@@ -699,21 +699,35 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 ```
 
 - `resident_rooms`: the rooms held in memory, which with the rooms sockets being admitted reserved are what `DISPATCH_MAX_LIVE_ROOMS` caps.
+
 - `room_records`: the room records the document service keeps.
+
 - `connections`: the browsers connected to rooms and the sockets being admitted to one, the count `DISPATCH_MAX_DOC_CONNECTIONS` caps.
+
 - `pending_updates`: the browser updates the rooms' persistence has yet to take.
+
 - `pending_update_bytes`: the bytes of the updates the rooms' queues hold.
+
 - `durable_appends`: the updates whose append has not landed.
+
 - `append_batches`: the append transactions of browser updates committed since the process started, an update stored alone included.
+
 - `appended_updates`: the browser updates those transactions stored.
+
 - `append_round_trips`: the round trips those transactions sent from the document's lock to its release, failed ones included.
+
 - `batch_sizes`: how many committed batches stored how many updates, by bucket (`1`, `2`, `3-4`, … `129-256`).
+
 - `pools.room_appends`, `pools.rooms`: each pool's connections held (`acquired`) and idle (`idle`), the acquires that found no idle connection (`empty_acquires`), and the time acquires waited in all (`acquire_duration_ns`); zeros for a pool not opened yet.
+
 - `read_cache`: the cold reads' cache's weight in bytes (`bytes`), its entries (`entries`) and its budget (`budget`).
+
 - `preloads`: the cold sockets' loaded states waiting for their room's load.
+
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
   It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received; parked rows already stored are part of the history a load decodes, so they count.
   ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`): a count of parked items and, separately, of parked delete ranges, not bytes.
+
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
 ## The live socket behind a proxy
@@ -921,6 +935,7 @@ What the two processes share, and what each keeps to itself:
 
 - A sign-in started on one process completes on the other:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
+
 - `server.started` names the build every live process serves, once each time that build changes.
   A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
@@ -1256,7 +1271,7 @@ the contracting migration — one that drops, renames or narrows — ships no ea
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
 A migration that cannot be written that way is a stop-the-world migration:
-it is deployed with no server of the earlier release running, and that is an exception named in the pull request, not a default (`0113` and `0117` below are the two).
+it is deployed with no server of the earlier release running, and that is an exception named in the pull request, not a default (`0113`, `0117` and `20261111210103` below are the three).
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -2095,6 +2110,66 @@ Its census answers `0`: the trigger runs only on versions written after it.
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
 On success it backfills each artifact's project and generated `ref_key`.
+
+Migration `20261111210103_projects_default_assignee_not_null` fills every project's `default_assignee` and then makes the column not null, so the last step of the chain that decides who a question reaches — the person the ask was handed to, then the issue's assignee, then the project's default — always lands on a person (INFRA-3090).
+`0116_project_default_assignee` added the column nullable and nothing ever filled it, so an ask on an unassigned issue of a project nobody had set a default on reached nobody's Inbox, which is the defect this change ends.
+The fill reads two sources and takes the first that names somebody who has signed in:
+the login holding most of that project's issues (`issues.project_key`, `issues.assignee`), a tie broken by the most recent issue among the tied logins (`issues.created_at`, then `issues.key`);
+then the person who created the project, read from its `project.created` event (`events.actor`, the jsonb of `model.Actor`: the `id` of an actor of kind `user`, else any actor's `owner`).
+Both sources are held to `people`, because a login no `people` row holds reaches nobody, which is the defect itself, so a stale assignee is passed over rather than stored.
+A project an agent session created with the shared bearer names nobody in its event (`api/projects_test.go`, `TestASessionBearerCreatesAProject`), so it is filled from its issues or not at all.
+A project neither source names stops the migration with its key in the message, raised from a `DO` block, since a `select` cannot raise.
+It locks `projects` alone, in `ACCESS EXCLUSIVE`, taken before the fill reads anything and held to commit, so no project created between the fill and the `ALTER` escapes with a null default;
+`issues`, `events` and `people` are read under `ACCESS SHARE`, which no write waits behind, so the census's one-gigabyte table limit reaches none of them.
+Its census counts the projects naming no default, which is every project the fill writes, so it refuses the deploy of a database nobody has filled.
+That is the point of it: run the fill on the release still serving, which is the migration's own two statements, and then take the census again, so that whoever deploys types no login at all.
+
+```sql
+-- 1. The login holding most of the project's issues, the most recent issue breaking a tie.
+with assigned as (
+	select i.project_key, i.assignee, i.created_at, i.key
+	from issues i
+	join people p on p.email = i.assignee
+), counted as (
+	select project_key, assignee, count(*) as held
+	from assigned
+	group by project_key, assignee
+), majority as (
+	select distinct on (a.project_key) a.project_key, a.assignee
+	from assigned a
+	join counted c on c.project_key = a.project_key and c.assignee = a.assignee
+	order by a.project_key, c.held desc, a.created_at desc, a.key desc
+)
+update projects p
+set default_assignee = m.assignee
+from majority m
+where p.key = m.project_key and p.default_assignee is null;
+
+-- 2. The person who created the project, where the first step named nobody.
+update projects p
+set default_assignee = creator.login
+from (
+	select distinct on (e.project_key)
+		e.project_key,
+		coalesce(
+			case when e.actor->>'kind' = 'user' then lower(e.actor->>'id') end,
+			lower(e.actor->>'owner')) as login
+	from events e
+	where e.type = 'project.created' and e.project_key is not null
+	order by e.project_key, e.id
+) creator
+join people person on person.email = creator.login
+where p.key = creator.project_key and p.default_assignee is null;
+```
+
+A project left with no default after both statements is one to name a person on by hand, `PUT /api/v1/projects/<key>/default-assignee` with `{"assignee": "<the person's email>"}`, which this release still serves.
+Reaching the migration with one left stops it, and its refusal names the repair that works from there: nothing is serving by then, so it is `update projects set default_assignee = '<the person''s email>' where key = '<KEY>';` on the database itself.
+
+**`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
+The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
+no server of the earlier release serves while the migration runs, and the release that boots over it names a default on every project it creates.
+An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
+recover a failed deploy forward, as `0113` and `0117` require.
 
 A migration runs while the build before it is still serving.
 The app Deployment of `envoy-infra:gcp:Dispatch` rolls above one replica (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
@@ -3030,7 +3105,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   List open asks newest-first, including their issue key, title, and assignee.
-  `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, and the assignee of its issue until somebody hands it on — so it keeps the asks waiting on the caller, the asks nobody waits on (a project-document ask nobody was handed included), or the asks waiting on that person;
+  `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, the assignee of its issue until somebody hands it on, and the default assignee of its project while the issue holds nobody — so it keeps the asks waiting on the caller or on that person, and `unassigned` keeps the asks that chain names nobody for, which every project naming a default assignee leaves none of;
   an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`.
 
 - `/api/v1/me/answers?limit=&offset=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
@@ -3104,12 +3179,16 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
-  List projects (`key`, `name`, `open_asks`, `created_at`), ordered by key.
+  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`), ordered by key.
+  A project's default assignee is not listed: `GET /api/v1/settings/project-default-assignees`, which needs the `person` scope, is the one read of it.
 
 - `/api/v1/projects` (POST; cookie, trusted header, or bearer)
 
-  Create a project from `key` and `name`, for a person or an agent session alike;
-  rejects a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate (U+202A-U+202E, U+2066-U+2069), and a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF);
+  Create a project from `key`, `name` and an optional `default_assignee`, for a person or an agent session alike.
+  Every project names a default assignee, the last step of the chain that decides who a question reaches, so the create takes the login `default_assignee` names, else the person creating the project, else the person its credential acts for.
+  A call that can name none — a credential that acts for no person and names no `default_assignee` — is `400 INVALID_PROJECT` naming the field, and a login nobody has signed in with, whether the call names it or it is the person the credential acts for (a broker-issued token's owner comes from the broker, not from `people`), is `400 ASSIGNEE_NOT_ALLOWED`.
+  The answer is the project plus the `default_assignee` it took; the `project.created` event carries the project alone.
+  It also rejects a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate (U+202A-U+202E, U+2066-U+2069), and a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF);
   combining marks, format characters, private-use characters and whitespace don't count) with `400 INVALID_PROJECT`, a name over 80 characters (`contracts.ProjectNameMax`, UTF-16 units after the trim) with `400 CAP_EXCEEDED`, and a duplicate key with `409 PROJECT_EXISTS`.
 
 - `/api/v1/settings/repo-projects` (GET; cookie, trusted header, or bearer)
@@ -3136,13 +3215,15 @@ Each item below names a path with its method and identity, then its purpose.
   `{id, instance, started_at, ended_at, state, counts, cursor}`.
   `instance` is the `server_processes` id of the process that ran the pass, which may be long gone — the rows are kept for 48 hours and a process is not.
   `ended_at`, `counts` and `cursor` are `null` until the pass ends;
-  `counts` is then the eight numbers the pass's one log line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`) and `cursor` is `{repository, from, number, rest, counted}`, where the pass left the order for the pass after it and so the address that pass takes it up at: `from` names the page of the repository's open pull requests, one above the last head of the page before it; `number` is the first pull request of that page the pass did not finish, `0` for the whole page; `rest` says the page is read from the repository's REST listing rather than from a query; and `counted` that its heads are already among the heads the cycle knows the repository has. All of them are zero and false for a pass that reached the end of the order. The page's position in the repository is recorded nowhere: a pull request merged below moves the position and moves no number.
+  `counts` is then the eight numbers the pass's one log line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`) and `cursor` is `{repository, from, number, rest, counted}`, where the pass left the order for the pass after it and so the address that pass takes it up at: `from` names the page of the repository's open pull requests, one above the last head of the page before it; `number` is the first pull request of that page the pass did not finish, `0` for the whole page; `rest` says the page is read from the repository's REST listing rather than from a query; and `counted` that its heads are already among the heads the cycle knows the repository has.
+  All of them are zero and false for a pass that reached the end of the order.
+  The page's position in the repository is recorded nowhere: a pull request merged below moves the position and moves no number.
   `state` is `running`, `complete`, `deadline`, `rate_limit`, `cancelled` (its process shut down under the pass) or `ended_without_completing`, the last being a process killed between a pass's start and its end.
   A deployment that has run no pass answers `[]`.
 
 - `/api/v1/settings/project-default-assignees` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  List every project that names a default assignee, by project key, as `[{project, assignee}]`; a project with no default is left out.
+  List every project with the person it defaults to, by project key, as `[{project, assignee}]`; every project is listed, because every project names a default, and no project at all is an empty list.
   It needs the `person` scope, since the default names a person.
 
 - `/api/v1/settings/new-issue` (GET; cookie, trusted header, or bearer)
@@ -3154,10 +3235,11 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Set a project's default assignee `{assignee}` (the email of a person who has signed in, or `null` to clear it):
-  who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to — the last step of the create chain.
-  `400 ASSIGNEE_NOT_ALLOWED` for an email nobody has signed in with, `400 INVALID_PROJECT` for a body without `assignee` or one whose `assignee` is neither a string nor null, `404 NOT_FOUND` for an unknown project.
-  It needs the `person` scope too, and no agent surface sets it.
+  Move a project's default assignee to another person, `{assignee}` being the email of a person who has signed in:
+  who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to — the last step of the create chain — and who a question on an issue nobody holds reaches.
+  Nothing clears a default, so a body whose `assignee` is absent, null or blank is `400 INVALID_PROJECT`.
+  `400 ASSIGNEE_NOT_ALLOWED` for an email nobody has signed in with, `404 NOT_FOUND` for an unknown project.
+  It needs the `person` scope too, and no agent moves a default: an agent names a project's first one on `POST /api/v1/projects`.
 
 - `/api/v1/delivery/session-groups` (POST; cookie, trusted header, or bearer)
 
@@ -3357,6 +3439,7 @@ Each item below names a path with its method and identity, then its purpose.
   A spec whose ask block breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`, and a spec whose markdown makes more than 65,536 elements (weighed as Element weights below lists) is `413 CAP_EXCEEDED`, naming the line that passes the limit;
   so is one whose markdown as stored (what `.../text` answers) would be longer than 1 MiB or make more than 65,536 elements.
+  A spec holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
 
 - `/api/v1/issues/{key}` (PATCH; cookie, trusted header, or bearer)
 
@@ -3538,11 +3621,12 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)
 
   GET lists the `check` blocks of the issue's Verification document in document order:
-  `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
+  `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
   A check's results come newest first by `created_at`, the time the recording transaction began, with `id` descending breaking a tie, and a client that reads one result per check reads the first of them;
   `dispatch results` prints every one of them, each with the reading its role recorded.
   Two results recorded in transactions that overlapped can come back in either order.
-  `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else, and reads GitHub for none of it.
+  `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
+  The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
@@ -3570,7 +3654,7 @@ Each item below names a path with its method and identity, then its purpose.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
 
   - `pass_stands` is `{answer, roles}` for the check as a whole: `yes`, with the roles of the passes that stand, while a result of it passed, stands at one of the compared commits, kept the check's words and carries no retraction;
-    `unknown` where the repository is unreadable, or where such a pass is held up only by a commit Dispatch could not place;
+    `unknown` where the repository is unreadable, for a check CI proves whose check runs GitHub could not be read (`ci.state` `unread`), or where such a pass is held up only by a commit Dispatch could not place;
     `no` otherwise, which a check compared with nothing for `no_pull_request_or_branch` answers, since there is nothing for a pass to stand at.
 
   Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
@@ -3583,12 +3667,33 @@ Each item below names a path with its method and identity, then its purpose.
 
   - Eligibility for that read is the repository and commit's, never one result's: it is skipped only where GitHub's answer cannot change the result — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to, since its own passes keep reading that row; or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
+  A check CI proves is one whose `ci_check` names a GitHub check run, with `when` `before_merge`, no `run`, a `negative_control`, and no result recorded against it (`validCICheck`, `docs.CICheckRuleIn`).
+  No role records its result (POST below refuses one), and nothing is stored for it:
+  each read takes the head of the issue's `open` pull request of the highest number, else the final head of its `merged` one of the highest number (`delivery.NewestPullRequestHead`), and reads that commit's check runs once, every page, under one 10-second deadline (`api/results_ci.go`, `deriveCIResults`).
+  Of the runs named exactly as `ci_check` says, the one of the highest id decides.
+  An issue holding no such check makes no read of check runs at all.
+
+  - Such a check carries `ci`, `{run, state, case, detail, line}`.
+    `state` is `pass`, `fail`, `no_result` or `unread`.
+    `case` is the conclusion that decided it — `success` passes, and `failure`, `timed_out`, `action_required`, `startup_failure`, `stale` and a conclusion this list does not name, as GitHub wrote it, fail — or one of the cases of no result:
+    `neutral`, `skipped`, `cancelled`, `not_completed`, `absent` (no run of that name at the head) and `no_head` (Dispatch holds no open or merged pull request head of the issue), each `no_result`, and `github_unreadable` (`unread`: no App key, a token GitHub would not mint, an HTTP error, a rate limit or the deadline).
+    `detail` is one sentence naming the case, at most 2,000 runes; for `github_unreadable` it names GitHub's own answer, a refusal by its status and the `message` of its JSON body, never the body itself and never a token.
+    `line` is the pull-request body line for the check: `- Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <the check's words>` for a pass or a fail, and `- Check <id> (before_merge): CI run <name> has no result (<case>)` for every other state; the check's words are cut as a recorded line's reading is, at a word, to at most 80 runes, with `…` where they were cut.
+
+  - For a pass or a fail its `results` hold the one result derived from that run, and nothing else:
+    `id` `ci-run:<check run id>`, `role` `ci`, `actor` `{kind: "github_app", id: <the slug of the App that made the run>}`, `session` `""`, `run` the run's name, `surface` and `negative_control` the check's, `commit_sha` the head read, `created_at` the run's `completed_at`, `observed` the conclusion, then the run's output title and summary cut together to 2,000 runes, then its URL, one a line, `check_sha256` the check's own digest, the counts 0, `screenshots` `[]`, and no `event_seq`.
+    It is judged as a recorded result is (`comparisonReader`), so its `commit_stands` and the check's `pass_stands` read as a recorded result's would.
+
+  A check carrying `ci_check` that breaks one of those rules, or that holds a recorded result, reads as an ordinary check with its recorded results.
+
   The issue a result was recorded on is read for nothing here, so a child's pull request is never a basis for a check above it.
   Nothing is written on a push: a push that moves a pull request's head leaves the result at the old head standing at no basis, by itself.
   An issue with no Verification document answers no checks.
 
 - POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
   `{key}` is the issue the result is recorded on; `check` names a check of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical block reference (`409 CHECK_AMBIGUOUS`); any other id is `400 UNKNOWN_CHECK`.
+  A check CI proves (GET above) is `409 CHECK_PROVED_BY_CI` for every role, naming the block and the check run, since its result is read from that run;
+  the test runs right after the check is resolved, before GitHub is asked about the commit, and again inside the recording transaction, where whether a result is recorded against the block is read again.
   `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0; a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
   Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything, and refuses a result at one it does not with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
   Only GitHub's `422 No commit found for SHA` refuses: a deployment with no App key, an issue resolving to no repository, a repository the App cannot read (GitHub answers `404` for that), a rate limit, a timeout and a failed read all store the result as before.
@@ -3648,6 +3753,7 @@ Each item below names a path with its method and identity, then its purpose.
   an upload under an existing artifact's name, one stored longer included, is never refused for its length.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
+  A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
   a document or version whose markdown as stored (what `.../text` answers) would be longer than 1 MiB and longer than the document's was, or make more than 65,536 elements and more than the document's did, or that would leave a live state ygo could not decode as one update;
   or whose formatting is more items than one document update can store (1,048,576), naming the count.
@@ -3661,6 +3767,7 @@ Each item below names a path with its method and identity, then its purpose.
   List non-primary project artifacts (or only unlinked documents with `?unlinked=true`), or create an unlinked project artifact, its kind read, and a new artifact's name held to 2692 bytes, as an issue upload's are.
   An ask block whose body breaks its content rule (`paragraph+ bullet_list?`:
   one or more paragraphs, then at most one bullet list, last) is `400 INVALID_ASK_BLOCK`; a new version is held to it only for the asks it writes or changes.
+  A check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A markdown document over 1 MiB, or any file over 25 MiB, is `413 CAP_EXCEEDED`, and so is a document whose markdown makes more than 65,536 elements (weighed as Element weights below lists), naming the line that passes the limit;
   a document or version whose markdown as stored (what `.../text` answers) would be longer than 1 MiB and longer than the document's was, or make more than 65,536 elements and more than the document's did, or that would leave a live state ygo could not decode as one update;
   or whose formatting is more items than one document update can store (1,048,576), naming the count.
@@ -3687,6 +3794,7 @@ Each item below names a path with its method and identity, then its purpose.
   any other document live in this server is `409 DOCUMENT_LIVE`; any other history that loads is `409 DOCUMENT_LOADS`, with or without markdown;
   supplied markdown on a closed issue's document is `409 ISSUE_CLOSED`;
   supplied markdown held to a new document's limits - more than 65,536 elements, or stored as markdown longer than 1 MiB or making more than 65,536 elements - is `413 CAP_EXCEEDED`.
+  Supplied markdown holding a check block that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   The latest saved version rebuilds whatever it weighs, except a document whose tree is more items than ygo decodes in one update (1,048,576), which no document can hold and which is `413 CAP_EXCEEDED` naming the count, from either source.
   A refused or failed rebuild leaves the document unchanged.
   It answers the report, whose `source_version` is the version the rebuilt document holds: its latest saved version, or the version supplied markdown wrote, and whose `validation_error` says why the history was rebuilt.
@@ -3716,6 +3824,7 @@ Each item below names a path with its method and identity, then its purpose.
   `{id}` must be a UUID.
   An edit is `400 INVALID_ASK_BLOCK` when an ask it writes or changes breaks its content rule (`paragraph+ bullet_list?`) or holds what settlement cannot read;
   an ask it carries through unchanged is not its to refuse.
+  A check block it adds or changes that breaks a `ci_check` rule is `400 INVALID_CI_CHECK` (Document errors below).
   A change a concurrent browser deletion removes before the version is rendered is `409 EDIT_LOST_TO_CONCURRENT_CHANGE` and writes nothing;
   one removed after it answers `200` with `lost_ops`.
   A batch whose markdown (its inserts and replaces together) makes more than 65,536 elements, or that would leave the document's markdown (what `.../text` answers) longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, or a live state ygo could not decode as one update, is `413 CAP_EXCEEDED` with the refusal itself as the error, and writes nothing.
@@ -3859,7 +3968,7 @@ On a comment, an ask or an issue message it is the logins with a Replies row on 
 on a direct (issue-less) conversation's message, which keeps no Replies row, it is the thread root's author, the one person whose Inbox holds that conversation's agent row, and `[]` when no person opened the thread.
 On an issue event it is the sorted union of two sets, naming a login in both of them once:
 for a close or a reopen the logins with a row on the issue's open asks, which the Inbox leaves out of their Replies while the issue is open and the ask waits on them, and `[]` for any other status move;
-for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on.
+for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on, a side where the issue holds nobody being the project's default assignee, whom a question on such an issue reaches (`issueWriteThreadLogins`, `api/thread_logins.go`).
 An `ask.asked_of` names two people instead of a thread's readers: the person the ask waited on and the person it waits on now, since a hand-on moves the ask between their lists and changes nothing for a reader of its thread.
 `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved, or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`PUT` or `DELETE /api/v1/me/asks/{id}/snooze`, which append it only when the row moved).
 A snooze's payload is exactly `{login, changed: ["snoozed"]}`:
@@ -4056,6 +4165,16 @@ Each item below names a status and code, then its meaning.
   An upload that moves an open anchor's quote where that anchor cannot stand - an ask's quote into a code block, or any open ask's, comment's or suggestion's quote into the front matter - and leaves no copy where it can is refused naming the anchor, its quote and where the text landed:
   move the text out, or resolve the anchor first.
   A copy there beside the original is taken, and the anchor stays on the original.
+
+- `400 INVALID_CI_CHECK`
+
+  A document write leaves a check block carrying `ci_check` that breaks one of the four rules of a check CI proves (`docs.CICheckRuleIn`), and the message names the block, its `ci_check` and the rule: `check <id> (ci_check "<name>"): <rule>`.
+  The rules, in the order they are read: `a check proved by CI carries no run`; `ci_check takes when of before_merge`; `a check proved by CI names its negative control`;
+  and, read in the write's transaction, `this check already holds a recorded result, so it does not become CI's; write a new check block under a new id and delete this one`.
+  Every route that writes a document refuses it - an issue's create, an upload of a document or a version, `POST /edits` and its attribute operations (never wrapped into `INVALID_OP`), and a rebuild from supplied markdown - for each check block the write adds and each one whose `ci_check`, `run`, `when` or `negative_control` it changes, compared by block id with the document before the write;
+  an edit elsewhere in a document never meets another writer's block.
+  A blank `ci_check` names no run.
+  A browser's edit is never refused: settlement removes such a block's `ci_check` and posts one `block.invalid` naming the block, the rule as `reason` and `block_type: "check"`.
 
 - `409 DOC_SCHEMA`
 

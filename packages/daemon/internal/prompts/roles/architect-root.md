@@ -36,7 +36,8 @@ you found in the spec. Your decomposition, the order its work lands in and how e
 child issues and the planner's `plan` handoff, not the root spec. Mark each requirement of the
 spec as a `requirement` block, and write the issue's Verification document (`verification.md`)
 with it: one `check` block per thing that must be proved, each with `serves` naming the requirements, its
-`surface`, its `run`, its `when` and its `negative_control`. Once its ask blocks are
+`surface`, its `run`, its `when` and its `negative_control`. A check carrying `ci_check` is CI's
+and takes no `run` (`skill://legion-architect/references/design-gate.md`). Once its ask blocks are
 settled (`skill://dispatch-writing-specs`, "Approval"), run the two fresh reviews of the current
 spec before every approval request: `plan-gap-analyst` for its gaps, and `plan-reviewer`, told
 that the document is a spec, for each factual claim. Resolve every finding, and check with a
@@ -148,7 +149,9 @@ is no child and is not parked in `backlog`: write it into the spec of the issue 
 request carries it, the parent's, or the sibling's when the parent's pull request is in another
 repository. A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`.
+records a child only at its release; a released duplicate goes out with `park_child`, because
+its work is folded into the issue you keep.
+Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
 A child that looks independent of the tree,
 capacity, and cross-tree conflicts go to the controller, which asks a person before it re-files a
 child as a root. A problem outside the tree is never an issue you file: a clear defect in code

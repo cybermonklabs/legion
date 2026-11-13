@@ -126,8 +126,9 @@ func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64, tracked int64) (w
 // roomQueries.ask), a history that loads and is not near a cap, a history another rebuild or an
 // append moved past the one this rebuild loaded (RebuildTx), a closed issue (for supplied
 // markdown, which changes the document), and markdown that is not a Proof document, drops an open
-// ask block, or introduces a block pointer at a block the attribute may not name
-// (refuseBlockPointers, against the latest version). Supplied markdown is caller text: it is
+// ask block, introduces a block pointer at a block the attribute may not name
+// (refuseBlockPointers), or introduces a check block that breaks a rule of a check CI proves
+// (refuseCICheckBlocks), both against the latest version. Supplied markdown is caller text: it is
 // parsed as an upload is, and its rendering is weighed as a new document's is (SeedText). The
 // latest version is the server's own rendering of the document, read back as every stored
 // rendering is (pmdoc.ParseRendering), so a document whose version is past what one write may
@@ -309,16 +310,17 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		if err := weighRendering("", canonical); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
-		// Supplied markdown is a caller's write, so a block pointer it introduces over the
-		// latest version is checked. That version is read back only when the schema declares a
-		// pointer attribute; one that does not read back holds no pointer.
+		// Supplied markdown is a caller's write, so a block pointer or a check block it introduces
+		// over the latest version is checked. That version is read back as the tree before the
+		// write; one that does not read back holds no pointer and no check block.
 		var prior *pmdoc.Node
-		if pmdoc.HasLinkKinds() {
-			if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
-				prior = latestTree
-			}
+		if latestTree, err := pmdoc.ParseRendering(latest.markdown); err == nil {
+			prior = latestTree
 		}
 		if err := refuseBlockPointers(ctx, tx, artifactID, tree, prior, offsets); err != nil {
+			return RebuildReport{}, VersionResult{}, err
+		}
+		if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, prior); err != nil {
 			return RebuildReport{}, VersionResult{}, err
 		}
 	}

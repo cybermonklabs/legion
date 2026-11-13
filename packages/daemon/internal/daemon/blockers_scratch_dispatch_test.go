@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -228,10 +229,11 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// The state names no slotted root in `blocked`, so the link's arrival is read off the daemon's
 	// own mirror of Dispatch, at the sequence Dispatch gave the link. Every state read on the way to
 	// the root's first phase is judged as well: nothing holds a root in its slot, so none may name it.
-	pool, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
+	raw, err := pgxpool.New(t.Context(), cfg.PostgresDSN)
 	if err != nil {
 		t.Fatalf("open the daemon's database: %v", err)
 	}
+	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
 	var namedSlotted []api.BlockedIssue
 	judgeSlotted := func(s api.State) {
@@ -860,7 +862,7 @@ func blockedOn(state api.State, issue string) ([]string, bool) {
 // its tree's architect, oldest first, read off the daemon's own outbox, where a notice stands
 // until the architect's role topic takes it. Nothing in this harness answers the Envoy address the
 // notice runner publishes to, so no row is finished by a delivery while the test reads it.
-func childStatusNotices(t *testing.T, pool *pgxpool.Pool, issue string) []string {
+func childStatusNotices(t *testing.T, pool *store.Pool, issue string) []string {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select payload->>'reason' from outbox
 		where kind = 'notice' and issue = $1 and payload->>'kind' = 'child-status' order by id`, issue)

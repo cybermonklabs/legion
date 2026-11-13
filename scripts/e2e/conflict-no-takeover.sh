@@ -5,7 +5,7 @@
 # that turn is neither ended nor asked after, since nothing at all is sent to the tester's
 # connection — the tester is told its phase ended by one message on its own Envoy role topic, a
 # completion reported from that old turn once the issue has handed testing out again is refused
-# HANDOFF_STALE_ASSIGNMENT while the completion of the handoff the new assignment's own task calls
+# HANDOFF_STALE_ENTRY while the completion of the handoff the new entry's own task calls
 # for, at a commit of its own, is taken, and a phase-ended message to a role topic no live session
 # holds finishes its outbox row instead of retrying for ever, with the start still acting. The
 # whole daemon is booted by the function `legion start` calls, over a real PostgreSQL and a real

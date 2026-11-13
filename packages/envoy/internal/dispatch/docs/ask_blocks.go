@@ -29,13 +29,13 @@ type askBlock struct {
 	urgency  string
 }
 
-// settlementReconciliation is what one settlement's pass over the ask blocks found. Everything
-// that names a version number - a repair, an invalid block, the retraction of an ask whose block
-// left - is left for nameVersion, since settlement knows the number only once it has rendered
-// the reconciled tree: a settlement whose markdown repeats the latest version writes no version
-// and leaves the document at the one it found.
+// settlementReconciliation is what one settlement's pass over the ask blocks and the check blocks
+// found. Everything that names a version number - a repair, an invalid block, the retraction of
+// an ask whose block left - is left for nameVersion, since settlement knows the number only once
+// it has rendered the reconciled tree: a settlement whose markdown repeats the latest version
+// writes no version and leaves the document at the one it found.
 type settlementReconciliation struct {
-	repairs   []askRepair
+	repairs   []blockRepair
 	events    []model.Event
 	retracted []model.Ask
 	// owedCopies are the other documents showing a copy of an ask this settlement retracts, or of
@@ -55,16 +55,25 @@ type settlementReconciliation struct {
 	rewrites []serverRewrite
 }
 
-// askRepair is one server-owned attribute repair settlement made to the ask block carrying blockID
-// in the tree it read, which set makes again on that block in the live document (repairLive).
-// attributes is how many of the block's attributes set can write; bounded is false for a repair
-// that rewrites the block's content (decidedWording), which no count of attributes bounds, as
-// serverWrite.bounded says the same of a server write (settlementReconciliation.addedStructs).
-type askRepair struct {
+// blockRepair is one repair settlement made to the block of type blockType carrying blockID in the
+// tree it read, which set makes again on that block in the live document (repairLive): a
+// server-owned attribute of an ask, an ask's decided wording (decidedWording), or the ci_check of a
+// check that breaks a rule (reconcileCICheckBlocks). attributes is how many of the block's
+// attributes set can write; bounded is false for a repair that rewrites the block's content
+// (decidedWording), which no count of attributes bounds, as serverWrite.bounded says the same of a
+// server write (settlementReconciliation.addedStructs).
+type blockRepair struct {
 	blockID    string
+	blockType  string
 	set        func(*pmdoc.Node) bool
 	attributes int
 	bounded    bool
+}
+
+// askRepair is the repair set makes to the ask block carrying blockID, writing at most attributes
+// of the block's attributes.
+func askRepair(blockID string, set func(*pmdoc.Node) bool, attributes int) blockRepair {
+	return blockRepair{blockID: blockID, blockType: "ask", set: set, attributes: attributes, bounded: true}
 }
 
 // copiedBlock is one block settlement wrote a copy's attributes into: its id and its source.
@@ -87,14 +96,14 @@ func (r *settlementReconciliation) logCopiedBlocks(artifactID string) {
 	}
 }
 
-// repair runs set, which writes at most attributes of the block's attributes, on node, the ask
-// block carrying blockID in the tree settlement read, and records it for repairLive when it changed
-// the block.
-func (r *settlementReconciliation) repair(node *pmdoc.Node, blockID string, set func(*pmdoc.Node) bool, attributes int) bool {
+// repair runs set, which writes one of the block's attributes, on node, the block carrying blockID
+// in the tree settlement read (an ask whose invalid it sets, or a check whose broken ci_check it
+// deletes), and records it for repairLive, under node's block type, when it changed the block.
+func (r *settlementReconciliation) repair(node *pmdoc.Node, blockID string, set func(*pmdoc.Node) bool) bool {
 	if !set(node) {
 		return false
 	}
-	r.repairs = append(r.repairs, askRepair{blockID: blockID, set: set, attributes: attributes, bounded: true})
+	r.repairs = append(r.repairs, blockRepair{blockID: blockID, blockType: node.Type, set: set, attributes: 1, bounded: true})
 	return true
 }
 
@@ -110,7 +119,7 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, a
 		return false
 	}
 	rewrite := serverRewrite{node: node, ask: ask, copied: copied, found: found, answer: wroteAnswer, repair: len(r.repairs), event: -1}
-	r.repairs = append(r.repairs, askRepair{blockID: blockID, set: askServerAttributes(ask, copied, false), attributes: len(askServerAttributeNames), bounded: true})
+	r.repairs = append(r.repairs, askRepair(blockID, askServerAttributes(ask, copied, false), len(askServerAttributeNames)))
 	if event != nil {
 		rewrite.event = len(r.events)
 		r.events = append(r.events, *event)
@@ -119,8 +128,9 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, a
 	return true
 }
 
-// changedTree reports whether reconcileAskBlocks changed the tree it reconciled. Every change it
-// makes in place is recorded in repairs - by repair, by repairAsk, and by its own write of a
+// changedTree reports whether settlement changed the tree it reconciled. Every change
+// reconcileAskBlocks and reconcileCICheckBlocks make in place is recorded in repairs - by repair,
+// which the deletion of a broken ci_check goes through too, by repairAsk, and by the write of a
 // decided ask's wording - and repairAsk records its change in rewrites too. withholdAnswers drops
 // a repair only for an entry of rewrites, which never shrinks, so changedTree is true whenever the
 // tree was touched.
@@ -131,8 +141,8 @@ func (r *settlementReconciliation) changedTree() bool {
 // repairLive makes the reconciliation's repairs on live, the document as it stands when settlement
 // writes them, which a peer may have edited since settlement read the tree it reconciled, and
 // reports whether any changed it. A repair lands on the first block carrying its id - the holder
-// EnsureBlockIDs keeps the id for - while that block is an ask: one removed or retyped since takes
-// none, and the settlement its removal scheduled reconciles it.
+// EnsureBlockIDs keeps the id for - while that block has the type the repair was made on: one
+// removed or retyped since takes none, and the settlement its removal scheduled reconciles it.
 func (r *settlementReconciliation) repairLive(live *pmdoc.Node) bool {
 	holders := make(map[string]*pmdoc.Node, len(r.repairs))
 	for _, repair := range r.repairs {
@@ -149,7 +159,7 @@ func (r *settlementReconciliation) repairLive(live *pmdoc.Node) bool {
 	})
 	changed := false
 	for _, repair := range r.repairs {
-		if holder := holders[repair.blockID]; holder != nil && holder.Type == "ask" && repair.set(holder) {
+		if holder := holders[repair.blockID]; holder != nil && holder.Type == repair.blockType && repair.set(holder) {
 			changed = true
 		}
 	}
@@ -163,16 +173,17 @@ func (r *settlementReconciliation) writeLive(doc *crdt.Doc, origin any) error {
 }
 
 // addedStructs bounds the structs the reconciliation's repairs add to the document they are
-// written into (writeLive), and reports whether any bound holds. Each repair sets attributes on
-// the one block it lands on (repairLive), at most askRepair.attributes of them, and pmdoc.Update
+// written into (writeLive), and reports whether any bound holds. Each repair writes attributes on
+// the one block it lands on (repairLive), at most blockRepair.attributes of them, and pmdoc.Update
 // writes each attribute it sets as one map item whose origin is the attribute's last item, whole,
 // so it splits nothing (pmdoc's updateElement; crdt/yxml.go:504-519 in sjawhar/ygo
-// v1.55.1-sami.8), and each it deletes as a deletion of that item, which adds no struct; it writes
-// nothing of the rest of the tree, read in the same transaction and handed back as it was
-// (pmdoc's updateChildren). An answer is one of those attributes: its text is the value of one
-// item, however long. A repair that rewrites a block's wording (decidedWording) can write any
-// number of elements and runs of text, which no count of attributes bounds, so a reconciliation
-// holding one has no bound and is always counted (leavesPastDecodeCap).
+// v1.55.1-sami.8), and each it deletes - a check's broken ci_check (reconcileCICheckBlocks) - as a
+// deletion of that item, which adds no struct; it writes nothing of the rest of the tree, read in
+// the same transaction and handed back as it was (pmdoc's updateChildren). An answer is one of
+// those attributes: its text is the value of one item, however long. A repair that rewrites a
+// block's wording (decidedWording) can write any number of elements and runs of text, which no
+// count of attributes bounds, so a reconciliation holding one has no bound and is always counted
+// (leavesPastDecodeCap).
 func (r *settlementReconciliation) addedStructs() (uint64, bool) {
 	var adds uint64
 	for _, repair := range r.repairs {
@@ -313,7 +324,7 @@ func (s *Service) reconcileAskBlocks(
 	var reconciled settlementReconciliation
 	for _, invalid := range invalidBlocks {
 		delete(rows, invalid.id)
-		if reconciled.repair(invalid.node, invalid.id, askInvalidAttribute(invalid.reason.Error()), 1) {
+		if reconciled.repair(invalid.node, invalid.id, askInvalidAttribute(invalid.reason.Error())) {
 			reconciled.events = append(reconciled.events, documentAskEvent(
 				owner,
 				artifactID,
@@ -414,7 +425,7 @@ func (s *Service) reconcileAskBlocks(
 				slog.Error("dispatch: cannot write a decided ask's wording back into its block",
 					"ask", ask.ID, "artifact", artifactID, "block", block.id, "error", err)
 			case changed:
-				reconciled.repairs = append(reconciled.repairs, askRepair{blockID: block.id, set: decidedWording(ask)})
+				reconciled.repairs = append(reconciled.repairs, blockRepair{blockID: block.id, blockType: "ask", set: decidedWording(ask)})
 				reworded = true
 				slog.Info("dispatch: wrote a decided ask's wording back into its block",
 					"ask", ask.ID, "artifact", artifactID, "block", block.id, "state", ask.State)

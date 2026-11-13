@@ -337,7 +337,7 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
@@ -359,6 +359,14 @@ Each item below names a task and where its code is, then notes on it.
     a commit no stored row places there answers `unknown` for `repository_unreadable`, as it does for `read_failed` wherever a read failed instead, and a branch check of a repository Dispatch can name no branch of compares with nothing.
     A read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
+  - a check CI proves - its `ci_check` names a GitHub check run, its `when` is `before_merge`, it carries no `run`, it names a `negative_control` and no result is recorded against it (`validCICheck`, `docs.CICheckRuleIn`) - takes no recorded result:
+    `POST` refuses one with `409 CHECK_PROVED_BY_CI` for every role, right after `resolveCheck` and again inside its transaction (`refuseCheckProvedByCI`).
+    `GET` reads its one result on every read instead, and stores nothing (`api/results_ci.go`, `deriveCIResults`):
+    at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.
+    The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.
+    `?at=` leaves that read in place, so a derived result stands at the named commit only where that commit is the head.
+    A check carrying a `ci_check` that breaks a rule, or one that holds a recorded result, reads as an ordinary check.
+
   A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
   The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;
@@ -369,7 +377,7 @@ Each item below names a task and where its code is, then notes on it.
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
-  Shapes: `IssueCheckResults`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
+  Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
 
 - **Load test**: `loadtest/`
 
@@ -2324,11 +2332,13 @@ Parsing mints an omitted id, while live document reads and writes validate each 
 Schema changes are additive: add a type, add a defaulted attribute, add an enum choice, or widen a content rule.
 Tightening content, removing or renaming a type or attribute, or requiring a new attribute requires a document migration and version bump.
 
-The shipped types are `callout`, `ask`, and the three this release adds (`pmdoc/schema/blocks.json`, version 3), each holding `paragraph+`:
+The shipped types are `callout`, `ask`, `requirement`, `plan_task` and `check` (`pmdoc/schema/blocks.json`, version 4, which added `ci_check` to `check`), the last three each holding `paragraph+`:
 `requirement`, one requirement of an issue's spec, with no attribute of its own;
 `plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
-and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run` and `negative_control`, and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
+and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
 A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
+A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
+an API write that adds a check block, or changes a check's `ci_check`, `run`, `when` or `negative_control`, so that it breaks one is `400 INVALID_CI_CHECK` (`refuseCICheckBlocks`), and settlement repairs what a browser writes (below).
 
 A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs` and a check's `serves`.
 Its value is the empty string (no pointers) or canonical block references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, and the renderer joins them with one space);
@@ -2482,6 +2492,7 @@ An open ask's indexed row stays open and unchanged; an answered or resolved ask 
 Repairing its body clears `invalid` before updating the ask row, and writes a decided ask's decided wording back into the block.
 An emptied question is repaired by an ask edit carrying one, the route's own path above;
 every other reading failure is repaired where a person writes it, or by the document edit the refusal names.
+A browser-written check block carrying a `ci_check` that breaks one of its four rules (`docs.CICheckRuleIn`: no `run`, `when` of `before_merge`, a `negative_control`, no recorded result against the block, read in the settlement's transaction) loses that `ci_check` at settlement (`reconcileCICheckBlocks`), and one `block.invalid` names the block, the rule as `reason` and `block_type: "check"`; a block it repaired carries no `ci_check`, so no later settlement repairs it again.
 Markdown that becomes a whole document - a spec at issue creation, an uploaded document or version - is refused with `400 INVALID_ASK_BLOCK` when an ask's body breaks its content rule, `paragraph+ bullet_list?` - one or more paragraphs, then at most one bullet list, last (`pmdoc.AskContentError`) - as the browser editor's parser refuses to build such a block.
 A new document is held to it for every ask, and so are a version that repairs a stored tree outside the schema, which has no readable asks to compare with, and a rebuild from supplied markdown;
 any other new version only for each ask it writes or changes (`refuseChangedAsks`), comparing the ask's rendering with the current one (`newAskMarkdown`, the asks of one check sharing one budget of span cells, spent in document order as the document's own render spent it, so a live ask over a table with colspans or rowspans matches the cells its stored markdown wrote them out as while that budget lasts), since a version is markdown and cannot carry a comment's anchor mark or the id a reader's browser derives for a heading;
@@ -2593,30 +2604,30 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
 - Every issue has a nullable `assignee`:
-  the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person (`issues.assignee`, migration `0034`, indexed on open issues).
+  the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
   absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
   everyone who has signed in) — else `400 ASSIGNEE_NOT_ALLOWED` naming the email; a non-string is `400 INVALID_ISSUE`).
   Any authenticated actor may set it; the event's actor is who assigned it, and the whole issue rides in `issue.created` / `issue.updated`, so there is no `assigned_by`.
-  Absent on create, the default is the first match of:
+  Absent or `null` on create (both name nobody there, so only the `PATCH`'s `null` clears), the default is the first match of:
   a human actor's email; a personal token's `Owner`;
   the parent's assignee when it names someone;
-  the project's `default_assignee` when that still names a row of `people` (`projects.default_assignee`, migration `0116`;
-  a default left stale by a restore or a direct write falls through to nobody rather than refusing the create, so the check is one query on the create's own transaction and not `allowedLogin`);
-  null — so an issue the shared token creates with no assignee named and no parent assignee lands on the project's default, and one it creates where the project names none stays unassigned;
-  nothing back-fills issues already filed, an explicit `null` on the create still means nobody, and a daemon status PATCH (no `assignee` key) never touches it.
-  A project's default is set by a person alone, through `GET /api/v1/settings/project-default-assignees` and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`, or `null` to clear it;
-  `400 ASSIGNEE_NOT_ALLOWED` otherwise, `400 INVALID_PROJECT` for a body without `assignee` or one whose `assignee` is neither a string nor null, and a `settings.project_default_assignee.updated` event);
-  no agent command, flag or route sets it, which is deliberate (`api/project_default_assignee.go`).
+  the project's `default_assignee`, which every project names (`projects.default_assignee`, migrations `0116` and `20261111210103`;
+  the column is not null, and a default left stale by a restore or a direct write is used as it stands rather than refusing the create, so the step is the column the create's own transaction already read and not `allowedLogin`).
+  The chain therefore ends on a person: an issue the shared token creates with no assignee named and no parent assignee lands on the project's default.
+  Nothing back-fills issues already filed, and a daemon status PATCH (no `assignee` key) never touches it.
+  A new issue therefore always has an assignee, whatever the create sends; the one way to an issue nobody holds is `PATCH /api/v1/issues/{key}` with `{"assignee": null}`, so a test that needs one creates the issue and then clears it.
+  A project's default is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
+  `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
   `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
   `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports.
   Issue reads (`GET /issues/{key}`, summaries, pinned) carry `assignee`, and so does the `issue` on every inbox row.
 
 - Every issue has a nullable claim: the session that intends to implement it (`issues.claimed_by` — the actor JSON
   — and `issues.claimed_at`, migration `0045`, both set or both null by `issues_claim_complete`).
-  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on).
+  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on, or, while the issue holds nobody, its project's default assignee).
   The whole rule lives in `api/issue_claim.go`.
   `POST /api/v1/issues/{key}/claim` (any authenticated actor) claims it:
   the claimant is the request's own actor, the same identity every other write carries
@@ -2934,7 +2945,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A direct (issue-less) conversation keeps no `user_threads` row, so its `message.created` and `message.answered` name the thread root's author instead, the one person whose Inbox holds that conversation's Agent row (`api/thread_logins.go`, `directThreadLogins`), and `[]` when no person opened the thread.
   An `issue.updated` or `issue.closed` that moved the status or the assignee carries it too (`issueWriteThreadLogins`), as the sorted union of two sets:
   for a close or a reopen `events.IssueThreadLogins`, the logins with a row on one of the issue's open asks, which the Replies list leaves out while the issue is open and the ask waits on them, and `[]` for any other status move;
-  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other.
+  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other, and a side where the issue holds nobody is the project's default assignee, whom a question on such an issue reaches (`issueWriteThreadLogins` resolves it, `api/thread_logins.go`).
   A login in both sets is named once, and a write that moved neither carries no `thread_logins` at all.
   `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved from the row it read (`api/state.go`), or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`askSnoozeEvent`, `api/ask_snooze.go`), whose payload is exactly `{login, changed: ["snoozed"]}`:
   the stream has no per-viewer filter, so every signed-in person and agent replays it, and it names no ask and no `state` of the writer's (the writer's tabs refetch their whole Inbox);
@@ -2973,14 +2984,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the person each ask waits on (`inboxAssigneeFilter`, `api/inbox.go`):
   `me` is the caller's lowercase email; an `<email>` is canonicalised (`strings.ToLower(strings.TrimSpace(...))`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
-  `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee)` is that login — the asks handed to them, and the asks on the issues assigned to them that nobody has handed on (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks nobody waits on, so an ask nobody was handed on an issue nobody holds **and every project-document ask nobody was handed** (a document has no assignee to fall back to); no value returns everything.
+  `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee, p.default_assignee)` is that login — the asks handed to them, the asks on the issues assigned to them that nobody has handed on, and, for the person a project defaults to, the asks nobody has handed on that project's issues nobody holds and on its documents (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks the expression names nobody for, which every project naming a default assignee leaves none of; no value returns everything.
   This is the contract for shareable links and humans' scripts: the SPA asks for no assignee at all.
   It fetches the unfiltered inbox once (the one `["inbox"]` query every surface shares) and splits it client-side by the reader's own `?assignee=` filter, whose values are repeated on the page's URL and are a lowercase login or the literal `unassigned` (`features/refs/routes.ts`, `inAssigneeFilter` in `features/inbox/sections.ts`):
   no `assignee` at all is the reader's own work, every visit and nothing remembered, and the single value `everyone` is the cleared filter.
   The two `?assignee=` vocabularies spell their default the opposite way round on purpose
   — absent means everybody here and the reader alone there
   — because the page must keep reading the whole list: its counts stay about the reader while the list on screen widens.
-  A row's `Assign to me` PATCH is offered wherever an issue-owned row nobody waits on is listed, and a project-document row never carries one.
+  A row's `Assign to me` PATCH is offered wherever an issue-owned row nobody waits on is listed, which every project naming a default assignee leaves none of, and a project-document row never carries one.
 
 - `GET /api/v1/asks/open` takes exactly one scope selector.
   `?author_session=<session-id>` lists every active open ask authored by that session across open issues and unlinked project documents;
@@ -3170,7 +3181,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
     The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
 
   - A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
-    that is an open ask on an open issue that waits on the caller alone (`myRepliesOwner`, over `askedOfPersonExpression`: the person the ask was handed to, and the assignee of its issue until somebody hands it on), so an open ask on a project document, on an issue nobody holds, or on another person's issue and handed to nobody, is a Reply row here.
+    that is an open ask on an open issue that waits on the caller alone (`myRepliesOwner`, over `askedOfPersonExpression`: the person the ask was handed to, the assignee of its issue until somebody hands it on, and its project's default assignee while the issue holds nobody), so an open ask on another person's issue and handed to nobody, or on a project document another person's project defaults to, is a Reply row here.
     A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
     its row stays, since the Inbox hides it.
 

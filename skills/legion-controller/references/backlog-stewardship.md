@@ -96,7 +96,46 @@ tree (a root in `admission.trees`, or an issue whose `tree` is one); its archite
 
 A person's `legion` label outranks a plan's deferral. The daemon queues the root at once: a
 person's label on an unrecorded root in `triage` is the root's `todo`, written by the daemon. A
-labelled root the weekly plan says to defer is parked by you at your next backlog pass, not
-before: `set_status` it to `backlog`, or to `icebox` for a longer deferral, and cite the plan's
-directive in a comment on the issue. The cost is the architect's work between the daemon's `todo`
-and your park.
+labelled root that the daemon has queued or runs, and that the weekly plan says to defer, is
+parked by you at your next backlog pass, not before, and only when the plan's line names a
+person's request to defer it: `set_status` it to `backlog`, or to `icebox` for a longer deferral,
+and cite that request in a comment on the issue.
+Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+A plan row you wrote with no such request behind it moves nothing. Ask the person whether to
+defer that root instead:
+
+1. Look for your earlier ask for that row. Read the root's comments with the command of
+   `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` step 1, with
+   `Asked whether to defer: ` in place of `Asked whether to park: `, and take the newest whose
+   second line is exactly that plan row. Compare that line alone. A comment or a reply from any
+   session counts as yours. When its ask is open, open nothing and post nothing. When it is
+   resolved with no answer, open nothing and post nothing for that row. The day's report names
+   the root and that ask, as `skill://legion-controller/references/daily-report.md` says. When it
+   is answered, and no reply of yours under it starts `Deferred dispatch://`,
+   `Not deferred dispatch://` or `Let run dispatch://`, act on its answer now (step 4). When your
+   reply under it starts `Deferred dispatch://` or `Let run dispatch://`, the person decided
+   already: open nothing and post nothing. When your reply under it starts
+   `Not deferred dispatch://`, that ask is spent, because its `Defer it` came when the check of
+   step 2 failed. Go on to step 2.
+2. Otherwise, and when step 1 sends you here, check first that Legion runs the root: it carries
+   the `legion` label, it stands in `admission.active` or `admission.waiting` of `read_state` (the
+   `active` and `waiting` lines of its summary), and
+   `issues.<root>.phase` is not `done`. When one of these fails, open nothing and post nothing,
+   because there is nothing to defer. When all of them hold, open a `dispatch ask` on the report
+   issue that names the root and the plan row and
+   asks the person whether to defer that root, with the options `Defer it` and `Let it run`.
+   Follow it (`dispatch follow --ask '<ref>' --action follow`). Post one comment on the root
+   (`dispatch comment --issue <root> --body-file -`). Make its first line
+   `Asked whether to defer: dispatch://<REPORT KEY>/ask/<id>`. Make its second line the plan row,
+   exactly as the plan gives it: that line is the key that step 1 compares.
+3. Name the row and that ask in the day's report while the ask is open.
+4. On `Defer it`, when the check of step 2 still holds, park the root as
+   above, and cite the answer in a comment on the issue. On `Defer it` in any other case, move
+   nothing, and say in your reply what you checked. On `Let it run`, move nothing, and take the
+   deferral off that plan row with `dispatch doc-edit`, as step 4 of
+   [Reconcile the weekly plan](#reconcile-the-weekly-plan) edits a row, so that the next backlog
+   pass asks nothing. In each case, reply under the ask with what you did, its first line exactly
+   `Deferred dispatch://<root>`, `Not deferred dispatch://<root>` or `Let run dispatch://<root>`:
+   `dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`.
+
+The cost is the architect's work between the daemon's `todo` and your park.
