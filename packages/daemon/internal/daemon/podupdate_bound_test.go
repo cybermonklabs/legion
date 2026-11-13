@@ -861,6 +861,71 @@ func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T)
 	}
 }
 
+// A round open at the deploy whose members stand three ways: the implementer has not answered,
+// the tester answered under the earlier release, and the planner failed. The migration's reset
+// keeps the tester's answer and starts every member's clock at the deploy. So the first sweeps
+// ask the implementer alone, once, with the end at the deploy plus pod_update_grace_minutes: the
+// tester has answered and the planner is failed, and the round asks neither. Nothing is replaced
+// while the implementer has not answered. Once it answers, and with no turn running, the next
+// sweep replaces the pod, still before the new bound, because the tester's answer from before the
+// deploy counts and the failed planner is waited for by no one.
+//
+// The control is a reset that also clears update_signalled_at: then the tester is asked as well.
+func TestPodUpdateRoundOpenAtTheDeployKeepsItsAnswerAndAsksOnlyTheUnanswered(t *testing.T) {
+	deploy := podUpdateStart.Add(3 * time.Hour)
+	unanswered := readyWorker(claim.RoleImplementer)
+	unanswered.round, unanswered.reasons = podUpdateRound, podUpdateDrift
+	answeredBefore := readyWorker(claim.RoleTester)
+	answeredBefore.round, answeredBefore.reasons, answeredBefore.signalled = podUpdateRound, podUpdateDrift, true
+	failed := podUpdateRole{role: claim.RolePlanner, state: supervise.StateFailed, session: true,
+		contract: readyWorker(claim.RolePlanner).contract, round: podUpdateRound, reasons: podUpdateDrift}
+	rig := newPodUpdateRig(t, unanswered, answeredBefore, failed)
+	rig.clockAt(deploy)
+	if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
+		t.Fatalf("reset the open pod round as the migration does: %v", err)
+	}
+	next := rig.restart()
+	if c := next.claimOf(claim.RoleTester); c.UpdateRound != podUpdateRound || c.UpdateSignalledAt == nil {
+		t.Errorf("the tester after the deploy is in round %q with answer %v, want round %s and the answer it gave the earlier release", c.UpdateRound, c.UpdateSignalledAt, podUpdateRound)
+	}
+	if c := next.claimOf(claim.RolePlanner); c.State != supervise.StateFailed || c.UpdateRound != podUpdateRound {
+		t.Fatalf("the planner after the deploy = %s in round %q, want it failed in the open round", c.State, c.UpdateRound)
+	}
+	clocks := next.replacementClocks()
+	next.drifts(podUpdateDrift)
+
+	next.tick()
+	next.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	for range 3 {
+		next.tick()
+	}
+	text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace), podUpdateRescue)
+	asked := map[claim.Role]int{}
+	for _, ask := range next.asks() {
+		asked[ask.Role]++
+		if ask.Text != text {
+			t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
+		}
+	}
+	want := map[claim.Role]int{claim.RoleImplementer: 1, claim.RoleTester: 0, claim.RolePlanner: 0}
+	for role, n := range want {
+		if asked[role] != n {
+			t.Errorf("the %s was asked %d times after the deploy, want %d", role, asked[role], n)
+		}
+	}
+	if calls := next.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times while the implementer had not answered, want none before the new bound %s", len(calls), deploy.Add(podUpdateGrace))
+	}
+
+	next.signal(claim.RoleImplementer, "a1b2c3d")
+	next.awaitReplacement(1, "once the one role the deploy asked has answered")
+	for _, at := range clocks() {
+		if !at.Before(deploy.Add(podUpdateGrace)) {
+			t.Fatalf("the pod was replaced at %s, want before the new bound %s: the tester's answer stands and the planner is failed", at, deploy.Add(podUpdateGrace))
+		}
+	}
+}
+
 // The bound has come and no claim has answered, so the walk lets the replacement through. The
 // runtime then finds no pod to replace — the Sandbox is absent or suspended, or its pod is not
 // the locator's — and returns nil without asking the last word. Nothing was replaced, so the

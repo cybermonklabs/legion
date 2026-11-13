@@ -430,6 +430,55 @@ func TestPodUpdateTheEndOfTheTurnOfAnOlderDaemonsAskIsNoAnswer(t *testing.T) {
 	}
 }
 
+// An operator suspended a claim of an open pod round under an older daemon, and that daemon queued
+// its ask of the round as a task that waits for the operator's resume. This daemon restores the
+// claim suspended and holding that task. While the suspension stands nothing is sent: the sweep's
+// posts of the round revive nothing and hand the task to nobody. The resume relaunches the claim,
+// and at ready the older daemon's task is dropped and never sent, though it names the round the
+// claim is still in (dispatch://INFRA-2981 R1). The role gets the round's Envoy ask instead, which
+// the sweep publishes and this machine does not.
+//
+// The negative control is sendPending's drop narrowed to the rule before this one, an ask of a
+// round the claim is not in now or has left (`asks && (round != m.claim.UpdateRound ||
+// m.claim.LeftPodRound(round))`): the resume then sends the ask, and a prompt carries it.
+func TestPodUpdateAnOperatorsSuspendedClaimDropsTheOlderDaemonsAskAtItsResume(t *testing.T) {
+	h := updateHarness(t, PodUpdateContract)
+	h.reach(StateIdle)
+	sent := len(h.prompts())
+	h.openUpdate(testRound, testReasons)
+	h.must(RequestSuspend{Claim: h.token, By: SuspendedByOperator})
+	h.wantState(StateSuspended)
+	ask := h.unsentAsk(testRound)
+	if c := h.claim(); c.State != StateSuspended || c.SuspendedBy != SuspendedByOperator {
+		t.Fatalf("the restored claim is %s, suspended by %q, want it suspended by the operator", c.State, c.SuspendedBy)
+	}
+
+	h.openUpdate(testRound, testReasons)
+	h.wantState(StateSuspended)
+	h.wantCalls("Resume", 0)
+	h.wantPrompts(sent)
+	if p := h.claim().Pending; p == nil || p.ID != ask.ID {
+		t.Fatalf("pending = %+v while the operator's suspension stands, want the older daemon's ask %s held unsent", p, ask.ID)
+	}
+
+	h.must(RequestResume{Claim: h.token})
+	h.relaunched()
+
+	for _, p := range h.prompts() {
+		if carriesAsk(p, ask) {
+			t.Fatalf("prompt %+v carries the older daemon's ask %s, want it dropped at the resume and never sent", p, ask.ID)
+		}
+	}
+	h.wantPrompts(sent)
+	c := h.wantRound(testRound)
+	if c.Pending != nil {
+		t.Fatalf("pending = %+v after the resume, want the older daemon's ask dropped", c.Pending)
+	}
+	if d, held := h.store.delivery(h.token); held {
+		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
+	}
+}
+
 // Once the worker has answered, the next task is held rather than sent: it would be lost with the
 // process (answeredOpenRound, dispatch://INFRA-2981 R5). The round's end releases it.
 func TestPodUpdateHoldsTheNextTaskUntilTheRoundEnds(t *testing.T) {

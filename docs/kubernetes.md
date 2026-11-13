@@ -1871,6 +1871,7 @@ alter table claims add column if not exists update_answered_by_turn_end boolean 
 alter table claims add column if not exists update_reasked_for_push_check boolean not null default false;
 delete from schema_version where version = 20261113110610;
 delete from outbox where kind = 'update_ask';
+update claims set update_tasked_at = null where update_round like 'pod:%' and update_signalled_at is null;
 ```
 
 Nothing else of #2792 must come back.
@@ -1883,7 +1884,7 @@ With the row left, that roll forward would skip the migration (its `Migrate` app
 The earlier release opens a round on every pod that drifts, and it writes `update_tasked_at` when it queues its task, which this release reads as the mark of its own Envoy ask.
 So without the reset, this release would never ask a role of such a round, and it would replace the pod of a round older than `pod_update_grace_minutes` at the first sweep.
 The roll forward runs the whole file again: its two `drop column` statements succeed because the rollback added the two columns back, and then the reset runs.
-A rollback to a release before `legion-v19.16.0` needs the same four statements.
+A rollback to a release before `legion-v19.16.0` needs the same five statements.
 Such a release names neither column in `packages/daemon/internal/store/claims.go`, but `legion-v19.15.0` also opens a `pod:` round on every pod that drifts and writes `update_tasked_at` when it queues its task, so it needs the `schema_version` delete for the same reason as above.
 It needs the two `alter` statements beside that delete so that the `drop column` statements that run again at the roll forward succeed.
 An earlier release reads no `pod_update_grace_minutes` and refuses it as `unknown key pod_update_grace_minutes`, so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
@@ -1892,6 +1893,18 @@ The earlier release puts that kind in no outbox lane (`laneKinds` in `record/out
 But the earlier release has no bound, so a pod round that was open at the rollback can still be open at the roll forward, and its claim still records that round.
 Left in place, the row would then publish the ask it was queued with, which names the end of the round as it was before the reset, and that moment can be past.
 The roll forward does not need the row: it resets every pod round that the earlier release opened or kept open, as the first deploy did, and then asks again each role of such a round that has not answered.
+The `update` clears the ask mark (`update_tasked_at`) of every claim of a pod round that has not answered.
+The earlier release reads that mark as the moment it queued its own task, and it asks the role again only once its re-ask bound has passed since that moment, 1 hour by default (`askForUpdate` and `updateReaskDue` in `internal/supervise/table.go` on that release).
+This release writes the mark when it queues its Envoy ask, before the ask is published, so a role whose `update_ask` row the `delete from outbox` above removes was never asked.
+With the mark cleared, the earlier release queues its task at once for each role of an open pod round that has not answered.
+A claim that has answered keeps its mark, and the earlier release asks no claim that has answered.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `claims` is one table for all of them, with the project in a column of each row (`store/migrations/0002_claims.up.sql`).
+This migration's two `drop column` statements and its reset act on every project's claims, not only on the claims of the project whose daemon ran it.
+So once one daemon has run this migration, a daemon of the same database that is still on the earlier release fails every claim read and every claim write, and the reset starts again the open pod rounds of every project.
+The statements above act on every project's claims in the same way.
+Deploy, roll back and roll forward every daemon of one database in the same change, and run the statements above only when all of those daemons are stopped.
 
 #### Rolling back the release that names what nothing starts
 
@@ -4590,6 +4603,7 @@ This release drops that task and never sends it, whichever round the task names 
 The text of that task can tell the role that the end of its turn is its answer, and this release reads no end of a turn as an answer.
 So this release never sends the earlier release's task, and a role that read it before the deploy gets the Envoy ask of this release as well.
 Only a `ready_for_update` call answers the round.
+The migration drops two columns that every release from `legion-v19.16.0` on reads and writes, and it resets the open pod rounds of every project in the database, so deploy this release to every daemon that shares the database in the same change ([Rolling back the release whose update round ends at its bound](#rolling-back-the-release-whose-update-round-ends-at-its-bound)).
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).

@@ -79,6 +79,9 @@ func TestTheClaimsUpdateAnswerMarksAreGoneAfter20261113110610(t *testing.T) {
 //
 // The negative control is the two claims the reset must not touch: one in no round and one in a
 // plugin round, each written with the same old opening and the same two marks, keep all three.
+// The reset also keeps what a pod round's member said before the deploy: the tester holds an
+// answer and the round it left, and both read back as written, so after the reset this release
+// still asks no role that answered and waits for no claim that left the round's pod.
 func TestAnOpenPodRoundStartsItsClockAndItsAskAgainAt20261113110610(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -98,6 +101,10 @@ func TestAnOpenPodRoundStartsItsClockAndItsAskAgainAt20261113110610(t *testing.T
 	seed("tester", "pod:a-pod-uid")
 	seed("reviewer", "")
 	seed("planner", "plugin:46")
+	if _, err := store.Pool().Exec(ctx, `update claims set update_signalled_at = $1, update_left_round = 'pod:a-pod-uid'
+		where token = 'legion-LEGION-209-tester'`, old); err != nil {
+		t.Fatalf("seed the tester's answer and the round it left: %v", err)
+	}
 	var before time.Time
 	if err := store.Pool().QueryRow(ctx, `select now()`).Scan(&before); err != nil {
 		t.Fatalf("read the database's clock before the migration: %v", err)
@@ -127,6 +134,15 @@ func TestAnOpenPodRoundStartsItsClockAndItsAskAgainAt20261113110610(t *testing.T
 		if m.tasked != nil || m.told != nil {
 			t.Errorf("the %s in the open pod round keeps ask mark %v and notice mark %v, want neither", role, m.tasked, m.told)
 		}
+	}
+	var signalled *time.Time
+	var left string
+	if err := store.Pool().QueryRow(ctx, `select update_signalled_at, update_left_round from claims
+		where token = 'legion-LEGION-209-tester'`).Scan(&signalled, &left); err != nil {
+		t.Fatalf("read the tester's answer and the round it left after the migration: %v", err)
+	}
+	if signalled == nil || !signalled.Equal(old) || left != "pod:a-pod-uid" {
+		t.Errorf("the tester in the open pod round has answer %v and left round %q after the migration, want both kept, %s and %q", signalled, left, old, "pod:a-pod-uid")
 	}
 	for _, role := range []string{"reviewer", "planner"} {
 		m := read(role)
