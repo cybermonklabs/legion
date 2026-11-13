@@ -28,7 +28,7 @@ import (
 // is testing both times. The entry can: the tester's claim still serves the first task's, because
 // the machine refuses a second delivery while one is pending, while the phases row is already on
 // the second, raised in the transition's own transaction. The completion is refused
-// HANDOFF_STALE_ASSIGNMENT before any fact is applied, and the refusal sends the tester to the
+// HANDOFF_STALE_ENTRY before any fact is applied, and the refusal sends the tester to the
 // new task's own work: that task's turn reports a handoff of its own, which is taken.
 func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	h, engine, facts := newEntryHarness(t)
@@ -87,7 +87,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	complete := func() string {
 		t.Helper()
 		recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: firstRecord, HandoffVersion: 1})
-		return refused(t, recorder, http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT")
+		return refused(t, recorder, http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	}
 	before := recordedCompletions(t, h, claim.RoleTester)
 	message := complete()
@@ -97,16 +97,22 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		"nothing was recorded",
 		// The second entry's task is queued and no delivery has carried it to this claim, which
 		// is the state the daemon sends the row's own work in (workflow's SendOwedEntry).
-		fmt.Sprintf("entry %d's task is owed to this claim, and the daemon sends it by itself", secondStart.Entry),
+		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
 	} {
 		if !strings.Contains(message, want) {
 			t.Fatalf("the refusal is %q, want it to say %q", message, want)
 		}
 	}
+	if strings.Contains(message, "your turn began before") {
+		t.Fatalf("the refusal is %q, want it to name no queued task: no delivery has carried entry %d's to this claim", message, secondStart.Entry)
+	}
 	// What the refusal tells the worker to do: the second testing entry is for the head the
 	// implementer's fix pushed, so this turn's verdict on the head before it is no answer for it.
 	// The worker does that task's work and writes a handoff of its own, and the refusal never
 	// sends this completion's record again.
+	if !strings.HasSuffix(message, ". "+staleEntryInstruction) {
+		t.Fatalf("the refusal is %q, want it to end with the instruction the legion tool's description carries, %q", message, staleEntryInstruction)
+	}
 	if !strings.Contains(message, "a handoff of its own") {
 		t.Fatalf("the refusal is %q, want it to tell the worker to complete the new task with a handoff of its own", message)
 	}
@@ -173,7 +179,7 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 	}
 
 	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT")
+		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusConflict, "HANDOFF_STALE_ENTRY")
 	for _, want := range []string{
 		"LEGION-208 handed the tester phase testing again: this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
 		"nothing was recorded",
@@ -184,9 +190,38 @@ func TestACompletionIsRefusedWhileTheNextEntrysTaskWaitsUnconfirmed(t *testing.T
 			t.Fatalf("the refusal = %q, want it to say %q", message, want)
 		}
 	}
+	if !strings.HasSuffix(message, ". "+staleEntryInstruction) {
+		t.Fatalf("the refusal = %q, want it to end with the instruction the legion tool's description carries, %q", message, staleEntryInstruction)
+	}
 	if recorded := facts.recorded(); len(recorded) != 0 {
 		t.Fatalf("the refused completion reached the workflow as %+v, want no fact", recorded)
 	}
+}
+
+// What a worker refused HANDOFF_STALE_ENTRY is told to do is one text in two languages: the
+// daemon ends every staleEntry refusal with staleEntryInstruction, and the legion tool's
+// description (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`) carries
+// it after the code. This golden is where the two meet, as version.json is for the contract
+// number: `packages/pi-shared/src/legion-phase-ops.test.ts` holds the description to the file,
+// so a word changed on the Go side fails here until the fixture is written again
+// (`go test ./internal/api/ -update`), and then fails there until the plugin's text says it too.
+//
+// The code is written out here beside it, so a rename of the constant's value — which would
+// otherwise rewrite the fixture with nobody reading the diff — fails here by its own name.
+func TestStaleEntryInstructionGolden(t *testing.T) {
+	if staleEntryCode != "HANDOFF_STALE_ENTRY" {
+		t.Fatalf("staleEntryCode = %q, want the wire code HANDOFF_STALE_ENTRY", staleEntryCode)
+	}
+	for clause, pending := range map[string]*supervise.Delivery{
+		"the entry 2 the phase is on; nothing was recorded":                                     nil,
+		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
+	} {
+		refusal := staleEntry("LEGION-208", claim.RoleTester, phase.Testing, 2, 1, pending)
+		if !strings.HasSuffix(refusal, clause+". "+staleEntryInstruction) {
+			t.Fatalf("staleEntry with pending %+v = %q, want %q and then exactly %q", pending, refusal, clause, staleEntryInstruction)
+		}
+	}
+	golden(t, "stale-entry.json", map[string]string{"code": staleEntryCode, "instruction": staleEntryInstruction})
 }
 
 // The comparison is made only when both sides name an entry, which is what carries a daemon
@@ -232,7 +267,7 @@ func TestACompletionIsHeldToItsEntryOnlyWhenBothSidesNameOne(t *testing.T) {
 			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 			if tc.refused {
-				message := refused(t, recorder, http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT")
+				message := refused(t, recorder, http.StatusConflict, "HANDOFF_STALE_ENTRY")
 				for _, want := range tc.says {
 					if !strings.Contains(message, want) {
 						t.Fatalf("the refusal = %q, want it to say %q", message, want)
@@ -257,7 +292,7 @@ func TestACompletionIsHeldToItsEntryOnlyWhenBothSidesNameOne(t *testing.T) {
 // (daemon's outbox, "not delivered again"), so the worker goes on serving the entry the held
 // phase gave it: the retry's start is of that same entry, the row keeps it, and the completion
 // the worker reports is applied. A retry that raised the entry would name one no start ever
-// delivers, and every completion of that phase would be refused HANDOFF_STALE_ASSIGNMENT until
+// delivers, and every completion of that phase would be refused HANDOFF_STALE_ENTRY until
 // something outside the workflow moved the issue.
 func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	h, engine, facts := newEntryHarness(t)

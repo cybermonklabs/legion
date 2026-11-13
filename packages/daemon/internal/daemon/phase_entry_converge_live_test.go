@@ -28,7 +28,7 @@
 // own task. The daemon then lets the launch run: the tester comes up on its own worker-stream
 // connection and is sent the task it was queued, entry 1's, because the claim held it throughout
 // (supervise's queue refuses a second delivery while one is pending); the completion the tester
-// reports for it is refused 409 HANDOFF_STALE_ASSIGNMENT naming both entries and recording
+// reports for it is refused 409 HANDOFF_STALE_ENTRY naming both entries and recording
 // nothing, and the entry the phase is on then reaches the same connection as a task of its own,
 // whose completion the daemon takes. That is the whole of R5 on a running daemon, and the entry on
 // each delivery is what tells the two tasks apart (record.PhaseRow.Entry,
@@ -186,7 +186,7 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	// The wall clock, in place of this package's still one (daemon.go's RealClock for a nil
-	// override): the launch the pacing holds runs when its timer fires, and a wake parked on a
+	// override): the launch the pacing holds runs when its timer fires, and a wake held on a
 	// clock whose timers never fire would never take its turn.
 	o.clock = nil
 	o.entrySweep = convergeEntrySweep
@@ -492,6 +492,22 @@ func (c *convergeClaimant) awaitPrompt(what string, bound time.Duration) shimwir
 	}
 }
 
+// drainPrompts takes every prompt the reader has already handed this claim and the steps have not
+// read, oldest first, and returns them. It never waits: a prompt still on its way is left for the
+// next awaitPrompt, so a step drains only where no task of the claim can be on its way, as run
+// two does while it holds the lane's lock (aDeletedStartRowLosesNoWork).
+func (c *convergeClaimant) drainPrompts() []shimwire.Prompt {
+	var drained []shimwire.Prompt
+	for {
+		select {
+		case prompt := <-c.prompts:
+			drained = append(drained, prompt)
+		default:
+			return drained
+		}
+	}
+}
+
 // grant is a capability grant minted for this session now, as its `legion` tool mints one per
 // operation.
 func (c *convergeClaimant) grant() string {
@@ -647,7 +663,7 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 
 // Check 2 of run one. The pace lets the tester's launch run. The tester comes up on its own
 // worker-stream connection and is sent the task it was queued, entry 1's, which the claim held
-// throughout; the completion it reports for that work is refused 409 HANDOFF_STALE_ASSIGNMENT,
+// throughout; the completion it reports for that work is refused 409 HANDOFF_STALE_ENTRY,
 // which names the entry the phase is on and says that entry's task is owed and arrives by itself,
 // and records nothing. The turn ends, the task of entry 2 reaches the same connection, and the
 // completion reported for it is taken: the issue moves to reviewing.
@@ -673,8 +689,8 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 		first.DeliveryID, firstLine(first.Message), givenEntry, phaseEntry)
 
 	status, failure := r.test.complete("tested the first head", convergeFirstHead, "pass", r.test.handoff("test"))
-	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ASSIGNMENT" {
-		t.Fatalf("the completion of entry 1's work = %d %s %s, want 409 HANDOFF_STALE_ASSIGNMENT", status, failure.Code, failure.Error)
+	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
+		t.Fatalf("the completion of entry 1's work = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
 	}
 	r.note("read back: the completion the tester reported for entry 1's work = 409 %s — %s", failure.Code, failure.Error)
 	if after := r.issue(r.key); after.Phase != phase.Testing {
@@ -720,6 +736,14 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 // project arrives after the delete. The entry sweep is what sends it: on its own period the daemon
 // applies an intake.EntrySweep and admission sends the role the work the entry its phases row
 // names stands for (admit's resumeSlottedWorkers, workflow's SendOwedEntry).
+//
+// The implementer's connection may still hold a prompt run one sent it and no step read, and such
+// a prompt carries the same conflict's task, so read as the sweep's delivery it would let this run
+// pass on a daemon that re-sends nothing. The step therefore drains every prompt the connection
+// has received before it lets the lock go, while no start of the issue can be on its way, and
+// then holds that the task which arrives was minted from an outbox row written after the deleted
+// one: an `outbox:<id>` delivery whose row id is above the deleted row's, which outbox ids, drawn
+// from one sequence, give only to a row the sweep wrote after the delete.
 func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	t := r.t
 	ctx := context.Background()
@@ -771,6 +795,13 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	if _, err := r.st.Pool().Exec(ctx, "delete from outbox where id = $1", deleted.id); err != nil {
 		t.Fatalf("delete the start row %d: %v", deleted.id, err)
 	}
+	// Every prompt run one left unread is drained here, under the lock: no lane can have run a
+	// start of the issue since the lock was taken, so nothing drained is the sweep's delivery,
+	// and the sweep's delivery cannot arrive until the lock goes.
+	for _, left := range r.imp.drainPrompts() {
+		r.note("drained a prompt the implementer's connection received before the delete and no step read: %s (%s)",
+			left.DeliveryID, firstLine(left.Message))
+	}
 	if err := lock.Rollback(ctx); err != nil {
 		t.Fatalf("let the lane's lock go: %v", err)
 	}
@@ -787,7 +818,25 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 
 	// Nothing of the project is published from here on: what sends the entry's work is the
 	// daemon's own sweep.
-	task := r.imp.awaitPrompt("the work of the entry the implementer's phases row names", convergeOwedBound)
+	task := r.imp.awaitPrompt(fmt.Sprintf("the work of entry %d, which the implementer's phases row names and whose start row %s%d this step deleted",
+		deleted.entry, outboxDeliveryPrefix, deleted.id), convergeOwedBound)
+	// The delivery's id names the outbox row it came from (the outbox's outboxDeliveryPrefix), so
+	// it says in one value that the task reached the worker from a row written after the deleted
+	// one, which is the sweep's, and not from the deleted row or any row before it.
+	rest, minted := strings.CutPrefix(task.DeliveryID, outboxDeliveryPrefix)
+	if !minted {
+		t.Fatalf("the implementer was sent delivery %q, which names no outbox row, want %s<id> of a row the sweep wrote after the deleted row %s%d",
+			task.DeliveryID, outboxDeliveryPrefix, outboxDeliveryPrefix, deleted.id)
+	}
+	row, err := strconv.ParseInt(rest, 10, 64)
+	if err != nil {
+		t.Fatalf("the implementer was sent delivery %q, whose row id does not parse (%v), want %s<id> of a row the sweep wrote after the deleted row %s%d",
+			task.DeliveryID, err, outboxDeliveryPrefix, outboxDeliveryPrefix, deleted.id)
+	}
+	if row <= deleted.id {
+		t.Fatalf("the implementer was sent delivery %s, of row %d, at or below the deleted row %s%d, want a row the sweep wrote after the delete",
+			task.DeliveryID, row, outboxDeliveryPrefix, deleted.id)
+	}
 	if !strings.Contains(task.Message, "the head conflicts with "+convergeBase) {
 		t.Fatalf("the implementer was sent %q, want the task entry %d names, which the conflict at %s wrote", task.Message, deleted.entry, convergeSecondHead)
 	}
@@ -795,14 +844,8 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 		phaseEntry, givenEntry = r.entries()
 		return phaseEntry == deleted.entry && givenEntry == deleted.entry
 	})
-	// The delivery's id names the outbox row it came from (the outbox's outboxDeliveryPrefix), so
-	// it says in one value that the task reached the worker from a row the sweep wrote and not
-	// from the one this step deleted.
-	if from := fmt.Sprintf("%s%d", outboxDeliveryPrefix, deleted.id); task.DeliveryID == from {
-		t.Fatalf("the implementer was sent %s, the deleted row's own delivery, want one of a row the sweep wrote", from)
-	}
-	r.note("read back: with no fact of the project arriving, the sweep (period %s here, %s in the shipped binary) sent the implementer %s (%s) on its own connection, where the deleted row's delivery would have been %s%d, and the state reads phaseEntry %d, givenEntry %d",
-		convergeEntrySweep, entrySweepInterval, task.DeliveryID, firstLine(task.Message), outboxDeliveryPrefix, deleted.id, phaseEntry, givenEntry)
+	r.note("read back: with no fact of the project arriving, the sweep (period %s here, %s in the shipped binary) sent the implementer %s (%s) on its own connection, row %d above the deleted row %s%d, and the state reads phaseEntry %d, givenEntry %d",
+		convergeEntrySweep, entrySweepInterval, task.DeliveryID, firstLine(task.Message), row, outboxDeliveryPrefix, deleted.id, phaseEntry, givenEntry)
 	r.imp.endTurn()
 }
 

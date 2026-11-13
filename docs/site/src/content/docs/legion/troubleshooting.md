@@ -1077,20 +1077,25 @@ These arrive as messages on the Dispatch issue:
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
   the issue finds none open on the branch the architect is told
   ([An architect is told `pull-request-missing`](#an-architect-is-told-pull-request-missing)).
-- **A worker's completion refused `HANDOFF_STALE_ASSIGNMENT`.** The phase the completing turn was
+- **A worker's completion refused `HANDOFF_STALE_ENTRY`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, or the head started conflicting with its base while the
   tester tested, while the reviewer reviewed a round it had not completed, or while the merger
-  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is the
-  earlier entry's and nothing is recorded. The refusal names the issue, the role and the phase,
-  the entry the completion is of and the entry the role's phases row is on: the worker ends that
-  turn without completing, and reports that work and that verdict no further. The phase was
-  entered again, so the task of the entry the role is on now — which arrives as the session's
-  next prompt — is work of its own: a testing entry after such a move is for the head the fix
-  pushed, and the verdict on the head before it answers for nothing there. The worker does that
-  task's work, writes a handoff of its own for it, and completes in its turn. When that task has
-  not reached the session yet, the refusal says the daemon sends it by itself, which it does on
-  every admission pass and on a sweep each minute.
+  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
+  an entry behind the one the role's phases row names, and nothing is recorded. The refusal
+  names the issue, the role and the phase, the entry the completion is of and the entry the
+  role's phases row is on, and, when the task of that entry already waits on the claim, that the
+  turn began before it reached the session. It then tells the worker what to do in the same
+  words the `legion` tool's description gives for the code
+  (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
+  without completing; the task of the entry the phase is on is owed to the claim and the daemon
+  sends it by itself, which it does on every admission pass and on a sweep each minute; and that
+  task is work of its own, done at the head it names and completed with a handoff of its own,
+  never the refused completion's record, commit or verdict. A testing entry after such a move is
+  for the head the fix pushed, and the verdict on the head before it answers for nothing there.
+  The same code on a completion of an entry above the one the phases row names is one the
+  record never produces, since the daemon raises the row in the transaction that composes the
+  entry's task; that refusal tells the worker to end the turn and tell the architect.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
@@ -1100,7 +1105,7 @@ from `merging` the merger kept its turn, its jobs, its process and its session. 
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
 entry retro handed it while its phases row is on the implementing one, so it is refused
-(`HANDOFF_STALE_ASSIGNMENT`), and the implementer merges the base forward in the implementing
+(`HANDOFF_STALE_ENTRY`), and the implementer merges the base forward in the implementing
 task's own turn and completes that work with a handoff of its own, never retro's commit; the
 merger's phases row still names the entry merging gave it, so a completion it sends for the phase
 it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,

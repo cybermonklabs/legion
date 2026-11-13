@@ -673,13 +673,13 @@ func upgradeOwedStartGivesItsEntry(t *testing.T, st *store.Store, issue record.I
 // upgradeCompletionAccepted posts the completion of the third shape's turn through the daemon's own
 // route, on the claim exactly as the upgrade left it, and reads the answer.
 //
-// The release before this one refused that completion 409 HANDOFF_STALE_ASSIGNMENT: its fence
-// compared the token on the role's phases row with the one the claim served, both were set, and
-// they differed, because the task that minted the row's token never reached the worker. The
-// upgrade leaves no such pair. The claim serves entry 0 — the fill wrote it no served entry, and
-// nothing has delivered the work the sweep just sent — and the entry fence compares only when both
-// sides name one (api/handoff.go), so the turn in flight completes instead of being refused for
-// work the role was never given.
+// The release before this one refused that completion 409, under the code it named after its
+// minted token: its fence compared the token on the role's phases row with the one the claim
+// served, both were set, and they differed, because the task that minted the row's token never
+// reached the worker. The upgrade leaves no such pair. The claim serves entry 0 — the fill wrote
+// it no served entry, and nothing has delivered the work the sweep just sent — and the entry
+// fence compares only when both sides name one (api/handoff.go), so the turn in flight completes
+// instead of being refused for work the role was never given.
 //
 // The supervisor here is the outbox tests' own (newOutboxSupervisor): its store is a fake, so the
 // machine the route reads holds the claim the upgrade left and no write of this call goes back

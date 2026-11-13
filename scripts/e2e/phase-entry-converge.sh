@@ -14,7 +14,7 @@
 #     forward at a second head — which raises the tester's phases row to entry 2 and writes
 #     that entry's own task while the claim still holds entry 1's; the pace then lets the launch
 #     run, the tester is sent the task it was queued, the completion it reports for that work is
-#     refused 409 HANDOFF_STALE_ASSIGNMENT naming both entries and recording nothing, and the
+#     refused 409 HANDOFF_STALE_ENTRY naming both entries and recording nothing, and the
 #     entry the phase is on then reaches the same connection as a task of its own, whose
 #     completion the daemon takes;
 #   - run two: the driver holds the advisory lock a lane takes before it claims a lifecycle row,

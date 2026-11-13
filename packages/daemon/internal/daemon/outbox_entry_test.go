@@ -505,12 +505,13 @@ func TestAHeldPhasesRetryReachesAWorkerThatFinishedTheEntrysTask(t *testing.T) {
 // row.
 //
 // What the claim standing below its row then gives the worker is the rest of this case. The
-// tester's completion of entry 1 is refused 409 HANDOFF_STALE_ASSIGNMENT with nothing recorded,
-// saying entry 2's task is owed to this claim and arrives by itself (api/handoff.go's
-// staleEntry). The admission pass passes over the claim while that task is still worked, and on
-// the first pass after the turn ends and the delivery is retired it sends entry 2's own task
-// (admit's resumeSlottedWorkers, workflow's SendOwedEntry). The worker takes that task, and the
-// completion it reports in its turn is the one the daemon takes: the issue moves to reviewing.
+// tester's completion of entry 1 is refused 409 HANDOFF_STALE_ENTRY with nothing recorded,
+// saying the task of entry 2, the entry the phase is on, is owed to this claim and arrives by
+// itself (api/handoff.go's staleEntry). The admission pass passes over the claim while that task
+// is still worked, and on the first pass after the turn ends and the delivery is retired it sends
+// entry 2's own task (admit's resumeSlottedWorkers, workflow's SendOwedEntry). The worker takes
+// that task, and the completion it reports in its turn is the one the daemon takes: the issue
+// moves to reviewing.
 //
 // The supervisor writes its claims to the rig's own database here rather than to the outbox
 // tests' in-memory claim store, because what the admission pass weighs against the phases row is
@@ -668,10 +669,10 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 		t.Fatalf("the completion of entry 1's task = %d %s, want 409: the phase was entered again, and this turn is on the entry before", status, refusal)
 	}
 	for _, want := range []string{
-		"HANDOFF_STALE_ASSIGNMENT",
+		"HANDOFF_STALE_ENTRY",
 		"this completion is of entry 1, which is 1 behind the entry 2 the phase is on",
 		"nothing was recorded",
-		"entry 2's task is owed to this claim, and the daemon sends it by itself",
+		"The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself",
 	} {
 		if !strings.Contains(refusal, want) {
 			t.Fatalf("the refusal = %s, want it to say %q", refusal, want)

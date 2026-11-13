@@ -1277,9 +1277,13 @@ package api
 // its task are columns of the `phases` and `claims` records, the start row carries the entry it
 // hands, and the completion route compares the entry the worker took with the entry its row
 // names, each of them the daemon's own lane and no route. The code that refusal carries is
-// still `HANDOFF_STALE_ASSIGNMENT` though its words now speak of the phase entry, and it is
-// kept deliberately: the skills a worker reads, both plugins and this daemon's own docs name
-// the code itself, so renaming it would refuse a worker in words nothing it reads describes.
+// renamed in this same contract, from the minted assignment's code to `HANDOFF_STALE_ENTRY`,
+// because what it refuses is now a completion of an entry behind the one the role's phases row
+// names (or above it): the skills a worker reads, both plugins and this daemon's own docs name
+// the new code, and the boot gate holds every plugin to this contract, so no worker is refused
+// a code its tool's description does not name. The words that refusal tells the worker to act
+// on are one text with the sentence the `legion` tool's description gives for that code,
+// which `packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two sides to.
 // (This entry took 77 against a base that declared 68 and held 77 through three forward merges;
 // it took 86 at the fourth such merge, 87 at the fifth, and it takes 93 at the push of that
 // fifth merge, of 2026-11-12. The merge brought main in at a4c0ff99 — dispatch://INFRA-714's

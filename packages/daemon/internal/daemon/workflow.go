@@ -1484,18 +1484,26 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 // pass already makes on every fact.
 const entrySweepInterval = time.Minute
 
-// tickEntrySweep applies an intake.EntrySweep fact every entrySweepInterval (the runtime's own
-// entrySweep, which a test shortens), so a role behind the entry its phases row names is sent
-// that entry's work even where nothing else happens in the project: an admission pass runs on a
-// fact, and a quiet project raises none. Each run's event id is its own — the word, the project,
-// this boot and the run's time — since processed_events is shared by every project's daemon. A
-// failed apply is logged, and the next run tries again, as applyControllerTick does.
-func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
-	interval := w.entrySweep
-	if interval <= 0 {
-		interval = entrySweepInterval
+// entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
+// that a test shortens, where one is set, and entrySweepInterval where none is, which is what
+// the shipped binary runs. It is a function of its own so a test reads the period a daemon with
+// no override sweeps at, and not the constant alone.
+func entrySweepPeriod(override time.Duration) time.Duration {
+	if override > 0 {
+		return override
 	}
-	ticker := time.NewTicker(interval)
+	return entrySweepInterval
+}
+
+// tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
+// or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
+// row names is sent that entry's work even where nothing else happens in the project: an
+// admission pass runs on a fact, and a quiet project raises none. Each run's event id is its own
+// — the word, the project, this boot and the run's time — since processed_events is shared by
+// every project's daemon. A failed apply is logged, and the next run tries again, as
+// applyControllerTick does.
+func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
+	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
 	defer ticker.Stop()
 	for {
 		select {

@@ -246,7 +246,7 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		} else {
 			refusal = unraisedEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry)
 		}
-		writeFailure(w, http.StatusConflict, "HANDOFF_STALE_ASSIGNMENT", refusal)
+		writeFailure(w, http.StatusConflict, staleEntryCode, refusal)
 		return
 	}
 	// A phase with a handoff ends with a Dispatch handoff record, which its writer's completion
@@ -447,15 +447,27 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 	return fmt.Sprintf("%s: the daemon has queued no task of generation %d for this claim, and may queue none (the new run's phase may be another claim's). End this turn without completing and tell the architect; if that task arrives, call the same handoff_complete in its turn", stale, current)
 }
 
+// staleEntryCode is the code of a completion refused for its phase entry: one of an entry behind
+// the one the role's phases row names (staleEntry), and one of an entry above it (unraisedEntry).
+const staleEntryCode = "HANDOFF_STALE_ENTRY"
+
+// staleEntryInstruction is what staleEntry tells the worker to do, after the clause that names the
+// entries. It is one text with the sentence the `legion` tool's description gives for
+// staleEntryCode (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`), so a
+// worker reads the same words in the refusal and in its tool: TestStaleEntryInstructionGolden
+// writes both values to `packages/contracts/fixtures/daemon-api/stale-entry.json`, and
+// pi-shared's own test holds the description to that file.
+const staleEntryInstruction = "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict"
+
 // staleEntry is the refusal of a completion of a phase entry the issue's phase has moved past:
 // the role was given this phase's work again — the issue left the phase and came back, or the
 // phase ended under the worker and another role's round sent it here — and the turn reporting
 // this completion is on the earlier entry, current - serving entries behind. It names the queued
 // task of the entry the phase hands the role now when the claim already holds it, as
-// staleCompletion does for a run, and otherwise says that entry's task is owed to this claim and
-// comes by itself: the claim is behind the entry its phases row names, which is what the
-// admission pass sends the row's own work for (record.PhaseRow.EntryTask, workflow's
-// SendOwedEntry), so the worker waits for that task rather than asking anyone for it.
+// staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
+// itself: the claim is behind the entry its phases row names, which is what the admission pass
+// sends the row's own work for (record.PhaseRow.EntryTask, workflow's SendOwedEntry), so the
+// worker waits for that task rather than asking anyone for it.
 //
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
@@ -463,16 +475,14 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // own. A head that starts conflicting with its base takes the issue back to implementing, and
 // the testing entry the implementer's merge forward then raises is for a new head, so a verdict
 // reported for the head before it would stand as that new head's. The worker does the new
-// task's work and writes a handoff of its own for it.
+// task's work and writes a handoff of its own for it, which staleEntryInstruction says.
 func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery) string {
 	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on; nothing was recorded",
 		issue, role, p, serving, current-serving, current)
 	if pending != nil && pending.Entry == current {
-		return fmt.Sprintf("%s: your turn began before the daemon's task for entry %d (%s) reached this session. End this turn without completing; that task arrives as your next prompt, and it is work of its own — do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict",
-			stale, current, pending.ID)
+		stale = fmt.Sprintf("%s, and your turn began before the daemon's task for entry %d (%s) reached this session", stale, current, pending.ID)
 	}
-	return fmt.Sprintf("%s: entry %d's task is owed to this claim, and the daemon sends it by itself. End this turn without completing; that task is work of its own — do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict",
-		stale, current)
+	return stale + ". " + staleEntryInstruction
 }
 
 // unraisedEntry is the refusal of a completion of a phase entry above the one the role's phases

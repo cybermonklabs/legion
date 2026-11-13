@@ -156,9 +156,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The daemon refuses " +
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
   "write this phase's handoff), " +
-  "HANDOFF_STALE_ASSIGNMENT (this completion is of an earlier phase entry than the one the phase hands you now, which the issue reached while " +
-  "your turn ran: end the turn without completing; the daemon sends the current entry's task by itself, and that task is work of its own, so do " +
-  "that work and complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
+  "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
+  "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
+  "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
+  "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
   "pull request on `legion/<issue>` and none recorded " +
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +

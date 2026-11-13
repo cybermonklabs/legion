@@ -157,6 +157,23 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 	}
 }
 
+// The sweep is what sends a role the work its entry names when no fact of the project arrives,
+// so its period is the longest such a role waits, and a daemon with no override must sweep at
+// least once a minute. Every other test of the sweep shortens the period, so this one reads the
+// choice tickEntrySweep makes (entrySweepPeriod) with no override, as the shipped binary runs
+// it, rather than the constant behind it; and with an override, which is how every other test
+// and the live proof reach the sweep at all.
+func TestTheEntrySweepConvergesAtLeastEveryMinuteWithNoOverride(t *testing.T) {
+	if got := entrySweepPeriod(0); got <= 0 || got > time.Minute {
+		t.Fatalf("the entry sweep's period with no override = %s, want more than zero and at most %s: a role behind its entry would wait longer than a minute for its work",
+			got, time.Minute)
+	}
+	const override = 10 * time.Millisecond
+	if got := entrySweepPeriod(override); got != override {
+		t.Fatalf("the entry sweep's period with an override of %s = %s, want the override as given", override, got)
+	}
+}
+
 // The sweep asks one read-only question before it applies anything, and it is the pass's own
 // selection: which roles of this project are owed the work of the entry their phases rows name
 // (admit's OwesEntryWork). A project with nothing owed takes neither the fact's lock nor a row

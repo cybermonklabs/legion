@@ -340,10 +340,10 @@ Legion uses GitHub's own review mechanisms rather than labels:
   stops writing there and leaves whatever it has uncommitted. Only the implementer's phase entry
   is raised, so a completion the tester, the reviewer or the merger sends for the phase it lost
   still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
-  `HANDOFF_STALE_ASSIGNMENT` comes once the issue has handed that role the phase again. From retro
+  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again. From retro
   the implementer keeps its turn, is told the same way, and is handed the implementing task after
   it; a retro completion that reaches the daemon after the move reports the entry retro handed it
-  while its phases row is on the implementing one, so it is refused `HANDOFF_STALE_ASSIGNMENT`;
+  while its phases row is on the implementing one, so it is refused `HANDOFF_STALE_ENTRY`;
   the implementer merges the base forward in the implementing task's own turn and completes that
   work with a handoff of its own, never retro's commit.
 - **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
