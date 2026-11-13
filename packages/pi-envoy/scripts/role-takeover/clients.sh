@@ -4,9 +4,9 @@
 # start_omp, start_claude), one command answered on a client's stdout (send), the readers of
 # that client's proxy log — the claims it made (claim_status, claim_holder, first_claim_status,
 # first_claim_holder, made_claim, claim_count), the registrations it sent (instance_id,
-# registered_at), its deregistration (delete_answer) and its hand-backs (release_status,
-# release_instance, released) — and the two ways a row makes a holder answer for its claim
-# (renew_omp, renew_claude).
+# registered_at, first_registered_at), the requests of either kind (claim_writes), its
+# deregistration (delete_answer) and its hand-backs (release_status, release_instance, released)
+# — and the two ways a row makes a holder answer for its claim (renew_omp, renew_claude).
 #
 # smoke-role-takeover.sh sources it, as it sources local-stack.sh and listener-api.sh beside it:
 # what that smoke knows about the stack is in the first file, what it knows about the listener's
@@ -183,6 +183,30 @@ registered_at() {
     'select(.path == "/v1/interests/subscribe" and .request.session_id == $sid) | .at' \
     "${proxy_log[$1]}" 2>/dev/null | tail -n 1)"
   printf '%s' "${at:-0}"
+}
+
+# first_registered_at LABEL SESSION: when that client first registered SESSION, 0 for never. A
+# row that times something from a process's first registration reads it here, since every later
+# pass of that process registers again.
+first_registered_at() {
+  local at
+  at="$(jq -rs --arg sid "$2" \
+    'map(select(.path == "/v1/interests/subscribe" and .request.session_id == $sid))
+     | if length == 0 then "" else (.[0].at | tostring) end' \
+    "${proxy_log[$1]}" 2>/dev/null)"
+  printf '%s' "${at:-0}"
+}
+
+# claim_writes LABEL SESSION: how many of that client's requests for SESSION wrote the session's
+# claims — its registrations, each of which renews the claims it holds, and its claims — so a
+# row that must see none after some moment reads it there and again later. A request is logged
+# once the listener has answered it, so one still in flight at the first reading is counted at
+# the second.
+claim_writes() {
+  jq -rs --arg sid "$2" \
+    'map(select((.path == "/v1/interests/subscribe" or .path == "/v1/roles/set")
+                and .request.session_id == $sid)) | length' \
+    "${proxy_log[$1]}" 2>/dev/null
 }
 
 # delete_answer LABEL SESSION FIELD: a field of the listener's answer to that client's

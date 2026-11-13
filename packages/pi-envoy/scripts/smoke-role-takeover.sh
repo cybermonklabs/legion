@@ -3,7 +3,8 @@
 # a second process that resumed a live session's id can neither take, release nor outlast that
 # session's role (INFRA-783), and a soft claim naming a predecessor takes the role only from a
 # predecessor that is gone or is the claimant's own client instance (INFRA-404, R8 and A5 of
-# dispatch://INFRA-404/spec).
+# dispatch://INFRA-404/spec); and that once a session holding a role restarts, the role lookup
+# and the session listing name the same holder (INFRA-2747).
 #
 # It builds natsd (packages/envoy/internal/testnats/cmd/natsd) and the listener
 # (packages/envoy/cmd/listener) from this checkout with `go build` and runs both on loopback ports
@@ -64,22 +65,35 @@
 #   INFRA-783 a client that states no process at all keeps its role across several live windows:
 #             a registration carrying no `client_instance_id` renews the claims of its own
 #             session that name none, which is the shape every claim standing at a deploy is in.
+#   INFRA-2747 a session that holds a role restarts: its process is killed, a new one starts
+#             under the same session id and is granted the role once the live window passes, and
+#             within 90 s of that process's first registration the role lookup and the session
+#             listing name the same holder, or both name none. The lookup reads the claim record
+#             and the listing the listener's copy of the role claims, so a copy that lost the
+#             claim shows as the holder listed with no role.
 #
 # `--base-rev <rev>` builds the listener from that revision instead of the working copy, leaving
-# every client as it is here. Against `main@origin` eleven of the seventeen rows fail, which is
-# this smoke's measure of what the change is for: the four original INFRA-783 rows, because that
-# listener hands a role held under a session id to any process that claims under that id; A5's
-# two scenarios and the row where the refused process takes the role once the holder exits,
-# because it takes a role from any predecessor a claim names, live or not and whichever process
-# holds the claim; the two row 1 rows, whose claim it grants but whose holder it names no
-# process for, the Claude Code one also because it grants inside the window the claim this row
-# wants refused there; and the two hand-back rows, because it has no mark to leave — it takes
-# the live holder's lane topic, the interest half of a claim that still stands, out of the
-# record and goes on renewing the claim for ever.
-# The third new row passes there: a claim that names no process was never aged out by that
-# listener either. It reads the
-# revision without touching this working copy: `jj --ignore-working-copy log` resolves it and
-# `git archive` extracts packages/envoy.
+# every client as it is here. It reads the revision without touching this working copy:
+# `jj --ignore-working-copy log` resolves it and `git archive` extracts packages/envoy. Against
+# `main@origin` at b601d25b (2026-11-13) none of the eighteen rows fail. The eleven of seventeen
+# that once failed there were counted in cybermonklabs/legion#2875 (277768d83e, 2026-11-07)
+# against the main of that day, which did not yet have the listener rule those rows drive; main
+# has carried that change since, so `--base-rev main@origin` is no longer a negative control for
+# them. The INFRA-2747 row passes there too: with nothing taken out of its copy, that listener's
+# copy names the restarted holder's role as the claim record does. That row's negative control is
+# SMOKE_DROP_ROLE_FROM_COPY=1 against a scratch build, below.
+#
+# `--listener-bin <path>` runs that built listener in place of building one, so a control can run
+# a scratch build; natsd is still built from this checkout. A path that is not an executable file
+# is refused, and so is `--listener-bin` beside `--base-rev`, since each chooses the listener.
+#
+# SMOKE_DROP_ROLE_FROM_COPY=1 turns the INFRA-2747 row into its own control (c-live-restart of
+# dispatch://INFRA-2747/verification): once the restarted process's claim is granted, the row asks
+# the listener to take the role out of its copy (`POST /debug/role-copy/drop?role=<role>`, which
+# only a scratch-tree patch serves, passed with `--listener-bin`) and fails saying so on any answer
+# that is not a 2xx, and it sends that process nothing more, so only the listener's own repair of
+# its copy can put the role back. A listener that repairs its copy within the window passes the
+# row; one that does not lists the holder with no role until the window ends, and the row fails.
 #
 # Exit status: 0 PASS (every row held); 1 FAIL (the failing rows are listed); 2 refused (a
 # prerequisite is missing or the configuration is invalid); 129, 130, 143 on SIGHUP, SIGINT,
@@ -133,6 +147,10 @@ readonly listener_wait_timeout=60
 # renewing the claim: the live window above, the heartbeat passes that ask again inside it, and
 # room for a loaded machine.
 readonly takeover_timeout=90
+# The live restart row's window (c-live-restart of dispatch://INFRA-2747/verification): from the
+# restarted process's first registration, the role lookup and the session listing have one
+# deployment heartbeat, 90 s, to name the same holder.
+readonly live_restart_window=90
 
 refuse() {
   printf 'smoke-role-takeover: %s\n' "$1" >&2
@@ -141,6 +159,19 @@ refuse() {
 
 note() {
   printf '[%s] %s\n' "$(date -u +%H:%M:%SZ)" "$*"
+}
+
+# now_ms: the wall clock in milliseconds, the clock the recording proxy stamps each request with
+# (`at`), so a time this script reads and one a client's log carries are read against each other.
+now_ms() {
+  local now=${EPOCHREALTIME/[.,]/}
+  printf '%s' "$((10#$now / 1000))"
+}
+
+# elapsed FROM_MS TO_MS: the time between two now_ms readings, in seconds to the millisecond.
+elapsed() {
+  local ms=$(($2 - $1))
+  printf '%d.%03ds' "$((ms / 1000))" "$((ms % 1000))"
 }
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -164,6 +195,7 @@ source "${script_dir}/local-stack.sh"
 source "${script_dir}/listener-api.sh"
 
 base_rev=""
+listener_bin=""
 while (($# > 0)); do
   case "$1" in
     --base-rev)
@@ -171,12 +203,35 @@ while (($# > 0)); do
       shift 2 || refuse "--base-rev needs a revision"
       [[ -n "$base_rev" ]] || refuse "--base-rev needs a revision"
       ;;
+    --listener-bin)
+      listener_bin="${2:-}"
+      shift 2 || refuse "--listener-bin needs a path"
+      [[ -n "$listener_bin" ]] || refuse "--listener-bin needs a path"
+      ;;
     *)
       refuse "unknown argument: $1"
       ;;
   esac
 done
 readonly base_rev
+[[ -z "$base_rev" || -z "$listener_bin" ]] ||
+  refuse "--base-rev and --listener-bin each choose the listener: give one of them"
+if [[ -n "$listener_bin" ]]; then
+  [[ -f "$listener_bin" && -x "$listener_bin" ]] ||
+    refuse "--listener-bin ${listener_bin} is not an executable file"
+  listener_bin="$(cd -- "$(dirname -- "$listener_bin")" && pwd)/$(basename -- "$listener_bin")"
+fi
+readonly listener_bin
+
+# SMOKE_DROP_ROLE_FROM_COPY=1 makes the live restart row its own control (row10_live_restart).
+case "${SMOKE_DROP_ROLE_FROM_COPY:-}" in
+  "" | 0) drop_role_from_copy=0 ;;
+  1) drop_role_from_copy=1 ;;
+  *) refuse "SMOKE_DROP_ROLE_FROM_COPY is 1 or unset, not '${SMOKE_DROP_ROLE_FROM_COPY}'" ;;
+esac
+readonly drop_role_from_copy
+
+[[ -n "${EPOCHREALTIME:-}" ]] || refuse "bash 5 or later is required (EPOCHREALTIME)"
 
 required=(go bun curl jq)
 [[ -z "$base_rev" ]] || required+=(jj git tar)
@@ -317,6 +372,7 @@ note "scratch ${work}"
 note "bun $(bun --version), $(go version)"
 
 listener_source="${repo_root}/packages/envoy"
+listener_under_test="the listener built from this working copy"
 if [[ -n "$base_rev" ]]; then
   base_commit="$(jj -R "$repo_root" --ignore-working-copy log -r "$base_rev" --no-graph -T commit_id 2>/dev/null)" ||
     refuse "jj could not resolve --base-rev ${base_rev} in ${repo_root}"
@@ -327,15 +383,29 @@ if [[ -n "$base_rev" ]]; then
   git -C "$repo_root" archive "$base_commit" packages/envoy | tar -x -C "${work}/base" ||
     refuse "git archive ${base_commit} packages/envoy failed"
   listener_source="${work}/base/packages/envoy"
+  listener_under_test="the listener built from ${base_rev}"
   note "the listener is built from ${base_rev} (${base_commit}); every client is this working copy's"
 fi
 readonly listener_source
 
-note "building natsd from ${repo_root}/packages/envoy and the listener from ${listener_source}"
+note "building natsd from ${repo_root}/packages/envoy"
 build_natsd "${repo_root}/packages/envoy" "${work}/bin/natsd" ||
   refuse "go build of natsd failed (the reason is above)"
-build_listener "$listener_source" "${work}/bin/listener" ||
-  refuse "go build of the listener failed (the reason is above)"
+if [[ -n "$listener_bin" ]]; then
+  # A build made elsewhere, such as a control's scratch tree, run as it is: nothing here builds
+  # or copies it.
+  listener_exe="$listener_bin"
+  listener_under_test="the listener at ${listener_bin}"
+  note "the listener is ${listener_bin} (--listener-bin); every client is this working copy's"
+else
+  listener_exe="${work}/bin/listener"
+  note "building the listener from ${listener_source}"
+  build_listener "$listener_source" "$listener_exe" ||
+    refuse "go build of the listener failed (the reason is above)"
+fi
+readonly listener_exe listener_under_test
+((drop_role_from_copy == 0)) ||
+  note "SMOKE_DROP_ROLE_FROM_COPY=1: the live restart row drops its role from the listener's copy of the role claims"
 
 pick_port nats_port
 pick_port monitor_port
@@ -360,7 +430,7 @@ listener_env+=(
   ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_claim_reap_interval"
 )
 (exec env -i PATH="$PATH" HOME="${work}/listener-home" "${listener_env[@]}" \
-  "${work}/bin/listener") >"${work}/logs/listener.log" 2>&1 &
+  "$listener_exe") >"${work}/logs/listener.log" 2>&1 &
 service_pids+=($!)
 wait_for 90 listener_healthy "$envoy_url" ||
   refuse "the listener did not become healthy: $(tail -n 5 "${work}/logs/listener.log")"
@@ -894,6 +964,132 @@ row9_no_instance() {
   end_row
 }
 
+# INFRA-2747 (c-live-restart of dispatch://INFRA-2747/verification): a session that holds a role
+# restarts. Its Oh My Pi process is killed, so its registration and its claim outlive it, and a
+# new process comes up under the same session id with the role in its transcript, as row 1's
+# reload does, and is granted the role once nobody has renewed the killed process's claim inside
+# the live window. From that process's first registration, the role lookup and the session
+# listing have the live restart window to name the same holder, or both to name none. The two
+# read different things: the lookup reads the claim record, and the listing reads the listener's
+# copy of the role claims, so a copy that lost the claim shows as the holder listed with no role.
+#
+# The lookup's holder is read off its 200 and off its 404 alike: once the row stops driving the
+# process nothing renews the claim, so ten seconds on its holder is lapsed — past the live
+# window, not gone — and still holds the role, which the 404 (`holder_lapsed`) names. A reading
+# counts only where the lookup answered 200 or 404 and the listing 200, each status read here
+# rather than through role_field, which answers an empty holder for any other status and would
+# take a 503 for "neither names one".
+#
+# SMOKE_DROP_ROLE_FROM_COPY=1 is the row's control. Once the claim is granted, the row asks the
+# listener to take the role out of its copy (POST /debug/role-copy/drop, which only a scratch
+# build serves) and fails saying so where it is not served, and from then on it drives the
+# process no more: no heartbeat, so no registration renews the claim and writes it back into
+# the copy. The comparison starts once the drop has answered, inside the same window, and what
+# can put the role back inside it is then the listener's own repair of its copy alone.
+row10_live_restart() {
+  local role session first second registered deadline writes=0 dropped=0 drop_status
+  local lookup_status lookup_holder list_status listed now agreed=0 reads=0 verdict
+  local metrics since_drop=""
+  role="$(role_for r10)"
+  session="$(session_for r10)"
+  begin_row "INFRA-2747 — after a restart under the holder's own id, the role lookup and the session listing name the same holder within ${live_restart_window}s"
+  start_omp omp-restart-1
+  send omp-restart-1 "$(jq -nc --arg s "$session" '{op:"start",session:$s,roles:[]}')"
+  send omp-restart-1 "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
+  expect "the first process holds the role" "$(role_holder "$role")" "$session"
+  first="$(instance_id omp-restart-1 "$session")"
+  # SIGKILL, so the registration and the claim outlive the process, as they do across a crash.
+  kill -KILL "${client_pid[omp-restart-1]}" 2>/dev/null || true
+  wait "${client_pid[omp-restart-1]}" 2>/dev/null || true
+  expect_true "the session is still registered after its process was killed" registered "$session"
+
+  start_omp omp-restart-2
+  expect_true "nobody renewed the killed process's claim inside the live window" \
+    wait_for "$listener_wait_timeout" role_unrenewed "$role"
+  send omp-restart-2 "$(jq -nc --arg s "$session" --arg r "$role" '{op:"start",session:$s,roles:[$r]}')"
+  second="$(instance_id omp-restart-2 "$session")"
+  registered="$(first_registered_at omp-restart-2 "$session")"
+  deadline=$((registered + live_restart_window * 1000))
+  expect_true "the new process registered the session" test "$registered" -gt 0
+  expect "the new process is another client instance" \
+    "$([[ -n "$second" && "$second" != "$first" ]] && echo different || echo same)" "different"
+  expect "its claim under the holder's own id is granted" "$(claim_status omp-restart-2 "$session" "")" "200"
+
+  # listed_holders: the sessions whose row of the listing just read names the role, joined by
+  # commas, so two rows naming it read as neither one holder nor none.
+  listed_holders() {
+    jq -r --arg r "$role" '[.[] | select(any((.roles // [])[]; . == $r)) | .session_id] | join(",")' \
+      "${work}/answer.json" 2>/dev/null || true
+  }
+
+  if ((drop_role_from_copy == 1)); then
+    writes="$(claim_writes omp-restart-2 "$session")"
+    drop_status="$(listener_post "/debug/role-copy/drop?role=${role}" '{}')"
+    dropped="$(now_ms)"
+    expect "the listener serves POST /debug/role-copy/drop and took the role out of its copy of the role claims" \
+      "$([[ "$drop_status" == 2?? ]] && echo 2xx || echo "$drop_status")" "2xx"
+    if [[ "$drop_status" != 2?? ]]; then
+      note "   the drop route answered: $(head -c 300 "${work}/answer.json" 2>/dev/null | tr -d '\n')"
+      end_row
+      end_scenario
+      return 0
+    fi
+    note "   the drop answered $(elapsed "$registered" "$dropped") after the new process's first registration"
+    list_status="$(listener_get "/v1/sessions?include=unresponsive")"
+    listed="$(listed_holders)"
+    expect "the drop took the role out of the session listing" \
+      "${list_status} naming ${listed:-nobody}" "200 naming nobody"
+  fi
+
+  # One reading: the lookup, whose holder is read off its answer before the listing overwrites
+  # that, and then the listing.
+  while :; do
+    lookup_status="$(listener_get "/v1/roles/${role}")"
+    lookup_holder=""
+    if [[ "$lookup_status" == 200 || "$lookup_status" == 404 ]]; then
+      lookup_holder="$(jq -r '.holder // ""' "${work}/answer.json" 2>/dev/null || true)"
+    fi
+    list_status="$(listener_get "/v1/sessions?include=unresponsive")"
+    listed=""
+    [[ "$list_status" != 200 ]] || listed="$(listed_holders)"
+    now="$(now_ms)"
+    reads=$((reads + 1))
+    if [[ ("$lookup_status" == 200 || "$lookup_status" == 404) && "$list_status" == 200 &&
+      "$lookup_holder" == "$listed" ]]; then
+      ((now > deadline)) || agreed=$now
+      break
+    fi
+    ((now < deadline)) || break
+    sleep 1
+  done
+  if ((agreed > 0)); then
+    verdict="the same holder"
+    ((dropped == 0)) || since_drop=" and $(elapsed "$dropped" "$agreed") after the drop"
+    note "   the lookup (${lookup_status}) and the listing (${list_status}) named ${lookup_holder:-nobody} $(elapsed "$registered" "$agreed") after the new process's first registration${since_drop}, at reading ${reads}"
+  else
+    verdict="lookup ${lookup_status} naming ${lookup_holder:-nobody} and listing ${list_status} naming ${listed:-nobody} $(elapsed "$registered" "$now") after the first registration"
+  fi
+  expect "the role lookup and the session listing name the same holder within ${live_restart_window}s of the new process's first registration" \
+    "$verdict" "the same holder"
+  ((dropped == 0)) ||
+    expect "the restarted process sent no registration and no claim after the drop" \
+      "$(claim_writes omp-restart-2 "$session")" "$writes"
+
+  # The listener's own report of its repair of the copy, which the control reads put_back from.
+  note "   the listener's /healthz role_claim_repair: $(curl -sS --max-time "$curl_max_time" "${envoy_url}/healthz" 2>/dev/null |
+    jq -c '.role_claim_repair // "absent"' 2>/dev/null)"
+  metrics="$(curl -sS --max-time "$curl_max_time" "${envoy_url}/metrics" 2>/dev/null |
+    grep '^envoy_role_claim_repair_' | paste -sd ';' - || true)"
+  note "   its /metrics: ${metrics:-no envoy_role_claim_repair_* sample}"
+  if ((dropped == 0)); then
+    evidence "${session} restarted from client instance ${first} to ${second}, which took ${role} back once the live window passed; $(elapsed "$registered" "$agreed") after that process's first registration the lookup (${lookup_status}) and the listing (${list_status}) both named ${lookup_holder:-nobody}"
+  else
+    evidence "${session} restarted from client instance ${first} to ${second}, which took ${role} back once the live window passed; the row then took ${role} out of the listener's copy and sent that process nothing more, and $(elapsed "$registered" "$agreed") after its first registration ($(elapsed "$dropped" "$agreed") after the drop) the lookup (${lookup_status}) and the listing (${list_status}) both named ${lookup_holder:-nobody}"
+  fi
+  end_row
+  end_scenario
+}
+
 # ---- the run ---------------------------------------------------------------------------------
 started_at=$SECONDS
 row1_omp
@@ -907,6 +1103,7 @@ row5_claude
 row7_handback_mark
 row8_handback_frees
 row9_no_instance
+row10_live_restart
 note "every row is driven; the rows took $((SECONDS - started_at))s"
 
 printf '\n'
@@ -917,10 +1114,10 @@ for index in "${!row_names[@]}"; do
 done
 printf '\n'
 if ((failures > 0)); then
-  printf 'SMOKE ROLE TAKEOVER FAIL: %d of %d rows did not hold against the listener built from %s\n' \
-    "$failures" "${#row_names[@]}" "${base_rev:-this working copy}"
+  printf 'SMOKE ROLE TAKEOVER FAIL: %d of %d rows did not hold against %s\n' \
+    "$failures" "${#row_names[@]}" "$listener_under_test"
   exit 1
 fi
 passed=1
-printf 'SMOKE ROLE TAKEOVER PASS: all %d rows held against the listener built from %s\n' \
-  "${#row_names[@]}" "${base_rev:-this working copy}"
+printf 'SMOKE ROLE TAKEOVER PASS: all %d rows held against %s\n' \
+  "${#row_names[@]}" "$listener_under_test"

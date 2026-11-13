@@ -113,8 +113,10 @@ Live proof that a role claim is weighed on the process that holds it: a second p
 resumed a live session's id can neither take, release nor outlast that session's role
 (dispatch://INFRA-783), and a soft claim naming a predecessor takes the role only from a
 predecessor that is gone or is the claimant's own client instance (dispatch://INFRA-404, R8 and
-A5 of its spec). It is the only smoke here that needs neither a model provider nor a deployment:
-`go` and `bun` alone, so CI runs it as a step of the `envoy-session-stall` job.
+A5 of its spec); and once a session that holds a role restarts, the role lookup and the session
+listing name the same holder (dispatch://INFRA-2747). It is the only smoke here that needs
+neither a model provider nor a deployment: `go` and `bun` alone, so CI runs it as a step of the
+`envoy-session-stall` job.
 
 It builds natsd (`packages/envoy/internal/testnats/cmd/natsd`) and the listener
 (`packages/envoy/cmd/listener`) from the checkout and runs both on loopback ports of its own, as
@@ -147,7 +149,7 @@ where it stood or a pass had already removed it, and a row whose claimant must b
 decided inside the window, its holder having answered for the claim immediately before. A row
 that waits the window out waits for the listener to say so, never for a sleep.
 
-Seventeen rows are printed, each with its outcome:
+Eighteen rows are printed, each with its outcome:
 
 - **row 1**, twice — a claim under the id that holds the role is granted because nobody renewed
   the standing claim inside the live window: an Oh My Pi plugin reload, and a Claude Code channel
@@ -187,33 +189,66 @@ Seventeen rows are printed, each with its outcome:
   claim standing at a deploy is in — keeps its role across three live windows of registrations
   that carry no `client_instance_id`.
 
+- **INFRA-2747**, one row — a session that holds a role restarts: its Oh My Pi process is
+  killed, a new one starts under the same session id and is granted the role once the live
+  window passes, and within 90 seconds of that process's first registration
+  `GET /v1/roles/<role>` and `GET /v1/sessions?include=unresponsive` name the same holder, or
+  both name none. The lookup reads the claim record and the listing the listener's copy of the
+  role claims, so a copy that lost the claim shows as the holder listed with no role. The
+  lookup's holder is read off its `200` and off its `404` (`holder_lapsed`) alike, since a
+  holder nothing renews is lapsed ten seconds on and still holds the role, and a reading counts
+  only where the lookup answered one of those and the listing `200`. The row prints how long
+  after the first registration the two agreed.
+
 ### Usage
 
 ```bash
 bash packages/pi-envoy/scripts/smoke-role-takeover.sh
-bash packages/pi-envoy/scripts/smoke-role-takeover.sh --base-rev main@origin   # must fail
+bash packages/pi-envoy/scripts/smoke-role-takeover.sh --base-rev main@origin   # every row passes at b601d25b
+bash packages/pi-envoy/scripts/smoke-role-takeover.sh --listener-bin <built listener>
+SMOKE_DROP_ROLE_FROM_COPY=1 bash packages/pi-envoy/scripts/smoke-role-takeover.sh \
+  --listener-bin <scratch build that serves the drop route>   # the INFRA-2747 row's control
 ```
 
 `--base-rev <rev>` builds only the listener from that revision, leaving every client as it is in
-the working copy, which is the negative control: against `main@origin` eleven of the seventeen
-rows fail. The four original INFRA-783 rows do, because that listener hands a role held under a
-session id to any process that claims under that id; A5's two scenarios and the row where the
-refused process takes the role once the holder exits do, because it takes a role from any
-predecessor a claim names, live or not; the two row 1 rows do, because it grants the claim but
-names no process for the holder; and the two hand-back rows do, because it has no mark to
-leave — it takes the live holder's lane topic out of the record and renews that holder's claim
-for ever. The third new row passes there, a claim naming no process never having been aged out
-by that listener either. It reads the revision without touching the working
-copy (`jj --ignore-working-copy log` resolves it, `git archive` extracts `packages/envoy`), moves
-no bookmark and writes nothing outside its scratch.
+the working copy. Against `main@origin` at `b601d25b` (2026-11-13) none of the eighteen rows
+fail. The eleven of seventeen that once failed there were counted in cybermonklabs/legion#2875
+(`277768d83e`, 2026-11-07) against the main of that day, which did not yet have the listener rule
+those rows drive; main has carried that change since, so `--base-rev main@origin` is no longer a
+negative control for them. The INFRA-2747 row passes there too: with nothing taken out of its
+copy, that listener's copy names the restarted holder's role as the claim record does, and that
+row's negative control is `SMOKE_DROP_ROLE_FROM_COPY=1` against a scratch build, below. It reads
+the revision without touching the working copy (`jj --ignore-working-copy log` resolves it,
+`git archive` extracts `packages/envoy`), moves no bookmark and writes nothing outside its
+scratch.
 
-Prerequisites, each checked before anything starts: `go`, `bun` with the checkout's dependencies
-installed, `curl`, `jq`, and `jj`, `git` and `tar` for `--base-rev`. Everything the run writes —
-the two binaries, the JetStream store, each client's home and state directory, every proxy's
-request log — lives in one `mktemp -d` under `$TMPDIR`, which an exit trap removes after a pass
-and keeps after anything else. Nothing it starts inherits this shell's environment (`env -i` plus
-`PATH` and what the script sets), so an operator's `ENVOY_*`, `NATS_*` or `DISPATCH_*` variables
-never reach a client. A local run takes about two minutes, and about four with `--base-rev`.
+`--listener-bin <path>` runs that built listener in place of building one, so a control can run a
+scratch build; natsd is still built from the checkout. A path that is not an executable file is
+refused with exit 2, and so is `--listener-bin` beside `--base-rev`, since each chooses the
+listener.
+
+`SMOKE_DROP_ROLE_FROM_COPY=1` turns the INFRA-2747 row into its own control
+(c-live-restart of dispatch://INFRA-2747). Once the restarted process's claim is granted, the row
+asks the listener to take the role out of its copy of the role claims
+(`POST /debug/role-copy/drop?role=<role>`) and fails, saying so, on any answer that is not a
+`2xx`, so a listener without that route never passes the control by doing nothing. It then reads
+the listing once and requires that the drop took the role out of it, sends the process no
+heartbeat, and requires at the end that the process sent no registration and no claim, so
+nothing but the listener's own repair can put the role back in the copy. The comparison starts
+once the drop has answered and keeps the same window. Only a scratch build serves the route: a
+patch that adds it is applied to a `git archive` of the revision under `$TMPDIR`, built there with
+`go build ./cmd/listener`, and passed with `--listener-bin`. The patch is never committed. A
+listener that repairs its copy within the window passes the row; one that does not lists the
+holder with no role until the window ends, and the row fails naming the two answers it last read.
+
+Prerequisites, each checked before anything starts: `bash` 5 or later, `go`, `bun` with the
+checkout's dependencies installed, `curl`, `jq`, and `jj`, `git` and `tar` for `--base-rev`.
+Everything the run writes — the binaries it builds, the JetStream store, each client's home and
+state directory, every proxy's request log — lives in one `mktemp -d` under `$TMPDIR`, which an
+exit trap removes after a pass and keeps after anything else. Nothing it starts inherits this
+shell's environment (`env -i` plus `PATH` and what the script sets), so an operator's `ENVOY_*`,
+`NATS_*` or `DISPATCH_*` variables never reach a client. A local run takes about two minutes, and
+about four with `--base-rev`.
 
 ### Exit codes
 
@@ -282,7 +317,8 @@ Bun drivers it starts: a recording proxy and a process per client (`start_proxy`
 `start_claude`), the stdin and stdout one command is sent and answered over (`client_fifo`,
 `client_ready`, `send`), the readers of each client's proxy log — the claims it made
 (`claim_status`, `claim_holder`, `first_claim_status`, `first_claim_holder`, `made_claim`,
-`claim_count`), the registrations it sent (`instance_id`, `registered_at`), its deregistration
+`claim_count`), the registrations it sent (`instance_id`, `registered_at`,
+`first_registered_at`), the requests of either kind (`claim_writes`), its deregistration
 (`delete_answer`) and its hand-backs (`release_status`, `release_instance`, `released`) — and the
 two ways a row makes a holder answer for its claim (`renew_omp`, `renew_claude`). It is sourced,
 never run: it starts no process of its own, and it reads the scratch directory, the driver
