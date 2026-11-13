@@ -560,6 +560,28 @@ export function agentStateRequest(
   );
 }
 
+/** `POST /api/v1/going/runs/{id}/writes`: one write of one of the bar's runs - one invocation of
+ *  an action its proposal offered, and how it came to run (`approved`). Every write of a run goes
+ *  on the run's own line (`goingRunTarget`), so a write the bar has not sent yet is still the
+ *  undo's to stop. */
+export function goingWriteRequest(
+  id: string,
+  input: Body<"/api/v1/going/runs/{id}/writes", "post">
+) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/writes", { id }, input);
+}
+
+/** `POST /api/v1/going/runs/{id}/undo`: undoes every write of one of the bar's runs that went
+ *  through, each by the undo its catalogue row states. */
+export function goingUndoRequest(id: string, input: Body<"/api/v1/going/runs/{id}/undo", "post">) {
+  return writeRequest("post", "/api/v1/going/runs/{id}/undo", { id }, input);
+}
+
+/** `PUT /api/v1/me/going/settings`: the person's own command-bar setting (`confirm_writes`). */
+export function goingSettingsRequest(input: Body<"/api/v1/me/going/settings", "put">) {
+  return writeRequest("put", "/api/v1/me/going/settings", {}, input);
+}
+
 /** The same-origin route of one stored version's bytes, addressed by the owner and the artifact's
  *  slug as a picture's `dispatch://` reference names it, so an `<img>` loads it with the reader's
  *  own cookie. A version never changes, so the server lets the browser keep it. */
@@ -1157,6 +1179,12 @@ export class DispatchApiClient {
   /** `GET /api/v1/me/going-runs`: the caller's own runs of the bar, newest first. */
   myGoingRuns(query: Query<"/api/v1/me/going-runs", "get"> = {}) {
     return this.read("/api/v1/me/going-runs", {}, query);
+  }
+
+  /** `GET /api/v1/me/going/settings`: the person's own command-bar setting, whether every write
+   *  the bar makes for them asks first (`confirm_writes`); off for a person who never set it. */
+  myGoingSettings() {
+    return this.read("/api/v1/me/going/settings", {});
   }
 
   /**

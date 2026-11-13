@@ -43,12 +43,19 @@ import {
   type DispatchReferenceRoute,
   nodeRouteFromHref,
 } from "../refs/routes";
-import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
+import {
+  appKeymap,
+  DIALOG_SCOPE,
+  type KeymapAction,
+  MOD_KEY_LABEL,
+  useKeymap,
+} from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AnswerPanel, capabilityGaps } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
+import { useGoingOperations } from "./OperationRows";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
@@ -530,7 +537,7 @@ function PaletteDialog({
   // list paints first and the answer joins it; the last answer drawn again as the bar opens
   // waits on nothing, since an empty box lists no hits.
   const capability = useQuery(goingCapabilityQuery());
-  const goingAnswer = useGoingAnswer({
+  const { answer: goingAnswer, askNow } = useGoingAnswer({
     context: scope.context,
     enabled: queryEnabled && capability.data?.answer.configured === true,
     login: whoAmI.data?.login,
@@ -542,11 +549,35 @@ function PaletteDialog({
   // What this Dispatch cannot do, said under the hits of every query, so a person reading the
   // hits alone knows whether an answer is still to come.
   const gaps = showHits && capability.data !== undefined ? capabilityGaps(capability.data) : [];
+  // The bar's operations, from the answer's decision and proposal: the operation the decision
+  // acts on, or the two best actions to pick from, as rows above the hits; what they wrote, one
+  // line each, under the list. A new issue and a send to this issue's agent stay the two offers
+  // below, which always ask, and write through the run where the decision chose them.
+  const operations = useGoingOperations({
+    answer: goingAnswer,
+    askNow,
+    hits: results,
+    words: searchText,
+  });
+  // The bar's submit runs the operation from anywhere in the bar, the box included; Enter keeps
+  // its one meaning, opening the row the highlight is on (decision 3).
+  useKeymap(DIALOG_SCOPE, [
+    {
+      id: "search-run",
+      inEditable: true,
+      keys: "$mod+Enter",
+      label: "Run the bar's operation",
+      palette: false,
+      run: operations.submit,
+    },
+  ]);
   // Words the search answered and matched nothing with: the bar offers them as a new issue,
   // under the rows this page can do and the projects they name, and never above them - the
-  // offer is the last thing left when nothing else answers.
+  // offer is the last thing left when nothing else answers. Where the bar's decision chose a new
+  // issue, it is offered once the proposal offers it, whatever the search found.
   const newIssue = useNewIssueOffer({
-    offered: showHits && results.length === 0,
+    file: operations.newIssue?.file,
+    offered: operations.newIssue?.offered ?? (showHits && results.length === 0),
     onOpen: (key) => {
       navigate(buildIssuePath({ key, kind: "issue" }));
       onClose();
@@ -561,6 +592,7 @@ function PaletteDialog({
   const sendToAgent = useSendToAgentOffer({
     block: scope.targets.block,
     issue: scope.targets.issue,
+    send: operations.sendToAgent,
     words: searchText,
   });
   const commandSections: readonly CommandSection[] = [
@@ -615,10 +647,21 @@ function PaletteDialog({
     newIssueSection,
   ];
   const footRows = footSections.reduce((count, section) => count + section.options.length, 0);
+  // The bar's operation rows, between the rows this page can do and the hits.
+  const operationSections: readonly CommandSection[] =
+    operations.section === undefined ? [] : [operations.section];
+  const leadRows = commandSections.flatMap((section) =>
+    section.options.map((option) => option.row)
+  );
+  const operationRows = operationSections.flatMap((section) =>
+    section.options.map((option) => option.row)
+  );
+  const hitRows = hitGroups.flatMap((group) => group.rows);
   // What the list shows, in the order it shows it: the arrows walk this same list.
   const rows: PaletteRow[] = [
-    ...commandSections.flatMap((section) => section.options.map((option) => option.row)),
-    ...hitGroups.flatMap((group) => group.rows),
+    ...leadRows,
+    ...operationRows,
+    ...hitRows,
     ...footSections.flatMap((section) => section.options.map((option) => option.row)),
   ];
   // The hits the highlight is decided against: the query they answer, "" while the list holds
@@ -627,9 +670,11 @@ function PaletteDialog({
   // The highlight is the row the reader sees highlighted, held by its id: hits arriving below
   // the actions, or an answer re-ranking them, leave it on that row. The first hits of a query
   // send it to the head, and the head it lands on is then adopted, so a row coming back does
-  // not take the highlight back from it. The head is the first row unless that is one of the
-  // foot rows - the two offers and the More actions, which come last: with only those listed,
-  // nothing is highlighted, and Enter runs nothing until the reader arrows.
+  // not take the highlight back from it. The head is the first row unless that is an operation
+  // row or one of the foot rows - the two offers and the More actions, which come last: the
+  // highlight never moves to an operation by itself, so an Enter never runs a write the reader
+  // did not point at, and with only foot rows listed nothing is highlighted, and Enter runs
+  // nothing until the reader arrows.
   // A row that leaves a list already answering this query takes the highlight with it and
   // leaves it on no row: that is the pause's fused order dropping a row the keystrokes' hits
   // held. Sending it to the head there would move the selection under the reader's hand, and
@@ -637,7 +682,9 @@ function PaletteDialog({
   // does nothing, until they arrow.
   const chosen = rows.findIndex((row) => row.id === active.id);
   const reranked = listedQuery !== "" && listedQuery === active.hits;
-  const activeIndex = chosen === -1 && !reranked && rows.length > footRows ? 0 : chosen;
+  const head =
+    leadRows.length > 0 ? 0 : hitRows.length > 0 ? leadRows.length + operationRows.length : -1;
+  const activeIndex = chosen === -1 && !reranked ? head : chosen;
   const activeRow = rows[activeIndex];
   const shownId = activeRow?.id ?? null;
   if (shownId !== active.id || listedQuery !== active.hits) {
@@ -718,7 +765,12 @@ function PaletteDialog({
             : walkable - 1
           : stepActive(activeIndex, delta, walkable);
       setActive({ hits: listedQuery, id: rows[next]?.id ?? null });
-    } else if (event.key === "Enter" && activeRow !== undefined) {
+    } else if (
+      event.key === "Enter" &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      activeRow !== undefined
+    ) {
       event.preventDefault();
       selectRow(activeRow);
     }
@@ -790,6 +842,14 @@ function PaletteDialog({
               role="listbox"
             >
               {commandSections.map((section) => (
+                <CommandGroup
+                  activeId={activeRow?.id}
+                  key={section.id}
+                  onSelect={selectRow}
+                  section={section}
+                />
+              ))}
+              {operationSections.map((section) => (
                 <CommandGroup
                   activeId={activeRow?.id}
                   key={section.id}
@@ -879,6 +939,7 @@ function PaletteDialog({
               ))}
             </div>
           )}
+          {operations.panel}
           {shownAnswer === undefined && gaps.length === 0 ? null : (
             <AnswerPanel answer={shownAnswer} gaps={gaps} />
           )}
@@ -947,6 +1008,13 @@ function PaletteDialog({
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
               to open
             </span>
+            {operations.section === undefined ? null : (
+              <span className="inline-flex items-center gap-1">
+                <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>{MOD_KEY_LABEL}</kbd>
+                <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
+                to run
+              </span>
+            )}
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Esc</kbd>
               to close

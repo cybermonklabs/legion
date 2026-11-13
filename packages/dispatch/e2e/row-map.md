@@ -247,7 +247,9 @@ such a row loses is feedback on the pull request itself.
 | `e2e/going-handoff.e2e.ts` | the hand-off row is offered only while a live session holds the issue's claim, and approving it is a message the fake Envoy records |
 | `e2e/going-key-forms.e2e.ts` | each form of a key is resolved by the server, and the row reads the rows it answers |
 | `e2e/going-new-issue.e2e.ts` | the bar creates an issue and the row re-reads what the server stored, its messages and its results |
+| `e2e/going-operations.e2e.ts` | every write and undo runs in-process through the server's route table as the caller, on a run the server decided from the fake decision model, and the row reads back what each route stored |
 | `e2e/going-operators.e2e.ts` | each operator form and each chip narrows a list the server answers |
+| `e2e/going-thresholds.e2e.ts` | whether the bar acts, offers or draws a chart is the server's comparison of the fake decision model's confidence with the committed record's thresholds, and a write it runs is read back from the server |
 | `e2e/going-unconfigured.e2e.ts` | its claim is the capability the server reports with nothing configured, and that the bar asks it for no answer |
 | `e2e/handoffs.e2e.ts` | needs the live frame |
 | `e2e/heavy-bodies.e2e.ts` | its claim is a wall-clock time, so it runs one row at a time in the -alone projects and in no other |

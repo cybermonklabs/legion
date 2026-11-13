@@ -136,7 +136,11 @@ export const realStackReasons: Record<string, string> = {
     "each form of a key is resolved by the server, and the row reads the rows it answers",
   "going-new-issue.e2e.ts":
     "the bar creates an issue and the row re-reads what the server stored, its messages and its results",
+  "going-operations.e2e.ts":
+    "every write and undo runs in-process through the server's route table as the caller, on a run the server decided from the fake decision model, and the row reads back what each route stored",
   "going-operators.e2e.ts": "each operator form and each chip narrows a list the server answers",
+  "going-thresholds.e2e.ts":
+    "whether the bar acts, offers or draws a chart is the server's comparison of the fake decision model's confidence with the committed record's thresholds, and a write it runs is read back from the server",
   "going-unconfigured.e2e.ts":
     "its claim is the capability the server reports with nothing configured, and that the bar asks it for no answer",
   "handoffs.e2e.ts": "needs the live frame",

@@ -252,6 +252,15 @@ export const goingCapabilityQuery = () =>
     staleTime: 60_000,
   });
 
+/** The person's own command-bar setting (`GET /api/v1/me/going/settings`): whether every write
+ *  the bar makes for them asks first. Held on Dispatch, so it follows the person to every browser;
+ *  the Settings page's Command bar section writes it and the bar reads it before it runs a write. */
+export const goingSettingsQuery = () =>
+  queryOptions({
+    queryKey: ["going-settings"],
+    queryFn: () => api.myGoingSettings(),
+  });
+
 /** Everyone who has signed in (`GET /api/v1/users`), sorted by email and kept for the session:
  *  the issue header's assignee picker and the Inbox's assignee filter choose from this one list.
  *  Each call site keeps its own `enabled` - the list is read only once a reader reaches for a

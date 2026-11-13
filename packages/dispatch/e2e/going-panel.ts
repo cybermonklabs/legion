@@ -1,9 +1,12 @@
+import type { GoingWriteInput } from "../web/src/api/types";
 import type { ChatReply } from "./fake-chat-model";
+import type { DecisionReply } from "./fake-decision-model";
 import { expect, type Locator, type Page } from "./test";
 
 // What the command bar's answer rows share: the bar, its answer panel, opening the bar over a
 // page, asking it a question, and the fake writing model's replies those rows script. The panel
-// and its lines are read by the test ids `features/search/AnswerPanel.tsx` gives them.
+// and its lines are read by the test ids `features/search/AnswerPanel.tsx` gives them, the bar's
+// operations by those of `features/search/OperationRows.tsx`.
 
 /** How long a row waits for one answer to end: the run's own window (`GOING_RUN_MS`, 30 s) and
  *  the stream's grace past it. */
@@ -77,4 +80,65 @@ export function plainWords(stem: string, count: number): string {
 export async function shownWords(page: Page): Promise<string[]> {
   const text = (await answerText(page).textContent()) ?? "";
   return text.split(/\s+/).filter((word) => word !== "");
+}
+
+/** The bar's operation row: the action the decision chose at or above the action threshold. */
+export function operationRow(page: Page): Locator {
+  return bar(page).locator("#search-option-going-run");
+}
+
+/** The offer row of `action`, one of the two best below the action threshold. */
+export function offerRow(page: Page, action: string): Locator {
+  return bar(page).locator(`#search-option-going-offer-${action}`);
+}
+
+/** The lines of the turn the bar shows, one per write. */
+export function writeLines(page: Page): Locator {
+  return page.getByTestId("going-operation").getByTestId("going-write-line");
+}
+
+/** The bar's submit, from the box: `$mod+Enter`. */
+export async function submitOperation(page: Page): Promise<void> {
+  await page.keyboard.press("Control+Enter");
+}
+
+/** Every write of the bar the page sends from here on, `POST /api/v1/going/runs/{id}/writes`,
+ *  each with its body: the offer, the invocation and how it came to run. */
+export function countGoingWrites(page: Page): { readonly bodies: GoingWriteInput[] } {
+  const sent = { bodies: [] as GoingWriteInput[] };
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    if (!/^\/api\/v1\/going\/runs\/[^/]+\/writes$/.test(new URL(request.url()).pathname)) return;
+    sent.bodies.push(request.postDataJSON() as GoingWriteInput);
+  });
+  return sent;
+}
+
+/** A decision of `action` at `confidence`, about the items the words name, with no runner-up
+ *  unless `runnerUp` names one: the probabilities are written out, so the two best are the
+ *  row's own and not the fake's even share of the rest. */
+export function decided(
+  action: string,
+  confidence: number,
+  runnerUp?: string,
+  display?: DecisionReply["display"]
+): DecisionReply {
+  return {
+    action: {
+      choice: action,
+      confidence,
+      probabilities: runnerUp === undefined ? { [action]: 1 } : { [action]: 0.6, [runnerUp]: 0.3 },
+    },
+    context: { choice: "named", confidence: 0.99 },
+    ...(display === undefined ? {} : { display }),
+  };
+}
+
+/** A structured reply whose answer is `answer` and whose arguments are `args`: each offered
+ *  action's invocations, one per item it changes (decision 2). */
+export function withArguments(
+  args: Readonly<Record<string, readonly Readonly<Record<string, unknown>>[]>>,
+  answer = "On it."
+): ChatReply {
+  return { final: { answer, arguments: args } };
 }

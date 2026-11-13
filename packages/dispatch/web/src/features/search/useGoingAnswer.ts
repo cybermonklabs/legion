@@ -159,6 +159,14 @@ interface OutRun {
   ended: boolean;
 }
 
+/** What `useGoingAnswer` answers: the answer, and how a submit inside the pause asks at once. */
+export interface GoingAnswerHook {
+  readonly answer: GoingAnswer | undefined;
+  /** Asks for the words in the box at once where the pause is still standing, and answers
+   *  whether an answer to them is coming or came: false where there is nothing to ask. */
+  readonly askNow: () => boolean;
+}
+
 /**
  * Dispatch's answer to the words in the bar. A run starts on the pause the bar already waits for
  * before it searches by meaning (`MEANING_PAUSE_MS`), never on a keystroke, so a person typing
@@ -170,7 +178,8 @@ interface OutRun {
  * A run that answered is kept outside the bar (`lastAnsweredRun`), and the bar opening again with
  * an empty box draws it from the first frame of its stream, as Dispatch still serves it.
  *
- * Answers the run of the words in the box, the replay while the box is empty, or undefined.
+ * Answers the run of the words in the box, the replay while the box is empty, or undefined, and
+ * `askNow`: a submit made inside the pause (decision 4) asks at once rather than waiting it out.
  */
 export function useGoingAnswer({
   context,
@@ -191,9 +200,11 @@ export function useGoingAnswer({
   readonly project: string;
   /** The words in the box, trimmed. */
   readonly words: string;
-}): GoingAnswer | undefined {
+}): GoingAnswerHook {
   const [answer, setAnswer] = useState<GoingAnswer | undefined>(undefined);
   const out = useRef<OutRun | null>(null);
+  // The pause standing for the words in the box, which a submit inside it cuts short.
+  const pause = useRef<{ readonly timer: number; readonly ask: () => void } | null>(null);
   // The chip and the asker are read as a request goes, not watched: moving the chip between
   // keystrokes is no new question, and the run asked before the move keeps the chip it was asked
   // with.
@@ -201,6 +212,8 @@ export function useGoingAnswer({
   contextNow.current = context;
   const loginNow = useRef(login);
   loginNow.current = login;
+  const wordsNow = useRef(words);
+  wordsNow.current = words;
   // Each request under a key of its own, carrying the asker's login and held to the page's
   // silence deadline, as the one keyed path takes every write of the page.
   const bounds = useCallback(
@@ -334,8 +347,16 @@ export function useGoingAnswer({
     if (!enabled) {
       return;
     }
-    const pause = window.setTimeout(() => ask(words, project), MEANING_PAUSE_MS);
-    return () => window.clearTimeout(pause);
+    const asking = () => {
+      pause.current = null;
+      ask(words, project);
+    };
+    const standing = { ask: asking, timer: window.setTimeout(asking, MEANING_PAUSE_MS) };
+    pause.current = standing;
+    return () => {
+      window.clearTimeout(standing.timer);
+      if (pause.current === standing) pause.current = null;
+    };
   }, [ask, enabled, project, stop, words]);
 
   // The bar opens with an empty box: the last run that answered is drawn again, from its stream's
@@ -360,11 +381,23 @@ export function useGoingAnswer({
   // Closing the bar cancels the run it has out.
   useEffect(() => stop, [stop]);
 
+  const askNow = useCallback((): boolean => {
+    const standing = pause.current;
+    if (standing !== null) {
+      window.clearTimeout(standing.timer);
+      standing.ask();
+      return true;
+    }
+    // No pause standing: the words were asked already, or there is nothing to ask.
+    const run = out.current;
+    return run !== null && !run.replayed && run.words === wordsNow.current;
+  }, []);
+
   if (answer === undefined) {
-    return undefined;
+    return { answer: undefined, askNow };
   }
   if (answer.replayed) {
-    return words === "" ? answer : undefined;
+    return { answer: words === "" ? answer : undefined, askNow };
   }
-  return answer.words === words ? answer : undefined;
+  return { answer: answer.words === words ? answer : undefined, askNow };
 }

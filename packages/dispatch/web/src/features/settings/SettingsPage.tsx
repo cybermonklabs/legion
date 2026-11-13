@@ -25,6 +25,7 @@ import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
+import { CommandBarSection } from "./CommandBarSection";
 import {
   ownerRepoPattern,
   settingsFieldLabel,
@@ -183,6 +184,7 @@ export function SettingsPage(): ReactNode {
       <div className={settingsSectionGap}>
         <ProjectsSection />
         <AgentTokensSection />
+        <CommandBarSection />
         {credentialsAvailable.isPending || credentialsAvailable.data === null ? null : (
           <>
             <GrantsSection />

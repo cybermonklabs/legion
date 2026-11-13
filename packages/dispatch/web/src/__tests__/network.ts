@@ -82,6 +82,10 @@ const shellHandlers: RequestHandler[] = [
       session: { configured: false },
     })
   ),
+  // The Settings page's Command bar section reads the person's own setting
+  // (`goingSettingsQuery`) wherever the page renders. The answer is a person who never set it -
+  // the server's own default, off - and a test of the setting spies `api.myGoingSettings`.
+  http.get("/api/v1/me/going/settings", () => Response.json({ confirm_writes: false })),
 ];
 
 const network = defineNetwork({

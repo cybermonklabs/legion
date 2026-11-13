@@ -491,6 +491,20 @@ export function setGoingDisplayFit(off: boolean, options: ApiOptions = {}) {
   return post("/api/v1/going/display-fit/_test", { body: { off } }, options);
 }
 
+/** `GET /api/v1/me/going-runs`: the caller's own command-bar runs, newest first, each with every
+ *  write it made and every undo of it. */
+export function listMyGoingRuns(
+  query: Query<"/api/v1/me/going-runs", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/me/going-runs", { query }, options);
+}
+
+/** `GET /api/v1/me/going/settings`: the caller's own command-bar setting (`confirm_writes`). */
+export function getMyGoingSettings(options: ApiOptions = {}) {
+  return get("/api/v1/me/going/settings", {}, options);
+}
+
 /** `GET /api/v1/issues/{key}/artifacts`: the issue's documents and files. */
 export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/artifacts", { params: { key: issue } }, options);
