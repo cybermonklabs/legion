@@ -36,7 +36,32 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
    ```
 
    `enqueuePullRequest` takes no message: GitHub writes the squash commit under the repository's own setting, so on a merge-queue base whose `squash_merge_commit_message` reads `COMMIT_MESSAGES` the queue would put this branch's commit messages on the default branch and nothing you pass can stop it. Do not enqueue it and do not complete. Tell the architect with `envoy_publish` to its encoded role token, naming the pull request, the head, the setting's value, and that only a person can change the repository's setting to `PR_BODY` or `BLANK`; the merge waits for that answer.
-5. On a merge-queue base, watch the pull request with `gh pr view <n> --json state,mergedAt,isInMergeQueue,mergeStateStatus` until GitHub merges it or takes it out of the queue, and act on a removal: a queue that took the head out because its own `merge_group` checks failed is work to fix, so send the issue back; a person's dequeue is that person's decision, which you report. A removal is never a merge.
+5. On a merge-queue base, watch the pull request with this command:
+
+   ```bash
+   gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){state mergedAt isInMergeQueue mergeStateStatus headRefOid mergeQueueEntry{state position}}}}'
+   ```
+
+   Watch until GitHub merges the pull request or removes it from the queue. Do not use `gh pr view` for this watch. On the `gh` of your pod, `gh pr view` has no `isInMergeQueue` field.
+
+   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon also sends this message when it released your pod. GitHub's event names no reason for the removal. Read the removals with this command. It lists them newest last:
+
+   ```bash
+   gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}'
+   ```
+
+   Act on the `reason` of the newest removal, the last node:
+
+   - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
+   - `failed_checks`: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
+   - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. If you already used it for this head, send the issue back with `request_backward_move` (step 6). If not, run the watch again. Decide by the `mergeStateStatus` that it reads now:
+     - `DIRTY`: the head conflicts with the base. Send the issue back with `request_backward_move` (step 6).
+     - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.
+     - Any other state: the head conflicted with an entry ahead of it in the queue. Enqueue the same head one more time (step 4). Record that enqueue in a `dispatch comment` on the issue.
+   - `manual`: if the `actor` is your own App and you removed the pull request because the design gate closed, the removal is your own act. Follow "A closed design gate" below. Any other `manual` removal is a person's dequeue. It is that person's decision. Report it to the architect with `envoy_publish` to its encoded role token.
+   - Any other reason: tell the architect with `envoy_publish` to its encoded role token. Quote the reason.
+
+   A removal is never a merge.
 6. When a merge fails, the decision is yours, and GitHub's own answer is the fact you decide on: quote it. Wait for what GitHub waits for (a required check still running, a required review only a person can give) and merge again; try the merge again at the head you re-read when a push moved it, or when GitHub refused while it was still computing mergeability; send the issue back with `request_backward_move` when the head itself must change (a conflict with the base, a check that failed); or tell the architect, with `envoy_publish` to its encoded role token, what no worker can do — a repository setting or an App permission only a person can change, naming the pull request, the head and GitHub's refusal. A merge you cannot make is never a rule to work around.
 7. Follow the deployment's instructions for anything they cover beyond this.
 
