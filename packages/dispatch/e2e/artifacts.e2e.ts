@@ -17,6 +17,7 @@ import {
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
+import { assertPageFits } from "./unclipped";
 
 const tinyPng =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL0eAAAAABJRU5ErkJggg==";
@@ -262,9 +263,9 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
     await openMargin.click();
     await expect(page.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
     await page.screenshot({ path: testInfo.outputPath("iphone-margin-sheet.png"), fullPage: true });
-    expect(
-      await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
-    ).toBe(true);
+    // `scrollWidth <= innerWidth` cannot fail on a phone, which widens `innerWidth` to a page
+    // wider than its window; `assertPageFits` holds `innerWidth` to the window as well.
+    await assertPageFits(page);
   }
 });
 
