@@ -1,11 +1,14 @@
 # shellcheck shell=bash
-# The run a whole-daemon live proof makes around its driver: child-adoption.sh,
-# claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh, provider-error-retry.sh and
-# role-prompt-rule.sh differ only in what their driver proves, so each is
-# this run; merged-root-waits.sh and no-required-checks.sh have gone with the daemon's merge and
+# The run a whole-daemon live proof makes around its driver: busy-relaunch-delivery.sh,
+# child-adoption.sh, claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh,
+# provider-error-retry.sh and role-prompt-rule.sh differ only in what their driver proves, so each
+# is this run; merged-root-waits.sh and no-required-checks.sh have gone with the daemon's merge and
 # its read of a base branch's required checks. Sourced by the entry script, never run. The entry
 # script sets `set -euo pipefail` and
 # root, the checkout it sources this file from, and calls live_daemon_proof as its last command.
+# busy-relaunch-delivery.sh's negative control calls it instead in a subshell of its own whose root
+# is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
+# goes on to read the run's proof.log.
 #
 # live_daemon_proof LABEL SLUG TEST EVIDENCE runs four checks, each printing `== <check>`, what it
 # observed and `ok <check> (<s>s)`; the first that fails prints `FAIL <check>: <why>` and ends the
