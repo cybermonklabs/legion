@@ -212,7 +212,7 @@ func runRigTransactionDoing(t *testing.T, database *store.Store, between func())
 		t.Fatalf("read before the write: %v", err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if _, err := tx.Exec(ctx, `insert into projects (key, name) values ('RIG', 'Rig')`); err != nil {
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	between()

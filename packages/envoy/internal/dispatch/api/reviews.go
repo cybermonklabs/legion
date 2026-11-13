@@ -632,6 +632,22 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The person this request reaches, named on the answer as the question create names it
+	// (createAskFor in api/asks.go): read here in the read phase, under the owner's lock, through
+	// the rule every read of that person shares, before the insert or the hand-back below is
+	// queued. Neither moves the person: a new request is handed to nobody, and a hand-back
+	// leaves the open request's asked_of, issue and document as they stand. The settled branch
+	// returned above answers no ask at all and so names nobody; every branch here has an open
+	// request, the one a hand-back puts back in front of the human.
+	reached, askedOf := owner, (*string)(nil)
+	if open != nil {
+		reached, askedOf = ownerOf(open.IssueKey, open.ArtifactID), open.AskedOf
+	}
+	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, reached, askedOf)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	ask := open
 	var appended []*model.Event
 	var opened *model.Event
@@ -647,6 +663,8 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		}
 		appended = []*model.Event{opened}
 	}
+	// Set once the payloads above are built, since no `ask.*` event payload may carry it.
+	ask.WaitingOnPerson = waitingOnPerson
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	approval := approvalAfterRequest(*artifact.Approval, *ask)
 	if err := ledger.Commit(r.Context()); err != nil {

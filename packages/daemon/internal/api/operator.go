@@ -62,10 +62,11 @@ type ForgetSessionRequest struct {
 }
 
 // OperatorClaim is a claim as the operator sees it: every field of the claim record the decision
-// table files in the operator column, which these routes alone carry, and all but four of the
+// table files in the operator column, which these routes alone carry, and all but five of the
 // fields it files in the agents column (ClaimRecordFields, internal/api's recordfields.go). The
-// four it leaves to the agent surfaces are `servingGeneration`, `pendingCause`,
-// `providerErrorRun` and `updateReasons`; the table's withheld column reaches no surface at all,
+// five it leaves to the agent surfaces are `servingGeneration`, `pendingCause`,
+// `providerErrorRun`, `updateReasons` and `givenEntry`, the last of which an issue's own view
+// carries and no claim's; the table's withheld column reaches no surface at all,
 // the claim's two hashes among it. Two fields stand here whole where a claim view reduces them:
 // the four counts, under `budgets` and again inside `failure`, and the pending task with its
 // text, under `pending`. Three keys below are no field of the claim record and stand on the
@@ -156,6 +157,12 @@ type OperatorClaim struct {
 	// operator retired after it failed, which is what lets the seat reading it say why that
 	// worker is gone.
 	Failure *ClaimFailureView `json:"failure,omitempty"`
+	// LeakCheckCause is the sentence the claim's latest launch try was refused with because the
+	// shared public leak check could not be installed in the role's pod
+	// (supervise.Claim.LeakCheckCause, ClaimView.LeakCheckCause), absent when that try started
+	// its process or failed for another reason. The controller's claim is on no claim view of the
+	// state, so these routes are where its cause is read.
+	LeakCheckCause string `json:"leakCheckCause,omitempty"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -316,6 +323,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 		LastReady:        instant(c.LastReady),
 		Step:             StepViewOf(step),
 		Failure:          FailureViewOf(c),
+		LeakCheckCause:   c.LeakCheckCause,
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{

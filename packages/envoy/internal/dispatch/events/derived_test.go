@@ -22,7 +22,7 @@ func TestDerivedEventSequencesAndOwnerRowsMatchTheRowsAppended(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name, last_seq) values ('DV', 'Derived', 4);
+		insert into projects (key, name, last_seq, default_assignee) values ('DV', 'Derived', 4, 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank, last_seq, updated_at)
 		values ('DV-1', 'DV', 1, 'Issue', '{"kind":"user","id":"alice"}', 'U', 7, now() - interval '1 day');
 		insert into issues (key, project_key, number, title, created_by, rank, last_seq, updated_at)
@@ -134,7 +134,7 @@ func TestDerivedAskOpenedPayloadEqualsTheEncodedPayloadWithItsEventID(t *testing
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('DA', 'Derived asks');
+		insert into projects (key, name, default_assignee) values ('DA', 'Derived asks', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ('DA-1', 'DA', 1, 'Issue', '{"kind":"user","id":"alice"}', 'U');
 	`); err != nil {

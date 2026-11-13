@@ -37,13 +37,13 @@ func threadLoginsQuery(param string) string {
 // other. It reads the asks through asks_open and their rows through user_threads_thread, so it
 // never scans user_threads.
 //
-// An issue event carries logins on an assignee move too, the old and the new assignee, since the
-// same rule moves the row of an open ask nobody has handed on out of one Inbox and into the
-// other; the two sets are joined by the `also` logins IssueLoginsOf unions into this query,
-// which is the whole of what an issue event names. An ask somebody handed on waits on the person
-// it was handed to wherever its issue goes, so no assignee move touches its row; the hand-on
-// itself names the two people instead (api/ask_asked_of.go, over api/thread_logins.go's
-// movedLogins).
+// An issue event carries logins on an assignee move too, the old and the new assignee, a side
+// where the issue holds nobody being the project's default assignee, since the same rule moves
+// the row of an open ask nobody has handed on out of one Inbox and into the other; the two sets
+// are joined by the `also` logins IssueLoginsOf unions into this query, which is the whole of
+// what an issue event names. An ask somebody handed on waits on the person it was handed to
+// wherever its issue goes, so no assignee move touches its row; the hand-on itself names the two
+// people instead (api/ask_asked_of.go, over api/thread_logins.go's movedLogins).
 func issueLoginsQuery(param string) string {
 	return `
 		select coalesce(array_agg(distinct u.login order by u.login), '{}')
@@ -85,8 +85,10 @@ func ThreadLoginsOf(threadID string) *Logins {
 
 // IssueLoginsOf is the logins of issueKey's open asks (issueLoginsQuery), read by the event's
 // insert: after the asks a close withdrew or a reopen restored earlier in the same batch. also is
-// the logins the write already knows it moved, the assignee it took the issue from and the one it
-// gave it to (api/issue_patch.go, over api/thread_logins.go's movedLogins), unioned into them.
+// the logins the write already knows it moved, the person the issue's questions reached before
+// its assignee move and the one they reach after it, the project's default on a side where the
+// issue holds nobody (api/issue_patch.go, over api/thread_logins.go's movedLogins), unioned into
+// them.
 func IssueLoginsOf(issueKey string, also ...string) *Logins {
 	return &Logins{query: issueLoginsQuery, key: issueKey, also: also}
 }

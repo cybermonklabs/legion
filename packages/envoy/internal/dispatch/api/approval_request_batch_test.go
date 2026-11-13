@@ -122,11 +122,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs at most twenty-three round trips,
+// One approval request on a document with no request open costs at most twenty-four round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
 // for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
 // is where it goes today: the first eight read the coverage the answer reports, before the
-// request's transaction opens (approvalCoverage); the thirteen after them are the transaction
+// request's transaction opens (approvalCoverage); the fourteen after them are the transaction
 // itself, and all but two of those are reads: this route's writes are queued and sent as one
 // batch before the commit, which is what holds its transaction id to its database work
 // (INFRA-636). The last two store the display trees of the texts it wrote, after the commit. In
@@ -155,21 +155,23 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (attachApproval, queueApprovals);
 //  15. the open approval ask naming this document, which there is none of
 //     (docs.OpenApprovalAskForDocuments);
-//  16. the new ask's id and the transaction's time (select gen_random_uuid()::text, now());
-//  17. the latest approved review the request carries (docs.LatestApprovedReview);
-//  18. the question's references as they stand, which the replacement is planned against
+//  16. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
+//     every read of that person shares), read over the owner before the ask's row is queued;
+//  17. the new ask's id and the transaction's time (select gen_random_uuid()::text, now());
+//  18. the latest approved review the request carries (docs.LatestApprovedReview);
+//  19. the question's references as they stand, which the replacement is planned against
 //     (queueNewAskReferences, through refs.PlanReplace);
-//  19. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
+//  20. the ask's block state, read for its parts' plan (refs.PlanAskParts, through
 //     refs.ReadItemIndex);
-//  20. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
+//  21. a batch of 15: the whole write phase, sent back to back - the ask row, its block state
 //     and the part rows of its question and options, the author's follow, the references and
 //     the row the ask owes the grammar's re-index queue, deleted with them
 //     (refs.Replacement.Queue, INFRA-869), the ask.opened event with its payload and the
 //     issue's last_seq, the reference stamps, and the approval as the request leaves it;
-//  21. commit;
-//  22. the display trees of the texts the ask.opened event carries - its question and both option
+//  22. commit;
+//  23. the display trees of the texts the ask.opened event carries - its question and both option
 //     labels - stored in one statement by the publish path (storeEventDisplayTrees);
-//  23. the display tree of the question the request wrote, stored by the route itself, which the
+//  24. the display tree of the question the request wrote, stored by the route itself, which the
 //     table already holds from the statement before it (`on conflict do nothing`): the route
 //     stores what it wrote whether or not the event it published carried the same text.
 //
@@ -180,11 +182,11 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // ever ask for that document, and the read is not made. A request whose summary writes a `#`
 // pays it once for the two of them.
 //
-// The transaction takes its transaction id at the first statement of 20 and gives it up at 21;
+// The transaction takes its transaction id at the first statement of 21 and gives it up at 22;
 // the per-route window test measures that window, and this test bounds what the route sends
-// around it. The one-phase route sent thirty-six, its write statements each a round trip of
+// around it. The one-phase route sent thirty-seven, its write statements each a round trip of
 // its own between the reads.
-func TestApprovalRequestsCostAtMostTwentyThreeRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostAtMostTwentyFourRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -208,8 +210,8 @@ func TestApprovalRequestsCostAtMostTwentyThreeRoundTrips(t *testing.T) {
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
-	// says where the twenty-three go.
-	const ceiling = 23
+	// says where the twenty-four go.
+	const ceiling = 24
 	if len(counted) > ceiling {
 		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
 			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))

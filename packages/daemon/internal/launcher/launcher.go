@@ -25,6 +25,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -74,6 +75,10 @@ type Config struct {
 	// SessionDialer builds that proxy's upstream dialer. Nil is the Cloud SQL connector's, which
 	// is the only one a pod uses; a test passes a fake.
 	SessionDialer func(ctx context.Context) (sessionproxy.Dialer, error)
+	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
+	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
+	// names a temporary one.
+	LeakCheckDir string
 }
 
 // reconnectDelay is the pause between daemon connections. A lost connection never stops the
@@ -148,10 +153,14 @@ func newManagers(cfg Config) ([]*manager, error) {
 	// connection it reaches, and the first role to start applies it for the pod, with every other
 	// role's start waiting on that one restore.
 	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+	// One install of the shared public leak check per launcher process, for the pin of its own
+	// environment: the daemon pushes it to whichever role's connection it starts first, and
+	// every other role's connection finds it installed.
+	check := newCheckInstall(os.Getenv(leakguard.TagVariable), cfg.LeakCheckDir)
 	if cfg.RolesDir == "" {
 		return []*manager{{
 			cfg: cfg, role: cfg.Role, token: cfg.Token, private: cfg.PrivateDir, launcherID: randomID(),
-			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore,
+			stdout: cfg.Stdout, stderr: cfg.Stderr, requests: map[string]request{}, restore: restore, check: check,
 		}}, nil
 	}
 	log := &roleLog{stdout: cfg.Stdout, stderr: cfg.Stderr}
@@ -172,7 +181,7 @@ func newManagers(cfg Config) ([]*manager, error) {
 		managers = append(managers, &manager{
 			cfg: cfg, role: role, token: strings.TrimSpace(string(token)), namespaced: true,
 			private: filepath.Join(cfg.RolesDir, role, RolePrivateDir), launcherID: randomID(),
-			log: log, stderr: own, requests: map[string]request{}, restore: restore,
+			log: log, stderr: own, requests: map[string]request{}, restore: restore, check: check,
 		})
 	}
 	return managers, nil
@@ -206,8 +215,10 @@ func (m *manager) logf(format string, args ...any) {
 }
 
 // serve is one authenticated daemon connection: hello, acknowledgement, the launcher's actual
-// state, then start and stop commands until the connection ends. The acknowledgement is logged as
-// one line, so a launcher the daemon accepted reads apart from one still dialing.
+// state, then start, stop, bundle and leak-check commands until the connection ends. The hello
+// names the launcher's leak-check pin and whether this process has installed it, so the daemon
+// pushes the check only to a launcher that still needs it. The acknowledgement is logged as one
+// line, so a launcher the daemon accepted reads apart from one still dialing.
 func (m *manager) serve(ctx context.Context, address string) error {
 	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", address)
 	if err != nil {
@@ -217,9 +228,11 @@ func (m *manager) serve(ctx context.Context, address string) error {
 	stopClose := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stopClose()
 	writer := shimwire.NewWriter(conn)
-	if err := writer.WriteFrame(shimwire.LauncherHello{
+	hello := shimwire.LauncherHello{
 		Token: m.token, Sandbox: m.cfg.Sandbox, Role: m.role, PodUID: m.cfg.PodUID, LauncherID: m.launcherID,
-	}); err != nil {
+	}
+	hello.LeakCheckTag, hello.LeakCheckInstalled = m.check.hello()
+	if err := writer.WriteFrame(hello); err != nil {
 		return fmt.Errorf("hello: %w", err)
 	}
 	reader := shimwire.NewReader(conn)
@@ -261,6 +274,8 @@ func (m *manager) serve(ctx context.Context, address string) error {
 			answer = m.stop(command)
 		case shimwire.LauncherBundle:
 			answer = m.restore.receive(command)
+		case shimwire.LauncherLeakCheck:
+			answer = m.check.receive(ctx, command, m.logf)
 		default:
 			return fmt.Errorf("command: got %T", frame)
 		}
@@ -417,6 +432,9 @@ type manager struct {
 	// container shares: the bundle a released pod's work was saved as arrives on one role's
 	// connection and is applied once, before the first role of the pod starts.
 	restore *bundleRestore
+	// check is the launcher process's one install of the shared public leak check, which every
+	// role manager of the container shares as it shares restore.
+	check *checkInstall
 }
 
 // state reports the actual child to the current daemon connection, if one is up. A state change

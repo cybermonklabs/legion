@@ -252,6 +252,21 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The default assignee of the issue's project, for an assignee move that leaves one side
+	// holding nobody: a question on an issue nobody holds reaches its project's default, the
+	// chain's last step (askedOfPersonExpression), so that side of the move names the default
+	// rather than nobody (movedAssignees below). Without it, an issue nobody held gaining an
+	// assignee would name only the new one, and the default's open Inbox would keep a row the
+	// server no longer gives them. It is read here, under the issue's owner lock and before the
+	// patch's first write, so it holds no transaction id; a patch that names no assignee, or one
+	// whose both sides name a person or both nobody, reads no project.
+	var projectDefault string
+	if assigneeProvided && (before.Assignee == nil) != (assignee == nil) {
+		if err := tx.QueryRow(r.Context(), `select default_assignee from projects where key = $1`, before.Project).Scan(&projectDefault); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// Closing an issue releases whatever claim it held: the work is finished, so nobody is
 	// on it. No other status move touches the claim — a claim is an explicit act
 	// (issue_claim.go), and the status is also how humans track work.
@@ -514,18 +529,26 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// nil on a write that left the assignee alone, which is what names the status move's logins
-	// and nobody else.
-	var movedAssignees []*string
+	// and nobody else. A move names the person the issue's questions reached before it and the
+	// person they reach after it: the assignee on each side, and the project's default, read
+	// above, on a side where the issue holds nobody, as askedOfPersonExpression resolves it.
+	var movedAssignees []string
 	if slices.Contains(changedFields, "assignee") {
-		movedAssignees = []*string{before.Assignee, after.Assignee}
+		reached := func(side *string) string {
+			if side == nil {
+				return projectDefault
+			}
+			return *side
+		}
+		movedAssignees = []string{reached(before.Assignee), reached(after.Assignee)}
 	}
 	// A close or a reopen names the logins with a row on the issue's open asks once the asks'
 	// rows are written, and those are still queued here, so the event's own insert reads them and
-	// unions in the assignees the write moved (events.IssueLoginsOf). Any other move names only
-	// those assignees, which this transaction already knows. The Replies list leaves out an open
-	// ask on an open issue that waits on the reader (api/replies.go, myRepliesOwner), so moving
-	// the assignee takes the asks nobody has handed on out of the new assignee's list and puts
-	// them into the old one's; an ask somebody handed on waits on that person wherever its issue
+	// unions in the people the assignee move moved (events.IssueLoginsOf). Any other move names
+	// only those people, which this transaction already knows. The Replies list leaves out an
+	// open ask on an open issue that waits on the reader (api/replies.go, myRepliesOwner), so
+	// moving the assignee takes the asks nobody has handed on out of one person's list and puts
+	// them into the other's; an ask somebody handed on waits on that person wherever its issue
 	// goes, so the move leaves its row where it is.
 	var logins *events.Logins
 	if statusChanged || movedAssignees != nil {

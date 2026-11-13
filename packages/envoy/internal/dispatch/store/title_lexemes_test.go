@@ -33,6 +33,7 @@ func TestTitleLexemesFillEveryStoredTitleAndFollowEveryRetitle(t *testing.T) {
 	}
 	searchBefore := issueSearchVectors(t, ctx, store)
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("apply 0088-0089: %v", err)
 	}
@@ -114,10 +115,13 @@ func TestMigrate0089WaitsForAReparentWithoutDeadlockingIt(t *testing.T) {
 	ctx := context.Background()
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, 88)
+	// The issues name a person as their assignee, and that person has signed in, so the
+	// backfill the migrate below ends at (20261111210103) reads CORE's default from them.
 	if _, err := store.Pool.Exec(ctx, `
+		insert into people (email) values ('alice@d.example');
 		insert into projects (key, name) values ('CORE', 'Core');
-		insert into issues (key, project_key, number, title, created_by, rank)
-		select 'CORE-' || n, 'CORE', n, 'Calibration window ' || n, '{"kind":"user","id":"alice"}', lpad(n::text, 3, '0')
+		insert into issues (key, project_key, number, title, created_by, rank, assignee)
+		select 'CORE-' || n, 'CORE', n, 'Calibration window ' || n, '{"kind":"user","id":"alice"}', lpad(n::text, 3, '0'), 'alice@d.example'
 		  from generate_series(1, 10) as n;`); err != nil {
 		t.Fatalf("seed issues: %v", err)
 	}

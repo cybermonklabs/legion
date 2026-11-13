@@ -12,18 +12,16 @@ import (
 )
 
 // movedLogins adds to logins the canonical login of each person a write moved an Inbox row
-// between, sorted and without a duplicate. A person may be nil - an issue nobody held, an ask
-// that waited on nobody - and naming the same person twice names them once. The result is never
-// nil, so an event that moved nobody's rows says so as [] rather than leaving the field out.
-func movedLogins(logins []string, moved ...*string) []string {
+// between, sorted and without a duplicate; naming the same person twice names them once. Each
+// person is resolved before it reaches here, so none is nobody: every question reaches a person
+// (askedOfPersonExpression). The result is never nil, so an event that moved nobody's rows says
+// so as [] rather than leaving the field out.
+func movedLogins(logins []string, moved ...string) []string {
 	if logins == nil {
 		logins = []string{}
 	}
 	for _, person := range moved {
-		if person == nil {
-			continue
-		}
-		login := model.CanonicalLogin(*person)
+		login := model.CanonicalLogin(person)
 		if login == "" || slices.Contains(logins, login) {
 			continue
 		}

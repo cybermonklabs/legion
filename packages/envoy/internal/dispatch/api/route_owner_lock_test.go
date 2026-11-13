@@ -373,8 +373,8 @@ func readyDesignGates(t *testing.T) lockedItemWrite {
 }
 
 // readyProjectDefaultAssignee drives PUT /api/v1/projects/{key}/default-assignee, which updates
-// the project's row under the project's owner lock it takes before the update
-// (putProjectDefaultAssignee, store.LockOwner).
+// the project's row under the project's owner lock it takes, with its read of the default the
+// write moves from, before the update (putProjectDefaultAssignee, store.LockOwnerAndRead).
 func readyProjectDefaultAssignee(t *testing.T) lockedItemWrite {
 	t.Helper()
 	fixture := newItemRowFixture(t, testServerOptions{}, "Default assignee", "A spec.\n")

@@ -3930,7 +3930,7 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	fake := startGitHubFake(t)
 	// The term-statistics refresh writes nothing for a database with no project, so one exists
 	// before either process starts.
-	if _, err := pair.database.Pool.Exec(context.Background(), `insert into projects (key, name) values ('LEASE', 'Lease')`); err != nil {
+	if _, err := pair.database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('LEASE', 'Lease', 'alice')`); err != nil {
 		t.Fatalf("create the project the term-statistics refresh rebuilds: %v", err)
 	}
 	// refs is where the reference-excerpt reconciliation's first statement writes
