@@ -620,18 +620,33 @@ func (s *Store) WriteDeliveryDay(ctx context.Context, settings delivery.Delivery
 // does not hold, such as a repository whose last row moved to another day or project. It records
 // day's members in eval_day_members on its day, and deletes the members of the project's delivery
 // and CI families recorded on that day that day does not hold, so each item's row there says
-// where it was last counted. A row of another project, another day or another eval is refused
-// before anything is written.
+// where it was last counted. A row of another project, another day or another eval, and an item
+// of another family, is refused before anything is written.
 func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy string) error {
+	return s.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, builtBy)
+}
+
+// writeProjectDay is the write of one project's computed rows of one day: day's rows of the evals
+// slugs name, and its members of families, written as WriteProjectDay says. The stale rows it
+// deletes are those of slugs alone and the stale members those of families alone, so the
+// delivery and the Legion writes of one day leave each other's rows and members as they are.
+// what names the rows in a refusal.
+func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
 	date := utcMidnight(day.Day)
-	evalIDs := make([]string, len(deliveryDaySlugs))
-	for i, slug := range deliveryDaySlugs {
+	evalIDs := make([]string, len(slugs))
+	for i, slug := range slugs {
 		evalIDs[i] = EvalID(day.Project, slug)
 	}
 	for _, row := range day.Rows {
 		if row.ProjectKey != day.Project || !row.Day.Equal(date) || !slices.Contains(evalIDs, row.EvalID) {
-			return fmt.Errorf("evals: a delivery day row of %s on %s is %s of %s on %s", day.Project, date.Format(time.DateOnly),
+			return fmt.Errorf("evals: a %s day row of %s on %s is %s of %s on %s", what, day.Project, date.Format(time.DateOnly),
 				row.EvalID, row.ProjectKey, row.Day.Format(time.DateOnly))
+		}
+	}
+	for _, member := range day.Members {
+		if !slices.Contains(families, member.Family) {
+			return fmt.Errorf("evals: a %s day item of %s on %s is %s of family %s", what, day.Project, date.Format(time.DateOnly),
+				member.RowKey, member.Family)
 		}
 	}
 	tx, err := s.database.Pool.Begin(ctx)
@@ -653,9 +668,9 @@ func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy str
 	`, day.Project, date, evalIDs, evals, series, repos); err != nil {
 		return fmt.Errorf("delete the day rows %s no longer holds on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
-	families, keys, memberRepos := make([]string, len(day.Members)), make([]string, len(day.Members)), make([]string, len(day.Members))
+	memberFamilies, keys, memberRepos := make([]string, len(day.Members)), make([]string, len(day.Members)), make([]string, len(day.Members))
 	for i, member := range day.Members {
-		families[i], keys[i], memberRepos[i] = member.Family, member.RowKey, member.Repo
+		memberFamilies[i], keys[i], memberRepos[i] = member.Family, member.RowKey, member.Repo
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into eval_day_members (project_key, family, row_key, day, repo)
@@ -664,14 +679,14 @@ func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy str
 		order by member.family, member.row_key
 		on conflict (project_key, family, row_key) do update set day = excluded.day, repo = excluded.repo
 		where (eval_day_members.day, eval_day_members.repo) is distinct from (excluded.day, excluded.repo)
-	`, day.Project, date, families, keys, memberRepos); err != nil {
+	`, day.Project, date, memberFamilies, keys, memberRepos); err != nil {
 		return fmt.Errorf("record the items %s counted on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	if _, err := tx.Exec(ctx, `
 		delete from eval_day_members
 		where project_key = $1 and family = any($2) and day = $3
 		  and (family, row_key) not in (select * from unnest($4::text[], $5::text[]))
-	`, day.Project, deliveryDayFamilies, date, families, keys); err != nil {
+	`, day.Project, families, date, memberFamilies, keys); err != nil {
 		return fmt.Errorf("delete the items %s no longer counts on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	if err := tx.Commit(ctx); err != nil {

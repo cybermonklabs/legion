@@ -159,7 +159,7 @@ func computeWhole(ctx context.Context, pool *store.Pool, project string, now tim
 // The waiting reason is the one card rule (legion.CardWaiting), read through the one waiting
 // line (legion.WaitingLine), which the board builds from its own cards. The daemon's admission
 // block is read once per computation, because it is one row of the project rather than a fact of
-// any issue, and the repositories are read once for every row kept (readRepos).
+// any issue, and the repositories are read once for every row kept (ReadRepos).
 func rowsOf(ctx context.Context, q Querier, population *metrics.Population, project string, wanted map[string]bool, now time.Time) ([]Row, error) {
 	admission, err := readAdmission(ctx, q, project)
 	if err != nil {
@@ -177,7 +177,7 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 			keys = append(keys, key)
 		}
 	}
-	repos, err := readRepos(ctx, q, keys)
+	repos, err := ReadRepos(ctx, q, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -251,12 +251,13 @@ var reposStatement = `
 	from issues i ` + refs.IssueRepoJoin + `
 	where i.key = any($1::text[])`
 
-// readRepos is the repository each of the keys resolves to, by key, and no entry for an issue
-// none resolves for. A parent chain the walk could not finish names no answer either: the issue
-// page refuses such an issue rather than answer its project's default, which would be a wrong
-// one, and a refusal here would stop every pass of the project's facts for good. The row holds
-// no repository for it, which is the answer a chain that names none gets.
-func readRepos(ctx context.Context, q Querier, keys []string) (map[string]string, error) {
+// ReadRepos is the repository each of the keys resolves to, by key, and no entry for an issue
+// none resolves for: the repository a row of issue_facts holds, and the one the Legion evals' day
+// rows cut a filing by (evals.ReadLegionDay). A parent chain the walk could not finish names no
+// answer either: the issue page refuses such an issue rather than answer its project's default,
+// which would be a wrong one, and a refusal here would stop every pass of the project's facts for
+// good. The row holds no repository for it, which is the answer a chain that names none gets.
+func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string, error) {
 	repos := map[string]string{}
 	if len(keys) == 0 {
 		return repos, nil

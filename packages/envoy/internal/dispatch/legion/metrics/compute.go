@@ -3,14 +3,14 @@ package metrics
 import (
 	"fmt"
 	"math"
-	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
-// Scope is which of a project's Legion issues an answer counts, the Legion section's own toggle.
+// Scope is which of a project's Legion issues an answer counts: the Legion section's own toggle,
+// and the cut every series of the Legion evals is stored in (CutSeries).
 type Scope string
 
 const (
@@ -205,6 +205,10 @@ type FiledIssue struct {
 
 // Compute is the metrics answer for a population. It reads nothing: the route and the live hub
 // both call it over a population Read gathered, so a live push and a GET answer the same numbers.
+// Every number of its four metrics is a Legion fold's (folds.go) over the parts of the window's
+// finished issues and filings, built from each issue's facts (factsOf), the values the stored
+// rows hold, so the section and the eval routes read one rule. The tables of issues beside the
+// numbers are its own.
 func Compute(population *Population, scope Scope, now time.Time) Report {
 	computed := newComputation(population, scope)
 	finished := computed.finished()
@@ -218,7 +222,7 @@ func Compute(population *Population, scope Scope, now time.Time) Report {
 		WorkTime:   computed.workTime(finished),
 		PhaseTime:  computed.phaseTime(finished),
 		Rework:     computed.rework(finished),
-		Splitting:  computed.splitting(finished),
+		Splitting:  computed.splitting(),
 	}
 }
 
@@ -236,6 +240,8 @@ type computation struct {
 	roots     map[string]string
 	workTimes map[string]workTimeRow
 	barSpans  map[string][]Span
+	// facts is each issue's facts (factsOf), which every metric of a report folds.
+	facts map[string]IssueFacts
 }
 
 // newComputation is an empty computation over population under scope, with its memoised maps
@@ -249,6 +255,7 @@ func newComputation(population *Population, scope Scope) *computation {
 		roots:      map[string]string{},
 		workTimes:  map[string]workTimeRow{},
 		barSpans:   map[string][]Span{},
+		facts:      map[string]IssueFacts{},
 	}
 }
 
@@ -332,22 +339,16 @@ func (c *computation) treeDepth(key string) int {
 	return 0
 }
 
-// inScope is the scope toggle itself, written once because two rules read it: the finished
-// population (finished) and the filings of the splitting table (splitting) are narrowed the same
-// way, so a reader of either number is reading the same rule. In `roots` an issue that is a root
+// inScope is the scope toggle itself: the finished population (finished) and the filings of the
+// splitting table (splitting) are narrowed by the rule that cuts every Legion series (inCut), so
+// a reader of any of those numbers is reading the same rule. In `roots` an issue that is a root
 // of its tree counts, in `children` one that is not, and in `all` every issue.
 //
 // It takes a key rather than an issue because the row of the splitting table is the issue that
 // was filed: a filing is read by the tree the new issue is in, not by the filer's, so one filer's
 // filings can fall on either side of the toggle.
 func (c *computation) inScope(key string) bool {
-	switch c.scope {
-	case ScopeRoots:
-		return c.isRoot(key)
-	case ScopeChildren:
-		return !c.isRoot(key)
-	}
-	return true
+	return inCut(c.scope, c.isRoot(key))
 }
 
 // timelineOf is the issue's phase timeline with where it came from, computed once.
@@ -404,25 +405,33 @@ func (c *computation) viewOf(issue *Issue) *issueView {
 }
 
 // workTime is metric 1: "Hours from the issue's first worker event to its close, minus any time in
-// `backlog` or `icebox` and any time back in the queue after it."
+// `backlog` or `icebox` and any time back in the queue after it." Its median and p90 are
+// FoldWorkTime's over the finished issues' part.
 func (c *computation) workTime(finished []*Issue) WorkTime {
 	metric := WorkTime{Issues: make([]WorkTimeIssue, 0, len(finished))}
-	hoursPer := make([]float64, 0, len(finished))
 	for _, issue := range finished {
-		row, ok := c.workTimeOf(issue)
-		if !ok {
-			continue
+		if row, ok := c.workTimeOf(issue); ok {
+			metric.Issues = append(metric.Issues, row)
 		}
-		metric.Issues = append(metric.Issues, row)
-		hoursPer = append(hoursPer, row.Hours)
 	}
-	slices.Sort(hoursPer)
-	metric.MedianHours, metric.P90Hours = quantile(hoursPer, 0.5), quantile(hoursPer, 0.9)
+	fold := FoldWorkTime(WorkTimeDay(c.population.From, c.factsOfEach(finished)), ScopeAll)
+	metric.MedianHours, metric.P90Hours = valueOrZero(fold.Median), valueOrZero(fold.P90)
 	return metric
 }
 
+// factsOfEach is the facts of each of issues, in their order. A metric of a report folds the
+// issues it is given as one part, whose day (the window's start) no fold of these reads, and the
+// parts' sums run in this order, the order the metrics summed their issues in before the folds.
+func (c *computation) factsOfEach(issues []*Issue) []IssueFacts {
+	facts := make([]IssueFacts, len(issues))
+	for index, issue := range issues {
+		facts[index] = c.factsOf(issue)
+	}
+	return facts
+}
+
 // workTimeOf is one finished issue's work time, computed once: the work-time metric asks for
-// every finished issue's row, and the splitting metric asks again for every finished root.
+// every finished issue's row, and the per-issue facts ask again.
 func (c *computation) workTimeOf(issue *Issue) (WorkTimeIssue, bool) {
 	held := c.workedOf(issue)
 	return held.row, held.ok
@@ -523,46 +532,27 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 // a partition of the work time: the timeline leaves no hour between two phases (the spec's
 // "Phase boundaries before observations"), and every phase an issue can be in is on one of the
 // seven bars.
+//
+// The bars are FoldPhaseTime's over the finished issues' part: every issue counts towards each
+// bar's median, one the role never worked as a zero, so the seven medians describe one
+// population and not seven (PhaseTimeDay).
 func (c *computation) phaseTime(finished []*Issue) PhaseTime {
-	metric := PhaseTime{Bars: make([]RoleBar, len(bars))}
-	perIssue := make([][]float64, len(bars))
+	fold := FoldPhaseTime(PhaseTimeDay(c.population.From, c.factsOfEach(finished)), ScopeAll)
+	metric := PhaseTime{Bars: make([]RoleBar, len(bars)), IdleShare: valueOrZero(fold.IdleShare)}
 	for index, bar := range bars {
-		metric.Bars[index].Role = bar.Role
-		perIssue[index] = make([]float64, 0, len(finished))
-	}
-	for _, issue := range finished {
-		parts := c.barPartsOf(issue)
-		for index, bar := range bars {
-			part := parts[bar.Role]
-			// Every issue of the population counts towards each bar's median, one the role
-			// never worked as a zero, so the seven medians describe one population and not
-			// seven.
-			perIssue[index] = append(perIssue[index], part.Segments.total())
-			if !part.HoldsHours {
-				continue
-			}
-			metric.Bars[index].Segments.addSegments(part.Segments)
-			metric.Bars[index].Issues++
+		folded := fold.Bars[bar.Role]
+		metric.Bars[index] = RoleBar{
+			Role: bar.Role, Hours: folded.Hours, Issues: folded.Issues,
+			MedianHoursPerIssue: valueOrZero(folded.MedianPerIssue), Segments: folded.Segments,
 		}
-	}
-	var whole, idle float64
-	for index := range metric.Bars {
-		row := &metric.Bars[index]
-		row.Hours = round(row.Segments.total())
-		row.MedianHoursPerIssue = median(perIssue[index])
-		row.Segments = rounded(row.Segments)
-		whole += row.Hours
-		idle += row.Segments.Idle
-	}
-	if whole > 0 {
-		metric.IdleShare = round(idle / whole)
 	}
 	return metric
 }
 
 // barPartsOf is one issue's part of metric 2, keyed by role: its time on each of the seven bars
-// (bars), shared out over the five segments. phaseTime adds these parts up across the finished
-// issues, and the per-issue facts store them (ProjectFacts), so the two read one rule.
+// (bars), shared out over the five segments. The per-issue facts store these parts
+// (ProjectFacts) and PhaseTimeDay adds them up across the finished issues, so the two read one
+// rule.
 //
 // A bar's spans are the issue's bar spans (barSpansOf) in the phases the bar holds. HoldsHours
 // is whether there are any, which is what RoleBar.Issues counts, kept apart from Hours because
@@ -580,35 +570,29 @@ func (c *computation) barPartsOf(issue *Issue) map[string]BarPart {
 }
 
 // rework is metric 3: review rounds, the share of issues sent back, and the implementing and
-// testing hours after the first review.
+// testing hours after the first review, FoldRework's over the finished issues' part.
 func (c *computation) rework(finished []*Issue) Rework {
+	facts := c.factsOfEach(finished)
 	metric := Rework{Issues: make([]ReworkIssue, 0, len(finished))}
-	rounds, afterReview := make([]float64, 0, len(finished)), make([]float64, 0, len(finished))
-	var sentBack int
-	for _, issue := range finished {
-		row := c.reworkOf(issue)
-		if row.SentBack {
-			sentBack++
-		}
-		rounds = append(rounds, float64(row.ReviewRounds))
-		hoursAfter := row.ImplementingHoursAfterFirst + row.TestingHoursAfterFirst
-		afterReview = append(afterReview, hoursAfter)
-		metric.HoursAfterFirstReview += hoursAfter
-		metric.Issues = append(metric.Issues, row)
+	for index, issue := range finished {
+		metric.Issues = append(metric.Issues, ReworkIssue{
+			Key: issue.Key, ReviewRounds: facts[index].ReviewRounds, SentBack: facts[index].SentBack,
+			ImplementingHoursAfterFirst: facts[index].ImplementingHoursAfterFirstReview,
+			TestingHoursAfterFirst:      facts[index].TestingHoursAfterFirstReview,
+		})
 	}
-	metric.MedianReviewRounds = median(rounds)
-	metric.MedianHoursAfterFirstReview = median(afterReview)
-	metric.HoursAfterFirstReview = round(metric.HoursAfterFirstReview)
-	if len(finished) > 0 {
-		metric.SentBackShare = round(float64(sentBack) / float64(len(finished)))
-	}
+	fold := FoldRework(ReworkDay(c.population.From, facts), ScopeAll)
+	metric.MedianReviewRounds = valueOrZero(fold.ReviewRounds.Median)
+	metric.SentBackShare = valueOrZero(fold.SentBack.Share)
+	metric.HoursAfterFirstReview = fold.HoursAfterFirstReview.Sum
+	metric.MedianHoursAfterFirstReview = valueOrZero(fold.HoursAfterFirstReview.Median)
 	return metric
 }
 
 // reworkOf is one issue's part of metric 3: its review rounds, whether it was sent back, and its
 // implementing and testing hours after the first review, which are the measure of its bar spans
-// from that review on. rework adds these parts up across the finished issues, and the per-issue
-// facts store them (ProjectFacts).
+// from that review on. The per-issue facts store these parts (ProjectFacts) and ReworkDay adds
+// them up across the finished issues.
 func (c *computation) reworkOf(issue *Issue) ReworkIssue {
 	phases := c.timelineOf(issue)
 	row := ReworkIssue{Key: issue.Key, ReviewRounds: reviewRounds(issue, phases), SentBack: sentBackOnce(issue, phases)}
@@ -735,69 +719,59 @@ func firstReview(issue *Issue, timeline phaseTimeline) (time.Time, bool) {
 
 // splitting is metric 4: each issue a Legion session created in the window, by the parent it had
 // at its `issue.created` event, counted per week against the issues that finished per week. The
-// rows and each week's four class counts are the filings the scope keeps, read by the issue the
-// filing created (inScope); each week's finished count is the scoped population it is passed.
-func (c *computation) splitting(finished []*Issue) Splitting {
+// rows are the filings the scope keeps, read by the issue the filing created (inScope). The
+// numbers are FoldSplitting's over the day parts of every issue that finished in the window and
+// every filing of it, by close day and by filing day: the weeks are the scope's cut, and the
+// four root figures the all cut's, which counts roots alone whatever scope the reader picked.
+func (c *computation) splitting() Splitting {
 	metric := Splitting{Filed: make([]FiledIssue, 0, len(c.population.Filed))}
-	weeks := map[time.Time]*SplittingWeek{}
-	week := func(at time.Time) *SplittingWeek {
-		start := weekStart(at)
-		if held, ok := weeks[start]; ok {
-			return held
+	type input struct {
+		finished []IssueFacts
+		filed    []IssueFiling
+	}
+	days := map[time.Time]*input{}
+	on := func(at time.Time) *input {
+		day := at.UTC().Truncate(24 * time.Hour)
+		if days[day] == nil {
+			days[day] = &input{}
 		}
-		fresh := &SplittingWeek{Week: start, Filed: map[string]int{}}
-		for _, class := range classes {
-			fresh.Filed[class] = 0
-		}
-		weeks[start] = fresh
-		return fresh
+		return days[day]
 	}
 	// The toggle reads each filed issue's tree as it stands now (inScope), while its class reads
 	// the parent it had when it was filed (classify); a filing into another project has no tree
 	// here and counts as a root.
 	for _, filed := range c.population.Filed {
-		if !c.inScope(filed.Key) {
-			continue
-		}
 		row := c.classify(filed)
-		metric.Filed = append(metric.Filed, row)
-		week(filed.At).Filed[row.Class]++
+		if c.inScope(filed.Key) {
+			metric.Filed = append(metric.Filed, row)
+		}
+		day := on(filed.At)
+		day.filed = append(day.filed, IssueFiling{FiledIssue: row, Root: c.treeRoot(filed.Key)})
 	}
-	for _, issue := range finished {
-		week(*issue.ClosedAt).Finished++
-	}
-	metric.Weeks = make([]SplittingWeek, 0, len(weeks))
-	for _, one := range weeks {
-		metric.Weeks = append(metric.Weeks, *one)
-	}
-	slices.SortFunc(metric.Weeks, func(a, b SplittingWeek) int { return a.Week.Compare(b.Week) })
-
-	// The roots that finished in the window, whatever scope the reader picked: the table's last
-	// two numbers are about roots by name, so the toggle does not change them.
-	var withChildren, withoutChildren []float64
-	var children int
 	for _, key := range c.population.Keys {
-		issue := c.population.Issues[key]
-		if !c.finishedInWindow(issue) || !c.isRoot(issue.Key) {
-			continue
-		}
-		metric.FinishedRoots++
-		children += len(issue.Children)
-		row, ok := c.workTimeOf(issue)
-		if !ok {
-			continue
-		}
-		if len(issue.Children) > 0 {
-			withChildren = append(withChildren, row.Hours)
-		} else {
-			withoutChildren = append(withoutChildren, row.Hours)
+		if issue := c.population.Issues[key]; c.finishedInWindow(issue) {
+			day := on(*issue.ClosedAt)
+			day.finished = append(day.finished, c.factsOf(issue))
 		}
 	}
-	if metric.FinishedRoots > 0 {
-		metric.ChildrenPerRoot = round(float64(children) / float64(metric.FinishedRoots))
+	var parts []measures.DayPart
+	for day, held := range days {
+		parts = append(parts, SplittingDay(day, held.finished, held.filed)...)
 	}
-	metric.MedianHoursRootsWithChildren = median(withChildren)
-	metric.MedianHoursRootsNoChildren = median(withoutChildren)
+
+	metric.Weeks = []SplittingWeek{}
+	if scoped := FoldSplitting(parts, c.scope); scoped != nil {
+		for _, week := range scoped.Weeks {
+			metric.Weeks = append(metric.Weeks, SplittingWeek{Week: week.Week, Filed: week.Filed, Finished: week.Finished})
+		}
+	}
+	if all := FoldSplitting(parts, ScopeAll); all != nil && all.Roots != nil {
+		roots := all.Roots
+		metric.FinishedRoots = roots.FinishedRoots
+		metric.ChildrenPerRoot = valueOrZero(roots.ChildrenPerRoot)
+		metric.MedianHoursRootsWithChildren = valueOrZero(roots.HoursWithChildren.Median)
+		metric.MedianHoursRootsNoChildren = valueOrZero(roots.HoursWithoutChildren.Median)
+	}
 	return metric
 }
 
@@ -887,13 +861,6 @@ func quantile(sorted []float64, q float64) float64 {
 		return 0
 	}
 	return round(measures.Quantile(sorted, q))
-}
-
-// median sorts values and is their middle. Every caller builds the slice for its median alone
-// and reads it no further, so the sort in place is unobservable.
-func median(values []float64) float64 {
-	slices.Sort(values)
-	return quantile(values, 0.5)
 }
 
 // hours is a duration in hours, rounded as every number of a report is.

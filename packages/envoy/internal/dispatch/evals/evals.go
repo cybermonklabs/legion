@@ -9,7 +9,8 @@
 // logged eval's day rows are kept by the readings write in its own transaction, by increment, so
 // no window read reads a reading (DayWindow); a computed eval's day rows are the refresher's,
 // which builds the delivery and CI evals' from one day's delivery population
-// (delivery_days.go), and a reading logged under a computed eval's slug is stored and answered by
+// (delivery_days.go) and the Legion evals' from one day's stored Legion facts and filings
+// (legion_days.go), and a reading logged under a computed eval's slug is stored and answered by
 // its items alone.
 //
 // The package serves no request (the routes are api's) and makes none: a link is stored as its

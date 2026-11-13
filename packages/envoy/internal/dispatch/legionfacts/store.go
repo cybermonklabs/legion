@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // ProjectWrite is one project's computed facts and the set the pass that computed them stated:
@@ -363,6 +365,30 @@ func storedMap[V any](values map[string]V) map[string]V {
 // facts makes: rows, and no computation. A read of the rows of named issues comes with the
 // eval's own route (dispatch://INFRA-2916), which brings that read with its caller.
 func Read(ctx context.Context, q Querier, project string) (map[string]Row, error) {
+	read, err := readRows(ctx, q, project, `where project_key = $1`, project)
+	if err != nil {
+		return nil, err
+	}
+	rows := make(map[string]Row, len(read))
+	for _, row := range read {
+		rows[row.Issue] = row
+	}
+	return rows, nil
+}
+
+// ReadClosedIn answers the stored rows of the project's issues that closed from from up to to,
+// newest close first, through issue_facts_closed (migration 20261113082157): the issues an eval
+// of the Legion measures counts in that window, every one with Legion phase work since every
+// stored row is one. The Legion evals' day rows are built from one day's (evals.ReadLegionDay).
+func ReadClosedIn(ctx context.Context, q Querier, project string, from, to time.Time) ([]Row, error) {
+	return readRows(ctx, q, project, `
+		where project_key = $1 and closed_at >= $2 and closed_at < $3
+		order by closed_at desc, issue_key`, project, from, to)
+}
+
+// readRows is the stored rows of project that where (a where clause, with its order) selects,
+// whose arguments args are.
+func readRows(ctx context.Context, q Querier, project, where string, args ...any) ([]Row, error) {
 	result, err := q.Query(ctx, `
 		select issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 		       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
@@ -370,43 +396,51 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 		       parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
 		       slot_wait_hours, sent_back, implementing_after_first_review,
 		       testing_after_first_review, children, coalesce(repo, '')
-		from issue_facts
-		where project_key = $1`, project)
+		from issue_facts `+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 	}
 	defer result.Close()
-	rows := map[string]Row{}
+	var rows []Row
 	for result.Next() {
-		row := Row{Project: project}
-		// opened_at is a nullable column, which a row this package wrote always fills.
-		var opened *time.Time
-		var hours, bars, idle []byte
-		if err := result.Scan(&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
-			&row.ReviewRounds, &row.RootKey, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
-			&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt,
-			&row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
-			&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
-			&row.TestingAfterFirstReview, &row.Children, &row.Repo); err != nil {
-			return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
+		row, err := scanRow(result, project)
+		if err != nil {
+			return nil, err
 		}
-		if opened != nil {
-			row.OpenedAt = *opened
-		}
-		for _, column := range []struct {
-			stored []byte
-			into   any
-		}{{hours, &row.HoursByPhase}, {bars, &row.Bars}, {idle, &row.IdleByRole}} {
-			if err := json.Unmarshal(column.stored, column.into); err != nil {
-				return nil, fmt.Errorf("read the Legion facts of %s: %w", row.Issue, err)
-			}
-		}
-		rows[row.Issue] = row
+		rows = append(rows, row)
 	}
 	if err := result.Err(); err != nil {
 		return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 	}
 	return rows, nil
+}
+
+// scanRow reads one row of readRows' columns.
+func scanRow(result pgx.Rows, project string) (Row, error) {
+	row := Row{Project: project}
+	// opened_at is a nullable column, which a row this package wrote always fills.
+	var opened *time.Time
+	var hours, bars, idle []byte
+	if err := result.Scan(&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
+		&row.ReviewRounds, &row.RootKey, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
+		&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt,
+		&row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
+		&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
+		&row.TestingAfterFirstReview, &row.Children, &row.Repo); err != nil {
+		return Row{}, fmt.Errorf("read the Legion facts of %s: %w", project, err)
+	}
+	if opened != nil {
+		row.OpenedAt = *opened
+	}
+	for _, column := range []struct {
+		stored []byte
+		into   any
+	}{{hours, &row.HoursByPhase}, {bars, &row.Bars}, {idle, &row.IdleByRole}} {
+		if err := json.Unmarshal(column.stored, column.into); err != nil {
+			return Row{}, fmt.Errorf("read the Legion facts of %s: %w", row.Issue, err)
+		}
+	}
+	return row, nil
 }
 
 // upsertFilings writes the filings of the project, in one statement as upsert writes the rows. A
@@ -507,22 +541,45 @@ func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) erro
 // ReadFilings answers the stored filings of a project, by filed issue: the filings a Legion
 // session of the project made, wherever the filed issue lives.
 func ReadFilings(ctx context.Context, q Querier, project string) (map[string]Filing, error) {
+	read, err := readFilings(ctx, q, project, `where project_key = $1`, project)
+	if err != nil {
+		return nil, err
+	}
+	filings := make(map[string]Filing, len(read))
+	for _, filing := range read {
+		filings[filing.Issue] = filing
+	}
+	return filings, nil
+}
+
+// ReadFilingsIn answers the stored filings a Legion session of the project made from from up to
+// to, oldest first, through issue_filings_day (migration 20261113082155): the filings the
+// splitting eval counts in that window. The Legion evals' day rows are built from one day's
+// (evals.ReadLegionDay).
+func ReadFilingsIn(ctx context.Context, q Querier, project string, from, to time.Time) ([]Filing, error) {
+	return readFilings(ctx, q, project, `
+		where project_key = $1 and filed_at >= $2 and filed_at < $3
+		order by filed_at, issue_key`, project, from, to)
+}
+
+// readFilings is the stored filings of project that where (a where clause, with its order)
+// selects, whose arguments args are.
+func readFilings(ctx context.Context, q Querier, project, where string, args ...any) ([]Filing, error) {
 	result, err := q.Query(ctx, `
 		select issue_key, filed_at, filer_role, filer_issue, filer_phase, class, root_key
-		from issue_filings
-		where project_key = $1`, project)
+		from issue_filings `+where, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)
 	}
 	defer result.Close()
-	filings := map[string]Filing{}
+	var filings []Filing
 	for result.Next() {
 		filing := Filing{Project: project}
 		if err := result.Scan(&filing.Issue, &filing.FiledAt, &filing.FilerRole, &filing.FilerIssue,
 			&filing.FilerPhase, &filing.Class, &filing.RootKey); err != nil {
 			return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)
 		}
-		filings[filing.Issue] = filing
+		filings = append(filings, filing)
 	}
 	if err := result.Err(); err != nil {
 		return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)

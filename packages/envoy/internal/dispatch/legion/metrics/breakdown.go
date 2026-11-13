@@ -165,47 +165,63 @@ func ProjectFacts(population *Population) map[string]IssueFacts {
 		if issue == nil || !population.hasPhaseWork(issue) {
 			continue
 		}
-		spent, _ := c.issueParts(issue)
-		parts := map[string]float64{}
-		for id, here := range spent {
-			if hours(here) > 0 {
-				parts[id] = hours(here)
-			}
-		}
-		work := c.workedOf(issue)
-		rework := c.reworkOf(issue)
-		sampled := population.sampledPhases(issue)
-		facts := IssueFacts{
-			OpenedAt:                          issue.CreatedAt,
-			ClosedAt:                          issue.ClosedAt,
-			PhaseHours:                        parts,
-			WorkHours:                         work.row.Hours,
-			ReviewRounds:                      rework.ReviewRounds,
-			Root:                              c.isRoot(key),
-			Tree:                              c.treeRoot(key),
-			TreeDepth:                         c.treeDepth(key),
-			SlotHours:                         hours(totalOf(population.slotSpans(issue, population.To))),
-			ParkedHours:                       work.row.ParkedHours,
-			QueuedHours:                       work.row.QueuedHours,
-			Bars:                              c.barPartsOf(issue),
-			SentBack:                          rework.SentBack,
-			ImplementingHoursAfterFirstReview: rework.ImplementingHoursAfterFirst,
-			TestingHoursAfterFirstReview:      rework.TestingHoursAfterFirst,
-			Children:                          len(issue.Children),
-			SlotWaitHours:                     c.slotWaitHours(issue, sampled),
-			IdleByRole:                        c.idleByRole(issue, sampled),
-		}
-		if work.ok {
-			started := work.row.StartedAt
-			facts.StartedAt, facts.MergedAt = &started, work.row.MergedAt
-		}
-		if bars := normalize(c.barSpansOf(issue)); len(bars) > 0 {
-			first, last := bars[0].From, bars[len(bars)-1].To
-			facts.WorkFirstAt, facts.WorkLastAt = &first, &last
-		}
-		out[key] = facts
+		out[key] = c.factsOf(issue)
 	}
 	return out
+}
+
+// factsOf is one issue's facts, computed once: ProjectFacts answers them for every issue with
+// Legion phase work, and Compute folds those of the issues that finished in its window, so the
+// stored facts and the section's report are one computation.
+func (c *computation) factsOf(issue *Issue) IssueFacts {
+	if held, computed := c.facts[issue.Key]; computed {
+		return held
+	}
+	population, key := c.population, issue.Key
+	spent, _ := c.issueParts(issue)
+	parts := map[string]float64{}
+	for id, here := range spent {
+		if hours(here) > 0 {
+			parts[id] = hours(here)
+		}
+	}
+	work := c.workedOf(issue)
+	rework := c.reworkOf(issue)
+	sampled := population.sampledPhases(issue)
+	facts := IssueFacts{
+		OpenedAt:                          issue.CreatedAt,
+		ClosedAt:                          issue.ClosedAt,
+		PhaseHours:                        parts,
+		WorkHours:                         work.row.Hours,
+		ReviewRounds:                      rework.ReviewRounds,
+		Root:                              c.isRoot(key),
+		Tree:                              c.treeRoot(key),
+		TreeDepth:                         c.treeDepth(key),
+		SlotHours:                         hours(totalOf(population.slotSpans(issue, population.To))),
+		ParkedHours:                       work.row.ParkedHours,
+		QueuedHours:                       work.row.QueuedHours,
+		Bars:                              c.barPartsOf(issue),
+		SentBack:                          rework.SentBack,
+		ImplementingHoursAfterFirstReview: rework.ImplementingHoursAfterFirst,
+		TestingHoursAfterFirstReview:      rework.TestingHoursAfterFirst,
+		Children:                          len(issue.Children),
+		SlotWaitHours:                     c.slotWaitHours(issue, sampled),
+		IdleByRole:                        c.idleByRole(issue, sampled),
+	}
+	if work.ok {
+		started := work.row.StartedAt
+		facts.StartedAt, facts.MergedAt = &started, work.row.MergedAt
+	}
+	if bars := normalize(c.barSpansOf(issue)); len(bars) > 0 {
+		first, last := bars[0].From, bars[len(bars)-1].To
+		facts.WorkFirstAt, facts.WorkLastAt = &first, &last
+	}
+	if c.facts == nil {
+		// A computation written as a literal rather than made by newComputation has no map yet.
+		c.facts = map[string]IssueFacts{}
+	}
+	c.facts[key] = facts
+	return facts
 }
 
 // IssueFiling is one issue a Legion session of the population's project filed, as the stored
