@@ -1,16 +1,15 @@
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 import type { PriorityRow } from "../../api/types";
-import { DataTable, useDataTable } from "../../components/DataTable";
 import {
-  borderDefault,
-  focusVisibleRing,
-  surfaceBg,
-  surfaceMutedHoverBg,
-  textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+  DataTable,
+  DataTableGroupRow,
+  type RowNoun,
+  useDataTable,
+} from "../../components/DataTable";
+import { textMutedOnSurfaceMuted, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { useTableLayout } from "../project/issues-table-layout";
+import { NewPriority } from "./NewPriority";
 import { usePriorityColumns } from "./priorities-columns";
 import {
   buildPriorityItems,
@@ -22,13 +21,15 @@ import {
   type PriorityItem,
   rankMove,
 } from "./priorities-model";
-import { GroupHeadingRow, TableToolbar } from "./priority-table-controls";
+import { TableToolbar } from "./priority-table-controls";
 import { compareHeadings, facetCounts, headingOf } from "./priority-table-model";
 import { TableBodyRow } from "./priority-table-rows";
 import { useTableView } from "./priority-table-view";
 import { usePriorityWrites } from "./priority-writes";
 
 const EMPTY_FACETS: ReadonlyMap<string, number> = new Map();
+/** What a row of this table is, which its pager and its group headings count in. */
+const NOUN: RowNoun = { many: "priorities", one: "priority" };
 /** The layout key of the priorities table: one table, one deployment, one stored layout. */
 const LAYOUT_KEY = "priorities";
 /** The address prefix of this table's own view, so the two fault lists keep their own. */
@@ -46,13 +47,11 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
   const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
-  const { attachAbove } = layout;
+  const { attachAbove, boxWidth } = layout;
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
-  const [adding, setAdding] = useState(false);
-  const [newTitle, setNewTitle] = useState("");
   const [openFilter, setOpenFilter] = useState<string>();
-  const { add, canWrite, patch } = usePriorityWrites();
+  const { canWrite, patch } = usePriorityWrites();
 
   const items = useMemo(() => buildPriorityItems(rows), [rows]);
   const order = useMemo(() => items.map((item) => item.priority.id), [items]);
@@ -195,55 +194,8 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
           searchPlaceholder="Search priorities: title, owner"
           table={table}
         >
-          {canWrite ? (
-            <button
-              className={`rounded-lg border px-3 py-1.5 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
-              onClick={() => setAdding((was) => !was)}
-              type="button"
-            >
-              New priority
-            </button>
-          ) : null}
+          <NewPriority />
         </TableToolbar>
-        {adding ? (
-          <form
-            aria-label="New priority"
-            className="flex flex-wrap items-center gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const title = newTitle.trim();
-              if (title === "") return;
-              add.mutate({ title });
-              setNewTitle("");
-              setAdding(false);
-            }}
-          >
-            <input
-              aria-label="Title of the new priority"
-              className={`min-w-64 flex-1 rounded-lg border px-3 py-1.5 text-sm ${borderDefault} ${surfaceBg} ${textPrimaryOnCanvas}`}
-              onChange={(event) => setNewTitle(event.target.value)}
-              placeholder="What the new priority is"
-              value={newTitle}
-            />
-            <button
-              className={`min-h-11 rounded-lg border px-3 text-sm disabled:opacity-40 ${borderDefault} ${surfaceMutedHoverBg} ${focusVisibleRing}`}
-              disabled={newTitle.trim() === ""}
-              type="submit"
-            >
-              Add priority
-            </button>
-            <button
-              className={`min-h-11 rounded-lg border px-3 text-sm ${borderDefault} ${surfaceMutedHoverBg}`}
-              onClick={() => {
-                setAdding(false);
-                setNewTitle("");
-              }}
-              type="button"
-            >
-              Cancel
-            </button>
-          </form>
-        ) : null}
       </div>
 
       <DataTable
@@ -251,18 +203,37 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
         filterCounts={facets}
         label="Priorities table"
         model={model}
-        noun={{ many: "priorities", one: "priority" }}
+        noun={NOUN}
         onOpenFilterChange={setOpenFilter}
         openFilter={openFilter}
-        renderGroup={({ entry, index, measure }) => (
-          <GroupHeadingRow
-            columns={visibleColumns}
-            entry={entry}
-            index={index}
-            measure={measure}
-            noun={{ many: "priorities", one: "priority" }}
-          />
-        )}
+        renderGroup={({ entry: { continued, row, shown }, index, measure }) => {
+          const heading = String(row.groupingValue ?? "");
+          const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped()).length;
+          const counted = `${leaves} ${leaves === 1 ? NOUN.one : NOUN.many}`;
+          // What the reader can see under this heading, which a page boundary can make fewer
+          // than the group holds: "1 of 2 priorities" rather than a count of rows not here.
+          const count = (shown ?? leaves) === leaves ? counted : `${shown} of ${counted}`;
+          return (
+            <DataTableGroupRow
+              columns={visibleColumns}
+              expanded={row.getIsExpanded()}
+              heading={
+                <>
+                  {heading}
+                  {continued ? (
+                    <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
+                  ) : null}
+                  <span className={`font-normal ${textMutedOnSurfaceMuted}`}>{count}</span>
+                </>
+              }
+              index={index}
+              label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
+              measure={measure}
+              onToggle={row.getToggleExpandedHandler()}
+              width={Math.max(180, boxWidth - 20)}
+            />
+          );
+        }}
         renderRow={({ row, index, measure }) => (
           <TableBodyRow
             dragging={dragging}

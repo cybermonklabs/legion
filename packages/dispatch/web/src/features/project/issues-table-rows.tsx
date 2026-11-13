@@ -1,8 +1,8 @@
-import { flexRender, type Header, type Row } from "@tanstack/react-table";
+import { flexRender, type Row } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
-import type { RowNoun } from "../../components/DataTable";
+import { DataTableGroupRow } from "../../components/DataTable";
 import {
   borderDefault,
   focusVisibleRing,
@@ -13,122 +13,14 @@ import {
   surfaceBg,
   surfaceMutedBg,
   surfaceMutedHoverBg,
-  tableResizeActive,
-  tableResizeHover,
   textMutedOnCanvas,
   textMutedOnSurfaceMuted,
   textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
 import { issueStatuses, statusLabel } from "./board-model";
-import { ColumnFilter, Popover } from "./issues-table-controls";
-import { columnFilterSpec, type Item, reorder } from "./issues-table-model";
-
-/** One header cell: its sort control, which doubles as the handle that drags the column
- *  elsewhere, its filter, and the edge that resizes it. */
-export function TableHeaderCell<TData>({
-  compact,
-  counts,
-  dragColumn,
-  header,
-  noun,
-  openFilter,
-  order,
-  setDragColumn,
-  setOpenFilter,
-  setOrder,
-  unloaded,
-}: {
-  /** A phone, where the title's header stacks its controls. */
-  compact: boolean;
-  counts: ReadonlyMap<string, number>;
-  dragColumn: string | undefined;
-  header: Header<TData, unknown>;
-  /** What one row of this table is, which this cell's filter menu counts in. */
-  noun: RowNoun;
-  openFilter: string | undefined;
-  /** The columns in the order they are shown, which a drop rewrites. */
-  order: readonly string[];
-  setDragColumn: (id: string | undefined) => void;
-  setOpenFilter: (id: string | undefined) => void;
-  setOrder: (next: string[]) => void;
-  /** This column's filter values whose rows are not loaded yet. */
-  unloaded: readonly string[];
-}): ReactNode {
-  const column = header.column;
-  const pinned = column.getIsPinned() === "left";
-  return (
-    <th
-      aria-sort={
-        column.getIsSorted() === "asc"
-          ? "ascending"
-          : column.getIsSorted() === "desc"
-            ? "descending"
-            : undefined
-      }
-      className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
-      onDragOver={(event) => {
-        if (dragColumn !== undefined && !pinned) event.preventDefault();
-      }}
-      onDrop={() => {
-        if (dragColumn === undefined || pinned || dragColumn === column.id) return;
-        setOrder(reorder(order, dragColumn, column.id));
-        setDragColumn(undefined);
-      }}
-      style={{
-        width: header.getSize(),
-        left: pinned ? column.getStart("left") : undefined,
-      }}
-    >
-      <span
-        className={`flex justify-between ${compact && column.id === "title" ? "flex-col items-center" : "items-center gap-0 md:gap-1"}`}
-      >
-        {column.getCanSort() ? (
-          <button
-            className="flex min-w-0 items-center gap-1 truncate whitespace-nowrap"
-            draggable={!pinned}
-            onClick={column.getToggleSortingHandler()}
-            onDragEnd={() => setDragColumn(undefined)}
-            onDragStart={() => setDragColumn(column.id)}
-            title={
-              pinned
-                ? "Sort (shift-click to add a second sort)"
-                : "Sort (shift-click to add a second sort); drag to move the column"
-            }
-            type="button"
-          >
-            {flexRender(column.columnDef.header, header.getContext())}
-            <span className={textMutedOnCanvas}>
-              {{ asc: "▲", desc: "▼" }[column.getIsSorted() as string] ?? ""}
-            </span>
-          </button>
-        ) : (
-          flexRender(column.columnDef.header, header.getContext())
-        )}
-        {column.getCanFilter() ? (
-          <ColumnFilter
-            column={column}
-            counts={counts}
-            noun={noun}
-            onOpenChange={(open) => setOpenFilter(open ? column.id : undefined)}
-            open={openFilter === column.id}
-            unloaded={unloaded}
-          />
-        ) : null}
-      </span>
-      {column.getCanResize() ? (
-        <span
-          aria-hidden
-          className={`absolute top-0 right-0 h-full w-1.5 cursor-col-resize touch-none select-none ${column.getIsResizing() ? tableResizeActive : tableResizeHover}`}
-          onDoubleClick={() => column.resetSize()}
-          onMouseDown={header.getResizeHandler()}
-          onTouchStart={header.getResizeHandler()}
-        />
-      ) : null}
-    </th>
-  );
-}
+import { Popover } from "./issues-table-controls";
+import { columnFilterSpec, type Item } from "./issues-table-model";
 
 /** One issue's row: its cells, and the Start next the reader reaches by hovering it. */
 export function IssueRow({
@@ -248,31 +140,27 @@ export function GroupRow({
     .map((status) => [status, leafCounts.get(status) ?? 0] as const)
     .filter(([, count]) => count > 0);
   return (
-    <tr className={surfaceMutedBg} data-index={index} ref={measure}>
-      <td className="px-2 py-2" colSpan={columns}>
-        <div
-          className="sticky left-0 flex flex-wrap items-center gap-x-4 gap-y-1"
-          style={{ width: Math.max(180, viewportWidth - 20) }}
-        >
-          <button
-            aria-expanded={row.getIsExpanded()}
-            aria-label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
-            className={`flex min-w-0 items-center gap-2 text-left font-semibold ${textPrimaryOnCanvas}`}
-            onClick={row.getToggleExpandedHandler()}
-            type="button"
-          >
-            <span className={`w-4 ${textMutedOnSurfaceMuted}`}>
-              {row.getIsExpanded() ? "▾" : "▸"}
-            </span>
-            {epicKey === undefined ? heading : null}
-            {continued ? (
-              <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
-            ) : null}
-            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
-              {count}
-              {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
-            </span>
-          </button>
+    <DataTableGroupRow
+      columns={columns}
+      expanded={row.getIsExpanded()}
+      heading={
+        <>
+          {epicKey === undefined ? heading : null}
+          {continued ? (
+            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>(continued)</span>
+          ) : null}
+          <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
+            {count}
+            {Number.isFinite(next) ? ` · next in queue #${next}` : ""}
+          </span>
+        </>
+      }
+      index={index}
+      label={`${row.getIsExpanded() ? "Collapse" : "Expand"} ${heading}, ${count}${continued ? ", continued" : ""}`}
+      measure={measure}
+      onToggle={row.getToggleExpandedHandler()}
+      slot={
+        <>
           {epicKey === undefined ? null : (
             <Link
               className={`font-semibold ${linkText} ${linkHoverText}`}
@@ -305,9 +193,10 @@ export function GroupRow({
               onStartAll={() => onStartAll(epicKey)}
             />
           )}
-        </div>
-      </td>
-    </tr>
+        </>
+      }
+      width={Math.max(180, viewportWidth - 20)}
+    />
   );
 }
 

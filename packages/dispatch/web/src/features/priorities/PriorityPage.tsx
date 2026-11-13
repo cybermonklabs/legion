@@ -41,7 +41,7 @@ const OWNER_FIELD = "priority-owner";
 export function PriorityPage(): ReactNode {
   const { id = "" } = useParams();
   const priorities = useQuery(prioritiesQuery());
-  const work = useQuery({ ...advancesIssuesQuery(id, true), enabled: id !== "" });
+  const work = useQuery({ ...advancesIssuesQuery({ advances: id }, true), enabled: id !== "" });
   const [open, setOpen] = useState(true);
   const { canWrite, patch } = usePriorityWrites();
   // The way out of this scope, in the issue table's own shape: the issues advancing this
@@ -158,7 +158,7 @@ export function PriorityPage(): ReactNode {
             <PriorityDescription
               canWrite={canWrite}
               description={description}
-              label="Description"
+              label={`Description of ${item.order}`}
               onSave={(next) =>
                 patch.mutate({
                   id,

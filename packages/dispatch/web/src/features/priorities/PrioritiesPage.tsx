@@ -4,8 +4,12 @@ import { prioritiesQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
-import { FaultList } from "./FaultList";
-import { countsLine } from "./fault-model";
+import type { IssueStatus } from "../project/board-model";
+import { IssuesTable } from "../project/IssuesTable";
+import { issueTableLayout } from "../project/issues-table-columns";
+import type { IssueListing } from "../project/issues-table-data";
+import { runningIssueStatuses } from "../project/issues-table-model";
+import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
 
 /** What each fault is, in the words a reader judges it by. Neither is a judgement: both are
@@ -15,34 +19,55 @@ const NO_PRIORITY_RULE =
 const PARKED_RULE =
   "Work that advances a priority and stands in the backlog or the icebox, with the time it was moved there and whoever moved it. No reason is recorded for a move yet.";
 
-/** How many rows of a fault the read carries, which is what the count is compared against to
- *  say a list is the newest of more (`GET /api/v1/priorities`). */
-function showing(count: number, rows: number): string {
-  return rows < count ? `${rows} of ${count} shown, the newest first` : "";
+const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
+
+/** The two faults, as the issue listing answers each: the work being done under no priority,
+ *  in the statuses an issue is worked in, and the work under a priority standing in backlog or
+ *  icebox, with the move that put it there. */
+const NO_PRIORITY: IssueListing = { advances: "none", statuses: runningIssueStatuses };
+const PARKED: IssueListing = { advances: "any", statuses: PARKED_STATUSES, moved: true };
+
+/** Each fault list's own stored layout. Both name each row's project, since neither stands on
+ *  one; the parked list names what the work advances and when it was moved there besides. */
+const NO_PRIORITY_LAYOUT = {
+  key: "priorities-no-priority",
+  columns: issueTableLayout(["project"]),
+};
+const PARKED_LAYOUT = {
+  key: "priorities-parked",
+  columns: issueTableLayout(["project", "advances", "moved"]),
+};
+
+/** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·
+ *  OPS 7`, greatest first, which is what says where the fault is. */
+function countsLine(by: Readonly<Record<string, number>> | null): string {
+  return Object.entries(by ?? {})
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name, count]) => `${name} ${count}`)
+    .join(" · ");
 }
 
 /**
  * `/priorities`: the priorities themselves, in their one order, and under them the two faults.
  * A priority belongs to no project, so this page names none: every count, every row and both
- * fault lists are the whole deployment's.
+ * fault lists are the whole deployment's. Each fault list is the one Issues table, over the
+ * issue listing the server narrows for it, under its own prefix in the address.
  */
 export function PrioritiesPage(): ReactNode {
   const priorities = useQuery(prioritiesQuery());
   // What the page draws of one read, built once that read answers rather than once a render:
-  // the titles are what each fault list declares its columns over, so a map built afresh would
-  // rebuild both tables' columns on every refetch of anything.
+  // the titles are what the parked list's columns are declared over, so a map built afresh
+  // would rebuild that table's columns on every refetch of anything.
   //
   // Every column and every count line of this page names a priority by the title a person
   // wrote, never by the id, which is a slug of that title and no name at all to a reader.
-  const { parkedByPriority, parkedRows, rows, titles, unprioritedRows } = useMemo(() => {
+  const { parkedByPriority, rows, titles } = useMemo(() => {
     const read = priorities.data;
     const priorityRows = read?.priorities ?? [];
     const byId = new Map(priorityRows.map((row) => [row.id, row.title]));
     return {
       rows: priorityRows,
       titles: byId,
-      unprioritedRows: read?.work_under_no_priority.issues ?? [],
-      parkedRows: read?.priority_work_parked.issues ?? [],
       parkedByPriority: Object.fromEntries(
         Object.entries(read?.priority_work_parked.by_priority ?? {}).map(([id, count]) => [
           byId.get(id) ?? id,
@@ -65,9 +90,7 @@ export function PrioritiesPage(): ReactNode {
   const unpriorited = body.work_under_no_priority;
   const parked = body.priority_work_parked;
   const unprioritedCounts = countsLine(unpriorited.by_project);
-  const unprioritedShowing = showing(unpriorited.count, unprioritedRows.length);
   const parkedCounts = countsLine(parkedByPriority);
-  const parkedShowing = showing(parked.count, parkedRows.length);
   return (
     <div className="space-y-8">
       <header className="space-y-1">
@@ -78,7 +101,15 @@ export function PrioritiesPage(): ReactNode {
       </header>
 
       {rows.length === 0 ? (
-        <p className={textSecondaryOnCanvas}>{body.empty ?? "No priority has been written yet."}</p>
+        <div className="space-y-3">
+          <p className={textSecondaryOnCanvas}>
+            {body.empty ?? "No priority has been written yet."}
+          </p>
+          {/* The page with no priority is where the first is written. */}
+          <div className="flex flex-wrap items-center gap-2">
+            <NewPriority />
+          </div>
+        </div>
       ) : (
         <PrioritiesTable rows={rows} />
       )}
@@ -91,14 +122,13 @@ export function PrioritiesPage(): ReactNode {
         <p className={textSecondaryOnCanvas}>
           {unpriorited.count} {unpriorited.count === 1 ? "issue" : "issues"}
           {unprioritedCounts === "" ? "" : ` · ${unprioritedCounts}`}
-          {unprioritedShowing === "" ? "" : ` · ${unprioritedShowing}`}
         </p>
-        <FaultList
-          issues={unprioritedRows}
-          kind="no-priority"
-          label="In flight under no priority"
-          prefix="n"
-          titles={titles}
+        <IssuesTable
+          label="Issues in flight under no priority"
+          layout={NO_PRIORITY_LAYOUT}
+          listing={NO_PRIORITY}
+          priorityTitles={titles}
+          stateKey="n"
         />
       </section>
 
@@ -110,14 +140,13 @@ export function PrioritiesPage(): ReactNode {
         <p className={textSecondaryOnCanvas}>
           {parked.count} {parked.count === 1 ? "issue" : "issues"}
           {parkedCounts === "" ? "" : ` · ${parkedCounts}`}
-          {parkedShowing === "" ? "" : ` · ${parkedShowing}`}
         </p>
-        <FaultList
-          issues={parkedRows}
-          kind="parked"
-          label="Priority work in backlog or icebox"
-          prefix="k"
-          titles={titles}
+        <IssuesTable
+          label="Priority issues in backlog or icebox"
+          layout={PARKED_LAYOUT}
+          listing={PARKED}
+          priorityTitles={titles}
+          stateKey="k"
         />
       </section>
     </div>

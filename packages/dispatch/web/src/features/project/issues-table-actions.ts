@@ -2,11 +2,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
+import { advancesIssuesParams } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
 import { plainWrite, useWrites } from "../writes/write-store";
-import type { IssueListing } from "./issues-table-data";
+import { type IssueListing, listingName } from "./issues-table-data";
 import {
   buildItems,
   type Item,
@@ -83,7 +84,7 @@ export function useIssueTableActions({
   const project = "project" in listing ? listing.project : undefined;
   // What an interrupted action is recorded under, which is the set it was started on: one
   // priority's work table resumes its own action and not the table of the priority beside it.
-  const recoveryKey = "project" in listing ? listing.project : `advances:${listing.advances}`;
+  const recoveryKey = listingName(listing);
   const recovery = useTableRecovery(recoveryKey, (text) =>
     setNotice({ kind: text.startsWith("Changes not saved") ? "error" : "success", text })
   );
@@ -91,7 +92,7 @@ export function useIssueTableActions({
   const listAll = () =>
     "project" in listing
       ? api.listIssues({ project: listing.project })
-      : api.listIssues({ advances: [listing.advances] });
+      : api.listIssues(advancesIssuesParams(listing));
 
   const request = <T>(value: WriteRequest<T>, label: string, issue: string, key: string) => {
     const answer = writes.run({

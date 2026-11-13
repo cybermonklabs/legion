@@ -19,19 +19,25 @@ const SAVE_AFTER_MS = 500;
  * round trip of their own write never shows them the old text again.
  */
 export function InPlaceField({
+  autoFocus = false,
   id,
   label,
   multiline = false,
+  onDone,
   onSave,
   options,
   placeholder,
   rows = 8,
   value,
 }: {
+  /** Takes the focus as it is drawn: a field the reader opened by clicking what it edits. */
+  autoFocus?: boolean;
   /** The field's own id, where a visible label points at it rather than wrapping it. */
   id?: string;
   label: string;
   multiline?: boolean;
+  /** Told when the reader leaves the field, after what they wrote has been sent. */
+  onDone?: () => void;
   onSave: (next: string) => void;
   /** What other rows already hold, offered beside the field: a reader picks one of the owners
    *  the deployment uses, or writes a new one, since nothing bounds what an owner may be. */
@@ -75,6 +81,15 @@ export function InPlaceField({
     },
     []
   );
+  // A field opened by a click on what it edits takes the focus once, with the caret at the end
+  // of the text, so the reader writes on from where the text stands.
+  const field = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
+  useEffect(() => {
+    const node = field.current;
+    if (!autoFocus || node === null) return;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, [autoFocus]);
 
   const common = {
     "aria-label": label,
@@ -82,6 +97,7 @@ export function InPlaceField({
     onBlur: () => {
       setEditing(false);
       save();
+      onDone?.();
     },
     onChange: (event: { target: { value: string } }) => {
       setDraft(event.target.value);
@@ -90,6 +106,7 @@ export function InPlaceField({
     },
     onFocus: () => setEditing(true),
     placeholder,
+    ref: field,
     value: draft,
   };
   // A plain bordered field: it is the text's one reading, written where it is read, so nothing

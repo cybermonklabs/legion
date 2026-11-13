@@ -44,7 +44,15 @@ import {
 const READS = {
   // The work under one priority, as a scoped issues table reads it: the Priorities page's open
   // row and the priority's own page.
-  advancesWork: { key: advancesIssuesQuery("linkage-closure", true).queryKey },
+  advancesWork: { key: advancesIssuesQuery({ advances: "linkage-closure" }, true).queryKey },
+  // A fault list of the Priorities page: the work under any priority standing in backlog or
+  // icebox, with its move there, as that page's Issues table reads it.
+  parkedWork: {
+    key: advancesIssuesQuery(
+      { advances: "any", statuses: ["backlog", "icebox"], moved: true },
+      true
+    ).queryKey,
+  },
   agentsPicker: { key: ["agents", "issue-picker"] },
   answers: { key: ["me", "answers"] },
   architecture: { key: ["architecture", "CORE"] },
@@ -449,6 +457,7 @@ const rules: Record<string, Rule> = {
       "priorities",
       "prioritySummary",
       "advancesWork",
+      "parkedWork",
     ],
     spares: ["unrelatedPanel", "issuePanel", "summary", "projects", "inbox", "pinned"],
   },
@@ -529,13 +538,13 @@ const rules: Record<string, Rule> = {
   "an advances change refreshes the priorities body, the summary and the work under a priority, and no backlink panel":
     {
       event: event("issue.updated", issue({ ancestors: [], changed: ["advances"] })),
-      refreshes: ["detail", "priorities", "prioritySummary", "advancesWork"],
+      refreshes: ["detail", "priorities", "prioritySummary", "advancesWork", "parkedWork"],
       spares: ["issuePanel", "parentPanel", "referencesTab", "summary", "components"],
     },
   "an assignee move leaves the work under a priority where it is": {
     event: event("issue.updated", issue({ ancestors: [], changed: ["assignee"] })),
     refreshes: ["detail"],
-    spares: ["advancesWork", "priorities", "prioritySummary"],
+    spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
   },
   "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
     {

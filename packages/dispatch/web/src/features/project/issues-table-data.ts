@@ -17,7 +17,28 @@ const PARENT_READS_IN_FLIGHT = 8;
  * project, so a scoped table lists the work of every project and stands on none of them: it
  * can make no write that names a project, and it offers none (`issues-table-actions.ts`).
  */
-export type IssueListing = { readonly project: string } | { readonly advances: string };
+export type IssueListing = { readonly project: string } | AdvancesListing;
+
+/**
+ * The issues of every project the server narrows by what they advance: one priority's id, or
+ * `none` for the work that advances no live priority and `any` for the work that advances one.
+ * `statuses`, where it is set, is the whole of what the listing holds - the issues standing in
+ * one of those statuses, which is how the priorities page asks for each of its two faults - so
+ * its one read answers every row and no closed issue is read beside it. `moved` asks for the
+ * time each row standing in backlog or icebox was moved there and who moved it.
+ */
+export type AdvancesListing = {
+  readonly advances: string;
+  readonly statuses?: readonly string[];
+  readonly moved?: boolean;
+};
+
+/** The name what a table keeps of its listing is held under: the ancestry it walked and the
+ *  action a reload interrupted. Two listings of different rows never share one. */
+export const listingName = (listing: IssueListing): string =>
+  "project" in listing
+    ? listing.project
+    : [`advances:${listing.advances}`, ...(listing.statuses ?? [])].join(":");
 
 /**
  * One project's issues as the table shows them - or, under a scope, every project's issues that
@@ -39,18 +60,19 @@ export function useIssueTableItems(
   const queryClient = useQueryClient();
   const text = useAgentText();
   // Scoped, the listing is the priority's own, which names no project: a priority belongs to
-  // none, so the work under it is every project's.
+  // none, so the work under it is every project's. A listing that names its statuses holds no
+  // closed issue it did not ask for, so its table never wants the full read (`IssuesTable`).
   const everyIssue = useQuery({
     ...("project" in listing
       ? projectIssuesQuery(listing.project, [])
-      : advancesIssuesQuery(listing.advances)),
+      : advancesIssuesQuery(listing)),
     enabled: wantsDone,
   });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
   const openIssues = useQuery({
     ...("project" in listing
       ? projectIssuesQuery(listing.project, [], true)
-      : advancesIssuesQuery(listing.advances, true)),
+      : advancesIssuesQuery(listing, true)),
     enabled: !doneLoaded,
   });
   const issues = doneLoaded ? everyIssue : openIssues;
@@ -66,11 +88,7 @@ export function useIssueTableItems(
     ];
   }, [all]);
   const ancestry = useQuery({
-    queryKey: [
-      "issue-ancestors",
-      "project" in listing ? listing.project : `advances:${listing.advances}`,
-      ...missingParents,
-    ],
+    queryKey: ["issue-ancestors", listingName(listing), ...missingParents],
     enabled: missingParents.length > 0,
     retry: false,
     queryFn: async () => {

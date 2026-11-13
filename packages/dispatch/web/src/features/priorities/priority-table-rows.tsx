@@ -4,7 +4,7 @@ import type { LineProps } from "../../components/DataTable";
 import { borderDefault, focusVisibleRing, selectedCardBg, surfaceBg } from "../../theme/classes";
 
 /**
- * One row of a table on these pages: its cells, and, where the table's order is the reader's to
+ * One row of the priorities table: its cells, and, while the table's order is the reader's to
  * drag, the drop that lands another row here. The row carries `data-issue-row`, which the
  * table's own keys walk it by and its box measures its height from.
  */
@@ -17,11 +17,11 @@ export function TableBodyRow<Row_>({
   row,
 }: LineProps & {
   /** The row the reader is dragging now, if any: only then is this row a drop target. */
-  dragging?: string;
+  dragging: string | undefined;
   /** What a reader hears the row called. */
   label: string;
   /** Lands the dragged row at this one's place. */
-  onDrop?: (onto: string) => void;
+  onDrop: (onto: string) => void;
   row: Row<Row_>;
 }): ReactNode {
   const dragged = dragging === row.id;
@@ -33,10 +33,10 @@ export function TableBodyRow<Row_>({
       data-issue-group={row.getParentRow()?.id ?? "ungrouped"}
       data-issue-row={row.id}
       onDragOver={(event) => {
-        if (dragging !== undefined && onDrop !== undefined) event.preventDefault();
+        if (dragging !== undefined) event.preventDefault();
       }}
       onDrop={() => {
-        if (dragging !== undefined && dragging !== row.id) onDrop?.(row.id);
+        if (dragging !== undefined && dragging !== row.id) onDrop(row.id);
       }}
       ref={measure}
       tabIndex={-1}

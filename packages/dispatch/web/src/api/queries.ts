@@ -10,6 +10,7 @@ import {
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
+import type { AdvancesListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api } from "./client";
@@ -331,17 +332,35 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
-/** Every issue that advances one priority, as the server narrows the listing itself
- *  (`GET /api/v1/issues?advances=<id>`). A priority belongs to no project, so the read names
- *  none: the work under it is the whole deployment's. `open` leaves the closed issues out, as
- *  the project listing's own flag does, and no board move gates it - a move is one project's,
- *  and this listing is of no project. */
-export const advancesIssuesQuery = (advances: string, open = false) =>
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
+ *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
+ *  leaves the closed issues out, as the project listing's own flag does. */
+export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
+  advances: [listing.advances],
+  ...(listing.statuses === undefined ? {} : { status: [...listing.statuses] }),
+  ...(listing.moved ? { moved: true } : {}),
+  ...(open ? { open: true } : {}),
+});
+
+/** Every issue an advances listing holds, as the server narrows the listing itself
+ *  (`GET /api/v1/issues?advances=<id>`, `none` or `any`). A priority belongs to no project, so
+ *  the read names none: the work under it is the whole deployment's. No board move gates it - a
+ *  move is one project's, and this listing is of no project. Every key sits under
+ *  `["issues", "advances"]`, the prefix the event feed refreshes when an `advances`, a status
+ *  or a parent moves (`api/event-refresh.ts`). */
+export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
   queryOptions({
     // Typed as widely as the project listing's key (`projectIssuesQueryKey`), so the table that
     // reads one or the other sees one options type rather than two that differ by their key.
-    queryKey: ["issues", "advances", advances, ...(open ? ["open"] : [])] as unknown[],
-    queryFn: () => api.listIssues({ advances: [advances], ...(open ? { open: true } : {}) }),
+    queryKey: [
+      "issues",
+      "advances",
+      listing.advances,
+      ...(listing.statuses === undefined ? [] : ["status", ...listing.statuses]),
+      ...(listing.moved ? ["moved"] : []),
+      ...(open ? ["open"] : []),
+    ] as unknown[],
+    queryFn: () => api.listIssues(advancesIssuesParams(listing, open)),
   });
 
 /** Every live priority with the work under each and the two faults beside them

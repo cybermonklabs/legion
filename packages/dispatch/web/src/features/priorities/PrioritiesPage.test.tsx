@@ -5,13 +5,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { api } from "../../api/client";
-import type {
-  IssueSummary,
-  Priorities,
-  Priority,
-  PriorityIssue,
-  PriorityRow,
-} from "../../api/types";
+import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { PrioritiesPage } from "./PrioritiesPage";
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
@@ -35,22 +29,6 @@ function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow
   };
 }
 
-function faultIssue(key: string, overrides: Partial<PriorityIssue> = {}): PriorityIssue {
-  return {
-    key,
-    title: `Work ${key}`,
-    project: key.split("-")[0] ?? key,
-    status: "in_progress",
-    assignee: null,
-    claim: null,
-    changed_at: "2026-11-10T00:00:00Z",
-    priorities: null,
-    moved_at: null,
-    moved_by: null,
-    ...overrides,
-  };
-}
-
 function body(overrides: Partial<Priorities> = {}): Priorities {
   return {
     priorities: [],
@@ -60,7 +38,13 @@ function body(overrides: Partial<Priorities> = {}): Priorities {
   };
 }
 
-function issue(key: string, advances: string[] = []): IssueSummary {
+/** The deployment's issues as the listing route answers them, standing in whatever status and
+ *  advancing whatever priorities `advances` and `overrides` give. */
+function issue(
+  key: string,
+  advances: string[] = [],
+  overrides: Partial<IssueSummary> = {}
+): IssueSummary {
   return {
     key,
     advances: advances.map((id) => ({ id, inherited: false })),
@@ -89,6 +73,7 @@ function issue(key: string, advances: string[] = []): IssueSummary {
     created_by: { kind: "user", id: "alice" },
     created_at: "2026-11-01T00:00:00Z",
     updated_at: "2026-11-01T00:00:00Z",
+    ...overrides,
   };
 }
 
@@ -109,23 +94,45 @@ afterEach(() => {
   localStorage.clear();
 });
 
-/** The page as a signed-in person sees it, with the reads it makes answered from `answer`. */
-function page(answer: Priorities, issues: IssueSummary[] = []) {
+/** The listing route as the server answers it: `advances` keeps the issues advancing any of the
+ *  ids it names, `none` those advancing none and `any` those advancing one; `status` keeps the
+ *  issues standing in one of its statuses; `open` leaves the closed out; and the move into
+ *  backlog or icebox is carried only when `moved` asks for it. */
+function answerListing(issues: readonly IssueSummary[]) {
+  return async (options: Parameters<typeof api.listIssues>[0] = {}) =>
+    issues
+      .filter((row) => {
+        const ids = (row.advances ?? []).map((relation) => relation.id);
+        return (
+          (options.advances === undefined ||
+            options.advances.some((asked) =>
+              asked === "none"
+                ? ids.length === 0
+                : asked === "any"
+                  ? ids.length > 0
+                  : ids.includes(asked)
+            )) &&
+          (options.status === undefined || options.status.includes(row.status)) &&
+          (!options.open || row.status !== "done")
+        );
+      })
+      .map(({ moved_at, moved_by, ...row }) =>
+        options.moved ? { ...row, moved_at, moved_by } : row
+      );
+}
+
+/** The page as a signed-in person sees it, with the reads it makes answered from `answer`; a
+ *  reader who is not a person, and so may not write a priority, where `writer` is false. */
+function page(answer: Priorities, issues: IssueSummary[] = [], writer = true) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(answer);
-  const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
-    issues.filter(
-      (row) =>
-        options.advances === undefined ||
-        (row.advances ?? []).some((relation) => options.advances?.includes(relation.id))
-    )
-  );
+  const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
-  const viewer = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
+  // `useIsHuman`: the contract types only a person's answer, so the other principal is cast.
+  const whoami = writer
+    ? { event_head: "0", kind: "user" as const, login: "alice" }
+    : ({ event_head: "0", kind: "token", login: "ci" } as never);
+  const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
   const patch = spyOn(api, "patchPriority").mockImplementation(async (id) => saved(id));
   // The unit DOM lays nothing out: give every table's box the height a window would.
@@ -137,7 +144,7 @@ function page(answer: Priorities, issues: IssueSummary[] = []) {
     },
   });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  client.setQueryData(["whoami"], whoami);
   const view = render(
     <MemoryRouter initialEntries={["/priorities"]}>
       <QueryClientProvider client={client}>
@@ -189,27 +196,24 @@ test("the page draws the priorities table above both fault lists", async () => {
   page(
     body({
       ...FIFTEEN,
-      work_under_no_priority: {
-        by_project: { CORE: 1 },
-        count: 1,
-        issues: [faultIssue("CORE-1")],
-      },
-      priority_work_parked: {
-        by_priority: { "linkage-closure": 1 },
-        count: 1,
-        issues: [faultIssue("CORE-9", { status: "backlog", priorities: ["linkage-closure"] })],
-      },
-    })
+      work_under_no_priority: { by_project: { CORE: 1 }, count: 1, issues: null },
+      priority_work_parked: { by_priority: { "linkage-closure": 1 }, count: 1, issues: null },
+    }),
+    [issue("CORE-1"), issue("CORE-9", ["linkage-closure"], { status: "backlog" })]
   );
   const priorities = await screen.findByRole("table", { name: "Priorities table" });
+  const faults = await screen.findByRole("table", {
+    name: "Issues in flight under no priority table",
+  });
+  const parked = await screen.findByRole("table", {
+    name: "Priority issues in backlog or icebox table",
+  });
   const headings = screen.getAllByRole("heading").map((heading) => heading.textContent);
   expect(headings).toEqual([
     "Priorities",
     "In flight under no priority",
     "Priority work in backlog or icebox",
   ]);
-  const faults = screen.getByRole("table", { name: "In flight under no priority" });
-  const parked = screen.getByRole("table", { name: "Priority work in backlog or icebox" });
   // The priorities come first, which is what the page's own name says it is about.
   expect(priorities.compareDocumentPosition(faults) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
     Node.DOCUMENT_POSITION_FOLLOWING
@@ -221,7 +225,114 @@ test("the page draws the priorities table above both fault lists", async () => {
   expect(screen.getByText(/advances no priority, its own or one it inherits/)).toBeDefined();
   expect(screen.getByText(/stands in the backlog or the icebox/)).toBeDefined();
   expect(screen.getByText(/1 issue · CORE 1/)).toBeDefined();
-  expect(within(parked).getByRole("cell", { name: "CORE-9" })).toBeDefined();
+  expect(screen.getByText(/1 issue · Linkage closure eval 1/)).toBeDefined();
+  // Each list holds its own fault's rows and no other's.
+  expect(await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
+  expect(within(faults).queryByRole("row", { name: "CORE-9 Work CORE-9" })).toBeNull();
+  expect(await within(parked).findByRole("row", { name: "CORE-9 Work CORE-9" })).toBeDefined();
+  expect(within(parked).queryByRole("row", { name: "CORE-1 Work CORE-1" })).toBeNull();
+});
+
+test("each fault table asks the issue listing for its statuses, and the parked one for the move", async () => {
+  const { listing } = page(FIFTEEN, [
+    issue("CORE-1"),
+    issue("OPS-12", [], { status: "needs_review" }),
+    issue("CORE-9", ["linkage-closure"], {
+      status: "backlog",
+      moved_at: "2026-11-09T12:00:00Z",
+      moved_by: { kind: "user", id: "bob" },
+    }),
+    issue("OPS-4", ["legion-first", "oss-verify"], { status: "icebox" }),
+  ]);
+  const faults = await screen.findByRole("table", {
+    name: "Issues in flight under no priority table",
+  });
+  const parked = await screen.findByRole("table", {
+    name: "Priority issues in backlog or icebox table",
+  });
+  // The narrowing is the server's: the no-priority list names the statuses work is done in, and
+  // the parked list backlog and icebox with the move into them. Neither reads a closed issue.
+  expect(listing).toHaveBeenCalledWith({
+    advances: ["none"],
+    status: ["in_progress", "testing", "needs_review", "retro"],
+    open: true,
+  });
+  expect(listing).toHaveBeenCalledWith({
+    advances: ["any"],
+    status: ["backlog", "icebox"],
+    moved: true,
+    open: true,
+  });
+  // A fault read names its statuses every time it is made: no read of every closed issue goes
+  // out beside it.
+  const faultReads = listing.mock.calls.filter(([options]) =>
+    ["none", "any"].includes(options?.advances?.[0] ?? "")
+  );
+  expect(faultReads.length).toBeGreaterThan(0);
+  expect(faultReads.every(([options]) => options?.status !== undefined)).toBe(true);
+
+  const cellsOf = async (table: HTMLElement, name: string) => {
+    const headers = within(table)
+      .getAllByRole("columnheader")
+      .map((header) => header.textContent ?? "");
+    const row = await within(table).findByRole("row", { name });
+    const cells = within(row).getAllByRole("cell");
+    return (header: string) => {
+      const at = headers.findIndex((text) => text.startsWith(header));
+      if (at === -1) throw new Error(`no ${header} column`);
+      const cell = cells[at];
+      if (cell === undefined) throw new Error(`no ${header} cell`);
+      return cell;
+    };
+  };
+
+  // The no-priority list names each row's project, and shows neither of the parked columns.
+  const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
+  expect(inFlight("Project").textContent).toBe("OPS");
+  const faultHeaders = within(faults)
+    .getAllByRole("columnheader")
+    .map((header) => header.textContent ?? "");
+  expect(faultHeaders.some((text) => text.startsWith("Advances"))).toBe(false);
+  expect(faultHeaders.some((text) => text.startsWith("Moved there"))).toBe(false);
+
+  // The parked list names the project, each priority advanced by its title, linking to it, and
+  // when the work was moved there and by whom - or that no move is recorded.
+  const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
+  expect(moved("Project").textContent).toBe("CORE");
+  expect(
+    within(moved("Advances"))
+      .getByRole("link", { name: "Linkage closure eval" })
+      .getAttribute("href")
+  ).toBe("/priorities/linkage-closure");
+  expect(within(moved("Moved there")).getByRole("time").getAttribute("datetime")).toBe(
+    "2026-11-09T12:00:00Z"
+  );
+  expect(moved("Moved there").textContent).toContain("bob");
+  const unrecorded = await cellsOf(parked, "OPS-4 Work OPS-4");
+  expect(
+    within(unrecorded("Advances"))
+      .getAllByRole("link")
+      .map((link) => link.textContent)
+  ).toEqual(["Legion works reliably first", "OSS Verify"]);
+  expect(unrecorded("Moved there").textContent).toBe("Not recorded");
+});
+
+test("with no priority the page says so, and offers a writer the way to add the first", async () => {
+  const user = userEvent.setup();
+  const { create } = page(body({ empty: "No priority has been written yet." }));
+  expect(await screen.findByText("No priority has been written yet.")).toBeDefined();
+  expect(screen.queryByRole("table", { name: "Priorities table" })).toBeNull();
+  await user.click(screen.getByRole("button", { name: "New priority" }));
+  await user.type(screen.getByRole("textbox", { name: "Title of the new priority" }), "First");
+  await user.click(screen.getByRole("button", { name: "Add priority" }));
+  await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  expect(create.mock.calls[0]?.[0]).toEqual({ title: "First" });
+});
+
+test("with no priority a reader who may not write one is shown only the sentence", async () => {
+  page(body({ empty: "No priority has been written yet." }), [], false);
+  expect(await screen.findByText("No priority has been written yet.")).toBeDefined();
+  expect(screen.queryByRole("button", { name: "New priority" })).toBeNull();
 });
 
 test("a row counts the work in flight, waiting, parked and closed in the last 7 days", async () => {
@@ -250,6 +361,10 @@ test("the first line of a description shows on a closed row and the whole of it 
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
   expect(screen.getByText("The first line.")).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
+  // Open, the row reads the whole description rendered, and a click on it opens its source.
+  const rendered = await screen.findByRole("button", { name: "Description of P1" });
+  expect(await within(rendered).findByText(/The rest of it/)).toBeDefined();
+  await user.click(rendered);
   const whole = await screen.findByRole("textbox", { name: "Description of P1" });
   expect((whole as HTMLTextAreaElement).value).toBe(
     "The first line.\nThe rest of it, which the row shows when it is open."
@@ -299,16 +414,22 @@ test("a title is renamed where it is read, with no edit mode and no Save button"
   expect(screen.queryByRole("button", { name: /^Save/ })).toBeNull();
 });
 
-test("a description is written on the open row", async () => {
+test("a description is written on the open row: the empty block is the prompt that opens it", async () => {
   const user = userEvent.setup();
   const { patch } = page(FIFTEEN);
   await screen.findByRole("row", { name: "P3 OSS Verify" });
   await user.click(screen.getByRole("button", { name: "Open P3 OSS Verify" }));
+  const prompt = await screen.findByRole("button", { name: "Description of P3" });
+  expect(prompt.textContent).toContain("No description is written.");
+  await user.click(prompt);
   const field = await screen.findByRole("textbox", { name: "Description of P3" });
   await user.type(field, "What it is.");
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual(["oss-verify", { description: "What it is." }]);
+  // Left, the description reads rendered again, with what was written.
+  const rendered = await screen.findByRole("button", { name: "Description of P3" });
+  expect(await within(rendered).findByText("What it is.")).toBeDefined();
 });
 
 test("dragging a row onto another writes the place it landed", async () => {
@@ -380,39 +501,30 @@ test("the priorities table counts its rows as priorities, as the agreed page rea
 });
 
 test("a fault row tells no reader that an issue nobody claims is claimed", async () => {
-  page(
-    body({
-      ...FIFTEEN,
-      work_under_no_priority: {
-        by_project: { CORE: 2 },
-        count: 2,
-        issues: [
-          faultIssue("CORE-1", { assignee: "alice" }),
-          faultIssue("CORE-2", {
-            assignee: "alice",
-            claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
-          }),
-        ],
-      },
-    })
-  );
-  const faults = await screen.findByRole("table", { name: "In flight under no priority" });
+  page(FIFTEEN, [
+    issue("CORE-1", [], { assignee: "alice" }),
+    issue("CORE-2", [], {
+      assignee: "alice",
+      claim: { actor: { kind: "user", id: "bob" }, at: "2026-11-10T00:00:00Z" },
+    }),
+  ]);
+  const faults = await screen.findByRole("table", {
+    name: "Issues in flight under no priority table",
+  });
+  await within(faults).findByRole("row", { name: "CORE-1 Work CORE-1" });
   const headers = within(faults)
     .getAllByRole("columnheader")
     .map((header) => header.textContent ?? "");
   const claimedBy = headers.findIndex((header) => header.includes("Claimed by"));
-  const cellUnder = (key: string) => {
-    const row = within(faults).getByRole("cell", { name: key }).closest("tr");
-    if (row === null) throw new Error(`no row holds ${key}`);
-    return within(row as HTMLElement).getAllByRole("cell")[claimedBy]?.textContent ?? "";
-  };
-  // The issues table of the same application reads "Claimed by" as the claim alone
-  // (features/project/issues-table-columns.tsx, its ClaimChip). Under that header an unclaimed
-  // issue names nobody, whoever it is assigned to, and a claimed one names its claimant.
-  if (claimedBy !== -1) {
-    expect(cellUnder("CORE-1")).not.toContain("alice");
-    expect(cellUnder("CORE-2")).toContain("bob");
-  }
+  expect(claimedBy).not.toBe(-1);
+  const cellUnder = (key: string) =>
+    within(within(faults).getByRole("row", { name: `${key} Work ${key}` })).getAllByRole("cell")[
+      claimedBy
+    ]?.textContent ?? "";
+  // The Issues table reads "Claimed by" as the claim alone (its ClaimChip). Under that header
+  // an unclaimed issue names nobody, whoever it is assigned to, and a claimed one its claimant.
+  expect(cellUnder("CORE-1")).not.toContain("alice");
+  expect(cellUnder("CORE-2")).toContain("bob");
 });
 
 test("a grouped table counts each group in the plural its rows are called by", async () => {
@@ -423,12 +535,9 @@ test("a grouped table counts each group in the plural its rows are called by", a
         priority("legion-first", { title: "Legion works reliably first" }),
         priority("oss-verify", { title: "OSS Verify" }),
       ],
-      work_under_no_priority: {
-        by_project: { CORE: 2 },
-        count: 2,
-        issues: [faultIssue("CORE-1"), faultIssue("CORE-2")],
-      },
-    })
+      work_under_no_priority: { by_project: { CORE: 2 }, count: 2, issues: null },
+    }),
+    [issue("CORE-1"), issue("CORE-2")]
   );
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
   const groupBy = (region: string) =>
@@ -436,11 +545,15 @@ test("a grouped table counts each group in the plural its rows are called by", a
       name: /^Group by/,
     });
   // No rule makes a plural from a singular: adding "s" to "priority" wrote "2 prioritys", so each
-  // table names both words, as its pager does.
+  // table names both words, as its pager does. The priorities table's heading is the one group
+  // row every table draws (`DataTableGroupRow`).
   await user.selectOptions(groupBy("Priorities"), "owner");
   expect(
     await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
   ).toBeDefined();
-  await user.selectOptions(groupBy("In flight under no priority"), "project");
-  expect(await screen.findByRole("button", { name: "Collapse CORE, 2 issues" })).toBeDefined();
+  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  await user.selectOptions(groupBy("In flight under no priority"), "status");
+  expect(
+    await screen.findByRole("button", { name: "Collapse In progress, 2 issues" })
+  ).toBeDefined();
 });
