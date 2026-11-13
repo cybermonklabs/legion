@@ -128,100 +128,6 @@ database_name() {
   printf '%s\n' "$name"
 }
 
-# masked_dsn VALUE: what a refusal prints of VALUE: VALUE with each password it carries replaced by
-# `***`, or, where this cannot say where every password in VALUE stands, a fixed placeholder that
-# names no part of VALUE. The refusals below reach stderr and whatever log keeps it, and a password
-# must not (ASVS v5.0.0-16.2.5): a masker that printed what it could not read would fail open, so
-# this fails closed, and the sentence of the refusal that prints it still says what is wrong.
-#
-# A postgres:// or postgresql:// URL holding an `@` loses everything between `//` and the last `@`
-# of the string, so a raw `/`, `?` or `@` in the password cannot end the userinfo inside it. A path
-# or a query holding an `@` loses more than the userinfo that way, which is the safe side. A URL
-# with no `@` is printed only when what stands between `//` and the first `/` or `?` is a host —
-# letters, digits, `.` and `-`, or a bracketed IPv6 address — with an optional numeric port, since
-# then it carries no userinfo; any other is the placeholder. In either URL the value of a query
-# parameter named `password`, each of its letters written as itself or as its percent escape, is
-# `***` too, since libpq decodes a parameter's name and reads a password there. The host, the port,
-# the path and every other parameter of the query are printed as they were written: they are what
-# both refusals below are about.
-#
-# Any other string is read as the libpq keyword form: it loses the value of each `password=` word,
-# a single-quoted one included, and its words are printed with one space between them whatever
-# spacing they had. It is the placeholder where this cannot be sure it found every password: a
-# `password` keyword with a space before or after its `=`, or with no `=` at all; a backslash
-# anywhere, which libpq reads as an escape in a value; an `@`, where a URL written into a value
-# carries its userinfo; and a single quote that opens a value and is never closed.
-masked_dsn() {
-  local value="$1" scheme rest query field masked word quoted=""
-  local -r placeholder='a connection string this run does not print, since it cannot tell where a password in it would stand'
-  local -r plain_host='^([A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]+)?$'
-  local -r password_name='^(p|%70)(a|%61)(s|%73)(s|%73)(w|%77)(o|%6[Ff])(r|%72)(d|%64)$'
-  local -r spaced_password='(^|[[:space:]])password([[:space:]]|=([[:space:]]|$)|$)'
-  if [[ "$value" =~ ^postgres(ql)?:// ]]; then
-    scheme="${BASH_REMATCH[0]}"
-    rest="${value#"$scheme"}"
-    if [[ "$rest" == *@* ]]; then
-      scheme+='***@'
-      rest="${rest##*@}"
-    elif [[ ! "${rest%%[/?]*}" =~ $plain_host ]]; then
-      printf '%s\n' "$placeholder"
-      return 0
-    fi
-    masked="${rest%%\?*}"
-    if [[ "$rest" == *\?* ]]; then
-      masked+='?'
-      query="${rest#*\?}"
-      while :; do
-        field="${query%%&*}"
-        if [[ "$field" == *=* && "${field%%=*}" =~ $password_name ]]; then
-          field="${field%%=*}=***"
-        fi
-        masked+="$field"
-        [[ "$query" == *\&* ]] || break
-        masked+='&'
-        query="${query#*&}"
-      done
-    fi
-    printf '%s%s\n' "$scheme" "$masked"
-    return 0
-  fi
-  if [[ "$value" == *[\\@]* || "$value" =~ $spaced_password ]]; then
-    printf '%s\n' "$placeholder"
-    return 0
-  fi
-  local -a words=() kept=()
-  read -ra words -d '' <<<"$value" || true
-  for word in "${words[@]}"; do
-    # A word inside a single-quoted value: the first one holding a quote closes it, and the words
-    # of a password's value are left out.
-    if [[ -n "$quoted" ]]; then
-      if [[ "$quoted" == kept ]]; then
-        kept+=("$word")
-      fi
-      if [[ "$word" == *\'* ]]; then
-        quoted=""
-      fi
-      continue
-    fi
-    if [[ "$word" == *=* && "${word#*=}" == \'* && "${word#*=\'}" != *\'* ]]; then
-      quoted=kept
-    fi
-    if [[ "$word" == password=* ]]; then
-      if [[ -n "$quoted" ]]; then
-        quoted=masked
-      fi
-      kept+=("password=***")
-      continue
-    fi
-    kept+=("$word")
-  done
-  if [[ -n "$quoted" ]]; then
-    printf '%s\n' "$placeholder"
-    return 0
-  fi
-  printf '%s\n' "${kept[*]}"
-}
-
 # percent_in_database_fields VALUE: whether a percent sign stands where a database name can hide —
 # the path of a postgres:// URL, or its query, which is where a `dbname=` keyword stands. libpq
 # decodes a percent escape in both and database_name, which reads the text as it stands, does not,
@@ -248,25 +154,28 @@ percent_in_database_fields() {
   [[ "$path" == *%* || "$query" == *%* ]]
 }
 
-# unreadable_dsn NAME VALUE: refuses a connection string whose database this run cannot read,
-# printing it with its password masked, or the placeholder where it cannot be masked (masked_dsn).
+# The two refusals below reach stderr and whatever log keeps it, and a password must not
+# (ASVS v5.0.0-16.2.5), so each names the variable and what is wrong with it and prints no part
+# of the connection string it holds.
+
+# unreadable_dsn NAME: refuses the connection string in the variable NAME, whose database this run
+# cannot read (database_name).
 unreadable_dsn() {
-  printf '%s does not name a database this run can read (%s): give it as postgres://user@host:port/<database>. The dispatch:local command truncates and reseeds the database it is given, so this run refuses every connection string whose database it cannot read.\n' \
-    "$1" "$(masked_dsn "$2")" >&2
+  printf '%s does not name a database this run can read: give it as postgres://user@host:port/<database>. The dispatch:local command truncates and reseeds the database it is given, so this run refuses every connection string whose database it cannot read.\n' \
+    "$1" >&2
   usage
   exit 2
 }
 
-# percent_encoded_dsn NAME VALUE: refuses a connection string holding a percent sign where its
-# database name stands (percent_in_database_fields). libpq percent-decodes the path and the query
-# keywords of a connection string, so `?db%6Eame=legion_test` reaches the database legion_test
-# while this guard, reading the text and decoding nothing, sees no `dbname=` at all. An encoding
-# this run cannot read is one it will not judge: it refuses rather than truncate and reseed a
-# database it cannot name. The string is printed with its password masked, or as the placeholder
-# where it cannot be masked (masked_dsn): a percent escape is no reason to print a password.
+# percent_encoded_dsn NAME: refuses the connection string in the variable NAME, which holds a
+# percent sign where its database name stands (percent_in_database_fields). libpq percent-decodes
+# the path and the query keywords of a connection string, so `?db%6Eame=legion_test` reaches the
+# database legion_test while this guard, reading the text and decoding nothing, sees no `dbname=`
+# at all. An encoding this run cannot read is one it will not judge: it refuses rather than
+# truncate and reseed a database it cannot name.
 percent_encoded_dsn() {
-  printf '%s holds a percent sign in its path or its query (%s): libpq decodes percent escapes there and this run does not, so this run cannot name the database the string reaches, and the dispatch:local command truncates and reseeds the database it is given. Give it as postgres://user@host:port/<database>, with no percent escape in the path or the query; one in the password is another matter and is let through.\n' \
-    "$1" "$(masked_dsn "$2")" >&2
+  printf '%s holds a percent sign in its path or its query, where libpq decodes percent escapes and this run does not, so this run cannot name the database the string reaches, and the dispatch:local command truncates and reseeds the database it is given. Give it as postgres://user@host:port/<database>, with no percent escape in the path or the query; one in the password is another matter and is let through.\n' \
+    "$1" >&2
   usage
   exit 2
 }
@@ -285,7 +194,7 @@ if [[ -n "$database_url" ]]; then
   # no keyword at all to a reader of the text, and the database it reaches can be the shared one
   # under a spelling this run cannot see. A percent escape in the userinfo is a password's
   # (postgres://u:p%40ss@127.0.0.1:5433/mine), names no database, and is let through.
-  ! percent_in_database_fields "$database_url" || percent_encoded_dsn DATABASE_URL "$database_url"
+  ! percent_in_database_fields "$database_url" || percent_encoded_dsn DATABASE_URL
   # The pod's shared test database, which every other check of this repository reads and writes.
   # The value a Legion pane exports carries its own quotes, so they come off before it is read.
   shared_dsn="${LEGION_TEST_PG_DSN-}"
@@ -293,9 +202,9 @@ if [[ -n "$database_url" ]]; then
   shared_dsn="${shared_dsn%[\"\']}"
   shared_name=""
   if [[ -n "$shared_dsn" ]]; then
-    ! percent_in_database_fields "$shared_dsn" || percent_encoded_dsn LEGION_TEST_PG_DSN "$shared_dsn"
+    ! percent_in_database_fields "$shared_dsn" || percent_encoded_dsn LEGION_TEST_PG_DSN
     shared_name="$(database_name "$shared_dsn")"
-    [[ -n "$shared_name" ]] || unreadable_dsn LEGION_TEST_PG_DSN "$shared_dsn"
+    [[ -n "$shared_name" ]] || unreadable_dsn LEGION_TEST_PG_DSN
   fi
   # The database this run would reach: the one DATABASE_URL names, else the one PGDATABASE names,
   # which libpq reads when the string names none. PGDATABASE is read here, before the scrub below
@@ -314,7 +223,7 @@ if [[ -n "$database_url" ]]; then
   # A DATABASE_URL that names no database of its own leaves the instance nothing to read: the
   # scrub below unsets PGDATABASE and every other PG* variable, and libpq would then open the
   # database named after the connecting user.
-  [[ -n "$own_name" ]] || unreadable_dsn DATABASE_URL "$database_url"
+  [[ -n "$own_name" ]] || unreadable_dsn DATABASE_URL
   require_commands setsid ps tail
   # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
   if [[ -n "${DISPATCH_URL:-}" ]]; then
@@ -403,10 +312,21 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# instance_log_tail: the last ten lines the instance logged before its hand-over message, which a
+# failed start prints. That message is the one place the instance writes DATABASE_URL whole (the
+# console.log of packages/dispatch/e2e/local-instance.ts that opens with "Dispatch local instance is
+# up.", whose lines carry the string twice), and it writes the signed-in line in the same call, so
+# a start that fails after it is a race this run can lose: the line read missed it, then the process
+# stopped. Nothing from that message's first line on is printed, so no failure puts the string on
+# stderr however the race goes.
+instance_log_tail() {
+  sed '/^Dispatch local instance is up\./,$d' "$work/instance.log" | tail -n 10
+}
+
 # start_instance starts `bun run dispatch:local` on DATABASE_URL, in the background and in a
 # session of its own, and sets $base to the base URL of the one line it prints with it. The wait
 # is bounded and says what it waits for, and an instance that stops while it starts fails the run
-# with the last lines of its log.
+# with the last lines of its log before its hand-over message (instance_log_tail).
 start_instance() {
   local deadline=$((SECONDS + instance_seconds)) own_group line
   printf 'replace-blocks.sh: starting a Dispatch of its own with bun run dispatch:local. It builds the dashboard, builds the server and seeds %s first, so this takes minutes.\n' \
@@ -440,10 +360,10 @@ start_instance() {
     fi
     instance_running ||
       fail setup "the Dispatch this run started" \
-        "it stopped while it started; the last lines of its log: $(tail -n 10 "$work/instance.log")"
+        "it stopped while it started; the last lines of its log: $(instance_log_tail)"
     ((SECONDS < deadline)) ||
       fail setup "the Dispatch this run started" \
-        "it printed no signed-in line in ${instance_seconds}s; the last lines of its log: $(tail -n 10 "$work/instance.log")"
+        "it printed no signed-in line in ${instance_seconds}s; the last lines of its log: $(instance_log_tail)"
     sleep 2
   done
 }
