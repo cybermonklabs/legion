@@ -103,7 +103,7 @@ import (
 // this command is listed here so broker-refgen can document it.
 const (
 	exitUsageError   = 2   // usage error: a flag, argument, token file, or required environment value is invalid
-	exitPending      = 75  // request still waiting for a person to approve it
+	exitPending      = 75  // request still waiting for a person to approve it, or its status could not be read when --wait ran out
 	exitRenewRefused = 76  // renew reached a refusal in terminalRenewal; the worker shim must not restart it
 	exitDenied       = 77  // request denied
 	exitCannotRun    = 126 // register --exec command exists but could not run
@@ -218,7 +218,7 @@ environment:
                              form needs a sign-in in the broker's account, and a write your own
                              Identity Center sign-in there
 
-exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval, 76 permanent renewal refusal, 77 denied;
+exit codes: 0 done, 1 failed, 2 usage error, 75 still waiting for approval (or its status unreadable when --wait ran out), 76 permanent renewal refusal, 77 denied;
 register --exec exits 127 when COMMAND is not found and 126 when it cannot run;
 secret create and set end by the signal on hang-up (SIGHUP), interrupt (Ctrl-C), quit (Ctrl-\)
 or termination (SIGTERM) at the value prompt: a shell reports 129, 130, 131 or 143

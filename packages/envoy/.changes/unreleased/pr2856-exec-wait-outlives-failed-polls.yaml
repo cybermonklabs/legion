@@ -8,6 +8,8 @@ body: |-
   that the command keeps waiting for the request. Before, the first such poll ended the wait with
   exit 1, however much of `--wait` was left, so a person who approved later approved a grant
   nothing collected. Every answer about the request still ends the wait as before: granted,
-  denied (77), cancelled, expired, an unknown request or a refused proof. A wait that runs out
-  while polls still fail exits 75, as a wait on a pending request does, and names the request,
-  the last failure and `agent-secrets status <id>`, which still collects the grant.
+  denied (77), cancelled, expired, an unknown request or a refused proof, and so does a failure
+  of the local helper that signs a machine session's calls. A wait that runs out while polls still
+  fail exits 75, as a wait on a pending request does, and names the request, the last failure and
+  `agent-secrets status <id>`, which says whether the request was decided; the same command run
+  again with the same names and `--ttl` collects a grant it was given, asking no one again.

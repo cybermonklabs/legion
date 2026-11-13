@@ -139,8 +139,13 @@ Without the grant line the status is the client's own:
   that is not on `PATH`.
 - **2** — a usage error: no broker identity at all (no key in the key dir and no helper socket), no
   `AGENT_SECRETS_URL`, no `--`, no `NAME`, or a flag value the client refuses.
-- **75** — the request still waits for a person. The message names who decides it, where, and the
-  `agent-secrets status <request_id>` that reads it.
+- **75** — the request still waits for a person when `--wait` runs out. The message names who
+  decides it, where, and the `agent-secrets status <request_id>` that reads it. A status poll
+  that did not reach the broker (a reset, a timeout, a 502 or 503) does not end the wait: stderr
+  says once that the command keeps waiting, and polling goes on. If the wait runs out while polls
+  still fail, the exit is 75 too, and the message names the last failure; `agent-secrets status
+  <request_id>` says whether the request was decided, and running the same command again (the same
+  names and `--ttl`, from the same session) collects a grant it already has, asking no one again.
 - **77** — the request was denied. The approver denied it, the policy refused a name (a
   service's secret, or one whose requesters list does not name this session), or the request
   named a secret a person must approve and carried no reason, which the detail reads

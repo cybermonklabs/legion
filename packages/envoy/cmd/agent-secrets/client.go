@@ -184,13 +184,24 @@ func peerAnswered(err error) bool {
 		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE)
 }
 
+// cutOffError is a broker answer lost after its headers came: the status line arrived and the
+// body did not, because the stream broke while doStatus read it. Its text is the call, then
+// "read response:", then the transport's own cause.
+type cutOffError struct {
+	call  string
+	cause error
+}
+
+func (e *cutOffError) Error() string { return e.call + ": read response: " + e.cause.Error() }
+
+func (e *cutOffError) Unwrap() error { return e.cause }
+
 // retryable reports whether a later call may get the answer err's call did not: the call went
 // out and failed in transport (unreachable's classes), its answer was cut off after the headers
-// came (doStatus's "read response" error, whose cause is the stream breaking: a reset, a broken
-// pipe, an unexpected EOF or a timeout), or the broker, or a front door before it, could not
-// serve it just then — 429, 502, 503 or 504, with the broker's envelope or without it (doStatus
-// makes an *apiError of either). Any other refusal is the broker's answer, which the same call
-// gets again.
+// came (*cutOffError), or the broker, or a front door before it, could not serve it just then —
+// 429, 502, 503 or 504, with the broker's envelope or without it (doStatus makes an *apiError of
+// either). Any other refusal is the broker's answer, which the same call gets again, and a
+// failure of the local signer (the helper's socket) is not the broker's at all.
 func retryable(err error) bool {
 	var unreached *unreachableError
 	if errors.As(err, &unreached) {
@@ -202,9 +213,8 @@ func retryable(err error) bool {
 			http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout,
 		}, refusal.Status)
 	}
-	var timeout net.Error
-	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, io.ErrUnexpectedEOF) ||
-		(errors.As(err, &timeout) && timeout.Timeout())
+	var cut *cutOffError
+	return errors.As(err, &cut)
 }
 
 // do sends the request and, on a 2xx response, returns its raw body; any other status decodes
@@ -246,7 +256,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, nil, fmt.Errorf("%s %s: read response: %w", method, redact.Call(c.baseURL, url), redact.Error(err, c.baseURL))
+		return 0, nil, &cutOffError{method + " " + redact.Call(c.baseURL, url), redact.Error(err, c.baseURL)}
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {

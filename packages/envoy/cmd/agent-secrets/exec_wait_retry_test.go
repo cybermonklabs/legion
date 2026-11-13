@@ -25,48 +25,39 @@ const (
 // pollAnswer is one answer flakyBroker gives a status poll of flakyRequestID.
 type pollAnswer func(t *testing.T, w http.ResponseWriter)
 
-// resetPoll ends the poll's connection with a TCP reset (SO_LINGER 0) before any answer, so the
-// CLI reads the `connection reset by peer` a production wait once ended on.
-func resetPoll(t *testing.T, w http.ResponseWriter) {
-	conn, _, err := http.NewResponseController(w).Hijack()
-	if err != nil {
-		t.Errorf("hijack the status poll: %v", err)
-		return
-	}
-	defer conn.Close()
-	tcp, ok := conn.(*net.TCPConn)
-	if !ok {
-		t.Errorf("the status poll came on a %T, not a TCP connection to reset", conn)
-		return
-	}
-	if err := tcp.SetLinger(0); err != nil {
-		t.Errorf("SO_LINGER 0 on the status poll: %v", err)
+// resetAfter answers a status poll by writing sent, raw, then ending the connection with a TCP
+// reset (SO_LINGER 0). With nothing sent the CLI reads `connection reset by peer` before any
+// answer; with headers and the start of a longer body sent, it reads the headers and loses the
+// answer mid-body.
+func resetAfter(sent string) pollAnswer {
+	return func(t *testing.T, w http.ResponseWriter) {
+		conn, buf, err := http.NewResponseController(w).Hijack()
+		if err != nil {
+			t.Errorf("hijack the status poll: %v", err)
+			return
+		}
+		defer conn.Close()
+		if sent != "" {
+			_, _ = buf.WriteString(sent)
+			if err := buf.Flush(); err != nil {
+				t.Errorf("write the cut-off answer: %v", err)
+			}
+		}
+		tcp, ok := conn.(*net.TCPConn)
+		if !ok {
+			t.Errorf("the status poll came on a %T, not a TCP connection to reset", conn)
+			return
+		}
+		if err := tcp.SetLinger(0); err != nil {
+			t.Errorf("SO_LINGER 0 on the status poll: %v", err)
+		}
 	}
 }
 
-// cutPoll answers the poll's headers and the start of a body it promises to be longer, then ends
-// the connection with a reset, so the CLI reads the headers and loses the answer mid-body: the
-// same broken exchange as resetPoll's, a few bytes later.
-func cutPoll(t *testing.T, w http.ResponseWriter) {
-	conn, buf, err := http.NewResponseController(w).Hijack()
-	if err != nil {
-		t.Errorf("hijack the status poll: %v", err)
-		return
-	}
-	defer conn.Close()
-	_, _ = buf.WriteString("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"state\":\"pend")
-	if err := buf.Flush(); err != nil {
-		t.Errorf("write the cut-off answer: %v", err)
-	}
-	tcp, ok := conn.(*net.TCPConn)
-	if !ok {
-		t.Errorf("the status poll came on a %T, not a TCP connection to reset", conn)
-		return
-	}
-	if err := tcp.SetLinger(0); err != nil {
-		t.Errorf("SO_LINGER 0 on the status poll: %v", err)
-	}
-}
+var (
+	resetPoll = resetAfter("")
+	cutPoll   = resetAfter("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"state\":\"pend")
+)
 
 // statePoll answers the poll with the request in state, its grant grant-flaky once granted.
 func statePoll(state string) pollAnswer {
@@ -159,13 +150,17 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 			exit: 0, lines: 1, says: []string{"read response: ", keepsWaiting},
 		},
 		{
-			name: "a 503, a front door's bare 502, then granted", wait: "1m",
+			name: "a 503, then granted", wait: "1m",
 			polls: []pollAnswer{
 				refusedPoll(http.StatusServiceUnavailable, "application/json", `{"code":"SHUTTING_DOWN","error":"the broker is shutting down and is no longer taking new traffic"}`),
-				refusedPoll(http.StatusBadGateway, "text/html", "<html><body><h1>502 Bad Gateway</h1></body></html>"),
 				granted,
 			},
 			exit: 0, lines: 1, says: []string{"no longer taking new traffic (SHUTTING_DOWN); asked "},
+		},
+		{
+			name: "a front door's bare 502, then granted", wait: "1m",
+			polls: []pollAnswer{refusedPoll(http.StatusBadGateway, "text/html", "<html><body><h1>502 Bad Gateway</h1></body></html>"), granted},
+			exit:  0, lines: 1, says: []string{"HTTP 502: ", keepsWaiting},
 		},
 		{
 			name: "every poll reset until the wait runs out", wait: "3s", polls: []pollAnswer{reset},
@@ -173,7 +168,7 @@ func TestExecFormWaitOutlivesFailedStatusPolls(t *testing.T) {
 			says: []string{ranOut, "ran out while its status could not be read: ", "connection reset by peer" + checkIt},
 		},
 		{
-			name: "a reset, a pending answer, then resets until the wait runs out", wait: "9s", polls: []pollAnswer{reset, pending, reset},
+			name: "a reset, a pending answer, then resets until the wait runs out", wait: "7s", polls: []pollAnswer{reset, pending, reset},
 			exit: exitPending, lines: 2, says: []string{"connection reset by peer" + checkIt},
 		},
 		{
@@ -223,8 +218,11 @@ func TestOnlyAFailureARetryCanCureIsRetried(t *testing.T) {
 	}{
 		{reset, true},
 		{fmt.Errorf("wrapped: %w", reset), true},
-		{fmt.Errorf("GET /v1/requests/x: read response: %w", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}), true},
-		{fmt.Errorf("GET /v1/requests/x: read response: %w", io.ErrUnexpectedEOF), true},
+		{&cutOffError{"GET " + base + "/v1/requests/x", &net.OpError{Op: "read", Net: "tcp", Err: os.NewSyscallError("read", syscall.ECONNRESET)}}, true},
+		{&cutOffError{"GET " + base + "/v1/requests/x", io.ErrUnexpectedEOF}, true},
+		// The helper's socket failing under a machine session's proof is the local signer's
+		// failure, not a poll that did not reach the broker: it ends the wait, as before.
+		{fmt.Errorf("sign proof: %w", &net.OpError{Op: "read", Net: "unix", Err: os.NewSyscallError("read", syscall.ECONNRESET)}), false},
 		{&unreachableError{"the broker's address is not a valid URL", base, http.MethodGet, base, errNothingSent}, false},
 		{&apiError{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "slow down"}, true},
 		{&apiError{Status: http.StatusBadGateway, Message: "<html>502 Bad Gateway</html>"}, true},
