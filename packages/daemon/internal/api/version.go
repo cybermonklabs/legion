@@ -1284,9 +1284,15 @@ package api
 // 15:32Z, 86 at 15:32Z, which the lane itself then declared and main now carries, 90 at 18:57Z,
 // which two other pull requests had declared by 20:30Z, and 91 at 20:30Z, which two other pull
 // requests had declared by 22:42Z. That is why the number is a census of every open head at the
-// moment it is written and never the base's number plus one. The entries above keep the numbers
-// they were read at. Read the base's own number and every open head again at the next merge
-// rather than from this line, as
+// moment it is written and never the base's number plus one. A sixth reading, the tester's at
+// 2026-11-12T23:38Z, found #3575 and #3677 on 93 as well, and this change keeps 93 all the same,
+// by the architect's decision: check-daemon-api-contract.sh compares a change with its base,
+// main at 86, so 93 passes, a renumber costs a push, a full check run and a test round each time
+// while the open heads move the free number again within the hour, and the change that lands
+// second is the one renumbered (AGENTS.md). If main carries 93 before this change merges, it
+// takes the free number then, in one push. The entries above keep the numbers they were read
+// at. Read the base's own number and every open head again at the next merge rather than from
+// this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 const DaemonAPIVersion = 93

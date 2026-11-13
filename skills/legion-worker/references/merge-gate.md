@@ -72,10 +72,14 @@ as the fingerprint decides (*The reviewer*, below, and
   A head that carries no check run at all is neither of those, and one count tells it apart:
   `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
   Read the merge state first where that count is zero (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.
-  Such a head takes a merge of its base forward, which is the implementer's push, and never the remedy below.
+  A head GitHub computes no merge for (`DIRTY`) takes a merge of its base forward, which is the implementer's push, and never the remedy below; the daemon itself sends such a head back to implementing.
   A second reading, of 60 open pull requests at 2026-11-12T22:16Z, found 12 heads with no check run: 10 `DIRTY`, and 2 `BLOCKED` fork pull requests whose workflow runs waited for a maintainer's approval (`action_required`, #2051 and #2646).
   A fork head of that kind takes the maintainer's approval of its runs, which is a person's: tell the architect, and never close and reopen it.
-  The remedy is for a `BLOCKED` head, not a fork's, on which a required check has no run, whatever its count: the base holds that check's workflow, and no event started it on a pull request that was already open; on cybermonklabs/legion#2856 it took a head from zero check runs to four (dispatch://INFRA-2831).
+  Every other head with no required run is `BLOCKED`, and the rule for it is one, whatever its count: the remedy below, unless the check's workflow skipped the change itself.
+  On cybermonklabs/legion#2856 the remedy took a head from zero check runs to four (dispatch://INFRA-2831).
+  Read the `on:` block of that check's workflow first: a `paths` or `paths-ignore` filter that skips every file of the change means the workflow started and skipped itself, so a reopen starts it no more.
+  That was this issue's own cause, `codeql.yaml`'s `paths-ignore`, which the reopen beat only after cybermonklabs/legion#3279 removed the filter; such a filter is the repository's to change, so tell the architect.
+  Otherwise no event started the workflow on a pull request that was already open, and the remedy delivers it.
   Close the pull request and reopen it at the same head.
   The reopen delivers the event the workflow needs, and the head and the approval stand.
   It costs two things: the close writes a `pr-closed-unmerged` notice to the architect, and the reopen starts the head's other checks again.
