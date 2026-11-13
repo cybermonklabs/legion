@@ -927,6 +927,12 @@ func (r runner) snapshot(dir string) error {
 // no test may put a stand-in binary on PATH.
 var observeCommand func(dir, name string, args []string)
 
+// observeRecord is nil outside this package's tests, where export_test.go sets it: the one place
+// a test can stand inside the readability walk's own loop (unreadable), called with the read's
+// context and the record's index before that record's test of the cut, so a test can have the cut
+// fall at a record of its choosing rather than at whatever record the clock reaches.
+var observeRecord func(ctx context.Context, record int)
+
 func (r runner) command(dir string, env []string, stdin io.Reader, name string, args ...string) (string, error) {
 	out, err := r.output(dir, env, stdin, name, args...)
 	return strings.TrimSpace(out), err
@@ -1359,8 +1365,8 @@ func (r runner) snapshotTree(dir, head string) (string, error) {
 // core.autocrlf, a clean filter) stores a file jj's tree holds at the copy's own record otherwise
 // than HEAD holds it, since the git read hashes the file again, and the route keeps the bytes
 // HEAD holds, as CRLF lines committed before an eol rule was written. A file jj's tree holds at
-// another entry is updated by the carry's `git add -f`, which converts it as the git read does
-// and keeps the copy's mode under core.fileMode=false. Beside these, one is a file the route
+// another entry is updated by the carry's `update-index --add`, which converts it as the git read
+// does and keeps the copy's mode under core.fileMode=false. Beside these, one is a file the route
 // keeps and the git read loses: a file jj tracks that the copy does not hold, `git reset` having
 // taken it out, and that an ignore rule covers, which jj keeps tracking whatever an ignore rule
 // says and the git read, adding no ignored file as new, does not add.
@@ -1368,24 +1374,48 @@ func (r runner) snapshotTree(dir, head string) (string, error) {
 // The tracked half is the seed (seeds), written into the scratch index as the copy records it
 // with `update-index -z --index-info`. Each file of it the copy holds unflagged — a file jj's
 // tree lacks or holds at another entry and the worktree still holds — is then updated from the
-// worktree with `git add -f -- <file>...`. -f is right here and only here: these are files the
-// index tracks, which `git add --all` updates whatever an ignore rule says, so -f adds nothing
-// that read would leave out. A file .gitignore ignores that a role forced into the index with
-// `git add -f` is one of them, and is carried; so is a tracked file under a directory that has
-// since become a jj or git repository of its own, which jj's snapshot leaves out: `git add -f --
-// <file>` over an index that holds that file updates it to the worktree's content even under a
-// directory holding its own .git. So is a gitlink only the copy holds, which the add records as
-// the git read does (seeds). A file jj's tree holds at another entry than the copy's is the
-// role's own uncommitted diff, an edit or a new file jj snapshotted, since jj writes the
-// colocated index with HEAD's blob for the one and the empty blob for the other: those files are
-// the ones this hashes beyond what jj's tree lacks, and on a clean tree there are none. An
-// unflagged record whose worktree path is now a directory is seeded too and updated with `git add
-// -u -- <path>...` instead, git's own update rule for a tracked path, which records the gitlink
-// of a repository there whose HEAD resolves and otherwise takes the record out, and adds nothing
-// under the directory (seeds). An entry the copy marks assume-unchanged or skip-worktree is
-// seeded and not added, since the git read keeps the blob it records whatever the worktree holds
-// there. A copy that holds a record and another under it, both of which the git read keeps,
-// fails the workspace before anything is written, as that read fails (keptUnderAKeptPath).
+// worktree by name with `update-index --add --replace -z --stdin`, fed the names on its standard
+// input, which matches no pathspec and has no ignore rule: these are files the index tracks,
+// which `git add --all` updates whatever an ignore rule says, so the add takes nothing that read
+// would leave out. It is not `git add -f -- <file>...`, which matches every name it is handed
+// against every record of the index, so its cost is the index's size times the names: measured
+// by the tester on 2026-11-13 over the fixture worktreeRead names, 290,600 records, `add -f`
+// over 200, 1,600 and 5,600 named files took 5.5, 22.9 and 71.0 s, and `update-index --add
+// --replace -z --stdin` over the same files 1.8, 0.9 and 2.1 s. Measured with git 2.47.3 on
+// 2026-11-13, over a scratch index of HEAD's tree with the file's record seeded as the carry
+// seeds it, `git add -f --` and that add left the same record and exit status at each shape:
+// exit 128 and `fatal: f.fx: clean filter 'bad' failed` for a required clean filter that fails;
+// `100644 57cf26d8` for one that works (`tr a-z A-Z` over `edited`); exit 128 and `fatal: CRLF
+// would be replaced by LF in c.txt` under core.safecrlf=true and `* text eol=lf`; `100644
+// 45b983be` (`hi\n`) for working-tree-encoding=UTF-16 with a byte order mark and exit 128 and
+// `fatal: BOM is required in 'w.u16' if encoded as UTF-16` without one; `100644 de980441` (LF
+// lines) under core.autocrlf=true; 100644 kept over a file made executable, and 100755 kept
+// over one made not, under core.fileMode=false; the edit of a tracked file an ignore rule
+// covers; `120000` for a tracked file now a symlink; the content of a file new in @, seeded at
+// the empty blob; a gitlink only the copy holds at the moved HEAD of its repository, at the
+// copy's record where its directory holds no repository, and at `100644` where its path is now a
+// file; exit 128 and `open("u.txt"): Permission denied` for a file of mode 000; the one named
+// file for `a*b` beside a tracked aXb; and a name holding a newline and ending in a space. A file
+// .gitignore ignores that a role forced into the index with `git add -f` is one of them, and is
+// carried; so is a tracked file under a directory that has since become a jj or git repository
+// of its own, which jj's snapshot leaves out: that add, as `git add -f -- <file>`, over an index
+// that holds that file updates it to the worktree's content even under a directory holding its
+// own .git (measured the same way, over a d/x.log under a d that became a repository with a
+// commit). So is a gitlink only the copy holds, which the add records as the git read does
+// (seeds). A file jj's tree holds at another entry than the copy's is the role's own uncommitted
+// diff, an edit or a new file jj snapshotted, since jj writes the colocated index with HEAD's
+// blob for the one and the empty blob for the other: those files are the ones this hashes beyond
+// what jj's tree lacks, and on a clean tree there are none. An unflagged record whose worktree
+// path is now a directory is seeded too and updated with `git add -u -- <path>...` instead, git's
+// own update rule for a tracked path, which records the gitlink of a repository there whose HEAD
+// resolves and otherwise takes the record out, and adds nothing under the directory (seeds). It
+// is the one shape where `update-index --add` is not git's add: measured the same way, over a
+// tracked p now a directory holding p/k.txt, `git add -u -- p` exited 0 and took the record out,
+// and `update-index --add --replace` exited 128 (`error: p: does not exist and --remove not
+// passed`). An entry the copy marks assume-unchanged or skip-worktree is seeded and not added,
+// since the git read keeps the blob it records whatever the worktree holds there. A copy that
+// holds a record and another under it, both of which the git read keeps, fails the workspace
+// before anything is written, as that read fails (keptUnderAKeptPath).
 //
 // jj's tree keeps a gitlink whatever the copy and the worktree hold at its path; the git read
 // does not. Where the copy holds the gitlink and that path is a regular file or a symlink, the
@@ -1407,7 +1437,7 @@ func (r runner) snapshotTree(dir, head string) (string, error) {
 // tree, the seed writes the copy's; then a path git sees nothing at is removed with `update-index
 // --force-remove -- <path>...`, which `update-index --add` will not do (`does not exist and
 // --remove not passed`, exit 128), and every other path is added by name with `update-index
-// --add --replace -- <path>...`, which records each of the others as the git read records it,
+// --add --replace -z --stdin`, which records each of the others as the git read records it,
 // measured on the same shapes: the file, the symlink, the repository's HEAD, and over a
 // directory holding no repository whose HEAD git resolves nothing new, exit 0, which keeps the
 // gitlink the seed or jj's tree holds there. Where the copy holds no gitlink at the path, the git
@@ -1428,16 +1458,17 @@ func (r runner) snapshotTree(dir, head string) (string, error) {
 // --all` adds as new, over the index that read adds to. So git walks into a directory holding a
 // .git exactly where that read does, which is where the copy holds an entry under it, a deleted
 // one among them, whatever the seed holds. It is the one whole-tree read of the worktree this
-// route makes, and it walks the worktree's directories and compares names: it hashes no file and
-// refreshes no entry, so its cost does not follow the size of the tracked tree the way the git
-// read's does (worktreeRead). A file jj refused for its size, a name that is not valid UTF-8 and
-// the files of a directory holding a .jj of its own are all among what it lists, as any other
-// file the copy does not hold. So are files jj's tree already holds, the new files jj
-// snapshotted that the copy lacks; adding them again is harmless, since it writes for each the
-// blob the git read writes for it. Under an unborn HEAD the copy holds nothing (snapshotTree), so
-// this lists every file of the worktree no ignore rule covers and the carry adds each of them
-// again, which hashes it: the cost the git read pays there too, since it starts from the same
-// empty index.
+// route makes but for the same read nowDirectories makes against another index, only where a
+// record of the copy is now a directory, and it walks the worktree's directories and compares
+// names: it hashes no file and refreshes no entry, so its cost does not follow the size of the
+// tracked tree the way the git read's does (worktreeRead). A file jj refused for its size, a
+// name that is not valid UTF-8 and the files of a directory holding a .jj of its own are all
+// among what it lists, as any other file the copy does not hold. So are files jj's tree already
+// holds, the new files jj snapshotted that the copy lacks; adding them again is harmless, since
+// it writes for each the blob the git read writes for it. Under an unborn HEAD the copy holds
+// nothing (snapshotTree), so this lists every file of the worktree no ignore rule covers and the
+// carry adds each of them again, which hashes it: the cost the git read pays there too, since it
+// starts from the same empty index.
 //
 // A record of the copy that is no gitlink and whose worktree path is now a directory, not beyond
 // a symbolic link, is one this read lists nothing at, since the copy holds it as a file, while
@@ -1448,7 +1479,7 @@ func (r runner) snapshotTree(dir, head string) (string, error) {
 // them, which it does not. The update half of that read, which records the gitlink of a
 // repository with a commit there whatever an ignore rule says, is the seeds' `git add -u` (seeds).
 //
-// Each entry is added by name with `update-index --add --replace -- <file>...`, which adds the
+// Each entry is added by name with `update-index --add --replace -z --stdin`, which adds the
 // files it names and walks no directory; it adds no file an ignore rule covers, because it is
 // handed none. It is not `git add -- <file>...`, whose walk over the scratch index would not be
 // the git read's: that index holds jj's tree and the seed and nothing of a deleted file, and
@@ -1465,37 +1496,41 @@ func (r runner) snapshotTree(dir, head string) (string, error) {
 // kept at its record where the directory held nothing or only an ignored file.
 //
 // An entry git lists with a trailing slash is an embedded git repository (embeddedRepository),
-// and it is added as its directory, with no trailing slash, by `update-index --add --replace --
-// <dir>...`, which records it as the git read records it or refuses it where that read refuses
-// it. Measured on this build on 2026-11-13: over a repository e with a commit, `git add --all`
-// and that add both recorded `160000` at e's HEAD; over one with no commit, made with `git init
-// e` or a fresh `jj git init --colocate` inside e, `git add --all` exited 128 (`'e/' does not
-// have a commit checked out`) and that add exited 128 (`e: is a directory - add files inside
-// instead`), and its failure fails the workspace naming the repositories and git's own words,
-// where dropping e would have read the workspace clean and lost what e holds. The route adds a
-// directory only where this read itself answers a name ending in a slash, and it has no check
-// of its own for a .git or a .jj: a directory holding a .git that git walks into, because the
-// copy holds an entry under it, is no embedded repository to git and its files are carried, as
-// the git read keeps them. Adding such a directory itself would take down the tracked files
+// and it is added as its directory, with no trailing slash, by the same `update-index --add
+// --replace -z --stdin`, which records it as the git read records it or refuses it where that
+// read refuses it. Measured on this build on 2026-11-13: over a repository e with a commit, `git
+// add --all` and that add both recorded `160000` at e's HEAD; over one with no commit, made with
+// `git init e` or a fresh `jj git init --colocate` inside e, `git add --all` exited 128 (`'e/'
+// does not have a commit checked out`) and that add exited 128 (`e: is a directory - add files
+// inside instead`), and its failure fails the workspace naming the repositories and git's own
+// words, where dropping e would have read the workspace clean and lost what e holds. The route
+// adds a directory only where this read itself answers a name ending in a slash, and it has no
+// check of its own for a .git or a .jj: a directory holding a .git that git walks into, because
+// the copy holds an entry under it, is no embedded repository to git and its files are carried,
+// as the git read keeps them. Adding such a directory itself would take down the tracked files
 // under it: measured on this build on 2026-11-12, over a d that HEAD tracks d/x.log in and that
 // a role then made a colocated jj repository, `git add -- d` exited 128 ("does not have a commit
 // checked out"), or once d had a commit recorded d as a gitlink, after which `git add -f --
 // d/x.log` exited 128 ("is in submodule 'd'").
 //
 // Every read of paths here is NUL-separated, since a name may hold any byte but NUL; every add
-// names the files it adds, in chunks (inChunks); and nothing here runs a bare add, `add --all`,
-// `update-index --refresh` or `status` over the worktree.
+// names the files it adds, `update-index --add` on its standard input, NUL-separated, and `git
+// add -u` in chunks (inChunks); and nothing here runs a bare add, `add --all`, `update-index
+// --refresh` or `status` over the worktree. No add hands git a pathspec but `add -u`, whose
+// paths are the records now directories, few where any: a pathspec is matched against every
+// record of the index, so a command naming many costs the index's size times their count.
 //
-// Then each file of the untracked set and each embedded repository is read back by its name
-// (notCarried), and a path the scratch index does not hold is missed: the workspace fails
-// naming those paths, since they are in no commit this check can push, and a workspace reported
-// clean would have the pod replaced and them lost with it. That is what catches a name git
-// refuses, which `update-index --add` passes over with exit 0 (notCarried). The failure names ten
-// of them and counts the rest, which is what keeps the message inside what Dispatch takes, and
-// writes each with %q, so that a name which is not valid UTF-8 and a name holding the separator
-// are both readable. The seeded half is not read back: `update-index --index-info` writes each
-// seeded entry before its add, so a read of it by name cannot fail, and the add's exit status is
-// that half's guard. Nor is a gitlink of jj's tree, a name that tree already held.
+// Then each file of the untracked set and each embedded repository is looked up by its name in
+// one listing of the scratch index (notCarried), and a path that index does not hold is missed:
+// the workspace fails naming those paths, since they are in no commit this check can push, and a
+// workspace reported clean would have the pod replaced and them lost with it. That is what
+// catches a name git refuses, which `update-index --add` passes over with exit 0 (notCarried).
+// The failure names ten of them and counts the rest, which is what keeps the message inside what
+// Dispatch takes, and writes each with %q, so that a name which is not valid UTF-8 and a name
+// holding the separator are both readable. The seeded half is not read back: `update-index
+// --index-info` writes each seeded entry before its add, so a read of it by name cannot fail,
+// and the add's exit status is that half's guard. Nor is a gitlink of jj's tree, a name that
+// tree already held.
 //
 // Every read the carry needs is made before jj's tree is read into the scratch index: where
 // nothing is seeded, jj's tree holds no gitlink and the untracked read lists nothing to add,
@@ -1548,28 +1583,47 @@ func (r runner) carried(dir, tracked string, records []string, index, tree strin
 			return "", err
 		}
 	}
-	add := []string{"update-index", "--add", "--replace", "--"}
+	// byName is `update-index --add --replace -z --stdin` over paths, fed NUL-separated on its
+	// standard input: one command for the whole set, which matches no pathspec against the index.
+	byName := func(paths []string) error {
+		var stdin strings.Builder
+		for _, path := range paths {
+			stdin.WriteString(path)
+			stdin.WriteByte(0)
+		}
+		_, err := r.command(dir, env, strings.NewReader(stdin.String()), "git",
+			append(slices.Clone(gitPins), "update-index", "--add", "--replace", "-z", "--stdin")...)
+		return err
+	}
+	added := func(paths []string, err error) error {
+		return fmt.Errorf("git could not add %s of %s to the tree this check pushes as the git read adds them, so what they hold is in no commit this check can push: %w", named(paths), dir, err)
+	}
 	for _, step := range []struct {
 		paths []string
-		args  []string
+		add   func(paths []string) error
 		// failed is the step's error as the workspace's failure says it.
 		failed func(paths []string, err error) error
 	}{
-		{paths: half.updated, args: []string{"add", "-f", "--"}},
-		{paths: half.refreshed, args: []string{"add", "-u", "--"}},
-		{paths: readded, args: add},
-		{paths: repositories, args: add, failed: func(paths []string, err error) error {
+		{paths: half.updated, add: byName, failed: added},
+		{paths: half.refreshed, add: func(paths []string) error {
+			return inChunks(paths, func(chunk []string) error {
+				_, err := r.git(dir, env, append([]string{"add", "-u", "--"}, chunk...)...)
+				return err
+			})
+		}},
+		{paths: readded, add: byName, failed: added},
+		{paths: repositories, add: byName, failed: func(paths []string, err error) error {
 			return fmt.Errorf("git could not record the embedded git repositories %s of %s as the gitlinks the git read records, so what they hold is in no commit this check can push: %w", named(paths), dir, err)
 		}},
-		{paths: untracked, args: add},
+		{paths: untracked, add: byName, failed: added},
 	} {
-		if err := inChunks(step.paths, func(files []string) error {
-			_, err := r.git(dir, env, append(slices.Clone(step.args), files...)...)
-			if err != nil && step.failed != nil {
-				return step.failed(files, err)
+		if len(step.paths) == 0 {
+			continue
+		}
+		if err := step.add(step.paths); err != nil {
+			if step.failed != nil {
+				err = step.failed(step.paths, err)
 			}
-			return err
-		}); err != nil {
 			return "", err
 		}
 	}
@@ -1588,7 +1642,7 @@ const gitlinkMode = "160000"
 
 // seeds is the tracked half of the carry, read from the index copy at tracked, whose records are
 // records (trackedHalf): the records the carry writes into the scratch index, each as that index
-// records it; the files among them that `git add -f` then updates from the worktree; the
+// records it; the files among them that `update-index --add` then updates from the worktree; the
 // unflagged records among them whose worktree path is now a directory, which `git add -u`
 // updates; what git lists at every record that is no gitlink, whose path jj's tree lacks or holds
 // at another entry and whose worktree path is now a directory, split into the files and the
@@ -1603,18 +1657,18 @@ const gitlinkMode = "160000"
 // have updated as tracked and jj's tree lacks or holds otherwise than the copy records them. A
 // file jj's tree holds at another entry is the role's own uncommitted diff, an edit jj
 // snapshotted, which the copy records at HEAD's blob, or a new file it snapshotted, which the copy
-// records at the empty blob (carried). Each of them is updated after, with `git add -f`, or with
-// `git add -u` where its path is now a directory (below), over the copy's record, so git updates
-// it as the git read does, keeping the record's mode under core.fileMode=false; and a file the
-// index holds at more than one stage is seeded once: the add replaces the record's blob with the
-// worktree's, so which stage's record seeds it decides nothing. A record jj's tree holds at the
-// copy's own mode and object is left as that tree holds it: the git read hashes that file again,
-// and carrying it would hash every file of the worktree (carried's named content losses). One
-// such file is not left: an unflagged regular file whose attributes and configuration can make
-// git's add fail on it as it is (converting), which is seeded and updated as an edit is, so that
-// the add fails the workspace where the git read fails on it, and carries an edit jj's stat rule
-// passed over where git converts it. What that re-read hashes follows the bytes of the files such
-// an attribute covers, and nothing where none does.
+// records at the empty blob (carried). Each of them is updated after, with `update-index --add`,
+// or with `git add -u` where its path is now a directory (below), over the copy's record, so git
+// updates it as the git read does, keeping the record's mode under core.fileMode=false; and a
+// file the index holds at more than one stage is seeded once: the add replaces the record's blob
+// with the worktree's, so which stage's record seeds it decides nothing. A record jj's tree holds
+// at the copy's own mode and object is left as that tree holds it: the git read hashes that file
+// again, and carrying it would hash every file of the worktree (carried's named content losses).
+// One such file is not left: an unflagged regular file whose attributes and configuration can
+// make git's add fail on it as it is (converting), which is seeded and updated as an edit is, so
+// that the add fails the workspace where the git read fails on it, and carries an edit jj's stat
+// rule passed over where git converts it. What that re-read hashes follows the bytes of the files
+// such an attribute covers, and nothing where none does.
 //
 // A file to be updated that is no gitlink, and whose record git's own stat comparison against
 // the copy reports unchanged (wouldRead), is seeded and not updated: the git read opens no such
@@ -1673,16 +1727,16 @@ const gitlinkMode = "160000"
 //
 // A gitlink the copy holds and jj's tree lacks — staged with `git add sub` over an embedded
 // repository, or by an uncommitted `git submodule add` — is seeded where its path is still there,
-// and updated as a file is: `git add -f -- sub` records the HEAD of the repository its directory
-// holds and, where the directory holds no repository whose HEAD git resolves, nothing new, so
-// the record stays as the copy records it. Measured on this build on 2026-11-13, over a sub
-// staged either way and then stripped of its .git, the git read kept the copy's `160000`
-// record, and so did the seed and that add, exit 0, with none of the files left in sub. A
-// gitlink the copy holds unflagged at another commit than the gitlink jj's tree holds there — a
-// bump staged with `update-index --cacheinfo` or with `git add sub` — is seeded where its path
-// is still there and not added: unlinked re-adds that path, which records the HEAD of a
-// repository there where one resolves and otherwise keeps the seeded record, as the git read
-// keeps it (carried).
+// and updated as a file is: `update-index --add` of sub records the HEAD of the repository its
+// directory holds and, where the directory holds no repository whose HEAD git resolves, nothing
+// new, so the record stays as the copy records it (both as `git add -f -- sub` does, carried).
+// Measured on this build on 2026-11-13, over a sub staged either way and then stripped of its
+// .git, the git read kept the copy's `160000` record, and so did the seed and that add, exit 0,
+// with none of the files left in sub. A gitlink the copy holds unflagged at another commit than
+// the gitlink jj's tree holds there — a bump staged with `update-index --cacheinfo` or with `git
+// add sub` — is seeded where its path is still there and not added: unlinked re-adds that path,
+// which records the HEAD of a repository there where one resolves and otherwise keeps the seeded
+// record, as the git read keeps it (carried).
 //
 // What is seeded decides nothing of what git walks into: the untracked half is read against the
 // copy itself, which holds a deleted file's record whether or not it is seeded (carried).
@@ -1810,7 +1864,7 @@ type trackedHalf struct {
 	// seed is the records written into the scratch index, each at stage 0 and NUL-separated as
 	// `update-index -z --index-info` reads them.
 	seed string
-	// updated is the files of the seed that `git add -f` updates from the worktree.
+	// updated is the files of the seed that `update-index --add` updates from the worktree.
 	updated []string
 	// refreshed is the unflagged records of the seed whose worktree path is now a directory, which
 	// `git add -u` updates by git's own rule for a tracked path.
@@ -1830,7 +1884,11 @@ type trackedHalf struct {
 // made against a copy of the copy at without, with exactly those records taken out by
 // `update-index --force-remove`, so it is git's own answer for what each directory is to the git
 // read's walk, and not a model of a .git. It answers nothing where directories is empty, and
-// reads nothing then.
+// reads nothing then. The read is the same whole-worktree listing carried makes (`-- .`), and
+// what lies under directories is kept from it here, an entry kept where one of its directories,
+// or the entry itself less its trailing slash, is one of them: a pathspec per directory is
+// matched against each entry the walk meets, so that read's cost grows with their count, where
+// this one costs one walk whatever their count (wouldRead holds what such matching cost).
 //
 // The whole-worktree listing against the copy lists nothing at such a path: the copy holds it as
 // a file, and git then lists no directory there, where `git add --all` over the copy replaces the
@@ -1864,13 +1922,29 @@ func (r runner) nowDirectories(dir, tracked, without string, directories []strin
 	}); err != nil {
 		return nil, err
 	}
-	var listed []string
-	err = inChunks(directories, func(paths []string) error {
-		entries, err := r.gitPaths(dir, env, append([]string{"ls-files", "-z", "--others", "--exclude-standard", "--"}, paths...)...)
-		listed = append(listed, entries...)
-		return err
-	})
-	return listed, err
+	listed, err := r.gitPaths(dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
+	if err != nil {
+		return nil, err
+	}
+	asked := make(map[string]bool, len(directories))
+	for _, directory := range directories {
+		asked[directory] = true
+	}
+	var under []string
+	for _, entry := range listed {
+		for at := strings.IndexByte(entry, '/'); at >= 0; {
+			if asked[entry[:at]] {
+				under = append(under, entry)
+				break
+			}
+			next := strings.IndexByte(entry[at+1:], '/')
+			if next < 0 {
+				break
+			}
+			at += 1 + next
+		}
+	}
+	return under, nil
 }
 
 // joined is listed with each entry of more that listed lacks after it, in order.
@@ -2012,17 +2086,21 @@ func indexRecord(record string) (tag, mode, object, file string, err error) {
 // access took 347 to 501 ms and an open and close 521 to 588 ms; over all of its records access
 // took 27.0 s and 26.4 s and an open and close 33.1 s; and four, eight or sixteen goroutines over
 // 20,000 of them took 1.4 to 1.7 s where one took 1.3 s, so the walk is one loop. That loop runs
-// under the read's cut (check): it stops at the record where the cut fires, and git's stat
-// comparison runs under the same cut, so a walk still running when the bound ends eats nothing
-// of the push's reserve.
+// under the read's cut (check): it tests the cut before each record and stops at the record where
+// the cut fires, and git's stat comparison runs under the same cut, so a walk still running when
+// the bound ends eats nothing of the push's reserve
+// (TestAReadCutInsideTheWalksOwnLoopStillRescuesTheCommitsFound).
 func (r runner) unreadable(dir, tracked string, records []string) error {
 	// paths is what the walk found, each with why it cannot be read at the same index of denials.
 	var paths []string
 	var denials []error
 	last := ""
-	for _, record := range records {
+	for i, record := range records {
+		if observeRecord != nil {
+			observeRecord(r.ctx, i)
+		}
 		if err := r.ctx.Err(); err != nil {
-			return fmt.Errorf("the walk of the tracked files of %s for one this process cannot read was stopped: %w", dir, err)
+			return fmt.Errorf("the walk of the tracked files of %s for one this process cannot read was stopped at its record %d of %d: %w", dir, i+1, len(records), err)
 		}
 		tag, _, _, file, err := indexRecord(record)
 		if err != nil {
@@ -2082,18 +2160,67 @@ func (r runner) unreadable(dir, tracked string, records []string) error {
 
 // wouldRead is the files among files, each a record of the index copy at tracked that is no
 // gitlink, that git's own stat comparison against that copy reports changed: `diff-files
-// --name-only -z -- <file>...` with GIT_INDEX_FILE at the copy, which compares each record's
-// stat data with the file's and lists those `git add --all` over the copy opens and hashes
-// again; a record it does not list is one that read keeps as the copy records it. It opens a
-// file only where the record is racily clean, git's own rule, and answers nothing and runs
-// nothing where files is empty (unreadable, which holds the measurements).
+// --name-only -z` with GIT_INDEX_FILE at the copy, which compares each record's stat data with
+// the file's and lists those `git add --all` over the copy opens and hashes again; a record it
+// does not list is one that read keeps as the copy records it. It opens a file only where the
+// record is racily clean, git's own rule, and answers nothing and runs nothing where files is
+// empty (unreadable, which holds the measurements). It asks by name below wholeIndexStatAt files
+// and over the whole index at or above it (statChanged).
 func (r runner) wouldRead(dir, tracked string, files []string) (map[string]bool, error) {
 	if len(files) == 0 {
 		return nil, nil
 	}
+	return r.statChanged(dir, tracked, files, len(files) >= wholeIndexStatAt)
+}
+
+// wholeIndexStatAt is the count of files at which wouldRead asks git's stat comparison over the
+// whole index rather than by name (statChanged): where the two cost the same. By name costs the
+// index's records times the names, and the whole index its records alone, so where they meet is a
+// count of names whatever the index's size. Measured with git 2.47.3 on 2026-11-13, on two CPUs,
+// over a copy of the .git/index of a full copy of the fixture worktreeRead names (290,600
+// records, none with stat data), its worktree the copy's, each with --literal-pathspecs and the
+// names spread evenly over the index, in chunks as inChunks cuts them, twice each: by name, 200
+// names took 1.6 and 1.7 s, 800 7.1 and 6.9 s, 1,200 12.5 and 9.7 s, 1,600 12.4 and 12.2 s,
+// 2,000 16.9 and 15.9 s, 2,400 20.2 and 19.0 s, 2,800 42.0 (a run another process slowed) and
+// 23.4 s, 3,000 25.2 and 24.4 s, and 3,200 25.5 and 24.8 s, about 8 ms a name; over the whole
+// index, no pathspec, 23.0, 24.4, 25.0 and 22.3 s, listing all 290,600 records, since none
+// carries stat data. So the two meet at about 2,800 names. Names that share less of their
+// prefix with the index's records are matched faster: in the c5 timing driver
+// (TestTheJJRouteOnACopyOfTheC5Fixture), 200 and 1,600 names in one new directory took 0.6 to
+// 0.7 s and 4.7 to 4.8 s by name, about 3 ms a name, which would meet the whole index nearer
+// 7,700. The count is set where the spread names meet it, so that a read by name never costs
+// much more than the whole index does, and the most a read over the whole index costs is that
+// one read.
+const wholeIndexStatAt = 2800
+
+// statChanged is wouldRead's answer made one of two ways. By name, whole false: `diff-files
+// --name-only -z -- <file>...`, in chunks (inChunks), each name a pathspec git matches against
+// every record of the copy, so its cost is the copy's size times the names. Over the whole copy,
+// whole true: one `diff-files --name-only -z` with no pathspec, whose answer is kept here where
+// it names one of files, so its cost is one stat comparison of every record, whatever the count
+// of names. Each record's comparison is the same either way, so the two answer the same
+// (TestGitsStatComparisonAnswersTheSameByNameAndOverTheWholeIndex).
+func (r runner) statChanged(dir, tracked string, files []string, whole bool) (map[string]bool, error) {
+	env := []string{"GIT_INDEX_FILE=" + tracked}
 	read := make(map[string]bool, len(files))
+	if whole {
+		asked := make(map[string]bool, len(files))
+		for _, file := range files {
+			asked[file] = true
+		}
+		listed, err := r.gitPaths(dir, env, "diff-files", "--name-only", "-z")
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range listed {
+			if asked[file] {
+				read[file] = true
+			}
+		}
+		return read, nil
+	}
 	err := inChunks(files, func(chunk []string) error {
-		listed, err := r.gitPaths(dir, []string{"GIT_INDEX_FILE=" + tracked}, append([]string{"diff-files", "--name-only", "-z", "--"}, chunk...)...)
+		listed, err := r.gitPaths(dir, env, append([]string{"diff-files", "--name-only", "-z", "--"}, chunk...)...)
 		for _, file := range listed {
 			read[file] = true
 		}
@@ -2408,14 +2535,20 @@ func inChunks(paths []string, each func(chunk []string) error) error {
 	return nil
 }
 
-// notCarried is every file of untracked that the index at env does not hold: each is read by its
-// own name with `ls-files -z -- <file>...`, in chunks, and a file is held only where git answers
-// that exact name. It is a read of named paths, not a second read of the whole worktree.
+// notCarried is every file of untracked that the index at env does not hold: the index is listed
+// once, whole, with `ls-files -z`, and a file is held only where that listing holds its exact
+// name. It is a read of the index, not a second read of the whole worktree, and it hands git no
+// pathspec: one per name is matched against every record of the index, so a read of the names
+// costs the index's size times their count, where the whole listing is read once. Measured by the
+// tester on 2026-11-13 over the fixture worktreeRead names, 290,600 records, `ls-files -z --`
+// over 200, 1,600 and 5,600 named paths took 1.9, 6.6 and 27.2 s, and `ls-files -z` with no
+// pathspec 0.1 s.
 //
 // It catches a name git refuses, which `update-index --add` passes over with exit 0 having added
 // nothing. Measured on this build on 2026-11-13, `update-index --add --replace --` over new files
 // named GIT~1, `.git. `, `git~1` and `.GIT` printed `Ignoring path GIT~1` and the same for each
-// of the others, exited 0 and added none of them, while `ls-files --others` listed all four. jj's
+// of the others, exited 0 and added none of them, while `ls-files --others` listed all four, and
+// `update-index --add --replace -z --stdin` fed GIT~1 and `.git. ` did the same. jj's
 // snapshot takes such a file where it is small enough, and then the `read-tree` of jj's tree into
 // the scratch index refuses it (`invalid path 'GIT~1'`, exit 128, measured on this build on
 // 2026-11-13) and fails the workspace; one above jj's size limit is in neither, and only this
@@ -2428,25 +2561,22 @@ func inChunks(paths []string, each func(chunk []string) error) error {
 // writes each entry before its add and a gitlink of jj's tree is a name that tree already held
 // (carried).
 func (r runner) notCarried(dir string, env []string, untracked []string) ([]string, error) {
-	var missing []string
-	err := inChunks(untracked, func(files []string) error {
-		held, err := r.gitPaths(dir, env, append([]string{"ls-files", "-z", "--"}, files...)...)
-		if err != nil {
-			return err
-		}
-		holds := make(map[string]bool, len(held))
-		for _, file := range held {
-			holds[file] = true
-		}
-		for _, file := range files {
-			if !holds[file] {
-				missing = append(missing, file)
-			}
-		}
-		return nil
-	})
+	if len(untracked) == 0 {
+		return nil, nil
+	}
+	held, err := r.gitPaths(dir, env, "ls-files", "-z")
 	if err != nil {
 		return nil, err
+	}
+	holds := make(map[string]bool, len(held))
+	for _, file := range held {
+		holds[file] = true
+	}
+	var missing []string
+	for _, file := range untracked {
+		if !holds[file] {
+			missing = append(missing, file)
+		}
 	}
 	return missing, nil
 }

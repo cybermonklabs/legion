@@ -194,11 +194,13 @@ func gitSubcommand(args []string) (string, []string) {
 
 // readsTheWorktreeThroughJJAndNamedPaths asserts the check read dir's files through jj's
 // snapshot, with no whole-tree read of git's but the one git's own rule for new files is: no
-// `add --all`, and no add — a `git add`, or a `git update-index` carrying `--add` — without `--`
-// and at least one path after it, none of those paths `.`, so every add names the files it adds
-// (rescue.carried); no `update-index --refresh`, `--really-refresh` or `--again`, which read
-// every tracked file, while `update-index -z --index-info`, which reads its records from its
-// standard input, is the seed's and allowed; no `status`; and no `ls-files` listing the files the
+// `add --all`, and no add — a `git add`, or a `git update-index` carrying `--add` — that does not
+// name the files it adds: a `git add` names them after `--`, at least one and none of them `.`,
+// and a `git update-index --add` either the same way or with `-z --stdin`, which reads them
+// NUL-separated from its standard input and walks no directory (rescue.carried); no
+// `update-index --refresh`, `--really-refresh` or `--again`, which read every tracked file, while
+// `update-index -z --index-info`, which reads its records from its standard input, is the seed's
+// and allowed; no `status`; and no `ls-files` listing the files the
 // index does not track but the one `ls-files -z --others --exclude-standard -- .` the carry reads
 // them by. Every other jj it ran there carries --ignore-working-copy, so it reads jj's view and
 // snapshots nothing.
@@ -243,7 +245,7 @@ func readsTheWorktreeThroughJJAndNamedPaths(t *testing.T, c *commands, dir strin
 			if at := slices.Index(rest, "--"); at >= 0 {
 				flags = rest[:at]
 			}
-			if slices.Contains(flags, "--add") {
+			if slices.Contains(flags, "--add") && !(slices.Contains(flags, "--stdin") && slices.Contains(flags, "-z") && len(flags) == len(rest)) {
 				namesPaths("git update-index --add", r.args, rest)
 			}
 			for _, whole := range []string{"--refresh", "--really-refresh", "--again", "-g"} {
@@ -681,9 +683,11 @@ func TestARefusedFileWhoseNameJJWritesAsTwoRefusedPathsIsCarriedAndTheWorkspaceI
 // no one may read (mode 000): jj refuses it from its size alone, git lists it among the files the
 // index does not track, and the add that names it exits 128. Measured on this build,
 // `update-index --add --replace -- refused.bin` over it wrote `error: open("refused.bin"):
-// Permission denied` and `fatal: Unable to process path refused.bin`, and `git add --
-// refused.bin` wrote the same open error, as the whole-tree `git add --all` the route replaces
-// did over the same file.
+// Permission denied` and `fatal: Unable to process path refused.bin`, as `update-index --add
+// --replace -z --stdin` fed the name does, and `git add -- refused.bin` wrote the same open
+// error, as the whole-tree `git add --all` the route replaces did over the same file. The add
+// reads the names on its standard input, so the failure names the file in the carry's own words
+// and in git's.
 func TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
@@ -704,7 +708,7 @@ func TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing(t *testing.T) {
 		t.Fatalf("the check reported %+v, want the workspace failed with nothing pushed", w)
 	}
 	failedAt(t, w, rescuetest.FileStep)
-	for _, want := range []string{`"update-index", "--add", "--replace", "--", "refused.bin"`, `open("refused.bin"): Permission denied`} {
+	for _, want := range []string{`could not add "refused.bin"`, `"update-index", "--add", "--replace", "-z", "--stdin"`, `open("refused.bin"): Permission denied`} {
 		if !strings.Contains(w.Error, want) {
 			t.Errorf("the failure says %q, want it to name the add that could not carry the file, %s", w.Error, want)
 		}

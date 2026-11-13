@@ -108,6 +108,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1302,8 +1303,8 @@ var differentialRows = []differentialRow{
 		// Measured on this build on 2026-11-13 over this shape: `git add --all` over a copy of
 		// the index exited 128 (`error: external filter 'false' failed 1`, `fatal: f.fx: clean
 		// filter 'bad' failed`), where `jj status` answered `The working copy has no changes.`;
-		// the route reads f.fx again through the carry's `git add -f` (rescue.converting) and
-		// fails with it.
+		// the route reads f.fx again through the carry's `update-index --add`
+		// (rescue.converting) and fails with it.
 		name: "a tracked file a required clean filter fails on, as it was committed",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			requiredFilterFails(t, d)
@@ -1313,8 +1314,8 @@ var differentialRows = []differentialRow{
 		failsNaming: []string{"f.fx"},
 	},
 	{
-		// Once the file is edited, jj snapshots the edit and the carry updates it with `git add
-		// -f`, which runs the filter as the git read does and fails with it.
+		// Once the file is edited, jj snapshots the edit and the carry updates it with
+		// `update-index --add`, which runs the filter as the git read does and fails with it.
 		name: "a tracked file a required clean filter fails on, edited",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			requiredFilterFails(t, d)
@@ -2085,7 +2086,7 @@ var differentialRows = []differentialRow{
 		// Measured on this build: the git read keeps y.txt at 100644 blob 975fbec8 ("y\n", which
 		// is HEAD's), and so does the route, where jj's tree holds it at 100644 blob 5758d80d
 		// ("y\r\n"): the copy holds HEAD's blob, which is not jj's entry, so the carry updates
-		// y.txt with `git add -f`, which converts it as the git read does (rescue.seeds).
+		// y.txt with `update-index --add`, which converts it as the git read does (rescue.seeds).
 		name: "a tracked file rewritten with CRLF lines under a .gitattributes eol=lf rule",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, ".gitattributes", "*.txt text eol=lf\n")
@@ -2146,7 +2147,7 @@ var differentialRows = []differentialRow{
 	{
 		// Measured on this build: the git read keeps x.sh at 100644 blob 67b376aa, the mode the
 		// index records, and so does the route, where jj's tree holds it at 100755 blob
-		// 67b376aa: the carry seeds the copy's record and `git add -f` keeps its mode.
+		// 67b376aa: the carry seeds the copy's record and `update-index --add` keeps its mode.
 		name: "a tracked file whose executable bit was set under core.fileMode=false",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, "x.sh", "echo x\n")
@@ -2490,5 +2491,135 @@ func TestAReadCutInsideTheWalkForUnreadableFilesStillRescuesTheCommitsFound(t *t
 	}
 	if took > 30*time.Second {
 		t.Errorf("the check took %s of its %s bound, want the read stopped with the push's reserve in hand", took, bound)
+	}
+}
+
+// The same cut, fallen inside the walk's own loop (rescue.unreadable) rather than at its git
+// question: the walk tests the read's cut before each record, so a bound that ends while it walks
+// stops it at that record, before git's stat comparison is asked anything, and the commits the
+// check already found are still pushed. The cut falls at the same record every run: the walk's
+// observer holds the walk at its second record until the read's own bound has run out, so that
+// record's test of the cut is the one that fires.
+func TestAReadCutInsideTheWalksOwnLoopStillRescuesTheCommitsFound(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	for _, name := range []string{"a.txt", "b.txt", "c.txt", "d.txt"} {
+		d.Write(d.Workspace, name, name+", tracked\n")
+	}
+	pushedByTheRole(t, d, "the files the walk walks")
+	d.Write(d.Workspace, "feature.txt", "work the remote lacks\n")
+	d.JJ("commit", "-m", "work the remote lacks")
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	records := len(strings.Fields(d.Git("ls-files")))
+	const cutAt = 1
+	if records <= cutAt+1 {
+		t.Fatalf("the workspace's index holds %d records, want more than %d, so the walk has records left after the one it is cut at", records, cutAt+1)
+	}
+
+	// The read's own bound is what the workspace's leaves past the push's reserve, 10 s here,
+	// as in the cut cases of rescue_test.go.
+	bound := rescue.CheckRun + rescue.GuardReserve + 10*time.Second
+	var walked []int
+	rescue.ObserveWalk(t, func(ctx context.Context, record int) {
+		walked = append(walked, record)
+		if record == cutAt {
+			<-ctx.Done()
+		}
+	})
+	asked := false
+	rescue.ObserveCommands(t, func(dir, name string, args []string) {
+		if name == "git" && slices.Contains(args, "diff-files") {
+			asked = true
+		}
+	})
+	started := time.Now()
+	checked := rescue.Run(context.Background(), rescue.Request{
+		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
+		WorkspaceTimeout: bound, Deadline: time.Now().Add(bound + time.Minute),
+	})
+	took := time.Since(started)
+	if !slices.Equal(walked, []int{0, cutAt}) {
+		t.Errorf("the walk reached the records %v, want it stopped at the record %d it was held at, of %d", walked, cutAt, records)
+	}
+	if asked {
+		t.Error("the check ran `git diff-files`, so the walk ran past its loop: the cut did not stop it at the record it fell at")
+	}
+	w := only(t, d, checked)
+	if w.Status != rescue.Failed || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want the one commit it found rescued and the workspace failed", w)
+	}
+	if b := w.Branches[0]; b.Name != prefix+"-1" || b.Commit != commit || d.RemoteBranch(b.Name) != commit {
+		t.Errorf("the check pushed %s at %s, want %s-1 at the commit %s the workspace holds", b.Name, b.Commit, prefix, commit)
+	}
+	stopped := fmt.Sprintf("the walk of the tracked files of %s for one this process cannot read was stopped at its record %d of %d", d.Workspace, cutAt+1, records)
+	if !strings.Contains(w.Error, "could not be read in the time the workspace's bound left for them") || !strings.Contains(w.Error, stopped) {
+		t.Errorf("the entry failed with %q, want it to name the read of %s as the step that ran out, %q", w.Error, d.Workspace, stopped)
+	}
+	if !strings.Contains(w.Error, "on the remote") {
+		t.Errorf("the entry failed with %q, want it to say that what the check did find reached the remote", w.Error)
+	}
+	if ran := failedAt(t, w, rescuetest.FileStep); ran <= 0 || ran > took {
+		t.Errorf("the entry says the read ran %s, want a time inside the %s the whole check took: %q", ran, took, w.Error)
+	}
+	if took > 30*time.Second {
+		t.Errorf("the check took %s of its %s bound, want the read stopped with the push's reserve in hand", took, bound)
+	}
+}
+
+// git's stat comparison (rescue.wouldRead) is asked by name below a count of files and over the
+// whole index at or above it, and the two must answer the same: each record's comparison is git's
+// own either way, and only the cost differs. The index here holds a record of each kind the
+// comparison tells apart: one whose stat data matches its file, which neither answer names; an
+// edited file, a deleted one, a record with no stat data, as jj writes every record, and an
+// intent-to-add record, which both name; and a changed file not asked about, which neither names.
+func TestGitsStatComparisonAnswersTheSameByNameAndOverTheWholeIndex(t *testing.T) {
+	dir := t.TempDir()
+	env := append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir, cmd.Env = dir, env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git("init", "-q")
+	tracked := []string{"keep.txt", "edit.txt", "gone.txt", "nostat.txt", "other.txt"}
+	// An hour back, so no record git writes below is racily clean and git opens none of them.
+	back := time.Now().Add(-time.Hour)
+	for _, name := range tracked {
+		write(name, name+"\n")
+		if err := os.Chtimes(filepath.Join(dir, name), back, back); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git(append([]string{"add", "--"}, tracked...)...)
+	git("update-index", "--cacheinfo", "100644,"+git("hash-object", "-w", "nostat.txt")+",nostat.txt")
+	write("edit.txt", "edit.txt, edited at another size\n")
+	write("other.txt", "other.txt, edited at another size\n")
+	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	write("new.txt", "new.txt\n")
+	git("add", "-N", "new.txt")
+
+	asked := []string{"keep.txt", "edit.txt", "gone.txt", "nostat.txt", "new.txt"}
+	want := map[string]bool{"edit.txt": true, "gone.txt": true, "nostat.txt": true, "new.txt": true}
+	index := filepath.Join(dir, ".git", "index")
+	for _, whole := range []bool{false, true} {
+		read, err := rescue.WhatGitsStatComparisonReads(context.Background(), env, dir, index, asked, whole)
+		if err != nil {
+			t.Fatalf("git's stat comparison, over the whole index %v: %v", whole, err)
+		}
+		if !maps.Equal(read, want) {
+			t.Errorf("git's stat comparison over the whole index %v answered %v, want %v", whole, read, want)
+		}
 	}
 }

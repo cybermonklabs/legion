@@ -23,6 +23,23 @@ func ObserveCommands(t testing.TB, observe func(dir, name string, args []string)
 	t.Cleanup(func() { observeCommand = was })
 }
 
+// ObserveWalk has observe called inside the readability walk's loop, before each record's test of
+// the read's cut, with the read's own context and the record's index, for the rest of t.
+func ObserveWalk(t testing.TB, observe func(ctx context.Context, record int)) {
+	t.Helper()
+	was := observeRecord
+	observeRecord = observe
+	t.Cleanup(func() { observeRecord = was })
+}
+
+// WhatGitsStatComparisonReads is the files among files that git's own stat comparison against
+// the index at index reports changed in the worktree at dir (wouldRead), asked by name, whole
+// false, or over the whole index, whole true, whatever the count of files: the two ways wouldRead
+// chooses between by that count, each run as the check runs it, with ctx as its bound.
+func WhatGitsStatComparisonReads(ctx context.Context, env []string, dir, index string, files []string, whole bool) (map[string]bool, error) {
+	return runner{ctx: ctx, env: env}.statChanged(dir, index, files, whole)
+}
+
 // TreeTheJJRouteBuilds is the tree the check builds for the files of the worktree at dir, which
 // jj holds, by the route it takes there in place of the whole-tree git read: jj's own snapshot
 // of the worktree, with what that read would have kept and the snapshot's tree lacks carried in
