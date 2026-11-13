@@ -24,7 +24,7 @@ import (
 //
 // Each attempt first reads the issue, its tree's root and its pull request record, and finishes
 // the row without reading GitHub once the issue has left merging at the row's head (mergingAt,
-// workflow.LeftMergingAt): nobody would be told of what the read says. Otherwise it reads the pull
+// workflow.MergingAt): nobody would be told of what the read says. Otherwise it reads the pull
 // request once, bounded by issueRead as the per-issue read bounds its own, and logs one line for
 // that read with what it came to. The row's context has no deadline, and a running row renews its
 // lease, so a read GitHub never answered would hold the issue's role-message lane without end; a
@@ -32,13 +32,15 @@ import (
 // webhook's merge would (intake.PullRequestMerged, which closes the issue, and changes nothing when
 // the merge is already recorded), and nothing is sent to the merger. A failed read is read again
 // after the runtime's wait (workflowRuntime.mergeStateWait), or after GitHub's Retry-After when
-// that is longer, up to mergeStateLadderReads reads in all, as the merge-state ladder reads a state
-// GitHub has not computed yet. Any other answer, or the last failed read, applies
-// intake.MergeQueueReadDone, whose transaction writes the merger's message
-// (record.MergeQueueRemoval) while the issue still merges at that head, Unread when no read
-// succeeded. The read applies nothing else: no mergeability and no head move, since a fact of that
-// kind can move a phase (workflow's mergeability), and a removal moves none
-// (dispatch://INFRA-3274/spec R1).
+// that is longer, as the merge-state ladder reads a state GitHub has not computed yet, up to
+// mergeStateLadderReads attempts in all. The bound is on attempts, and each attempt makes at most
+// one read: the row's tries (record.OutboxRow.Attempts) count an attempt that a database error or
+// a failed apply ended too, so the log names the attempt and not a count of reads. Any other
+// answer, or the failed read of the last attempt, applies intake.MergeQueueReadDone, whose
+// transaction writes the merger's message (record.MergeQueueRemoval) while the issue still merges
+// at that head, Unread when no read succeeded. The read applies nothing else: no mergeability and
+// no head move, since a fact of that kind can move a phase (workflow's mergeability), and a
+// removal moves none (dispatch://INFRA-3274/spec R1).
 //
 // Both facts are applied under an event id that names the row, so a row run again after its finish
 // was lost applies neither a second time. The read and the wait are the runtime's, which attach
@@ -57,11 +59,11 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 			"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head, "why", left)
 		return nil
 	}
-	read := row.Attempts + 1
+	attempt := row.Attempts + 1
 	bounded, cancel := context.WithTimeout(ctx, issueRead)
 	pull, failed := r.readPullRequest(bounded, *pr)
 	cancel()
-	attributes := []any{"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head, "read", read}
+	attributes := []any{"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head, "attempt", attempt}
 	switch {
 	case failed == nil && pull.Merged:
 		r.log.Info("outbox merge-queue read: GitHub answered merged; the merge is applied", append(attributes, "mergeCommit", pull.MergeCommitSHA)...)
@@ -72,16 +74,16 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 		return nil
 	case failed == nil:
 		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State)...)
-	case read < mergeStateLadderReads:
+	case attempt < mergeStateLadderReads:
 		after, _ := githubrest.RetryAfter(failed)
 		delay := max(r.mergeStateWait(), after)
 		r.log.Warn("outbox merge-queue read: the read of GitHub failed; it reads again",
-			append(attributes, "reads", mergeStateLadderReads, "wait", delay, "error", failed)...)
-		return wait.Until(r.now().UTC().Add(delay), fmt.Sprintf("the merge-queue read of %s's pull request #%d reads GitHub again in %s, after read %d of %d failed: %v",
-			row.Issue, payload.Number, delay, read, mergeStateLadderReads, failed))
+			append(attributes, "attempts", mergeStateLadderReads, "wait", delay, "error", failed)...)
+		return wait.Until(r.now().UTC().Add(delay), fmt.Sprintf("the merge-queue read of %s's pull request #%d reads GitHub again in %s, after the read of attempt %d of %d failed: %v",
+			row.Issue, payload.Number, delay, attempt, mergeStateLadderReads, failed))
 	default:
-		r.log.Error("outbox merge-queue read: the last read of GitHub failed; the merger is told that no read succeeded",
-			append(attributes, "reads", mergeStateLadderReads, "error", failed)...)
+		r.log.Error("outbox merge-queue read: the read of the last attempt failed; the merger is told that no read succeeded",
+			append(attributes, "attempts", mergeStateLadderReads, "error", failed)...)
 	}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-queue-read:%s:%d", row.Issue, row.ID),
 		intake.MergeQueueReadDone{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Unread: failed != nil}, r.handlers...); err != nil {

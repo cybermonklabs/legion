@@ -515,11 +515,11 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 
 // sendOwedEntry is the body SendOwedEntry, the builder of the boot's resume by rule and of the
 // cutover's repair of a merger the `awaiting_merge` cutover left released (resume.go's
-// resumeByRule) and the silence repair (silence.go's repairSilence) share, with the marks of the
-// door the start comes through (startMarks). A mark names that door and not the task's text, so
-// what a claim behind its entry is sent is composed in one place however the start is made, and
-// the boot's resume of a claim the daemon suspended goes on telling the outbox whose launch budget
-// is at risk.
+// startSuspendedOwner) and the silence repair (silence.go's repairSilence) share, with the marks
+// of the door the start comes through (startMarks). A mark names that door and not the task's
+// text, so what a claim behind its entry is sent is composed in one place however the start is
+// made, and the boot's resume of a claim the daemon suspended goes on telling the outbox whose
+// launch budget is at risk.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
 	task := row.EntryTask
@@ -565,19 +565,19 @@ type startMarks struct {
 	// start delivers none (record.SuperviseRequest.ResumeTask). The promotion's start of a
 	// mid-phase worker sets it (StartPromotedWorker), and so do the boot's resume, the cutover's
 	// repair and the silence repair of a claim level with the entry its phases row names
-	// (resumeByRule, which booted and cutoverMergerRepair share, and repairSilence).
+	// (startSuspendedOwner, which booted and cutoverMergerRepair share, and repairSilence).
 	resumeTask bool
-	// ruleResume says the start is the boot's resume by rule, so the outbox finishes the row
-	// rather than retrying the claim it resumed when that claim spends its launch budget
-	// (record.SuperviseRequest.RuleResume). The boot sets it on the two starts it makes of a
-	// claim the daemon itself suspended, and no other start carries it: its resume by rule
-	// (booted) and the cutover's one-time repair of a merger the idle release suspended
-	// (cutoverMergerRepair), whose starts one builder makes (resumeByRule). The mark names the
-	// door the start comes through — the boot's resume of a claim the daemon suspended, where the
-	// outbox finishes the row rather than retrying a claim that is spending its launch budget —
-	// and not the task's text. So each of the two carries it on the work of the entry its role's
-	// phases row names as well as on the phase's resume task (sendOwedEntry), and changing what
-	// the task says does not change whose budget is at risk.
+	// ruleResume says the start is the boot's start of a claim the daemon itself suspended, so the
+	// outbox finishes the row rather than retrying the claim it resumed when that claim spends its
+	// launch budget (record.SuperviseRequest.RuleResume). The boot sets it on the two starts it
+	// makes of such a claim, and no other start carries it: its resume by rule (booted) and the
+	// cutover's one-time repair of a merger the idle release suspended (cutoverMergerRepair), whose
+	// starts one builder makes (startSuspendedOwner). The mark names the door the start comes
+	// through — the boot's resume of a claim the daemon suspended, where the outbox finishes the
+	// row rather than retrying a claim that is spending its launch budget — and not the task's
+	// text. So each of the two carries it on the work of the entry its role's phases row names as
+	// well as on the phase's resume task (sendOwedEntry), and changing what the task says does not
+	// change whose budget is at risk.
 	ruleResume bool
 	// freshSession says the start must not resume the session the claim records but begin one of
 	// its own (record.SuperviseRequest.FreshSession). Only the operator's `legion claims retry
@@ -589,10 +589,10 @@ type startMarks struct {
 // started enqueues the start each of its six callers makes, each of which has held role to one
 // that works a phase and composed the task itself, at the entry that task is of — 0 for a
 // resume that hands the role no new work, which is the boot's resume, the cutover's repair and
-// the silence repair of a claim level with the entry its phases row names (resumeByRule, which
-// booted and cutoverMergerRepair share, and repairSilence) — and each of which names its own
-// marks. It is the one place a start of a phase worker is built, so a reader asking what such a
-// row carries reads this request and no other, and a field added here reaches every one of those
+// the silence repair of a claim level with the entry its phases row names (startSuspendedOwner,
+// which booted and cutoverMergerRepair share, and repairSilence) — and each of which names its
+// own marks. It is the one place a start of a phase worker is built, so a reader asking what such
+// a row carries reads this request and no other, and a field added here reaches every one of those
 // starts. It goes through StartOrOwe, so the worker comes back on the one row that carries its new
 // task, and that row waits for the issue's admission slot: a transition's start puts a worker to
 // work, which is exactly what the cap counts.
@@ -602,11 +602,11 @@ type startMarks struct {
 // (admit's owedEntryRoles and resumeSlottedWorkers), which readyWorkerTask calls for a worker
 // whose agent has just reported ready while its claim stands below the entry its phases row
 // names (catch_up.go), which the boot's resume by rule and the cutover's repair call for a
-// suspended claim standing below it (resumeByRule, for booted's claims and for the released
-// mergers of cutoverMergerRepair), and which the silence repair calls for a silent claim standing
-// below it (repairSilence). A ready worker level with that row is given the phase's resume task
-// instead, and that one start is enqueued directly rather than built here, for the reason
-// StartOrOwe's own comment gives.
+// suspended claim standing below it (startSuspendedOwner, for booted's claims and for the
+// released mergers of cutoverMergerRepair), and which the silence repair calls for a silent claim
+// standing below it (repairSilence). A ready worker level with that row is given the phase's
+// resume task instead, and that one start is enqueued directly rather than built here, for the
+// reason StartOrOwe's own comment gives.
 func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
 		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,

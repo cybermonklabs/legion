@@ -383,7 +383,7 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 
 // dequeued writes the daemon's one read of a pull request that GitHub reports left the merge
 // queue (intake.PullRequestDequeued, record.MergeQueueRead), while the issue stands in merging at
-// the head the event names (LeftMergingAt). The event names no reason for the removal, since the
+// the head the event names (MergingAt). The event names no reason for the removal, since the
 // listener drops GitHub's, and GitHub's merge queue reports a removal in the same second as the
 // merge it makes, so the read decides and the event does not: a merged answer applies the merge,
 // and any other answer tells the merger (mergeQueueReadDone). The read is an outbox row, as every
@@ -400,24 +400,20 @@ func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullReques
 	if err != nil || pr == nil {
 		return intake.Result{}, err
 	}
-	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	issue, _, why, err := MergingAt(ctx, e.store, tx, pr.Issue, fact.Number, fact.HeadSHA)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	if why := LeftMergingAt(*issue, lingers, pr, pr.Number, fact.HeadSHA); why != "" {
+	if why != "" {
 		e.logOnCommit(ctx, "workflow: a pull request left the merge queue where its issue does not merge at that head; nothing is read",
-			"issue", issue.Key, "pullRequest", pr.Number, "head", fact.HeadSHA, "why", why)
+			"issue", issue.Key, "pullRequest", fact.Number, "head", fact.HeadSHA, "why", why)
 		return intake.Result{}, nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.MergeQueueRead{Number: pr.Number, Head: fact.HeadSHA}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.MergeQueueRead{Number: fact.Number, Head: fact.HeadSHA}); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once",
-		"issue", issue.Key, "pullRequest", pr.Number, "head", fact.HeadSHA)
+		"issue", issue.Key, "pullRequest", fact.Number, "head", fact.HeadSHA)
 	return intake.Result{}, nil
 }
 
@@ -426,7 +422,7 @@ func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullReques
 // merge (intake.MergeQueueReadDone): GitHub answered it open or closed unmerged, or no read
 // succeeded (Unread), which the message then says. The read ran outside any transaction, for up
 // to two minutes while GitHub failed it, so the issue is judged again here by the rule the read
-// row judged it by before it read (LeftMergingAt): an issue that has left merging at that head
+// row judged it by before it read (MergingAt): an issue that has left merging at that head
 // since writes nothing, and is logged. The message is a row of its own rather than a publish of
 // the read row's, because it waits until the merger's session holds its role, and a row that
 // waited there would read GitHub again at each try (record.MergeQueueRead).
@@ -454,10 +450,11 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 // MergingAt reads in tx what the merging rule judges issue key by: the issue, whether its tree
 // lingers (record.TreeLingers) and the pull request the record holds for it. It returns the issue
 // and that pull request, with why the workflow no longer works the issue's merging phase at head
-// of pull request number (LeftMergingAt), "" while it does. An issue the record does not hold is a
-// nil issue, no pull request and no reason. The fact that writes the merger's message
-// (mergeQueueReadDone) and the daemon's outbox rows that read the pull request and deliver the
-// message read the issue through this one read, so all three judge it from the same records.
+// of pull request number (leftMergingAt), "" while it does. An issue the record does not hold is a
+// nil issue, no pull request and no reason. The facts that write the read and the merger's
+// message (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request
+// and deliver the message read the issue through this one read, so all four judge it from the
+// same records. It is exported for those outbox rows (the daemon's mergingAt).
 func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
 	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
@@ -471,19 +468,20 @@ func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, n
 	if err != nil {
 		return nil, nil, "", err
 	}
-	return issue, pr, LeftMergingAt(*issue, lingers, pr, number, head), nil
+	return issue, pr, leftMergingAt(*issue, lingers, pr, number, head), nil
 }
 
-// LeftMergingAt says why the workflow no longer works issue's merging phase at head of pull
+// leftMergingAt says why the workflow no longer works issue's merging phase at head of pull
 // request number, or "" while it does: the issue stands in merging itself, not held from it; it
 // is in the workflow; its tree does not linger (lingers, record.TreeLingers); and the pull request
 // the record holds for it (pr, nil for none) is number, open, at head. In each other state no
 // merger is told of a removal from the merge queue at head: the workflow no longer works that
 // phase at that head, and the merger of a lingering tree is suspended by its close and would
-// never hold its role to hear it. The fact that writes the merger's message (dequeued,
-// mergeQueueReadDone) and the daemon's outbox rows that read the pull request and deliver the
-// message all judge by this one rule, so no two of them disagree about an issue that left merging.
-func LeftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, number int, head string) string {
+// never hold its role to hear it. The facts that write the read and the merger's message
+// (dequeued, mergeQueueReadDone) and the daemon's outbox rows that read the pull request and
+// deliver the message all judge by this one rule, through MergingAt, so no two of them disagree
+// about an issue that left merging.
+func leftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, number int, head string) string {
 	switch {
 	case issue.Phase != phase.Merging:
 		return fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
