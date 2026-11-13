@@ -20,7 +20,8 @@ type uploadRefusal struct {
 // document that exists (400 ARTIFACT_INPUT, blankWriteToADocumentThatExists) and a replacement
 // that names no token (400 PRECONDITION_REQUIRED). A blank write over a held name is refused
 // whatever token it names, so telling its writer to name one would send them into a second
-// refusal; the blank refusal therefore stands ahead of every reading of the token, and each
+// refusal. A precondition that is not well formed is answered as malformed first; past that,
+// the blank refusal stands ahead of every check of the token against the document, and each
 // refusal names only a remedy this route then takes. Each case drives its refusal, and then the
 // remedy the refusal names, to its answer.
 func TestUploadRefusalsNameOnlyARemedyTheRouteTakes(t *testing.T) {
@@ -53,8 +54,26 @@ func TestUploadRefusalsNameOnlyARemedyTheRouteTakes(t *testing.T) {
 	blankRefusal := `"notes.md" names artifact notes-md (notes.md), which exists; a write with no ` +
 		`content makes no document and writes no version: edit it with dispatch doc-edit, or give ` +
 		`the new document another name`
+	// blankRefused fails unless the answer is the blank refusal, and one that carries no token:
+	// the 409 a token behind the document earns hands the live token back (`current`), and a
+	// blank write handed a token would read it as a remedy the route then refuses.
+	blankRefused := func(what string, code int, refusal uploadRefusal, raw string) {
+		t.Helper()
+		if code != http.StatusBadRequest || refusal.Code != "ARTIFACT_INPUT" || refusal.Error != blankRefusal {
+			t.Fatalf("a blank write over notes.md naming %s: status=%d body=%s, want 400 ARTIFACT_INPUT %q",
+				what, code, raw, blankRefusal)
+		}
+		if refusal.Current.Document != "" || strings.Contains(raw, "sha256:") {
+			t.Fatalf("a blank write over notes.md naming %s is handed a token: %s", what, raw)
+		}
+	}
+	// A malformed precondition is answered as malformed, ahead of the blank refusal.
+	if code, refusal, raw := post(token(map[string]any{"name": "notes.md", "content": ""}, "")); code != http.StatusBadRequest || refusal.Code != "INVALID_PRECONDITION" {
+		t.Fatalf("a blank write over notes.md naming an empty token: status=%d body=%s, want 400 INVALID_PRECONDITION", code, raw)
+	}
 	// A blank write over a held name: the blank refusal, whether it names no token, the live one
-	// or one behind it. The token is never read, and the refusal names no token.
+	// or one behind it. The token is never checked against the document, and the refusal hands
+	// back no token.
 	for _, c := range []struct {
 		name string
 		body map[string]any
@@ -64,13 +83,7 @@ func TestUploadRefusalsNameOnlyARemedyTheRouteTakes(t *testing.T) {
 		{"the live token", token(map[string]any{"name": "notes.md", "content": " \n"}, first.Token)},
 	} {
 		code, refusal, raw := post(c.body)
-		if code != http.StatusBadRequest || refusal.Code != "ARTIFACT_INPUT" || refusal.Error != blankRefusal {
-			t.Fatalf("a blank write over notes.md naming %s: status=%d body=%s, want 400 ARTIFACT_INPUT %q",
-				c.name, code, raw, blankRefusal)
-		}
-		if strings.Contains(refusal.Error, "precondition") || strings.Contains(refusal.Error, "token") {
-			t.Fatalf("a blank write over notes.md naming %s is told to name a token: %q", c.name, refusal.Error)
-		}
+		blankRefused(c.name, code, refusal, raw)
 	}
 
 	// Content over a held name naming no token: the token refusal, naming the token.
@@ -90,9 +103,7 @@ func TestUploadRefusalsNameOnlyARemedyTheRouteTakes(t *testing.T) {
 
 	// A blank write naming a token the document has moved past is still the blank refusal.
 	code, refusal, raw = post(token(map[string]any{"name": "notes.md", "content": ""}, first.Token))
-	if code != http.StatusBadRequest || refusal.Code != "ARTIFACT_INPUT" || refusal.Error != blankRefusal {
-		t.Fatalf("a blank write over notes.md naming a stale token: status=%d body=%s, want 400 ARTIFACT_INPUT", code, raw)
-	}
+	blankRefused("a stale token", code, refusal, raw)
 
 	// Content over a held name naming a stale token: the 409, with the live token beside it.
 	code, refusal, raw = post(token(map[string]any{"name": "notes.md", "content": "# Notes\n\nA third text.\n"}, first.Token))

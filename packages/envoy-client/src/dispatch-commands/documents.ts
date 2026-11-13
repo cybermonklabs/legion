@@ -859,7 +859,8 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // alone, which is all the server takes from an upload. It rides every shape below, a create
   // that stores nothing included, because the server is what decides a token that names
   // nothing it can replace: it refuses a token on a first upload, and a blank write over a
-  // held name whatever token it names.
+  // held name whatever well-formed token it names, ahead of every check of the token against
+  // the document; a token that is not well formed it answers as malformed first.
   const precondition = optionalPrecondition<UploadPrecondition>(args);
   // What every create carries, whatever it stores under the name.
   const options = {

@@ -81,9 +81,11 @@ type artifactUploadInput struct {
 	// blank reports a JSON body that carries no content, or whose content is blank: such a
 	// body makes a new document holding nothing, and storeArtifact refuses it where the name
 	// already names a document or gives the slug of one Dispatch makes itself. A multipart
-	// upload always carries its bytes, so it never sets this. The refusal of a blank write
-	// over a document that exists comes before the token is read, so a blank write is never
-	// told to name a token for a write the server would refuse whatever token it named.
+	// upload always carries its bytes, so it never sets this. A precondition that is not well
+	// formed is answered as malformed first (uploadArtifactFor, ValidateUploadPrecondition);
+	// past that, the refusal of a blank write over a document that exists comes ahead of every
+	// check of the token against the document, so a blank write is never told to name a token
+	// for a write the server would refuse whatever token it named.
 	blank bool
 }
 
