@@ -2014,8 +2014,9 @@ default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
 projects, whose rows a listing naming no project holds none of. The four
 collect at once, and each is a bounded child, so the row states its limit as
 `rowLimit` over the four (`e2e/__tests__/no-browser-rows.test.ts`) and the file
-holds no number of its own. What each listing cost is in the line the row
-itself prints on its own stderr. A row may stand all the same as a named
+holds no number of its own. The four listings start when the file's module loads,
+and the process that runs the file prints each one's cost line on its own stderr
+as that listing ends. A row may stand all the same as a named
 exemption with its reason, written in `e2e/no-browser-rows.ts`, whose list
 ships empty; the check refuses a stale exemption too — one naming a row the
 suite no longer holds, or one that drives a browser now — so the rule cannot
@@ -2031,7 +2032,10 @@ and every process it started when the bound passes (its descendants by parent
 pid, and on Linux every process whose environment carries the child's token),
 fails with a message naming the file that started the child, its command and
 how long it waited, and prints one line per child, with what that child cost,
-on the stderr of the run that started it.
+on the stderr of the run that started it. One edge is stated rather than
+bounded: on a machine with no `/proc`, the `ps` with which `bounded-subprocess.ts`
+and its test read the process table runs with no bound. Linux lists its
+processes under `/proc` and never runs it.
 The child stays in the process group of the run that started it, so an
 interrupted `bun test --parallel` takes it along
 (`e2e/__tests__/bounded-subprocess.test.ts`).
@@ -2046,9 +2050,9 @@ children the row waits for one after another, counts a group written
 row's own work. Each argument is a bound name and never a number, so a wrong
 value is a compiler error rather than a red run. A row or hook that drives a
 process rather than waiting for one keeps a number, with the reason it is that
-long on the line directly above it: the four driven rows of
-`e2e/__tests__/delivery-live-probe.test.ts`, the interrupted-runner row of
-`e2e/__tests__/bounded-subprocess.test.ts` and the two hooks of
+long on the line directly above it: the six rows of
+`e2e/__tests__/delivery-live-probe.test.ts` that read the probe's lines and stop
+it with SIGINT, and the two hooks of
 `e2e/__tests__/psql-session.test.ts`. `e2e/row-limits.ts`, which
 `e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
 any depth, that the lane's `bun test` collects there - measured with bun 1.4.4
@@ -2073,9 +2077,18 @@ or `require` of their module. Where it reads the bound of what a row waits for
 bound to either), it refuses a `rowLimit` whose total, computed from its
 arguments as written, falls below `rowLimit` of the largest such bound; a bound
 or a total it cannot read (a computed `bound:`, a spread argument) is not
-checked. A bounded function passed as a value (`.map(runBounded)`) is not read
-as a wait, and neither is a name a property or a destructuring assignment
-writes (`state.lane = listing(...)`, `[lane] = [listing(...)]`).
+checked. What it does not read is read as waiting for nothing, and no refusal
+names a row that waits that way: a bounded function passed as a value
+(`.map(runBounded)`); a name bound to a waiting name
+(`const rows = lane.then(rowsOf)`); a name a destructuring declaration binds
+(`const [lane] = [listing(...)]`); a name a property or a destructuring
+assignment writes (`state.lane = listing(...)`, `[lane] = [listing(...)]`); and
+a method of a `class`, static or not, that calls `runBounded`. A name bound to an
+awaited call (`const options = await helpOptions()`) is no wait either, since it
+holds what the call answered, but only where the `await` is outermost:
+`const code = (await runBounded(...)).code` is read as a waiting name, so a row
+that refers to `code` and states no `rowLimit` is refused although `code` is a
+number.
 `e2e/__tests__/fixtures/row-limits.fixture.ts` and
 `e2e/__tests__/fixtures/row-limits-spellings.fixture.ts` are its planted
 controls, one limit of every shape the rule answers.
@@ -2683,20 +2696,25 @@ of the reset.
 `e2e/delivery-live-probe.ts` is an agent's client for a delivery subscription on `GET /ws/live`,
 run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--view <json>`,
 `--minutes`, counted from the first open; `--open-within <seconds>` bounds the first connection's
-wait to open, `LIVE_SOCKET_SILENT_MS` unless given, and a connection that does not open by then
-ends the probe with exit 1): it writes one JSON line per frame, applies each with the page's own
-`applyDelta` and `applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
-/api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
-/api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
-routes for the last window it applied and writes whether the pull request ids, run ids and every
-measure are equal, exiting 1 when one does not, or when a read receives nothing for
+wait to open, `LIVE_SOCKET_SILENT_MS` unless given, and that first connection, when it does not
+open by then or is refused, ends the probe with exit 1, while a later one is dialled again): it
+writes one JSON line per frame, applies each with the page's own `applyDelta` and `applyRevs`,
+and reconnects and resumes as `api/live-socket.ts` does. `POST /api/v1/live/_test/disconnect`
+closes its socket as a restart would, and `POST /api/v1/live/_test/rotate` exercises a 4001
+rotation. With `--compare`, the probe reads the GET routes for the last window it applied and
+writes whether the pull request ids, run ids and every measure are equal, exiting 1 when one does
+not, when no snapshot arrived to compare, or when a read receives nothing for
 `--read-within <seconds>` (`REQUEST_DEADLINE_MS` unless given; it starts over as the headers and
-each piece of the body arrive). `docs/site/src/content/docs/dispatch/delivery.md`
+each piece of the body arrive). Each read goes through `readUntilSilent` of `e2e/silence-read.ts`,
+a module of its own so a test can import it. `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
-and holds the body it applies to `after.json`. It also checks that the probe reopens at once
-after a 4001, its second subscribe arriving within 500 ms of the close, and within the first
-attempt's spread after a 1012 (`RECONNECT_SPREAD_MS`, two seconds).
+and holds the body it applies to `after.json`. It also reads the delay each close line names as
+`retry_ms`: 0 after a 4001, a dial at once, and at most `RECONNECT_SPREAD_MS` (two seconds) after
+a 1012, each followed by a second subscribe that resumes from the change the probe holds.
+`e2e/__tests__/silence-read.test.ts` (`bun run test`) holds the read's deadline on a clock it
+moves by hand: it starts over on the headers and on each piece of the body, and a read whose
+headers never come, or whose body falls silent, fails at the deadline, naming its route.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,

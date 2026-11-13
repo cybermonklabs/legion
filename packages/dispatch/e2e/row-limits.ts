@@ -107,19 +107,37 @@
  *
  * What that reading leaves out is said here, because a row it leaves out is a row no refusal
  * names. It reads a name BOUND OR ASSIGNED TO a call that waits, and references to that name,
- * and nothing broader: a name bound to such a name - `const rows = lane.then(rowsOf)` - is not
- * read, though a row that refers to `lane` itself is. Only an identifier is read as assigned, by
- * `=`, `??=`, `||=` or `&&=`: a property assigned - `state.lane = listing(...)` - and a
- * destructuring assignment - `[lane] = [listing(...)]`, `({ lane } = ...)` - bind no name the
- * scan reads, so a row that awaits `state.lane` or that `lane` is read as waiting for nothing. A
- * name bound or assigned to an awaited call - `const options = await helpOptions()` - holds what
- * the call answered, so a reference to it waits for nothing and is not read either; the binding's
- * own `await` is the wait. A bounded function passed as a value - `.map(runBounded)`,
- * `.map(listing)`, a waiting function of the file's own handed to another call - is no call the
- * scan sees, so a row that waits that way is read as waiting for nothing and still states
- * `rowLimit` because its writer knows it waits. A bare reference to `runBounded` or `listing`
- * themselves is read as no wait at all, since `e2e/__tests__/row-limits.test.ts` and
- * `e2e/__tests__/bounded-subprocess.test.ts` write those names in rows that start nothing.
+ * and nothing broader. A row that waits through any of these shapes is read as waiting for
+ * nothing, and no refusal names it:
+ *
+ * - a name bound to a waiting name - `const rows = lane.then(rowsOf)` - though a row that refers
+ *   to `lane` itself is read;
+ * - a name a destructuring declaration binds - `const [lane] = [listing(...)]`,
+ *   `const { lane } = { lane: listing(...) }` - because only a declaration whose name is one
+ *   identifier binds a name the scan reads;
+ * - a property assigned - `state.lane = listing(...)` - or a destructuring assignment -
+ *   `[lane] = [listing(...)]`, `({ lane } = ...)` - because only an identifier is read as
+ *   assigned, by `=`, `??=`, `||=` or `&&=`, so a row that awaits `state.lane`, or that `lane`,
+ *   waits for nothing here;
+ * - a method of a `class`, static or not, that calls `runBounded` or `listing`: the file's own
+ *   functions are its function declarations and its variables bound to an arrow or a function
+ *   expression, and a call through a member - `Helpers.run()` - reaches none of them;
+ * - a bounded function passed as a value - `.map(runBounded)`, `.map(listing)`, a waiting
+ *   function of the file's own handed to another call - which is no call the scan sees.
+ *
+ * A row that waits through one of them still states `rowLimit`, because its writer knows it
+ * waits. A bare reference to `runBounded` or `listing` that calls neither - the `void runBounded`
+ * that `e2e/__tests__/fixtures/row-limits.fixture.ts` plants - is no wait at all, because only a
+ * call starts a child.
+ *
+ * A name bound or assigned to an awaited call - `const options = await helpOptions()` - holds
+ * what the call answered, so a reference to it waits for nothing and is not read; the binding's
+ * own `await` is the wait. That holds only where the `await` is outermost in what the name is
+ * bound to, under parentheses and `as` alone. Where the `await` stands deeper -
+ * `const code = (await runBounded(...)).code` - the name is read as bound to the call, so it is
+ * a waiting name although it holds a number, and a row that refers to `code` and states no
+ * `rowLimit` is refused as a row that waits for a bounded child: a false refusal. No test file
+ * of this directory writes that shape.
  *
  * WHAT A ROWLIMIT COVERS. A `rowLimit` call is checked against the bounds of what its row waits
  * for wherever the scan reads them: a `listing` call is the `listing` bound, a `runBounded` call
@@ -649,9 +667,10 @@ type WaitingNames = {
   readonly helpers: ReadonlyMap<string, Reach>;
   /** The names the file binds or assigns, at any scope, to an expression that holds a call that
    *  waits - `const lane = retained(listing(...))`, `lane = retained(listing(...))` - each with
-   *  what that call reaches. A name bound or assigned to an awaited expression is left out: it
-   *  holds what the call answered, the binding itself waited, and a reference to it waits for
-   *  nothing. */
+   *  what that call reaches. A name bound or assigned to an expression whose outermost operator,
+   *  under parentheses and `as`, is `await` is left out: it holds what the call answered, the
+   *  binding itself waited, and a reference to it waits for nothing. An `await` deeper in the
+   *  expression leaves the name in: WHAT A ROW WAITS FOR. */
   readonly values: ReadonlyMap<string, Reach>;
 };
 

@@ -10,7 +10,9 @@ import { bounds, rowLimit, runBounded } from "./bounded-subprocess";
 const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.meta.url));
 
 /** The command line of every process on the machine, by pid, with its words joined by spaces; or
- *  undefined where neither `/proc` nor `ps` lists processes. */
+ *  undefined where neither `/proc` nor `ps` lists processes. Without `/proc`, one `ps` lists them,
+ *  run by `Bun.spawnSync` with no bound, so a `ps` that never ends is never stopped. That is a
+ *  stated edge: Linux lists its processes under `/proc` and never runs it. */
 function commandLines(): Map<number, string> | undefined {
   const lines = new Map<number, string>();
   if (existsSync("/proc/self/cmdline")) {

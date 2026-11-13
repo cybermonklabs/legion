@@ -174,10 +174,10 @@ function runProbe(args: readonly string[]): Run {
   };
 }
 
-/** The probe as the four rows that wait for its exit alone start it: a bounded child, read whole
- *  once it has ended. They read the exit status and the stderr, which is what the run itself
- *  answers with, so this adds nothing to it. No row drives this one, so its bound stops nothing
- *  a row is still using. */
+/** The probe as the nine rows that wait for its exit alone start it, six written out and three
+ *  from the loop over the flags that set a timer: a bounded child, read whole once it has ended.
+ *  They read the exit status and the stderr, which is what the run itself answers with, so this
+ *  adds nothing to it. No row drives this one, so its bound stops nothing a row is still using. */
 function runProbeToEnd(args: readonly string[]) {
   return runBounded({
     argv: [process.execPath, probe, ...args],
@@ -566,14 +566,11 @@ test(
   rowLimit("short")
 );
 
-// The row above passes when the pod is quiet and fails when it is busy, which is the class this
-// change exists to end. In the testing phase of dispatch://INFRA-3082 on 2026-11-12, one of five
-// `bun test --parallel` runs of this directory under six busy loops failed it: the probe ran
-// `--minutes 0.01` for 2248 ms, exited 0, and the fake Dispatch had received no frame at all,
-// because the probe arms its 600 ms in the tick it opens the socket and the socket had not
-// opened by then. This row holds the worker that serves the fake Dispatch for 2.5 s, as that
-// loaded run held it, so the socket opens after the probe's own budget began: the watch must
-// still subscribe, and still end on its own.
+// `--minutes` counts from the socket's first open, not from the dial, so a socket that opens late
+// still gets its whole watch. This row holds the worker that serves the fake Dispatch for 2.5 s,
+// as a loaded pod can, so the upgrade is answered only after that hold, and the 600 ms of
+// `--minutes 0.01` start then. It proves the watch still subscribes, and still ends on its own
+// with exit 0.
 test(
   "the watch subscribes and ends on its own when its socket opens late",
   async () => {
@@ -591,13 +588,10 @@ test(
 );
 
 // The other half of counting `--minutes` from the first open: a watch whose socket never opens
-// must still end. Measured in the testing phase of dispatch://INFRA-3082 on 2026-11-13 against a
-// server that accepts the connection and never answers the upgrade: the probe at 59a774be ended
-// a `--minutes 0.05` watch after 3 s, and the probe at a2d4a1ab was still running when `timeout`
-// stopped it at 40 s, having written nothing, because its only timer is armed by an open that
-// never comes and the silence check only redials. A Dispatch that refuses the connection already
-// ends the watch at once with exit 1, so a handshake that never completes ends it the same way:
-// on its own, and not as a clean watch.
+// still ends. The server here accepts the connection and never answers the upgrade, so the open
+// that arms `--minutes` never comes, and the silence check, which acts only after a first open,
+// never redials. The row proves that `--open-within 1` ends that watch on its own with exit 1, as
+// a refused connection ends it, and not as a clean watch.
 test(
   "a watch whose socket never opens ends on its own, and not as a clean watch",
   async () => {

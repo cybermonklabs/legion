@@ -205,12 +205,15 @@ It subscribes under the token in the file, writes one JSON line per frame (`at`,
 and the pull requests, runs, map keys, counts and `set` fields the frame carries), applies each
 frame as the page does, and reconnects and resumes as the page does. `--minutes` counts from the
 moment its socket first opens. Before that, the first connection has `--open-within <seconds>` to
-open, 45 s unless given (the page's silence rule); a connection that does not open by then, or is
-refused, ends the probe with exit 1. When the time is up, `--compare` reads the GET routes for the
-last window it applied and writes, for each, whether the pull request ids, run ids and every
-measure equal what it holds; it exits 1 when one does not, or when a read receives nothing for
-`--read-within <seconds>`, 30 s unless given (the page's own request deadline, which starts over
-as each piece of the answer arrives). `--body-file <file>` writes the body it holds.
+open; without that flag it has the page's silence rule, `LIVE_SOCKET_SILENT_MS` (45 s). If that
+first connection does not open by then, or is refused, the probe ends with exit 1; a later
+connection that is refused or does not open is dialled again, as the page does. When the time is
+up, `--compare` reads the GET routes for the last window it applied and writes, for each, whether
+the pull request ids, run ids and every measure equal what it holds; it exits 1 when one does
+not, when no snapshot arrived to compare, or when a read receives nothing for
+`--read-within <seconds>`, a time that starts over as each piece of the answer arrives; without
+that flag a read has the page's own request deadline, `REQUEST_DEADLINE_MS` (30 s).
+`--body-file <file>` writes the body it holds.
 
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside

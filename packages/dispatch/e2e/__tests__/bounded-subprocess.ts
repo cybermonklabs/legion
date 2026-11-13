@@ -1,8 +1,19 @@
-/** The one bounded subprocess every row of this directory starts, and every hook but the psql of
- *  `e2e/psql.ts`: the argv, the working directory, the environment the caller chose, how the
- *  pipes are read, the bound that stops a child that is stuck, and the line the run that started
- *  a child prints on its own stderr when that child ends. It also holds the limit a row states
- *  for itself, which is read from the bounds of the children that row waits for.
+/** The module every one-shot subprocess a row of this directory waits for starts through, and
+ *  every one a hook waits for but the psql of `e2e/psql.ts`: the argv, the working directory, the
+ *  environment the caller chose, how the pipes are read, the bound that stops a child that is
+ *  stuck, and the line the run that started a child prints on its own stderr when that child
+ *  ends. It also holds the limit a row states for itself, which is read from the bounds of the
+ *  children that row waits for.
+ *
+ * A process a row or hook drives rather than waits for starts outside it by design, since a bound
+ * would kill a process its row is still using: the probe the six driven rows of
+ * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
+ * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
+ * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, and the processes
+ * `local-instance-support.test.ts` starts through its `Supervisor`. One subprocess a row can wait
+ * for runs outside it, as a stated edge: on a machine with no `/proc`, the `ps` that reads the
+ * process table, here (`processTable`) and in `bounded-subprocess.test.ts`, runs with no bound.
+ * Linux lists its processes under `/proc` and never runs that `ps`.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
@@ -14,31 +25,42 @@
  * A bound exists so that a child which will never end fails with a name, and fails before the
  * job that runs it is killed from outside.
  *
- * The rule for each value: each bound is at least three times the largest reading of its kind
- * taken under load in a pod with two CPUs.
+ * The rule for each value: each bound is at least three times the largest reading of its kind.
+ * The readings behind `short`, `listing` and `generation` were taken under load in a pod with two
+ * CPUs; the reading behind `twoStackBuild` was taken from cold, on a pod with four cores.
  *
- * - `short`, against 2.5 s. That is the largest reading of a short command: `playwright test
- *   --help`, the two compare-recordings runs, the two `bun --eval` probes, and the harness and
- *   import children.
+ * - `short`, against 8.78 s: what the row of `playwright-argv.test.ts`, which runs one
+ *   `playwright test --help`, cost under the whole lane. The other short commands, the two
+ *   compare-recordings runs, the two `bun --eval` probes, and the harness and import children,
+ *   read 2.5 s or less.
  * - `listing`, against 84.85 s for a whole file of listings run alone, and against 78.4 s for the
  *   first listing in a fresh checkout.
  * - `generation`, 30 s above the listings inside it. The `row-map` generation starts two listings
  *   of its own, so the inner bound fires first and the inner message is what the reader sees. The
- *   30 s is the tool's own start and the work it does outside its two listings.
- * - `twoStackBuild`, against about nine minutes measured from cold. That child builds two
- *   stacks, and each stack is a Go build and an initdb.
+ *   30 s is the tool's own start and the work it does outside its two listings. The row of
+ *   `row-map.test.ts` that waits for the generation cost 33.47 s under the whole lane.
+ * - `twoStackBuild`, against about nine minutes, measured from cold on that four-core pod. That
+ *   child builds two stacks, and each stack is a Go build and an initdb.
  *
- * Where a stuck child fails. The lane runs in the `dispatch-ui` job of
- * `.github/workflows/ci.yaml`, whose limit is 15 minutes. The lane starts about 2 minutes into
- * that job, measured in job 130837751961. A stuck listing therefore fails about 7 minutes into
- * the job, and the job reports it rather than losing it to a kill from outside. The largest row
- * limit that can fire there is 450 000 ms, and two rows carry it: the seven-short-children row
- * of `harness-signin.test.ts` and the seven-short-children row of `round-robin-proxy.test.ts`.
- * Either of them fails about 9.5 minutes in. The two-stack row's 1 830 000 ms is longer than
- * the job and never fires there: that row skips unless `DISPATCH_E2E_PG_BIN` or
- * `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no CI job names one. A reader on a laptop waits
- * longer for a failure than before: a stuck child now takes 5 to 7.5 minutes to fail, where it
- * took 60 to 90 seconds.
+ * Where a stuck child fails. A stuck child fails at its own bound, counted from its start, on a
+ * laptop as in CI: a `short` child after 60 s, a listing after 5 minutes, the generation after
+ * 5.5 minutes, and the two-stack build after 30 minutes. A row's limit is what `rowLimit` reads
+ * from the bounds of what the row waits for, plus 30 s for its own work, so the child's bound
+ * fires before the row's limit and the failure names the child. The lane runs in the
+ * `dispatch-ui` job of `.github/workflows/ci.yaml`, whose limit is 15 minutes. That job ran green
+ * in 158 s (job 130837751961) and in 188 s (job 130834905422) on 2026-11-11, and in the first of
+ * those the lane started about 2 minutes in. A stuck listing therefore fails about 7 minutes into
+ * the job: more than twice as long as a green run of the job, and well inside its limit, so the
+ * job reports the failure rather than losing it to a kill from outside. The largest row limit
+ * below the two-stack row's is 450 000 ms, on the two rows that start seven `short` children one
+ * after another (the first rows of `harness-signin.test.ts` and of the `DISPATCH_E2E_PROCESSES`
+ * block of `round-robin-proxy.test.ts`, each read from its lists through a spread the guard does
+ * not total). A hung child of either fails at its own 60 s bound; the row's limit fires only
+ * when the row itself stalls outside its children, at most 7.5 minutes from its start, so such a
+ * row, stalled from the lane's start, fails about 9.5 minutes into the job. The
+ * two-stack row's 1 830 000 ms is longer than the job and never fires there: that row skips
+ * unless `DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE` names a Postgres, and no job of
+ * `ci.yaml` names either.
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -105,8 +127,8 @@ const marker = "bounded child:";
 const tokensVariable = "DISPATCH_E2E_BOUNDED_TOKENS";
 
 /** Whether this machine lists its processes under `/proc`, as Linux does. Where it does not, `ps`
- *  lists them, gives no process's environment, and the kill finds only the tree below a child
- *  that is still running. */
+ *  lists them, runs with no bound of its own, gives no process's environment, and the kill finds
+ *  only the tree below a child that is still running. */
 const procfs = existsSync("/proc/self/stat");
 
 /** One process of the machine: its pid, its parent's pid, and the bounded tokens of its
@@ -124,7 +146,11 @@ interface Listed {
  *  come from `/proc/<pid>/environ`, which is the environment the process was started with. A
  *  process of another user has an environ this process cannot read, and it carries no token
  *  here. A process that ends between the directory read and the read of its own files is left
- *  out, since it is gone. */
+ *  out, since it is gone.
+ *
+ *  Without `/proc`, one `ps` lists them, run by `Bun.spawnSync` with no bound: a `ps` that never
+ *  ends is never stopped, and the kill that read it waits with it. That is a stated edge, not a
+ *  bounded child; Linux lists its processes under `/proc` and never runs it. */
 function processTable(): Listed[] | undefined {
   if (procfs) {
     const table: Listed[] = [];
@@ -213,7 +239,8 @@ interface Running {
  *  whose environment this process cannot read; a process outside this pid namespace, such as a
  *  container a daemon started on a child's request; and, where `/proc` is missing, anything a
  *  child left once that child has exited, and anything forked during the kill, since `ps` gives
- *  no environment to match and the table is read once there.
+ *  no environment to match and the table is read once there, by one `ps` that runs with no bound
+ *  (`processTable`).
  *
  *  The child's own pid is signalled only through `child.kill`, and only while the runtime has
  *  not seen the child exit. Once the runtime reaps a child the system may give its pid to another
@@ -390,7 +417,7 @@ async function drain(
 
 /** Starts one child, waits for it, and answers what it did.
  *
- *  Both pipes are read whole, as the nine hand-rolled copies in this directory read them before.
+ *  Both pipes are read to their end while the child runs, each by `drain`, and answered whole.
  *  The run that starts the child prints one cost line on its own stderr when that child ends,
  *  and never into the text this answers with: rows of this directory read a child's stderr as
  *  exactly empty.

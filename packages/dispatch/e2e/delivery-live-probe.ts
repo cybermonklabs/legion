@@ -4,24 +4,26 @@
  * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does, and each new
  * connection resumes from the last change it applied. What bounds each wait of the probe:
  *
- *  - Before the first open, `--open-within` seconds from the first dial, 45 s unless given: the
- *    page's silence rule (`LIVE_SOCKET_SILENT_MS`, three heartbeats). A dial that has not opened
- *    by then fails the watch, and a first connection that is refused or closed fails it at once.
+ *  - Before the first open, `--open-within` seconds from the first dial; without that flag, the
+ *    page's silence rule, `LIVE_SOCKET_SILENT_MS` (45 s, three heartbeats). A first dial that
+ *    has not opened by then fails the watch, and a first connection that is refused or closed
+ *    fails it at once. A later connection that is refused or never opens is dialled again.
  *  - After the first open, `--minutes` counted from that open, which ends the watch cleanly. A
  *    reconnect's open does not count it again.
  *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
- *    (4001), up to 2 s after Dispatch's restart close (1012), and up to 30 s with backoff after
- *    any other close. `--minutes` ends the watch during that delay as well. Each close line
- *    carries the delay chosen as `retry_ms`: 0 for a dial at once, null when none follows.
- *  - A silent socket, after the first open: one that has carried no frame for more than 45 s, a
- *    reconnect's dial that never opens included, is replaced by a new dial at the next check,
- *    which runs each second, and `--minutes` still ends the watch.
- *  - Each `--compare` read, while Dispatch sends nothing: `--read-within` seconds, 30 s unless
- *    given, the page's own deadline on a GET's silence (`REQUEST_DEADLINE_MS`). The time starts
- *    at the request and starts over as the headers arrive and as each piece of the body does, so
- *    a read that keeps sending goes on however slowly, and one that sends nothing for that long
- *    fails the probe. The reads run one after another, two for a timeline view and one for any
- *    other.
+ *    (4001), up to `RECONNECT_SPREAD_MS` (2 s) after Dispatch's restart close (1012), and up to
+ *    30 s with backoff after any other close. `--minutes` ends the watch during that delay as
+ *    well. Each close line carries the delay chosen as `retry_ms`: 0 for a dial at once, null when
+ *    none follows.
+ *  - A silent socket, after the first open: one that has carried no frame for more than
+ *    `LIVE_SOCKET_SILENT_MS`, a reconnect's dial that never opens included, is replaced by a new
+ *    dial at the next check, which runs each second, and `--minutes` still ends the watch.
+ *  - Each `--compare` read, while Dispatch sends nothing: `--read-within` seconds; without that
+ *    flag, the page's own deadline on a GET's silence, `REQUEST_DEADLINE_MS` (30 s). The time
+ *    starts at the request and starts over as the headers arrive and as each piece of the body
+ *    does, so a read that keeps sending goes on however slowly, and one that sends nothing for
+ *    that long fails the probe. The reads run one after another, two for a timeline view and one
+ *    for any other.
  *
  *  No flag takes a time longer than the longest delay a timer keeps, 2^31-1 ms (about 24.9 days).
  *  Reading `--token-file` and writing `--body-file` wait as long as the named file makes them, as
@@ -37,9 +39,9 @@
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
- *  fails or receives nothing for `--read-within`, the first connection is refused or does not
- *  open within `--open-within`, Dispatch refuses the view, or a frame breaks the contract; 2 on a
- *  usage error. */
+ *  fails or receives nothing for `--read-within`, `--compare` was asked for and no snapshot
+ *  arrived to compare, the first connection is refused or does not open within `--open-within`,
+ *  Dispatch refuses the view, or a frame breaks the contract; 2 on a usage error. */
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";

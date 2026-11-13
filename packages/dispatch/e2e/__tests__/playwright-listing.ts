@@ -3,9 +3,11 @@
  *  unhandled rejection.
  *
  * It lives here rather than in `e2e/configurations.ts` because that module's header promises it
- * imports no Playwright and spawns nothing, and the contract this file holds is one subprocess:
- * the argv, the working directory, the environment floor, how the pipes are read and what a
- * non-zero exit says. Two copies of it drift apart the next time the config refuses a run.
+ * imports no Playwright and spawns nothing, and the contract this file holds is one subprocess's
+ * own: the argv, the working directory, the environment floor and what a non-zero exit says. How
+ * the pipes are read, the bound and the cost line are `runBounded`'s, in
+ * `e2e/__tests__/bounded-subprocess.ts`. Two copies of the argv drift apart the next time the
+ * config refuses a run.
  *
  * `bun test` collects only `*.test.ts` and its kin, so a plain `.ts` module under `__tests__/`
  * runs nowhere — the same thing `e2e/__tests__/fixtures/` relies on for the configs and specs it
