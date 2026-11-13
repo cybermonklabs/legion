@@ -106,6 +106,7 @@ assertion_table() {
 claim-form|replay|every claim carries one of the five forms of evidence the specification allows|a claim whose kind is none of them
 claim-mark|replay|every claim carries one of the marks its requirement fixes|a claim with no mark
 predicate-form|replay|every row that carries a command carries exactly one predicate over its output, and every predicate is a bound, a set membership or an exit status, never a sentence|a predicate written as a sentence
+install-pinned|replay|every package a recorded command installs or runs names its version, or a constraints file, a pinned list or a local path|a recorded command that runs a package with no version
 replay-command|replay|every recorded command runs again, no read inside it failed unless its predicate is an exit status, and its output meets the predicate the row carries|a recorded output changed by one character
 absence-still-empty|replay|every absence search reads its corpus and still finds nothing, and a read that failed before the search is no empty search|an absence search that now finds something
 quotation-marked|replay|every quotation of a project's prose is marked a claim of the project and not of its code|a quotation marked as evidence of the code
@@ -559,6 +560,82 @@ github_budget() {
     fi
 }
 
+# unpinned_installs; prints one line per package a recorded command installs or runs with
+# no version, as <id><TAB><what it runs>, over every row of claims.jsonl, in the runner
+# forms a recorded command uses: uv run --with, uvx, pip install and uv pip install,
+# bunx and npx, go run and go install. A version is ==<v> for Python, @<v> for npm and
+# Go, and a local path or a variable naming one needs none; an install that reads a
+# constraints file, a requirements file or env.sh's pinned list is pinned by that file.
+unpinned_installs() {
+    claims | python3 -c '
+import json, re, shlex, sys
+
+def local(arg):
+    return arg.startswith((".", "/", "$", "~")) or arg in ("-",)
+
+def python_ok(arg):
+    return "==" in arg or local(arg)
+
+def node_ok(arg):
+    return re.search(r".@[0-9]", arg) is not None or local(arg)
+
+def go_ok(arg):
+    return "@" in arg or local(arg)
+
+def words(text):
+    try:
+        return shlex.split(text, posix=True)
+    except ValueError:
+        return text.split()
+
+for line in sys.stdin:
+    row = json.loads(line)
+    command = row.get("command") or ""
+    # Each command of the row, split at the shell operators that end one.
+    for part in re.split(r"&&|\|\||[;|\n(){}]", command):
+        w = words(part)
+        found = []
+        for i, word in enumerate(w):
+            nxt = w[i + 1] if i + 1 < len(w) else ""
+            if word == "--with" and not python_ok(nxt):
+                found.append("uv run --with " + nxt)
+            elif word.startswith("--with=") and not python_ok(word[7:]):
+                found.append("uv run " + word)
+            elif word == "uvx":
+                pkg = w[i + 2] if nxt == "--from" and i + 2 < len(w) else nxt
+                if not (python_ok(pkg) or "@" in pkg):
+                    found.append("uvx " + pkg)
+            elif word in ("bunx", "npx"):
+                pkg = w[i + 2] if nxt == "--package" and i + 2 < len(w) else nxt
+                if not node_ok(pkg):
+                    found.append(word + " " + pkg)
+            elif word == "go" and nxt in ("run", "install"):
+                args = [a for a in w[i + 2:] if not a.startswith("-")]
+                if args and not go_ok(args[0]):
+                    found.append("go " + nxt + " " + args[0])
+            elif word == "install" and i > 0 and w[i - 1] in ("pip", "pip3"):
+                rest = w[i + 1:]
+                if any(a in ("-c", "--constraint", "-r", "--requirement") or a.startswith(("--constraint=", "--requirement=")) for a in rest) or "$IOC_ENV_PY_PINS" in part:
+                    continue
+                skip = False
+                for a in rest:
+                    if skip:
+                        skip = False
+                        continue
+                    if a in ("--python", "-p", "--target", "--prefix", "--index-url", "--extra-index-url"):
+                        skip = True
+                        continue
+                    if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
+                        break
+                    if a.startswith("-"):
+                        continue
+                    if not python_ok(a):
+                        found.append("pip install " + a)
+        for what in found:
+            print(row.get("id", "?") + "\t" + what)
+'
+}
+
 mode_replay() {
     local work
     work="$(mktemp -d "${TMPDIR:-/tmp}/ioc-replay.XXXXXX")"
@@ -647,6 +724,14 @@ mode_replay() {
             fail replay-command "$id ran '$command' and its output does not meet $expect: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
         fi
     done < <(claims)
+
+    local unpinned unpinned_id unpinned_what
+    unpinned="$(unpinned_installs)"
+    while IFS=$'\t' read -r unpinned_id unpinned_what; do
+        [ -n "$unpinned_id" ] || continue
+        fail install-pinned "$unpinned_id runs '$unpinned_what', a package with no version, so the run reads whatever release is newest"
+    done <<<"$unpinned"
+    [ -z "$unpinned" ] && pass install-pinned "every package a recorded command installs or runs names its version, or is pinned by a constraints file, a pinned list or a local path"
 
     [ "$bad_form" -eq 0 ] && pass claim-form "every claim of $(claims | wc -l) carries one of the five forms"
     [ "$bad_mark" -eq 0 ] && pass claim-mark "every claim carries a mark its requirement fixes"
@@ -1888,6 +1973,7 @@ fixture_plant() {
     claim-form) sed -i 's/"kind":"project-code"/"kind":"a reading"/' "$evidence/claims.jsonl" ;;
     claim-mark) sed -i 's/"mark":"verified"/"mark":""/' "$evidence/claims.jsonl" ;;
     predicate-form) sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains_a_sentence":"the output says it ran"}/' "$evidence/claims.jsonl" ;;
+    install-pinned) sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uvx pyshacl --version; printf 'ran once/" "$evidence/claims.jsonl" ;;
     replay-command) sed -i 's/"expect":{"contains":"ran once"}/"expect":{"contains":"ran twice"}/' "$evidence/claims.jsonl" ;;
     absence-still-empty) sed -i "s#grep -r 'REVIEWER_PAIR_REQUIRED' skills || true#grep -r 'thermonuclear' skills || true#" "$evidence/claims.jsonl" ;;
     quotation-marked) sed -i 's/"marked":"a claim of the project, not of its code"/"marked_as":"evidence of the code"/' "$evidence/claims.jsonl" ;;

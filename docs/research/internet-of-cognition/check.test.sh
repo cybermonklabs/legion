@@ -151,6 +151,15 @@ sed -i "s/^- \*\*Landed:\*\* [0-9a-f]*/- **Landed:** $merged/" "$dir/judgement.m
 sed -i "s/$(cat "$dir/rows")/$merged/" "$dir/repo/docs/research/internet-of-cognition/sources.json"
 case_result "a landed page naming a base commit a forward merge brought in is not a commit of this pull request" landed-proof "$(fixture_run "$dir" --landed)"
 
+# 9. A recorded command that runs a package with no version. The row ts-shapes-graph ran
+# `uv run --no-project --with rdflib`, which reads whatever rdflib release is newest while
+# env.sh pins rdflib==7.6.0, and its run passed because the newest release was the pinned
+# one that day. The command here never runs the package, so only the gate's reading of the
+# command can catch it.
+dir="$(fresh unpinned-runner)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv run --no-project --with rdflib python -c 1; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "a recorded command that runs a package with no version is refused" install-pinned "$(fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

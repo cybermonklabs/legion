@@ -27,7 +27,7 @@ One is rejected: MAS Lab's experiment harness, because the rig it would replace 
 
 - `check.sh` — the gate, in seven modes. `--help` lists its prerequisites and `--coverage` prints what it reads and what it does not.
 
-- `check.test.sh` — the faults the gate was found passing, one case each: a row with a command and no predicate, an absence search whose corpus read failed, an absence search whose first of two reads failed, a landed page naming a commit of the base branch, a project citation whose quoted text the file does not hold, a committed copy whose bytes changed, a run that says nothing of a published copy's live address, and a landed page naming a base commit that a forward merge brought in. The tester found the first seven; the last was found at this pull request's own forward merge of main. `--self-test` runs it, so one run proves the gate's own table and these.
+- `check.test.sh` — the faults the gate was found passing, one case each: a row with a command and no predicate, an absence search whose corpus read failed, an absence search whose first of two reads failed, a landed page naming a commit of the base branch, a project citation whose quoted text the file does not hold, a committed copy whose bytes changed, a run that says nothing of a published copy's live address, a landed page naming a base commit that a forward merge brought in, and a recorded command that runs a package with no version. The tester found the first seven and the ninth; the eighth was found at this pull request's own forward merge of main. `--self-test` runs it, so one run proves the gate's own table and these.
 
 - `sources.json` — every repository and commit, and every published page with its committed copy.
 
