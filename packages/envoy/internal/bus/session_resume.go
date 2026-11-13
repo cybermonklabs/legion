@@ -19,7 +19,6 @@ import (
 	"fmt"
 
 	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 )
 
 // SessionResumeSubjectPrefix begins the listener's resume lane (SessionResumeSubject).
@@ -51,12 +50,6 @@ func SessionResumeSubject(sessionID string) string {
 type SessionResumeRecord struct {
 	Floor    uint64 `json:"floor"`
 	StreamID string `json:"stream_id"`
-}
-
-// recordResumeFloor publishes session sessionID's resume record at the ack floor of its consumer
-// as info reports it (recordResumeFloorAt).
-func (s *SessionConsumers) recordResumeFloor(ctx context.Context, sessionID string, info *jetstream.ConsumerInfo) error {
-	return s.recordResumeFloorAt(ctx, sessionID, ackFloor(info))
 }
 
 // recordResumeFloorAt publishes session sessionID's resume record, floor and the stream's own

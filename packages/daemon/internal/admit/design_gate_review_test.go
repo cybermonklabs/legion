@@ -278,7 +278,7 @@ func TestAChangesRequestIsToldOnceWhicheverReadCarriesIt(t *testing.T) {
 // told changes request is not told again, an approval is not rolled back — and no wait starts,
 // since only the person's next act could answer one. Where that review is an approval, the
 // registration itself tells the architect nothing, but every required step is open, so the
-// admission pass this fact runs starts the root (workflow.AdvanceOpenTrees): a root whose steps
+// admission pass this fact runs starts the root (record.Waiting's LineFirstPhase): a root whose steps
 // are all open never stays at admitted waiting for a gate fact that has already happened.
 func TestARegistrationDoesNotHideTheReviewTheGateAlreadyHolds(t *testing.T) {
 	reviewed := record.EventMark{Seq: 11, At: reviewedAt.Add(time.Minute)}

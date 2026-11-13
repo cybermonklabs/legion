@@ -262,7 +262,7 @@ func (d mentionDeliveries) liveFor(sessionID string) bool {
 // own attempts and the attempts this read resolved to that key, which is the question this
 // filter asks: whose copy a mention decides.
 //
-// What that costs, in the ruling that took it: a credit-only session an unnamed role attempt is
+// What that costs, in the decision that took it: a credit-only session an unnamed role attempt is
 // later pinned to is dropped here, although leftTo, reading state, would have kept a
 // comment_fallback_copies row for it (its mentionResending arm), which the pass that publishes
 // those rows sends should that attempt's send fail. It would not have held the event: a credit
@@ -1333,7 +1333,7 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // resolved and forwarded to the role's holder, as a batch's role route is (fallbackRoleForward,
 // roleForward.send): a role no live holder can take has its copy kept on the role's kept lane for
 // the holder that claims it next, and the stream's acknowledgement of that keep marks the row
-// published as a holder's receipt of a forward does, and the copy it keeps carries every settled
+// published as a forward's acknowledgement does, and the copy it keeps carries every settled
 // mention of the comment by session, so that whoever forwards it to the role's next holder keys
 // it by that holder's own mention (roleForward.keep, contracts.Envelope.MentionDedupeKeys); a
 // holder whose own mention of the comment settled - the session the row's key names, which a
@@ -1526,18 +1526,18 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence, instance 
 			release(item.held, 0)
 			continue
 		default:
-			// Counted as a batch counts a destination that did not reach NATS (sendChains): a
-			// role forward its holder's resolution held pending sent nothing at all and is
-			// counted under that holder, a forward NATS took whose holder sent no receipt is
-			// unanswered, and a send the server refused under this connection's own publish
-			// permissions is a denial. An answer a stopping process stopped waiting for says
-			// nothing of NATS and counts nothing.
+			// Counted as a batch counts a destination that did not reach NATS, by the batch's
+			// own rule (sendChains, forwardUnanswered): a role forward its holder's resolution
+			// held pending sent nothing at all and is counted under that holder, a forward the
+			// stream never acknowledged is unanswered, and a send the server refused under this
+			// connection's own publish permissions is a denial. An answer a stopping process
+			// stopped waiting for says nothing of NATS and counts nothing.
 			switch forward := item.out.forward; {
 			case errors.Is(err, bus.ErrPublishDenied):
 				deps.countPublishFailure("denied")
 			case forward != nil && forward.err != nil:
 				deps.countPublishFailure("holder")
-			case errors.Is(err, bus.ErrReceiptTimeout) && !errors.Is(err, bus.ErrPublishUnconfirmed):
+			case forwardUnanswered(forward != nil, err):
 				deps.countPublishFailure("unanswered")
 			case !lostToContextEnd(ctx, err):
 				deps.countPublishFailure("failed")

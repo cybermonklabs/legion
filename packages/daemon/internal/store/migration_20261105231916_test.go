@@ -66,8 +66,14 @@ func TestTheProductionCheckTakesItsRoleAndWakeWith20261105231916(t *testing.T) {
 			t.Fatalf("queue a %s row of %s before the migration: %v", row.kind, row.issue, err)
 		}
 	}
-	if err := queue("check_wake", "LEGION-208"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
-		t.Fatalf("queueing a check_wake row before the migration = %v, want the kind constraint to refuse it: it is the kind the migration exists for", err)
+	// check_wake is admitted before this migration, and deliberately: this release's own
+	// 20261105081500 names it beside the compare kind, so that a database which ran this
+	// migration first and queued such a row survives that lower version applying late
+	// (TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan). What this migration adds
+	// is the check's role and its wake, read below; the kind it names is settled, for both
+	// orders, by 20261107095842.
+	if err := queue("check_wake", "LEGION-208"); err != nil {
+		t.Fatalf("queue a check_wake row before the migration: %v", err)
 	}
 
 	if _, err := store.Migrate(ctx); err != nil {

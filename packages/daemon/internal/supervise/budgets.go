@@ -12,17 +12,15 @@ import (
 //     refused, a process that died, one whose agent never registered or registered and never said
 //     it was ready. Reset only by the agent's ready: a registration alone proves nothing about the
 //     next launch.
-//   - Deaths: processes that died after their agent was ready and while it had work outstanding —
-//     a pending task, whose turn was running or which was sent and not yet begun. The relaunch
-//     reaches ready again whatever killed the last process, so ready cannot bound these; an agent
-//     that dies before it completes a turn each time it is given the task would otherwise be
-//     relaunched for ever. The count is charged against the pending task and reset only when that
-//     task ends (retirePending): its turn ends, which a killed Oh My Pi never reports, or a
-//     suspension or a phase change retires it. A turn that never ran the task — a notice's —
-//     clears nothing. A death with nothing pending is not counted: a parked agent — idle, holding
-//     no task — that the environment kills now and then is relaunched however often it happens, and
-//     so is one killed in a turn no delivery started, a notice's, whose work waits for whatever
-//     next wakes the relaunched agent. Bounded by the launch failure limit.
+//   - Deaths: processes that died after their agent was ready with work outstanding — a pending
+//     task, or a turn the agent had begun and not ended, whether or not a task was behind it
+//     (chargeDeath). The relaunch reaches ready again whatever killed the last process, so ready
+//     cannot bound these; an agent that dies in its turn each time it is woken would otherwise be
+//     relaunched for ever. The count ends with the work it was charged against: the task's retire
+//     (retirePending) or a turn that ends normally (turnEnded), either of which says the agent got
+//     through what it was doing. A death with no turn open and nothing pending is not counted: a
+//     parked agent — idle, holding no task — that the environment kills now and then is relaunched
+//     however often it happens. Bounded by the launch failure limit.
 //   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
 //     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
 //     want of a connection, or refused because the agent is in a turn of its own (Oh My Pi's busy
@@ -46,33 +44,121 @@ type Limits struct {
 	PromptRetires  int
 }
 
+// FailureCause is the one word for what failed a claim, chosen by the site that fails it rather
+// than read back out of the sentence that site writes (Claim.Failure): one sentence covers four
+// different events today, and a reader of it cannot tell a dead process from an agent that never
+// came up. The set is closed, so an agent choosing between a retry and an escalation reads a word
+// it can decide on and the sentence stays for the person behind it.
+type FailureCause string
+
+const (
+	// CauseLaunchRefused: the runtime refused the launch until the launch budget ran out
+	// (launchNow), with no other cause pending for the relaunch it refused.
+	CauseLaunchRefused FailureCause = "launch_refused"
+	// CauseDied: the process died until the deaths or the launch budget ran out (died, directly
+	// and through relaunchAfterFailure).
+	CauseDied FailureCause = "died"
+	// CauseNeverRegistered: the agent did not register before its deadline, or registered and
+	// never said it was ready, until the launch budget ran out (registrationDeadline). The one
+	// word covers both, which is what the deadline itself does.
+	CauseNeverRegistered FailureCause = "never_registered"
+	// CauseStalePlugin: a relaunch onto the daemon's own plugin contract that ran out
+	// (staleRegistration).
+	CauseStalePlugin FailureCause = "stale_plugin"
+	// CausePromptRetiresExhausted: the prompt retirements ran out (chargePrompt).
+	CausePromptRetiresExhausted FailureCause = "prompt_retires_exhausted"
+	// CauseProviderError: a provider error that cannot clear ended the claim's turn
+	// (providerErrored), or the claim's producer reported a run of refused turns that reached the
+	// launch failure limit (turnOutcome). Both are the provider refusing to run this session's
+	// turns, which is the one thing a reader of the word has to act on, and the sentence beside
+	// it says which of the two it was.
+	CauseProviderError FailureCause = "provider_error"
+	// CauseUnrecorded: the claim failed before the daemon recorded a cause. No live path writes
+	// it; the migration that adds the column writes it for every stored failure whose sentence
+	// does not say which event wrote it.
+	CauseUnrecorded FailureCause = "unrecorded"
+)
+
+// FailureCauses is the closed set the constants above are, in the order they are declared: the
+// roster of the set, which nothing in Go can read off the constants themselves. A cause added
+// here with no word added to the `legion-api.ts` enum of the same set would make every strict
+// plugin refuse the whole state body, so the two are pinned to each other through one file both
+// suites read: `internal/api`'s TestFailureCausesGolden writes this list to
+// `packages/contracts/fixtures/daemon-api/failure-causes.json`, and
+// `packages/contracts/src/legion-api.test.ts` holds that file equal to `LEGION_FAILURE_CAUSES`.
+// The roster itself is kept by hand beside the constants: a constant added above and left out of
+// this list fails no test, so add every new cause here as well. What the fixture ties is this
+// list to the enum, so a word added to one of those two alone fails one of the suites.
+var FailureCauses = []FailureCause{
+	CauseLaunchRefused,
+	CauseDied,
+	CauseNeverRegistered,
+	CauseStalePlugin,
+	CausePromptRetiresExhausted,
+	CauseProviderError,
+	CauseUnrecorded,
+}
+
 // relaunchAfterFailure charges one launch failure for a process that did not survive, and
 // relaunches the same session after it, once the backoff for the failures charged so far has
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
 // when the budget is spent. A relaunch the tree lifecycle refuses (its cleanup reserved) is
 // checked before the charge, so it costs none; one whose process is already stopped is
 // relaunchRefused's.
-func (m *Machine) relaunchAfterFailure(ctx context.Context) error {
+//
+// cause is what failed the process this relaunch replaces, from the caller that saw it, and it is
+// recorded on the claim before the charge: it is what the claim fails under when this budget runs
+// out, and what a launch the runtime refuses on the way fails under too (launchNow,
+// Claim.PendingCause). The retry of a relaunch the lifecycle check refused carries the same
+// cause, which is why it is handed over in a closure rather than as the method value.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) error {
 	if err := m.checkLaunch(ctx); err != nil {
-		return m.relaunchRefused(ctx, m.relaunchAfterFailure, err)
+		return m.relaunchRefused(ctx, func(ctx context.Context) error {
+			return m.relaunchAfterFailure(ctx, cause)
+		}, err)
 	}
+	m.claim.PendingCause = cause
 	m.claim.Budgets.LaunchFailures++
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
-		return m.fail(ctx, "launch failures ran out")
+		return m.fail(ctx, cause, "launch failures ran out")
 	}
 	return m.launchAfter(ctx, true, false)
 }
 
-// chargeDeath counts a process that died after its agent was ready while it had work
-// outstanding, and reports whether those deaths have reached the limit.
+// chargeDeath counts a process that died after its agent was ready with work outstanding, and
+// reports whether those deaths have reached the limit. Work is outstanding when the claim holds a
+// task, and also when a turn of the agent's was open at the death — the claim's last turn started
+// and has not ended — since a turn an Envoy message began does the issue's work with no task
+// behind it, and a root architect killed six times inside its turns was relaunched for ever
+// because each death found nothing pending. A death with no turn open and nothing pending is a
+// parked agent the environment killed, which is not counted however often it happens.
+//
+// The death ends the turn it interrupted (Claim.LastTurnEnd), which no other path does: a turn
+// records its end only when the agent ends it, so a turn whose agent died would otherwise stay
+// open for ever and every later death of the relaunched agent — idle, with nothing pending —
+// would be charged against it, failing a claim that is doing nothing wrong. Each death after
+// this one is judged on the turn it finds, as the first was.
 func (m *Machine) chargeDeath() bool {
-	if m.claim.Pending == nil || slices.Contains(unready, m.claim.State) {
+	if slices.Contains(unready, m.claim.State) {
+		return false
+	}
+	open := m.turnOpen()
+	if m.claim.Pending == nil && !open {
 		return false
 	}
 	m.claim.Budgets.Deaths++
+	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.log.Warn("supervise: the agent died with work outstanding", "deaths", m.claim.Budgets.Deaths,
-		"limit", m.deps.Limits.LaunchFailures)
+		"limit", m.deps.Limits.LaunchFailures, "pending", pendingID(m.claim.Pending), "turnOpen", open)
 	return m.claim.Budgets.Deaths >= m.deps.Limits.LaunchFailures
+}
+
+// turnOpen is whether the agent began a turn it has not ended: the claim is working, which is the
+// state a turn's start puts it in and its end takes it out of, or the claim's recorded turn times
+// say so. Both are persisted, so the answer survives the restart that rebuilt the machine, and
+// the times answer for a claim whose state has already moved on.
+func (m *Machine) turnOpen() bool {
+	return m.claim.State == StateWorking || m.claim.LastTurnStart.After(m.claim.LastTurnEnd)
 }
 
 // chargePrompt counts one prompt failure. At the limit the process is retired — suspended, the
@@ -108,7 +194,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		"relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
 	if last {
 		m.claim.Budgets.PromptFailures = failures
-		return m.fail(ctx, "prompt retirements ran out")
+		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
 	return m.launch(ctx)

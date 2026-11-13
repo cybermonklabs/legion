@@ -101,6 +101,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
       return `added ${event.payload.artifact.name}`;
+    case "artifact.renamed":
+      return `renamed ${event.payload.previous_name} to ${event.payload.artifact.name}`;
+    case "artifact.removed":
+      return `removed ${event.payload.artifact.name}`;
     case "artifact.version":
       return `saved ${event.payload.name} v${event.payload.version.number}`;
     case "artifact.human_edited":
@@ -206,6 +210,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
+    case "result.retracted":
+      return `retracted the result of check ${event.payload.check_block_id} at ${event.payload.commit_sha}: ${event.payload.reason}`;
+    case "issue.pull_request_attribution_changed":
+      return `moved pull request ${event.payload.repo}#${event.payload.number} from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
   }
 }
 

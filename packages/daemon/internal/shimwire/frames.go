@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -68,6 +69,11 @@ const (
 	TypeLauncherBundle        = "launcher_bundle"
 	TypeLauncherBundleResult  = "launcher_bundle_result"
 	TypeLauncherRestored      = "launcher_restored"
+	// The shared public leak check's two directions: the daemon pushing the check's packed
+	// directory, in slices under the frame limit, to a launcher whose hello named a tag, and the
+	// launcher answering each slice, the last with the outcome of its install.
+	TypeLauncherLeakCheck       = "launcher_leak_check"
+	TypeLauncherLeakCheckResult = "launcher_leak_check_result"
 )
 
 // The protocol's sizes, verified against the shipped files: the largest plain line including its
@@ -156,12 +162,23 @@ type AgentSecretsTokenResult struct {
 // LauncherHello authenticates a role launcher independently from its child shim. The daemon
 // minted Token belongs to exactly this pod UID, role and Secret epoch; LauncherID changes each
 // time Kubernetes restarts the launcher container.
+//
+// LeakCheckTag is the launcher's own pin of the shared public leak check (its environment's
+// LEGION_LEAK_CHECK_TAG), empty when its environment names none: a hello that names a tag is a
+// launcher that takes the check from the daemon (LauncherLeakCheck) rather than a role reading
+// GitHub for it. LeakCheckInstalled is this launcher process having already installed that tag,
+// so the daemon pushes it nothing, and a daemon that restarts makes a running pod read nothing
+// again; a launcher process that restarts says false and is pushed the check again. The hello
+// does not refuse a tag of another shape than LeakCheckTagPattern: the launcher connects, and the
+// daemon refuses that tag as the cause of the start it cannot serve the check for.
 type LauncherHello struct {
-	Token      string `json:"token"`
-	Sandbox    string `json:"sandbox"`
-	Role       string `json:"role"`
-	PodUID     string `json:"podUid"`
-	LauncherID string `json:"launcherId"`
+	Token              string `json:"token"`
+	Sandbox            string `json:"sandbox"`
+	Role               string `json:"role"`
+	PodUID             string `json:"podUid"`
+	LauncherID         string `json:"launcherId"`
+	LeakCheckTag       string `json:"leakCheckTag,omitempty"`
+	LeakCheckInstalled bool   `json:"leakCheckInstalled,omitempty"`
 }
 
 // LauncherHelloAck admits a launcher to receive child process commands.
@@ -218,12 +235,45 @@ type LauncherStart struct {
 // it writes them.
 func GenerationDir(generation uint64) string { return "g" + strconv.FormatUint(generation, 10) }
 
-// LauncherStartResult is the launcher's answer to LauncherStart.
+// SessionRefusal is why a launcher refused a start over the session it was asked to resume. It is
+// one kind with two values rather than a flag for each, because a start meets at most one of them:
+// SessionGone is the session table answering that it holds no such session, a session that is
+// gone, and SessionStoreUnreachable is that table being absent or the store not answering at all,
+// which says nothing about the session. The empty value is no session problem, which every start
+// that succeeded and every refusal over anything else carries. A value is also the error the
+// launcher wraps its own refusal in, so the sentence the daemon reads and the kind it acts on are
+// the same thing said once (internal/launcher's resumable).
+type SessionRefusal string
+
+const (
+	SessionGone             SessionRefusal = "gone"
+	SessionStoreUnreachable SessionRefusal = "store-unreachable"
+)
+
+// Error is the sentence a refusal of this kind reads as, so a launcher can wrap it into the error
+// it answers with. A kind this build does not know reads as its own value, which keeps a newer
+// launcher's answer legible rather than empty.
+func (r SessionRefusal) Error() string {
+	switch r {
+	case SessionGone:
+		return "the session table holds no such session"
+	case SessionStoreUnreachable:
+		return "the session store could not be asked"
+	}
+	return string(r)
+}
+
+// LauncherStartResult is the launcher's answer to LauncherStart. A start the launcher refused over
+// the session it was asked to resume names the refusal's kind, so the daemon never has to read an
+// error's prose to tell the two apart: the sandbox runtime maps the kind to the sentinel the
+// supervisor acts on (runtime.ErrSessionFileMissing, runtime.ErrSessionStore). Error carries the
+// sentence either way.
 type LauncherStartResult struct {
-	ID                string `json:"id"`
-	OK                bool   `json:"ok"`
-	RunningGeneration uint64 `json:"runningGeneration,omitempty"`
-	Error             string `json:"error,omitempty"`
+	ID                string         `json:"id"`
+	OK                bool           `json:"ok"`
+	RunningGeneration uint64         `json:"runningGeneration,omitempty"`
+	Error             string         `json:"error,omitempty"`
+	Session           SessionRefusal `json:"session,omitempty"`
 }
 
 // LauncherStop stops only the child of Generation. The launcher refuses an older generation
@@ -482,6 +532,39 @@ type LauncherRestored struct {
 	Error   string `json:"error,omitempty"`
 }
 
+// LauncherLeakCheck is one slice of the shared public leak check on its way to a pod's launcher:
+// the daemon reads the check's directory at the tag the launcher's hello named
+// (LauncherHello.LeakCheckTag), packs it, and pushes it before it starts a role of that launcher,
+// so no role of the pod reads GitHub for it. The launcher has no rpc_chunk lane of its own, so
+// the slicing is the frame's, as LauncherBundle's is: Payload is the Index-th
+// LauncherBundlePayloadBytes of the packed directory (SplitLeakCheck), Count how many slices there
+// are, and SHA256 the digest of the body the slices rebuild, which the launcher checks before it
+// installs anything. Tag is the tag the body was read at, which the launcher refuses unless it is
+// its own pin. ID names the sequence, `leak-check-<tag>-<first 12 hex of the digest>`, so a
+// repeated slice is recognised as a repeated launcher_bundle slice is.
+type LauncherLeakCheck struct {
+	ID      string `json:"id"`
+	Index   int    `json:"index"`
+	Count   int    `json:"count"`
+	Tag     string `json:"tag"`
+	SHA256  string `json:"sha256"`
+	Payload []byte `json:"payload"`
+}
+
+// LauncherLeakCheckResult answers one LauncherLeakCheck. OK is the slice taken. Installed is the
+// launcher having installed the whole, digest-checked check at its tag, which it answers the last
+// slice of the sequence with, or any slice of a sequence whose tag and digest it has already
+// installed: the sequence is over and the daemon sends no more of it. A refusal carries Error, the
+// pod's cause sentence for why the check could not be installed, which the daemon refuses the
+// role's start with.
+type LauncherLeakCheckResult struct {
+	ID        string `json:"id"`
+	Index     int    `json:"index"`
+	OK        bool   `json:"ok"`
+	Installed bool   `json:"installed,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
 // WorkspaceBundle is the saved work the LauncherBundle slices carry: the git bundle's own bytes,
 // the commit the working copy sat on, the heads the bundle carries and each local bookmark that
 // pointed into the saved set. It is no frame of its own — it is the body a sequence rebuilds.
@@ -587,6 +670,8 @@ func (BundleWorkspaceResult) FrameType() string        { return TypeBundleWorksp
 func (LauncherBundle) FrameType() string               { return TypeLauncherBundle }
 func (LauncherBundleResult) FrameType() string         { return TypeLauncherBundleResult }
 func (LauncherRestored) FrameType() string             { return TypeLauncherRestored }
+func (LauncherLeakCheck) FrameType() string            { return TypeLauncherLeakCheck }
+func (LauncherLeakCheckResult) FrameType() string      { return TypeLauncherLeakCheckResult }
 
 func (f Hello) MarshalJSON() ([]byte, error) {
 	type plain Hello
@@ -755,6 +840,16 @@ func (f LauncherRestored) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeLauncherRestored, plain(f))
 }
 
+func (f LauncherLeakCheck) MarshalJSON() ([]byte, error) {
+	type plain LauncherLeakCheck
+	return marshalFrame(TypeLauncherLeakCheck, plain(f))
+}
+
+func (f LauncherLeakCheckResult) MarshalJSON() ([]byte, error) {
+	type plain LauncherLeakCheckResult
+	return marshalFrame(TypeLauncherLeakCheckResult, plain(f))
+}
+
 // Validate refuses a hello the listener would refuse (worker-stream-listener.ts:140-148).
 func (f Hello) Validate() error {
 	if f.BootToken == "" {
@@ -864,8 +959,95 @@ const LauncherBundlePayloadBytes = 256 << 10
 // here (outbox's release), and this bound says what the sequence itself will build, so a caller
 // that never read that policy cannot ask for a slice count or a body buffer sized by a length
 // nothing checked. 64 MiB leaves the release's 40 MiB its header and room to grow under a bound
-// a test keeps ordered (runtime's workspace_bundle_wire_test.go).
+// a test keeps ordered (runtime's workspace_bundle_wire_test.go). A launcher_leak_check sequence
+// is held to the same bound, so a launcher's allocations for one are under it too.
 const MaxWorkspaceBundleBodyBytes = 64 << 20
+
+// LeakCheckTagPattern is the published shape of a tag of the shared public leak check. The pattern
+// is written here rather than imported so the wire depends on nothing of the daemon's; it is the
+// one copy, which internal/leakguard reads too (ValidLeakCheckTag), since a tag becomes a path of a
+// GitHub API endpoint there.
+const LeakCheckTagPattern = `^leak-check-v[1-9][0-9]*$`
+
+var leakCheckTagShape = regexp.MustCompile(LeakCheckTagPattern)
+
+// ValidLeakCheckTag is whether tag is of the published shape LeakCheckTagPattern.
+func ValidLeakCheckTag(tag string) bool { return leakCheckTagShape.MatchString(tag) }
+
+// maxLauncherSlices is the most slices a sequence of LauncherBundlePayloadBytes each may count
+// without the body they rebuild passing MaxWorkspaceBundleBodyBytes.
+const maxLauncherSlices = MaxWorkspaceBundleBodyBytes / LauncherBundlePayloadBytes
+
+// Validate refuses a leak check slice the launcher could not place in its sequence, or one whose
+// count asks it to hold more than the sequence's bound.
+func (f LauncherLeakCheck) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_leak_check carries no id", ErrMalformedFrame)
+	case f.Count <= 0:
+		return fmt.Errorf("%w: launcher_leak_check count is %d", ErrMalformedFrame, f.Count)
+	case f.Count > maxLauncherSlices:
+		return fmt.Errorf("%w: launcher_leak_check count is %d, which could pass the %d bytes a sequence carries",
+			ErrMalformedFrame, f.Count, MaxWorkspaceBundleBodyBytes)
+	case f.Index < 0 || f.Index >= f.Count:
+		return fmt.Errorf("%w: launcher_leak_check index %d of %d", ErrMalformedFrame, f.Index, f.Count)
+	case !ValidLeakCheckTag(f.Tag):
+		return fmt.Errorf("%w: launcher_leak_check tag %q is not of the shape %s", ErrMalformedFrame, f.Tag, LeakCheckTagPattern)
+	case len(f.Payload) == 0:
+		return fmt.Errorf("%w: launcher_leak_check %d carries no payload", ErrMalformedFrame, f.Index)
+	case len(f.Payload) > LauncherBundlePayloadBytes:
+		return fmt.Errorf("%w: launcher_leak_check payload is %d bytes, limit %d", ErrMalformedFrame, len(f.Payload), LauncherBundlePayloadBytes)
+	case !digestShape.MatchString(f.SHA256):
+		return fmt.Errorf("%w: launcher_leak_check sha256 %q is not a hex SHA-256", ErrMalformedFrame, f.SHA256)
+	}
+	return nil
+}
+
+// Validate refuses a leak check answer the daemon could not act on: one answering no sequence or
+// no slice of it, a refusal with no cause, or an install the launcher says it both made and refused.
+func (f LauncherLeakCheckResult) Validate() error {
+	switch {
+	case f.ID == "":
+		return fmt.Errorf("%w: launcher_leak_check_result carries no id", ErrMalformedFrame)
+	case f.Index < 0:
+		return fmt.Errorf("%w: launcher_leak_check_result index is %d", ErrMalformedFrame, f.Index)
+	case !f.OK && f.Error == "":
+		return fmt.Errorf("%w: launcher_leak_check_result refuses without a cause", ErrMalformedFrame)
+	case !f.OK && f.Installed:
+		return fmt.Errorf("%w: launcher_leak_check_result refuses an install it says it made", ErrMalformedFrame)
+	}
+	return nil
+}
+
+// SplitLeakCheck slices body, the shared public leak check's directory packed at tag, into the
+// launcher_leak_check sequence that carries it, every slice declaring the tag and the digest of
+// the whole body so the launcher can refuse one that did not arrive as it was sent or was read at
+// another tag than its pin. The sequence's id is the tag and the digest's first 12 hex, so the
+// same check pushed again is the same sequence and the launcher answers a slice it already took
+// with the answer it gave.
+func SplitLeakCheck(tag string, body []byte) ([]LauncherLeakCheck, error) {
+	switch {
+	case !ValidLeakCheckTag(tag):
+		return nil, fmt.Errorf("%w: a launcher_leak_check sequence of the tag %q, which is not of the shape %s",
+			ErrMalformedFrame, tag, LeakCheckTagPattern)
+	case len(body) == 0:
+		return nil, fmt.Errorf("%w: a launcher_leak_check sequence of %s carries no body", ErrMalformedFrame, tag)
+	case len(body) > MaxWorkspaceBundleBodyBytes:
+		return nil, fmt.Errorf("%w: a leak check body of %d bytes is over the %d a launcher_leak_check sequence carries",
+			ErrMalformedFrame, len(body), MaxWorkspaceBundleBodyBytes)
+	}
+	digest := BundleDigest(body)
+	id := "leak-check-" + tag + "-" + digest[:12]
+	count := (len(body) + LauncherBundlePayloadBytes - 1) / LauncherBundlePayloadBytes
+	frames := make([]LauncherLeakCheck, 0, count)
+	for payload := range slices.Chunk(body, LauncherBundlePayloadBytes) {
+		frames = append(frames, LauncherLeakCheck{
+			ID: id, Index: len(frames), Count: count, Tag: tag,
+			SHA256: digest, Payload: payload,
+		})
+	}
+	return frames, nil
+}
 
 // SplitWorkspaceBundle slices b, the work release saved, into the launcher_bundle sequence that
 // carries it, every slice declaring the release and the digest of the whole body so the launcher
@@ -921,7 +1103,8 @@ func ParseWorkspaceBundle(body []byte) (WorkspaceBundle, error) {
 	return b, nil
 }
 
-// BundleDigest is the digest a launcher_bundle sequence declares for the body it carries.
+// BundleDigest is the digest a launcher_bundle or launcher_leak_check sequence declares for the
+// body it carries.
 func BundleDigest(body []byte) string {
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
@@ -1000,7 +1183,9 @@ func (f Hello2) Validate() error {
 	return nil
 }
 
-// Validate refuses an unactionable launcher hello before the listener hands it to the runtime.
+// Validate refuses an unactionable launcher hello before the listener hands it to the runtime: a
+// leak check said to be installed with no tag is one. The tag's shape is the daemon's to refuse
+// when it serves the check (LauncherHello).
 func (f LauncherHello) Validate() error {
 	switch {
 	case f.Token == "":
@@ -1013,6 +1198,8 @@ func (f LauncherHello) Validate() error {
 		return fmt.Errorf("%w: launcher_hello carries no podUid", ErrMalformedFrame)
 	case f.LauncherID == "":
 		return fmt.Errorf("%w: launcher_hello carries no launcherId", ErrMalformedFrame)
+	case f.LeakCheckInstalled && f.LeakCheckTag == "":
+		return fmt.Errorf("%w: launcher_hello says a leak check is installed and names no leakCheckTag", ErrMalformedFrame)
 	}
 	return nil
 }
@@ -1154,6 +1341,10 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[LauncherBundleResult](trimmed)
 	case TypeLauncherRestored:
 		return decodeInto[LauncherRestored](trimmed)
+	case TypeLauncherLeakCheck:
+		return decodeInto[LauncherLeakCheck](trimmed)
+	case TypeLauncherLeakCheckResult:
+		return decodeInto[LauncherLeakCheckResult](trimmed)
 	default:
 		return Raw{Type: head.Type, JSON: bytes.Clone(trimmed)}, nil
 	}
