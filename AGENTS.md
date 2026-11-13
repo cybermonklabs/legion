@@ -870,6 +870,58 @@ A tree is live while its lifecycle is open and it does not linger, or while its 
 `legion state` counts the slot holders against the cap and prints the live trees;
 its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
 
+Every issue of a project that the daemon's record holds in the workflow stands in `admission.active`, in `admission.waiting`, or in `admission.held`.
+`admission.held` names no issue that `admission.active` or `admission.waiting` names, while those two keep the overlap above, where an issue holding a row stands in both until the pass that promotes it;
+`admission.blocked` keeps its rows and its overlaps with all three, so a held issue a Dispatch link holds stands in both lists.
+Each row of `admission.held` carries three fields:
+`issue`, the issue key; `reason`, one word of the list below; and `heldBy`, the issues that hold it, which is absent where no other issue holds the one that waits.
+The reason is the first of these eleven words that is true of the issue, and the daemon reads them in this order wherever it leaves a candidate behind, so one issue reads one reason, and it reads the same reason in the state and in the controller's tick notice:
+
+- `tree_closed` — the daemon's record of the issue's tree root says `done`, or that root's linger is still running after it left the workflow.
+  A parked root lingers too, so a member of a parked tree reads this word while that linger runs.
+
+- `tree_parked` — the issue's tree root left the workflow to `backlog` or `icebox`, and that root's linger has run out.
+
+- `label_off` — the issue is a root the waiting line does not carry, because the record says the `legion` label is off.
+
+- `ancestry` — the root's Dispatch chain reaches another live root, so the issue is that tree's unreleased work.
+
+- `root_awaiting_person` — the tree root waits on a person's answer.
+
+- `design_gate` — the tree root's design gate is not open.
+
+- `dispatch_blocker` — a Dispatch `blocked_by` link names an issue that is not done, and holds this issue where it stands.
+
+- `children_first` — Dispatch shows an open child under the issue, so its own first phase waits.
+
+- `accepted_ancestor` — an ancestor's reviewed head is accepted, and the hold ends at that ancestor's close.
+
+- `at_work` — the issue stands in a phase that holds no admission slot and that the waiting line does not carry.
+  No issue reads this word today (`record.HeldAtWork` says why).
+  The workers of such a phase run as they did before, and the word says nothing about them.
+
+- `unclassified` — no reason above is true of the issue.
+  The daemon carries it all the same and logs it once for that issue and run.
+
+`heldBy` holds the issue or issues the reason names:
+the tree root for `tree_closed`, `tree_parked`, `design_gate` and `root_awaiting_person`;
+every live root the chain reaches for `ancestry`, which can be more than one;
+the accepted ancestor for `accepted_ancestor`;
+the unfinished blockers for `dispatch_blocker`;
+and the open children for `children_first`.
+It is absent for `label_off`, `at_work` and `unclassified`.
+An issue in `admission.held` holds no admission slot, so the list changes no count against `admission_cap`.
+An issue in the phase `held` keeps its slot while its tree runs, and then `admission.active` names it and no held row does.
+Under a tree root whose linger was ever armed — a root that closed, was parked or was moved to `triage` — it holds no slot from the next admission pass on (`record.NeedsSlot`), and its held row reads the first word of the ladder that is true of it:
+`tree_closed` while that linger runs and after it for a `done` root, `tree_parked` after it for a root in `backlog` or `icebox`, and after it for a root in any other status, such as `triage`, the first later word that is true, `unclassified` where none is.
+The daemon starts no held issue while its word stands.
+The end of one hold starts nothing where a later word is true of the issue, since that word then holds it;
+once no word holds the issue, it goes into the waiting line, where it waits for a slot.
+An architect's `release_children` can adopt a member of a closed tree, as the adoption rule below says.
+A person's `todo` on the root re-admits a parked tree, and a person's label puts back a root whose label is off.
+A linger's own expiry hands members over, as the hand-over rule below says.
+A handed-over issue queues for a slot of its own; the daemon does not start it at once.
+
 **Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
 So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that has no open child.
 `sign_off` and `close_root` are refused while an issue beneath is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), and `release_children` and `rerun_child` refuse a child whose ancestor is in `retro` or `merging` (`CHILD_UNDER_ACCEPTED_PARENT`, naming the ancestor);
@@ -950,10 +1002,15 @@ A `todo` root that never ran as a tree of its own (no slot reached it and it car
 It gets no architect and runs there as a `todo` child does: it waits in the line for a slot of its own, is held like any child while it waits on an unfinished Dispatch issue, and the tree's architect gets a `child-status` notice.
 A root that left another tree, handed over by its finished tree or admitted as an orphan, carried or not, stays its own tree (`record.Issue.HandedOverFrom`):
 admitting its old root again never takes it back, no other tree adopts it, and no live tree on its Dispatch chain holds it; it queues for a slot of its own.
-`release_children` adopts a joinable child the same way before it answers `released`, naming it under `held` when it waits on an unfinished issue, and refuses one it cannot, writing nothing:
-`CHILD_NOT_ADOPTABLE` for a root that ran as a tree of its own, carries a run of its own, or left another tree as a root of its own, `CHILD_IN_OTHER_TREE` for a child recorded in another tree.
+`release_children` adopts a joinable child the same way before it answers `released`, naming it under `held` when it waits on an unfinished issue, and refuses one it cannot, writing nothing.
+It refuses first, before it reads the child's record, a child Dispatch shows in any status but `triage`, `backlog`, `icebox` or `todo`, with `ISSUE_ALREADY_RELEASED`, so a member of another tree that is at work reads that refusal and neither of the two below;
+`CHILD_NOT_ADOPTABLE` for a root that ran as a tree of its own, carries a run of its own, or left another tree as a root of its own, and for a member of a closed tree that the rule below would adopt but that holds an admission slot;
+`CHILD_IN_OTHER_TREE` for every other member of another tree but a member of a root the same release adopts, which joins with that root: a member of a live tree, which is another architect's work, a member of a tree whose root is not `done` (a parked tree, or one a person moved to `triage`), a member of a tree still in its linger, and a member past `admitted` that Dispatch shows in one of those four statuses.
+A child recorded in another tree is adopted instead only when it stands at the phase `admitted` and holds no admission slot, and its root's record says `done` with that root's linger ended:
+it joins the releasing tree with its repository unchanged and its generation raised by one, at `admitted` when its status is `todo`, and otherwise as a parked child at `done`, which a `todo` runs again.
 A labelled `todo` issue whose parent is not recorded, or is recorded as a root of its own, and whose Dispatch chain reaches a live tree (a child that tree's architect has not released, or a root parked under it) is held under that unreleased child, the ancestry hold:
-out of `admission.waiting`, and not in `admission.blocked`, which names blocked-by links and children-first waits, neither of which is what holds it.
+out of `admission.waiting`, and not in `admission.blocked`, which names blocked-by links and children-first waits, neither of which is what holds it;
+it stands in `admission.held` under the reason `ancestry`, which does name what holds it.
 It waits for no slot until that release, or its parent's, brings it into the tree, and a `todo` child of it waits with it and moves with it;
 it queues as a root of its own once no live tree is left on its chain:
 each lingers or leaves the workflow, or a person moves an ancestor, recorded or not, out from under it.
@@ -966,7 +1023,7 @@ the daemon sets it `todo` with the label in one Dispatch write, and the write's 
 A child that never started is handed over too, carrying no run, whatever held it where it stood — an unfinished Dispatch issue, an ancestor the daemon had accepted, or one that closed during the linger:
 the expiry reads the child's own state rather than the reason it waited, so every member the tree leaves in the workflow at `todo` and `admitted` becomes a root of its own.
 A child a person has taken out of the workflow, and one the architect has filed and not released, is in no such state and stays where it is.
-A root that does not stay `done` through its linger, one a person or a controller parked, hands over only a child standing at `merging` whose pull request is still open and whose own status is in the workflow:
+A root that does not stay `done` through its linger, one a person or a controller parked or one a person moved to `triage`, hands over only a child standing at `merging` whose pull request is still open and whose own status is in the workflow:
 the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, and its merger merges the head it reads, whose merge closes it.
 Ask the person whether that child's merge must wait for its parked root.
 A child whose old root had no gate (cleared by a reopen in its linger) carries none:
@@ -997,6 +1054,7 @@ a blocker added to a running tree's issue changes nothing for it.
 Two backstops catch a close no event brought:
 the daemon's boot reads the whole project listing, and its periodic turn (`controller_wake_interval_seconds`, an hour by default) re-reads from Dispatch the issues anything is waiting on and looks again.
 `legion state` prints the waits as `blocked on Dispatch links:`, the state's JSON carries them under `admission.blocked`, and the periodic wake to the project's controller carries the same list (the tick notice's `blocked`), for the day's report.
+`legion state` prints a held line of its own, how many issues the project holds in `admission.held` and how many of each reason, and the periodic wake to the project's controller carries the held rows beside the blocked ones.
 The mark is a label rather than the issue's `route` because Dispatch publishes every event of a routed issue to the route's topic, where a label only marks the issue; it carries no workflow state.
 
 **Waiting on a person:** an admitted root whose architect asked a person a question, or handed its spec to a person for approval, keeps its admission slot while it waits, in its own `awaiting_person` phase.

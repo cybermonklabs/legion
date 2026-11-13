@@ -65,7 +65,7 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // the cap's slots from the moment its architect begins, so a root whose design gate is shut, one
 // whose children go first and one an unfinished link holds each stand in active with no word
 // against them. A held list built from the ladder alone, rather than from the issues the slots
-// and the line leave behind, would give all three a word and claim the daemon runs nothing of a
+// and the line leave behind, would give all three a word and say the daemon does not start a
 // tree it is running.
 //
 // admission.blocked is read as well: it keeps its own rows and its overlaps with all three lists,
@@ -245,8 +245,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 }
 
-// wordFor is the held row the projected state gives one issue: the word for why nothing of it
-// runs and the issues that hold it (heldRow).
+// wordFor is the held row the projected state gives one issue: the word for why the daemon does
+// not start it and the issues that hold it (heldRow).
 func wordFor(t *testing.T, store projectionStore, key string) api.HeldIssue {
 	t.Helper()
 	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)

@@ -177,8 +177,18 @@ slot and so resumes whatever the cap says, the key that placed it — `since`, t
 work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not started — and
 `reason`, the daemon's own sentence for that place. Every issue that is not working now carries
 `why` beside that: a `state`, one of `claim_stopped` (a claim nothing will wake), `waiting`,
-`blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
-`reason` sentence. An issue holding an admission slot carries no `why` unless it
+`blocked` (it stands in `admission.blocked`, where a Dispatch link or an open child below it
+holds it) and `unlisted` (the record holds it in the workflow and it stands in none of
+`admission.active`, `admission.waiting` and `admission.blocked`, so it stands in
+`admission.held`), with a `reason` sentence. For an issue of `admission.held` that no stranded
+claim names, that sentence is the one of its held word, under `blocked` as well where the word
+is one of the six the daemon reads before `dispatch_blocker`, because closing the links would
+not start the issue while that word stands; a held issue a stranded claim names reads
+`claim_stopped` and that claim's sentence. One child reads otherwise: under `blocked`, a child
+whose own `blocked_by` link holds it under an ancestor in its tree (a children-first cycle)
+reads the cycle sentence, whatever its held word, and `admission.held` still names that word.
+An issue holding an
+admission slot carries no `why` unless it
 also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an
 answered root reads `waiting`, a root whose open children hold its own first phase reads
 `blocked`, and an issue at work whose worker runs, one `held` and a root whose ask a person has

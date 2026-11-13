@@ -1844,7 +1844,7 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 
 #### Rolling back the release that names what nothing starts
 
-This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.
+This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why the daemon does not start it and the issues that hold it.
 An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a controller notice still queued at the rollback fails on its backoff for ever and the tick reaches nobody.
 Run this with the daemon stopped, before the earlier image is pinned:
 

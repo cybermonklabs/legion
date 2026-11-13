@@ -754,8 +754,8 @@ export const LEGION_HELD_REASONS = [
 ] as const;
 
 /** `api.HeldIssue` (`record.HeldIssue`) — one row of `admission.held`: an issue the daemon's
- * record holds in the workflow that stands in neither `active` nor `waiting`. The daemon runs
- * nothing of it and queues it nowhere, and the row says in one word why (`reason`, the closed
+ * record holds in the workflow that stands in neither `active` nor `waiting`. The daemon does not
+ * start it and queues it nowhere, and the row says in one word why (`reason`, the closed
  * list one ladder reads in one order) and which issues hold it (`heldBy`). A row names no issue
  * of `active` or `waiting`: the three lists are one partition of the issues the record holds in
  * the workflow, so a reader with all three has every issue and what each is doing. `heldBy` is
@@ -793,7 +793,7 @@ const legionHeldIssue = z.object({
  * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
  * The controller names them in the day's report and takes nothing for them.
  * `held` is every issue the daemon's record holds in the workflow that stands in neither
- * `active` nor `waiting`, sorted by key: the work the daemon runs nothing of and queues nowhere,
+ * `active` nor `waiting`, sorted by key: the work the daemon does not start and queues nowhere,
  * each row saying in one word why and naming the issues that hold it. A row names no issue of
  * `active` or `waiting`, so the three lists are one partition of the workflow and a reader of
  * all three can say of every issue what it is doing; `heldBy` is absent where no issue holds the

@@ -1058,11 +1058,13 @@ Closing the terminal leaves the project without one, and the daemon logs
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
+  admission.held: 4 issues — tree_parked 1, label_off 1, ancestry 1, design_gate 1
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  roles not given their phase entry: none
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none
@@ -1090,6 +1092,25 @@ Closing the terminal leaves the project without one, and the daemon logs
   `waiting line: none` while nothing waits, and
   `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
   this caller no sentence at all, which is what a daemon older than the sentence serves.
+
+  The `admission.held` line counts the issues the record holds in the workflow that stand in
+  neither `admission.active` nor `admission.waiting`, then how many of them each reason holds,
+  as `admission.held: <N> issues — <word> <n>, …` (`1 issue` for one, and
+  `admission.held: none` while nothing is held). The eleven reason words name what holds an
+  issue:
+  `tree_closed`, `tree_parked`, `label_off`, `ancestry`, `root_awaiting_person`, `design_gate`,
+  `dispatch_blocker`, `children_first`, `accepted_ancestor`, `at_work` and `unclassified`. The
+  daemon reads them in that order and takes the first that is true of the issue, so one issue is
+  counted once, and the line lists the words in that same order; a word this `legion` binary
+  does not know, which a newer daemon can send, follows them with its count, sorted by the word,
+  so the counts always add up to the total. No issue reads `at_work`
+  today (`record.HeldAtWork` says why). An issue in `admission.held` holds no slot, so this
+  count never moves the `admission` line's count against the cap. The `held lifecycle rows` line
+  further down the block is a different thing: one issue's
+  own start or stop waiting behind another row of that same issue
+  ([An issue's stop or start waits behind its own launch](/legion/legion/troubleshooting/#an-issues-stop-or-start-waits-behind-its-own-launch)).
+  [An issue does not start](/legion/legion/troubleshooting/#an-issue-does-not-start) says what to
+  do about each word.
 
   The `roots waiting on a person` line counts the roots in phase `awaiting_person`, each holding
   the slot it took when the daemon started it, how many of them a person
@@ -1170,7 +1191,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   [GitHub events wait](/legion/legion/troubleshooting/#github-events-wait) says what each means
   and what to check.
 
-  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
+  `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a
+  slot, `waiting` the issues in the line, `held` the issues in neither of those two lists, each row
+  carrying `issue`, `reason` — the first of the eleven words of the `admission.held` line above
+  that is true of the issue — and `heldBy`, the issues that hold it, absent where no other issue
+  holds the one that waits; then `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
   `architect` and `workers` (each claim's `state`, and on the implementer `backwardMoves`, one
   count for each kind of move back the issue has made, keyed `<from>-<to>`, left out where it has
@@ -1191,8 +1216,14 @@ Closing the terminal leaves the project without one, and the daemon logs
   Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
   sentence the block above prints. Beside them, on every issue that is not working now,
   `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
-  line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
-  holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
+  line; `blocked`, an issue of `admission.blocked`, which a Dispatch link or an open child below
+  it holds; `unlisted`, an issue the record holds in the workflow that stands in none of
+  `admission.active`, `admission.waiting` and `admission.blocked`, and so in `admission.held` —
+  and a `reason` sentence, which for an issue of `admission.held` that no stranded claim names
+  is its held word's sentence, under `blocked` as well where the word is one the daemon reads
+  before `dispatch_blocker`, except that under `blocked` a child whose own `blocked_by` link
+  holds it under an ancestor in its tree (a children-first cycle) reads the cycle sentence,
+  whatever its held word, and a held issue a stranded claim names reads `claim_stopped`; an
   issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
   or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
   whose open children hold its own first phase reads `blocked`, and an issue at work whose

@@ -31,7 +31,7 @@ answer to your ask, a mention), Envoy or Slack. No `legion controller start` can
   children), `admission.waiting` (the issues in the line, in its order), `admission.trees` (the
   roots of the live trees), `admission.blocked`, `admission.held` (every issue the record holds
   in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with
-  one word for why nothing of it runs and the issues that hold it;
+  one word for why the daemon does not start it and the issues that hold it;
   `skill://legion-controller/references/admission.md` gives the word for each row and what ends
   it), `capabilities[]`, `daemon.project`, and
   `settings` (the daemon's resolved `legion.yaml`, with no credential in it).

@@ -61,8 +61,8 @@ take nothing for them.
 
 `held`, when present, is `[{issue, reason, heldBy?}, …]`: every issue the daemon's record holds
 in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one
-word for why nothing of it runs and the issues that hold it. `heldBy` is absent where no issue
-holds the one that waits. The field is absent where the project holds nothing, as `blocked` is.
+word for why the daemon does not start it and the issues that hold it. `heldBy` is absent where
+no issue holds the one that waits. The field is absent where the project holds nothing, as `blocked` is.
 `read_state` shows the same rows under `admission.held`, with the same word for each issue, and
 `legion state` prints their counts as `admission.held:`. The word for each row, and what ends
 each hold, is the table in `skill://legion-controller/references/admission.md`. The rows name the
