@@ -1337,8 +1337,8 @@ package api
 //
 // 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 // record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
-// the issue's key, the one word for why the daemon does not start it (`record.HeldReason`, a
-// closed list of eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
+// the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
+// eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
 // `record.HeldAtWork` says) and the issues that hold it where any do (`heldBy`, absent where none
 // does — a root whose Legion label is off, an issue none of the other words is true of). The
 // three lists together are every issue of the workflow and what each is doing, which `active` and
