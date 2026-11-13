@@ -2,6 +2,9 @@ package api
 
 import (
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -281,6 +284,31 @@ func TestClaimOwedIsAFailureWhereTheDaemonCannotReadWhoWorksThePhase(t *testing.
 	recorder := askOwed(h, OwedRequest{ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret})
 	if recorder.Code != http.StatusInternalServerError {
 		t.Fatalf("owed on a daemon with no RoleFor = %d, want 500; body %s", recorder.Code, recorder.Body)
+	}
+}
+
+// unreadableIssues is a record store whose read of an issue fails, as a database that is down or
+// refuses the read fails it.
+type unreadableIssues struct{ record.Store }
+
+func (unreadableIssues) Issue(context.Context, pgx.Tx, string) (*record.Issue, error) {
+	return nil, errors.New("the database refused the read")
+}
+
+// A daemon that cannot read the claim's issue record answers a failure, not "nothing owed": the
+// reminder reads the failure as an answer that did not arrive and still nudges, where an empty
+// answer on every failed read would silence every reminder for as long as the store fails.
+func TestClaimOwedIsAFailureWhereTheDaemonCannotReadTheIssueRecord(t *testing.T) {
+	h := newHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)), Pool: h.store.Pool(), Record: unreadableIssues{record.NewStore()}, RoleFor: workflow.RoleFor,
+	}).Handler
+	recorder := askOwed(h, OwedRequest{ClaimToken: tester.token, SessionID: tester.session, Secret: tester.secret})
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("owed on a daemon whose issue read fails = %d, want 500; body %s", recorder.Code, recorder.Body)
 	}
 }
 

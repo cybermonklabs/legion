@@ -231,6 +231,24 @@ test("a daemon that does not answer still nudges, and the nudge names no phase a
   }
 });
 
+// The other side of the rows above, over the same real client: only the daemon's success that the
+// claim owes nothing silences the reminder. A failure, the 500 of a record the daemon could not
+// read among them, is no such answer and nudges.
+test("a daemon that answers 200 that the claim owes nothing is reminded of nothing", async () => {
+  const client = createLegionDaemonClient("http://daemon.test", (async () =>
+    Response.json(OWES_NOTHING)) as unknown as typeof fetch);
+  const { reminder, timers, sent, asked } = rig({
+    owed: (input, signal) => client.owed(input, { signal }),
+  });
+
+  expect(await reminder.settle(said("Pushed."))).toBeUndefined();
+  // A quiet wait is armed, and its timer asks the daemon again.
+  expect(await reminder.settle(said("WAITING on CI."))).toBeUndefined();
+  await fireLast(timers);
+  expect(sent).toEqual([]);
+  expect(asked()).toBe(2);
+});
+
 // A daemon that answers the owed read later than the bound still has the worker nudged
 // (`NUDGE_WHEN_OWED_UNREAD`), and the nudge, and the architect notice that follows it, name no
 // phase, no operation and no owed work: the answer that comes after the bound, naming the work,

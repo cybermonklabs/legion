@@ -141,6 +141,59 @@ func TestACatchUpListsAnIssueItsTreeGainedBeforeItsDelivery(t *testing.T) {
 	}
 }
 
+// Whether a hand-over created the root at its generation (HandedOver) and whether its old root's
+// gate came with it (Carried) are the record's at the delivery, as the gates and the issues are:
+// they tell the architect whether its workers already run their phases and whether it registers a
+// spec of its own, so a catch-up that stated them as they stood at its queueing would send it to
+// decompose a tree that is already running, or to register a gate it carried. Each case moves one
+// of them in the record (handed_over_roots, which workflow.TreeCatchUp reads) between the queueing
+// and the delivery, at the root's own generation, so that nothing supersedes the row.
+func TestACatchUpStatesTheHandOverItsRootRecordsWhenItIsDelivered(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		before, after     *record.HandedOverRoot
+		queued, delivered record.CatchUp
+	}{
+		{name: "the root is handed over after the queueing",
+			after:  &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1},
+			queued: record.CatchUp{}, delivered: record.CatchUp{HandedOver: true}},
+		{name: "the handed-over root's gate is carried after the queueing",
+			before: &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1},
+			after:  &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1, GateCarried: true},
+			queued: record.CatchUp{HandedOver: true}, delivered: record.CatchUp{HandedOver: true, Carried: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newCatchUpDelivery(t)
+			handOver := func(root *record.HandedOverRoot) {
+				if root == nil {
+					return
+				}
+				d.write(t, "record the hand-over of LEGION-1", func(ctx context.Context, tx pgx.Tx) error {
+					return d.records.PutHandedOverRoot(ctx, tx, *root)
+				})
+			}
+			handOver(tc.before)
+			keptCatchUp(t, d.pool, d.records, "LEGION-1", 1, d.now)
+			handOver(tc.after)
+
+			queued, published := d.deliver(t)
+			if queued.CatchUp.HandedOver != tc.queued.HandedOver || queued.CatchUp.Carried != tc.queued.Carried {
+				t.Fatalf("the queued catch-up states handed over %t, carried %t, want %t, %t: the row holds the record of its queueing",
+					queued.CatchUp.HandedOver, queued.CatchUp.Carried, tc.queued.HandedOver, tc.queued.Carried)
+			}
+			if len(published) != 1 {
+				t.Fatalf("the delivery published %d notices, want the one catch-up", len(published))
+			}
+			got := published[0].CatchUp
+			if got.HandedOver != tc.delivered.HandedOver || got.Carried != tc.delivered.Carried {
+				t.Fatalf("the delivered catch-up states handed over %t, carried %t, want %t, %t: the architect is told the hand-over "+
+					"the record holds when the notice is delivered, not the one it held when the row was queued",
+					got.HandedOver, got.Carried, tc.delivered.HandedOver, tc.delivered.Carried)
+			}
+		})
+	}
+}
+
 // A catch-up whose root advanced a generation between its queueing and its delivery is superseded
 // (catchUpSuperseded): the re-admission's start writes the fresh one. The fence reads the row's
 // generation, as the row holds it, against the root's now, before the delivery composes the tree

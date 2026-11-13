@@ -18,12 +18,16 @@ import (
 // the four charge functions — chargePrompt, chargeDeath, relaunchAfterFailure and chargeLaunch —
 // each ask it, so no site that reaches one can charge what the policy waives. But the Go type
 // system cannot require that a failing path call one of them at all, and a busy path that
-// decides the busy answer itself, from the agent's words, never reaches a charge function. So
-// this test reads the package's own source and holds the four things the compiler cannot: every
-// member has a row in the policy, no site outside outcome.go reads a refusal's words to decide,
-// every charge names a member the package declares, and no function but a charge function
-// writes a budget counter except to reset it to zero (budgetResets names each that may). Delete
-// this test when a chokepoint for that becomes possible.
+// decides the busy answer itself, from the agent's words, never reaches a charge function. Nor
+// can a type keep a site from reading those words: they reach the package as an error and as
+// strings, which it must hold to log a failure and to keep a delivery's last send error, and the
+// text of either is open to any function that holds it. So this test reads the package's own
+// source and holds the four things the compiler cannot: every member has a row in the policy, no
+// site in the package reads a refusal's words to decide — outcome.go no more than any other file,
+// since the outcome is minted in internal/stream where the frame is read — every charge names a
+// member the package declares, and no function but a charge function writes a budget counter
+// except to reset it to zero (budgetResets names each that may). Delete this test when a
+// chokepoint for that becomes possible.
 //
 // It type-checks the package's non-test source against the compiler's export data for its
 // dependencies (compiledDependencies, as TestProcessEndsListsEveryEndDeclared does), so it reads
@@ -65,29 +69,32 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 		}
 	})
 
-	t.Run("no site outside outcome.go reads a refusal's words", func(t *testing.T) {
+	t.Run("no site in the package reads a refusal's words", func(t *testing.T) {
 		taint := src.refusalWords(t)
-		for name, file := range src.files {
-			if name == "outcome.go" {
-				continue
-			}
-			ast.Inspect(file, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
+		for _, file := range src.files {
+			for _, decl := range file.Decls {
+				in := "a package-level declaration"
+				if fn, ok := decl.(*ast.FuncDecl); ok {
+					in = fn.Name.Name
 				}
-				fn := src.callee(call)
-				if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "strings" ||
-					!slices.Contains([]string{"HasPrefix", "Contains", "EqualFold"}, fn.Name()) {
-					return true
-				}
-				for _, arg := range call.Args {
-					if taint.reaches(arg) {
-						t.Errorf("%s calls strings.%s on a refusal's words: the outcome is minted where the frame is read (stream.PromptRefusalOutcome), never derived here", src.pos(call), fn.Name())
+				ast.Inspect(decl, func(node ast.Node) bool {
+					call, ok := node.(*ast.CallExpr)
+					if !ok {
+						return true
 					}
-				}
-				return true
-			})
+					fn := src.callee(call)
+					if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "strings" ||
+						!slices.Contains([]string{"HasPrefix", "Contains", "EqualFold"}, fn.Name()) {
+						return true
+					}
+					for _, arg := range call.Args {
+						if taint.reaches(arg) {
+							t.Errorf("%s, in %s, calls strings.%s on a refusal's words: the outcome is minted where the frame is read (stream.PromptRefusalOutcome), never derived in this package", src.pos(call), in, fn.Name())
+						}
+					}
+					return true
+				})
+			}
 		}
 	})
 
