@@ -1,0 +1,5 @@
+kind: Added
+body: 'The Envoy skill names the command that reads a role''s holder from a shell with no tool device: `envoy role <role>` where the dotfiles `scripts/envoy` is on the PATH, and a `curl` of `GET /v1/roles/<role>` with `ENVOY_URL` and `ENVOY_TOKEN_FILE` in a Legion pod, which prints the holder''s session id or `unclaimed`.'
+time: 2026-11-13T23:01:15.122412092Z
+custom:
+    Issue: pr3998
