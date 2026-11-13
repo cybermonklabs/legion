@@ -418,8 +418,9 @@ type PhaseRow struct {
 	Role  claim.Role
 	Claim claim.Token
 	// HandoffCommit is the commit the role's completion of its current phase reported: the
-	// implementer's pushed tip for an implementing round, and the commit retro and merging stand
-	// on. The planner, the tester and the reviewer report none; they name a handoff record instead.
+	// implementer's pushed tip for an implementing round, the commit retro and merging stand on,
+	// and for the planner, the tester and the reviewer the head their handoff record names, the
+	// commit their work was done against, which they report beside that record.
 	HandoffCommit string
 	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
 	// more run of the implementing, testing and reviewing stretch. It tells one pass through a
