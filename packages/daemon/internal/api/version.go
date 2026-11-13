@@ -1327,18 +1327,19 @@ package api
 // brought main in, 74 at the push that followed, 86 at the forward merge of 2026-11-12 that
 // brought main in at 9009dc1d, 87 at the push after it, 90 at the push after that, 93 at the
 // push after that, 95 at the push after that, 97 at the forward merge of 2026-11-13 that brought
-// main in at 12ba4e6a, and 99 here. The number a renumber takes is one above every open
-// declaration, never the lowest free one: three branches each took the lowest free number at
+// main in at 12ba4e6a, and 99 here. Each of those took one above every open declaration rather
+// than the lowest free number, because three branches had each taken the lowest free number at
 // three moments and collided four ways at 65. The heads were read at this push over the
 // `const DaemonAPIVersion` of main and of every one of the 140 open pull requests of this
 // repository at refs/pull/<n>/head, rather than over the file lists GitHub gives, which it cuts
 // short for a pull request of many files: main declares 87, and the highest open declarations
 // are #3708's 98, above the 97 this change declared before this move, #2731's and #3573's 96 and
 // #3677's 94; every other open head declares less than 94. So this change takes 99, which is
-// one above every one of them: a number below the highest open
-// declaration is refused by .github/scripts/check-daemon-api-contract.sh the moment one of those
-// heads lands and main itself reaches it. Read main's number and every open pull request again
-// at the next merge rather than from this line, as
-// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says.)
+// one above every one of them. That rule, one above every open declaration, is retired here:
+// two trees both following it push each other higher at every push, and #3708 and this change
+// did, 95 to 99 against 98. This change holds 99 while main's own number is below it, and
+// renumbers only when main reaches 99 or above, once, in the forward merge that landing forces,
+// to the lowest free number above main's;
+// .github/scripts/check-daemon-api-contract.sh refuses a number at or below the base's, which is
+// the one collision a renumber has to answer.)
 const DaemonAPIVersion = 99
