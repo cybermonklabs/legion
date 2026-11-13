@@ -12,9 +12,12 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cmdtest"
@@ -252,30 +255,39 @@ func TestTwoPodsSIGKILLMidFrameKeepsTheSessionsOrderWithin15s(t *testing.T) {
 // durable, each NAKed for durableRetryDelay (30 s), far past every hold these rows measure.
 const mpParkedMessages = 4
 
-// mpParkedResumeAhead is how far past the stream's last sequence the parked session's resume point
-// lies: far more messages than any row publishes, so every parked message is stored below the
-// start of that session's consumer.
-const mpParkedResumeAhead = 1 << 20
+// mpParkedQuiet is how long mpRetryOutstanding reads the durable after the NAKs and requires it to
+// deliver nothing: the 30 s of durableRetryDelay measured on the server rather than quoted.
+const mpParkedQuiet = 5 * time.Second
 
 // mpRetryOutstanding registers on pod a two healthy sessions, named after row, and leaves the
-// machine's durable holding messages no pod of it can settle. The parked session follows a stored
-// topic and is live, but its consumer cannot carry the messages published to it
-// (session.Resolve's "one whose consumer cannot carry this message", internal/session/session.go):
-// it registers on consumer delivery with a resume point that names the stream's identity and a
-// sequence mpParkedResumeAhead past the stream's last, so its consumer starts past every parked
-// message. No consumer holds those messages, so the durable delivers them (durableNeedsDelivery),
-// and the fan-out's resolution of that live session fails, which the durable path NAKs for
-// durableRetryDelay (30 s; fanoutDelivery). Those messages are in no pod's hands over a
-// hand-over and come back only after those 30 s, so the pod taking delivery over never finds
-// every outstanding message in hand, however long the hand-over takes. The old mechanism, a
-// registration that asked for no consumer at all, is one the listener refuses since #2603
-// (2af83d53fc: sessionDelivery.consumerFor answers it 409 not_requested), and this is the other
-// state session.Resolve still parks a retry for.
+// machine's durable holding messages no pod of it can settle, by the route production reaches that
+// state on: the backlog. Messages are left unacknowledged on the machine's durable by an outage of
+// the pod receiving it, and the session they are for registers at its real resume point, past
+// them, so its consumer starts after them. The session follows a stored topic and is live, but its
+// consumer cannot carry those messages (session.Resolve's "one whose consumer cannot carry this
+// message", internal/session/session.go), so when the durable delivers them again the fan-out's
+// resolution of that live session fails, which the durable path NAKs for durableRetryDelay (30 s;
+// fanoutDelivery). Those messages are in no pod's hands over a hand-over and come back only after
+// those 30 s, so the pod taking delivery over never finds every outstanding message in hand,
+// however long the hand-over takes. The old mechanism, a registration that asked for no consumer
+// at all, is one the listener refuses since #2603 (2af83d53fc: sessionDelivery.consumerFor
+// answers it 409 not_requested), and this is the other state session.Resolve still parks a retry
+// for.
+//
+// The outage is a's link frozen (listenerRelay.freeze) while the parked messages are published
+// and the durable pushes them to a, then dropped: what the durable pushed goes with that
+// connection, unacknowledged, and comes back only at the durable's ack wait (consumerAckWait,
+// 6 s). The session registers through a once a has reconnected, inside that ack wait, with the
+// resume point a correct client holds: the stream's identity and the last parked sequence. The
+// freeze alone cannot be ordered against the registration, since every connection of a goes
+// through the one relay: the registration's own writes would wait for the thaw, behind the
+// durable's push, which a would then fan out to no registered interest and ACK.
 //
 // It requires the retry to be outstanding before it returns: pod a answered the parked
-// registration with the far consumer start, logged a failed delivery to the parked session for
-// every parked message, the fan-out's failure that it NAKs for durableRetryDelay, and counted at
-// least that many NAKs (envoy_messages_naked_total).
+// registration with a consumer starting just after the last parked message, logged a failed
+// delivery to the parked session for every parked message, the fan-out's failure that it NAKs for
+// durableRetryDelay, and counted at least that many NAKs (envoy_messages_naked_total); and the
+// durable, read directly, still holds every parked message and delivers nothing for mpParkedQuiet.
 //
 // A session with no record at all, which the unplaceable branch defers too
 // (unplaceable_delivery.go), is no use here: its NAK comes back after unplaceableRetryDelay
@@ -291,9 +303,10 @@ func mpRetryOutstanding(t *testing.T, uri string, a *mpPod, row string) (serving
 		a.registerNATS(t, serving, sessionID)
 	}
 	publisher = mpConnectPublisher(t, uri)
+	js := publisher.client.JS()
 	parked := "ses_mp_" + row + "_parked"
 	parkedTopic := "notifications.github.acme.mp-parked." + row
-	stream, err := publisher.client.JS().StreamInfo(bus.Stream)
+	stream, err := js.StreamInfo(bus.Stream)
 	if err != nil {
 		t.Fatalf("read %s: %v", bus.Stream, err)
 	}
@@ -301,13 +314,72 @@ func mpRetryOutstanding(t *testing.T, uri string, a *mpPod, row string) (serving
 	if streamID == "" {
 		t.Fatalf("%s carries no %s", bus.Stream, bus.StreamIDMetadataKey)
 	}
-	resumeSeq := stream.State.LastSeq + mpParkedResumeAhead
+
+	// The outage: the parked messages are pushed to a's frozen link, and go with it.
+	var thaw func()
+	publisher.quiesce(t, serving, func() { thaw = a.relay.freeze() })
+	t.Cleanup(thaw)
+	for range mpParkedMessages {
+		if _, err := publisher.publishOn(mpTarget{topic: parkedTopic, session: parked}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	last, err := js.GetLastMsg(bus.Stream, parkedTopic)
+	if err != nil {
+		t.Fatalf("read the last parked message on %s: %v", parkedTopic, err)
+	}
+	lastParked := last.Sequence
+	mpEventually(t, 10*time.Second, "the machine's durable to push every parked message to "+a.instance+"'s frozen link", func() bool {
+		info, err := js.ConsumerInfo(bus.Stream, publisher.consumer)
+		return err == nil && info.Delivered.Stream >= lastParked && info.NumAckPending >= mpParkedMessages
+	})
+	// a is back once each connection the registration and the fan-out need has reconnected and
+	// each cache that drop left stale has been read again: the bus logs a connection's name in
+	// Go's text format, quoted when it holds a space.
+	named := func(connection string) string {
+		if strings.Contains(connection, " ") {
+			return "name=" + strconv.Quote(connection) + " "
+		}
+		return "name=" + connection + " "
+	}
+	back := [][]string{
+		{"envoy nats reconnected", named(mpReceiveConnection(a.instance))},
+		{"envoy nats reconnected", named(mpSessionConsumerConnection)},
+		{`"msg":"interest registry cache warm-up"`, `"outcome":"completed"`},
+		{`"msg":"session registry cache warm-up"`, `"outcome":"completed"`},
+	}
+	count := func(parts []string) int {
+		n := 0
+		for line := range strings.SplitSeq(a.Output.String(), "\n") {
+			if !slices.ContainsFunc(parts, func(part string) bool { return !strings.Contains(line, part) }) {
+				n++
+			}
+		}
+		return n
+	}
+	before := make([]int, len(back))
+	for index, parts := range back {
+		before[index] = count(parts)
+	}
+	dropped := time.Now()
+	a.relay.drop()
+	thaw()
+	mpEventually(t, 10*time.Second, a.instance+" to reconnect and read its interest and session caches again", func() bool {
+		for index, parts := range back {
+			if count(parts) <= before[index] {
+				return false
+			}
+		}
+		return true
+	})
+
 	registration := fmt.Sprintf(`{"session_id":%q,"topics":[%q],"host":"127.0.0.1","delivery":{"consumer":true,"epoch":%q,"resume":{"stream_id":%q,"seq":%d}}}`,
-		parked, parkedTopic, "mp-"+parked, streamID, resumeSeq)
+		parked, parkedTopic, "mp-"+parked, streamID, lastParked)
 	answer := a.call(http.MethodPost, "/v1/interests/subscribe", registration)
 	if answer.err != nil || answer.status != http.StatusOK {
 		t.Fatalf("subscribe %s through %s: status %d %s %v", registration, a.instance, answer.status, answer.body, answer.err)
 	}
+	registeredAt := time.Now()
 	var registered struct {
 		Delivery struct {
 			ConsumerStart uint64 `json:"consumer_start"`
@@ -316,14 +388,14 @@ func mpRetryOutstanding(t *testing.T, uri string, a *mpPod, row string) (serving
 	if err := json.Unmarshal([]byte(answer.body), &registered); err != nil {
 		t.Fatalf("decode %s's registration answer %s: %v", parked, answer.body, err)
 	}
-	if registered.Delivery.ConsumerStart != resumeSeq+1 {
-		t.Fatalf("%s gave %s a consumer starting at %d, want %d, past every parked message: %s",
-			a.instance, parked, registered.Delivery.ConsumerStart, resumeSeq+1, answer.body)
+	if registered.Delivery.ConsumerStart != lastParked+1 {
+		t.Fatalf("%s gave %s a consumer starting at %d, want %d, just after the last parked message: %s",
+			a.instance, parked, registered.Delivery.ConsumerStart, lastParked+1, answer.body)
 	}
-	for range mpParkedMessages {
-		if _, err := publisher.publishOn(mpTarget{topic: parkedTopic, session: parked}); err != nil {
-			t.Fatal(err)
-		}
+	t.Logf("%s registered at its resume point %d, %s after the outage, consumer start %d",
+		parked, lastParked, registeredAt.Sub(dropped).Round(time.Millisecond), registered.Delivery.ConsumerStart)
+	if line := lineWith(a.Output.String(), "listener no matching interests", parkedTopic); line != "" {
+		t.Fatalf("%s took a parked message off the durable before %s registered: %s", a.instance, parked, line)
 	}
 	mpEventually(t, 30*time.Second, a.instance+" to defer every parked message for its retry delay", func() bool {
 		return strings.Count(a.Output.String(), `"session_id":"`+parked+`"`) >= mpParkedMessages
@@ -339,6 +411,40 @@ func mpRetryOutstanding(t *testing.T, uri string, a *mpPod, row string) (serving
 		return failures >= mpParkedMessages &&
 			metricValue(t, &listenerProcess{Process: a.Process, port: a.port}, "envoy_messages_naked_total") >= mpParkedMessages
 	})
+
+	// The direct reading: the durable still holds every parked message, and delivers none again,
+	// for mpParkedQuiet after the NAKs. Delivered.Consumer counts every delivery the durable makes,
+	// a redelivery included, and nothing else is published meanwhile.
+	nakedAt := time.Now()
+	var first *natsgo.ConsumerInfo
+	for {
+		info, err := js.ConsumerInfo(bus.Stream, publisher.consumer)
+		if err != nil {
+			t.Fatalf("read %s: %v", publisher.consumer, err)
+		}
+		at := time.Now()
+		lastDelivery := "never"
+		if info.Delivered.Last != nil {
+			lastDelivery = info.Delivered.Last.Format("15:04:05.000")
+		}
+		t.Logf("%s at %s (+%s after the NAKs): delivered %d (stream %d, last at %s), ack floor %d (stream %d), ack pending %d, redelivered %d",
+			publisher.consumer, at.Format("15:04:05.000"), at.Sub(nakedAt).Round(time.Millisecond), info.Delivered.Consumer, info.Delivered.Stream,
+			lastDelivery, info.AckFloor.Consumer, info.AckFloor.Stream, info.NumAckPending, info.NumRedelivered)
+		if info.NumAckPending < mpParkedMessages {
+			t.Fatalf("%s holds %d messages unacknowledged, want at least the %d parked", publisher.consumer, info.NumAckPending, mpParkedMessages)
+		}
+		if first == nil {
+			first = info
+		} else if info.Delivered.Consumer != first.Delivered.Consumer || info.NumRedelivered != first.NumRedelivered {
+			t.Fatalf("%s delivered again within %s of the NAKs: delivered %d, redelivered %d, from %d, %d",
+				publisher.consumer, at.Sub(nakedAt).Round(time.Millisecond), info.Delivered.Consumer, info.NumRedelivered,
+				first.Delivered.Consumer, first.NumRedelivered)
+		}
+		if at.Sub(nakedAt) >= mpParkedQuiet {
+			break
+		}
+		time.Sleep(time.Second)
+	}
 	return serving, publisher, healthy
 }
 
