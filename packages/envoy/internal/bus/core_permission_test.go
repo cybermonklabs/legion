@@ -54,7 +54,7 @@ func roleEnvelope(topic string) contracts.Envelope {
 // A core publish the server denies returns the denial, naming the subject, where core NATS itself
 // reports nothing to the publisher; a granted one after it is still accepted and delivered, so
 // the connection's recorded violation does not fail every later publish. Publish takes the core
-// transport for these role lanes (bus.UsesCoreTransport).
+// transport for these role lanes (bus.Client.UsesCoreTransport).
 func TestPublishReportsACorePublishNATSDenies(t *testing.T) {
 	client, subscriber := grantedClient(t)
 	received, err := subscriber.SubscribeSync(grantedRole)

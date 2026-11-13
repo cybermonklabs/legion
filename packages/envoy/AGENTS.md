@@ -135,8 +135,8 @@ Each item below names a task and where its code is, then notes on it.
 
 - **Session delivery**: `internal/session/session.go`
 
-  what a delivery to a resolved session comes to (`session.Resolve(item, sessionID, entry, storedSeq)`): the session's own consumer relays the message, or the entry records no way of receiving at all (`session.ErrNoSessionRecord`, which a nil entry gives too).
-  The agent path reaches it through one call, `session.HandleAgentMessage(item, sessionID, machineID, interest, entry, storedSeq)`.
+  what a delivery to a resolved session comes to (`session.Resolve(item, sessionID, entry, storedSeq, captured)`, `captured` being whether the deployed stream captures the topic, `bus.Client.DeployedStreamCaptures`, which the caller reads from its own bus client): the session's own consumer relays the message, or the entry records no way of receiving at all (`session.ErrNoSessionRecord`, which a nil entry gives too).
+  The agent path reaches it through one call, `session.HandleAgentMessage(item, sessionID, machineID, interest, entry, storedSeq, captured)`.
 
 - **Session consumers**: `internal/bus/session_consumers.go`, `cmd/listener/session_delivery.go`, `cmd/listener/session_relay.go`
 
@@ -3439,7 +3439,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The daemon's consumer handles only its own architect notices, and it treats those two reasons as a never-re-hold (`roleholder.IsNoHolderReason`, the list the listener and `notify.Publish` both read): the refused row is still held and retries on its own backoff, so a copy would send the notice twice.
   Upgrade every Legion daemon before this listener: an older daemon sends `unclaimed` and `holder_lapsed` to its malformed-exception branch and logs `ERROR role-lane exception not re-held` once for each refused attempt to publish its own notice.
 
-- An exception the stream stores (the failed-delivery lane of an agent subject), raised by the durable path for a stored message, carries `Nats-Msg-Id` `exception.<reason>.<origin>`, the origin being the message's own `Nats-Msg-Id`, else its stream sequence (`exceptionOrigin`, `bus.Client.PublishStoredAs`), so the stream keeps one copy however many listeners raise it from their own durables:
+- An exception on a lane the deployed stream captures (`bus.Client.DeployedStreamCaptures`; the failed-delivery lane of an agent subject is one), raised by the durable path for a stored message, carries `Nats-Msg-Id` `exception.<reason>.<origin>`, the origin being the message's own `Nats-Msg-Id`, else its stream sequence (`exceptionOrigin`, `bus.Client.PublishStoredAs`), so the stream keeps one copy however many listeners raise it from their own durables:
   an agent delivery's `no_holder` at give-up, and its `delivery_failed`.
   A stored message on the agent subject of a live session on consumer delivery raises none:
   the durable acknowledges it unread, and it waits in the session's consumer.
@@ -4647,9 +4647,9 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   What says whether the cap `ENVOY_NOTIFICATIONS` carries (dispatch://INFRA-1384) has room is the stream's own `consumer_count`, read from its info: each hub's prometheus-nats-exporter exports it as `nats_stream_consumer_count` (`infra/docs/nats-hub.md`), and `loadtest/` reads it at each step's start and end, reporting both beside the sessions the step registered and refusing a step whose end count stands more than twice them above its start count, the growth being what that step itself made (`loadtest/relay.go`'s `streamConsumerCount`, `loadtest/run.go`).
   The server-wide `/jsz` count stays beside it (`loadtest/sample.go`'s `natsJsz`, reported as `js_consumers_max` and `js_consumers_last` and shown in the run table's server-wide consumers column, `loadtest/tables.go`), and it counts every consumer the server holds, the KV buckets' watchers among them, so the two answer different questions and the table names which is which.
 
-- **Filter:** the session's agent subject and each followed topic the stream stores (`bus.StreamCaptures`), reduced so that no two filters overlap (`bus.ReduceFilterSubjects`:
+- **Filter:** the session's agent subject and each followed topic the deployed stream stores (`bus.Client.DeployedStreamCaptures`, judged on the subjects the listener's own client last read of the stream, the same ones `POST /v1/interests/subscribe` judges a registration's topics on), reduced so that no two filters overlap (`bus.ReduceFilterSubjects`:
   a subject another contains is dropped, two that partly overlap become their common token prefix and `>`, and `X` and `X.>` both stay).
-  Every other topic a registration may store is one the stream captures (`POST /v1/interests/subscribe` refuses the rest by name), so the filter covers all of them;
+  Every other topic a registration may store is one the deployed stream captures (`POST /v1/interests/subscribe` leaves the rest out of the registration and names each in a warning, `bus.Client.ReachesNoSession`), so the filter covers all of them;
   a role lane, which `POST /v1/roles/set` stores and the stream does not capture, is no filter subject, because a role message reaches its holder as a forward to the agent subject the filter already covers.
   The registration or unsubscribe call sets the filter before it answers.
   A registration's filter and the interest row it stores come from one plan: the session's roles are read once, for the topics the body names and for the row it already holds, and the merge they decide is written as it is (`store.Registry.PlanInterest` and `UpsertPlanned`), so a heartbeat whose body leaves out the controller notice lane its row holds keeps that lane in the filter as well as in the row.
@@ -4717,7 +4717,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
 
 - **A consumer holds it:** the durable path acknowledges, unread, a stored message for a live session whose entry records consumer delivery and whose consumer covers it (`session.SessionEntry.ConsumerHoldsStored`):
   the message waits in the session's consumer.
-  It records nothing for such a session -- no attempt, no dedupe key (`session.SessionEntry.ConsumerRelaysStored`, which the fan-out and the agent-subject path both skip by) -- since the relay of that consumer is what delivers the message:
+  It records nothing for such a session -- no attempt, no dedupe key (`session.SessionEntry.ConsumerRelaysStored`, which the fan-out and the agent-subject path both skip by, on the deployed stream's capture of the topic) -- since the relay of that consumer is what delivers the message:
   a dedupe key written for a message this listener handed to nobody would have the next copy of the same event skipped as one the session already has, and an attempt record would have a redelivery of it skipped as one already on its way, so the fan-out records nothing for such a session, its own refusals included.
   The fan-out decides that once per recipient, from the session's entry, which `judgeFollowedTopic` reads for every verdict and not only the ones it judges against that entry, so a delivery mode it cannot read unambiguously -- a mode no session can be shown to advertise, and one any publisher can send on a followed topic -- is judged for such a session too rather than left to a resolution that only skips it.
   The relay publishes every frame unjudged (`sessionRelays.relayNATS`), and the plugin drops a frame whose delivery mode it cannot read without a word, so the fan-out publishes that session's `delivery_failed` itself -- and records no attempt for it, since it records only where it resolved the session and left the message to no relay.

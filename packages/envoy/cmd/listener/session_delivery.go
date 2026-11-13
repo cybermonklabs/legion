@@ -160,7 +160,13 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
-	logger    *logging.Logger
+	// stream is the client whose read of the deployed stream's subjects decides which stored
+	// topics a consumer's filter carries (sessionConsumerFilter): main's listener client, the one
+	// /v1/interests/subscribe judges a registration's topics on (splitUncapturedTopics), so a topic
+	// a registration stores is one its consumer filters on. nil judges the subjects this build
+	// compiles (bus.Client.DeployedStreamCaptures), which only a test's listener does.
+	stream *bus.Client
+	logger *logging.Logger
 	// relay hears each registration that records consumer delivery. A sessionDelivery with
 	// consumers has one (startSessionRelays sets it before /v1 opens, and main's start ends when
 	// that relay cannot start), so a registration answered consumer is relayed.
@@ -266,11 +272,12 @@ type sessionDelivery struct {
 // urls, with inactiveThreshold the threshold every consumer created on it carries: it is given
 // here, at the connection, because the threshold must be in hand before the first consumer is
 // created, and this is the one place every one of them comes from. main derives it from the
-// deployment's own windows (inactiveThresholdFor).
+// deployment's own windows (inactiveThresholdFor). stream is the listener's own client, whose
+// read of the deployed stream's subjects every consumer filter is judged on (sessionDelivery.stream).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
-func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, logger *logging.Logger) (*sessionDelivery, error) {
+func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
 	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold)
 	if err != nil {
 		return nil, err
@@ -280,7 +287,7 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, logg
 	// it and one whose connection failed logs no threshold at all.
 	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
 		slog.String("inactive_threshold", inactiveThreshold.String()))
-	return &sessionDelivery{consumers: consumers, logger: logger, now: time.Now}, nil
+	return &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now}, nil
 }
 
 // close closes the session-consumer connection, if one is open.
@@ -531,7 +538,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: sessionConsumerFilter(m.stream, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -717,7 +724,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(body.SessionID, topics), startSeq)
+	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(m.stream, body.SessionID, topics), startSeq)
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
 		// consumer it refused - set no filter, and the registration settles nothing for it: a
@@ -924,11 +931,15 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 }
 
 // sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
-// every one of topics the stream stores (bus.StreamCaptures), a team topic among them. A Legion
-// controller's notice lane (notifications.legion.<project>.controller) is one of those topics
-// while the session holds that project's controller role, and this filter is the whole of how it
-// now reaches the controller: the lane's live core subscription, which handed the session only
-// what was published while it was subscribed, went with the rest of the core receive path
+// every one of topics the deployed stream stores, as stream last read its subjects
+// (bus.Client.DeployedStreamCaptures), a team topic among them. Those are the subjects
+// /v1/interests/subscribe judges a registration's topics on (bus.Client.ReachesNoSession), so a
+// topic only a newer build's subjects capture, which this build stores on the session's row
+// while the two builds run, is in the filter too, and a message stored on it is delivered. A
+// Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
+// topics while the session holds that project's controller role, and this filter is the whole of
+// how it now reaches the controller: the lane's live core subscription, which handed the session
+// only what was published while it was subscribed, went with the rest of the core receive path
 // (INFRA-771), so a notice published while the controller was away is delivered from the stream
 // when it returns. A topic the stream does not store reaches the session on no path of its own: a
 // role lane reaches its holder as a forward on the holder's agent subject, and a topic an earlier
@@ -940,11 +951,11 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // in a GitHub topic that spells a repository name with a dot, or a `>` before the last token) is
 // left out, though the row stores it: with it in the list the server refuses the whole call and
 // the session gets no consumer at all, and no message can reach such a subject anyway.
-func sessionConsumerFilter(sessionID string, topics []string) []string {
+func sessionConsumerFilter(stream *bus.Client, sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
 	filter = append(filter, contracts.AgentSubject(sessionID))
 	for _, topic := range topics {
-		if bus.StreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
+		if stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
 			filter = append(filter, topic)
 		}
 	}

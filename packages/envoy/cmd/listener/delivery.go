@@ -281,14 +281,16 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 }
 
 // publishDeliveryException publishes item's delivery exception for reason, on the transport its
-// own lane takes (bus.Client.Publish, bus.UsesCoreTransport): the stream stores the lane of an
-// agent subject and of a team topic, and a role lane's exception keeps core NATS, since no stream
-// subject captures it. Every fanout refusal took core NATS until team topics were stored, which
-// keeps nothing: the report of a team message reached only a reader subscribed at that moment,
-// where the stream's copy reaches a session's consumer whenever that session comes back. origin,
-// when not empty, identifies the stored message the exception is about (exceptionOrigin): an
-// exception the stream stores then carries Nats-Msg-Id exception.<reason>.<origin>, so the stream
-// keeps one copy however many listeners raise it for that message, each from its own durable.
+// own lane takes (bus.Client.Publish, bus.Client.UsesCoreTransport): the stream stores the lane
+// of an agent subject and of a team topic, and a role lane's exception keeps core NATS, since no
+// stream subject captures it. Every fanout refusal took core NATS until team topics were stored,
+// which keeps nothing: the report of a team message reached only a reader subscribed at that
+// moment, where the stream's copy reaches a session's consumer whenever that session comes back.
+// origin, when not empty, identifies the stored message the exception is about (exceptionOrigin):
+// an exception on a lane the deployed stream captures (bus.Client.DeployedStreamCaptures, the
+// judgement its transport takes too) then carries Nats-Msg-Id exception.<reason>.<origin>, so the
+// stream keeps one copy however many listeners raise it for that message, each from its own
+// durable, a lane only a newer build's subjects capture among them.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
@@ -297,7 +299,7 @@ func publishDeliveryException(client *bus.Client, item contracts.Envelope, reaso
 	if err != nil {
 		return err
 	}
-	if origin != "" && bus.StreamCaptures(exception.Topic) {
+	if origin != "" && client.DeployedStreamCaptures(exception.Topic) {
 		// The stream keeps one copy however many listeners raise it, each from its own durable.
 		if err := client.PublishStoredAs(context.Background(), exception.Topic, exception, "exception."+reason+"."+origin); err != nil {
 			return fmt.Errorf("publish delivery exception: %w", err)
@@ -729,8 +731,10 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	cfg.attemptCache.Record(item.DedupeKey, sessionID)
 	deliveryTimer := metrics.NewTimer()
 	// The durable path's message carries the stream sequence that says whether the session's
-	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0).
-	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr, message.storedSeq())
+	// consumer already holds it, and the core path's message is in no consumer (storedSeq 0). The
+	// capture is the deployed stream's, which the session's consumer filter is judged on too.
+	result := session.HandleAgentMessage(item, sessionID, cfg.machineID, interestPtr, entryPtr, message.storedSeq(),
+		cfg.client.DeployedStreamCaptures(item.Topic))
 	if result.Relayed {
 		// The session's own consumer holds this message and the relay of that consumer delivers it
 		// (session.SessionEntry.ConsumerRelaysStored), as on the fan-out path below. The attempt
@@ -978,8 +982,10 @@ func fanoutDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMessage, 
 		deliveryTimer := metrics.NewTimer()
 		// One resolution per recipient decides every outcome below: it reads the entry the
 		// judgement above returned for every verdict, its refusals among them, and makes no call
-		// of its own.
-		err := session.Resolve(item, interest.SessionID, target, message.storedSeq())
+		// of its own. The capture is the deployed stream's, which the session's consumer filter is
+		// judged on too (sessionConsumerFilter), so a topic only a newer build's subjects capture
+		// is one that consumer relays.
+		err := session.Resolve(item, interest.SessionID, target, message.storedSeq(), cfg.client.DeployedStreamCaptures(item.Topic))
 		relayed := err == nil
 		// Refusals are decided before the take case, since the session whose own consumer relays
 		// the message is one this path still reports a refusal of: that relay judges nothing it

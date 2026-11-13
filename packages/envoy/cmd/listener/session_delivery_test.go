@@ -53,7 +53,7 @@ func newSessionConsumerRigOn(t *testing.T, client *bus.Client, url string, sessi
 	// deployment with these windows would give it.
 	delivery, err := connectSessionDelivery([]string{url},
 		inactiveThresholdFor(harness.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval),
-		harness.config.logger)
+		client, harness.config.logger)
 	if err != nil {
 		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestSessionConsumerKeepsTheControllerNoticeLaneAHeartbeatOmits(t *testing.T
 	}
 	// The row holds the session's own agent subject, which sessionConsumerFilter names anyway,
 	// and the consumer keeps each subject once (bus.SessionConsumers).
-	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(sessionID, stored.Topics))))
+	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(rig.deps.consumers.stream, sessionID, stored.Topics))))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter and the stored row must name one set after a heartbeat that omits the lane", got, want)
 	}
@@ -385,7 +385,7 @@ func TestSessionConsumerFiltersAgainWhenItsWriteLosesTheCompareAndSwap(t *testin
 	if !slices.Contains(stored.Topics, added) {
 		t.Fatalf("stored topics %v, want the topic %s the second registration was answered 200 for", stored.Topics, added)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(sessionID, stored.Topics))))
+	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(rig.deps.consumers.stream, sessionID, stored.Topics))))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: a registration that re-plans after a lost compare-and-swap must filter on the plan it stores", got, want)
 	}
@@ -450,7 +450,7 @@ func TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite(t *tes
 	if slices.Contains(stored.Topics, dropped) {
 		t.Fatalf("stored topics %v; the unsubscribe removed %s, so the registration must not write it back", stored.Topics, dropped)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(sessionID, stored.Topics))))
+	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(rig.deps.consumers.stream, sessionID, stored.Topics))))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("consumer filters %v, want %v: the filter is the plan that was stored", got, want)
 	}
@@ -932,7 +932,7 @@ func followWhileLocked(t *testing.T, rig *sessionConsumerRig, sessionID, topic s
 	if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{topic}); err != nil {
 		t.Fatalf("store %s's interest in %s: %v", sessionID, topic, err)
 	}
-	if err := rig.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, sessionConsumerFilter(sessionID, []string{topic})); err != nil {
+	if err := rig.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, sessionConsumerFilter(rig.deps.consumers.stream, sessionID, []string{topic})); err != nil {
 		t.Fatalf("set the filter of %s's consumer: %v", sessionID, err)
 	}
 }

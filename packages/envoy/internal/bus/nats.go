@@ -347,7 +347,7 @@ type Client struct {
 	// connection event after it (ensureStreamOn); nil for a client that owns no stream.
 	streamConfig *nats.StreamConfig
 	// deployedSubjects holds the subjects the deployed stream carried when the client last read them
-	// (UsesCoreTransport); nil until the client has read them once.
+	// (DeployedStreamCaptures); nil until the client has read them once.
 	deployedSubjects atomic.Pointer[[]string]
 	// subjectsRefused is set once the server refused a read of the deployed stream's subjects under
 	// the NATS user's permissions (readDeployedSubjects): the client then reads them no more.
@@ -614,9 +614,9 @@ func (c *Client) ensureStreamOn(conn *nats.Conn) error {
 }
 
 // readDeployedSubjects reads the deployed stream's subjects on conn within timeout and keeps them
-// for UsesCoreTransport. A read that fails keeps what the client held. It reports false only when
-// the server refused the read under the NATS user's permissions: such a user cannot read them later
-// either, so the client keeps deciding by what it holds, and reads no more (subjectsRefused).
+// for DeployedStreamCaptures. A read that fails keeps what the client held. It reports false only
+// when the server refused the read under the NATS user's permissions: such a user cannot read them
+// later either, so the client keeps deciding by what it holds, and reads no more (subjectsRefused).
 func (c *Client) readDeployedSubjects(conn *nats.Conn, timeout time.Duration) bool {
 	js, err := conn.JetStream(nats.MaxWait(timeout))
 	if err == nil {
@@ -1571,57 +1571,63 @@ func (c *Client) ensureConnWithContext(ctx context.Context) error {
 }
 
 // UsesCoreTransport reports whether topic travels over core NATS rather than JetStream: any
-// notification topic none of the stream's subjects captures, and every role lane and its exception
-// lane, which the stream must never retain (TestStreamConfigExcludesRoleLanes) and which take core
-// NATS even from a stream that still captures them. The rest of the core topics are ad-hoc topics
-// such as notifications.lxspec.probe.all, or the exception lane of one. JetStream answers a
-// publish to a subject no stream captures only with "no responders", and not at all while a core
-// subscriber holds the subject, since that subscriber is handed the acknowledgement request: the
-// publish would wait out its whole deadline for an acknowledgement that never comes, after the
-// subscribers had already received the message. A subject outside NotificationTopicPrefix keeps
-// JetStream, as before. The listener's publish route reads it too: such a topic is not stored, so
-// the route confirms it with each self-subscribed recipient itself.
+// notification topic the deployed stream does not capture (DeployedStreamCaptures), every role
+// lane and its exception lane among them, which the stream must never retain
+// (TestStreamConfigExcludesRoleLanes) and which take core NATS even from a stream that still
+// captures them. The rest of the core topics are ad-hoc topics such as
+// notifications.lxspec.probe.all, or the exception lane of one. JetStream answers a publish to a
+// subject no stream captures only with "no responders", and not at all while a core subscriber
+// holds the subject, since that subscriber is handed the acknowledgement request: the publish
+// would wait out its whole deadline for an acknowledgement that never comes, after the subscribers
+// had already received the message. A subject outside NotificationTopicPrefix keeps JetStream. The
+// listener's publish route answers 400 to a core topic other than a role lane (ReachesNoSession),
+// since no session's consumer would hold it.
+func (c *Client) UsesCoreTransport(topic string) bool {
+	return strings.HasPrefix(topic, NotificationTopicPrefix) && !c.DeployedStreamCaptures(topic)
+}
+
+// DeployedStreamCaptures reports whether the deployed stream retains a publish to topic for a
+// session's consumer to deliver: some subject of the stream matches it, and it is no role lane or
+// exception lane of one, which no consumer filters on even where a stream still captures them.
 //
 // The capture is judged on the subjects of the deployed stream as the client last read them (at
 // each ensure of an owning client, at connect for any other, and every streamSubjectsRefresh), and
-// on the subjects this build compiles only while the client has never read them. Two builds can
-// run at once, and the deployed stream holds the subjects of both: a topic under a subject only the
-// newer build adds is published through JetStream, with its MsgId, by the older build too.
-func (c *Client) UsesCoreTransport(topic string) bool {
-	if !strings.HasPrefix(topic, NotificationTopicPrefix) {
+// on the subjects this build compiles (StreamCaptures) only while the client has never read them.
+// A nil client has read no deployed stream - a caller that holds none, and the deps a test builds
+// without one - so it answers on the compiled subjects too. Two builds can run at once, and the
+// deployed stream holds the subjects of both: a topic under a subject only the newer build adds is
+// published through JetStream, with its MsgId, by the older build too, and the older build's
+// listener puts it in a session's consumer filter (cmd/listener's sessionConsumerFilter).
+func (c *Client) DeployedStreamCaptures(topic string) bool {
+	if subjectsCapture(roleLaneSubjects, topic) {
 		return false
 	}
-	if subjectsCapture(roleLaneSubjects, topic) {
-		return true
-	}
-	// A nil client has read no deployed stream - a caller that holds none, and the deps a test
-	// builds without one - so it answers on the subjects this build compiles, which is what a
-	// client answers before its first read too.
 	if c != nil {
 		if subjects := c.deployedSubjects.Load(); subjects != nil {
-			return !subjectsCapture(*subjects, topic)
+			return subjectsCapture(*subjects, topic)
 		}
 	}
-	return !StreamCaptures(topic)
+	return StreamCaptures(topic)
 }
 
 // ReachesNoSession reports whether a topic a caller names would deliver to no session at all: a
-// notification topic no stream subject captures (UsesCoreTransport) that is not a role lane. A
-// session receives what its own consumer delivers, which is what the stream stored, so a publish
-// to such a topic reaches nobody, now or later, and an interest in it would be stored and deliver
-// nothing. POST /v1/messages/publish refuses such a publish by name, since its sender is there to
-// read the answer, and POST /v1/interests/subscribe leaves such a topic out of the registration
-// and names it in a warning, the rest of the registration stored, since refusing a registration
-// whole leaves its session no consumer at all (cmd/listener/api.go, the one place this question
-// is asked). A role lane is the exception the name's "no session" turns on: it travels over core
-// NATS to the listener, which forwards the message to its holder's agent subject, where the
-// stream stores it for the holder's own consumer.
+// notification topic the deployed stream does not capture (UsesCoreTransport) that is not a role
+// lane. A session receives what its own consumer delivers, which is what the stream stored, so a
+// publish to such a topic reaches nobody, now or later, and an interest in it would be stored and
+// deliver nothing. POST /v1/messages/publish refuses such a publish by name, since its sender is
+// there to read the answer, and POST /v1/interests/subscribe leaves such a topic out of the
+// registration and names it in a warning, the rest of the registration stored, since refusing a
+// registration whole leaves its session no consumer at all (cmd/listener/api.go). A role lane is
+// the exception the name's "no session" turns on: it travels over core NATS to the listener, which
+// forwards the message to its holder's agent subject, where the stream stores it for the holder's
+// own consumer.
 //
 // It is a method for the same reason UsesCoreTransport is: the question is what the DEPLOYED
 // stream captures, not what this binary compiles. While two builds serve one NATS, the stream
 // holds the subjects of both, so a topic only the newer build adds reaches a session's consumer
-// and the older build must not refuse a publish of it (the subjects this client last read,
-// deployedSubjects).
+// and the older build must not refuse a publish or an interest of it (the subjects this client
+// last read, deployedSubjects). The listener's consumer filter judges the same deployed subjects
+// (DeployedStreamCaptures), so a topic a registration stores is one its consumer filters on.
 func (c *Client) ReachesNoSession(topic string) bool {
 	return c.UsesCoreTransport(topic) && !strings.HasPrefix(topic, contracts.RoleTopicPrefix)
 }

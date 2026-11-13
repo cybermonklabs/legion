@@ -343,10 +343,11 @@ func setupPublishTestClient(t *testing.T, options ...bus.ConnectOption) *bus.Cli
 // setupSessionConsumers is the session-consumer connection main's listener always holds, for a
 // test that drives the registration route: a listener without one refuses every registration
 // (consumer_error), as a session receives only what its own consumer holds. Its relay records
-// what it is told and relays nothing, since no test here reads a frame.
+// what it is told and relays nothing, since no test here reads a frame. It holds no listener
+// client, so its filters judge the subjects this build compiles (sessionDelivery.stream).
 func setupSessionConsumers(t *testing.T) *sessionDelivery {
 	t.Helper()
-	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, logging.NewWithWriter("test", io.Discard))
+	delivery, err := connectSessionDelivery([]string{testnats.URL(t)}, bus.SessionConsumerInactiveThreshold, nil, logging.NewWithWriter("test", io.Discard))
 	if err != nil {
 		t.Fatalf("open the session-consumer connection: %v", err)
 	}
