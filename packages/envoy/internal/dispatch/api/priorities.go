@@ -1,6 +1,6 @@
 // priorities.go serves the five routes of a priority: the deployment-wide node work in any
 // project advances. Every row it reads and writes belongs to internal/dispatch/prioritystore,
-// which is the one place in the tree that touches `priority_nodes` and `priority_tuples`; this
+// which is the one place in the tree that writes `priority_nodes` and `priority_tuples`; this
 // file is the HTTP shape of those calls and the refusals they map to.
 //
 // A priority belongs to no project, so each of the three writes is classed scopeDeployment

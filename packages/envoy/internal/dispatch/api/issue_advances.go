@@ -8,8 +8,8 @@
 // issue's own relations and nothing else. A read answers a list of entries, each an id and
 // whether the relation is the issue's own or inherited from an issue above it
 // (model.IssueAdvance), because an id alone cannot tell the two apart and only an own relation
-// is a write's to retract. This slice writes own relations alone, so every entry it answers is
-// own; the inheritance walk is the slice after it.
+// is a write's to retract. A write states and retracts own relations alone; the inherited
+// entries are the read's walk up the parent chain (issueAdvancesTerms, issue_queries.go).
 package api
 
 import (
