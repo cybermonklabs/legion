@@ -165,8 +165,9 @@ type issueListQuery struct {
 	Pinned bool `query:"pinned"`
 	// Project lists one project's issues.
 	Project string `query:"project"`
-	// Status, repeatable, lists issues standing in any of these lifecycle statuses; none is every
-	// status, and one the lifecycle does not hold is 400 INVALID_STATUS.
+	// Status, repeatable, lists issues standing in any of these statuses; none, or only blank
+	// ones, is every status. A value is matched as written, so one the lifecycle does not hold
+	// matches no issue and is never refused: alone it lists none, beside another it adds nothing.
 	Status []string `query:"status"`
 	// Parent lists the children of one issue.
 	Parent string `query:"parent"`

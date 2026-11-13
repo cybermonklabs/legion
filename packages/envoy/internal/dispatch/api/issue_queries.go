@@ -115,8 +115,8 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 // issueListFilters are the ten filters a listing request carries, written as thirteen parameters
 // (the priority filter takes a list and a flag for the unset, and the `advances` filter a list
 // and a flag for each of its two keywords), every one but the last written against `issues i`
-// alone, so the filtered term joins nothing. The status filter ($2) is a list of lifecycle
-// statuses, an issue standing in any of them, and the empty list is every status. The closed
+// alone, so the filtered term joins nothing. The status filter ($2) is a list of the statuses
+// named, an issue standing in any of them, and the empty list is every status. The closed
 // window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
 // outside every window. The last is the `advances` filter, which no column of an issue holds and
 // whose answer a relation of an issue above it can decide: it reads one term computed once per
@@ -366,27 +366,25 @@ const (
 	anyAdvancesFilter = "any"
 )
 
-// parseStatusFilter reads the repeated `status` query parameter: each value is a status of the
-// lifecycle (model.IssueStatuses), and the listing answers the issues standing in any of them.
-// No value means every status, and so does a blank one, which is what `status=` has always
-// answered; one value means what it meant when the key took one. A value the lifecycle does not
-// hold is refused, naming it, as a write of one is (issue_patch.go): it would otherwise match no
-// issue and read as a status nothing stands in.
-func parseStatusFilter(values []string) ([]string, error) {
-	statuses := []string{}
+// parseStatusFilter reads the repeated `status` query parameter: the listing answers the issues
+// standing in any status named. No value means every status, and so does a blank one, which is
+// what `status=` has always answered; one value means what it meant when the key took one. Each
+// value is matched as written, so one the lifecycle does not hold (model.IssueStatuses), or one
+// spelled in another case, is a status no issue stands in: alone it answers no issue, as the
+// listing always has, and beside a status of the lifecycle it adds nothing. None is refused, so
+// every request that names at most one status is answered as it was before the key repeated;
+// a repeated key, which the listing read as its first value alone, now answers the union.
+// The list is never nil: pgx writes a nil slice as NULL, which the statement's empty-list test
+// does not read as every status.
+func parseStatusFilter(values []string) []string {
+	statuses := make([]string, 0, len(values))
 	for _, raw := range values {
-		value := strings.TrimSpace(raw)
-		switch {
-		case value == "":
-		case model.IsIssueStatus(value):
+		if value := strings.TrimSpace(raw); value != "" {
 			statuses = append(statuses, value)
-		default:
-			return nil, errorf(http.StatusBadRequest, "INVALID_STATUS",
-				"status filter values must be one of %s, got %q", strings.Join(model.IssueStatuses, ", "), raw)
 		}
 	}
 	slices.Sort(statuses)
-	return slices.Compact(statuses), nil
+	return slices.Compact(statuses)
 }
 
 // parsePriorityFilter reads the repeated `priority` query parameter: each value is 0..3, or
@@ -566,11 +564,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := strings.TrimSpace(query.Get("project"))
-	statuses, err := parseStatusFilter(query["status"])
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
+	statuses := parseStatusFilter(query["status"])
 	parent := strings.TrimSpace(query.Get("parent"))
 	labels, err := normalizeIssueLabels(query["label"])
 	if err != nil {

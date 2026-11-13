@@ -10,8 +10,9 @@ body: |-
   a child inherits every priority the issues above it advance, and `GET /api/v1/issues` takes
   `advances=<id>`, repeated, `advances=none` and `advances=any`, a repeated `status`, and
   `moved=true`, which adds to each row standing in `backlog` or `icebox` when it was moved there
-  and by whom, so the issues table draws both faults over the one listing. An unknown `status`
-  is now `400 INVALID_STATUS` rather than an empty list.
+  and by whom, so the issues table draws both faults over the one listing. A `status` value is
+  still matched as written and never refused: one the lifecycle does not hold alone answers the
+  empty list, as it always has, and beside another status adds nothing.
   `GET /api/v1/priorities` answers every live priority in rank order with the work under it — its
   open issues by lifecycle status, how many are claimed, their open asks, what closed in the last
   seven days and when anything under it last moved — and the two faults: the work in flight that

@@ -383,9 +383,7 @@ func listedIssuePage(t *testing.T, handler http.Handler, target string) model.Is
 
 // TestListIssuesFiltersByRepeatedStatus reads `status` as a list: the issues standing in any
 // status named, one value meaning what it meant when the key took one, a repeat of one status the
-// same as naming it once, and no value or a blank one every status. A status the lifecycle does
-// not hold is refused 400 INVALID_STATUS, naming the value, rather than answering a list nothing
-// stands in.
+// same as naming it once, and no value or a blank one every status.
 func TestListIssuesFiltersByRepeatedStatus(t *testing.T) {
 	handler, _ := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "STAT")
@@ -419,15 +417,31 @@ func TestListIssuesFiltersByRepeatedStatus(t *testing.T) {
 			t.Fatalf("?%s answers %v, want %v", query, got, want)
 		}
 	}
-	for query, named := range map[string]string{
-		"status=almost":             "almost",
-		"status=todo&status=closed": "closed",
-		"project=STAT&status=Todo":  "Todo",
-	} {
-		refused := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
-		code, text := refusalOf(t, refused)
-		if refused.Code != http.StatusBadRequest || code != "INVALID_STATUS" || !strings.Contains(text, fmt.Sprintf("%q", named)) {
-			t.Fatalf("?%s: status=%d code=%s error=%q, want 400 INVALID_STATUS naming %q", query, refused.Code, code, text, named)
+}
+
+// TestAStatusTheLifecycleDoesNotHoldIsNoRefusal holds the listing to what it answered before
+// `status` repeated, when a value was matched as written: a status the lifecycle does not hold,
+// or one spelled in another case, is a status no issue stands in, so alone it answers the empty
+// list (an empty page, counting none, when paged) and beside a status of the lifecycle it adds
+// nothing. Neither is refused, so no caller the listing answered then meets a refusal now.
+func TestAStatusTheLifecycleDoesNotHoldIsNoRefusal(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "STAT")
+	seedPriorityIssue(t, handler, "STAT", "Work in triage", "", "", nil)
+	seedPriorityIssue(t, handler, "STAT", "Work in todo", "todo", "", nil)
+	working := seedPriorityIssue(t, handler, "STAT", "Work in progress", "in_progress", "", nil)
+	for _, query := range []string{"status=almost", "project=STAT&status=almost", "project=STAT&status=Todo", "project=STAT&status=almost&status=closed"} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+		if body := strings.TrimSpace(response.Body.String()); response.Code != http.StatusOK || body != "[]" {
+			t.Fatalf("?%s: status=%d body=%s, want 200 and the empty list", query, response.Code, body)
+		}
+	}
+	if page := listedIssuePage(t, handler, "/api/v1/issues?project=STAT&status=almost&limit=10"); len(page.Issues) != 0 || page.Total != 0 {
+		t.Fatalf("a paged unknown status answers %d rows counting %d, want an empty page counting none", len(page.Issues), page.Total)
+	}
+	for _, query := range []string{"project=STAT&status=almost&status=in_progress", "project=STAT&status=in_progress&status=Todo"} {
+		if got := listedIssueKeys(t, handler, "/api/v1/issues?"+query); !slices.Equal(got, []string{working}) {
+			t.Fatalf("?%s answers %v, want the in_progress issue %s alone", query, got, working)
 		}
 	}
 }
