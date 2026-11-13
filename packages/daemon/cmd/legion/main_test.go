@@ -2253,6 +2253,12 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 			held: `[{"issue":"LEGION-209","reason":"unclassified"}]`,
 			want: "admission.held: 1 issue — unclassified 1\n",
 		},
+		{
+			name: "a word this binary does not know, counted after the known words",
+			held: `[{"issue":"LEGION-209","reason":"a_word_this_binary_does_not_know"},` +
+				`{"issue":"LEGION-210","reason":"tree_closed","heldBy":["LEGION-212"]}]`,
+			want: "admission.held: 2 issues — tree_closed 1, a_word_this_binary_does_not_know 1\n",
+		},
 		{name: "none", held: `[]`, want: "admission.held: none\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

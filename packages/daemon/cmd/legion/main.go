@@ -682,7 +682,9 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 // holds in the workflow that stand in neither the active set nor the waiting line
 // (api.Admission.Held): how many, and how many of each word for why, in the ladder's own order
 // (record.HeldReasons), so two readings of one state print one line. A word no row carries is
-// left out.
+// left out. Each word that order does not hold follows the known ones with its count, sorted by
+// the word's text, so the line's counts always add up to its total and a binary older than the
+// daemon it asks still accounts for every row.
 //
 // The prefix names the admission list because `legion state` prints a second held line below
 // this one, the lifecycle rows the daemon holds behind their issues' running ones
@@ -702,6 +704,10 @@ func heldAdmissionSummary(held []api.HeldIssue) string {
 		if count := counts[reason]; count > 0 {
 			words = append(words, fmt.Sprintf("%s %d", reason, count))
 		}
+		delete(counts, reason)
+	}
+	for _, reason := range slices.Sorted(maps.Keys(counts)) {
+		words = append(words, fmt.Sprintf("%s %d", reason, counts[reason]))
 	}
 	noun := "issues"
 	if len(held) == 1 {
