@@ -7,11 +7,8 @@ import (
 	"net/url"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // deliveryPipelineResponse is GET /api/v1/delivery/pipeline: the Pipeline page's UTC days (the
@@ -34,12 +31,6 @@ type deliveryPipelineResponse struct {
 	Targets           measures.Targets               `json:"targets"`
 	Freshness         delivery.DeliveryFreshnessView `json:"freshness"`
 }
-
-const (
-	pipelineProductionApplyCard measures.DeployJobCardID = "production_apply"
-	pipelineStagingE2ECard      measures.DeployJobCardID = "staging_e2e"
-	pipelineStagingApplyCard    measures.DeployJobCardID = "staging_apply"
-)
 
 // deliveryPipelinePRChecks is the PR-checks workflow's part of the Pipeline page: its whole runs'
 // timing, its slowest jobs and the jobs that failed over the window's last day, both lists never
@@ -152,46 +143,17 @@ type pipelinePopulation struct {
 
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the window's days.
 // Runs are read by start over the whole of those days, the last one included past the window's
-// end. The PR-checks runs are read with every job, which their job timings and failing jobs
-// tally whatever their names (measures.PRChecks); the deploy runs with the jobs the deploy cards
-// follow and no other (measures.DeployJobs reads none else).
+// end, by delivery.ReadCIRows, the read the CI evals' day rows make: the PR-checks runs with every
+// job, which their job timings and failing jobs tally whatever their names (measures.PRChecks),
+// and the deploy runs with the jobs the deploy cards follow and no other (measures.DeployJobs
+// reads none else).
 func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, window pipelineWindow) (pipelinePopulation, error) {
-	pool := s.deps.Store.Pool
 	from, to := window.start(), window.readTo()
-	var followed []string
-	for _, card := range pipelineDeployCards(settings) {
-		followed = append(followed, card.JobNames...)
-	}
-
-	// The two run reads are independent, so they run side by side, each on a hold mark of its own
-	// (store.ForConcurrentRead), as readDeliveryPopulation runs its reads.
-	var pop pipelinePopulation
-	reads, readsCtx := errgroup.WithContext(ctx)
-	for _, read := range []struct {
-		into *delivery.RunsWithJobs
-		list func(ctx context.Context) (delivery.RunsWithJobs, error)
-	}{
-		{&pop.checks, func(ctx context.Context) (delivery.RunsWithJobs, error) {
-			return delivery.ListRunsWithEveryJobStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindPRChecks, "", "pull_request", from, to)
-		}},
-		{&pop.deploys, func(ctx context.Context) (delivery.RunsWithJobs, error) {
-			return delivery.ListRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", "push", from, to, followed)
-		}},
-	} {
-		readCtx, err := store.ForConcurrentRead(readsCtx)
-		if err != nil {
-			_ = reads.Wait()
-			return pipelinePopulation{}, err
-		}
-		reads.Go(func() (err error) {
-			*read.into, err = read.list(readCtx)
-			return err
-		})
-	}
-	if err := reads.Wait(); err != nil {
+	ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
+	if err != nil {
 		return pipelinePopulation{}, err
 	}
-	var err error
+	pop := pipelinePopulation{checks: ci.Checks, deploys: ci.Deploys}
 	if pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false); err != nil {
 		return pipelinePopulation{}, err
 	}
@@ -210,9 +172,9 @@ func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePop
 		rollup = *settings.PRChecksRollupJobName
 	}
 	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, window.end, rollup)
-	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, pipelineDeployCards(settings), days)
-	stagingE2E := optionalDeployJobTiming(timings, pipelineStagingE2ECard)
-	stagingApply := optionalDeployJobTiming(timings, pipelineStagingApplyCard)
+	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, measures.DeployCards(settings), days)
+	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
+	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
 	derived := pop.leadTimes.derive(settings)
 	mergeToProduction, openedToMerge := measures.LeadTimes(derived.measuresPRs(), days)
 	return deliveryPipelineResponse{
@@ -221,38 +183,12 @@ func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePop
 		PRChecks:          deliveryPipelinePRChecks{Run: run, SlowestJobs: slowest, FailingJobs: failing},
 		StagingE2E:        stagingE2E,
 		StagingApply:      stagingApply,
-		ProductionApply:   timings[pipelineProductionApplyCard],
+		ProductionApply:   timings[measures.CardProductionApply],
 		MergeToProduction: mergeToProduction,
 		OpenedToMerge:     openedToMerge,
 		Targets:           measures.DefaultTargets,
 		Freshness:         derived.freshness,
 	}
-}
-
-// pipelineDeployCards is the Pipeline's deploy cards under settings: the production deploy, and
-// the staging end-to-end and staging deploy jobs where the settings name them. The deploy runs
-// are read with the jobs these cards follow (readPipelinePopulation).
-func pipelineDeployCards(settings delivery.DeliverySettings) []measures.DeployJobCard {
-	cards := []measures.DeployJobCard{{
-		CardID:     pipelineProductionApplyCard,
-		Production: settings.Production(),
-	}}
-	for _, optional := range []struct {
-		cardID measures.DeployJobCardID
-		name   *string
-	}{
-		{pipelineStagingE2ECard, settings.StagingE2EJobName},
-		{pipelineStagingApplyCard, settings.StagingApplyJobName},
-	} {
-		if optional.name == nil {
-			continue
-		}
-		cards = append(cards, measures.DeployJobCard{
-			CardID:     optional.cardID,
-			Production: delivery.Production{JobNames: []string{*optional.name}},
-		})
-	}
-	return cards
 }
 
 func optionalDeployJobTiming(timings map[measures.DeployJobCardID]measures.DeployJobTiming, card measures.DeployJobCardID) *measures.DeployJobTiming {

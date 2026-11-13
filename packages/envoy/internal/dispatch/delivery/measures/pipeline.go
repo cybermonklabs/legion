@@ -447,6 +447,45 @@ type DeployJobCard struct {
 	delivery.Production
 }
 
+// The Pipeline's deploy cards, by the key GET /api/v1/delivery/pipeline answers each under: the
+// production deploy, the staging end-to-end gate and the staging deploy (the CI evals
+// production-deploy, staging-e2e and staging-deploy).
+const (
+	CardProductionApply DeployJobCardID = "production_apply"
+	CardStagingE2E      DeployJobCardID = "staging_e2e"
+	CardStagingApply    DeployJobCardID = "staging_apply"
+)
+
+// DeployCards is the deploy cards under settings, in the order DeployJobsDay gives a name two cards
+// follow to the first: the production deploy, by the settings' production rule, and the staging
+// end-to-end and staging deploy jobs where the settings name them. The Pipeline route and the CI
+// evals' day rows both build their cards here, and read the deploy runs with the jobs these
+// cards follow.
+func DeployCards(settings delivery.DeliverySettings) []DeployJobCard {
+	cards := []DeployJobCard{{CardID: CardProductionApply, Production: settings.Production()}}
+	for _, optional := range []struct {
+		cardID DeployJobCardID
+		name   *string
+	}{
+		{CardStagingE2E, settings.StagingE2EJobName},
+		{CardStagingApply, settings.StagingApplyJobName},
+	} {
+		if optional.name != nil {
+			cards = append(cards, DeployJobCard{CardID: optional.cardID, Production: delivery.Production{JobNames: []string{*optional.name}}})
+		}
+	}
+	return cards
+}
+
+// DeployCardJobNames is every job name cards follow: the jobs a deploy run is read with for them.
+func DeployCardJobNames(cards []DeployJobCard) []string {
+	var names []string
+	for _, card := range cards {
+		names = append(names, card.JobNames...)
+	}
+	return names
+}
+
 // DeployJobsDay is each card's part of one UTC day, keyed by its CardID (staging-e2e,
 // staging-deploy and production-deploy; pipeline.py:170-185), read in one pass from the deploy
 // workflow's push runs on main started that day: each followed job's outcome (its conclusion as

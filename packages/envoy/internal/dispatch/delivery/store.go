@@ -391,23 +391,16 @@ type WaitingPullRequest struct {
 // shipped it afterwards: what the timeline's waiting line starts its window from. A pull request
 // ships by shippingRunJoin's rule. One merged before the latest creation among the runs whose job
 // finished before at had shipped by then, and every one merged at or after it had not: that
-// creation, read through delivery_runs_kind_created newest first, is the one bound this needs. The
-// shipping run is read here rather than from the window's own runs, which start at the window and
-// so can miss a run created before it.
+// creation (latestShipBefore), read through delivery_runs_kind_created newest first, is the one
+// bound this needs. The shipping run is read here rather than from the window's own runs, which
+// start at the window and so can miss a run created before it.
 func ListPullRequestsWaitingAt(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) ([]WaitingPullRequest, error) {
 	rows, err := pool.Query(ctx, `
 		select `+PullRequestColumns+`, ship.run_id, ship.completed_at
 		from delivery_pull_requests pr
 		`+shippingRunJoin("$1", "$2", "$5")+`
 		where pr.repo = $1 and pr.merged_at < $3 and pr.merged_at >= coalesce((
-			select `+runCreatedAt+`
-			from delivery_runs r
-			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.name = any($2)
-			where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and j.conclusion = 'success'
-				and ($5::text is null or j.apply_step is distinct from $5 or j.apply_step_conclusion = 'success')
-				and j.completed_at < $3
-			order by `+runCreatedAt+` desc
-			limit 1
+			`+latestShipBefore("$1", "$2", "$5", "$3")+`
 		), '-infinity')
 		order by pr.merged_at, (pr.repo || '#' || pr.number) collate "C"
 		limit $4
@@ -451,6 +444,38 @@ func shippingRunJoin(repo, jobNames, applyStep string) string {
 			order by j.completed_at
 			limit 1
 		) ship on true`
+}
+
+// latestShipBefore is the SQL of the latest creation (runCreatedAt) among the deploy runs on main
+// whose production job succeeded, by shippingRunJoin's judgement, before at: a pull request merged
+// before it had shipped by at, since that run was created after the merge and its job succeeded
+// before at. repo, jobNames, applyStep and at are the placeholders of the query that embeds it.
+// ListPullRequestsWaitingAt and LatestShipBefore both embed it.
+func latestShipBefore(repo, jobNames, applyStep, at string) string {
+	return `select ` + runCreatedAt + `
+			from delivery_runs r
+			join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.name = any(` + jobNames + `)
+			where r.repo = ` + repo + ` and r.kind = 'deploy' and r.head_branch = 'main' and j.conclusion = 'success'
+				and (` + applyStep + `::text is null or j.apply_step is distinct from ` + applyStep + ` or j.apply_step_conclusion = 'success')
+				and j.completed_at < ` + at + `
+			order by ` + runCreatedAt + ` desc
+			limit 1`
+}
+
+// LatestShipBefore is latestShipBefore's creation for deployRepo and production, found false when
+// no deploy succeeded before at. Every pull request merged before it had shipped by at, so no
+// deploy completing at or after at ships one: it is the earliest merge the shipped set of such a
+// deploy reaches back to (evals reads the pull requests a day's deploys ship from it).
+func LatestShipBefore(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) (time.Time, bool, error) {
+	var created time.Time
+	err := pool.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	return created.UTC(), true, nil
 }
 
 // DeletePullRequest removes a stored row: a provisional row written from an envelope alone

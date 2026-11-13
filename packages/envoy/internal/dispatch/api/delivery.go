@@ -322,57 +322,25 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	// the rest. The run jobs depend on the runs, so they follow the runs in the same goroutine.
 	//
 	// A timeline request therefore holds up to seven of the shared pool's connections
-	// (store.sharedPoolSize) for the length of its longest read, where it held one at a time. That
-	// is fine because none of them holds a lock or opens a transaction, so none waits on
-	// another caller or makes another caller wait on it: the deadlock the pool's guard exists to
-	// prevent needs a caller already holding a connection, which ForConcurrentRead refuses. A read
-	// past the pool's free connections waits for one, as any request does.
-	runsWithJobs := func(list func(ctx context.Context) ([]delivery.DeliveryRun, error), readJobs func(ctx context.Context, runIDs []int64) (map[int64][]delivery.DeliveryRunJob, error), runs *[]delivery.DeliveryRun, jobs *map[int64][]delivery.DeliveryRunJob) func(ctx context.Context) error {
-		return func(ctx context.Context) error {
-			listed, err := list(ctx)
-			if err != nil {
-				return err
-			}
-			runIDs := make([]int64, len(listed))
-			for i, run := range listed {
-				runIDs[i] = run.RunID
-			}
-			byRun, err := readJobs(ctx, runIDs)
-			if err != nil {
-				return err
-			}
-			*runs, *jobs = listed, byRun
-			return nil
-		}
-	}
-	// Containment and the measures judge a run by its production jobs alone, so their runs are
-	// read with those jobs and no other (delivery.Production.JudgedJobNames says why that judges
-	// every run as its every job would). The timeline lists each deploy run it shows with its
-	// failed jobs and the job that failed first (delivery.FailedJobs, RootFailingJob), which can
-	// be any job the run holds, so its read of the runs containment reads takes every job.
-	judgedJobNames := settings.Production().JudgedJobNames()
-	productionJobs := func(ctx context.Context, runIDs []int64) (map[int64][]delivery.DeliveryRunJob, error) {
-		return delivery.ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, judgedJobNames)
-	}
-	applyJobs := productionJobs
-	if withWaiting {
-		applyJobs = func(ctx context.Context, runIDs []int64) (map[int64][]delivery.DeliveryRunJob, error) {
-			return delivery.ListEveryRunJobForRuns(ctx, pool, settings.DeployRepo, runIDs)
-		}
-	}
+	// (store.sharedPoolSize) for the length of its longest read, where it held one at a time (the
+	// merged rows' two reads run side by side within their own read). That is fine because none
+	// of them holds a lock or opens a transaction, so none waits on another caller or makes
+	// another caller wait on it: the deadlock the pool's guard exists to prevent needs a caller
+	// already holding a connection, which ForConcurrentRead refuses. A read past the pool's free
+	// connections waits for one, as any request does.
 	independent := []func(ctx context.Context) error{
-		func(ctx context.Context) (err error) {
-			pop.prs, err = delivery.ListPullRequestsInWindow(ctx, pool, from, to)
+		// The pull requests merged in the window and every deploy run on main GitHub created at
+		// or after `from` (delivery.MergedRows says why unbounded past `to`), the one read the
+		// eval registry's day rows read too. Containment and the measures judge a run by its
+		// production jobs alone (delivery.Production.JudgedJobNames says why that judges every
+		// run as its every job would); the timeline lists each deploy run it shows with its
+		// failed jobs and the job that failed first, which can be any job the run holds, so its
+		// read takes every job. The timeline's runs[] list is filtered to [from, to) separately.
+		func(ctx context.Context) error {
+			merged, err := delivery.ReadMergedRows(ctx, pool, settings, from, to, withWaiting)
+			pop.prs, pop.applyRuns, pop.jobsByRun = merged.PullRequests, merged.ApplyRuns, merged.ApplyJobs
 			return err
 		},
-		// Every deploy run on main GitHub created at or after `from`: the containment
-		// algorithm needs every apply from there forward, unbounded past `to`, since a PR merged
-		// just before `to` may first ship after it -- bounding this query to [from, to) would
-		// wrongly read such a PR as "waiting". A production job on another branch ships no PR
-		// (decision 7). The timeline's runs[] list is filtered to [from, to) separately.
-		runsWithJobs(func(ctx context.Context) ([]delivery.DeliveryRun, error) {
-			return delivery.ListRuns(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", from)
-		}, applyJobs, &pop.applyRuns, &pop.jobsByRun),
 		func(ctx context.Context) (err error) {
 			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool)
 			return err
@@ -383,13 +351,12 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		},
 	}
 	if withMeasures {
-		// Whether a run reached production is decided on the window's own runs and their jobs,
-		// never on the creation-time list containment reads, so every run the window counts is
-		// judged.
 		independent = append(independent,
-			runsWithJobs(func(ctx context.Context) ([]delivery.DeliveryRun, error) {
-				return delivery.ListRunsStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", "", from, to)
-			}, productionJobs, &pop.windowRuns, &pop.windowJobs),
+			func(ctx context.Context) error {
+				started, err := delivery.ListDeployRunsStartedIn(ctx, pool, settings, from, to)
+				pop.windowRuns, pop.windowJobs = started.Runs, started.Jobs
+				return err
+			},
 			// Every project's: the delivery measures follow no project.
 			func(ctx context.Context) (err error) {
 				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "")

@@ -1,6 +1,6 @@
-// Package evals is the eval registry's store (dispatch://INFRA-2916, R1 to R5, R9 and R12):
-// every write and read of eval_versions, eval_series and eval_readings, of the day rows
-// (eval_days) of the evals whose readings are logged, and of each project's `evals-md` document,
+// Package evals is the eval registry's store (dispatch://INFRA-2916, R1 to R5, R9, R12, R15 and
+// R16): every write and read of eval_versions, eval_series and eval_readings, of the day rows
+// (eval_days) and their members (eval_day_members), and of each project's `evals-md` document,
 // which holds one section per eval with the eval's method in it.
 //
 // An eval is one number a project's pages show. Its definition is append-only: each change
@@ -8,7 +8,9 @@
 // append-only too: a correction is a new reading naming the one it replaces (WriteReadings). A
 // logged eval's day rows are kept by the readings write in its own transaction, by increment, so
 // no window read reads a reading (DayWindow); a computed eval's day rows are the refresher's,
-// and a reading logged under a computed eval's slug is stored and answered by its items alone.
+// which builds the delivery and CI evals' from one day's delivery population
+// (delivery_days.go), and a reading logged under a computed eval's slug is stored and answered by
+// its items alone.
 //
 // The package serves no request (the routes are api's) and makes none: a link is stored as its
 // caller wrote it and its far side is never fetched, so the package imports no HTTP client

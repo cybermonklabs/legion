@@ -167,9 +167,9 @@ func TestDeliveryPipelineProductionCardMergesJobNames(t *testing.T) {
 func TestDeliveryPipelineCardKeysSurviveReorderedCards(t *testing.T) {
 	started := pipelineFixtureTime(32, 8, 0)
 	cards := []measures.DeployJobCard{
-		{CardID: pipelineStagingApplyCard, Production: delivery.Production{JobNames: []string{"staging-release / apply"}}},
-		{CardID: pipelineProductionApplyCard, Production: delivery.Production{JobNames: []string{"widgets-release / widgets-release"}}},
-		{CardID: pipelineStagingE2ECard, Production: delivery.Production{JobNames: []string{"staging-e2e / run"}}},
+		{CardID: measures.CardStagingApply, Production: delivery.Production{JobNames: []string{"staging-release / apply"}}},
+		{CardID: measures.CardProductionApply, Production: delivery.Production{JobNames: []string{"widgets-release / widgets-release"}}},
+		{CardID: measures.CardStagingE2E, Production: delivery.Production{JobNames: []string{"staging-e2e / run"}}},
 	}
 	timings := measures.DeployJobs(
 		[]delivery.DeliveryRun{{RunID: 1, StartedAt: started}},
@@ -181,9 +181,9 @@ func TestDeliveryPipelineCardKeysSurviveReorderedCards(t *testing.T) {
 		cards,
 		measures.ShownDays(pipelineFixtureTime(32, 12, 0), measures.ShownDayCount),
 	)
-	stagingE2E := optionalDeployJobTiming(timings, pipelineStagingE2ECard)
-	stagingApply := optionalDeployJobTiming(timings, pipelineStagingApplyCard)
-	production := timings[pipelineProductionApplyCard]
+	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
+	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
+	production := timings[measures.CardProductionApply]
 	if stagingE2E == nil || stagingE2E.Job != "staging-e2e / run" {
 		t.Fatalf("staging_e2e = %+v, want its card's timing", stagingE2E)
 	}

@@ -142,11 +142,19 @@ const smokeTimeout = 30 * time.Minute
 // Spec is the history Write stores: the project it belongs to, the moment it ends, how many days
 // it covers, and the seed of every random draw. A zero field takes its default: DefaultProject,
 // DefaultNow, DefaultDays; a zero Seed is a seed like any other.
+//
+// OneProject, off by default, names a new issue of the project wherever the history would name
+// one of the second project, so every pull request counts for the project, by its issue or, where
+// it names none, by its repository: the eval registry's day rows of the project then hold every
+// row the deployment-wide delivery routes count. It takes the same random draws, so the history
+// is the default one with those issues moved to the project (and the project's issues numbered
+// to match).
 type Spec struct {
-	Project string    `json:"project"`
-	Now     time.Time `json:"now"`
-	Days    int       `json:"days"`
-	Seed    uint64    `json:"seed"`
+	Project    string    `json:"project"`
+	Now        time.Time `json:"now"`
+	Days       int       `json:"days"`
+	Seed       uint64    `json:"seed"`
+	OneProject bool      `json:"one_project,omitempty"`
 }
 
 // withDefaults is the spec with every zero field given its default.
@@ -402,18 +410,22 @@ func (s *seeding) pullRequest(repo string, merged time.Time) {
 }
 
 // nameIssues gives each pull request, in creation order, the issue it names: about one in twenty
-// an issue of the second project, a little over half an issue of the project (a new one, or now
-// and then one a recent pull request already named), and the rest none. Each issue closes half an
-// hour after the last pull request naming it merged, and stays open where that falls past the
-// history's end.
+// an issue of the second project (of the project under Spec.OneProject), a little over half an
+// issue of the project (a new one, or now and then one a recent pull request already named), and
+// the rest none. Each issue closes half an hour after the last pull request naming it merged, and
+// stays open where that falls past the history's end.
 func (s *seeding) nameIssues() {
+	elsewhere := s.fixture.SecondProject
+	if s.spec.OneProject {
+		elsewhere = s.fixture.Project
+	}
 	var recent []string
 	for i := range s.prs {
 		pr := &s.prs[i]
 		var key string
 		switch u := s.rng.Float64(); {
 		case u < 0.05:
-			key = s.newIssue(s.fixture.SecondProject, *pr.CreatedAt)
+			key = s.newIssue(elsewhere, *pr.CreatedAt)
 		case u < 0.6 && len(recent) > 0 && s.chance(0.3):
 			key = recent[s.rng.IntN(len(recent))]
 		case u < 0.6:
