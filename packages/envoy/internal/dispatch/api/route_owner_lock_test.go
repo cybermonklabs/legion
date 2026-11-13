@@ -55,6 +55,7 @@ var routeOwnerLockTable = []routeOwnerLockCase{
 	{name: "the result record route held on the check's issue", route: "POST /api/v1/issues/{key}/results (recordResultUnderOwnerLocks)", ready: readyResultHeldOnTheChecksIssue},
 	{name: "the design gates route", route: "PUT /api/v1/issues/{key}/design-gates (putIssueDesignGates)", ready: readyDesignGates},
 	{name: "the project default assignee route", route: "PUT /api/v1/projects/{key}/default-assignee (putProjectDefaultAssignee)", ready: readyProjectDefaultAssignee},
+	{name: "the project gated steps route", route: "PUT /api/v1/projects/{key}/gated-steps (putProjectGatedSteps)", ready: readyProjectGatedSteps},
 	{name: "the project file upload route", route: "POST /api/v1/projects/{key}/artifacts on a file it has (storeArtifact)", ready: readyProjectFileUpload},
 	{name: "the ask follow route", route: "PUT /api/v1/asks/{id}/followers/{session_id} (changeAskFollower)", ready: readyAskFollow},
 }
@@ -453,6 +454,31 @@ func readyAskFollow(t *testing.T) lockedItemWrite {
 				t.Fatalf("the ask has %d followers named s3, want the one the route added", followers)
 			}
 		})
+}
+
+// readyProjectGatedSteps drives PUT /api/v1/projects/{key}/gated-steps with a list the project
+// does not hold yet, which updates the project's row under the project's owner lock it takes
+// before the update (putProjectGatedSteps): the publish the daemon makes at every boot, beside
+// the creates that hold that lock while they wait for the row.
+func readyProjectGatedSteps(t *testing.T) lockedItemWrite {
+	t.Helper()
+	fixture := newItemRowFixture(t, testServerOptions{}, "Gated steps", "A spec.\n")
+	write := fixture.routeWrite(t, "the project's gated steps",
+		func(handler http.Handler) *httptest.ResponseRecorder {
+			return agentRequest(t, handler, http.MethodPut, "/api/v1/projects/LOCK/gated-steps",
+				map[string]any{"steps": []string{"spec"}, "actor": sessionActor()}, "agent-token")
+		},
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusOK {
+				t.Fatalf("publish the gated steps once the lock was released: status=%d body=%s",
+					answer.Code, answer.Body.String())
+			}
+			if set := fixture.rowCount(t, `select count(*) from projects where key = $1 and gated_steps = array['spec']`, "LOCK"); set != 1 {
+				t.Fatal("the project gates nothing after the route answered 200")
+			}
+		})
+	write.owner = store.ProjectOwner("LOCK")
+	return write
 }
 
 // rowCount answers a count(*) query of one argument, read from the pool.

@@ -300,9 +300,9 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// The project's owner lock comes before its row's update: every writer of a projects row
-	// takes it first (an event append, a mapping write, the default assignee's PUT), so none of
-	// them holds the row while it waits on the lock this create holds, and none closes a cycle
-	// with the mapping check below.
+	// takes it first (an event append, a mapping write, the default assignee's PUT, the gated
+	// steps' publish), so none of them holds the row while it waits on the lock this create
+	// holds, and none closes a cycle with the mapping check below.
 	//
 	// The create's read phase (INFRA-636): the spec's parse, render and encoding (SeedText), its
 	// task count, its reference index and the advice all run here, before the update of the
