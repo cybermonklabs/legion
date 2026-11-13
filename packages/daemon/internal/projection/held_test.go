@@ -329,8 +329,8 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			want:  api.HeldIssue{Issue: "LEGION-2", Reason: record.HeldTreeParked, HeldBy: []string{"LEGION-1"}},
 		},
 		{
-			// label_off before ancestry: a root nothing hands to Legion waits for nothing at all,
-			// so the release that would bring it into the tree its chain reaches is not its wait.
+			// label_off before ancestry: nothing hands such a root to Legion, so the release that
+			// would bring it into the tree its chain reaches is not what holds it.
 			name: "a root whose label is off whose chain reaches a live root",
 			store: projectionStore{issues: []record.Issue{func() record.Issue {
 				root := treeRoot("LEGION-1", "todo", phase.Admitted)

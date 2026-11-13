@@ -120,22 +120,27 @@ func TestTheUnlistedSentenceOfAMemberUnderARootAwaitingAPersonNamesThatRoot(t *t
 }
 
 // An issue that stands in `admission.blocked` and in a held row reads one cause in both: where
-// its held word ranks above dispatch_blocker in the ladder (record.HeldReasons), `why` names that
-// word's sentence, because closing the link it waits on frees nothing; where the word is
-// dispatch_blocker itself, `why` names the link. The state word is `blocked` in both, since both
-// issues stand in that list. The first case is a member of a closed tree a Dispatch link holds,
-// whose `why` would otherwise say that it waits on the link; the second is the control, a child
-// of a running tree under an open gate that the same link holds.
+// its held word ranks above dispatch_blocker in the ladder (record.HeldBefore), `why` names that
+// word's sentence, because closing the link or child it waits on frees nothing; where the word
+// is dispatch_blocker itself, `why` names the link. The state word is `blocked` in every case,
+// since every issue here stands in that list. The first case is a member of a closed tree a
+// Dispatch link holds, whose `why` would otherwise say that it waits on the link; the second is
+// a root whose label is off, which the children-first rule holds on the one open Dispatch child
+// under it, whose `why` would otherwise name that child; the third is the control, a child of a
+// running tree under an open gate that the same link as the first holds.
 func TestABlockedIssueWhoseHeldWordRanksAboveTheLinksReadsThatWord(t *testing.T) {
 	link := []record.DispatchIssueRow{
 		{Key: "LEGION-101", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-900"}},
 		{Key: "LEGION-900", Project: "LEGION", Status: "todo"},
 	}
+	unlabelled := treeRoot("LEGION-100", "todo", phase.Admitted)
+	unlabelled.HandedOver = false
 	for _, tc := range []struct {
-		name    string
-		store   projectionStore
-		wantRow api.HeldIssue
-		want    api.WhyView
+		name        string
+		store       projectionStore
+		wantRow     api.HeldIssue
+		wantBlocked []string
+		want        api.WhyView
 	}{
 		{
 			name: "a member of a closed tree a link holds",
@@ -144,10 +149,27 @@ func TestABlockedIssueWhoseHeldWordRanksAboveTheLinksReadsThatWord(t *testing.T)
 					treeMember("LEGION-101", "LEGION-100", "LEGION-100", "todo", phase.Admitted)},
 				mirror: link,
 			},
-			wantRow: api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: []string{"LEGION-100"}},
+			wantRow:     api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: []string{"LEGION-100"}},
+			wantBlocked: []string{"LEGION-900"},
 			want: api.WhyView{State: api.WhyBlocked,
 				Reason: "Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, " +
 					"and nothing of that tree runs again until a re-admission opens it."},
+		},
+		{
+			name: "a root whose label is off whose own Dispatch child is open",
+			store: projectionStore{
+				issues: []record.Issue{unlabelled},
+				gates: map[string]map[record.DesignStep]record.DesignGate{
+					"LEGION-100": openGate("LEGION-100", projectedAt.Add(-time.Hour))},
+				mirror: []record.DispatchIssueRow{
+					{Key: "LEGION-101", Project: "LEGION", Status: "todo", Parent: "LEGION-100"},
+				},
+			},
+			wantRow:     api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
+			wantBlocked: []string{"LEGION-101"},
+			want: api.WhyView{State: api.WhyBlocked,
+				Reason: "It is the root of its own tree and its record says the legion label is off, " +
+					"so nothing hands it to the daemon."},
 		},
 		{
 			name: "a child of a running tree under an open gate a link holds",
@@ -160,30 +182,66 @@ func TestABlockedIssueWhoseHeldWordRanksAboveTheLinksReadsThatWord(t *testing.T)
 					"LEGION-100": openGate("LEGION-100", projectedAt.Add(-time.Hour))},
 				mirror: link,
 			},
-			wantRow: api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
-			want:    api.WhyView{State: api.WhyBlocked, Reason: "It waits on LEGION-900, which is not done."},
+			wantRow:     api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
+			wantBlocked: []string{"LEGION-900"},
+			want:        api.WhyView{State: api.WhyBlocked, Reason: "It waits on LEGION-900, which is not done."},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			state, err := Project(context.Background(), nil, tc.store, "LEGION", nil, nil, nil, nil, projectedAt)
-			if err != nil {
-				t.Fatalf("Project: %v", err)
-			}
-			row := heldRow(t, state, "LEGION-101")
-			if row.Issue != tc.wantRow.Issue || row.Reason != tc.wantRow.Reason || !slices.Equal(row.HeldBy, tc.wantRow.HeldBy) {
-				t.Fatalf("the held row of LEGION-101 = %#v, want %#v", row, tc.wantRow)
-			}
-			if !slices.ContainsFunc(state.Admission.Blocked, func(b api.BlockedIssue) bool { return b.Issue == "LEGION-101" }) {
-				t.Fatalf("LEGION-101 stands in no blocked row, so its why is not the blocked arm's; blocked = %#v",
-					state.Admission.Blocked)
-			}
-			view := state.Issues["LEGION-101"]
-			if view.Why == nil {
-				t.Fatalf("LEGION-101 carries no why")
-			}
-			if *view.Why != tc.want {
-				t.Errorf("LEGION-101's why = %+v, want %+v", *view.Why, tc.want)
-			}
+			blockedWhy(t, tc.store, tc.wantRow, tc.wantBlocked, tc.want)
 		})
+	}
+}
+
+// A child whose own blocked_by link holds it under an issue above it in its tree reads the
+// cycle sentence whatever its held word, because nothing else in the state says that the issue
+// it waits on is waiting for it; `admission.held` still names its held word beside it. The
+// child is a tree of its own under a shut design gate, so its word is design_gate, which the
+// ladder reads before dispatch_blocker; its Dispatch parent is a root under an open gate, which
+// is what makes the children-first rule read the children under it and name the cycle.
+func TestABlockedChildInACycleReadsTheCycleWhateverItsHeldWord(t *testing.T) {
+	store := projectionStore{
+		issues: []record.Issue{treeRoot("LEGION-100", "todo", phase.Admitted),
+			treeRoot("LEGION-101", "todo", phase.Admitted)},
+		gates: map[string]map[record.DesignStep]record.DesignGate{
+			"LEGION-100": openGate("LEGION-100", projectedAt.Add(-time.Hour)),
+			"LEGION-101": shutGate("LEGION-101")},
+		mirror: []record.DispatchIssueRow{
+			{Key: "LEGION-101", Project: "LEGION", Status: "todo", Parent: "LEGION-100", Blockers: []string{"LEGION-100"}},
+		},
+	}
+	blockedWhy(t, store,
+		api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-101"}},
+		[]string{"LEGION-100"},
+		api.WhyView{State: api.WhyBlocked,
+			Reason: "A blocked_by link holds it under LEGION-100, which stands above it in its own tree."})
+}
+
+// blockedWhy projects store through the whole pass and proves of the issue wantRow names that
+// its held row is wantRow, that it stands in `admission.blocked` held by wantBlocked — so its
+// `why` is the blocked arm's — and that its `why` is want.
+func blockedWhy(t *testing.T, store projectionStore, wantRow api.HeldIssue, wantBlocked []string, want api.WhyView) {
+	t.Helper()
+	key := wantRow.Issue
+	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	row := heldRow(t, state, key)
+	if row.Issue != wantRow.Issue || row.Reason != wantRow.Reason || !slices.Equal(row.HeldBy, wantRow.HeldBy) {
+		t.Fatalf("the held row of %s = %#v, want %#v", key, row, wantRow)
+	}
+	if !slices.ContainsFunc(state.Admission.Blocked, func(b api.BlockedIssue) bool {
+		return b.Issue == key && slices.Equal(b.BlockedBy, wantBlocked)
+	}) {
+		t.Fatalf("%s stands in no blocked row held by %v, so its why is not the blocked arm's; blocked = %#v",
+			key, wantBlocked, state.Admission.Blocked)
+	}
+	view := state.Issues[key]
+	if view.Why == nil {
+		t.Fatalf("%s carries no why", key)
+	}
+	if *view.Why != want {
+		t.Errorf("%s's why = %+v, want %+v", key, *view.Why, want)
 	}
 }

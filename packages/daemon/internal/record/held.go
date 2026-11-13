@@ -1,6 +1,7 @@
 package record
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -24,7 +25,7 @@ const (
 	// two statuses of OutOfWorkflowStatuses that stop work without finishing it.
 	HeldTreeParked HeldReason = "tree_parked"
 	// HeldLabelOff is a root of its own tree whose record says the Legion label is off
-	// (Issue.HandedOver): nothing hands it to the daemon, so it waits for nothing.
+	// (Issue.HandedOver): nothing hands it to the daemon.
 	HeldLabelOff HeldReason = "label_off"
 	// HeldAncestry is a root whose Dispatch chain names a live root that is not itself: it is
 	// that tree's unreleased work, which its architect's release brings in (the ancestry hold of
@@ -57,11 +58,13 @@ const (
 )
 
 // HeldReasons is the eleven words in the order HeldReasonOf reads them, named once for a reader
-// that must print or walk them in that order rather than keep an order of its own: the
-// operator's `admission.held` line (`legion state`), which counts each word and prints the
-// counts in this order, so two readings of one state print one line. It is the vocabulary in the
-// ladder's order and nothing more — the order is decided in HeldReasonOf's own body, whose
-// cases this list follows, and a word added there is added here and to `LEGION_HELD_REASONS` in
+// that must print or walk them in that order rather than keep an order of its own. Two read it:
+// the operator's `admission.held` line (`legion state`), which counts each word and prints the
+// counts in this order, so two readings of one state print one line; and `why` (the
+// projection's whyStates), which asks HeldBefore whether a blocked issue's word stands before
+// dispatch_blocker and so which sentence the issue reads. The order is decided in HeldReasonOf's
+// own body, and this list must follow that body's cases exactly, since a reorder here changes
+// that sentence; a word added there is added here and to `LEGION_HELD_REASONS` in
 // `packages/contracts/src/legion-api.ts`.
 var HeldReasons = []HeldReason{
 	HeldTreeClosed,
@@ -75,6 +78,14 @@ var HeldReasons = []HeldReason{
 	HeldAcceptedAncestor,
 	HeldAtWork,
 	HeldUnclassified,
+}
+
+// HeldBefore reports whether the ladder reads word before other (HeldReasons, HeldReasonOf). It
+// is false where either is not one of the eleven words, so the zero row's empty word stands
+// before nothing.
+func HeldBefore(word, other HeldReason) bool {
+	rank, otherRank := slices.Index(HeldReasons, word), slices.Index(HeldReasons, other)
+	return rank >= 0 && otherRank >= 0 && rank < otherRank
 }
 
 // HeldIssue is one issue the daemon's record holds in the workflow that stands in neither the
@@ -160,8 +171,9 @@ func openChildren(wait ChildWait) []string {
 // tree_closed and not design_gate, though its gate is shut too — and this body is the one
 // statement of it, so that the drop sites of the waiting line (Waiting) and the backstop that
 // answers for a candidate none of them saw (HeldList) cannot give one issue two words. A reader
-// that must walk the words in this order rather than ask about one issue reads HeldReasons,
-// which is this body's order written out.
+// that must walk the words in this order, or ask whether one word is read before another, reads
+// HeldReasons or HeldBefore, which is this body's order written out: `why` reads it that way to
+// choose a blocked issue's sentence, so the list must follow this body.
 //
 // The state and the controller's tick both read it, over the same candidates and the same facts,
 // so one issue reads one word wherever it is read.
