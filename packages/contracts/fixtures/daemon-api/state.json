@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 90,
-    "caller": 90
+    "daemon": 103,
+    "caller": 103
   },
   "admission": {
     "cap": 3,
@@ -243,7 +243,9 @@
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "phaseEntry": 4,
+      "givenEntry": 4
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -361,7 +363,9 @@
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
-      }
+      },
+      "phaseEntry": 2,
+      "givenEntry": 1
     },
     "LEGION-212": {
       "key": "LEGION-212",
