@@ -146,8 +146,9 @@ func servedKeys(t *testing.T, name string, document map[string]any, table []api.
 func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	claimTable := decisionsOf(t, "supervise.Claim", api.ClaimRecordFields, reflect.TypeFor[supervise.Claim]())
 	issueTable := decisionsOf(t, "record.Issue", api.IssueRecordFields, reflect.TypeFor[record.Issue]())
-	// The assignment table is held to the record alone: every field of it is served to the agent
-	// surfaces or withheld, and the subtest below reads the keys the view serves against it.
+	// The assignment table is held to the record alone: decisionsOf fails on a field of
+	// record.Assignment that stands in no column, and the subtest below reads the keys the view
+	// serves against it.
 	decisionsOf(t, "record.Assignment", api.AssignmentRecordFields, reflect.TypeFor[record.Assignment]())
 
 	// No field of the issue record is a secret and none is the operator route's alone, so R4

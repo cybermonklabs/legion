@@ -224,8 +224,9 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// table: take the row out, apply the strip beside the loop as an `if` of its own, and the
 	// expectation falls with the answer, so the body is still narrowed, no line is written and
 	// nothing fails. That is exactly the state R12 of dispatch://INFRA-3083 forbids. Measured
-	// at 7530a855fb25 with the row removed and that `if` restored: every other test of
-	// internal/api passed, the subtest above included, and this one alone failed.
+	// on 83073e209f96, the commit that adds this subtest, with the row removed and that `if`
+	// restored: every other test of internal/api passed, the subtest above included, and this
+	// one alone failed.
 	t.Run("the assignments narrowing names its own keys in the log", func(t *testing.T) {
 		const dropped = "the issues' assignments"
 		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
