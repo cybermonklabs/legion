@@ -1,0 +1,267 @@
+import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import type { Artifact } from "../../api/types";
+import {
+  activeTabIndicatorBorder,
+  activeTabIndicatorText,
+  borderDefault,
+  focusVisibleRing,
+  inputClasses,
+  secondaryButtonBorder,
+  secondaryButtonHoverBorder,
+  secondaryButtonText,
+  textSecondaryOnCanvas,
+} from "../../theme/classes";
+import { useMediaQuery } from "../shell/useDialog";
+import { ZOOMED_TREE_QUERY } from "./IssueTree";
+import { presetPath } from "./issue-address";
+import { MENU_CLASS, MENU_ITEM_CLASS, NodeMenu } from "./NodeMenu";
+import { authorText, pageChrome } from "./page-structure";
+import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
+
+/**
+ * The five presets, the node menu beside them and the filter (dispatch://INFRA-1196 R3, R16,
+ * `dispatch://INFRA-1196/artifact/plan-md#b-t9`).
+ *
+ * A preset is a query over the one tree and carries an address of its own, so each one is a
+ * link in a tablist: the row says what the page is showing and how much of the tree each query
+ * holds, and selecting one is navigation, not a panel switch.
+ *
+ * The row has two shapes and no third. Past the width the tree zooms at (`ZOOMED_TREE_QUERY`,
+ * `IssueTree.tsx`, whose negation decides this) it is the row of five, each tab named by
+ * its preset alone - `tab "Spec"`, the name the page is held to by the inventory of the page
+ * it replaced (`e2e/fixtures/issue-page-inventory.json`'s rename of `tab "Spec"`) - with its
+ * count beside it. The count sits beside the link rather than inside it, because WCAG 2.5.3
+ * holds a control's accessible name to contain every word drawn inside that control: a tab
+ * reading "Spec 7" and named "Spec" is the `label-content-name-mismatch` axe reports, and
+ * hiding the count with `aria-hidden` does not answer it, since that rule reads what is drawn
+ * and not what is announced. So the count is the tab's description instead
+ * (`aria-describedby`): a reader hears "Spec, tab" and then "7", and the count is lost to
+ * nobody. At 1024 px and below - every phone, and the width the tree itself zooms at - it is
+ * one control naming the preset the page is on, which opens a menu of the five; that control
+ * is named by the preset and its count together, because the count is drawn inside it and no
+ * inventory entry holds it to a name. Between the two the row wraps rather than scrolling, so
+ * nothing is ever cut.
+ *
+ * The node menu sits beside the row and outside it, so the one control at the zoomed width is
+ * unambiguous. What it holds is `NodeMenu.tsx`'s: what no block of the tree cites, the upload,
+ * and the control that makes a document from a title.
+ */
+export function IssuePresets({
+  active,
+  artifacts,
+  counts,
+  filter,
+  isClosed,
+  issueKey,
+  nodeMenu,
+  onFilterChange,
+  onLeave,
+  toolbar,
+  uncited,
+}: {
+  active: Preset;
+  /** Every artifact of the issue, which a title typed into the node menu's New document is held
+   *  against before the write. */
+  artifacts: readonly Artifact[];
+  /** How many nodes each preset's query holds, by `presets.ts`. */
+  counts: Readonly<Record<string, number>>;
+  /** What the filter holds, which is `?q=`. */
+  filter: string;
+  /** Whether the issue is closed, which refuses the node menu's upload. */
+  isClosed: boolean;
+  issueKey: string;
+  /** Whether the address opens the node menu, which `/artifacts` does. */
+  nodeMenu: boolean;
+  onFilterChange: (next: string) => void;
+  /** Called before this row leaves the address, so the page records where the reader was. */
+  onLeave: () => void;
+  /** The open document's toolbar, where the preset has one. */
+  toolbar?: ReactNode;
+  /** Every artifact of the issue no block of the tree cites, which is what the node menu
+   *  holds beside the upload (R16). */
+  uncited: readonly Artifact[];
+}): ReactNode {
+  const navigate = useNavigate();
+  // The row of five is drawn exactly where the tree is not zoomed: one query and its negation,
+  // so no width answers both shapes or neither (`ZOOMED_TREE_QUERY`).
+  const row = !useMediaQuery(ZOOMED_TREE_QUERY);
+  // The page opens at most one menu at a time, so which one is open is one value.
+  const [open, setOpen] = useState<OpenMenu>(nodeMenu ? "nodes" : undefined);
+  const wrapper = useRef<HTMLDivElement>(null);
+  const tabs = useRef<Partial<Record<Preset, HTMLAnchorElement | null>>>({});
+  // The counts the tabs point at with `aria-describedby`; one prefix per drawn row, since two
+  // issue pages in one document would otherwise write the same ids.
+  const countIds = useId();
+  const countId = (preset: Preset) => `${countIds}-${preset}`;
+
+  // An address that opens the node menu opens it on arrival, and leaving that address closes it
+  // again, so the menu says what the address says.
+  useEffect(() => setOpen(nodeMenu ? "nodes" : undefined), [nodeMenu]);
+  useEffect(() => {
+    if (open === undefined) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node) || wrapper.current?.contains(event.target) !== true) {
+        setOpen(undefined);
+      }
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(undefined);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [open]);
+
+  const walk = (event: KeyboardEvent<HTMLElement>, from: Preset) => {
+    const at = PRESET_ORDER.indexOf(from);
+    const to =
+      event.key === "ArrowRight"
+        ? (at + 1) % PRESET_ORDER.length
+        : event.key === "ArrowLeft"
+          ? (at - 1 + PRESET_ORDER.length) % PRESET_ORDER.length
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? PRESET_ORDER.length - 1
+              : undefined;
+    const next = to === undefined ? undefined : PRESET_ORDER[to];
+    if (next === undefined) return;
+    event.preventDefault();
+    onLeave();
+    navigate(presetPath(issueKey, next));
+    tabs.current[next]?.focus();
+  };
+
+  return (
+    <div
+      className={`mb-0.5 flex min-w-0 flex-wrap items-center gap-2 border-b pb-1 ${borderDefault}`}
+      ref={wrapper}
+    >
+      <div className="relative flex min-w-0 flex-wrap items-center" data-testid="issue-presets">
+        {row ? (
+          <div
+            aria-label={CONTROL_LABELS.presets}
+            className="flex min-w-0 flex-wrap items-center gap-1"
+            role="tablist"
+          >
+            {PRESET_ORDER.map((preset) => (
+              // The tab's box, so the row draws exactly what it drew when the count sat inside
+              // the link: the same padding, the same gap, and the same underline under the
+              // name and the count together. What moved is where the count sits in the tree,
+              // not where it sits on the screen.
+              <span
+                className={`inline-flex min-h-11 shrink-0 items-center gap-1.5 pr-2 text-sm md:min-h-9 ${
+                  preset === active
+                    ? `border-b-2 font-semibold ${activeTabIndicatorBorder} ${activeTabIndicatorText}`
+                    : textSecondaryOnCanvas
+                }`}
+                key={preset}
+              >
+                <a
+                  aria-describedby={countId(preset)}
+                  aria-label={PRESET_NAMES[preset]}
+                  aria-selected={preset === active}
+                  className="inline-flex min-h-11 items-center py-2 pl-2 md:min-h-9"
+                  href={presetPath(issueKey, preset)}
+                  onClick={(event) => {
+                    if (event.metaKey || event.ctrlKey || event.shiftKey) return;
+                    event.preventDefault();
+                    onLeave();
+                    navigate(presetPath(issueKey, preset));
+                  }}
+                  onKeyDown={(event) => walk(event, preset)}
+                  ref={(node) => {
+                    tabs.current[preset] = node;
+                  }}
+                  role="tab"
+                  tabIndex={preset === active ? 0 : -1}
+                  {...pageChrome}
+                >
+                  {PRESET_NAMES[preset]}
+                </a>
+                {/* Hidden from the tablist's own reading and spoken as the tab's description,
+                    which is what `aria-describedby` on the link above makes of it: a reader
+                    hears the count once, after the tab, rather than as loose text in the row. */}
+                <span
+                  aria-hidden="true"
+                  data-preset-count={preset}
+                  id={countId(preset)}
+                  {...authorText}
+                >
+                  {counts[preset] ?? 0}
+                </span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <>
+            {/* Named by what it draws - "Spec 7" - rather than by an `aria-label` of "Spec"
+                over a count hidden from it: the count is inside this control, so WCAG 2.5.3
+                puts it in the name (`label-content-name-mismatch`, as on the tabs above). The
+                row of tabs cannot take that answer, because the inventory of the page this one
+                replaced holds a tab to the name "Spec"; nothing holds this control to one. */}
+            <button
+              aria-expanded={open === "presets"}
+              aria-haspopup="menu"
+              className={`inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${focusVisibleRing}`}
+              onClick={() => setOpen((shown) => (shown === "presets" ? undefined : "presets"))}
+              type="button"
+              {...pageChrome}
+            >
+              <span>{PRESET_NAMES[active]}</span>
+              <span data-preset-count={active} {...authorText}>
+                {counts[active] ?? 0}
+              </span>
+            </button>
+            {open === "presets" ? (
+              <div className={MENU_CLASS} role="menu">
+                {PRESET_ORDER.map((preset) => (
+                  <button
+                    aria-label={PRESET_NAMES[preset]}
+                    className={MENU_ITEM_CLASS}
+                    key={preset}
+                    onClick={() => {
+                      setOpen(undefined);
+                      onLeave();
+                      navigate(presetPath(issueKey, preset));
+                    }}
+                    role="menuitem"
+                    type="button"
+                    {...pageChrome}
+                  >
+                    {PRESET_NAMES[preset]}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+      <NodeMenu
+        artifacts={uncited}
+        documents={artifacts}
+        isClosed={isClosed}
+        issueKey={issueKey}
+        onClose={() => setOpen(undefined)}
+        onToggle={() => setOpen((shown) => (shown === "nodes" ? undefined : "nodes"))}
+        open={open === "nodes"}
+      />
+      <input
+        aria-label={CONTROL_LABELS.filter}
+        className={`min-h-11 w-32 min-w-0 flex-1 rounded border px-2 py-1 text-sm md:min-h-9 ${inputClasses(false)}`}
+        data-testid="issue-filter"
+        onChange={(event) => onFilterChange(event.target.value)}
+        type="search"
+        value={filter}
+      />
+      {toolbar}
+    </div>
+  );
+}
+
+/** Which of the page's two menus is open; the page opens at most one at a time. */
+type OpenMenu = "nodes" | "presets" | undefined;

@@ -146,11 +146,15 @@ test("a closed issue refuses both ways to add a document, in one sentence", asyn
 
   await patchIssue(issue.key, { status: "done" });
   const refusal = "This issue is closed. Reopen it to add a document.";
-  // One line covers the whole strip, and every control in it says that line.
+  // One line covers the whole strip, and every control in it says that line: as its description
+  // rather than a `title`, since the issue page raises no tooltip at all (dispatch://INFRA-1196
+  // R21, `components/tooltips.tsx`).
   await expect(create).toHaveAttribute("aria-disabled", "true");
-  await expect(create).toHaveAttribute("title", refusal);
+  await expect(create).toHaveAccessibleDescription(refusal);
+  await expect(create).not.toHaveAttribute("title", /./);
   await expect(upload).toHaveAttribute("aria-disabled", "true");
-  await expect(upload).toHaveAttribute("title", refusal);
+  await expect(upload).toHaveAccessibleDescription(refusal);
+  await expect(upload).not.toHaveAttribute("title", /./);
   await expect(page.getByText(refusal, { exact: true })).toHaveCount(1);
 
   // `force`: the refusal is `aria-disabled`, which Playwright reads as not enabled, and the

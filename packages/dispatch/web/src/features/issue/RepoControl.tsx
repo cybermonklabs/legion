@@ -5,15 +5,27 @@ import { api, apiErrorMessage } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 import { useIssueRepo } from "./useIssueRepo";
+
+/**
+ * The name the repository picker answers to: the property it sets and the issue it is on, so a
+ * voice user saying what they read presses it (WCAG 2.5.3). The add menu reaches this picker by
+ * this name rather than drawing a second one, and calls this function for it
+ * (`IssueAddMenu.tsx`), so a word changed here changes both sides at once.
+ */
+export function repoControlName(issueKey: string): string {
+  return `${PROPERTY_LABELS.repository} of ${issueKey}`;
+}
 
 /**
  * The issue's repository in the details rail: `Repository:` and a badge naming the repository the
  * issue resolves to (its own, else its nearest ancestor's, else the project's default, muted when
  * not its own; "No repository" when none resolves) with a native `<select>` laid over it, as
  * `AssigneeControl` does. The select lists Inherit first, then the repositories mapped to the
- * issue's project in Settings; Inherit clears the issue's own repository. Labelled
- * `Repository of <KEY>`. While the issue resolves to a repository the mappings are read only once
+ * issue's project in Settings; Inherit clears the issue's own repository. Named by
+ * `repoControlName`. While the issue resolves to a repository the mappings are read only once
  * the reader reaches for the control (pointer over it, a touch on it, or focus). While it resolves
  * to none, they are read at once, because the item shows only when the project maps a repository:
  * until the read answers nothing shows, a project that maps none has nothing to pick and gets no
@@ -21,7 +33,9 @@ import { useIssueRepo } from "./useIssueRepo";
  * item. A failed read beside a resolved repository shows the same failure next to the picker. The
  * badge is hidden from assistive technology; the select's description names what it shows: the
  * repository, `, inherited or the project's default` when it is not the issue's own, or
- * `No repository`.
+ * `No repository`. Those same words are drawn beside the badge, because an inherited repository
+ * and one the issue sets of its own differ in the badge's colour alone otherwise, and a state is
+ * told by a word and a shape and never by colour (dispatch://INFRA-1196 R15).
  */
 export function RepoControl({
   disabled = false,
@@ -66,30 +80,33 @@ export function RepoControl({
   // shows a value its options lack.
   const options = repo === null || mapped.includes(repo) ? mapped : [repo, ...mapped];
   const tone = repo === null ? badgeLow : badgePrimary;
+  // The description the select is named by: the repository itself is the issue's value, and
+  // the words around it are the page's own (dispatch://INFRA-1196 R21).
   const description =
-    resolvedRepo === null
-      ? "No repository"
-      : repo === null
-        ? `${resolvedRepo}, inherited or the project's default`
-        : resolvedRepo;
+    resolvedRepo === null ? (
+      CONTROL_LABELS.no_repository
+    ) : (
+      <>
+        <span {...authorText}>{resolvedRepo}</span>
+        {repo === null ? `, ${CONTROL_LABELS.repository_inherited}` : null}
+      </>
+    );
   // Nothing resolved and no list to pick from: the failure is all there is to show.
   const picker =
     resolvedRepo === null && mappings.isError ? null : (
-      <span
-        className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}
-        title={
-          repo === null && resolvedRepo !== null ? "Inherited or the project's default" : undefined
-        }
-      >
+      // No `title`: the words below say "inherited or the project's default" where a reader
+      // sees them (dispatch://INFRA-1196 R21).
+      <span className={`${badgeSelectRailWrapper} ${disabled ? "opacity-50" : ""}`}>
         <span
           aria-hidden="true"
           className={`${badgeSelectBadge} font-mono ${tone.bg} ${tone.text}`}
+          {...(resolvedRepo === null ? pageChrome : authorText)}
         >
-          {resolvedRepo ?? "No repository"}
+          {resolvedRepo ?? CONTROL_LABELS.no_repository}
         </span>
         <select
           aria-describedby={descriptionId}
-          aria-label={`Repository of ${issueKey}`}
+          aria-label={repoControlName(issueKey)}
           className={badgeSelectOverlay}
           disabled={disabled}
           onFocus={want}
@@ -113,15 +130,26 @@ export function RepoControl({
             </option>
           ))}
         </select>
-        <span className="sr-only" id={descriptionId}>
+        <span className="sr-only" id={descriptionId} {...pageChrome}>
           {description}
         </span>
       </span>
     );
   return (
     <div className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}>
-      <span className="font-medium">Repository:</span>
+      <span className="font-medium" {...pageChrome}>
+        {PROPERTY_LABELS.repository}:
+      </span>
       {picker}
+      {/* Why the repository shown may not be the issue's own, in words: an inherited
+          repository and one the issue sets are told apart by the badge's colour alone
+          otherwise, which R15 forbids. Hidden from assistive technology because the select's
+          own description says the same thing, and nothing is said twice. */}
+      {resolvedRepo === null || repo !== null ? null : (
+        <span aria-hidden="true" className="text-xs" {...pageChrome}>
+          {CONTROL_LABELS.repository_inherited}
+        </span>
+      )}
       {loadFailure}
       {write.failed ? (
         <QueryError

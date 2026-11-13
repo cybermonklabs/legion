@@ -1,4 +1,5 @@
 import type { IssueDetails } from "../web/src/api/types";
+import { NODE_TYPE_NAMES } from "../web/src/features/issue/page-words";
 
 import {
   createComment,
@@ -63,7 +64,8 @@ test("a comment's callout shows the document's header with its kind and title", 
 
     const header = callout.locator("[data-proof-block-summary]");
     await expect(header).toBeVisible();
-    await expect(callout.locator("[data-proof-block-name]")).toHaveText("callout");
+    // The block type is still `callout`; what the header draws is the page's word for it.
+    await expect(callout.locator("[data-proof-block-name]")).toHaveText(NODE_TYPE_NAMES.callout);
 
     // The kind reads as a badge: a filled pill, not bare text.
     const badge = callout.locator("[data-proof-block-badge]");

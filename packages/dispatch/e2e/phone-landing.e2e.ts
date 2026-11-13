@@ -1,4 +1,5 @@
 import { createAsk, createComment, createIssue, createMessage, createProject } from "./api";
+import { conversationStateControl, openIssueAddress } from "./issue-page";
 import { boxesApart } from "./layout";
 import { type BrowserContext, expect, type Locator, type Page, type Route, test } from "./test";
 import { asUser } from "./users";
@@ -292,8 +293,8 @@ test("on a phone, a reader who leaves the Conversation while it loads lands on i
     await expect(page.getByText("Loading conversation…")).toBeVisible();
     await expect.poll(() => held.length).toBe(1);
 
-    await page.getByRole("tab", { name: "Activity" }).click();
-    await expect(page.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+    await openIssueAddress(page, "activity");
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -306,7 +307,7 @@ test("on a phone, a reader who leaves the Conversation while it loads lands on i
     // The list renders in the hidden panel before the reader comes back.
     await expect(newestCard).toBeAttached();
 
-    await page.getByRole("tab", { name: "Conversation" }).click();
+    await openIssueAddress(page, "conversation");
     await settle(newestCard, "back on the Conversation");
     await expectNewestInView(page, newestCard, "back on the Conversation");
   } finally {

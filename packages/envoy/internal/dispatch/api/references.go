@@ -462,12 +462,27 @@ func pinsAMessageBlock(raw, serverURL string) bool {
 	return ok && ref.Kind == "block" && ref.Item == "message"
 }
 
+// parseRequestRef reads one reference a request names - a ?to= or ?from=, or one ?ref= of the
+// batched read - by text.ParseRef, so a node is read whatever the length of its name: the target
+// bound decides only what text indexes, and a node no index holds an edge to simply has fewer
+// edges. Anything else is 400 INVALID_REFERENCE naming the value, with its own sentence for a
+// pinned block of a message, which the grammar reads as no reference at all.
+func parseRequestRef(raw, serverURL string) (text.Ref, error) {
+	ref, ok := text.ParseRef(raw, serverURL)
+	if ok {
+		return ref, nil
+	}
+	if pinsAMessageBlock(raw, serverURL) {
+		return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
+	}
+	return text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+}
+
 // parseReferencesQuery turns ?to=|?from=, ?kind=, and ?since= into an edge query addressed the
 // way graph_edges stores the node (refs.TargetOf): text.TargetID for the to side (ref_key for
 // artifacts; an ask's part and a comment's or message's block under its storage kind), the
 // item id for the from side (the caller swaps an artifact's ref_key for its uuid). The reference
-// is read by text.ParseRef, so a node is read whatever the length of its name: the target bound
-// decides only what text indexes, and a node no index holds an edge to simply has fewer edges.
+// itself is read by parseRequestRef, as the batched read reads each of its own.
 func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.Ref, error) {
 	values := r.URL.Query()
 	to, from := strings.TrimSpace(values.Get("to")), strings.TrimSpace(values.Get("from"))
@@ -478,12 +493,9 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 	if from != "" {
 		raw, direction = from, "out"
 	}
-	ref, ok := text.ParseRef(raw, serverURL)
-	if !ok {
-		if pinsAMessageBlock(raw, serverURL) {
-			return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q pins a block of a message, which never changes; name the block without @v<N>", raw)
-		}
-		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
+	ref, err := parseRequestRef(raw, serverURL)
+	if err != nil {
+		return refs.Query{}, text.Ref{}, err
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
 	// its storage kind.
@@ -552,11 +564,42 @@ func (s *server) documentMentionExcerpts(ctx context.Context, query refs.Query, 
 	return nil
 }
 
+// ownRequested reads ?own of an issue references request: 1 answers the issue's own documents
+// as members too, 0 or absent answers only what the issue reaches outside itself, and anything
+// else - an empty own= and a repeat of the parameter among them - is refused rather than read
+// by its first value, so a caller that meant to widen the read is never quietly given the
+// narrow answer. Those two spellings are the whole set the OpenAPI document declares
+// (issueReferencesQuery.Own's enum), so the generated client refuses nothing this takes.
+func ownRequested(r *http.Request) (bool, error) {
+	values, present := r.URL.Query()["own"]
+	if !present {
+		return false, nil
+	}
+	if len(values) == 1 {
+		switch values[0] {
+		case "1":
+			return true, nil
+		case "0":
+			return false, nil
+		}
+	}
+	return false, errorf(http.StatusBadRequest, "INVALID_QUERY", "own must be given once, as 0 or 1")
+}
+
 // getIssueReferences answers an issue's reference closure. ?versions=latest leaves each member's
 // artifact.versions holding only its latest version, under its own ETag; absent, empty or all is
-// the full answer. A repeated versions is refused rather than read by its first value.
+// the full answer. ?own=1 answers the issue's own documents as members too, each with the blocks
+// citing it, which is what a reader drawing a document under the block that cites it needs;
+// absent or 0 is the long-standing answer, the artifacts the issue reaches outside itself. An
+// own that is repeated, or given with no value at all, is refused rather than read as 0, while
+// a repeated versions is refused rather than read by its first value.
 func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	own, err := ownRequested(r)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	versionsValues := r.URL.Query()["versions"]
@@ -575,12 +618,12 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	issue, err := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
-	if err != nil {
-		s.writeHandlerError(w, err)
+	issue, loadErr := s.loadIssue(r.Context(), s.deps.Store.Pool, r.PathValue("key"))
+	if loadErr != nil {
+		s.writeHandlerError(w, loadErr)
 		return
 	}
-	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, issue.Key)
+	closure, truncated, err := refs.Closure(r.Context(), s.deps.Store.Pool, issue.Key, own)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -602,12 +645,13 @@ func (s *server) getIssueReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		members = append(members, model.ReferenceMember{
-			Artifact: *artifact,
-			Depth:    closureMember.Depth,
-			Via:      closureMember.Via,
+			Artifact:  *artifact,
+			Depth:     closureMember.Depth,
+			Via:       closureMember.Via,
+			ViaBlocks: closureMember.ViaBlocks,
 		})
 	}
-	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly)
+	etag := referencesETag(issue.LastSeq, members, truncated, latestOnly, own)
 	w.Header().Set("ETag", etag)
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
@@ -638,17 +682,28 @@ func (s *server) getArtifactReferences(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, model.ArtifactReferences{Outgoing: outgoing, ReferencedBy: referencedBy})
 }
 
-// referencesETag hashes what an issue references answer depends on. The trimmed answer
-// (latestOnly) hashes one more line naming its variant, so the full and trimmed answers of one
-// issue never share an ETag; the full answer hashes no such line.
-func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, latestOnly bool) string {
+// referencesETag hashes what an issue references answer depends on, under a first line naming
+// the shape of that answer: the format of the hash itself and which ?versions and which ?own
+// the answer is. Two answers of one issue that differ in any of those are two different bodies,
+// and a tag they shared would tell a client holding one 304 for the other. The format is named
+// because the fields the hash covers have grown: the build before via_blocks hashed a member no
+// block cites to the bytes this one would without the line, so over a rollout the two builds
+// computed one tag for two bodies, the older of which carries no via_blocks at all. Raising
+// `references/2` to `references/3` is what a later field costs.
+//
+// A member's line carries the blocks citing it as well as its document and its version, because
+// the hash decides 304 and so must cover every field of the answer: a client holding an ETag
+// taken before a citation moved from one block of a document to another would otherwise be told
+// 304 for an answer that now names a different block.
+func referencesETag(lastSeq int, members []model.ReferenceMember, truncated, latestOnly, own bool) string {
 	hash := sha256.New()
-	_, _ = fmt.Fprintf(hash, "%d\n%t\n", lastSeq, truncated)
-	if latestOnly {
-		_, _ = io.WriteString(hash, "versions=latest\n")
-	}
+	_, _ = fmt.Fprintf(hash, "references/2 latest=%t own=%t\n%d\n%t\n", latestOnly, own, lastSeq, truncated)
 	for _, member := range members {
-		_, _ = fmt.Fprintf(hash, "%s@%d\n", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
+		_, _ = fmt.Fprintf(hash, "%s@%d", member.Artifact.ID, member.Artifact.Versions[len(member.Artifact.Versions)-1].Number)
+		for _, block := range member.ViaBlocks {
+			_, _ = fmt.Fprintf(hash, " %s", block)
+		}
+		_, _ = io.WriteString(hash, "\n")
 	}
 	return `"` + hex.EncodeToString(hash.Sum(nil)) + `"`
 }

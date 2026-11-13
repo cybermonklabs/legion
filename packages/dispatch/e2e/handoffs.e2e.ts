@@ -1,4 +1,5 @@
 import { createHandoff, createIssue, createProject } from "./api";
+import { conversationStateControl } from "./issue-page";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -70,10 +71,7 @@ test("the Conversation lists each handoff version, and expanding one shows its f
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${key}/conversation`);
-    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
+    await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
 
     const cards = page
       .getByRole("list", { name: "Conversation turns" })
@@ -185,7 +183,7 @@ test("the Activity list has one line per recorded handoff version", async ({ bro
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${key}/activity`);
-    await expect(page.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
       "aria-selected",
       "true"
     );

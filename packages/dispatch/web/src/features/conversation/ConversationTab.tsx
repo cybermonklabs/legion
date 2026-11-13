@@ -95,7 +95,7 @@ import { ReplyButton } from "./ReplyButton";
 import { ReplyTurn, ThreadReplies, TurnActions } from "./ReplyTurn";
 import type { CarriedBlockIds } from "./send-request";
 import { capabilitiesForTarget, TargetedMessageCard } from "./TargetedMessageCard";
-import { useFollowLatest } from "./use-follow-latest";
+import { conversationScrollport, useFollowLatest } from "./use-follow-latest";
 import { useAgents } from "./useAgents";
 import { threadRepliesSendKey, threadReplySendKey, usePhoneThread } from "./usePhoneThread";
 
@@ -106,8 +106,14 @@ interface ConversationTabProps {
   focusItemId?: string;
   isClosed: boolean;
   issueKey: string;
-  /** Called once, when the tab first places the reader at the newest card (`useFollowLatest`'s
-   *  `onFirstPlacement`), before the parent's layout effects of that commit run. */
+  /** What the panel's conversation state keeps, where the reader picked one that narrows the
+   *  list (`features/issue/conversation-states.tsx`); every conversation is kept without it.
+   *  It narrows beside the All / Open / Closed filter rather than in place of it. */
+  narrow?: (conversation: Conversation) => boolean;
+  /** Called once, when the list first places the reader at the newest card (`useFollowLatest`'s
+   *  `onFirstPlacement`), before the parent's layout effects of that commit run. It is the
+   *  commit the list's first cards are drawn in, which is where the reader opened it and not
+   *  where `/conversation` is opened. */
   onFirstPlacement?: () => void;
   state: UserState | undefined;
   visible: boolean;
@@ -767,6 +773,7 @@ function CommentTurn({
         savingCommentEditId={savingCommentEditId}
         onAction={onAction}
         onEdit={editComment}
+        marginItem={false}
         onEditingChange={setEditingCommentId}
         onRetryAction={onRetryAction}
         onToggle={toggleThread}
@@ -903,6 +910,7 @@ export function ConversationTab({
   focusItemId,
   isClosed,
   issueKey,
+  narrow,
   onFirstPlacement,
   state,
   visible,
@@ -976,8 +984,20 @@ export function ConversationTab({
   const [filter, setFilter] = useState<ConversationFilter>("all");
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
   const phone = usePhoneThread({ isPhoneViewport, sendKey, sendingNow });
-  // The comments whose thread the reader has open inline.
-  const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(() => new Set());
+  // The comments whose thread the reader has open inline. A comment whose card's own reply the
+  // store still holds - out, late or refused - opens with its thread expanded, so whatever
+  // unmounted the last composer leaves the reply where the reader left it: the viewport
+  // narrowing past the width the margin keeps a column at moves this whole list from the margin
+  // into the page's own column, which is a remount (`features/issue/IssuePage.tsx`), and the
+  // send, its draft and its refusal outlive it in the store but the open thread would not.
+  const [openThreads, setOpenThreads] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        heldCardReplies
+          .map((held) => held.request.replyTo?.id)
+          .filter((id): id is string => id !== undefined)
+      )
+  );
   const setThreadOpen = useCallback((id: string, open: boolean) => {
     setOpenThreads((current) => {
       if (current.has(id) === open) return current;
@@ -1005,15 +1025,16 @@ export function ConversationTab({
       // its thread open inline or full-screen, the phone thread composer holding a reply to it,
       // or its card's own reply held, out or refused, for its thread to show again - and keeps
       // its place in that order rather than falling in behind the conversations the filter took.
+      // The panel's own state narrows the same pass, and a conversation in hand outranks it too.
       conversations.filter(
         (conversation) =>
-          matchesFilter(conversation, filter) ||
+          ((narrow === undefined || narrow(conversation)) && matchesFilter(conversation, filter)) ||
           (conversation.kind === "comment" &&
             (openThreads.has(conversation.root.id) ||
               phone.holds(conversation.root.id) ||
               heldCardReplies.some((held) => held.request.replyTo?.id === conversation.root.id)))
       ),
-    [conversations, filter, heldCardReplies, openThreads, phone.holds]
+    [conversations, filter, heldCardReplies, narrow, openThreads, phone.holds]
   );
   // Counted over the list as shown, which is the list the pill acts on: it jumps to the first
   // card on the page, so a count taken over the whole set would name unread conversations the
@@ -1079,11 +1100,45 @@ export function ConversationTab({
   const newestShown = loading || failed ? undefined : shown.at(0);
   const latestItemSeq = newestShown === undefined ? undefined : Date.parse(newestShown.at);
   const follow = useFollowLatest({
-    enabled: visible,
+    // An address that names a card places the reader on it (the landing effect below), and the
+    // follow does not take them off it again: both scroll the box the turns are in, which is
+    // the page's one right-hand panel, so a follow that still ran would scroll the landed card
+    // out of the panel it had just brought the reader to.
+    //
+    // Drawn is what spends the one first placement, never `visible`: this list belongs to the
+    // page's panel and is read at every address (dispatch://INFRA-1196 R12), so the reader is
+    // given it when it is drawn - which is when they opened it - and not when `/conversation`
+    // is opened. Tying that placement to the address spent it late: a reader who picked a
+    // conversation state without leaving their preset (R19, `IssuePage`'s `pickState`) read
+    // and scrolled this list for as long as they liked, and the first opening of
+    // `/conversation` then placed them at the newest card, throwing the place they were
+    // reading at away. Their place survives everything else by itself - the panel is one
+    // element held for the life of the page and moved between its hosts, so its scrollport is
+    // never rebuilt and never zeroed (`IssuePage`'s `panelStage`) - and that placement was the
+    // one thing that took it from them.
+    //
+    // What arrives afterwards is `visible`'s: a card landing in this list while the reader is
+    // reading a preset moves nothing, because this list is beside what they are reading rather
+    // than in front of them (`e2e/attention.e2e.ts`).
+    enabled: focus === undefined,
     latestItemSeq,
     onFirstPlacement,
     ownSendCount,
+    reading: visible,
   });
+  // The box the turns scroll in, read afresh whenever the anchor asks for it: the page's one
+  // right-hand panel at every width the margin keeps a column at, and the page itself below
+  // that (`use-follow-latest.ts`). Without it the anchor would read and move the window while
+  // the rows it measures scroll in the panel, and every correction it made would be made to
+  // the wrong box.
+  const turnsScroller = useMemo(
+    () => ({
+      get current(): HTMLElement | null {
+        return conversationScrollport() ?? null;
+      },
+    }),
+    []
+  );
   const { agents: listedAgents, current: agentsCurrent } = useAgents(visible);
   // Delivery capabilities come only from a current list: one that is refilling or unreachable
   // leaves every mode unknown, never "not supported".
@@ -1213,10 +1268,14 @@ export function ConversationTab({
   return (
     <ViewportAnchor
       as="section"
-      className="flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
+      // `@container`: the turns are laid out against this box, which is the panel's 384 px at
+      // every width above a phone and the page's own column below it, never the screen's width
+      // (`ReplyTurn.tsx`'s `TurnActions` and `ThreadReplies`).
+      className="@container flex min-h-[60dvh] flex-col gap-3 pb-56 sm:pb-16 xl:pb-0"
       enabled={() => !follow.pinnedToTop()}
       item="data-turn"
       label="Conversation"
+      scroller={turnsScroller}
     >
       {/* Mounted, and hidden, while a phone thread covers it: its draft, a send it has out, that
           send's refusal and its reply are all still there on Back. A closed issue takes comments

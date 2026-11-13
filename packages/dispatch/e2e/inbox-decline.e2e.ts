@@ -76,10 +76,11 @@ async function decline(page: Page, card: Locator, note: string): Promise<void> {
 }
 
 /** The question's card on the issue page, where the Conversation lists every question of the
- *  issue, open or closed. */
+ *  issue, open or closed. The address is the one the Conversation tab answered and still
+ *  resolves (dispatch://INFRA-1196 R19), since the redesigned page draws no such tab; it is
+ *  how every other spec of this suite reaches the conversation (`conversation.e2e.ts:209`). */
 async function conversationCard(page: Page, issueKey: string, askId: string): Promise<Locator> {
-  await page.goto(`/issues/${issueKey}`);
-  await page.getByRole("tab", { name: "Conversation" }).click();
+  await page.goto(`/issues/${issueKey}/conversation`);
   return page.getByRole("region", { name: "Conversation" }).getByTestId(`ask-${askId}`);
 }
 
@@ -341,8 +342,7 @@ test("an answered ask and a declined ask draw no Decline to answer, which an ope
 
   // A closed question is a record, whichever way it closed: the act is drawn on an open question
   // and nowhere else.
-  await page.goto(`/issues/${issue.key}`);
-  await page.getByRole("tab", { name: "Conversation" }).click();
+  await page.goto(`/issues/${issue.key}/conversation`);
   const conversation = page.getByRole("region", { name: "Conversation" });
   await expect(conversation.getByTestId(`ask-${answered.id}`)).toBeVisible();
   await expect(declineControl(conversation.getByTestId(`ask-${answered.id}`))).toHaveCount(0);

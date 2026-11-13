@@ -426,7 +426,15 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     {
       route: "/issues/:key/*",
-      shows: (page) => [page.locator("#issue-children-panel").getByText(shown.child)],
+      // The child's own row, not a panel: `#issue-children-panel` went with the nine tab
+      // panels, and the children are a section of the page the tree sits under
+      // (`web/src/features/issue/IssueChildren.tsx`), drawn at every address and open from
+      // Tailwind's `md` for a reader who has never shut it (`useChildrenSection.ts`). The row
+      // is `[data-child-row]`, which is how `e2e/issue-page.ts` and `e2e/review-routes.ts`
+      // read one.
+      shows: (page) => [
+        page.locator('[data-testid="issue-children"] [data-child-row]').getByText(shown.child),
+      ],
       url: `${issue}/children`,
     },
     {

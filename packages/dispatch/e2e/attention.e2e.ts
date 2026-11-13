@@ -1,5 +1,11 @@
 import { createComment, createIssue, createMessage, createProject, putIssueState } from "./api";
-import { expect, type Page, test } from "./test";
+import {
+  conversationScrollTop,
+  conversationViewport,
+  scrollConversationBy,
+  scrollConversationTo,
+} from "./conversation-scroll";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -8,21 +14,43 @@ const session = {
 };
 
 /**
- * The row the reader is on, read the way `ViewportAnchor` reads it: the row nearest the visible
- * centre of the list, probed through `elementFromPoint`. `root` is the list's own labelled box
- * and `item` the attribute each of its rows carries - `data-turn` in the Conversation,
- * `data-event-seq` in the Activity tab.
+ * The conversation, where a reader reads a comment or a message. Every entry of the issue is
+ * also a row of the issue page's one tree (dispatch://INFRA-1196 R1, R12), so an entry's text
+ * names two elements on the page; these rows are about the conversation, so they read it there.
+ *
+ * The section is named by its element as well as by its label: the panel's four-state control
+ * above it carries the same accessible name ("Conversation", `features/issue/
+ * conversation-states.tsx`), and `ViewportAnchor` renders this one as a `section` (R12).
  */
-async function readingAnchor(page: Page, root: string, item: string): Promise<string> {
+const CONVERSATION = 'section[aria-label="Conversation"]';
+
+function conversation(page: Page): Locator {
+  return page.locator(CONVERSATION);
+}
+
+/**
+ * The row the reader is on, read the way `ViewportAnchor` reads it: the row nearest the visible
+ * centre of the list, probed through `elementFromPoint`. `root` is the list's own labelled box,
+ * `item` the attribute each of its rows carries - `data-turn` in the Conversation,
+ * `data-event-seq` in the Activity tab - and `clip` the box the list is clipped to, which is
+ * the window for a list the page scrolls and the scrollport's own for one that scrolls in a box
+ * of its own (`conversation-scroll.ts`).
+ */
+async function readingAnchor(
+  page: Page,
+  root: string,
+  item: string,
+  clip: { bottom: number; top: number }
+): Promise<string> {
   const value = await page.evaluate(
-    ({ itemAttribute, rootSelector }) => {
+    ({ clipBox, itemAttribute, rootSelector }) => {
       const list = document.querySelector<HTMLElement>(rootSelector);
       if (list === null) {
         return null;
       }
       const rect = list.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
-      const y = (Math.max(rect.top, 0) + Math.min(rect.bottom, window.innerHeight)) / 2;
+      const y = (Math.max(rect.top, clipBox.top) + Math.min(rect.bottom, clipBox.bottom)) / 2;
       for (const offset of [0, 8, 16, 24, 32, 40, -8, -16, -24, -32, -40]) {
         const row = document
           .elementFromPoint(x, y + offset)
@@ -34,7 +62,7 @@ async function readingAnchor(page: Page, root: string, item: string): Promise<st
       }
       return null;
     },
-    { itemAttribute: item, rootSelector: root }
+    { clipBox: clip, itemAttribute: item, rootSelector: root }
   );
   expect(value).not.toBeNull();
   return value ?? "";
@@ -54,17 +82,33 @@ test("a reader scrolled up keeps their Conversation viewport when a new card arr
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Existing message 29")).toBeVisible();
-    await page.evaluate(() => window.scrollTo(0, 500));
+    await expect(conversation(page).getByText("Existing message 29")).toBeVisible();
+    // The conversation scrolls in the panel's own box at every width the margin keeps a column
+    // at, and in the page's column below that (`conversation-scroll.ts`): where the reader is
+    // is that box's scroll, and scrolling the window instead moves the turns not at all. The
+    // reader is put on a turn in the middle of the list rather than at a fixed offset, because
+    // the docked composer and the filter take the first screen of that box and a fixed offset
+    // need not reach a turn at all - and a reader on no turn is not what this row is about.
+    const clip = await conversationViewport(page);
+    await scrollConversationBy(
+      page,
+      await page.evaluate((clipBox) => {
+        const turns = [...document.querySelectorAll("[data-turn]")];
+        const middle = turns[Math.floor(turns.length / 2)]?.getBoundingClientRect();
+        if (middle === undefined) return 0;
+        return middle.top + middle.height / 2 - (clipBox.top + clipBox.bottom) / 2;
+      }, clip)
+    );
 
-    const id = await readingAnchor(page, '[aria-label="Conversation"]', "data-turn");
+    const id = await readingAnchor(page, CONVERSATION, "data-turn", clip);
+
     const anchor = page.locator(`[data-turn="${id}"]`);
     const before = (await anchor.boundingBox())?.y;
 
     await createMessage(issue.key, { body: "Arrived while reading" }, session);
 
     await expect(page.getByTestId("jump-to-latest")).toBeVisible();
-    await expect(page.getByText("Arrived while reading")).toBeVisible();
+    await expect(conversation(page).getByText("Arrived while reading")).toBeVisible();
     await expect.poll(async () => (await anchor.boundingBox())?.y).toBe(before);
   } finally {
     await context.close();
@@ -82,19 +126,79 @@ test("a reader at the Conversation top follows a new card", async ({ browser }) 
   try {
     const page = await context.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Existing message 29")).toBeVisible();
-    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect(conversation(page).getByText("Existing message 29")).toBeVisible();
+    await scrollConversationTo(page, 0);
 
     await createMessage(issue.key, { body: "Arrived at the top" }, session);
 
-    const arrived = page.getByText("Arrived at the top", { exact: true });
+    const arrived = conversation(page).getByText("Arrived at the top", { exact: true });
     await expect(arrived).toBeVisible();
     const box = await arrived.boundingBox();
+    const clip = await conversationViewport(page);
     expect(box).not.toBeNull();
-    expect(box?.y ?? -1).toBeGreaterThanOrEqual(0);
-    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(
-      await page.evaluate(() => window.innerHeight)
-    );
+    expect(box?.y ?? -1).toBeGreaterThanOrEqual(clip.top);
+    expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual(clip.bottom);
+  } finally {
+    await context.close();
+  }
+});
+
+// The twin of the row above, at every other address of the page. The conversation is the
+// panel's and stays drawn wherever the reader goes (dispatch://INFRA-1196 R12), so a card
+// arriving while they are reading a preset must leave that panel where they left it: the
+// follow places them at the newest card when the list is drawn, and follows what arrives
+// afterwards only while they are reading the list (`use-follow-latest.ts`). The panel's own
+// top is where its properties are, and a reader parked there reads as "at the newest card" to
+// the follow, so a follow that ran at every address pulled the panel down to the conversation
+// under a reader who was reading something else.
+test("a new card arriving while the reader is on another preset leaves the conversation where they left it", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Away from the conversation" });
+  for (let index = 0; index < 30; index += 1) {
+    await createMessage(issue.key, { body: `Existing message ${index}` }, session);
+  }
+
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await expect(conversation(page).getByText("Existing message 29")).toBeVisible();
+    // Up to the panel's own top, off the conversation and onto the issue's properties, which
+    // is the position the follow reads as the reader keeping up with the newest card.
+    await scrollConversationTo(page, 0);
+
+    // Away to a preset the page draws in its own column. The panel, and this list in it, are
+    // drawn beside it the whole time - that is what makes the arrival below reach a list the
+    // reader is not reading.
+    const spec = page.getByRole("tab", { exact: true, name: "Spec" });
+    await spec.click();
+    await expect(spec).toHaveAttribute("aria-selected", "true");
+    expect(await conversationScrollTop(page)).toBe(0);
+
+    await createMessage(issue.key, { body: "Arrived while away" }, session);
+
+    // The card lands in the list, and the panel has not moved: the reading is taken once the
+    // card is on the page, which is the commit a follow would have scrolled it in.
+    await expect(conversation(page).getByText("Arrived while away")).toBeAttached();
+    expect(
+      await conversationScrollTop(page),
+      "a card arriving while the reader was on another preset moved the panel"
+    ).toBe(0);
+
+    // And they come back to the place they left, with the new card in the list behind it. A
+    // state picked in the panel keeps every preset's address, the issue's own among them
+    // (R19), so the way back to the conversation's own address is Back, which moves inside the
+    // page as the tab did. Its chord would do it too, but a chord scrolls the panel to the
+    // control it focuses, which is a move of the reader's place this row would then read.
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`, "u"));
+    await expect(conversation(page).getByText("Arrived while away")).toBeAttached();
+    expect(
+      await conversationScrollTop(page),
+      "coming back to the conversation did not leave the reader where they left it"
+    ).toBe(0);
   } finally {
     await context.close();
   }
@@ -134,7 +238,11 @@ test("loading older Activity rows keeps the reader anchor", async ({ browser }) 
       await page.evaluate(() => window.innerHeight)
     );
 
-    const sequence = await readingAnchor(page, '[aria-label="Issue activity"]', "data-event-seq");
+    // The Activity tab is drawn in the page's own column, so the window is what clips it.
+    const sequence = await readingAnchor(page, '[aria-label="Issue activity"]', "data-event-seq", {
+      bottom: await page.evaluate(() => window.innerHeight),
+      top: 0,
+    });
     const anchor = page.locator(`[data-event-seq="${sequence}"]`);
     const before = (await anchor.boundingBox())?.y;
     await loadOlder.click();
@@ -177,57 +285,64 @@ async function verifyGapDetection(
       await page.setViewportSize(viewport);
     }
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Gap comment 19")).toBeVisible();
+    await expect(conversation(page).getByText("Gap comment 19")).toBeVisible();
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(turns.getByText("New", { exact: true })).toHaveCount(0);
 
-    const gap = await page.evaluate(() => {
-      const conversation = document.querySelector('[aria-label="Conversation"]');
-      if (conversation === null) {
-        return null;
-      }
-      const cards = [
-        ...document.querySelectorAll<HTMLElement>('[aria-label="Conversation turns"] > li'),
-      ];
-      const gaps = [];
-      for (let index = 0; index < cards.length - 1; index += 1) {
-        const upper = cards[index]?.getBoundingClientRect();
-        const lower = cards[index + 1]?.getBoundingClientRect();
-        if (upper !== undefined && lower !== undefined && lower.top > upper.bottom) {
-          gaps.push({
-            gapMidPage: (upper.bottom + lower.top) / 2 + window.scrollY,
-            index,
-            lowerId: cards[index + 1]?.getAttribute("data-turn"),
-          });
+    // Where the gap nearest the middle of the list sits, as an offset from the centre of the
+    // box the turns are clipped to: the reader is moved by that offset, so the gap lands on
+    // the very point `ViewportAnchor` probes (`rowAtCenter`), whichever box scrolls them.
+    const clip = await conversationViewport(page);
+    const gap = await page.evaluate(
+      ({ clipBox, root }) => {
+        const conversation = document.querySelector(root);
+        if (conversation === null) {
+          return null;
         }
-      }
-      if (gaps.length === 0) {
-        return null;
-      }
-      const middle = cards.length / 2;
-      gaps.sort((left, right) => Math.abs(left.index - middle) - Math.abs(right.index - middle));
-      return gaps[0];
-    });
+        const cards = [
+          ...document.querySelectorAll<HTMLElement>('[aria-label="Conversation turns"] > li'),
+        ];
+        const gaps = [];
+        for (let index = 0; index < cards.length - 1; index += 1) {
+          const upper = cards[index]?.getBoundingClientRect();
+          const lower = cards[index + 1]?.getBoundingClientRect();
+          if (upper !== undefined && lower !== undefined && lower.top > upper.bottom) {
+            gaps.push({
+              fromCenter: (upper.bottom + lower.top) / 2 - (clipBox.top + clipBox.bottom) / 2,
+              index,
+              lowerId: cards[index + 1]?.getAttribute("data-turn"),
+            });
+          }
+        }
+        if (gaps.length === 0) {
+          return null;
+        }
+        const middle = cards.length / 2;
+        gaps.sort((left, right) => Math.abs(left.index - middle) - Math.abs(right.index - middle));
+        return gaps[0];
+      },
+      { clipBox: clip, root: CONVERSATION }
+    );
     expect(gap).not.toBeNull();
     if (gap === null || gap.lowerId === undefined || gap.lowerId === null) {
       throw new Error("no gap found between adjacent Conversation cards");
     }
 
-    await page.evaluate(
-      (midPage) => window.scrollTo(0, midPage - window.innerHeight / 2),
-      gap.gapMidPage
+    await scrollConversationBy(page, gap.fromCenter);
+    const conversationCenter = await page.evaluate(
+      ({ clipBox, root }) => {
+        const conversation = document.querySelector(root);
+        if (conversation === null) {
+          return null;
+        }
+        const rect = conversation.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const visibleTop = Math.max(rect.top, clipBox.top);
+        const visibleBottom = Math.min(rect.bottom, clipBox.bottom);
+        return { x, y: (visibleTop + visibleBottom) / 2 };
+      },
+      { clipBox: await conversationViewport(page), root: CONVERSATION }
     );
-    const conversationCenter = await page.evaluate(() => {
-      const conversation = document.querySelector('[aria-label="Conversation"]');
-      if (conversation === null) {
-        return null;
-      }
-      const rect = conversation.getBoundingClientRect();
-      const x = rect.left + rect.width / 2;
-      const visibleTop = Math.max(rect.top, 0);
-      const visibleBottom = Math.min(rect.bottom, window.innerHeight);
-      return { x, y: (visibleTop + visibleBottom) / 2 };
-    });
     expect(conversationCenter).not.toBeNull();
     if (conversationCenter === null) {
       throw new Error("could not locate the Conversation column");

@@ -9,6 +9,7 @@ import { oklchToSrgb8 } from "../web/src/theme/contrast";
 import type { Swatch } from "../web/src/theme/palette";
 import { createAsk, createComment, createIssue, createProject } from "./api";
 import { conversationThreadScope } from "./editor";
+import { openIssueAddress } from "./issue-page";
 import { stubbed } from "./stub/stub-test";
 
 const session = {
@@ -167,7 +168,7 @@ test("the Inbox, an issue's spec and its Conversation render each palette token 
   const dock = page.getByRole("form", { name: "Comment composer" });
 
   await page.emulateMedia({ colorScheme: "light" });
-  await page.goto(`/issues/${scene.issue}/conversation`);
+  await openIssueAddress(page, "conversation");
   await expect(link).toBeVisible();
   await expectTextColor(link, C.LINK.light);
   await expect(dock).toBeVisible();

@@ -118,11 +118,22 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
     await expect(ask).toContainText("Should we ship?");
     const decisions = page.getByRole("navigation", { name: "Open decisions" });
     await expect(decisions.getByText("1 open decision", { exact: true })).toBeVisible();
+    // The link says which decision it reaches and reaches it. It carries no `title`: the issue
+    // page draws no tooltip anywhere, because a fact a pointer alone can reach is a fact a
+    // reader on a phone and a reader on the keyboard do not have (dispatch://INFRA-1196 R2,
+    // R21; `components/tooltips.tsx`, which `ProofDocument`'s open-decisions link reads).
     const decisionLink = decisions.getByRole("link", { name: "Should we ship?" });
-    await expect(decisionLink).toHaveAttribute("title", "Should we ship?");
+    await expect(decisionLink).toHaveText("Should we ship?");
+    await expect(decisionLink).toHaveAttribute("href", "#b-ship-decision");
+    await expect(decisionLink).not.toHaveAttribute("title", /./);
     await expect(decisions).toHaveCSS("height", "28px");
     const header = page.getByTestId("issue-header");
     const specification = documentEditor(page).getByRole("heading", { name: "Specification" });
+    // The block is measured once it has all four of its rows. The fourth - the route with the
+    // claim - is drawn from the issue's own read, after the rows above it, and a height taken
+    // before it arrives is the block half drawn: that is what had this row measure 96 px one
+    // run and 150 px the next, with no polling to tell the two apart.
+    await expect(page.getByTestId("issue-work-row")).toBeVisible();
     const desktopMetrics = await Promise.all([
       header.evaluate((element) => element.getBoundingClientRect().height),
       specification.evaluate((element) => element.getBoundingClientRect().y),
@@ -132,14 +143,25 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
       contentType: "application/json",
     });
     await page.screenshot({ path: testInfo.outputPath("specchrome-1770.png") });
-    expect(desktopMetrics[0]).toBeLessThanOrEqual(96);
+    // What these budgets guard is a header that grows a row nobody noticed, not any
+    // particular height: that the first open question still reaches the first screen is
+    // c-open-questions' check, at 1440 x 900 and 390 x 844, and it does not rest on these.
+    // The identity block is four rows (dispatch://INFRA-1196, the Design section's table: the
+    // parent and the key with their controls; the title; the status, priority, assignee and
+    // labels; the route with the claim), where the header this budget was first written for
+    // was a title and a metadata rail. Measured in Chromium with DejaVu Sans: 150 px at
+    // 1770 x 900, where the properties fit one line, and 186 px at 1280 x 800, where the
+    // panel's column leaves them two. Each budget leaves a row and a half of room over its
+    // measurement, so the block can be changed without breaking a row about ask blocks, and
+    // two rows more than it draws today fails here.
+    expect(desktopMetrics[0]).toBeLessThanOrEqual(200);
 
     await page.setViewportSize({ width: 1280, height: 800 });
     const tabletMetrics = await Promise.all([
       header.evaluate((element) => element.getBoundingClientRect().height),
       specification.evaluate((element) => element.getBoundingClientRect().y),
     ]);
-    expect(tabletMetrics[0]).toBeLessThanOrEqual(140);
+    expect(tabletMetrics[0]).toBeLessThanOrEqual(234);
     await testInfo.attach("specchrome-1280-metrics", {
       body: JSON.stringify({ headerHeight: tabletMetrics[0], specificationY: tabletMetrics[1] }),
       contentType: "application/json",

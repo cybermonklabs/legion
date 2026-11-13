@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
+import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -12,7 +13,13 @@ import type { Issue, IssueDetails, IssueSummary } from "../../api/types";
 import type { IssueStatus } from "../project/board-model";
 import { useBoardMoves } from "../project/board-moves";
 import { projectIssuesQueryKey } from "../project/issue-filters";
+import { writesOf } from "../writes/write-store";
+import { blockedByControlName } from "./BlockedByControl";
 import { IssuePage } from "./IssuePage";
+import { HELP_LINES, PROPERTY_LABELS } from "./page-structure";
+import { BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
+import { blockedByRefusal } from "./useIssueBlockedBy";
+import { issueUpdateLabel } from "./useIssueHeaderWrites";
 
 const issue: IssueDetails = {
   route_status: null,
@@ -122,6 +129,29 @@ function stubIssueApi() {
     api,
     "listProjectArchitectureSources"
   ).mockResolvedValue([]);
+  // The one tree the page's body is reads these on every address (dispatch://INFRA-1196 R1),
+  // and the conversation panel beside it reads the issue's asks, comments and messages. Each
+  // answers the API's empty shape: these rows are about the header's writes, and a read that
+  // reached the network would fail the file (`__tests__/network-guard.ts`).
+  const treeReads = [
+    spyOn(api, "getIssueDecisions").mockResolvedValue({
+      decisions: [],
+      document: null,
+      open_questions: [],
+    }),
+    spyOn(api, "getIssueResults").mockResolvedValue({
+      checks: [],
+      issue: "CORE-1",
+      verification_artifact_id: "",
+    }),
+    spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
+    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
+    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", token: "", version: null }),
+    spyOn(api, "listIssueAsks").mockResolvedValue([]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueMessages").mockResolvedValue([]),
+  ];
   // The server answers a PATCH with the narrow `Issue`, not `IssueDetails`: no artifacts,
   // children, or open asks. The stub mirrors that so the page is exercised against the
   // real response shape.
@@ -149,6 +179,7 @@ function stubIssueApi() {
       getIssueCoverage.mockRestore();
       listProjectArchitectureSources.mockRestore();
       listRepoProjects.mockRestore();
+      for (const spy of treeReads) spy.mockRestore();
       patchIssue.mockRestore();
     },
   };
@@ -165,13 +196,23 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
 }
 
 async function openRouteEditor(): Promise<HTMLInputElement> {
-  const existing = screen.queryByLabelText("Message route");
+  const existing = screen.queryByLabelText("Messages go to");
   if (existing instanceof HTMLInputElement) {
     return existing;
   }
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Messages default to/ }));
-  return (await screen.findByLabelText("Message route")) as HTMLInputElement;
+  return (await screen.findByLabelText("Messages go to")) as HTMLInputElement;
+}
+
+/** Opens the identity block's one actions control, which holds close, reopen and the control
+ *  that sets the parent (dispatch://INFRA-1196 R11), and leaves it open if it already is. */
+async function openIssueActions(): Promise<void> {
+  const user = userEvent.setup();
+  const control = await screen.findByRole("button", { name: "Issue actions" });
+  if (control.getAttribute("aria-expanded") !== "true") {
+    await user.click(control);
+  }
 }
 
 test("IssuePage keeps an unsaved route draft when a stale refetch arrives", async () => {
@@ -284,7 +325,7 @@ test("IssuePage keeps the document and a route draft across a save response", as
     expect(
       screen.queryByText("Could not load this issue's primary document.")
     ).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Message route")).toBe(route);
+    expect(screen.getByLabelText("Messages go to")).toBe(route);
     expect(route.value).toBe("");
   } finally {
     unmount();
@@ -610,6 +651,32 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:b" }, keyedAttempt)
     );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// What the route box refuses is said in the reader's words: a regular expression is the model's
+// own rule for a route, and drawn on the issue page it told a reader nothing they could type
+// (R21). The words say what a route looks like and how to clear one.
+test("the route box says what a route looks like in words, and draws no pattern", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderIssuePage();
+
+  try {
+    const route = await openRouteEditor();
+    await user.click(route);
+    await user.paste("not-a-route");
+    const refusal = document.getElementById("issue-route-help");
+    expect(route.getAttribute("aria-describedby")).toContain("issue-route-help");
+    expect(
+      refusal?.textContent ?? "",
+      "the route box's refusal draws a regular expression where a reader needs words"
+    ).not.toMatch(/[[\]{}()*+?^$|\\]/);
+    expect(refusal?.textContent).toBe(HELP_LINES.route_shape);
+    expect(screen.getByRole("button", { name: "Save route" })).toHaveProperty("disabled", true);
   } finally {
     unmount();
     restore();
@@ -1005,7 +1072,8 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    await openIssueActions();
+    await user.click(screen.getByRole("button", { name: "Set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");
@@ -1029,7 +1097,8 @@ test("IssuePage clears the parent with an empty editor save", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Edit parent issue" }));
+    await openIssueActions();
+    await user.click(screen.getByRole("button", { name: "Edit parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     expect(parent.value).toBe("CORE-9");
     await user.clear(parent);
@@ -1038,7 +1107,8 @@ test("IssuePage clears the parent with an empty editor save", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
     );
-    await screen.findByRole("button", { name: "None, set parent issue" });
+    await openIssueActions();
+    await screen.findByRole("button", { name: "Set parent issue" });
     expect(screen.queryByRole("link", { name: "CORE-9" })).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -1060,7 +1130,8 @@ test("IssuePage renders the server's reason inline when a parent save is refused
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
+    await openIssueActions();
+    await user.click(screen.getByRole("button", { name: "Set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");
@@ -1139,4 +1210,329 @@ test("a board move then a header status change land in press order after an outa
     unmount();
     restore();
   }
+});
+
+// The issues an issue waits on are written where their value is drawn, in the panel's
+// Development section (dispatch://INFRA-1196 R11), and a list Dispatch refuses - a key it does
+// not know, the issue itself, an issue in another project - is said there, over the list the
+// reader typed, so they mend it rather than retype it. It used to close at once and reach the
+// header as "Could not update this issue.", whose Retry sent the same refused list again. What
+// it says is the page's own sentence with the key Dispatch named in it, never the server's
+// message, which names the field by its wire token (`blocked_by issue CORE-9 not found`, R21).
+test("the blocked-by editor stays open on a refusal and says what Dispatch refused", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(
+      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+    )
+  );
+  const { unmount } = renderIssuePage();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Add issues CORE-1 waits on" }));
+    const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
+    await user.click(keys);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith(
+        "CORE-1",
+        { blocked_by: ["CORE-9"] },
+        keyedAttempt
+      )
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("There is no issue CORE-9.");
+    expect(alert).not.toHaveTextContent("blocked_by");
+    // The key is the reader's own text inside the page's sentence (c-plain-words).
+    expect(within(alert).getByText("CORE-9")).toHaveAttribute("data-author-text");
+    expect(
+      (screen.getByLabelText("Issues CORE-1 waits on") as HTMLInputElement).value,
+      "the refused list is no longer in the box for the reader to mend"
+    ).toBe("CORE-9");
+    expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+test("a blocked-by that is set can be changed and cleared from the panel", async () => {
+  const user = userEvent.setup();
+  const { getIssue, patchIssue, restore } = stubIssueApi();
+  getIssue.mockResolvedValue({ ...issue, blocked_by: ["CORE-2"] });
+  const { unmount } = renderIssuePage();
+
+  try {
+    expect(await screen.findByRole("link", { name: "CORE-2" })).toBeInTheDocument();
+    await user.click(await screen.findByRole("button", { name: "Edit issues CORE-1 waits on" }));
+    const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
+    expect(keys.value).toBe("CORE-2");
+
+    await user.clear(keys);
+    await user.paste("core-3");
+    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith(
+        "CORE-1",
+        { blocked_by: ["CORE-3"] },
+        keyedAttempt
+      )
+    );
+    // The editor closes on a landing, and the written list is what the panel draws.
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
+    );
+    expect(await screen.findByRole("link", { name: "CORE-3" })).toBeInTheDocument();
+
+    await user.click(await screen.findByRole("button", { name: "Edit issues CORE-1 waits on" }));
+    await user.clear(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.click(screen.getByRole("button", { name: "Save blocked by" }));
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { blocked_by: [] }, keyedAttempt)
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R21: the indicator names the field in the page's own words. It read "CORE-1: route saved",
+// which is the schema's name for it, and "CORE-1: blocked_by saved" for the issues it waits on.
+test("the shell's indicator names the field a header write is saving", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const saving = deferred<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const { queryClient, unmount } = renderIssuePage();
+
+  try {
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    const route = (await screen.findByLabelText("Messages go to")) as HTMLInputElement;
+    await user.click(route);
+    await user.paste("role:legion-controller-core");
+    await user.click(screen.getByRole("button", { name: "Save route" }));
+
+    await waitFor(() =>
+      expect(
+        writesOf(queryClient)
+          .rows()
+          .map((row) => row.label)
+      ).toEqual(["Route of CORE-1 saved"])
+    );
+    saving.resolve(narrowIssue({ ...issue, route: "role:legion-controller-core" }));
+    await waitFor(() => expect(writesOf(queryClient).rows()).toHaveLength(0));
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The refusal is drawn in the editor and nowhere else, so a reader who closed the editor while
+// the save was out was shown no refusal at all. Cancel and Escape wait for the answer, and
+// Cancel says so: it is drawn and announced as held for as long as the save is out, rather than
+// as a control whose press does nothing.
+test("the blocked-by editor refuses Cancel and Escape while the save is out", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  const saving = deferred<Issue>();
+  patchIssue.mockImplementationOnce(() => saving.promise);
+  const { unmount } = renderIssuePage();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
+    await user.click(keys);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+
+    const cancel = screen.getByRole("button", { name: CONTROL_LABELS.cancel });
+    expect(
+      cancel,
+      "Cancel is drawn as a control while the save it would leave is out"
+    ).toBeDisabled();
+    await user.click(cancel);
+    expect(
+      screen.getByLabelText("Issues CORE-1 waits on"),
+      "Cancel closed the editor over a save whose refusal it would have drawn"
+    ).toBeInTheDocument();
+    await user.click(keys);
+    await user.keyboard("{Escape}");
+    expect(
+      screen.getByLabelText("Issues CORE-1 waits on"),
+      "Escape closed the editor over a save whose refusal it would have drawn"
+    ).toBeInTheDocument();
+
+    // The answer closes it, which is the one thing that may.
+    saving.resolve(narrowIssue({ ...issue, blocked_by: ["CORE-9"] }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A refusal belongs to the attempt that earned it. The editor held the last one until the next
+// save started, so opening it again drew a refusal of a list the reader had already dropped.
+test("the blocked-by editor opened again draws no refusal from the attempt before", async () => {
+  const user = userEvent.setup();
+  const { patchIssue, restore } = stubIssueApi();
+  patchIssue.mockImplementationOnce(() =>
+    Promise.reject(
+      new ApiError(400, { code: "BLOCKED_BY_INPUT", error: "blocked_by issue CORE-9 not found" })
+    )
+  );
+  const { unmount } = renderIssuePage();
+
+  try {
+    await user.click(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) })
+    );
+    await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("There is no issue CORE-9.");
+    // The answer gives Cancel back: the editor is the reader's to leave again.
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.cancel })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
+    await waitFor(() =>
+      expect(screen.queryByLabelText("Issues CORE-1 waits on")).not.toBeInTheDocument()
+    );
+    await user.click(screen.getByRole("button", { name: blockedByControlName("CORE-1", 0) }));
+    expect(await screen.findByLabelText("Issues CORE-1 waits on")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("alert"),
+      "the editor draws the refusal of a save this reader never made"
+    ).not.toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R21: each refusal of a blocked-by list is a sentence in the page's words, with the key the
+// refusal is about inside it as the reader's own text: a key Dispatch knows no issue for, the
+// issue itself, an issue of another project, and a list longer than an issue waits on.
+test("each refusal of a blocked-by list is the page's sentence about the key it names", () => {
+  const refused = (code: string, error: string) => new ApiError(400, { code, error });
+  expect(
+    blockedByRefusal(refused("BLOCKED_BY_INPUT", "blocked_by issue CORE-9 not found"), "CORE-1", [
+      "CORE-2",
+      "CORE-9",
+    ])
+  ).toEqual({ key: "CORE-9", words: "not_found" });
+  expect(
+    blockedByRefusal(refused("BLOCKED_BY_INPUT", "CORE-1 cannot be blocked by itself"), "CORE-1", [
+      "CORE-1",
+    ])
+  ).toEqual({ key: "CORE-1", words: "itself" });
+  expect(
+    blockedByRefusal(
+      refused("BLOCKED_BY_OUTSIDE_PROJECT", "blocked_by issue OPS-3 must be in the same project"),
+      "CORE-1",
+      ["OPS-3"]
+    )
+  ).toEqual({ key: "OPS-3", words: "outside_project" });
+  const many = Array.from({ length: MAX_ISSUE_BLOCKERS + 1 }, (_, index) => `CORE-${index + 2}`);
+  expect(
+    blockedByRefusal(
+      refused("BLOCKED_BY_INPUT", "blocked_by is 1 over the 20-item limit (21/20)"),
+      "CORE-1",
+      many
+    )
+  ).toEqual({ words: "too_many" });
+  // Any other answer is none of these refusals, and is said as it was before: the server's own
+  // words, or the page's line for a save that never reached it.
+  expect(
+    blockedByRefusal(new ApiError(500, { code: "INTERNAL", error: "boom" }), "CORE-1", ["CORE-2"])
+  ).toBeUndefined();
+});
+
+// R21: a list that would make the issue wait on itself through the issues it waits on, its
+// parent or its children is refused as `DEPENDENCY_CYCLE`, whose message names the field by its
+// wire token (`CORE-1 would wait on itself through blocked_by and parent links`). It is said in
+// the page's words as the other refusals are, with the issue the server names as the reader's
+// own text; a chain too long for the server to follow names none.
+test("a blocked-by list that would make a loop is the page's sentence about the issue it names", () => {
+  const refused = (error: string) => new ApiError(409, { code: "DEPENDENCY_CYCLE", error });
+  expect(
+    blockedByRefusal(
+      refused("CORE-1 would wait on itself through blocked_by and parent links"),
+      "CORE-1",
+      ["CORE-7"]
+    )
+  ).toEqual({ key: "CORE-1", words: "cycle" });
+  expect(
+    blockedByRefusal(refused("the dependency graph is deeper than 64 links"), "CORE-1", ["CORE-7"])
+  ).toEqual({ words: "too_deep" });
+
+  // Each sentence is the page's own: no wire token, and the key in it only where one goes.
+  const sentences = Object.values(BLOCKED_BY_REFUSALS).map(
+    ({ after, before }) => `${before}KEY${after}`
+  );
+  expect(sentences).toEqual([
+    "KEY would then wait on itself, through the issues it waits on, its parent or its children.",
+    "KEY is this issue, and an issue cannot wait on itself.",
+    "There is no issue KEY.",
+    "KEY is in another project, and an issue can wait only on issues of its own project.",
+    "These issues wait on one another through more links than Dispatch follows, so it cannot check them for a loop.KEY",
+    `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.KEY`,
+  ]);
+  for (const sentence of sentences) {
+    expect(sentence).not.toMatch(/blocked_by|_/u);
+  }
+});
+
+// R11: the menu lists the properties with no value and presses the control that sets each one,
+// rather than drawing a second copy of it. It finds that control by the name the control
+// exports (`blockedByControlName`), so the two sides cannot spell it apart: while each typed
+// its own, a word changed in one made the entry disappear with no error anywhere.
+test("the add menu opens the control the panel draws, under the name that control exports", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderIssuePage();
+
+  try {
+    expect(
+      await screen.findByRole("button", { name: blockedByControlName("CORE-1", 0) }),
+      "the panel draws no blocked-by control under the name it exports"
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.add }));
+    await user.click(await screen.findByRole("menuitem", { name: PROPERTY_LABELS.blocked_by }));
+    expect(
+      await screen.findByLabelText("Issues CORE-1 waits on"),
+      "the menu entry reached no control, so picking it opened nothing"
+    ).toBeInTheDocument();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R21: the indicator says what the page calls each field the write carries, and what it calls
+// the status the write sets, never the schema's token for either. It read the first key of the
+// write ("CORE-1: blocked_by saved"), so a write of two named one, and the status as the wire
+// spells it ("CORE-1 set to in_progress").
+//
+// The shell's indicator draws this line, but the issue page's own write hook composes it, so its
+// words are this page's (`useIssueHeaderWrites.ts`, `e2e/keyed-writes.e2e.ts`).
+test("the indicator names every field a header write carries, and a status by the page's word", () => {
+  expect(issueUpdateLabel("CORE-1", { parent: "CORE-9" })).toBe("Parent of CORE-1 saved");
+  expect(issueUpdateLabel("CORE-1", { route: "role:legion-controller-core" })).toBe(
+    "Route of CORE-1 saved"
+  );
+  expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to In progress");
+  expect(issueUpdateLabel("CORE-1", { status: "todo" })).toBe("CORE-1 set to Todo");
+  expect(issueUpdateLabel("CORE-1", { parent: "CORE-9", title: "A title" })).toBe(
+    "Parent and Title of CORE-1 saved"
+  );
+  expect(issueUpdateLabel("CORE-1", {})).toBe("CORE-1 saved");
 });

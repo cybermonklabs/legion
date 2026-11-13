@@ -9,9 +9,11 @@ import { MemoryRouter } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
+import { NoTooltips } from "../../components/tooltips";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
+import { CONTROL_LABELS } from "./page-words";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
@@ -57,9 +59,19 @@ const idlePriorityWrite: IssuePriorityWrite = {
   submit: () => undefined,
 };
 
+/**
+ * The header around one issue. `liveness` is what the issue read says of the claim's holder,
+ * which outranks the agent list.
+ *
+ * `tooltips` is the surface the chip is drawn on. The issue page raises no tooltip at all
+ * (dispatch://INFRA-1196 R21, `components/tooltips.tsx`), which is this helper's default and
+ * what decides whether each instant is drawn in words; the chip's other hosts, a List row and
+ * a Board card, do raise one, and a row that reads the chip's `title` asks for that surface.
+ */
 function header(
   issue: Issue,
-  liveness: ClaimHolderLiveness = {}
+  liveness: ClaimHolderLiveness = {},
+  { tooltips = false }: { tooltips?: boolean } = {}
 ): { unmount: () => void; user: UserEvent } {
   const details: IssueDetails = {
     route_status: null,
@@ -87,7 +99,7 @@ function header(
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <MarginProvider>{children}</MarginProvider>
+        <MarginProvider>{tooltips ? children : <NoTooltips>{children}</NoTooltips>}</MarginProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
@@ -143,9 +155,12 @@ test("a claimed issue names its holder and releases the claim from the header", 
   const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
   const view = header({ ...base, claim });
   try {
-    expect(await screen.findByTitle(/Claimed by Implementer/)).toBeDefined();
-    // The chip is the only place a reader is told what a claim is.
-    expect(await screen.findByTitle(/two agents never take the same work/)).toBeDefined();
+    // The chip says who holds the issue and since when in words, not in a tooltip: the issue
+    // page draws none at all (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
+    const claimed = await screen.findByTestId("issue-claim");
+    expect(claimed.textContent).toContain("Claimed by");
+    expect(claimed.textContent).toContain("Implementer");
+    expect(claimed.querySelector("time")?.textContent ?? "").toMatch(/\(.+\)/);
     // The holder is drawn by `AgentName`: its name links to its live conversation, and the
     // registry lists it, so it reads as running and the chip adds nothing.
     const chip = screen.getByTestId("issue-claim");
@@ -179,7 +194,8 @@ test("a holder the registry no longer lists reads as not running", async () => {
   const view = header({ ...base, claim });
   try {
     expect(await screen.findByText("not running")).toBeDefined();
-    expect(screen.getByTitle(/no longer running, so anyone may claim it/)).toBeDefined();
+    // "not running" is drawn, not hovered: the chip carries no tooltip.
+    expect(screen.queryByTitle(/no longer running/)).toBeNull();
     const chip = screen.getByTestId("issue-claim");
     expect(
       chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
@@ -271,7 +287,9 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     unresponsive("session-one", "Implementer", lastSeen),
   ]);
-  const view = header({ ...base, claim });
+  // The chip's `title` is read here, so it is drawn on a host that raises one (a List row, a
+  // Board card); the words it draws are the same on either surface.
+  const view = header({ ...base, claim }, {}, { tooltips: true });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
@@ -321,11 +339,14 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     unresponsive("session-one", "Implementer", lastSeen),
   ]);
-  const view = header({ ...base, claim });
+  // Read on a host that raises a tooltip, because this row reads the chip's `title` too.
+  const view = header({ ...base, claim }, {}, { tooltips: true });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(stalled).toHaveTextContent("unresponsive since");
-    expect(within(stalled).getByTestId("issue-claim-takeable").textContent).toBe(", takeable now");
+    expect(within(stalled).getByTestId("issue-claim-takeable").textContent).toBe(
+      `, ${CONTROL_LABELS.takeable_now}`
+    );
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     expect(screen.queryByText("not running")).not.toBeInTheDocument();
     const chip = screen.getByTestId("issue-claim");
@@ -334,6 +355,39 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
     expect(
       chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
     ).toBe("unresponsive");
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// The chip has to read as a sentence. It drew the relative age after "free for another agent
+// from", which made ", free for another agent from in 3 minutes (11/11/26, 12:05)", and inside
+// the last minute of the wait ", free for another agent from just now" - free, said of an issue
+// the server still refuses to hand over.
+test("the moment the issue comes free is drawn as a date and a time, so the chip reads as a sentence", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  // Half a minute of the grace left: the relative form of that moment is "just now", and the
+  // server still refuses the take.
+  const lastSeen = Date.now() - ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS + 30_000;
+  const agents = spyOn(api, "listAgents").mockResolvedValue([
+    unresponsive("session-one", "Implementer", lastSeen),
+  ]);
+  const view = header({ ...base, claim });
+  try {
+    const stalled = await screen.findByTestId("issue-claim-unresponsive");
+    const free = within(stalled).getByTestId("issue-claim-takeable");
+    const takeableAt = lastSeen + ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS;
+    expect(free.textContent).toBe(
+      `, ${CONTROL_LABELS.takeable} ${new Date(takeableAt).toLocaleString(undefined, {
+        dateStyle: "short",
+        timeStyle: "short",
+      })}`
+    );
+    expect(free.querySelector("time")?.getAttribute("datetime")).toBe(
+      new Date(takeableAt).toISOString()
+    );
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -354,7 +408,8 @@ test("the issue read's own holder_state outranks an agent list that does not nam
     last_seen: lastSeen,
     takeable_at: takeableAt,
   };
-  const view = header({ ...base, claim }, liveness);
+  // Read on a host that raises a tooltip, because this row reads the chip's `title` too.
+  const view = header({ ...base, claim }, liveness, { tooltips: true });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
     expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
@@ -374,6 +429,48 @@ test("the issue read's own holder_state outranks an agent list that does not nam
     expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
       `keeps this issue until ${new Date(takeableAt).toLocaleString()}`
     );
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// A registry that could not be read judges nothing, so the chip may not pass the claim off as
+// held and may not call it gone either. On the issue page no tooltip carries that refusal, so
+// the chip draws it (dispatch://INFRA-1196 R21).
+test("a claim whose registry could not be read says the running state is unknown", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
+  const view = header({ ...base, claim });
+  try {
+    const unjudged = await screen.findByTestId("issue-claim-unchecked");
+    expect(unjudged.textContent).toBe("running state unknown");
+    expect(screen.queryByTestId("issue-claim-lapsed")).toBeNull();
+    expect(screen.queryByText("not running")).toBeNull();
+    // Drawn, not hovered: this surface raises no tooltip at all.
+    expect(screen.getByTestId("issue-claim").getAttribute("title")).toBeNull();
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// Where a tooltip does carry it - a List row, a Board card - the chip says it there and draws
+// no word of its own, which would say the same thing twice and widen a chip those hosts have
+// no room for.
+test("a host that raises a tooltip keeps the unread registry in the title and draws no word", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
+  const view = header({ ...base, claim }, {}, { tooltips: true });
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
+        "Couldn't check whether that session is still running"
+      )
+    );
+    expect(screen.queryByTestId("issue-claim-unchecked")).toBeNull();
   } finally {
     view.unmount();
     agents.mockRestore();

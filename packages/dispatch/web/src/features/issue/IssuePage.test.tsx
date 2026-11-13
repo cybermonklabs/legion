@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -20,22 +20,35 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
+  ArtifactBlock,
   ArtifactText,
   ArtifactVersionText,
   Ask,
   GraphReferences,
   InboxRow,
+  IssueAskThreadRow,
+  IssueCheckResults,
   IssueCoverage,
   IssueDetails,
   IssueReferences,
+  Message,
   Project,
+  ReferenceTargets,
   Subscriber,
   UserIssueState,
 } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "../margin/margin-slot";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { appKeymap } from "../shell/keymap";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { IssuePage } from "./IssuePage";
+import { HELP_LINES } from "./page-structure";
+import { EMPTY_STATE_LINES } from "./page-words";
+
+/** Where this browser keeps the conversation state the file's signed-in reader last picked. */
+const KEPT_STATE = userPreferenceStorageKey("alice", "issue.conversation-state");
 
 const issue = {
   route_status: null,
@@ -257,6 +270,24 @@ function answerIssuePageReads(): void {
       } satisfies IssueCoverage)
     ),
     http.get("/api/v1/issues/:key/artifacts", () => Response.json([])),
+    // The issue's own conversation, which the tree and the panel's list share. A row that
+    // asserts one of them stubs `api` itself; this answers every other render, including one
+    // that moves to a second issue.
+    http.get("/api/v1/issues/:key/asks", () => Response.json([])),
+    http.get("/api/v1/issues/:key/comments", () => Response.json([])),
+    http.get("/api/v1/issues/:key/messages", () => Response.json([])),
+    // The tree's own reads, which every address draws: its check results, and the one batched
+    // read of every `dispatch://` address its nodes hold.
+    http.get("/api/v1/issues/:key/results", ({ params }) =>
+      Response.json({
+        checks: [],
+        issue: String(params.key),
+        verification_artifact_id: "",
+      } satisfies IssueCheckResults)
+    ),
+    http.get("/api/v1/reference-targets", () =>
+      Response.json({ targets: [] } satisfies ReferenceTargets)
+    ),
     http.get("/api/v1/issues/:key/references", () =>
       Response.json({ members: [], truncated: false } satisfies IssueReferences)
     ),
@@ -293,7 +324,21 @@ beforeEach(answerIssuePageReads);
 
 function CurrentRoute() {
   const location = useLocation();
-  return <output data-testid="current-route">{`${location.pathname}${location.search}`}</output>;
+  return (
+    <output data-testid="current-route">{`${location.pathname}${location.search}${location.hash}`}</output>
+  );
+}
+
+/** A stand-in for the shell's margin, which draws whatever the page put in the slot the way
+ *  `MarginSheet` does (`features/margin/margin-slot.tsx`). A row mounts one to watch the panel
+ *  move between the margin's column and the page's own. */
+function StandInMargin(): ReactNode {
+  const fill = useMarginSlotFill();
+  return (
+    <aside data-testid="stand-in-margin">
+      <FilledMarginSlot fill={fill}>{null}</FilledMarginSlot>
+    </aside>
+  );
 }
 
 function renderIssuePage(
@@ -302,32 +347,72 @@ function renderIssuePage(
   seedText?: string,
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
-  })
+  }),
+  /** Whether the shell's margin is keeping a column for the page's panel. No margin is
+   *  mounted here by default, so the default is the state a collapsed margin and a phone both
+   *  leave the page in: the page draws its panel itself (`features/margin/margin-slot.tsx`). */
+  marginDrawsPanel = false,
+  /** Whether a stand-in for the shell's margin is mounted at all. Off by default: with none
+   *  mounted, a page that hands its panel to the margin draws it nowhere, which is what the
+   *  rows below read. */
+  margin = false
 ) {
   const runtime = fakeDocumentRuntime({ text: seedText });
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
-  const view = render(
+  const tree = (drawsSlot: boolean) => (
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
           <DocumentRuntime.Provider value={runtime.runtime}>
             <MarginProvider>
-              <CurrentRoute />
-              {navigateTo === undefined ? null : (
-                <Link to={navigateTo}>Navigate to test route</Link>
-              )}
-              <Routes>
-                <Route path="/issues/:key/*" element={<IssuePage />} />
-              </Routes>
+              <MarginSlotProvider drawsSlot={drawsSlot}>
+                <CurrentRoute />
+                {navigateTo === undefined ? null : (
+                  <Link to={navigateTo}>Navigate to test route</Link>
+                )}
+                <Routes>
+                  <Route path="/issues/:key/*" element={<IssuePage />} />
+                </Routes>
+                {margin ? <StandInMargin /> : null}
+              </MarginSlotProvider>
             </MarginProvider>
           </DocumentRuntime.Provider>
         </KeymapProvider>
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const view = render(tree(marginDrawsPanel));
   window.setTimeout(runtime.sync);
-  return { ...view, runtime };
+  return {
+    ...view,
+    runtime,
+    /** Shows the shell's margin, or collapses it again: the shell answers whether the margin
+     *  keeps a column for the page's panel, and the reader's own control moves that answer. */
+    showMargin: (drawsSlot: boolean) => view.rerender(tree(drawsSlot)),
+  };
 }
+
+/** happy-dom answers every media query against its own 1024 px window, which is a width the
+ *  shell's margin is a sheet at. A test that wants the desktop layout asks for a wider one, as
+ *  `IssueTree.test.tsx` does. */
+function setViewport(width: number): void {
+  window.matchMedia = ((query: string) =>
+    ({
+      addEventListener: () => {},
+      addListener: () => {},
+      dispatchEvent: () => true,
+      matches: width <= Number(/max-width:\s*(\d+)/.exec(query)?.[1] ?? 0),
+      media: query,
+      onchange: null,
+      removeEventListener: () => {},
+      removeListener: () => {},
+    }) as MediaQueryList) as typeof window.matchMedia;
+}
+
+const originalMatchMedia = window.matchMedia;
+afterEach(() => {
+  window.matchMedia = originalMatchMedia;
+});
 
 async function openSubscribedAgents(count: number) {
   const user = userEvent.setup();
@@ -338,13 +423,58 @@ async function openSubscribedAgents(count: number) {
   return screen.findByRole("region", { name: "Subscribed agents" });
 }
 
+/** Who opened the issue, where the redesigned page draws it: the panel's People section, with
+ *  the label beside the name as text rather than the tooltip the metadata rail carried
+ *  (dispatch://INFRA-1196 R11). */
 async function expectCreator(label: string): Promise<HTMLElement> {
-  const rail = await screen.findByTestId("issue-metadata-rail");
-  // `AgentName` draws the name; the span around it carries the whole label as its `title`.
-  const creator = await within(rail).findByTitle(label);
+  const panel = await screen.findByTestId("issue-margin");
+  const openedBy = await within(panel).findByText("Opened by:");
+  const row = openedBy.parentElement as HTMLElement;
+  expect(row.textContent).toBe(`Opened by:${label}`);
+  const creator = row.querySelector<HTMLElement>("[data-author-text]") as HTMLElement;
   expect(creator.textContent).toBe(label);
-  expect(creator.parentElement?.textContent).toBe(`Opened by:${label}`);
   return creator;
+}
+
+/**
+ * The preset the page is on. happy-dom's window is 1024 px wide, which is the width the row of
+ * five presets becomes one control named by the active preset (dispatch://INFRA-1196 R3), so
+ * that one control is what these tests read and press. The control draws the preset and its
+ * count, and so is named by both - a word drawn inside a control belongs in that control's
+ * name (WCAG 2.5.3, `IssuePresets.tsx`) - so the preset is its name with the count taken out.
+ */
+async function activePreset(): Promise<string> {
+  const row = await screen.findByTestId("issue-presets");
+  const named = within(row).getByRole("button").cloneNode(true) as HTMLElement;
+  for (const count of named.querySelectorAll("[data-preset-count]")) count.remove();
+  return (named.textContent ?? "").replace(/\s+/g, " ").trim();
+}
+
+async function expectPreset(name: string): Promise<void> {
+  await waitFor(async () => {
+    expect(await activePreset()).toBe(name);
+  });
+}
+
+/** Moves to `name` through that one control's menu. */
+async function openPreset(name: string): Promise<void> {
+  const user = userEvent.setup();
+  const row = await screen.findByTestId("issue-presets");
+  await user.click(within(row).getByRole("button"));
+  await user.click(await screen.findByRole("menuitem", { name }));
+  await expectPreset(name);
+}
+
+/** Opens the identity block's one actions control, which is where close, reopen and the control
+ *  that sets the parent live now (R11: row one holds the actions, never a property). */
+async function openIssueActions(): Promise<void> {
+  const user = userEvent.setup();
+  const control = await screen.findByRole("button", { name: "Issue actions" });
+  // The control is a toggle and a press inside it closes the group, so this opens it only while
+  // it is closed: two calls in a row leave the actions on screen, not hidden again.
+  if (control.getAttribute("aria-expanded") !== "true") {
+    await user.click(control);
+  }
 }
 
 test("IssuePage shows a session creator's live title and personal-token owner", async () => {
@@ -412,7 +542,7 @@ test("IssuePage omits creator metadata for historical issues", async () => {
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -421,11 +551,12 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 });
 
 test("IssuePage's header warns when nobody holds the route, and adds nothing when it is live", async () => {
-  // The warning sits in the wrapping state row, not the metadata rail, which clips at every width.
+  // The warning sits in row four of the identity block, beside the route it speaks for: both
+  // wrap, so neither is ever reached by scrolling a row sideways (dispatch://INFRA-1196 R11).
   const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
+    const row = await screen.findByTestId("issue-work-row");
+    await within(row).findByRole("button", { name: "Messages default to role:sre" });
+    return row;
   };
 
   const unheld = stubIssuePage({ ...issue, route: "role:sre", route_status: "no_holder" });
@@ -500,9 +631,9 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
 // is still held, or hides that anything is wrong at all (dispatch://INFRA-392).
 test("IssuePage's header marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
   const stateRow = async () => {
-    const rail = await screen.findByTestId("issue-metadata-rail");
-    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
-    return screen.getByTestId("issue-state-actions");
+    const row = await screen.findByTestId("issue-work-row");
+    await within(row).findByRole("button", { name: "Messages default to role:sre" });
+    return row;
   };
 
   const stalled = stubIssuePage({
@@ -517,7 +648,9 @@ test("IssuePage's header marks an unresponsive route holder apart from an unheld
     const marker = within(row).getByTestId("issue-route-unresponsive");
     expect(marker).toHaveTextContent("role:sre:");
     expect(marker).toHaveTextContent("Unresponsive, still reached");
-    expect(marker.getAttribute("title")).toContain("waits until it answers");
+    // The page raises no tooltip (dispatch://INFRA-1196 R21), so the marker's explanation is
+    // drawn for a screen reader rather than held in its `title`.
+    expect(marker).toHaveTextContent("waits until it answers");
     expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
     expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();
@@ -552,7 +685,7 @@ test("IssuePage omits creator metadata when an issue response omits it", async (
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -580,7 +713,9 @@ test("IssuePage shows subscribed agents with their title and their running state
     expect(within(subscribed).getAllByRole("listitem")).toHaveLength(2);
     const planner = within(subscribed).getByRole("link", { name: "Planner (live)" });
     expect(planner).toHaveAttribute("href", "/agents/0123456789abcdef/live");
-    expect(planner.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    // The panel raises no tooltip, so the session's own id is nowhere but in the link it
+    // follows and the mark the registry reads (R21, `IssueMargin.tsx`'s `NoTooltips`).
+    expect(planner.closest("[title]")).toBeNull();
     expect(within(subscribed).getByRole("link", { name: "Historical (offline)" })).toBeDefined();
     const states = () =>
       [...subscribed.querySelectorAll("[data-agent-name]")].map((agent) => [
@@ -619,9 +754,17 @@ test("IssuePage disables Unsubscribe and explains why for a subscriber reachable
 
   try {
     const subscribed = await openSubscribedAgents(1);
-    expect(within(subscribed).getByText("via notifications.dispatch.>")).toBeDefined();
+    // Why Unsubscribe is refused, in words: a disabled control takes no focus and raises no
+    // tooltip, so the `title` it carried reached nobody (R21). The line says why in the
+    // reader's words and draws no topic.
+    expect(
+      within(subscribed).getByText(
+        "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone."
+      )
+    ).toBeDefined();
     const unsubscribeButton = within(subscribed).getByRole("button", { name: "Unsubscribe" });
     expect(unsubscribeButton).toHaveProperty("disabled", true);
+    expect(unsubscribeButton.getAttribute("title")).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -635,7 +778,7 @@ test("IssuePage shortens a subscriber id when its title is blank", async () => {
   try {
     const subscribed = await openSubscribedAgents(1);
     const label = within(subscribed).getByText("session:01234567…");
-    expect(label.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
+    expect(label.closest("[title]")).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -647,7 +790,7 @@ test("IssuePage hides the Subscribed agents header when there are no subscribers
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
@@ -794,7 +937,7 @@ test("IssuePage shows a retryable error and hides the section when the subscribe
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     await waitFor(() =>
       expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
@@ -815,7 +958,7 @@ test("IssuePage says the agent list is refilling and counts no subscribers from 
   const view = renderIssuePage();
 
   try {
-    await screen.findByText(issue.title);
+    await screen.findByRole("heading", { level: 1, name: issue.title });
     const notice = await screen.findByTestId("agent-list-refilling");
     expect(notice.textContent).toBe(AGENT_LIST_REFILLING);
     expect(
@@ -1031,7 +1174,14 @@ for (const fixture of [
     try {
       await screen.findByText("Merge native Dispatch");
       expect(screen.getByText("merged")).toBeDefined();
-      expect(await screen.findByText(`checks: ${fixture.checks}`)).toBeDefined();
+      // The chip is the page's word and GitHub's own count beside it, each marked as what it
+      // is (dispatch://INFRA-1196 R21), so the chip is read whole rather than as one text node.
+      expect(
+        await screen.findByText(
+          (_text, element) => element?.textContent === `checks: ${fixture.checks}`,
+          { selector: "span[data-page-chrome]" }
+        )
+      ).toBeDefined();
     } finally {
       view.unmount();
       githubRest.mockRestore();
@@ -1081,7 +1231,9 @@ test("IssuePage keeps a pull request's title and state when only its check-runs 
     expect(within(link).getByText("Keep the title when checks vanish")).toBeDefined();
     expect(within(link).getByText("open")).toBeDefined();
     expect(within(link).queryByText(/^checks:/)).not.toBeInTheDocument();
-    expect(link).toHaveAttribute("title", "owner/repository#7: Keep the title when checks vanish");
+    // The link draws its repository, number, title and state; it carries no tooltip, because
+    // the issue page draws none (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
+    expect(link).not.toHaveAttribute("title");
   } finally {
     view.unmount();
     githubRest.mockRestore();
@@ -1111,7 +1263,8 @@ test("IssuePage continues to unfurl GitHub issues through the issues endpoint", 
   }
 });
 
-test("IssuePage opens the Spec tab and leaves open asks out of the main column", async () => {
+test("IssuePage opens the Tree preset and leaves open asks out of the main column", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue, [
     {
       ...openIssueAsk,
@@ -1134,10 +1287,11 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
   const view = renderIssuePage("/issues/CORE-1");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    expect(screen.getByRole("tab", { name: "Conversation", selected: false })).toBeDefined();
-    expect(screen.getByRole("tab", { name: "Children", selected: false })).toBeDefined();
-    expect(screen.getByRole("tab", { name: "Activity", selected: false })).toBeDefined();
+    await expectPreset("Tree");
+    await user.click(within(await screen.findByTestId("issue-presets")).getByRole("button"));
+    for (const preset of ["Tree", "Decisions", "Checks", "Spec", "Plan"] as const) {
+      expect(screen.getByRole("menuitem", { name: preset })).toBeDefined();
+    }
     expect(screen.queryByLabelText("Issue board")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -1145,27 +1299,71 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
   }
 });
 
-// `t a` is already Artifacts, so Activity's chord is `t v`; it reaches the same tablist button a
-// click does, and the route it lands on is the tab's own.
-test("IssuePage opens the Activity tab with the t v chord", async () => {
+// `t a` is already the node menu's address, so Activity's chord is `t v`; the tablist is gone,
+// so the chord opens the address the Activity tab answered and the page still resolves it.
+test("IssuePage opens the activity address with the t v chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Spec");
     await user.keyboard("t");
     await user.keyboard("v");
 
-    await screen.findByRole("tab", { name: "Activity", selected: true });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
+    );
+    await expectPreset("Tree");
   } finally {
     view.unmount();
     restore();
   }
 });
 
-test("IssuePage opens the Decisions tab with the t d chord", async () => {
+// What `?` lists for each chord: the page has no tablist, no Verification, Children, Artifacts
+// or Collaborators tab, so a label naming one would send a reader looking for something the
+// page does not have (dispatch://INFRA-1196 R21, `useIssueKeymap.ts`).
+test("IssuePage names each chord by what it opens on this page", async () => {
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage();
+
+  try {
+    await screen.findByTestId("issue-header");
+    const labels = new Map(
+      appKeymap
+        .describe()
+        .filter((binding) => binding.scope === "issue")
+        .map((binding) => [binding.id, binding.label])
+    );
+    expect(labels.get("tab-tree")).toBe("Open the Tree preset");
+    expect(labels.get("tab-verification")).toBe("Open the Checks preset");
+    expect(labels.get("tab-plan")).toBe("Open the Plan preset");
+    expect(labels.get("tab-conversation")).toBe("Open the conversation in the panel");
+    expect(labels.get("tab-activity")).toBe("Open the activity in the panel");
+    expect(labels.get("tab-children")).toBe("Open the issue's children");
+    expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
+    expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);
+    // `t o` is gone with the chord: the spec's key table names two chords into the panel -
+    // `t c` for the conversation and `t v` for the activity - and the collaborators were a
+    // third it does not hold (dispatch://INFRA-1196 R9). `/collaborators` still resolves and
+    // still opens them in the panel (R19); it is the key that is gone, and `?`, which lists
+    // what the page binds, no longer offers a row for it.
+    expect(labels.get("tab-collaborators")).toBeUndefined();
+    expect(
+      appKeymap
+        .describe()
+        .filter((binding) => binding.keys.join(" ") === "t o")
+        .map((binding) => `${binding.scope}:${binding.id}`),
+      "`t o` is still bound"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("IssuePage opens the Decisions preset with the t d chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
@@ -1176,12 +1374,14 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Spec");
     await user.keyboard("t");
     await user.keyboard("d");
 
-    await screen.findByRole("tab", { name: "Decisions", selected: true });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/decisions");
+    await expectPreset("Decisions");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/decisions")
+    );
     await waitFor(() => expect(decisions).toHaveBeenCalledWith("CORE-1"));
   } finally {
     view.unmount();
@@ -1190,8 +1390,11 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   }
 });
 
-test("IssuePage opens the Collaborators tab with the t o chord", async () => {
-  const user = userEvent.setup();
+// `/collaborators` is the address the Collaborators tab carried. The tab is gone, and so is the
+// `t o` chord that opened it: the spec's key table names two chords into the panel and that was
+// a third (dispatch://INFRA-1196 R9). The address still resolves and still opens the panel's
+// People section on who worked the issue (R12, R19).
+test("IssuePage opens the issue's collaborators at their own address", async () => {
   const restore = stubIssuePage(issue);
   const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
     agents: [],
@@ -1199,15 +1402,10 @@ test("IssuePage opens the Collaborators tab with the t o chord", async () => {
     legion_registry: "ok",
     people: [],
   });
-  const view = renderIssuePage("/issues/CORE-1/spec");
+  const view = renderIssuePage("/issues/CORE-1/collaborators");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    await user.keyboard("t");
-    await user.keyboard("o");
-
-    await screen.findByRole("tab", { name: "Collaborators", selected: true });
-    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/collaborators");
+    await screen.findByText("No one has worked this issue yet.");
     await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
   } finally {
     view.unmount();
@@ -1226,7 +1424,7 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   try {
     await screen.findByRole("heading", { name: "Page not found" });
     expect(screen.getByRole("link", { name: "Back to inbox" })).toBeDefined();
-    expect(screen.queryByRole("tablist", { name: "Issue detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist", { name: "Issue presets" })).not.toBeInTheDocument();
     expect(document.title).toBe("Not found · Dispatch");
     expect(getIssueSpy).not.toHaveBeenCalled();
     expect(getMyStateSpy).not.toHaveBeenCalled();
@@ -1237,8 +1435,7 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   }
 });
 
-test("IssuePage keeps the Spec mounted across tabs", async () => {
-  const user = userEvent.setup();
+test("IssuePage keeps the Spec mounted across presets", async () => {
   const restore = stubIssuePage(issue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
@@ -1251,17 +1448,15 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
   const view = renderIssuePage("/issues/CORE-1/spec", undefined, "The mounted specification");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Spec");
     await waitFor(() =>
       expect(within(view.container).getByRole("article")).toHaveTextContent(
         "The mounted specification"
       )
     );
 
-    await user.click(screen.getByRole("tab", { name: "Conversation" }));
-    await screen.findByRole("tab", { name: "Conversation", selected: true });
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await openPreset("Tree");
+    await openPreset("Spec");
 
     expect(within(view.container).getByRole("article")).toHaveTextContent(
       "The mounted specification"
@@ -1274,22 +1469,28 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
   }
 });
 
-test("IssuePage preserves an in-progress Conversation composer draft across a tab round-trip", async () => {
+test("IssuePage preserves an in-progress Conversation composer draft across a preset round-trip", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
-    await screen.findByRole("tab", { name: "Conversation", selected: true });
+    await expectPreset("Tree");
     const composer = (await screen.findByLabelText("Comment")) as HTMLTextAreaElement;
     await user.click(composer);
     await user.paste("Draft in progress");
     expect(composer.value).toBe("Draft in progress");
 
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-    await screen.findByRole("tab", { name: "Spec", selected: true });
-    await user.click(screen.getByRole("tab", { name: "Conversation" }));
-    await screen.findByRole("tab", { name: "Conversation", selected: true });
+    await openPreset("Spec");
+    // A state picked in the panel opens no address from a preset: it would drop the preset, the
+    // filter and the document the reader has open (R19), and the issue's own address is a
+    // preset's address too. The way back to the conversation's own address is its chord.
+    await openPreset("Tree");
+    await user.keyboard("t");
+    await user.keyboard("c");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/conversation")
+    );
 
     expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe(
       "Draft in progress"
@@ -1363,12 +1564,10 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
 
     try {
       await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
-      expect(
-        await screen.findByText(
-          "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim."
-        )
-      ).toBeDefined();
-      const routeInput = await screen.findByLabelText("Message route");
+      // What a route is, and what it is not: text beside the editor now, where the rail carried
+      // it as a tooltip no phone could raise (dispatch://INFRA-1196 R11).
+      expect(await screen.findByText(HELP_LINES.route)).toBeDefined();
+      const routeInput = await screen.findByLabelText("Messages go to");
       await user.click(routeInput);
       await user.paste("role:not-saved-draft");
       await screen.findByDisplayValue("role:not-saved-draft");
@@ -1461,7 +1660,9 @@ test("IssuePage highlights a historical quote from its comment deep link", async
     );
     expect(view.runtime.editors.some((editor) => editor.focused.includes("comment-1"))).toBe(true);
     expect(
-      within(within(view.container).getByRole("tabpanel", { name: "Spec" })).getAllByRole("article")
+      within(
+        view.container.querySelector<HTMLDivElement>("#issue-spec-panel") as HTMLDivElement
+      ).getAllByRole("article")
     ).toHaveLength(1);
   } finally {
     view.unmount();
@@ -1542,7 +1743,7 @@ test("IssuePage reports an ambiguous historical quote as changed text", async ()
   }
 });
 
-test("IssuePage renders an image artifact in the Artifacts tab", async () => {
+test("IssuePage renders an image artifact at its own address", async () => {
   const imageArtifact = {
     created_at: "2026-09-09T01:00:00Z",
     created_by: { id: "alice", kind: "user" as const },
@@ -1572,9 +1773,12 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    await expectPreset("Tree");
     expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
+    // The ring says so to a reader and the mark says so to a layer that reads the page as a
+    // reader does, which waits for both to go (`e2e/review-routes.ts`'s `waitForRouteSettled`).
+    expect(screen.getByTestId("artifact-header").getAttribute("data-landing-ring")).toBe("true");
   } finally {
     view.unmount();
     restore();
@@ -1617,7 +1821,7 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
   const view = renderIssuePage("/issues/CORE-1/spec", "/issues/CORE-1/artifacts/diagram-png");
 
   try {
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Spec");
     await waitFor(() => expect(getArtifactText).toHaveBeenCalledWith("artifact-1"));
     getArtifactText.mockClear();
     await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
@@ -1669,7 +1873,7 @@ test("IssuePage opens a non-spec document at its version route", async () => {
   const view = renderIssuePage("/issues/CORE-1/artifacts/design");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    await expectPreset("Tree");
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
     await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
@@ -1716,7 +1920,7 @@ test("IssuePage shows an unavailable image version instead of the latest image",
   const view = renderIssuePage("/issues/CORE-1/artifacts/diagram-png?v=999");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
+    await expectPreset("Tree");
     expect(screen.getByText("Version 999 is not available for this artifact.")).not.toBeNull();
     expect(screen.queryByRole("img", { name: "diagram.png version 1" })).not.toBeInTheDocument();
   } finally {
@@ -1735,22 +1939,20 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
       "href",
       "/issues/CORE-1/artifacts"
     );
-    expect(screen.getByRole("tablist", { name: "Issue detail" })).not.toBeNull();
+    await expectPreset("Tree");
   } finally {
     view.unmount();
     restore();
   }
 });
 
-test("IssuePage hides the Artifacts panel after switching to Spec", async () => {
-  const user = userEvent.setup();
+test("IssuePage hides the artifact panel after switching to the Spec preset", async () => {
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/artifacts");
 
   try {
-    await screen.findByRole("tab", { name: "Artifacts 1", selected: true });
-    await user.click(screen.getByRole("tab", { name: "Spec" }));
-    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await expectPreset("Tree");
+    await openPreset("Spec");
     const artifactsPanel = view.container.querySelector<HTMLDivElement>("#issue-artifacts-panel");
     expect(artifactsPanel?.hidden).toBe(true);
     expect(artifactsPanel?.getAttribute("aria-hidden")).toBe("true");
@@ -1841,7 +2043,6 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   }
 });
 test("IssuePage keeps version controls in the active Spec tab row", async () => {
-  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
@@ -1854,14 +2055,21 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    const tabs = await screen.findByTestId("issue-tabs");
-    expect(within(tabs).getByRole("combobox", { name: "Version" })).not.toBeNull();
-    expect(within(tabs).getByRole("button", { name: "Name version" })).not.toBeNull();
+    const toolbar = await screen.findByTestId("issue-preset-toolbar");
+    expect(within(toolbar).getByRole("combobox", { name: "Version" })).not.toBeNull();
+    expect(within(toolbar).getByRole("button", { name: "Name version" })).not.toBeNull();
     expect(screen.queryByTestId("spec-document-toolbar")).not.toBeInTheDocument();
 
-    for (const tab of ["Conversation", "Children", "Artifacts 1", "Activity"] as const) {
-      await user.click(screen.getByRole("tab", { name: tab }));
-      await screen.findByRole("tab", { name: tab, selected: true });
+    // The Tree preset is the issue's own address, and the page draws the spec beside its tree
+    // there, so that document keeps its toolbar: the version picker, Name version and the
+    // approval are controls it has nowhere else (dispatch://INFRA-1196 R18). The three
+    // presets below draw no document of this issue at all, so their row carries no toolbar.
+    await openPreset("Tree");
+    const treeToolbar = await screen.findByTestId("issue-preset-toolbar");
+    expect(within(treeToolbar).getByRole("combobox", { name: "Version" })).not.toBeNull();
+    for (const preset of ["Decisions", "Checks", "Plan"] as const) {
+      await openPreset(preset);
+      expect(screen.queryByTestId("issue-preset-toolbar")).not.toBeInTheDocument();
       expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Name version" })).not.toBeInTheDocument();
     }
@@ -1908,15 +2116,15 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
     await user.keyboard("{/Control}");
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1"));
 
-    const tabs = await screen.findByTestId("issue-tabs");
+    const toolbar = await screen.findByTestId("issue-preset-toolbar");
     await user.click(
-      within(tabs).getByRole("button", { name: "Copy reference dispatch://CORE-1/spec" })
+      within(toolbar).getByRole("button", { name: "Copy reference dispatch://CORE-1/spec" })
     );
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/spec"));
 
     await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
     await user.click(
-      await within(tabs).findByRole("button", {
+      await within(toolbar).findByRole("button", {
         name: "Copy reference dispatch://CORE-1/artifact/spec@v1",
       })
     );
@@ -1945,7 +2153,9 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
   const view = renderIssuePage("/issues/CORE-1", undefined, undefined, queryClient);
 
   try {
-    expect(await screen.findByText("Waiting on you (1)")).not.toBeNull();
+    // The marker's words are the page's and the count beside them is the issue's, each marked
+    // as what it is (dispatch://INFRA-1196 R21), so the marker is read whole.
+    expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe("Waiting on you (1)");
     queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
       ...waitingIssue,
       open_asks: [
@@ -1959,7 +2169,9 @@ test("IssuePage updates whose turn when a human clarification is latest", async 
         },
       ],
     });
-    expect(await screen.findByText("Waiting on agents (1)")).not.toBeNull();
+    expect((await screen.findByTestId("issue-whose-turn")).textContent).toBe(
+      "Waiting on agents (1)"
+    );
   } finally {
     view.unmount();
     restore();
@@ -2007,7 +2219,9 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     ).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
     expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
-    expect(within(stateActions).getByRole("button", { name: "Close issue" })).not.toBeNull();
+    // Close is an action, not a property, so it sits behind row one's one actions control.
+    await openIssueActions();
+    expect(screen.getByRole("button", { name: "Close issue" })).not.toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -2234,14 +2448,17 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     const openStatus = (await screen.findByLabelText("Status")) as HTMLSelectElement;
     expect([...openStatus.options].map((option) => option.value)).not.toContain("done");
 
+    await openIssueActions();
     await user.click(screen.getByRole("button", { name: "Close issue" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt)
     );
-    // While the write is in flight the control is disabled: no second close can be queued.
-    expect(
-      (screen.getByRole("button", { name: "Close issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    // While the write is in flight the control is disabled and says so: no second close can be
+    // queued, and the words it shows are its name.
+    await openIssueActions();
+    expect((screen.getByRole("button", { name: "Closing…" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
     await act(async () => {
       closeSave.resolve({ ...issue, closed_at: "2026-09-12T10:00:00Z", status: "done" });
       await closeSave.promise;
@@ -2252,13 +2469,17 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     expect(closedStatus.disabled).toBe(true);
     expect(closedStatus.value).toBe("done");
 
-    await user.click(screen.getByRole("button", { name: "Reopen issue" }));
+    await openIssueActions();
+    // The control is named by the words it shows, so a voice user who says what it reads
+    // presses it (WCAG 2.5.3): while the write is out that is "Reopening…".
+    await user.click(screen.getByRole("button", { name: "Reopen into Backlog" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
-    expect(
-      (screen.getByRole("button", { name: "Reopen issue" }) as HTMLButtonElement).disabled
-    ).toBe(true);
+    await openIssueActions();
+    expect((screen.getByRole("button", { name: "Reopening…" }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
     await act(async () => {
       reopenSave.resolve({ ...issue, status: "backlog" });
       await reopenSave.promise;
@@ -2396,7 +2617,8 @@ test("IssuePage reads an item whose address writes its id whole without resolvin
 
   try {
     await waitFor(() => expect(getComment).toHaveBeenCalledWith(WHOLE_ID));
-    await screen.findByRole("tab", { name: /Conversation/ });
+    // The tabs are gone (R3): the conversation's own turns are what the landing opens.
+    await screen.findByRole("list", { name: "Conversation turns" });
     // The whole id is read once, under itself, and nothing is resolved for it.
     expect(getComment.mock.calls).toEqual([[WHOLE_ID]]);
     expect(getReferences).not.toHaveBeenCalled();
@@ -2547,6 +2769,415 @@ test("IssuePage shows its not-found view for an id prefix that names nothing", a
     view.unmount();
     getComment.mockRestore();
     getReferences.mockRestore();
+    restore();
+  }
+});
+
+// The panel is drawn wherever the shell's margin is not drawing it: at the width the margin is
+// a sheet, and - this row - from 1280 px up with the reader's margin collapsed to its rail.
+// Without it that reader loses every property in the panel, the conversation with them, and
+// `/conversation`, `/collaborators`, `t c` and `t o` reach nothing.
+test("IssuePage draws its panel in its own column wherever the margin draws none", async () => {
+  const restore = stubIssuePage({ ...issue, blocked_by: ["CORE-9"] });
+  setViewport(1280);
+  const view = renderIssuePage();
+
+  try {
+    const panel = await screen.findByTestId("issue-margin");
+    expect(within(panel).getByText("Opened by:")).toBeInTheDocument();
+    expect(within(panel).getByRole("link", { name: "CORE-9" })).toBeInTheDocument();
+    expect(within(panel).getByRole("listbox", { name: "Conversation" })).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+test("IssuePage leaves the panel to the margin where the margin keeps a column for it", async () => {
+  const restore = stubIssuePage(issue);
+  setViewport(1280);
+  const view = renderIssuePage("/issues/CORE-1", undefined, undefined, undefined, true);
+
+  try {
+    await screen.findByTestId("issue-header");
+    expect(screen.queryByTestId("issue-margin")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// Picking a state in the panel is a change of state and not a change of address: the preset the
+// reader is reading, the `?q=` that narrows it and the document it has open all stay.
+test("IssuePage keeps the preset and the filter when a conversation state is picked", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/spec?q=socket");
+
+  try {
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await expectPreset("Spec");
+    await user.click(within(states).getByRole("option", { name: "Questions" }));
+
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?q=socket");
+    await expectPreset("Spec");
+    expect(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Questions",
+      })
+    ).toHaveAttribute("aria-selected", "true");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// `/conversation` and `/activity` are the two addresses that are a state of their own, so from
+// one of them picking the other's state opens it - and the filter goes with it.
+test("IssuePage carries the filter into the address a conversation state names", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/conversation?q=socket");
+
+  try {
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await user.click(within(states).getByRole("option", { name: "Everything" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        "/issues/CORE-1/activity?q=socket"
+      )
+    );
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// The issue's own address draws the spec beside the tree, and a `#b-` there names a block of
+// it, so it is a preset's address like the others and a picked state keeps it whole: the spec,
+// the fragment and the filter. This row used to pin the opposite - Everything and Words, the
+// latter already the selected state, sent the reader to `/activity` and `/conversation`, which
+// closed the spec and dropped the `#b-` - and nothing the reader asked for needed that (R19).
+test("IssuePage keeps the issue's own address, its spec and its fragment when a state is picked", async () => {
+  const user = userEvent.setup();
+  window.localStorage.removeItem(KEPT_STATE);
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1?q=socket#b-r1");
+
+  try {
+    await expectPreset("Tree");
+    const spec = document.getElementById("issue-spec-panel") as HTMLElement;
+    expect(spec).not.toHaveAttribute("hidden");
+    for (const name of ["Everything", "What people said"]) {
+      const states = await screen.findByRole("listbox", { name: "Conversation" });
+      await user.click(within(states).getByRole("option", { name }));
+
+      expect(screen.getByTestId("current-route").textContent, `${name} left the address`).toBe(
+        "/issues/CORE-1?q=socket#b-r1"
+      );
+      await expectPreset("Tree");
+      expect(document.getElementById("issue-spec-panel"), `${name} closed the spec`).toBe(spec);
+      expect(spec, `${name} hid the spec`).not.toHaveAttribute("hidden");
+      expect(
+        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+          name,
+        })
+      ).toHaveAttribute("aria-selected", "true");
+    }
+  } finally {
+    view.unmount();
+    restore();
+    window.localStorage.removeItem(KEPT_STATE);
+  }
+});
+
+// Words and Everything are addresses of their own, and picking one from a preset used to send
+// the reader to the bare `/conversation` or `/activity`: the preset gone, the `?q=` cleared
+// and the document they were reading closed. From a preset the state is the panel's alone
+// (R19, `issue-address.ts`'s `conversationStatePath`).
+test("IssuePage keeps the preset and the filter when Words or Everything is picked", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/spec?q=socket");
+
+  try {
+    await expectPreset("Spec");
+    for (const name of ["Everything", "What people said"]) {
+      const states = await screen.findByRole("listbox", { name: "Conversation" });
+      await user.click(within(states).getByRole("option", { name }));
+
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?q=socket");
+      await expectPreset("Spec");
+      expect(
+        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+          name,
+        })
+      ).toHaveAttribute("aria-selected", "true");
+    }
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// `/activity` is the Everything state's own address, and the issue's whole history in the
+// page's column is what that state draws there. Picking Questions keeps the address now, so
+// the history goes with the state rather than standing under a panel showing the questions
+// alone (`IssuePresetPanels.tsx`).
+test("IssuePage hides the activity list when a state other than Everything is picked", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/activity");
+
+  try {
+    await screen.findByTestId("issue-header");
+    const activity = document.getElementById("issue-activity-panel") as HTMLElement;
+    expect(activity).not.toHaveAttribute("hidden");
+
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await user.click(within(states).getByRole("option", { name: "Questions" }));
+
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity");
+    expect(activity).toHaveAttribute("hidden");
+
+    // Everything brings it back, and it was kept mounted all along.
+    await user.click(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Everything",
+      })
+    );
+    expect(document.getElementById("issue-activity-panel")).toBe(activity);
+    expect(activity).not.toHaveAttribute("hidden");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// A pick on `/activity` holds while the reader stays on that address and no longer. They pick
+// Questions there, leave for the Spec preset and come back: the address is theirs to read
+// again, and it names Everything and the history Everything draws there. The pick used to stay
+// tied to the address for the life of the page, so every later return showed no history.
+test("IssuePage draws the activity again when the reader comes back to /activity after a pick there", async () => {
+  const user = userEvent.setup();
+  window.localStorage.removeItem(KEPT_STATE);
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/activity", "/issues/CORE-1/spec");
+
+  try {
+    await screen.findByTestId("issue-header");
+    const activity = document.getElementById("issue-activity-panel") as HTMLElement;
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await user.click(within(states).getByRole("option", { name: "Questions" }));
+    expect(activity).toHaveAttribute("hidden");
+
+    await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec")
+    );
+    await expectPreset("Spec");
+    // Elsewhere the kept pick is the state the panel opens in (R13).
+    expect(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Questions",
+      })
+    ).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("t");
+    await user.keyboard("v");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
+    );
+    expect(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Everything",
+      })
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      activity,
+      "/activity shows no history after a pick made there earlier"
+    ).not.toHaveAttribute("hidden");
+  } finally {
+    view.unmount();
+    restore();
+    window.localStorage.removeItem(KEPT_STATE);
+  }
+});
+
+/** The ask a landing row's `/asks/<id>` names, as the conversation lists it. */
+const landingAsk: IssueAskThreadRow = {
+  ...openIssueAsk,
+  last_reply: null,
+  thread: {
+    answers: [],
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  },
+};
+
+/** The message a landing row's `/messages/<id>` names. */
+const landingMessage: Message = {
+  author: { id: "alice", kind: "user" },
+  body: "A message the link names.",
+  broadcast_id: null,
+  created_at: "2026-09-11T00:00:00Z",
+  deliveries: [],
+  id: "message-landing",
+  in_reply_to: null,
+  issue_key: "CORE-1",
+  reply_block: null,
+  target: null,
+};
+
+/** The comment a landing row's `/comments/<id>` names: unanchored, so it lands on its turn. */
+const landingComment = { ...itemComment, anchor: null, id: "comment-landing" };
+
+// R19: every address resolves to what it names, and a comment, message or ask link names one
+// entry of the conversation. Questions keeps the asks alone and Pinned what the reader pinned,
+// so while the kept pick outranked these addresses the entry was not in the list at all: the
+// page scrolled to nothing, opened no thread, and every later link from the Inbox, Replies or
+// search landed nowhere for that login. The address names what people said, which holds the
+// entry whatever the reader kept.
+test("IssuePage lands a comment, message or ask link whatever conversation state the reader kept", async () => {
+  const links = [
+    { path: `/issues/CORE-1/comments/${landingComment.id}`, turn: `comment:${landingComment.id}` },
+    { path: `/issues/CORE-1/messages/${landingMessage.id}`, turn: `message:${landingMessage.id}` },
+    { path: `/issues/CORE-1/asks/${landingAsk.id}`, turn: `ask:${landingAsk.id}` },
+  ];
+  for (const kept of ["questions", "pinned"] as const) {
+    for (const { path, turn } of links) {
+      window.localStorage.setItem(KEPT_STATE, kept);
+      const restore = stubIssuePage(issue);
+      api.listComments = async () => [landingComment];
+      api.listIssueMessages = async () => [{ message: landingMessage, replies: [] }];
+      api.listIssueAskThreads = async () => [landingAsk];
+      const reads = [
+        spyOn(api, "getComment").mockResolvedValue({ comment: landingComment, replies: [] }),
+        spyOn(api, "getMessage").mockResolvedValue({ message: landingMessage, replies: [] }),
+        spyOn(api, "getAsk").mockResolvedValue({ ...landingAsk.thread, ask: landingAsk }),
+      ];
+      const view = renderIssuePage(path);
+
+      try {
+        await waitFor(
+          () =>
+            expect(
+              document.querySelector(`li[data-turn="${turn}"]`)?.getAttribute("aria-current"),
+              `${path} with ${kept} kept does not land on its entry`
+            ).toBe("true"),
+          { timeout: 5_000 }
+        );
+        expect(
+          within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+            name: "What people said",
+          })
+        ).toHaveAttribute("aria-selected", "true");
+      } finally {
+        view.unmount();
+        for (const read of reads) read.mockRestore();
+        restore();
+        window.localStorage.removeItem(KEPT_STATE);
+      }
+    }
+  }
+});
+
+// The panel moves between the shell's margin and the page's own column as the reader shows the
+// margin and collapses it again. It is one panel, drawn once and moved (`IssuePage`'s
+// `panelStage`): drawn afresh in each host, every move remounted it, and a message the reader
+// had typed - which `MentionComposer` holds in its own state - went with it.
+test("IssuePage keeps a message typed under the collapsed margin when the margin is shown", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  setViewport(1280);
+  const view = renderIssuePage(
+    "/issues/CORE-1/conversation",
+    undefined,
+    undefined,
+    undefined,
+    false,
+    true
+  );
+
+  try {
+    const column = await screen.findByTestId("issue-margin");
+    const composer = await within(column).findByLabelText<HTMLTextAreaElement>("Comment");
+    await user.type(composer, "half a thought");
+    expect(composer).toHaveValue("half a thought");
+
+    act(() => view.showMargin(true));
+
+    const inTheMargin = await screen.findByTestId("issue-margin");
+    expect(within(await screen.findByTestId("stand-in-margin")).getByTestId("issue-margin")).toBe(
+      inTheMargin
+    );
+    const moved = within(inTheMargin).getByLabelText<HTMLTextAreaElement>("Comment");
+    expect(moved).toBe(composer);
+    expect(moved).toHaveValue("half a thought");
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// R5: the head reads the spec's summary out of the tree, and the first load draws the tree
+// before the spec's blocks and their words have arrived. A summary not read yet is no spec
+// without a summary, so the head says nothing about one until those reads answer, and then says
+// what they held: the summary's sentences, or the page's line for a spec that carries none.
+test("IssuePage's head says nothing about the summary until the reads that carry it answer", async () => {
+  const restore = stubIssuePage(issue);
+  // The address the tree gives a block of the spec, which is what the batched read is asked for.
+  const summary = "dispatch://CORE-1/artifact/spec#b-summary";
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ':::callout{#summary title="What this issue is"}\nThe page is one outline.\n:::',
+        ref: summary,
+      },
+    ],
+  });
+  const callout: ArtifactBlock = {
+    attributes: [],
+    from: 0,
+    id: "summary",
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: "summary",
+    type: "callout",
+  };
+  try {
+    for (const { blocks, head } of [
+      { blocks: [callout], head: "The page is one outline." },
+      { blocks: [], head: EMPTY_STATE_LINES.spec_summary },
+    ]) {
+      const held = Promise.withResolvers<ArtifactBlock[]>();
+      const read = spyOn(api, "getArtifactBlocks").mockReturnValue(held.promise);
+      const view = renderIssuePage();
+      try {
+        const drawn = await screen.findByTestId("issue-three-things");
+        await waitFor(() => expect(read).toHaveBeenCalled());
+        expect(
+          drawn.textContent,
+          "the head says the spec has no summary before the spec's blocks were read"
+        ).not.toContain(EMPTY_STATE_LINES.spec_summary);
+        act(() => held.resolve(blocks));
+        await waitFor(() => expect(drawn.textContent).toContain(head));
+      } finally {
+        view.unmount();
+        read.mockRestore();
+      }
+    }
+  } finally {
+    names.mockRestore();
     restore();
   }
 });

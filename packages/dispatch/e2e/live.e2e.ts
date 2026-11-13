@@ -16,7 +16,9 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
+import { conversationStateControl } from "./issue-page";
 import { expect, type Locator, test, type WebSocket } from "./test";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -249,15 +251,16 @@ test("live: closing a grandchild updates every loaded ancestor's Children rollup
   const page = await alice.newPage();
   try {
     await page.goto(`/issues/${root.key}/children`);
-    const childRow = page
-      .getByRole("tabpanel")
-      .locator("li")
-      .filter({ hasText: `${child.key} · Child` });
-    await expect(childRow).toContainText("0/2 done");
+    // The children are a section of every preset now, and the whole subtree's roll-up is the
+    // section header's own labelled count beside the direct one (dispatch://INFRA-1196 R10).
+    const children = page.getByTestId("issue-children");
+    await expect(children.locator("li").filter({ hasText: `${child.key} · Child` })).toBeVisible();
+    const subtree = page.getByTestId("issue-children-subtree-count");
+    await expect(subtree).toContainText("0/2");
 
     await patchIssue(grandchild.key, { status: "done" });
 
-    await expect(childRow).toContainText("1/2 done");
+    await expect(subtree).toContainText("1/2");
   } finally {
     await alice.close();
   }
@@ -333,14 +336,13 @@ test("live: new events on the open issue appear in Conversation and mark it read
   const page = await alice.newPage();
   await page.clock.install();
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
-    "aria-selected",
-    "true"
-  );
+  await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
 
   await createMessage(issue.key, { body: "Live message from bob" }, bob);
 
-  await expect(page.getByText("Live message from bob")).toBeVisible();
+  await expect(
+    page.getByRole("list", { name: "Conversation turns" }).getByText("Live message from bob")
+  ).toBeVisible();
   // The mark is written once the reader has dwelt on the newest card (`DWELL_MS`), a page timer
   // the page's own clock spends; the jump repeats because the timer is armed only once the
   // observer has reported the card.
@@ -466,11 +468,15 @@ test("live: a forced server disconnect resumes from the last event id @pr", asyn
   await page.clock.install();
   await page.goto(`/issues/${issue.key}/conversation`);
   const head: string = (await (await whoami).json()).event_head;
-  await expect(page.getByText("Before disconnect")).toBeVisible();
+  await expect(
+    page.getByRole("list", { name: "Conversation turns" }).getByText("Before disconnect")
+  ).toBeVisible();
   // The first subscription resumes from the sign-in check's head.
   await expect.poll(() => sockets[0]?.resumes).toEqual([head]);
   await createMessage(issue.key, { body: "Seen live before disconnect" }, bob);
-  await expect(page.getByText("Seen live before disconnect")).toBeVisible();
+  await expect(
+    page.getByRole("list", { name: "Conversation turns" }).getByText("Seen live before disconnect")
+  ).toBeVisible();
   const first = sockets[0];
   if (first === undefined) throw new Error("the page opened no live socket");
   expect(first.events.length).toBeGreaterThan(0);
@@ -491,7 +497,9 @@ test("live: a forced server disconnect resumes from the last event id @pr", asyn
   await expect.poll(() => sockets[1]?.starts).toEqual([true]);
 
   await createMessage(issue.key, { body: "Missed during disconnect" }, bob);
-  await expect(page.getByText("Missed during disconnect")).toBeVisible();
+  await expect(
+    page.getByRole("list", { name: "Conversation turns" }).getByText("Missed during disconnect")
+  ).toBeVisible();
 
   await alice.close();
 });
@@ -552,7 +560,7 @@ test("live: a change committed while the first live socket fails to open is show
     await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
     const head: string = (await (await whoami).json()).event_head;
-    await expect(page.getByText("Before the failed handshake", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Before the failed handshake" })).toBeVisible();
     await refused.promise;
     await patchIssue(issue.key, { title: "Committed while the socket was down" }, bob);
     committed.resolve();
@@ -567,8 +575,10 @@ test("live: a change committed while the first live socket fails to open is show
       )
       .toBe(2);
 
+    // The issue's title, which the identity block draws and the panel's facts repeat: the
+    // heading is the one this test means.
     await expect(
-      page.getByText("Committed while the socket was down", { exact: true })
+      page.getByRole("heading", { name: "Committed while the socket was down" })
     ).toBeVisible();
     // The first subscribe the page ever sent rode the second socket, and resumed from the sign-in
     // check's head: the patch is above it, so Dispatch replayed it there.
@@ -592,6 +602,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
   const apiRequestPaths: string[] = [];
+  // What says the load is over: nothing in flight for the recorded baseline's window
+  // (`expectLoadSettled`), counting every request the page makes and not only these.
+  const settling = watchApiRequests(page);
   page.on("request", (request) => {
     // Called for every request of a cold load this row measures, so the cheap string test comes
     // first: a path under /api/v1/ or /auth/ always shows in the raw URL.
@@ -608,22 +621,40 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     (socket) => new URL(socket.url()).pathname === "/ws/live"
   );
   await page.goto(`/issues/${issue.key}/conversation`);
-  await expect(page.getByText("Backlog message 4")).toBeVisible();
+  await expect(
+    page.getByRole("list", { name: "Conversation turns" }).getByText("Backlog message 4")
+  ).toBeVisible();
   await socketOpened;
 
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly these on a fresh load, and nothing else. A set rather than a count, and waited for
-  // rather than read at an instant: the page issues the last requests of its first load within
-  // a few milliseconds of painting the message this row waits for, so a count taken the moment
-  // that message appears can be one request short, which is how this row failed in CI - 20
-  // against 21. The wait ends on the set itself, so a panel that starts eagerly fetching
-  // before its tab is ever opened still trips this immediately instead of only breaking some
-  // looser upper bound, and a failure names the request that is missing or extra instead of
-  // leaving a reader to work out which of 21 a count of 20 dropped. The Conversation pages no
-  // event log at all now that the history is the Activity tab's, and the Activity panel is
-  // unmounted until its tab is opened.
+  // Exactly these addresses on a fresh load, and nothing else. A set rather than a count, and
+  // waited for rather than read at an instant: the page issues the last requests of its first
+  // load within a few milliseconds of painting the message this row waits for, so a count
+  // taken the moment that message appears can be one request short, which is how this row
+  // failed in CI - 20 against 21. The wait ends on the set itself, so a panel that starts
+  // eagerly fetching before its own address is ever opened still trips this immediately
+  // instead of only breaking some looser upper bound, and a failure names the address that is
+  // missing or extra instead of leaving a reader to work out which of a count of N dropped.
+  // The Conversation pages no event log at all now that the history is the Activity list's,
+  // and that list is unmounted until its own address is opened.
+  //
+  // It is the set of addresses, not the list of requests: the page reads an address it has
+  // already read when a query of the shell's invalidates, which is that query's business and
+  // not this budget's. What this holds is that no surface reads an address the page has no
+  // reason to read on a first load.
+  //
+  // The last reads of the set are the one tree the page's body is, which every preset is a
+  // query over and which therefore draws on every address (dispatch://INFRA-1196 R1, R3): the
+  // issue's coverage, its decisions, its check results, its references and the blocks of each
+  // of its documents - this issue carries one, whose nodes the tree draws - and the one batched
+  // read of every `dispatch://` address the tree holds. That read is one request and not one
+  // per read that lands: the tree grows as each of its reads answers, so the batch waits until
+  // all of them have (`features/issue/useIssueTree.ts`), where before it asked for the
+  // addresses known so far and asked again for the rest. The tree's asks, comments and messages
+  // are read under the keys the Conversation and the margin already own, so they are shared
+  // rather than asked twice and are the entries already here.
   const firstLoad = [
     "/auth/whoami",
     // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
@@ -638,19 +669,19 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     `/api/v1/issues/${issue.key}`,
     // The active-sessions read.
     "/api/v1/agents",
-    // The primary artifact's comments, which the Conversation's own list shares rather than
-    // fetching again.
+    // The primary artifact's comments, which the Conversation's own list and the tree share
+    // rather than fetching again.
     `/api/v1/issues/${issue.key}/comments`,
-    // The margin's own list of the issue's asks, and the Conversation's, which asks the same
-    // route for each ask's thread (`?thread=1`) and so is a request of its own, not the
-    // margin's shared.
+    // The margin's own list of the issue's asks, which the tree shares, and the Conversation's,
+    // which asks the same route for each ask's thread (`?thread=1`) and so is a request of its
+    // own, not the margin's shared.
     `/api/v1/issues/${issue.key}/asks?state=all`,
     `/api/v1/issues/${issue.key}/asks?state=all&thread=1`,
-    // The issue's message threads.
+    // The issue's message threads, which the tree shares.
     `/api/v1/issues/${issue.key}/messages`,
     // The two one-row event reads the unread mark needs: the first event past the watermark,
     // and the issue's head.
-    `/api/v1/issues/${issue.key}/events?after=0&limit=1`,
+    `/api/v1/issues/${issue.key}/events?after=&limit=1`,
     `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
     // The Conversation's live-agent query.
     `/api/v1/issues/${issue.key}/subscribers`,
@@ -676,8 +707,51 @@ test("live: a fresh page load opens the socket at the current head and stays wit
     // The Conversation's list of the issue's phase handoffs, which it shows beside the
     // messages.
     `/api/v1/issues/${issue.key}/handoffs`,
+    // The reader's own state on this issue, which the unread mark and the pin read.
+    `/api/v1/me/issues/${issue.key}/state`,
+    // The tree's own reads, and the blocks of the one document the issue carries, which are
+    // the nodes the tree draws of it. The document's *text* is no read of a first load:
+    // nothing on load parses stored markdown any more (dispatch://INFRA-1196 R20). The head's
+    // three sentences were read out of the spec's own text at the summary block's span, and
+    // R20 replaced both reads with the summary node the tree already carries
+    // (`features/issue/IssueThreeThings.tsx`); the editor that reads a document's text is
+    // mounted only where a document preset is open, which this address is not.
+    `/api/v1/issues/${issue.key}/coverage`,
+    `/api/v1/issues/${issue.key}/decisions`,
+    `/api/v1/issues/${issue.key}/results`,
+    `/api/v1/issues/${issue.key}/references?own=1`,
+    `/api/v1/artifacts/${issue.primary_artifact_id}/blocks`,
+    // The one batched read of every `dispatch://` address the tree holds. Its query is that
+    // list, which is what the issue's own text holds rather than a fact about the budget, so
+    // this set names the read and `seen` drops the query.
+    "/api/v1/reference-targets",
   ].sort();
-  await expect.poll(() => [...apiRequestPaths].sort()).toEqual(firstLoad);
+  // The watermark an event read starts past is the reader's, not a fact of the budget, and
+  // neither is the list of references the batched read names, so both are dropped here.
+  const seen = () =>
+    [
+      ...new Set(
+        apiRequestPaths.map((path) =>
+          path
+            .replace(/^\/api\/v1\/reference-targets\?.*$/, "/api/v1/reference-targets")
+            .replace(/\?after=\d+&limit=1$/, "?after=&limit=1")
+        )
+      ),
+    ].sort();
+  await expect.poll(seen).toEqual(firstLoad);
+
+  // The batch is one request, which the set above cannot say: it holds the address once
+  // however many times the page asked for it. The tree waits for all of its reads before it
+  // asks (`features/issue/useIssueTree.ts`), where before it asked for the addresses known so
+  // far and asked again for the rest, so the count is the assertion that rule needs. It is
+  // counted once the page has gone quiet, not at the moment the set above first matched: that
+  // moment is the first batch's own, so a second batch sent after the reads answer would land
+  // after it and never be counted.
+  await expectLoadSettled(settling);
+  expect(
+    apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/reference-targets"),
+    "the page read /api/v1/reference-targets more than once on a first load"
+  ).toHaveLength(1);
 
   await alice.close();
 });

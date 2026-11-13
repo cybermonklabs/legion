@@ -8,6 +8,7 @@ import {
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
+import { conversationStateControl } from "./issue-page";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -253,10 +254,7 @@ test("a project-document hit is grouped under the document and opens it; a messa
 
     await dialog.getByRole("option", { name: /^message / }).click();
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/messages/${message.id}$`));
-    await expect(page.getByRole("tab", { name: "Conversation" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
+    await expect(conversationStateControl(page, "words")).toHaveAttribute("aria-selected", "true");
     await expect(
       page.getByRole("list", { name: "Conversation turns" }).locator('li[aria-current="true"]')
     ).toContainText("Sextant calibration done.");

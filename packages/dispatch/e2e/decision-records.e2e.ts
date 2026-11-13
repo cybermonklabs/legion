@@ -1,3 +1,4 @@
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import {
   createIssue,
   createIssueArtifact,
@@ -7,6 +8,7 @@ import {
   listComments,
 } from "./api";
 import { blockId } from "./editor";
+import { gotoIssue, nodeRows } from "./issue-page";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, test } from "./test";
 
@@ -60,29 +62,35 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   await expect(page.locator(`[data-margin-item$=":${newest}"]`)).toHaveCount(1);
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(0);
 
-  // The Decisions tab lists it under the reader's review, with both blocks and neither out of
-  // date.
-  await page.goto(`/issues/${issue.key}/decisions`);
-  const waiting = page.getByRole("region", { name: "Waiting for your review" });
-  await expect(waiting.getByRole("heading", { name: DECISION })).toBeVisible();
-  await expect(waiting.getByText("out of date")).toHaveCount(0);
+  // The Decisions preset: the decision is a node of the issue's tree, the preset opens on it
+  // because it waits for the reader's review, and its body holds Keep and Change. Until
+  // 2026-11-06 this read the Decisions tab's four sections of cards
+  // (`features/issue/DecisionsPanel.tsx`, `region "Waiting for your review"`), which
+  // dispatch://INFRA-1196 replaced with the tree: the sections are gone, so what waits for the
+  // reader is the decision whose node carries Keep, and a shaped link that went out of date is
+  // a word on that node's own chip instead of a line in a card.
+  await gotoIssue(page, `/issues/${issue.key}/decisions`);
+  const decision = nodeRows(page).filter({ hasText: DECISION }).first();
+  await expect(decision).toBeVisible();
+  await expect(page.getByText(CONTROL_LABELS.target_stale)).toHaveCount(0);
 
   // Change opens the composer on the decision's own text and posts a comment anchored to it.
-  await waiting.getByRole("button", { name: "Change" }).click();
+  await decision.focus();
+  await decision.getByRole("button", { exact: true, name: CONTROL_LABELS.change_decision }).click();
   const composer = page.getByRole("form", { name: `Change ${DECISION}` });
   await expect(composer.getByTestId("decision-quote")).toContainText(REASON);
   await composer.getByRole("textbox").fill("Measure the file store first.");
-  await composer.getByRole("button", { name: "Send" }).click();
+  await composer.getByRole("button", { name: CONTROL_LABELS.send_change }).click();
   await expect(composer).toBeHidden();
 
-  // The agent changes the decision's text: both blocks it links are out of date, on the Decisions
-  // tab and as a mark on the Spec tab.
+  // The agent changes the decision's text: both blocks it links are out of date, on the
+  // Decisions preset and as a mark on the Spec tab.
   await editArtifact(decisions.artifact.id, {
     ops: [{ find: REASON, op: "replace", with: `${REASON} Measured against the file store.` }],
     summary: "measured",
   });
-  await page.goto(`/issues/${issue.key}/decisions`);
-  await expect(page.getByText("out of date")).toHaveCount(2);
+  await gotoIssue(page, `/issues/${issue.key}/decisions`);
+  await expect(page.getByText(CONTROL_LABELS.target_stale)).toHaveCount(2);
   await page.goto(`/issues/${issue.key}/spec`);
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(2);
 
@@ -93,33 +101,30 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   });
   await page.goto(`/issues/${issue.key}/spec`);
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(1);
-  await page.goto(`/issues/${issue.key}/decisions`);
-  await expect(page.getByText("out of date")).toHaveCount(1);
+  await gotoIssue(page, `/issues/${issue.key}/decisions`);
+  await expect(page.getByText(CONTROL_LABELS.target_stale)).toHaveCount(1);
 
-  // Keep records the reader's agreement: the decision leaves the section that waits for it and
-  // stands under the decisions that are theirs.
-  await page
-    .getByRole("region", { name: "Waiting for your review" })
-    .getByRole("button", { name: "Keep" })
-    .click();
+  // Keep records the reader's agreement: the decision stops waiting for the reader's review,
+  // so the control that takes it there is gone and the decision is still a node of the tree.
+  const waiting = nodeRows(page).filter({ hasText: DECISION }).first();
+  await waiting.focus();
+  await waiting.getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision }).click();
   await expect(
-    page.getByRole("region", { name: "Waiting for your review" }).getByRole("heading", {
-      name: DECISION,
-    })
+    page.getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision })
   ).toHaveCount(0);
-  await expect(
-    page.getByRole("region", { name: "Your decisions" }).getByRole("heading", { name: DECISION })
-  ).toBeVisible();
+  await expect(nodeRows(page).filter({ hasText: DECISION }).first()).toBeVisible();
 });
 
-// The same tab for a decision whose text the server read into a tree with more in it than one
-// paragraph: a list of two items that cites the spec and names an issue key. The tab draws that
-// tree, so what it draws and what it quotes both come from the server's reading, and the quote
-// has to be the words that reading flattens to - one space where one list item ends and the
-// next begins (`pmdoc.buildFlattenedText`) - or the server finds nothing to anchor the Change
-// on and refuses it.
-// @pr: The Decisions tab draws a decision written as a list, keeps its link and its key, and anchors its Change on the words the server flattens that list to.
-test("a decision written as a list keeps its link and its key, and anchors its Change on the words that list flattens to @pr", async ({
+// The same preset for a decision whose text the server read into a tree with more in it than
+// one paragraph: a list of two items that cites the spec and names an issue key. The quote a
+// Change anchors on has to be the words that reading flattens to - one space where one list
+// item ends and the next begins (`pmdoc.buildFlattenedText`) - or the server finds nothing to
+// anchor the Change on and refuses it. Until dispatch://INFRA-1196 this row read the Decisions
+// tab's card (`DecisionsPanel.tsx`), which drew the list as a list with its link and its code
+// span; the decision is a node of the tree now, whose body draws its text as written, so what
+// this row holds the node to is the anchor its Change writes (`DecisionActions.tsx`).
+// @pr: The Decisions preset anchors the Change of a decision written as a list on the words the server flattens that list to.
+test("a decision written as a list anchors its Change on the words that list flattens to @pr", async ({
   page,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -143,37 +148,19 @@ test("a decision written as a list keeps its link and its key, and anchors its C
   });
   const listBlock = await blockId(decisions.artifact.id, list);
 
-  await page.goto(`/issues/${issue.key}/decisions`);
-  const card = page
-    .getByRole("region", { name: "Waiting for your review" })
-    .locator("[data-decision]");
-  await expect(card.getByRole("heading", { name: LISTED })).toBeVisible();
-
-  // The list is drawn as a list: one item each, both readable, rather than one run of words.
-  const items = card.getByRole("listitem");
-  await expect(items).toHaveCount(2);
-  await expect(items.first()).toContainText(LISTED_OPENING);
-  await expect(items.last()).toHaveText(
-    `A ${issue.key}-style key names where each notice came from.`
-  );
-
-  // The reference is a link into the app and the key stands in a code span, both of which the
-  // reading takes from the decision's own markdown: the words of a block hold neither a link's
-  // target nor the backticks that end a key.
-  await expect(card.locator(`a[data-dispatch-ref="${reference}"]`)).toHaveAttribute(
-    "href",
-    `/issues/${issue.key}/spec`
-  );
-  await expect(card.locator("code")).toHaveText(issue.key);
+  await gotoIssue(page, `/issues/${issue.key}/decisions`);
+  const decision = nodeRows(page).filter({ hasText: LISTED }).first();
+  await expect(decision).toBeVisible();
 
   // Change quotes that first block as the server flattens it, and the server finds those words
   // in the document's own text: the comment it writes is anchored to the list block the quote
   // names, which a quote with its items run together would never have reached.
-  await card.getByRole("button", { name: "Change" }).click();
+  await decision.focus();
+  await decision.getByRole("button", { exact: true, name: CONTROL_LABELS.change_decision }).click();
   const composer = page.getByRole("form", { name: `Change ${LISTED}` });
   await expect(composer.getByTestId("decision-quote")).toHaveText(words);
   await composer.getByRole("textbox").fill(LISTED_CHANGE);
-  await composer.getByRole("button", { name: "Send" }).click();
+  await composer.getByRole("button", { name: CONTROL_LABELS.send_change }).click();
   await expect(composer).toBeHidden();
   await expect
     .poll(async () => {
@@ -185,13 +172,15 @@ test("a decision written as a list keeps its link and its key, and anchors its C
 
 // The same decision from a server that answers no reading of its text, which is what a pod of
 // the build before this one serves during a rolling deploy: every `*_tree` member is taken out
-// of the answers, as `parse-count.e2e.ts`'s own control takes them out. The tab then splits the
-// markdown itself, as it did before this change and as the margin card still does, so each
-// block is drawn once, with its own text and nothing else. The reading this row refuses is the
-// one two rounds of this change got wrong: a body handed a text that is not its own draws that
-// whole text in every slot.
-// @pr: The Decisions tab of an answer with no reading draws each block once, with its own text.
-test("a decision whose answer carries no reading is drawn block by block @pr", async ({ page }) => {
+// of the answers, as `parse-count.e2e.ts`'s own control takes them out. The node still offers
+// its Change, quoting what the browser has when the server sent it no reading to flatten. Until
+// dispatch://INFRA-1196 this row also read the Decisions tab's card drawing each block once in
+// a slot of its own (`DecisionsPanel.tsx`); the node's body draws the decision's text once, as
+// written, and has no slots for a text to be repeated in.
+// @pr: The Decisions preset of an answer with no reading still anchors a Change on the decision's first block.
+test("a decision whose answer carries no reading still quotes its first block @pr", async ({
+  page,
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -205,21 +194,14 @@ test("a decision whose answer carries no reading is drawn block by block @pr", a
 
   await serveWithoutDisplayTrees(page);
 
-  await page.goto(`/issues/${issue.key}/decisions`);
-  const card = page
-    .getByRole("region", { name: "Waiting for your review" })
-    .locator("[data-decision]");
-  await expect(card.getByRole("heading", { name: LISTED })).toBeVisible();
+  await gotoIssue(page, `/issues/${issue.key}/decisions`);
+  const decision = nodeRows(page).filter({ hasText: LISTED }).first();
+  await expect(decision).toBeVisible();
 
-  // Two blocks below the heading, each drawn once and holding its own text: the doubt in the
-  // accented slot, the rest outside it, and the heading line nowhere in the body.
-  await expect(card.getByTestId("decision-unsure")).toHaveText("Unsure: the index may be slow.");
-  await expect(card.getByText("Notices live in a table.")).toHaveCount(1);
-  await expect(card).not.toContainText("##");
-
-  // The Change still has a quote on this path: the first block's own markdown, which is what
-  // the browser has when the server sent it no reading to flatten.
-  await card.getByRole("button", { name: "Change" }).click();
+  // The first block's own markdown, which is what the browser has when the server sent it no
+  // reading to flatten.
+  await decision.focus();
+  await decision.getByRole("button", { exact: true, name: CONTROL_LABELS.change_decision }).click();
   await expect(
     page.getByRole("form", { name: `Change ${LISTED}` }).getByTestId("decision-quote")
   ).toHaveText("Notices live in a table.");

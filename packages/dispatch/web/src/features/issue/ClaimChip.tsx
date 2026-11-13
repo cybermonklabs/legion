@@ -10,9 +10,12 @@ import type { ReactNode } from "react";
 import { AGENT_LIST_REFILLING } from "../../api/client";
 import type { IssueClaim } from "../../api/types";
 import { pillClassName } from "../../components/Pill";
+import { useTooltips } from "../../components/tooltips";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
 import { Timestamp } from "../refs/Timestamp";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 
 /**
  * What the registry says about a claim's holder, as `claimHolds` judges it. The registry lists
@@ -101,25 +104,39 @@ export function claimIsTakeable(
  * List row, a Board card. The holder is drawn by `AgentName`, as every agent is: its current
  * registry title, else the title stamped on the claim, else `session:<8>…`, with its running
  * state and a link to its live conversation. The age keeps itself current through the shared
- * `Timestamp` tick, and the whole label with the absolute time is in the `title`, which also
- * says what a claim is: the chip sits among status, priority and assignee, and nothing else on
- * the page defines it. An unclaimed issue renders nothing at all, so a board of unclaimed work
- * stays quiet.
+ * `Timestamp` tick, and on a surface that raises no tooltip - the issue page
+ * (dispatch://INFRA-1196 R21) - the instant itself follows it in words, because the time a
+ * claim was taken is what decides whether it is stale and a tooltip saying so reaches no
+ * reader on a phone or on the keyboard. Where a tooltip does carry it, a Board card and a List
+ * row, it is not drawn as well: it would say the same thing twice and widen a chip those hosts
+ * have no room for (`Timestamp.tsx`). An unclaimed issue renders nothing at all, so a board of
+ * unclaimed work stays quiet.
  *
  * A holder the registry no longer lists reads "· not running" in the muted tone, beside its
  * name's own not-running mark, because that claim is free for the taking and a chip that looked
  * held would hide pickable work — the same judgement the Unclaimed filter makes through
  * `claimIsTakeable`. A holder that has only missed its heartbeats reads "· unresponsive since
  * <heartbeat>", the state and the moment R5 asks the chip for, and keeps the held tone while
- * the server would still refuse a take: the chip also names the moment the issue comes free
+ * the server would still refuse a take: the chip also says when the issue comes free, as
+ * ", free for another agent from <moment>", with the moment itself and no relative age
  * (`liveness`, the issue read's own `takeable_at`), so a reader waiting on it knows how long.
- * Past that moment the chip reads "· takeable now" and wears the free tone, because the server
- * now grants that take and a held-looking chip would hide the issue again — the holder is still
- * drawn as unresponsive, since it has not ended and may yet come back. Without a `liveness` - a
- * List row, a Board card, whose rows carry no such read - the state and the heartbeat are the
- * registry's and the takeable moment is that heartbeat plus the shared grace, the same sum the
- * server uses. The judgement is remade on each render, so it follows the registry poll and the
- * issue read rather than a timer of the chip's own.
+ * Past that moment the chip reads "· free for another agent to take now" and wears the free
+ * tone, because the server now grants that take and a held-looking chip would hide the issue
+ * again — the holder is still drawn as unresponsive, since it has not ended and may yet come
+ * back. Without a `liveness` - a List row, a Board card, whose rows carry no such read - the
+ * state and the heartbeat are the registry's and the takeable moment is that heartbeat plus
+ * the shared grace, the same sum the server uses. The judgement is remade on each render, so
+ * it follows the registry poll and the issue read rather than a timer of the chip's own.
+ *
+ * The `title` says what no word of the chip does - what a claim is for and each instant to the
+ * second - and the chip carries it only where its host raises a tooltip. The issue page raises
+ * none (R21, `components/tooltips.tsx`), so everything a reader there has to act on is drawn
+ * instead: the holder's state in words, both instants after their ages (`Timestamp`'s `exact`),
+ * and "· running state unknown" where the registry could not be read at all, which is a claim
+ * nobody has judged rather than a held one, and the one fact of the four a tooltip would
+ * otherwise keep to itself. Each of the three is drawn on that surface alone: where a tooltip
+ * carries it, a Board card and a List row, drawing it as well would say the same thing twice
+ * and widen a chip those hosts have no room for.
  *
  * A session title can be any length, and no name may widen the page (the rule
  * `IssueHeader.tsx` cites for the metadata rail). `pillClassName` sets `shrink-0`, and no class
@@ -138,6 +155,9 @@ export function ClaimChip({
   liveness?: ClaimHolderLiveness;
 }): ReactNode {
   const registry = useAgentRegistry(claim?.actor.kind === "session");
+  const tooltips = useTooltips();
+  // The holder is drawn by `AgentName` and each instant by `Timestamp`; the agent text is read
+  // only for the tooltip the chip carries where its host raises one.
   const text = useAgentText();
   if (claim === null) {
     return null;
@@ -173,59 +193,94 @@ export function ClaimChip({
             : `It keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it.`
       }`;
   // A session claim the registry could not judge says so, rather than pass for a held one.
-  const uncheckedNote =
-    claim.actor.kind === "session" && registry.isError
-      ? ` Couldn't check whether that session is still running: ${
-          registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
-        }`
-      : "";
+  const unchecked = claim.actor.kind === "session" && registry.isError;
+  const uncheckedNote = !unchecked
+    ? ""
+    : ` Couldn't check whether that session is still running: ${
+        registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
+      }`;
+  // No tooltip on a surface that raises none (the issue page, R21): what the chip means is
+  // drawn below instead, down to each instant (`Timestamp`'s `exact`) and to the unjudged
+  // running state, which no word of the chip would otherwise carry.
   return (
     <span
       className={`${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`}
       data-testid="issue-claim"
       style={{ flexShrink: 1 }}
-      title={`${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`}
+      title={
+        tooltips
+          ? `${since} ${explains}${lapsedNote}${unresponsiveNote}${uncheckedNote}`
+          : undefined
+      }
     >
-      <span className="shrink-0">Claimed by</span>
+      <span className="shrink-0" {...pageChrome}>
+        {PROPERTY_LABELS.claim}
+      </span>
       <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
-      <span aria-hidden="true" className="shrink-0">
+      <span aria-hidden="true" className="shrink-0" {...pageChrome}>
         ·
       </span>
-      <Timestamp at={claim.at} className="shrink-0" />
+      {/* The instant itself where no tooltip carries it: how long a session has held the issue
+          is what decides whether its claim is stale, and on the issue page a tooltip saying so
+          reaches no reader on a phone or on the keyboard (dispatch://INFRA-1196 R21). */}
+      <Timestamp at={claim.at} className="shrink-0" exact />
       {lapsed ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
+          <span aria-hidden="true" className="shrink-0" {...pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-lapsed">
-            not running
+          <span className="shrink-0" data-testid="issue-claim-lapsed" {...pageChrome}>
+            {CONTROL_LABELS.not_running}
           </span>
         </>
       ) : null}
       {unresponsive ? (
         <>
-          <span aria-hidden="true" className="shrink-0">
+          <span aria-hidden="true" className="shrink-0" {...pageChrome}>
             ·
           </span>
-          <span className="shrink-0" data-testid="issue-claim-unresponsive">
-            unresponsive
+          <span className="shrink-0" data-testid="issue-claim-unresponsive" {...pageChrome}>
+            {CONTROL_LABELS.unresponsive}
             {heardAt === null ? null : (
               <span data-testid="issue-claim-unresponsive-since">
-                {" since "}
-                <Timestamp at={heardAt} />
+                {` ${CONTROL_LABELS.unresponsive_since} `}
+                <Timestamp at={heardAt} exact />
               </span>
             )}
             {takeableAt === null ? null : (
               <span data-testid="issue-claim-takeable">
                 {takeable ? (
-                  ", takeable now"
+                  `, ${CONTROL_LABELS.takeable_now}`
                 ) : (
                   <>
-                    , takeable <Timestamp at={takeableAt} />
+                    {`, ${CONTROL_LABELS.takeable} `}
+                    {/* The moment itself, and no relative age: the words before it end in
+                        "from", and a `Timestamp` would finish the sentence with "in 3 minutes"
+                        or, inside the last minute of the wait, with "just now" - which reads as
+                        free while the server still refuses the take. */}
+                    <time dateTime={takeableAt} {...authorText}>
+                      {new Date(takeableAt).toLocaleString(undefined, {
+                        dateStyle: "short",
+                        timeStyle: "short",
+                      })}
+                    </time>
                   </>
                 )}
               </span>
             )}
+          </span>
+        </>
+      ) : null}
+      {/* Where a tooltip carries it, `uncheckedNote` above says it; where none is raised, the
+          page says it, because a claim nobody could judge is not a held one and a reader on a
+          phone or on the keyboard has no other way to that (R21). */}
+      {unchecked && !tooltips ? (
+        <>
+          <span aria-hidden="true" className="shrink-0" {...pageChrome}>
+            ·
+          </span>
+          <span className="shrink-0" data-testid="issue-claim-unchecked" {...pageChrome}>
+            {CONTROL_LABELS.unchecked}
           </span>
         </>
       ) : null}

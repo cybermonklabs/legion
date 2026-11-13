@@ -10,7 +10,9 @@ import {
   putIssueState,
 } from "./api";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
-import { expect, type Page, type Request, test } from "./test";
+import { openIssueAddress } from "./issue-page";
+import { expect, type Page, test } from "./test";
+import { type Traffic, watchTraffic } from "./traffic";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -20,51 +22,6 @@ import { asUser } from "./users";
 // The writer is an autonomous session acting through the bearer API, as in `live.e2e.ts`; only
 // alice's browser is real.
 const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as const };
-
-/** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
- *  detail since the page opened, and whether any request is still in flight. The event feed rides
- *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
- *  request, so none of these counts it. */
-interface Traffic {
-  /** Path and query of each GET under `/api/` since the last `reset`. */
-  readonly gets: string[];
-  /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
-  issueReads(key: string): number;
-  /** Whether no request has been in flight for `ms`. */
-  quietFor(ms: number): boolean;
-  reset(): void;
-}
-
-function watchTraffic(page: Page): Traffic {
-  const gets: string[] = [];
-  const issueReads = new Map<string, number>();
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
-  page.on("request", (request) => {
-    inFlight.add(request);
-    const url = new URL(request.url());
-    if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
-    gets.push(`${url.pathname}${url.search}`);
-    const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
-    if (issue !== undefined) {
-      const key = decodeURIComponent(issue);
-      issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
-    }
-  });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
-  return {
-    gets,
-    issueReads: (key) => issueReads.get(key) ?? 0,
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
-    reset: () => {
-      gets.length = 0;
-    },
-  };
-}
 
 /** Waits until no request has been in flight for 500 ms. */
 async function settled(traffic: Traffic): Promise<void> {
@@ -243,9 +200,9 @@ test("budget: 20 title writes to issues the page does not show send at most 5 re
 
     // ... and a child's new status in the open parent's Children tab, which reads the parent's
     // own detail: only the child's event can refresh it once the tab shows the old status.
-    await page.getByRole("tab", { name: "Children" }).click();
+    await openIssueAddress(page, "children");
     const childRow = page
-      .getByRole("tabpanel")
+      .getByTestId("issue-children")
       .locator("li")
       .filter({ hasText: `${child.key} · ${child.title}` });
     await expect(childRow).toContainText("Todo");

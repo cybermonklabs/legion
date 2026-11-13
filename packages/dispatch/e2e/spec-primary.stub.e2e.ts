@@ -7,6 +7,7 @@ import { expect } from "@playwright/test";
 
 import { createAsk, createIssue, createProject } from "./api";
 import { needsYouCards } from "./editor";
+import { expectActivePreset } from "./issue-page";
 import { stubbed } from "./stub/stub-test";
 
 const session = {
@@ -40,7 +41,9 @@ test("issue landing keeps Spec primary and puts open asks in Needs you @pr", asy
   await page.setViewportSize({ height: 900, width: 1440 });
   await page.goto(`/issues/${scene.issue}`);
 
-  await expect(page.getByRole("tab", { name: "Spec" })).toHaveAttribute("aria-selected", "true");
+  // The issue's own address is the Tree preset's now (dispatch://INFRA-1196 R19); at a phone
+  // width the row of five is one control naming it.
+  await expectActivePreset(page, "Tree");
 
   await expect(
     needsYouCards(page).filter({ hasText: "Approve the document-first layout?" })

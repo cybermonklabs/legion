@@ -41,8 +41,22 @@ function documentHolding(documents: readonly Artifact[], title: string): Artifac
   );
 }
 
+/** One control's making of a document: whether its form is open, the press that opens it, and
+ *  the strip the form is drawn in. `CreateDocument` holds one behind its own button; the issue
+ *  page's node menu holds one behind an item of the menu, which closes as it is pressed, so the
+ *  form is drawn beside the menu rather than in it (`features/issue/NodeMenu.tsx`). */
+export interface DocumentCreation {
+  /** Whether the form is open. */
+  readonly open: boolean;
+  /** Opens the form, forgetting what the last press answered. */
+  readonly start: () => void;
+  /** The strip: `idle` while the form is closed, the form while it is open, and in both what
+   *  the last write said where it landed with no answer. */
+  readonly strip: (idle: ReactNode) => ReactNode;
+}
+
 /**
- * The one control that makes a document, on an issue's Documents tab and on a project's document
+ * The one way to make a document, on an issue's Documents tab and on a project's document
  * list: a `New document` button, then a title and a submit. It writes under an idempotency key, so
  * two presses make one document, and it sends the title alone - no content - so the document holds
  * nothing and the person writes the first word in it. When it is made the person is taken to it,
@@ -50,11 +64,11 @@ function documentHolding(documents: readonly Artifact[], title: string): Artifac
  *
  * A title the owner already holds is refused here, before the write, in the words of the list the
  * control was given; every other refusal is the server's own sentence, shown as it came. With a
- * `refusal` - the issue is closed - nothing can be made, and the button says why: on the line the
+ * `refusal` - the issue is closed - nothing can be made, and the submit says why: on the line the
  * host already shows it on (`refusalShownBy`, the one line a closed issue's strip shows for every
  * control in it), or on a hidden line of the button's own.
  */
-export function CreateDocument({
+export function useCreateDocument({
   documents,
   owner,
   refusal = null,
@@ -64,7 +78,7 @@ export function CreateDocument({
   readonly owner: DocumentOwner;
   readonly refusal?: string | null;
   readonly refusalShownBy?: string;
-}): ReactNode {
+}): DocumentCreation {
   const [creating, setCreating] = useState(false);
   const [title, setTitle] = useState("");
   const [takenBy, setTakenBy] = useState<Artifact | undefined>();
@@ -109,47 +123,68 @@ export function CreateDocument({
         ? apiErrorMessage(create.error, "Could not create the document.")
         : undefined;
 
-  return (
-    <TitleForm
-      busyLabel="Creating…"
-      formLabel="New document"
-      idle={
-        <RefusableButton
-          look="secondary-compact"
-          onPress={() => {
-            setCreating(true);
-            setTakenBy(undefined);
-            create.forgetUnanswered();
-          }}
-          refusal={refusal}
-          refusalShownBy={refusalShownBy}
-        >
-          New document
-        </RefusableButton>
-      }
-      onCancel={() => {
-        setCreating(false);
-        setTitle("");
-        setTakenBy(undefined);
-      }}
-      onSubmit={submit}
-      onTitleChange={(typed) => {
-        setTitle(typed);
-        setTakenBy(undefined);
-      }}
-      open={creating}
-      pending={create.isPending}
-      problem={problem}
+  return {
+    open: creating,
+    start: () => {
+      setCreating(true);
+      setTakenBy(undefined);
+      create.forgetUnanswered();
+    },
+    strip: (idle) => (
+      <TitleForm
+        busyLabel="Creating…"
+        formLabel="New document"
+        idle={idle}
+        onCancel={() => {
+          setCreating(false);
+          setTitle("");
+          setTakenBy(undefined);
+        }}
+        onSubmit={submit}
+        onTitleChange={(typed) => {
+          setTitle(typed);
+          setTakenBy(undefined);
+        }}
+        open={creating}
+        pending={create.isPending}
+        problem={problem}
+        refusal={refusal}
+        refusalShownBy={refusalShownBy}
+        submitLabel="Create"
+        title={title}
+      >
+        {create.unanswered === undefined ? null : (
+          <div className="w-full">
+            <LandedWithoutAnswer what={`Document ${create.unanswered.variables}`} />
+          </div>
+        )}
+      </TitleForm>
+    ),
+  };
+}
+
+/** `useCreateDocument` behind a `New document` button of its own, which says why it cannot be
+ *  pressed while there is a `refusal`. */
+export function CreateDocument({
+  documents,
+  owner,
+  refusal = null,
+  refusalShownBy,
+}: {
+  readonly documents: readonly Artifact[];
+  readonly owner: DocumentOwner;
+  readonly refusal?: string | null;
+  readonly refusalShownBy?: string;
+}): ReactNode {
+  const creation = useCreateDocument({ documents, owner, refusal, refusalShownBy });
+  return creation.strip(
+    <RefusableButton
+      look="secondary-compact"
+      onPress={creation.start}
       refusal={refusal}
       refusalShownBy={refusalShownBy}
-      submitLabel="Create"
-      title={title}
     >
-      {create.unanswered === undefined ? null : (
-        <div className="w-full">
-          <LandedWithoutAnswer what={`Document ${create.unanswered.variables}`} />
-        </div>
-      )}
-    </TitleForm>
+      New document
+    </RefusableButton>
   );
 }

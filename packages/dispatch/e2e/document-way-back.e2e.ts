@@ -110,8 +110,9 @@ test("a document's title is corrected and a document made by mistake is removed,
   expect((await listIssueArtifacts(issue.key)).map((item) => item.slug)).toContain("kept-notes");
 
   // What the issue records of all of it: one line for the correction, naming both titles, and
-  // one for each removal, naming the document.
-  await page.getByRole("tab", { name: "Activity" }).click();
+  // one for each removal, naming the document. The issue page has no Activity tab
+  // (dispatch://INFRA-1196 R3): the issue's whole history is its `/activity` address.
+  await page.goto(`/issues/${issue.key}/activity`);
   const lines = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
   await expect(lines.filter({ hasText: "renamed Lauch notes to Launch notes" })).toHaveCount(1);
   await expect(lines.filter({ hasText: "removed Draft notes" })).toHaveCount(1);

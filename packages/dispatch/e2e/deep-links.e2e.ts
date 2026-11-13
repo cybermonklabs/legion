@@ -22,6 +22,7 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
+import { openIssueAddress } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, type Locator, type Page, test } from "./test";
@@ -628,7 +629,7 @@ for (const state of crossDocumentLandingStates) {
       await (await searchHit(page, "must show its quote")).click();
       await expect(page).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
       if (!state.holdIssuePageCode) {
-        await expect(page.getByRole("tab", { name: "Spec" })).toHaveAttribute(
+        await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveAttribute(
           "aria-selected",
           "true"
         );
@@ -663,13 +664,21 @@ const hiddenEditorJourneys = [
   {
     name: "a hidden spec editor withdraws its report before View in document returns to it",
     namedVersion: false,
-    async hide(page: Page): Promise<() => Promise<void>> {
-      await page.getByRole("tab", { name: "Conversation" }).click();
-      const conversation = page.getByRole("tabpanel", { name: "Conversation" });
+    async hide(page: Page, issueKey: string): Promise<() => Promise<void>> {
+      // The conversation keeps its address; the Spec editor it hides is the Spec preset's.
+      // The move is inside the page and never a load: a load would unmount the editor this
+      // journey is about, and "View in document" would then mount a fresh one with no stale
+      // report to withdraw, so the row would pass with the withdrawal reverted
+      // (`doc.e2e.ts:435-437` gives the same reason for the same move).
+      await openIssueAddress(page, "conversation");
+      await expect(page).toHaveURL(`/issues/${issueKey}/conversation`);
+      const conversation = page.locator("#issue-conversation-panel");
       await expect(conversation).toBeVisible();
+      // The editor is hidden, not gone: the journey's return finds the editor that landed.
+      await expect(page.locator("#issue-spec-panel")).toBeAttached();
       return async () => {
         await conversation.getByRole("link", { name: "View in document" }).click();
-        await expect(page.getByRole("tabpanel", { name: "Spec" })).toBeVisible();
+        await expect(page.locator("#issue-spec-panel")).toBeVisible();
       };
     },
   },
@@ -885,14 +894,24 @@ test("a resolving reference above a linked card does not end the hold", async ({
 test("the margin stops holding a landed card once the reader works the document", async ({
   browser,
 }) => {
-  // Anchored near the top: the quote is on screen from the first frame, so the landing needs no
-  // correction at all. A hold that only lets go once it has corrected something never lets go
-  // here, and the asks below drag the margin thousands of pixels while the reader reads.
+  // Anchored at the document's first paragraph, so the landing needs no correction at all and
+  // the margin's scroll stays where it started. A hold that only lets go once it has
+  // corrected something never lets go here, and the asks below drag the margin thousands of
+  // pixels while the reader reads.
+  //
+  // That premise needs a screen this page can hold it on. The issue page draws the document
+  // below the issue's tree (dispatch://INFRA-1196 R1, R16), so the first paragraph's mark
+  // sits 565 px down and the 294 px card beside it reaches 859 px (measured in Chromium):
+  // past the foot of the 720 px screen this project opens, where the landing corrects the
+  // margin by 352 px and the asks below then move it again through the browser's own scroll
+  // anchoring, which answers for none of the holding this row is about. The 1000 px screen
+  // below is the same reading of "on screen from the first frame" the row was written with.
   const { comment, issue, markId } = await seedLongDocument("Paragraph 1: surrounding context");
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
+    await page.setViewportSize({ height: 1000, width: 1280 });
     await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
 
     const sheet = page.getByTestId("margin-sheet");

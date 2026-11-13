@@ -2097,12 +2097,18 @@ function renderThreads(lists: Lists, unread: readonly string[], focusItemId?: st
 }
 
 /** The shared dwell with the fake clock it moves: this file's tests leave installing the clock to
- *  the dwell rather than installing it at their head. */
+ *  the dwell rather than installing it at their head.
+ *
+ *  The landing effects of the render before it are flushed first, on the real clock: fake
+ *  timers drop whatever is still pending when they go in, and on a loaded machine the effect
+ *  that opens a landed comment's thread can still be in flight here, which left the dwell
+ *  watching nothing and the mark unwritten (`bun test --parallel` on a two-core box). */
 async function dwellOnFakeClock(
   viewport: IntersectionControl,
   element: Element,
   placement?: Placement
 ) {
+  for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
   jest.useFakeTimers();
   await dwellOn(viewport, element, placement);
 }

@@ -20,6 +20,7 @@ import {
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser, BlockSchema, Version } from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
 import {
   badgeMed,
@@ -305,6 +306,7 @@ export function ProofDocument({
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
+  const tooltips = useTooltips();
   const blockSchemaQuery = useQuery({
     queryFn: loadBlockSchema,
     queryKey: ["block-schema"],
@@ -1122,7 +1124,7 @@ export function ProofDocument({
               window.location.hash = blockFragment(blockID);
               focusInEditor(() => editorRef.current?.focusBlock(blockID));
             }}
-            title={openDecision.question}
+            title={tooltips ? openDecision.question : undefined}
           >
             <TruncatedText>{openDecision.question}</TruncatedText>
           </a>

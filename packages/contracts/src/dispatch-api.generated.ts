@@ -2495,6 +2495,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/reference-targets": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description What many dispatch:// references point at, in one read: ?ref=<dispatch ref> once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, which carries no name. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. Under an ETag (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges. */
+    get: operations["getApiV1ReferenceTargets"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/references": {
     parameters: {
       query?: never;
@@ -4836,6 +4853,8 @@ export interface components {
     IssueChild: {
       /** Format: date-time */
       active_at: string;
+      blocked_by: string[] | null;
+      claim: components["schemas"]["IssueClaim"] | null;
       external_links: components["schemas"]["ExternalLink"][] | null;
       key: string;
       status: string;
@@ -5495,6 +5514,7 @@ export interface components {
       artifact: components["schemas"]["Artifact"];
       depth: number;
       via: components["schemas"]["ReferenceVia"];
+      via_blocks: string[] | null;
     };
     ReferenceQuestion: {
       ask: string;
@@ -5504,6 +5524,15 @@ export interface components {
     ReferenceQuestions: {
       document: string;
       questions: components["schemas"]["ReferenceQuestion"][] | null;
+    };
+    ReferenceTarget: {
+      gone: boolean;
+      kind: string;
+      name: string;
+      ref: string;
+    };
+    ReferenceTargets: {
+      targets: components["schemas"]["ReferenceTarget"][] | null;
     };
     ReferenceVia: {
       id: string;
@@ -10302,6 +10331,7 @@ export interface operations {
     parameters: {
       query?: {
         versions?: string;
+        own?: "0" | "1";
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -12380,6 +12410,46 @@ export interface operations {
       };
     };
   };
+  getApiV1ReferenceTargets: {
+    parameters: {
+      query?: {
+        ref?: string[];
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ReferenceTargets"];
+        };
+      };
+      /** @description Not Modified */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1References: {
     parameters: {
       query?: {
@@ -13428,6 +13498,8 @@ export type RecordResponse = components["schemas"]["RecordResponse"];
 export type ReferenceMember = components["schemas"]["ReferenceMember"];
 export type ReferenceQuestion = components["schemas"]["ReferenceQuestion"];
 export type ReferenceQuestions = components["schemas"]["ReferenceQuestions"];
+export type ReferenceTarget = components["schemas"]["ReferenceTarget"];
+export type ReferenceTargets = components["schemas"]["ReferenceTargets"];
 export type ReferenceVia = components["schemas"]["ReferenceVia"];
 export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];

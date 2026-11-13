@@ -12,7 +12,7 @@ import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-
 import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { api } from "./client";
+import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from "./client";
 import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
@@ -139,6 +139,54 @@ export const artifactBlocksQuery = (id: string) =>
     queryKey: ["artifact", id, "blocks"],
     queryFn: () => api.getArtifactBlocks(id),
   });
+
+/** What every `dispatch://` reference a page draws points at, in one read
+ *  (`GET /api/v1/reference-targets`). The key holds the references themselves, sorted, so two
+ *  surfaces naming the same set share one answer and a set that grows by one is a read of its
+ *  own rather than a stale hit. An empty set is never read: `enabled` is off, because a read of
+ *  nothing still costs a request.
+ *
+ *  A set past either bound of one request is read in batches rather than cut to it, so the
+ *  addresses past it are named too: a page the bounds were not sized for - an issue whose tree
+ *  holds a node per comment, message, ask and typed block - would otherwise draw the rest of
+ *  its rows with no words at all and say nothing about it. The bounds are the server's cap
+ *  (`REFERENCE_TARGETS_MAX`, which it refuses with `400 CAP_EXCEEDED`) and the request line a
+ *  proxy in front of it admits (`REFERENCE_TARGETS_MAX_QUERY_CHARS`): a full batch of comment
+ *  or message addresses is longer than 16 KB of query string, and a read refused there would
+ *  draw every typed-block row of the heaviest issues blank. One request is still one request:
+ *  a page inside both bounds, which is every ordinary one, reads exactly as it did.
+ */
+export const referenceTargetsQuery = (refs: readonly string[]) => {
+  const named = [...new Set(refs)].sort();
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let written = 0;
+  for (const ref of named) {
+    // What this address costs the request line, written as the client writes it: `ref=<encoded>`
+    // and the `&` joining it to the one before.
+    const cost = new URLSearchParams({ ref }).toString().length + 1;
+    const full =
+      batch.length === REFERENCE_TARGETS_MAX || written + cost > REFERENCE_TARGETS_MAX_QUERY_CHARS;
+    // An address longer than the whole budget still goes out, alone: a batch of none names
+    // nothing at all, which is what this read is here to avoid.
+    if (full && batch.length > 0) {
+      batches.push(batch);
+      batch = [];
+      written = 0;
+    }
+    batch.push(ref);
+    written += cost;
+  }
+  if (batch.length > 0) batches.push(batch);
+  return queryOptions({
+    enabled: named.length > 0,
+    queryKey: ["reference-targets", named],
+    queryFn: async () => {
+      const answers = await Promise.all(batches.map((batch) => api.getReferenceTargets(batch)));
+      return { targets: answers.flatMap((answer) => answer.targets ?? []) };
+    },
+  });
+};
 
 /** The viewer's per-agent conversation state: each session's Clear, read mark, count of unread
  *  replies to the viewer's direct messages, and `pinned_at` where the viewer pinned it

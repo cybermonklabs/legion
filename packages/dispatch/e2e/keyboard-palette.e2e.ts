@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
@@ -78,9 +79,13 @@ test("the palette lists the issue page's actions, guarded like their buttons, an
     await expect.poll(() => getIssue(issue.key).then((read) => read.status)).toBe("done");
 
     // The guards follow the buttons: the closed issue offers Reopen and neither Close nor a
-    // priority, exactly as its header renders Reopen and disables the priority select.
+    // priority, exactly as its header renders Reopen and disables the priority select. Close
+    // and Reopen sit behind the identity block's one actions control now
+    // (dispatch://INFRA-1196 R11), which is where the button is read.
     await page.reload();
-    await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
+    await page.getByRole("button", { name: "Issue actions" }).click();
+    await expect(page.getByRole("button", { name: "Reopen into Backlog" })).toBeVisible();
+    await page.keyboard.press("Escape");
     await page.locator("body").focus();
     await page.keyboard.press("Control+k");
     await expect(actions.getByRole("option", { name: "Reopen issue" })).toBeVisible();
@@ -210,6 +215,7 @@ test("/ opens the same bar, and a query that is no action's start lists the hits
         .getByTestId("issue-header")
         .getByRole("heading", { level: 1, name: "Astrolabe issue calibration" })
     ).toBeVisible();
+    await page.getByRole("button", { name: "Issue actions" }).click();
     await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
     expect(statusWrites).toEqual([]);
     expect((await getIssue(issue.key)).status).not.toBe("done");
@@ -323,9 +329,19 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
     });
     await openIssue(page, issue.key, "In-flight guard");
 
-    const closeButton = page.getByRole("button", { name: "Close issue" });
-    await closeButton.click();
-    await expect(closeButton).toBeDisabled();
+    // Close sits behind the identity block's one actions control (dispatch://INFRA-1196 R11),
+    // and running an action closes that control: the disabled state is read where the control
+    // draws it, which is the group opened again while the write is still out.
+    const actionsControl = page.getByRole("button", { name: CONTROL_LABELS.issue_actions });
+    await actionsControl.click();
+    await page.getByRole("button", { name: CONTROL_LABELS.close_issue }).click();
+    await actionsControl.click();
+    // The action answers to the words it draws, and while the write is out those words are the
+    // in-flight ones: it reads "Closing…" and takes no second press. Under the name it carried
+    // before the press there is now no control at all (WCAG 2.5.3, `IssueHeader.tsx`).
+    await expect(page.getByRole("button", { name: CONTROL_LABELS.saving_close })).toBeDisabled();
+    await expect(page.getByRole("button", { name: CONTROL_LABELS.close_issue })).toHaveCount(0);
+    await page.keyboard.press("Escape");
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeDisabled();
 
     await page.locator("body").focus();
@@ -547,6 +563,7 @@ test("an arrow pressed before the search answers reaches no action the query fin
     await expect(input).toHaveAttribute("aria-activedescendant", /^search-option-issue-/);
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
+    await page.getByRole("button", { name: "Issue actions" }).click();
     await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
     expect(statusWrites).toEqual([]);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
@@ -609,6 +626,7 @@ test("a stale answer refreshing for the same query keeps the arrows off the acti
     release.resolve();
     await input.press("Enter");
     await expect(dialog).toHaveCount(0);
+    await page.getByRole("button", { name: "Issue actions" }).click();
     await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
     expect(statusWrites).toEqual([]);
     expect((await getIssue(issue.key)).status).toBe("in_progress");
@@ -632,7 +650,10 @@ test("a row whose control has gone since the palette opened does nothing", async
       }
     });
     await openIssue(page, issue.key, "Stale row");
-    await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
+    // Reopen sits behind the identity block's one actions control (dispatch://INFRA-1196 R11).
+    // The group stays open under the palette, so the check below reads the header's own button.
+    await page.getByRole("button", { name: "Issue actions" }).click();
+    await expect(page.getByRole("button", { name: "Reopen into Backlog" })).toBeVisible();
     await page.keyboard.press("Control+k");
     const dialog = page.getByRole("dialog", { name: "Search" });
     const reopen = dialog
@@ -640,11 +661,12 @@ test("a row whose control has gone since the palette opened does nothing", async
       .getByRole("option", { name: "Reopen issue" });
     await expect(reopen).toBeVisible();
 
-    // Someone else reopens the issue while the palette is open; the header's Reopen button goes.
-    // A CSS locator, since what is asserted is the header behind the modal palette.
+    // Someone else reopens the issue while the palette is open; the header's own control goes.
+    // A CSS locator, since what is asserted is the header behind the modal palette, and the
+    // control carries no `aria-label`: its name is the words it draws (WCAG 2.5.3).
     await patchIssue(issue.key, { status: "in_progress" }, { login: "bob" });
     await expect(
-      page.locator('[data-testid="issue-header"] button[aria-label="Reopen issue"]')
+      page.locator('[data-testid="issue-header"] button').filter({ hasText: "Reopen into Backlog" })
     ).toHaveCount(0);
 
     // The row checks its control again when it runs, so it writes nothing. The palette closing

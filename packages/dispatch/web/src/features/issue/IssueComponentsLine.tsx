@@ -16,7 +16,19 @@ import {
 } from "../../theme/classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
 import { buildIssuePath } from "../refs/routes";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 import { useIssueComponents } from "./useIssueComponents";
+
+/**
+ * The name the components picker's trigger answers to: what it opens and the issue it is on, so
+ * a voice user saying what they read presses it (WCAG 2.5.3). The add menu reaches this trigger
+ * by this name rather than drawing a second picker, and calls this function for it
+ * (`IssueAddMenu.tsx`), so a word changed here changes both sides at once.
+ */
+export function componentsControlName(issueKey: string): string {
+  return `${CONTROL_LABELS.edit} ${PROPERTY_LABELS.components.toLowerCase()} of ${issueKey}`;
+}
 
 /**
  * The `Components:` line of the issue header's metadata rail: the issue's effective
@@ -39,19 +51,26 @@ export function IssueComponentsLine({
   const { components } = issue;
   const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
   const [pickerOpen, setPickerOpen] = useState(false);
+  // The architecture names each component the issue is attached to, and the page draws a name
+  // where a name belongs rather than the model's own id (dispatch://INFRA-1196 R21), so the
+  // tree is read once this issue has a component to name - the same read, under the same key,
+  // that the picker opens with.
   const tree = useQuery({
     queryKey: ["architecture", issue.project],
     queryFn: () => api.getArchitecture(issue.project),
-    enabled: pickerOpen,
+    enabled: pickerOpen || (components.mode === "explicit" && (components.ids ?? []).length > 0),
   });
+  const componentName = (id: string) =>
+    (tree.data?.components ?? []).find((component) => component.id === id)?.title ?? id;
   const write = useIssueComponents(issue);
   const inheritedFrom =
     components.inherited_from === null ? null : (
-      <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>
-        inherited from{" "}
+      <span className={`shrink-0 text-xs ${textMutedOnSurface}`} {...pageChrome}>
+        {CONTROL_LABELS.components_inherited_from}{" "}
         <Link
           className={`dispatch-inline-link underline ${linkText} ${linkHoverText}`}
           to={buildIssuePath({ key: components.inherited_from, kind: "issue" })}
+          {...authorText}
         >
           {components.inherited_from}
         </Link>
@@ -59,31 +78,40 @@ export function IssueComponentsLine({
     );
   return (
     <div
-      className={`flex shrink-0 items-center gap-2 text-sm ${textSecondaryOnSurface}`}
+      className={`flex min-w-0 flex-wrap items-center gap-2 text-sm ${textSecondaryOnSurface}`}
       data-testid="issue-components"
     >
-      <span className="font-medium">Components:</span>
+      <span className="font-medium" {...pageChrome}>
+        {PROPERTY_LABELS.components}:
+      </span>
       {components.mode === "inherit" ? (
-        <span className={textMutedOnSurface}>Not attached</span>
+        <span className={textMutedOnSurface} {...pageChrome}>
+          {CONTROL_LABELS.components_not_attached}
+        </span>
       ) : components.mode === "none" ? (
-        <span className={textMutedOnSurface}>None — {components.reason}</span>
+        <span className={textMutedOnSurface} {...pageChrome}>
+          {CONTROL_LABELS.components_none} — <span {...authorText}>{components.reason}</span>
+        </span>
       ) : (
         <>
           {(components.ids ?? []).map((id) => (
             <span
               className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgePrimary.bg} ${badgePrimary.text}`}
               key={id}
+              {...authorText}
             >
-              {id}
+              {componentName(id)}
             </span>
           ))}
           {(components.unknown ?? []).map((id) => (
             <span
               className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-xs font-medium ${badgeHigh.bg} ${badgeHigh.text}`}
               key={id}
-              title={`${id} is no longer in the project's architecture model`}
+              // No `title`: the chip reads "retired: <id>", which is the whole of it
+              // (dispatch://INFRA-1196 R21).
+              {...pageChrome}
             >
-              retired: {id}
+              {CONTROL_LABELS.components_retired}: <span {...authorText}>{id}</span>
             </span>
           ))}
         </>
@@ -104,15 +132,17 @@ export function IssueComponentsLine({
               ? (components.ids ?? [])
               : []
           }
-          triggerAriaLabel={`Edit components of ${issue.key}`}
+          triggerAriaLabel={componentsControlName(issue.key)}
         >
-          {components.mode === "explicit" && components.inherited_from === null
-            ? "+"
-            : "Set components"}
+          <span {...pageChrome}>
+            {components.mode === "explicit" && components.inherited_from === null
+              ? "+"
+              : CONTROL_LABELS.components_set}
+          </span>
         </ComponentPicker>
       )}
       {write.error === null ? null : (
-        <span className={`shrink-0 text-xs ${dangerText}`} role="alert">
+        <span className={`shrink-0 text-xs ${dangerText}`} role="alert" {...authorText}>
           {write.error}
         </span>
       )}

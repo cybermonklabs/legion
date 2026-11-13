@@ -9,6 +9,7 @@ import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 
 import type { Actor, AskResolution } from "../../api/types";
+import { useTooltips } from "../../components/tooltips";
 import {
   focusVisibleRing,
   inlineWarningText,
@@ -19,6 +20,7 @@ import {
   stalledDotBorder,
   unknownDotBorder,
 } from "../../theme/classes";
+import { authorText } from "../issue/page-structure";
 import { askResolutionBadge, askResolutionReason } from "./actor";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
 import { AGENT_LIVE_PATH } from "./routes";
@@ -155,16 +157,22 @@ function AgentStateMark({
   lastSeen: number | undefined;
   state: AgentState;
 }): ReactNode {
+  const tooltips = useTooltips();
   const seen =
     (state === "running" || state === "unresponsive") && lastSeen !== undefined
       ? relativeTimeLabel(new Date(lastSeen), Date.now())
       : undefined;
+  const reading = `${STATE_LABEL[state]}${seen === undefined ? "" : ` · seen ${seen}`}${STATE_NOTE[state]}`;
+  // On a surface with no tooltips (`components/tooltips.tsx`) the whole reading - the state,
+  // how long ago a running or unresponsive session was seen, and what an unresponsive one's
+  // state means - is the mark's accessible name instead, so nothing is kept for a pointer
+  // alone; the shape says the state to everyone either way.
   return (
     <span
-      aria-label={STATE_LABEL[state]}
+      aria-label={tooltips ? STATE_LABEL[state] : reading}
       className={STATE_MARK_CLASS[state]}
       role="img"
-      title={`${STATE_LABEL[state]}${seen === undefined ? "" : ` · seen ${seen}`}${STATE_NOTE[state]}`}
+      title={tooltips ? reading : undefined}
     />
   );
 }
@@ -252,6 +260,7 @@ function SessionAgentName({
   subject: SessionRef;
   variant: AgentVariant;
 }): ReactNode {
+  const tooltips = useTooltips();
   const registry = useAgentRegistry(true);
   const { attribution, name, sessionId } = resolveAgent(subject, registry);
   const state = registry.state(sessionId);
@@ -263,7 +272,12 @@ function SessionAgentName({
     named = variant.control(name);
     const openLabel = `Open live conversation with ${name}${attribution}`;
     liveLink = (
-      <Link aria-label={openLabel} className={`ml-1 px-1 ${LINK_CLASS}`} title={openLabel} to={to}>
+      <Link
+        aria-label={openLabel}
+        className={`ml-1 px-1 ${LINK_CLASS}`}
+        title={tooltips ? openLabel : undefined}
+        to={to}
+      >
         <span aria-hidden="true">↗</span>
       </Link>
     );
@@ -290,12 +304,15 @@ function SessionAgentName({
   // long title with no space breaks mid-word; a host's `truncate` (nowrap) still ellipsizes.
   // The short form `session:<8>…` does not tell sessions apart (ids minted in the same minute
   // share it), so an agent named by it carries its full id as its tooltip.
+  // An agent's name, and the person it acted for, are the names they were given, not words the
+  // issue page declares (`features/issue/page-structure.ts`), so the span carries that mark.
   return (
     <span
       className={className === undefined ? AGENT_SPAN_CLASS : `${AGENT_SPAN_CLASS} ${className}`}
       data-agent-name={sessionId}
       data-agent-state={state}
-      title={name === shortSessionId(sessionId) ? sessionId : undefined}
+      title={tooltips && name === shortSessionId(sessionId) ? sessionId : undefined}
+      {...authorText}
     >
       <AgentStateMark lastSeen={registry.lastSeen(sessionId)} state={state} />
       {named}

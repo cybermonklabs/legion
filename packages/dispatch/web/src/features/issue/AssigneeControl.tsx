@@ -5,7 +5,19 @@ import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 import { useIssueAssignee } from "./useIssueAssignee";
+
+/**
+ * The name the assignee picker answers to: the property it sets and the issue it is on, so a
+ * voice user saying what they read presses it (WCAG 2.5.3). The add menu reaches this picker by
+ * this name rather than drawing a second one, and calls this function for it
+ * (`IssueAddMenu.tsx`), so a word changed here changes both sides at once.
+ */
+export function assigneeControlName(issueKey: string): string {
+  return `${PROPERTY_LABELS.assignee} of ${issueKey}`;
+}
 
 /**
  * The single assignee editor: shows who answers the issue's asks as a badge (their lowercase
@@ -19,7 +31,7 @@ import { useIssueAssignee } from "./useIssueAssignee";
  * partitions update at once and roll back together; a refused person shows the server's
  * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
  * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. Labelled `Assignee of <KEY>`.
+ * is queued behind the save. Named by `assigneeControlName`.
  */
 export function AssigneeControl({
   assignee,
@@ -42,11 +54,15 @@ export function AssigneeControl({
   return (
     <>
       <span className={`${badgeSelectWrapper} ${disabled ? "opacity-50" : ""}`}>
-        <span aria-hidden="true" className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}>
-          {assignee ?? "Unassigned"}
+        <span
+          aria-hidden="true"
+          className={`${badgeSelectBadge} ${tone.bg} ${tone.text}`}
+          {...(assignee === null ? pageChrome : authorText)}
+        >
+          {assignee ?? CONTROL_LABELS.unassigned}
         </span>
         <select
-          aria-label={`Assignee of ${issueKey}`}
+          aria-label={assigneeControlName(issueKey)}
           className={badgeSelectOverlay}
           disabled={disabled}
           onFocus={want}

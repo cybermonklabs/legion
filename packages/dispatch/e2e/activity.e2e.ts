@@ -13,6 +13,7 @@ import {
   resolveAsk,
   resolveComment,
 } from "./api";
+import { conversationStateControl, openIssueAddress } from "./issue-page";
 import { setEventCreatedAt } from "./seed";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -54,7 +55,7 @@ test("the Activity tab lists the event rows the Conversation does not draw @pr",
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/activity`);
-    await expect(page.getByRole("tab", { name: "Activity" })).toHaveAttribute(
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
       "aria-selected",
       "true"
     );
@@ -151,7 +152,7 @@ test("Activity breaks its rows by day and marks where the reader stopped", async
     // Nothing the tab did wrote the reader's watermark, and the Conversation is the control:
     // its own write is what says the page had the chance to make one.
     expect(stateWrites).toBe(0);
-    await page.getByRole("tab", { name: "Conversation" }).click();
+    await openIssueAddress(page, "conversation");
     await expect.poll(() => stateWrites, { intervals: [50, 50, 100, 200, 500] }).toBe(1);
   } finally {
     await alice.close();

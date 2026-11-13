@@ -9,6 +9,7 @@
  */
 import { expect, type Page } from "@playwright/test";
 
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { createIssue, createProject, patchIssue } from "./api";
 import { leaveFocus, onBody, openIssue } from "./keyboard-issue";
 import { stubbed } from "./stub/stub-test";
@@ -174,7 +175,11 @@ closedTest(
   async ({ page, scene }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await openIssue(page, scene.issue, "Closed issue");
-    await expect(page.getByRole("button", { name: "Reopen issue" })).toBeVisible();
+    // Reopen is behind the identity block's actions control now (dispatch://INFRA-1196 R11).
+    await page.getByRole("button", { name: "Issue actions" }).click();
+    await expect(
+      page.getByRole("button", { name: CONTROL_LABELS.reopen_into_backlog })
+    ).toBeVisible();
 
     await page.keyboard.press("?");
     const issueSection = page
@@ -188,7 +193,7 @@ closedTest(
     await expect(row("Edit labels")).toHaveAttribute("data-enabled", "false");
     await expect(row("Set priority P0–P3")).toHaveAttribute("data-enabled", "false");
     await expect(row("Pin or unpin the issue")).toHaveAttribute("data-enabled", "true");
-    await expect(row("Conversation tab")).toHaveAttribute("data-enabled", "true");
+    await expect(row("Open the conversation in the panel")).toHaveAttribute("data-enabled", "true");
   }
 );
 

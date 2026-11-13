@@ -5,6 +5,7 @@ import {
   createComment,
   createIssue,
   createProject,
+  createProjectDocument,
   getArtifact,
   getArtifactText,
   getAsk,
@@ -25,6 +26,7 @@ import {
   selectEditorText,
   setSheet,
 } from "./editor";
+import { pickPreset } from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
 import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
@@ -562,10 +564,15 @@ test("a document mark opens its thread in the margin and stays on the document",
     await expect(connectedDot(page)).toHaveText("connected");
 
     // The comment is anchored, so its deep link lands on the document it quotes, with the
-    // thread open beside it — the same place clicking the mark just opened.
+    // thread open beside it — the same place clicking the mark just opened. The card is read
+    // inside the margin's own anchored-comments region rather than anywhere in the sheet: the
+    // issue page's panel now draws the Conversation inside that same sheet
+    // (dispatch://INFRA-1196 R12), and it holds a card for this comment too.
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
     await expect(page).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
-    const deepLinked = page.getByTestId("margin-sheet").getByTestId(`margin-comment-${comment.id}`);
+    const deepLinked = page
+      .getByRole("region", { name: "Anchored comments" })
+      .getByTestId(`margin-comment-${comment.id}`);
     await expect(deepLinked).toHaveAttribute("aria-current", "true");
     await expect(deepLinked).toContainText("focus this");
   } finally {
@@ -633,7 +640,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}`);
-    await page.getByRole("tab", { name: "Spec" }).click();
+    await pickPreset(page, "Spec");
     await selectEditorText(page, "brown");
     await barAction(page, "Ask");
 
@@ -707,7 +714,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
   try {
     const alicePage = await alice.newPage();
     await alicePage.goto(`/issues/${issue.key}`);
-    await alicePage.getByRole("tab", { name: "Spec" }).click();
+    await pickPreset(alicePage, "Spec");
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
     await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
@@ -719,7 +726,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     // cache. He still sees the answered anchored ask in the margin.
     const bobPage = await bob.newPage();
     await bobPage.goto(`/issues/${issue.key}`);
-    await bobPage.getByRole("tab", { name: "Spec" }).click();
+    await pickPreset(bobPage, "Spec");
     const bobCard = marginCard(bobPage, ask.id);
     await expect(bobCard).toBeVisible();
     await expect(bobCard).toContainText("brown");
@@ -910,5 +917,67 @@ test("a browser reconnecting after an accept keeps the accepted text", async ({ 
     await expect(documentEditor(page)).toHaveText("The quick red fox");
   } finally {
     await bob.close();
+  }
+});
+
+/**
+ * The issue page fills a slot in the shell's margin (dispatch://INFRA-1196 R12,
+ * `web/src/features/margin/margin-slot.tsx`), and the margin is mounted once for every route.
+ * These three rows are what says the slot changed no other page: each one draws its margin
+ * exactly as it did before, and none of them draws the issue page's panel.
+ */
+const ISSUE_PANEL = '[data-testid="issue-margin"]';
+
+test("a project document page draws its margin, and none of the issue page's panel", async ({
+  browser,
+}) => {
+  await createProject({ key: "DOC", name: "Documents" });
+  const document = await createProjectDocument("DOC", {
+    content: "# The handbook\n\nIts margin is the margin every document page has.\n",
+    name: "handbook.md",
+  });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto(`/projects/DOC/documents/${document.artifact.slug}`);
+    await expect(page.getByRole("heading", { level: 1, name: "The handbook" })).toBeVisible();
+    await expect(page.getByTestId("desktop-margin-shell")).toHaveCount(1);
+    await expect(page.getByTestId("margin-sheet")).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
+    await expect(page.getByLabel("Resize margin")).toHaveCount(1);
+    await expect(page.locator(ISSUE_PANEL)).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the Inbox keeps its margin-less layout", async ({ browser }) => {
+  await createProject({ key: "INB", name: "Inbox" });
+  await createIssue({ project: "INB", spec: initialMarkdown, title: "An issue to list" });
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto("/");
+    await expect(page.getByTestId("main-content")).toBeVisible();
+    // A route with no margin spends no width on one, which is what it did before the slot.
+    await expect(page.getByTestId("desktop-margin-shell")).toHaveCount(0);
+    await expect(page.locator(ISSUE_PANEL)).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("an Agents page keeps its margin-less layout", async ({ browser }) => {
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.setViewportSize({ height: 900, width: 1440 });
+    await page.goto("/agents");
+    await expect(page.getByTestId("desktop-margin-shell")).toHaveCount(0);
+    await expect(page.locator(ISSUE_PANEL)).toHaveCount(0);
+  } finally {
+    await alice.close();
   }
 });

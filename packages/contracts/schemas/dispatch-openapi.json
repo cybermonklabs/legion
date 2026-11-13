@@ -6903,6 +6903,17 @@
             }
           },
           {
+            "name": "own",
+            "in": "query",
+            "schema": {
+              "enum": [
+                "0",
+                "1"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "session",
             "in": "query",
             "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
@@ -10118,6 +10129,58 @@
         },
         "x-auth": "any",
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/reference-targets": {
+      "get": {
+        "description": "What many dispatch:// references point at, in one read: ?ref=\u003cdispatch ref\u003e once per reference, at most 256 of them (past that 400 CAP_EXCEEDED naming the cap). {targets}, one member per ?ref= in the request's order (a reference named twice answered twice), each {ref, kind, name, gone}: ref as the request wrote it, kind the kind of node it names, name the words shown for the target in place of its text (an issue's title, a document's name, an ask's question, a comment's or a message's body, a component's title, a block's text), and gone whether nothing answers to that reference now, which carries no name. A reference the grammar cannot read is 400 INVALID_REFERENCE naming it; one that reads but names nothing is answered gone, never refused. Under an ETag (If-None-Match answers 304). This answers no edges: GET /api/v1/references reads one node's edges.",
+        "operationId": "getApiV1ReferenceTargets",
+        "parameters": [
+          {
+            "name": "ref",
+            "in": "query",
+            "schema": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferenceTargets"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Not Modified"
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/references": {
@@ -20162,6 +20225,25 @@
             "format": "date-time",
             "type": "string"
           },
+          "blocked_by": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "claim": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueClaim"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "external_links": {
             "items": {
               "$ref": "#/components/schemas/ExternalLink"
@@ -20194,7 +20276,9 @@
           "subtree_done",
           "subtree_total",
           "active_at",
-          "external_links"
+          "external_links",
+          "blocked_by",
+          "claim"
         ],
         "type": "object"
       },
@@ -23168,12 +23252,22 @@
           },
           "via": {
             "$ref": "#/components/schemas/ReferenceVia"
+          },
+          "via_blocks": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
           }
         },
         "required": [
           "artifact",
           "depth",
-          "via"
+          "via",
+          "via_blocks"
         ],
         "type": "object"
       },
@@ -23214,6 +23308,46 @@
         "required": [
           "document",
           "questions"
+        ],
+        "type": "object"
+      },
+      "ReferenceTarget": {
+        "properties": {
+          "gone": {
+            "type": "boolean"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "kind",
+          "name",
+          "gone"
+        ],
+        "type": "object"
+      },
+      "ReferenceTargets": {
+        "properties": {
+          "targets": {
+            "items": {
+              "$ref": "#/components/schemas/ReferenceTarget"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "targets"
         ],
         "type": "object"
       },

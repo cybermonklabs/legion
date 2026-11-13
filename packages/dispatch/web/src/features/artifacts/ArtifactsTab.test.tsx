@@ -393,6 +393,7 @@ test("References lists closure members with chip, via, and depth, names truncati
         artifact: referencedDocument,
         depth: 1,
         via: { id: "comment-1", kind: "comment" },
+        via_blocks: ["b1"],
       },
     ],
     truncated: true,
@@ -448,7 +449,9 @@ test("References names the agent that owns a conversation's artifact", async () 
     slug: "shot-png",
   };
   const { getIssueReferences, listArtifacts, view } = renderTab([artifact], {
-    members: [{ artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" } }],
+    members: [
+      { artifact: picture, depth: 1, via: { id: "comment-1", kind: "comment" }, via_blocks: null },
+    ],
     truncated: false,
   });
 

@@ -20,9 +20,10 @@ import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
 // An issue's agents stay reachable from its page once they stop (dispatch://INFRA-470): the
-// Collaborators tab lists everyone who worked the issue, running or not, each agent one click from
-// its live conversation, and the mention picker offers the issue's Legion roles nobody live holds
-// under "Not running", addressed to the role rather than to a session that has ended.
+// page's one right-hand panel lists everyone who worked the issue, running or not, each agent
+// one click from its live conversation, and the mention picker offers the issue's Legion roles
+// nobody live holds under "Not running", addressed to the role rather than to a session that
+// has ended.
 //
 // Fixture: a closed issue assigned to alice, which bob commented on and messaged before the close;
 // one live Legion tester, two reviewer sessions of one role token (the old one started first) and a
@@ -91,7 +92,7 @@ async function seed(): Promise<Fixture> {
 }
 
 /** The selector for an agent's own row name: the name `Row` marks `data-collaborator`
- *  (`CollaboratorsTab.tsx`), never one that names it as another row's replacement. */
+ *  (`IssueCollaboratorList.tsx`), never one that names it as another row's replacement. */
 const rowNameSelector = (sessionId: string) =>
   `[data-collaborator] [data-agent-name="${sessionId}"]`;
 
@@ -103,8 +104,8 @@ function agentRowName(legion: Locator, sessionId: string): Locator {
 // No `@phone` tag: this row starts at the project's own desktop width and narrows the window
 // itself, so under `iphone` it would start from the wrong layout (packages/dispatch/AGENTS.md,
 // "Phone acceptance").
-// @pr: The Collaborators tab's only row: the issue's people and its Legion agents, running or not.
-test("the Collaborators tab lists an issue's people and its Legion agents, running or not @pr", async ({
+// @pr: The collaborators list's only row: the issue's people and its Legion agents, running or not.
+test("the panel lists an issue's people and its Legion agents, running or not @pr", async ({
   browser,
 }) => {
   const { issueKey } = await seed();
@@ -113,20 +114,22 @@ test("the Collaborators tab lists an issue's people and its Legion agents, runni
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issueKey}/collaborators`);
-    await expect(page.getByRole("tab", { name: "Collaborators" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
+    // The address the Collaborators tab answered now opens the list inside the page's one
+    // right-hand panel (dispatch://INFRA-1196 R12, R19), and its control says it is open.
+    const collaborators = page.getByRole("region", { name: "Collaborators" });
+    await expect(
+      page.getByTestId("issue-margin").getByRole("button", { name: "Collaborators" })
+    ).toHaveAttribute("aria-expanded", "true");
 
     // People, with how each of them worked the issue.
-    const people = page.getByRole("region", { name: "People" });
+    const people = collaborators.getByRole("region", { name: "People" });
     await expect(people.getByRole("listitem").filter({ hasText: "alice" })).toContainText(
       "assignee"
     );
     await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText("posted");
 
     // The Legion agents, by role in workflow order (`LEGION_ROLES`), each role's newest first.
-    const legion = page.getByRole("region", { name: "Legion agents" });
+    const legion = collaborators.getByRole("region", { name: "Legion agents" });
     await expect(legion.getByRole("heading", { level: 3 })).toHaveText([
       "implementer",
       "tester",
@@ -191,14 +194,12 @@ test("the Collaborators tab lists an issue's people and its Legion agents, runni
   }
 });
 
-// A registry the listener cannot read is an answer of its own, never a tab that failed: Dispatch
-// answers `legion_registry: "unavailable"` and still names the issue's people and the sessions
-// its own events hold (packages/envoy/internal/dispatch/api/issue_collaborators.go,
-// `issueLegionAgents`). So the tab says the record could not be read, and alice and bob stand
+// A registry the listener cannot read is an answer of its own, never a list that failed:
+// Dispatch answers `legion_registry: "unavailable"` and still names the issue's people and the
+// sessions its own events hold (packages/envoy/internal/dispatch/api/issue_collaborators.go,
+// `issueLegionAgents`). So the panel says the record could not be read, and alice and bob stand
 // where they did - their place in the issue is Dispatch's own record, not Legion's.
-test("the Collaborators tab says so when Legion's record of the issue cannot be read", async ({
-  browser,
-}) => {
+test("the panel says so when Legion's record of the issue cannot be read", async ({ browser }) => {
   const { issueKey } = await seed();
   await setLegionRegistryState("unreadable");
   const alice = await asUser(browser, "alice");
@@ -211,26 +212,27 @@ test("the Collaborators tab says so when Legion's record of the issue cannot be 
         new URL(response.url()).pathname === `/api/v1/issues/${issueKey}/collaborators`
     );
     await page.goto(`/issues/${issueKey}/collaborators`);
-    // What the tab is showing is the server's answer: the read itself succeeded, and it named the
-    // registry unavailable and held no agent, the issue's events naming none of these sessions.
+    // What the panel is showing is the server's answer: the read itself succeeded, and it named
+    // the registry unavailable and held no agent, the issue's events naming none of these
+    // sessions.
     const answer = await collaborators;
     expect(answer.status()).toBe(200);
     expect(await answer.json()).toMatchObject({ agents: [], legion_registry: "unavailable" });
 
-    const tab = page.getByRole("tabpanel", { name: "Collaborators" });
-    await expect(tab.getByRole("status")).toHaveText(
+    const panel = page.getByRole("region", { name: "Collaborators" });
+    await expect(panel.getByRole("status")).toHaveText(
       "Legion's record of this issue's agents could not be read."
     );
 
     // The people are Dispatch's own, so the notice takes none of them with it.
-    const people = tab.getByRole("region", { name: "People" });
+    const people = panel.getByRole("region", { name: "People" });
     await expect(people.getByRole("listitem").filter({ hasText: "alice" })).toContainText(
       "assignee"
     );
     await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText("posted");
     // And nothing stands in for the agents: an empty section would read as an issue no agent
     // ever worked, which is the one thing the registry did not say.
-    await expect(tab.getByRole("region", { name: "Legion agents" })).toHaveCount(0);
+    await expect(panel.getByRole("region", { name: "Legion agents" })).toHaveCount(0);
   } finally {
     await alice.close();
   }

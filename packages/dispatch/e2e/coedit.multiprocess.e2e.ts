@@ -88,7 +88,10 @@ interface ConnectionWatch {
 /** Has `page` read its own connection dot every `samplingInterval`, and on every change to it in
  *  between, until `stop`. The page reads it, not this process: a Playwright round trip per reading
  *  is slower than the interval on a busy machine. The dot is the document's `role="status"`
- *  element whose title starts with one of `connectionLabel`'s states (features/doc/connection.ts). */
+ *  element whose `aria-label` starts with one of `connectionLabel`'s states
+ *  (features/doc/connection.ts). It is read by `aria-label` and not by `title`, which is what
+ *  names it on every surface: a page may draw no tooltip at all (`components/tooltips.tsx`), and
+ *  the issue page is one that does not, so the dot there carries no `title` to read. */
 async function watchConnection(page: Page): Promise<{ stop(): Promise<ConnectionReadings> }> {
   const watch = await page.evaluateHandle((interval): ConnectionWatch => {
     const states = [
@@ -99,8 +102,9 @@ async function watchConnection(page: Page): Promise<{ stop(): Promise<Connection
     ];
     const started = performance.now();
     const label = () => {
-      for (const element of document.querySelectorAll<HTMLElement>('[role="status"][title]')) {
-        if (states.includes(element.title.split(" · ")[0] ?? "")) return element.title;
+      for (const element of document.querySelectorAll<HTMLElement>('[role="status"][aria-label]')) {
+        const named = element.getAttribute("aria-label") ?? "";
+        if (states.includes(named.split(" · ")[0] ?? "")) return named;
       }
       return "absent";
     };
@@ -122,7 +126,7 @@ async function watchConnection(page: Page): Promise<{ stop(): Promise<Connection
     const timer = window.setInterval(() => read(true), interval);
     const observer = new MutationObserver(() => read(false));
     observer.observe(document.body, {
-      attributeFilter: ["title"],
+      attributeFilter: ["aria-label"],
       attributes: true,
       childList: true,
       subtree: true,

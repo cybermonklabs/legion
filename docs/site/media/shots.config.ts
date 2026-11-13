@@ -104,8 +104,13 @@ const dispatch: ShotSet<DispatchWorkspace> = {
       theme: "light",
       ready: specReady,
       steps: async (page) => {
+        // The reply is on the page twice: in the margin's anchored thread, which this shot is
+        // of, and in the panel's conversation list, which lists every comment of the issue
+        // (dispatch://INFRA-1196 R12). Unscoped, the wait would match both.
         await expect(
-          page.getByText("Yes: one of each, plus an ask on the Runbook document.")
+          page
+            .getByRole("region", { name: "Anchored comments" })
+            .getByText("Yes: one of each, plus an ask on the Runbook document.")
         ).toBeVisible();
       },
     },

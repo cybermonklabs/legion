@@ -263,10 +263,11 @@ export async function setSheet(page: Page, project: string, open: boolean): Prom
   await expect(sheet).toHaveAttribute("data-expanded", String(open));
 }
 
-/** The thread card rendered inside a Conversation turn (the margin renders the same thread as
- *  its own card, so a bare `[data-margin-item]` lookup would match both). */
+/** The thread card rendered inside a Conversation turn. The margin renders the same thread as
+ *  its own card, so each card carries its own name (`data-thread-card`) and only the margin's
+ *  carry the margin's (`data-margin-item`), which is what places a landed card by its mark. */
 export function threadCard(page: Page, rootId: string): Locator {
-  return page.locator(`[data-turn="comment:${rootId}"]`).locator(`[data-margin-item="${rootId}"]`);
+  return page.locator(`[data-turn="comment:${rootId}"]`).locator(`[data-thread-card="${rootId}"]`);
 }
 
 /** Where a Conversation turn's thread shows once the reader expands it: in place, in the turn,
@@ -315,9 +316,14 @@ export function conversationFilter(page: Page, label: "All" | "Closed" | "Open")
 
 /** The margin's open asks waiting on the reader. Every margin ask card, open or decided, is in one
  *  keyed list - an answered ask moves to the decided ones in place - so the group is each card's
- *  own `data-margin-section`, and a card is found inside it by its `ask-<id>` test id. */
-export function needsYouCards(page: Page): Locator {
-  return page.locator('[data-margin-section="needs-you"]');
+ *  own `data-margin-section`, and a card is found inside it by its `ask-<id>` test id.
+ *
+ *  `scope` is the page, or the one panel the cards are to be read in: the issue page fills the
+ *  margin's slot in an effect (`features/margin/margin-slot.tsx`), so the margin draws once
+ *  plain and again inside that page's panel, and a row that presses a card's own control reads
+ *  it inside the panel rather than taking whichever draw it caught. */
+export function needsYouCards(scope: Locator | Page): Locator {
+  return scope.locator('[data-margin-section="needs-you"]');
 }
 
 export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {
@@ -550,7 +556,16 @@ export async function openIssue(browser: Browser, title: string, spec: string) {
 export async function blockId(artifactId: string, text: string): Promise<string> {
   const { markdown } = await getArtifactText(artifactId);
   const blocks = await getArtifactBlocks(artifactId);
-  const block = blocks.find((candidate) => markdown.slice(candidate.from, candidate.to) === text);
+  // `from`/`to` are offsets into the document's bytes, which is what the server slices the same
+  // markdown with (`packages/envoy/internal/dispatch/docs/closed_version_blocks.go`), so the cut
+  // is made over the encoded bytes: a document holding anything outside ASCII puts every later
+  // block's byte offset past its JavaScript string index, and a string slice would read the
+  // wrong text.
+  const bytes = new TextEncoder().encode(markdown);
+  const decoder = new TextDecoder();
+  const block = blocks.find(
+    (candidate) => decoder.decode(bytes.slice(candidate.from, candidate.to)) === text
+  );
   if (block === undefined) {
     throw new Error(`no block of ${artifactId} reads ${JSON.stringify(text)}: ${markdown}`);
   }

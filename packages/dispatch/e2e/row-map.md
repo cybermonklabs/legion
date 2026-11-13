@@ -267,6 +267,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
 | `e2e/inbox-view.e2e.ts` | a priority write must arrive live |
 | `e2e/inbox.e2e.ts` | writes a reply and re-reads the thread; live event feed; lands in the document's live room |
+| `e2e/issue-layout.e2e.ts` | its rows write the issue and read the server's own answer back - an ask answered, a claim taken and released, a priority, an approval requested, a subscriber removed, a document version named - and several of them open the document's live room beside the tree |
 | `e2e/issue.e2e.ts` | asserts the fake Envoy's state across resets; status writes re-read; writes persisted and re-read |
 | `e2e/issues-table.e2e.ts` | every row writes and then reads its own write: parents, ranks, epics and merges patched through the API and read back through `getIssue`, plus a refused write retried from the store and an interrupted action finished after a reload |
 | `e2e/judged-grant.e2e.ts` | the two grants it reads are written into the fake broker and the page is asserted against what the server lists back |
@@ -315,6 +316,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/progress.e2e.ts` | it asserts the progress the server computes over an issue's children before it opens a page |
 | `e2e/project.e2e.ts` | the reference closure is the server's graph walk |
 | `e2e/recipients-claim.e2e.ts` | claims and routes the server computes, with live card updates |
+| `e2e/record-page-inventory.e2e.ts` | it records what the page offered rather than reading this build: it drives the base's own nine-tab page from a worktree at the commit before the redesign and writes the fixture c-nothing-lost is read against |
 | `e2e/reference-cards.e2e.ts` | opens the spec's live editor and its margin thread |
 | `e2e/reference-titles.e2e.ts` | asserts drawn titles inside the live editor |
 | `e2e/references.e2e.ts` | the backlink index the server rebuilds after each write |

@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  Three reads the Dispatch issue page needs to draw an issue as one tree:
+
+  - `GET /api/v1/reference-targets?ref=…&ref=…` resolves many `dispatch://` references in one
+    request, answering each one's kind, the words a reader is shown for its target and whether
+    the target is gone, so a page draws every pointer chip without a request per chip. At most
+    256 references in one request, with an `ETag`; a reference that parses but names nothing is
+    answered as gone rather than refused.
+  - `GET /api/v1/issues/{key}/references` names the blocks citing each member (`via_blocks`), and
+    takes `own=1` to include the issue's own documents, which the closure leaves out by default.
+  - Each `IssueChild` of `GET /api/v1/issues/{key}` carries `blocked_by` and `claim`, the shapes
+    `Issue` already has, so a reader sees what blocks a child and who holds it.

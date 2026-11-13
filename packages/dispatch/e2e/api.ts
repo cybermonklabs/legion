@@ -406,6 +406,12 @@ export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/decisions`: the issue's decision records, each with whether it
+ *  waits for the reader's review and the Keep a person recorded. */
+export function getIssueDecisions(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
@@ -456,7 +462,8 @@ export function retractCheckResult(
 }
 
 /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
- *  document order, each with the results recorded against it. */
+ *  document order, each with every result recorded against it, newest first, and each result's
+ *  currency as the server computes it on the read. */
 export function getIssueResults(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/results", { params: { key: issue } }, options);
 }
@@ -614,8 +621,31 @@ export function createIssueArtifact(
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
 }
 
-/** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
- *  own `["artifacts", key]` read lists them, each with its role and its versions. */
+/** Uploads bytes as an issue artifact through the multipart form the file picker posts. The JSON
+ *  body `createIssueArtifact` sends carries text only, so an image can only be seeded this way,
+ *  and `request` sends JSON alone, so the form goes out as its own fetch. */
+export async function uploadIssueFile(
+  issue: string,
+  input: { bytes: Uint8Array<ArrayBuffer>; contentType: string; name: string },
+  login = "alice"
+): Promise<Result<"/api/v1/issues/{key}/artifacts", "post">> {
+  const form = new FormData();
+  form.append("name", input.name);
+  form.append("file", new Blob([input.bytes], { type: input.contentType }), input.name);
+  const response = await fetch(
+    new URL(routeUrl("/api/v1/issues/{key}/artifacts", { key: issue }), baseUrl),
+    { body: form, headers: await userHeaders(login), method: "POST" }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`upload ${input.name} to ${issue} failed: ${response.status} ${text}`);
+  }
+  return (await response.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
+}
+
+/** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the issue page's
+ *  Artifacts panel lists them from its own `["artifacts", key]` read (`ArtifactsTab.tsx`), each
+ *  with its role and its versions. */
 export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/artifacts", { params: { key: issue } }, options);
 }

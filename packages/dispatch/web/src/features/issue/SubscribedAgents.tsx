@@ -1,6 +1,7 @@
 import { type ReactNode, useState } from "react";
 
 import type { Subscriber } from "../../api/types";
+import { useTooltips } from "../../components/tooltips";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
@@ -25,6 +26,11 @@ export interface SubscribedAgentsProps {
  * That state is the registry's alone: the subscribers endpoint's `live` (`Subscriber.live`) is
  * a second snapshot taken at another time, and it knows only two states where the registry
  * knows three, so it is deliberately ignored and one agent never shows two states on one page.
+ *
+ * The session's own id is a tooltip on the surfaces that raise one, and nothing on a surface
+ * that does not (`components/tooltips.tsx`), as every other shared control here reads it: the
+ * issue page draws this section inside `NoTooltips`, because a reader on a phone or on the
+ * keyboard never sees a tooltip (dispatch://INFRA-1196 R21).
  */
 export function SubscribedAgents({
   onUnsubscribe,
@@ -33,6 +39,7 @@ export function SubscribedAgents({
 }: SubscribedAgentsProps): ReactNode {
   const [confirming, setConfirming] = useState<Subscriber | undefined>(undefined);
   const text = useAgentText();
+  const tooltips = useTooltips();
   const confirmingLabel =
     confirming === undefined ? "" : text.sessionText(confirming.session_id, confirming.title);
 
@@ -46,22 +53,26 @@ export function SubscribedAgents({
       <ul className="mt-2 flex flex-wrap gap-2">
         {subscribers.map((subscriber) => (
           <li className={sessionChipClassName} key={subscriber.session_id}>
-            <span title={subscriber.session_id}>
+            <span title={tooltips ? subscriber.session_id : undefined}>
               <AgentName sessionId={subscriber.session_id} storedTitle={subscriber.title} />
             </span>
             <Timestamp at={new Date(subscriber.last_seen).toISOString()} />
+            {/* Why Unsubscribe is refused, drawn rather than carried as the control's `title`:
+                a disabled control takes no focus and raises no tooltip on a phone, so the
+                reason reached nobody who could not already press it (R21, the panel draws this
+                section inside `NoTooltips`). The session's subscription is wider than this one
+                owner (`Subscriber.via`), and removing it would unsubscribe it from everything
+                that subscription covers; the line says that rather than drawing the topic. */}
             {subscriber.removable ? null : (
-              <span className="text-xs italic">via {subscriber.via}</span>
+              <span className="text-xs italic">
+                Its subscription covers other issues and documents too, so it cannot be unsubscribed
+                from this one alone.
+              </span>
             )}
             <button
               className={sessionRemoveButtonClassName}
               disabled={!subscriber.removable}
               onClick={() => setConfirming(subscriber)}
-              title={
-                subscriber.removable
-                  ? undefined
-                  : `Subscribed only via ${subscriber.via}, which also covers other issues and documents — cannot unsubscribe just this one`
-              }
               type="button"
             >
               Unsubscribe

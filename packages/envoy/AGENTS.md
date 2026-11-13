@@ -2482,7 +2482,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   — both always notify, like `child.status`.
   Issue-detail `children` rows are one recursive-CTE query (`issueChildrenStatement`, read by `scanIssueChildren`; the issue read queues it in its first batch and nothing else reads it, so there is no loader of its own):
   each direct child carries `subtree_done` / `subtree_total` (the child itself included, every status;
-  done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
+  done = `status='done'`), `active_at` (the subtree's newest `updated_at`), its own `external_links`, `blocked_by` (the keys it waits on, sorted, from one lateral over `issue_links` keyed by the child's own key, `[]` when it waits on nothing) and `claim` (`model.IssueClaim`: who holds the child and since when, the `claimed_by` / `claimed_at` of the child's own row, which the statement already reads, so it costs no join; `null` when nobody holds it), still ordered by key.
 
 - Every issue has a nullable `assignee`:
   the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person (`issues.assignee`, migration `0034`, indexed on open issues).

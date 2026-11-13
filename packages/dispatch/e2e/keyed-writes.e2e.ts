@@ -17,6 +17,7 @@ import {
   slowWrites,
   userHeaders,
 } from "./api";
+import { openIssueAddress } from "./issue-page";
 import {
   cutFirstAnswerBody,
   dropFirstAnswer,
@@ -261,9 +262,13 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
     // waiting out a backoff on a page timer the jump fires; the one that follows it is refused
     // before it goes out, so this count is the last.
     const spent = attempts.length;
+    // The page's word for the status, `Todo`, and not the token the write carries: the shell's
+    // indicator draws this line, but the issue page's own write hook composes it
+    // (`useIssueHeaderWrites.ts`'s `issueUpdateLabel`), and a word the page composes is the
+    // page's (dispatch://INFRA-1196 R21). Reworded on purpose from `set to todo`.
     await runClockUntil(
       page,
-      expect(indicator).toContainText(`Not saved: ${issue.key} set to todo`)
+      expect(indicator).toContainText(`Not saved: ${issue.key} set to Todo`)
     );
 
     await expect(indicator).toContainText(expiredRetryNote("saved"));
@@ -562,7 +567,7 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
     const answers = watchAnswers(page, "POST", path);
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await openIssueAddress(page, "artifacts");
     await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
       mimeType: "application/octet-stream",
@@ -645,7 +650,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     const attempts = await recordUploadAttempts(page, path);
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    await page.getByRole("tab", { name: "Artifacts" }).click();
+    await openIssueAddress(page, "artifacts");
     await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
       mimeType: "application/octet-stream",
@@ -809,8 +814,11 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
         status: 400,
       });
     });
+    // The nine tabs are five presets over one tree now (dispatch://INFRA-1196 R3), and the
+    // artifacts address is reached inside the page, as the tab it replaces was: a reload here
+    // would drop the kept write this row is about.
     const openArtifacts = async () => {
-      await page.getByRole("tab", { name: "Artifacts" }).click();
+      await openIssueAddress(page, "artifacts");
     };
     await page.goto(`/issues/${issue.key}`);
     await openArtifacts();

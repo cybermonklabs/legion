@@ -15,6 +15,13 @@ import {
   getArtifactText,
 } from "./api";
 import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
+import {
+  openIssueAddress,
+  pickPreset,
+  presetChooser,
+  presetTablist,
+  presetTabs,
+} from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 
@@ -43,7 +50,7 @@ async function openArtifacts(page: Page, isPhone: boolean) {
       await reviewPanel.click();
     }
   }
-  await page.getByRole("tab", { name: "Artifacts" }).click();
+  await openIssueAddress(page, "artifacts");
 }
 
 // Choosing a file only stages it; the row then shows a Summary field plus a confirming
@@ -74,7 +81,7 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   await createAsk(issue.key, { question: "Can this ship?" });
 
   await page.goto(`/issues/${issue.key}`);
-  await page.getByRole("tab", { name: "Spec" }).click();
+  await pickPreset(page, "Spec");
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openArtifacts(page, testInfo.project.name === "iphone");
@@ -128,7 +135,7 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   const notes = page.getByTestId("artifact-notes-md");
   await expect(notes).toContainText("notes.md");
   await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-  await page.getByRole("tab", { name: "Spec" }).click();
+  await pickPreset(page, "Spec");
   await expect(documentEditor(page)).toContainText("The original document.");
 
   await createComment(issue.key, {
@@ -271,83 +278,39 @@ test("the artifacts tab filter narrows rows by name and kind", async ({ page }, 
   await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
 });
 
-// SLOW(>=2s): a real upload the live feed counts into the tab, and the keyboard tour of five
-// tabs with each tab's box measured, at 390 px and back.
-test("an uploaded document is linked from the Activity tab and counted on its own tab", async ({
+// SLOW(>=2s): a real upload the Activity list links, and the keyboard tour of the five presets
+// with each tab's box measured, at 1440 px and at 390 px.
+//
+// The nine tabs are gone (dispatch://INFRA-1196 R3): the row is five presets, and how many
+// artifacts an issue carries is the node menu's, not a tab's badge, so the `Artifacts (N)`
+// assertions this test carried are retired with it - what they proved, that the live feed
+// refreshes the page's own counts without a reload, is proved here on the Activity list.
+//
+// It is not tagged `@phone`: the row sets 390 px itself, so the iphone project would run the
+// same assertions a second time (#2866, no browser row runs twice).
+test("an uploaded document is linked from the Activity list and the presets fit every width", async ({
   page,
 }, testInfo) => {
   await createProject({ key: "OPS", name: "Ops" });
   const issue = await createIssue({ project: "OPS", title: "Customer update" });
-  await page.goto(`/issues/${issue.key}/conversation`);
-  // Every issue has its own document, so the tab opens counting one.
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 1" })).toBeVisible();
+  await page.goto(`/issues/${issue.key}/activity`);
+
+  // The list is drawn before the upload, so the line below is one the live feed brought and
+  // not one the first read already held: without this the upload can land before that read
+  // answers, and the row would pass with the feed disconnected. This is what the retired
+  // `Artifacts 1` badge reading proved - that the page's own counts move without a reload.
+  const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
+  await expect(rows.filter({ hasText: "created the issue" })).toHaveCount(1);
 
   const name = "cu-update-2026-09-15.md";
+  const added = rows.filter({ hasText: `added ${name}` });
+  await expect(added).toHaveCount(0);
   const upload = await createIssueArtifact(issue.key, {
     content: "# Draft\n\nHi team, here is this week's update.\n",
     name,
   });
 
-  // The live event feed refreshes the issue and its tabs: no reload.
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
-  const tablist = page.getByRole("tablist", { name: "Issue detail" });
-  const tabs = tablist.getByRole("tab");
-  await expect(tabs).toHaveCount(9);
-  const insideTablist = async (tab: Locator) => {
-    const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
-    expect(listBox).not.toBeNull();
-    expect(box).not.toBeNull();
-    expect(box?.height).toBeLessThanOrEqual(48);
-    expect(box?.x).toBeGreaterThanOrEqual(listBox?.x ?? 0);
-    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
-      (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
-    );
-  };
-  // Nine tabs, one of them counted, no longer fit a 390 px viewport: the tablist scrolls
-  // sideways there (as it already did at 360 px). No label is shortened to buy the room, every
-  // tab is reachable from the keyboard, each is scrolled fully into view as it takes focus, and
-  // each keeps its 44 px touch target.
-  const viewport = page.viewportSize();
-  await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
-  await expect(tabs).toHaveText([
-    "Spec",
-    "Verification",
-    "Plan",
-    "Conversation",
-    "Children",
-    "Artifacts 2",
-    "Activity",
-    "Decisions",
-    "Collaborators",
-  ]);
-  expect(await tablist.evaluate((node) => node.scrollWidth > node.clientWidth + 0.5)).toBe(true);
-  await page.getByRole("tab", { name: "Spec" }).focus();
-  for (const label of [
-    "Verification",
-    "Plan",
-    "Conversation",
-    "Children",
-    "Artifacts 2",
-    "Activity",
-    "Decisions",
-    "Collaborators",
-  ] as const) {
-    await page.keyboard.press("ArrowRight");
-    const tab = page.getByRole("tab", { exact: true, name: label });
-    await expect(tab).toBeFocused();
-    await insideTablist(tab);
-    expect((await tab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
-  }
-  await page.keyboard.press("Home");
-  const specTab = page.getByRole("tab", { name: "Spec" });
-  await expect(specTab).toBeFocused();
-  await insideTablist(specTab);
-  expect((await specTab.boundingBox())?.height ?? 0).toBeGreaterThanOrEqual(44);
-  await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
-
-  await page.getByRole("tab", { name: "Activity" }).click();
-  const rows = page.getByRole("list", { name: "Issue activity" }).getByRole("listitem");
-  const added = rows.filter({ hasText: `added ${name}` });
+  // The live event feed puts the upload on the open Activity list without a reload.
   await expect(added).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("activity-added-artifact.png") });
 
@@ -355,18 +318,85 @@ test("an uploaded document is linked from the Activity tab and counted on its ow
   await createIssueArtifact(issue.key, { content: "# Draft\n\nRevised.\n", name });
   const saved = rows.filter({ hasText: `saved ${name} v2` });
   await expect(saved).toHaveCount(1);
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
   await expect(saved.getByRole("link", { name })).toHaveAttribute(
     "href",
     `/issues/${issue.key}/artifacts/${upload.artifact.slug}?v=2`
   );
 
+  const viewport = page.viewportSize();
+  await page.setViewportSize({ height: viewport?.height ?? 800, width: 1440 });
+  const tablist = presetTablist(page);
+  const tabs = presetTabs(page);
+  await expect(tabs).toHaveCount(5);
+  const insideTablist = async (tab: Locator) => {
+    const [listBox, box] = await Promise.all([tablist.boundingBox(), tab.boundingBox()]);
+    expect(listBox).not.toBeNull();
+    expect(box).not.toBeNull();
+    expect(box?.x).toBeGreaterThanOrEqual(listBox?.x ?? 0);
+    expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(
+      (listBox?.x ?? 0) + (listBox?.width ?? 0) + 0.5
+    );
+  };
+  // What the row promises at 1440 px, which is a pointer's width: a tab of the page's own
+  // pointer height and no taller than the row it shares. The presets declare
+  // `min-h-11 md:min-h-9` (`web/src/features/issue/IssuePresets.tsx`), the idiom the whole app
+  // writes for a control - 44 px where a finger reaches it, 36 px from `md` where a pointer
+  // does (`web/src/components/Tabs.tsx`, `CopyButton.tsx`) - so 36 px is what it is held to
+  // here. The 44 px floor is a touch rule and is read below at the width a finger is what
+  // reaches the presets: these five tabs are not drawn there at all, because at 1024 px and
+  // below the row is one control instead (`ZOOMED_TREE_QUERY`), and that control carries the
+  // floor.
+  const fitsTheRow = async (tab: Locator, label: string) => {
+    const height = (await tab.boundingBox())?.height ?? 0;
+    expect(
+      height,
+      `the ${label} tab is ${height} px tall, under the 36 px a pointer control is drawn at`
+    ).toBeGreaterThanOrEqual(36);
+    expect(
+      height,
+      `the ${label} tab is ${height} px tall, taller than the row of five`
+    ).toBeLessThanOrEqual(48);
+  };
+  // Every preset is reachable from the keyboard, each is inside the row as it takes focus, and
+  // each is drawn at the height the row gives it.
+  await page.getByRole("tab", { exact: true, name: "Tree" }).focus();
+  for (const label of ["Decisions", "Checks", "Spec", "Plan"] as const) {
+    await page.keyboard.press("ArrowRight");
+    const tab = page.getByRole("tab", { exact: true, name: label });
+    await expect(tab).toBeFocused();
+    await insideTablist(tab);
+    await fitsTheRow(tab, label);
+  }
+  await page.keyboard.press("Home");
+  const treeTab = page.getByRole("tab", { exact: true, name: "Tree" });
+  await expect(treeTab).toBeFocused();
+  await insideTablist(treeTab);
+  await fitsTheRow(treeTab, "Tree");
+
+  // At 390 px the row is one control naming the preset the page is on, which opens the five.
+  // This is the width a finger is what reaches the presets, so this is where the 44 px touch
+  // target is read: the one control a reader presses there carries it, and the row fails if it
+  // ever loses it.
+  await page.setViewportSize({ height: viewport?.height ?? 800, width: 390 });
+  await expect(tabs).toHaveCount(0);
+  const chooser = presetChooser(page);
+  await expect(chooser).toBeVisible();
+  const chooserHeight = (await chooser.boundingBox())?.height ?? 0;
+  expect(
+    chooserHeight,
+    `the preset control is ${chooserHeight} px tall at 390 px, under the 44 px a touch needs`
+  ).toBeGreaterThanOrEqual(44);
+  await chooser.click();
+  await expect(page.getByRole("menu").getByRole("menuitem")).toHaveCount(5);
+  await page.keyboard.press("Escape");
+  await page.setViewportSize({ height: viewport?.height ?? 800, width: viewport?.width ?? 1280 });
+
   // The upload is an Activity line and nothing else: the Conversation draws no row for it.
-  await page.getByRole("tab", { name: "Conversation" }).click();
+  await page.goto(`/issues/${issue.key}/conversation`);
   await expect(
     page.getByRole("list", { name: "Conversation turns" }).getByText(`added ${name}`)
   ).toHaveCount(0);
-  await page.getByRole("tab", { name: "Activity" }).click();
+  await page.goto(`/issues/${issue.key}/activity`);
 
   await added.getByRole("link", { name }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/${upload.artifact.slug}`);
@@ -387,7 +417,6 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
   await page.goto(`/issues/${issue.key}/artifacts`);
   const rows = page.locator("[data-testid^='artifact-']");
   await expect(rows).toHaveCount(2);
-  await expect(page.getByRole("tab", { exact: true, name: "Artifacts 2" })).toBeVisible();
 
   // Every row shows its whole detail line: it wraps where it must rather than truncating on a
   // row with room beside it.

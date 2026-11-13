@@ -35,12 +35,14 @@ export function ArtifactRoutePanel({
   toolbar: DocumentToolbar | undefined;
 }): ReactNode {
   return (
-    <div
+    // A named panel and no `tabpanel`: the issue page has no tablist for one to belong to, and
+    // the name this carried was the id of a tab control nothing renders any more, which left
+    // the panel announced with no name at all (dispatch://INFRA-1196 R21).
+    <section
       aria-hidden={!active}
-      aria-labelledby="issue-artifacts-tab"
+      aria-label="Artifacts"
       hidden={!active}
       id="issue-artifacts-panel"
-      role="tabpanel"
     >
       {mounted ? (
         route.kind === "artifacts" ? (
@@ -81,6 +83,6 @@ export function ArtifactRoutePanel({
           )
         ) : null
       ) : null}
-    </div>
+    </section>
   );
 }

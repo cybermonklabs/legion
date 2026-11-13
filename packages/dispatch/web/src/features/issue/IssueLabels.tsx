@@ -11,6 +11,8 @@ import {
   surfaceMutedStrongBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
+import { CONTROL_LABELS } from "./page-words";
 
 const maxLabelLength = 40;
 const maxLabels = 20;
@@ -139,7 +141,9 @@ export function IssueLabels({
       <div
         className={
           variant === "rail"
-            ? "relative flex shrink-0 flex-nowrap items-center gap-1"
+            ? // The identity block's row three wraps, so the labels wrap inside it: eight long
+              // labels take a second line at 390 px rather than a sideways scroll (R11, R17).
+              "relative flex min-w-0 flex-wrap items-center gap-1"
             : "relative mt-2 flex flex-wrap items-center gap-2"
         }
         data-testid="issue-labels"
@@ -148,6 +152,7 @@ export function IssueLabels({
           <span
             className={`inline-flex min-h-11 shrink-0 items-center rounded-full px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`}
             key={label}
+            {...authorText}
           >
             {label}
           </span>
@@ -173,7 +178,13 @@ export function IssueLabels({
           triggerAriaLabel="Edit labels"
           triggerClassName={`min-h-11 shrink-0 rounded-lg border px-3 py-1 text-xs font-medium whitespace-nowrap sm:min-h-7 sm:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         >
-          {saving ? "Saving labels…" : displayLabels.length === 0 ? "Labels" : "+"}
+          <span {...pageChrome}>
+            {saving
+              ? CONTROL_LABELS.saving_labels
+              : displayLabels.length === 0
+                ? PROPERTY_LABELS.labels
+                : "+"}
+          </span>
         </MultiSelect>
       </div>
       {/* A refused save shows in the shell's pending-writes indicator, with every other write's

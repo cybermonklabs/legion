@@ -47,15 +47,15 @@ After approval the daemon starts the planner, then the implementer, which opens 
 then the tester and the reviewer. The issue's status follows: `in_progress`, `testing`,
 `needs_review`, then `retro` once the reviewer has approved and the architect has accepted.
 
-![The issue after the phases ran: Retro in its header beside the pull request link, #42, and its activity newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.](/legion/media/legion/status-events.png)
+![The issue after the phases ran: Retro in its identity block, the pull request linked as #42 in the panel's Development section, and its activity under the tree, newest first: the Legion daemon's status updates and the architect's acceptance.](/legion/media/legion/status-events.png)
 
 ## 5. The pull request
 
 The pull request's body follows Legion's template: the outcome, why, the change, how it was
 proven, what is not proven, and after the merge the production check your project asks for. Legion's reviewer approves it
-as the review App. In Dispatch, the issue's header links the pull request.
+as the review App. In Dispatch, the issue page's Development section links the pull request.
 
-![The issue header with the pull request Legion opened, linked as #42.](/legion/media/legion/pull-request.png)
+![The issue page's Development section, where the pull request Legion opened is linked as #42, beside the repository it is in.](/legion/media/legion/pull-request.png)
 
 ## 6. The acceptance
 

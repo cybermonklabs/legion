@@ -71,15 +71,23 @@ const issue: IssueDetails = {
 };
 
 const originalApi = {
+  getArtifactBlocks: api.getArtifactBlocks,
+  getArtifactText: api.getArtifactText,
   getAsk: api.getAsk,
   getInbox: api.getInbox,
   getIssue: api.getIssue,
+  getIssueCoverage: api.getIssueCoverage,
+  getIssueDecisions: api.getIssueDecisions,
+  getIssueReferences: api.getIssueReferences,
+  getIssueResults: api.getIssueResults,
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
+  getReferenceTargets: api.getReferenceTargets,
   listAgents: api.listAgents,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
+  listIssueMessages: api.listIssueMessages,
   listIssues: api.listIssues,
   listMyReplies: api.listMyReplies,
   listProjectArchitectureSources: api.listProjectArchitectureSources,
@@ -163,11 +171,31 @@ function renderShellAt(
   ];
   api.listIssueAsks = async () => [];
   api.listComments = async () => [];
+  api.listIssueMessages = async () => [];
   api.listAgents = async () => listedAgents;
   // The issue page under the shell reads these of its own; no test here asserts them.
   api.getIssueSubscribers = async () => [];
   api.listRepoProjects = async () => [];
   api.listProjectArchitectureSources = async () => [];
+  // The one tree the issue page's body is draws on every address (dispatch://INFRA-1196 R1),
+  // and reads these for it.
+  api.getIssueCoverage = async (key) => ({
+    gaps: [],
+    has_plan: false,
+    issue: key,
+    requirements: [],
+    spec_artifact_id: "",
+  });
+  api.getIssueDecisions = async () => ({ decisions: [], document: null, open_questions: [] });
+  api.getIssueResults = async (key) => ({
+    checks: [],
+    issue: key,
+    verification_artifact_id: "",
+  });
+  api.getIssueReferences = async () => ({ members: [], truncated: false });
+  api.getReferenceTargets = async () => ({ targets: [] });
+  api.getArtifactBlocks = async () => [];
+  api.getArtifactText = async () => ({ markdown: "", token: "", version: null });
   // Each ask card refreshes its own thread; the row the Inbox listed carries the one Dispatch
   // would answer with.
   api.getAsk = async (id) => {

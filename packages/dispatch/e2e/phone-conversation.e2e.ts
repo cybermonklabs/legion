@@ -69,6 +69,13 @@ function commentTurn(page: Page, commentId: string): Locator {
   return page.locator(`[data-turn="comment:${commentId}"]`);
 }
 
+/** The conversation's turns. An entry of the issue is drawn in the page's tree as well as in
+ *  the conversation (dispatch://INFRA-1196 R1, R12), so a turn's text names two elements on the
+ *  page; these rows read the conversation, so they name its list. */
+function turns(page: Page): Locator {
+  return page.getByRole("list", { name: "Conversation turns" });
+}
+
 function threadView(page: Page): Locator {
   return page.getByRole("dialog", { name: "Thread" });
 }
@@ -710,7 +717,7 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
     await page.clock.install();
     await page.setViewportSize(phone);
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Older turn 14")).toBeVisible();
+    await expect(turns(page).getByText("Older turn 14")).toBeVisible();
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
     const jump = page.getByTestId("jump-to-latest");
@@ -733,7 +740,9 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
     expect(send.posts()).toBe(1);
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
     await page.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
-    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    // Reopen sits behind the identity block's actions control now (dispatch://INFRA-1196 R11);
+    // what says the page has taken the close in is the line the block draws for it.
+    await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
     const posted = answeredPost(page, `/api/v1/issues/${issue.key}/comments`, 201);
     send.release();
     await posted;
@@ -773,7 +782,7 @@ test("on a phone, the shell's status corner covers none of Jump to latest @phone
     const network = await pageNetwork(page);
     await page.setViewportSize(phone);
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Older turn 14")).toBeVisible();
+    await expect(turns(page).getByText("Older turn 14")).toBeVisible();
     const jump = page.getByTestId("jump-to-latest");
     const pill = page.getByTestId("connection-pill");
     const pendingWrites = page.getByRole("region", { name: "Pending changes" });
@@ -832,7 +841,7 @@ test("on a phone, Jump to latest covers none of the docked composer while the st
       await route.close({ code: 1006, reason: "the network is down" });
     });
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Older turn 14")).toBeVisible();
+    await expect(turns(page).getByText("Older turn 14")).toBeVisible();
     const pill = page.getByTestId("connection-pill");
     await expect(pill).toHaveText("Reconnecting…");
     const form = page.getByRole("form", { name: "Comment composer" });
@@ -1025,7 +1034,7 @@ test("on a phone, Jump to latest stays off a thread opened over the Conversation
     const page = await alice.newPage();
     await page.setViewportSize(phone);
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Newer turn 14")).toBeVisible();
+    await expect(turns(page).getByText("Newer turn 14")).toBeVisible();
     const jump = page.getByTestId("jump-to-latest");
     await scrollToOldest(page);
     await expect(jump).toBeVisible();
@@ -1265,15 +1274,16 @@ test("on a phone, the newest conversation's read mark moves nothing under a pres
  *  scrolls, lets two frames pass so the pill's own scroll listener and the render React queues
  *  for it have both landed, and records where a tap at the centre of a control does not reach
  *  it as it should: a tab must take its own tap, and no control may lose its tap to `Jump to
- *  latest`. Every control above the turns is tapped - the issue's header, its tabs and the All
- *  / Open / Closed filter - and inside the turns the two that decide a suggestion, Accept and
- *  Reject, which are what the pill took while it sat at the head of the list. `end` is the
- *  bottom of the newest card, so that card is the one card the band carries, and it is swept
- *  from where it lands under the controls up off the top of the screen: no card crosses the
- *  foot band here, where the pill does cover a card's Accept and Reject for as long as the
- *  card is passing. The pill floats at the foot now, where the list scrolls behind it as it
- *  does behind any floating control, so a turn's quiet actions - Copy reference, Reply, Pin -
- *  pass under it and are not tapped.
+ *  latest`. Every control above the turns is tapped - the issue's head, its presets, its panel
+ *  and the All / Open / Closed filter - and inside the turns the two that decide a suggestion,
+ *  Accept and Reject, which are what the pill took while it sat at the head of the list. `end`
+ *  is the bottom of the newest card, so that card is the one card the band carries, and it is
+ *  swept from where it lands up off the top of the screen.
+ *  Nothing is tapped in the pill's own foot band - from the pill's top edge to the foot of the
+ *  screen - because the pill covers whatever is passing under it there, a card's Accept and
+ *  Reject as well as its Reply and Pin, and that cover is accepted: it lasts no longer than
+ *  the passage. Where the pill sits is read at every step instead, since the band is that
+ *  cover only while the pill is at the foot.
  *  Controls whose centre is off screen, or clipped out of view by a scrolling ancestor (the
  *  issue tablist scrolls sideways at this width, so a tab past its edge is not on screen to tap
  *  at all), are not tapped either. A step away from where the page settled that draws no pill is
@@ -1304,6 +1314,23 @@ async function tapsLostAcrossBand(
         lost.push(`scrolled to ${top}: no Jump to latest`);
         continue;
       }
+      // The band the pill owns: from its top edge down to the foot of the screen. The issue
+      // page's own column scrolls through that band - its identity block, its panel sections
+      // and the filter above the turns as well as the cards - and what is passing it is
+      // covered for as long as the passage lasts, which is the cover the Conversation accepts
+      // (dispatch://INFRA-1196 R12 draws the conversation under the page on a phone, so the
+      // page passes the foot the way main's cards do). That is the cover only where the pill
+      // is at the foot: a pill at the head of the list, over the content column, is the
+      // failure this row is for, so where it sits is read at every step rather than trusted.
+      const pillRect = pill?.getBoundingClientRect();
+      const footBand =
+        pillRect === undefined || pillRect.height === 0 ? window.innerHeight : pillRect.top;
+      if (footBand < window.innerHeight / 2) {
+        lost.push(
+          `scrolled to ${top}: Jump to latest sits ${Math.round(footBand)} from the top, not at the foot`
+        );
+        continue;
+      }
       const turnsTopNow = turns.getBoundingClientRect().top;
       for (const control of document.querySelectorAll<HTMLElement>(
         '[role="tab"], button, a[href], input'
@@ -1315,6 +1342,8 @@ async function tapsLostAcrossBand(
         const decides = label === "Accept suggestion" || label === "Reject suggestion";
         if (pill?.contains(control) || box.width === 0) continue;
         if (box.bottom > turnsTopNow && !decides) continue;
+        // In the foot band, where the pill covers whatever is passing under it.
+        if (y >= footBand) continue;
         if (x < 0 || x >= window.innerWidth || y < 0 || y >= window.innerHeight) continue;
         let clipped = false;
         for (
@@ -1342,16 +1371,17 @@ async function tapsLostAcrossBand(
   }, band);
 }
 
-// On a phone the issue's header, its tabs and the filters sit above the turns, the newest turn
-// just under them, so a reader scrolling back up passes a band where they are on screen while
-// `Jump to latest` shows. The pill is fixed at the foot there, above the docked composer, so
-// every control above the turns keeps its own tap through that band, and so does the newest
-// card's Accept and Reject, the pair the pill took for itself while it sat at the head of the
-// list. The band ends at that card's bottom, so the decisions this row checks are the newest
-// card's above the foot band, never a card's crossing it: a card scrolled through the foot
-// passes under the pill and loses those two taps for as long as it is there, which is accepted
-// - scrolling the card on, or the pill's own tap, which hides the pill, clears it, as it does
-// for that card's Reply and Pin.
+// On a phone the whole issue page sits above the turns - its head, its presets, its panel and
+// the All / Open / Closed filter, with the conversation drawn under the page in the page's own
+// column (dispatch://INFRA-1196 R12) - so a reader scrolling back up passes a band where they
+// are on screen while `Jump to latest` shows. The pill is fixed at the foot there, above the
+// docked composer, so every control keeps its own tap through that band, and so does the
+// newest card's Accept and Reject, the pair the pill took for itself while it sat at the head
+// of the list. The one place a tap is the pill's is the foot band it owns: whatever is passing
+// under it there - a card's Accept and Reject as much as its Reply and Pin, and the page's own
+// rows, since the page passes that foot too - is covered for as long as the passage lasts,
+// which is accepted: scrolling it on, or the pill's own tap, which hides the pill, clears it.
+// So nothing in that band is tapped, and where the pill sits is read at every step instead.
 // SLOW(>=2s): the band is swept 4 px at a time, a frame per step, and every control above the
 // turns, with the suggestion's decisions under it, is hit-tested at each one.
 test("on a phone, Jump to latest covers none of the issue's tabs, the controls above the turns, or the newest card's Accept and Reject above the foot band @phone", async ({
@@ -1379,16 +1409,15 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     const page = await alice.newPage();
     await page.setViewportSize(phone);
     await page.goto(`/issues/${issue.key}/conversation`);
-    await expect(page.getByText("Older turn 14")).toBeVisible();
+    await expect(turns(page).getByText("Older turn 14")).toBeVisible();
     const jump = page.getByTestId("jump-to-latest");
-    const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(page.getByRole("button", { name: "Accept suggestion" })).toBeVisible();
     // Where the page settled on the latest turn, the one place in the band with no pill.
     const settled = await page.evaluate(() => window.scrollY);
     // The band ends where the newest card has gone off the top of the screen - its bottom is
     // the scroll position the sweep stops at - so every control on that card is hit-tested on
     // its way up, not only the header row the card opens with.
-    const end = await turns.evaluate((list) => {
+    const end = await turns(page).evaluate((list) => {
       const first = list.firstElementChild;
       if (first === null) throw new Error("expected a first turn");
       const box = first.getBoundingClientRect();

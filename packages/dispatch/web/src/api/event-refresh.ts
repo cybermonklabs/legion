@@ -24,6 +24,7 @@ import type {
   EventType,
   GraphReferences,
   InboxRow,
+  IssueDetails,
   IssueSummary,
   MyRepliesResponse,
   MyReplyRow,
@@ -182,6 +183,27 @@ function referencePanels(matches: (references: GraphReferences) => boolean): Ref
 /** The backlink panel of exactly one reference, as `ReferencedBy` keys it. */
 function referencePanel(reference: string): RefreshTarget {
   return { exact: true, queryKey: ["references", "to", reference] };
+}
+
+/**
+ * Every loaded issue detail that draws who holds `key`: the issue's own, and the detail of an
+ * issue whose children section lists it (`IssueChildren.tsx` draws each child's holder). A key
+ * of more than two segments is one of the reads hanging under a detail's - the coverage, the
+ * results, the collaborators, the references - and none of them says who holds anything.
+ *
+ * A read holding nothing yet is accepted: there are no children to tell by, and a query with no
+ * data is marked stale and fetched by whatever mounts it.
+ */
+function issueHolderDetails(key: string): RefreshTarget {
+  return {
+    queryKey: ["issue"],
+    when: (data, query) => {
+      if (query.queryKey.length !== 2) return false;
+      if (query.queryKey[1] === key) return true;
+      const detail = data as Pick<IssueDetails, "children"> | undefined;
+      return detail === undefined || (detail.children ?? []).some((child) => child.key === key);
+    },
+  };
 }
 
 // The document an ask or comment event touches: a block ask names the document that holds its
@@ -509,6 +531,18 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
 }
 
 /**
+ * The batched read a page's names come from (`referenceTargetsQuery`): the words shown for every
+ * `dispatch://` address one page holds - an issue's title, a document's name, a block's excerpt,
+ * an ask's question, a comment's or a message's first words - in one answer. Its key is the set
+ * of addresses it asked for and names no issue, so there is no narrower target than the prefix:
+ * a retitled issue, an edited block or a reworded ask moves the words of a page whose addresses
+ * reach it, whichever issue the event is on. One read of one open page answers it, the scheduler
+ * asks it at most once a second, and the route answers an unchanged set `304` from its ETag
+ * (`reference_targets.go`), so the prefix costs a conditional request rather than a payload.
+ */
+const EVERY_REFERENCE_NAME: RefreshTarget = { queryKey: ["reference-targets"] };
+
+/**
  * What an `issue.created`, `issue.updated` or `issue.closed` of `key` refreshes beyond what every
  * event of the issue does.
  */
@@ -695,6 +729,11 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
+  // A version, an ask or a comment of a document outside any issue can be what a page's chip
+  // names, and the words that chip draws come from the batched name read.
+  if (changesReferenceGraph(event)) {
+    targets.push(EVERY_REFERENCE_NAME);
+  }
   // A reference to the document shows its name, kind and latest version. A correction moves the
   // name it shows. A new document can be the one a reference that found nothing named (no data
   // to test), so it refreshes those too.
@@ -854,7 +893,12 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push({ queryKey: myRepliesKey });
   }
   if (changesReferenceGraph(event)) {
-    targets.push({ exact: true, queryKey: ["issue", key, "references"] });
+    // By prefix, not exactly: the References tab reads `["issue", key, "references"]` and the
+    // issue page's tree reads the issue's own closure under `["issue", key, "references", "own"]`
+    // (`useIssueTree.ts`), and a version that cites a document moves both. Nothing else hangs
+    // under this prefix, so the one rule holds whatever the next reader of the closure keys on.
+    targets.push({ queryKey: ["issue", key, "references"] });
+    targets.push(EVERY_REFERENCE_NAME);
   }
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
@@ -880,15 +924,23 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push(...issueWriteTargets(event, key, project));
     return targets;
   }
-  if (
-    event.type === "issue.claimed" ||
-    event.type === "issue.released" ||
-    event.type === "issue.deployed"
-  ) {
+  if (event.type === "issue.claimed" || event.type === "issue.released") {
     // A claim changes who holds the issue, and its holder is a collaborator from then on: the
     // detail, the log, the project lists that render the claim, and the collaborators the
-    // branch above named. No rollup, ask count or component attachment moves with it. A deploy
-    // is a line in the issue's log and nothing the lists or rollups read.
+    // branch above named. No rollup, ask count or component attachment moves with it.
+    //
+    // Every loaded detail that draws this holder, not this issue's alone: an ancestor's children
+    // section draws each child's holder (`IssueChildren.tsx`), and the claim payload names no
+    // ancestors (`IssueClaimEventPayload`). So the prefix is every issue read and the check is
+    // what narrows it - the issue's own detail, and the detail of an issue whose children hold
+    // it - rather than every read hanging under `["issue", key]`: the references, the coverage,
+    // the results and the collaborators of every loaded issue hang there too, and a claim moves
+    // none of them.
+    targets.push(issueHolderDetails(key));
+    return targets;
+  }
+  if (event.type === "issue.deployed") {
+    // A deploy is a line in the issue's log and nothing the lists or rollups read.
     return targets;
   }
   if (event.type === "artifact.human_edited") {
@@ -1129,7 +1181,9 @@ function changedReferenceTargets(event: DispatchEvent): RefreshTarget[] {
     if (target.kind === "issue") {
       targets.push(
         { exact: true, queryKey: ["issue", target.id] },
-        { exact: true, queryKey: ["issue", target.id, "references"] },
+        // By prefix: the References tab's read and the issue page's own closure
+        // (`["issue", key, "references", "own"]`) both hold the edges this target just lost.
+        { queryKey: ["issue", target.id, "references"] },
         referencePanel(buildDispatchReference({ key: target.id, kind: "issue" }))
       );
       continue;
