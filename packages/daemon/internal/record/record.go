@@ -660,7 +660,7 @@ type PullRequest struct {
 	// reader's own clock at the moment GitHub's answer was in hand, whatever that answer was
 	// (daemon.readIssuePullRequest). A read that only confirms what is already recorded moves it
 	// exactly as one that changes something does: it is the age of the knowledge, not the age of
-	// the last change to it, and that is what tells a head still being read from one nothing has
+	// the last change to it, and that is what tells a head read a minute ago from one nothing has
 	// read for a day. The zero time means no read has ever run, as MergeState's "" does. It is
 	// cleared with MergeState when the head moves (classify's decisions), because it is then the
 	// time of a read about the head before this one.

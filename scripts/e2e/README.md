@@ -261,7 +261,7 @@ Each item below names a script, then what it proves.
 
   a reader of the state can tell a head that stopped from a head that is moving, driven through the whole daemon `legion start` boots, over a PostgreSQL the caller names and a `nats-server` of the run's own, with CI's settlements, the reviews, the push, the synchronize and the pushes onto the base as GitHub envelopes and every assertion a read of `GET /legion/v1/state`:
   an approved head GitHub answers `blocked` for carries a `mergeWait` object naming the head, the state, when it was read, when GitHub last moved the pull request, the head's own concluded check runs and the head and state the architect and the reviewer were told of;
-  a read that only confirms that answer moves `stateReadAt` and nothing else, which is what tells a head read on every pass from one nothing has read for a day;
+  a read that only confirms that answer moves `stateReadAt` and nothing else, which is what tells a head read a minute ago from one nothing has read for a day;
   a read that answers `behind` moves the state and the stamp together;
   a push that moves the head takes the object away with the approval, and the reviewer's approval of the new head brings it back on that head, with no `stateReadAt` until a read answers there and the new head's own check runs counted;
   an issue whose round waits on nothing and an issue whose pull request the record does not hold open carry no `mergeWait` key at all;

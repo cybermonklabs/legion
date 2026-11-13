@@ -11,7 +11,7 @@
 // `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The step the proof exists for is the second: a read that only confirms the state already
-// recorded still moves `stateReadAt`, so a head read on every pass reads differently from one
+// recorded still moves `stateReadAt`, so a head read a minute ago reads differently from one
 // nothing has read for a day. A daemon whose confirming read applied nothing would leave the two
 // one picture, which is what the proof's control (the early return in applyMergeability put back)
 // shows by failing at that step.
@@ -300,7 +300,7 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 // This is the sentence the proof exists for, and the read is driven by a fact that moves nothing
 // else for that reason: the head stands, the round stands, GitHub's answer stands and the base has
 // not moved under the head, which is the read a daemon that applied only changing answers would
-// drop. A head read on every pass would then be indistinguishable from one nothing had read for a
+// drop. A head read a minute ago would then be indistinguishable from one nothing had read for a
 // day (dispatch://INFRA-3027).
 //
 // A moved stamp alone would not say which read moved it: a read step 1 asked for can reach the

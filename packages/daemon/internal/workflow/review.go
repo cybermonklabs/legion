@@ -86,8 +86,8 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // The read time the fact carries (intake.PullRequestMergeability.ReadAt) is what
 // record.PullRequest.StateReadAt is written from, and it is the one thing a read that confirms
 // what is recorded still moves: the row is written for it alone. A fact that carries none - every
-// one minted by something that did not read GitHub, which twelve test files do - writes no stamp
-// and erases none, so the recorded one stands as the last real read left it.
+// one minted by something that did not read GitHub, as a test's PullRequestMergeability is -
+// writes no stamp and erases none, so the recorded one stands as the last real read left it.
 //
 // Whatever the read decides, it is also the judgement the conflict-round exemption is read from
 // (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's

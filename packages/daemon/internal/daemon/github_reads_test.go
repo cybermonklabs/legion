@@ -227,7 +227,7 @@ func TestThePerIssueReadCatchesAHeadThatStartsConflictingWithItsBase(t *testing.
 //
 // It records when that answer was in hand with it (record.PullRequest.StateReadAt), from the
 // reader's own clock, and the next read moves the stamp although it answers the very same state:
-// what the column records is the read, so a head read on every pass reads differently from one
+// what the column records is the read, so a head read a minute ago reads differently from one
 // nothing has read for a day (applyMergeability).
 func TestThePerIssueReadRecordsGitHubsMergeStateForTheHead(t *testing.T) {
 	for _, tc := range []struct {

@@ -5,11 +5,13 @@
 -- because what the column records is the read, not the change.
 --
 -- The row carries GitHub's merge state for the head (merge_state, 20261029120200) and nothing of
--- when it was read, so a head the daemon reads every pass and finds 'blocked' each time cannot be
--- told from one nothing has read for a day: both rows hold the same state and the same silence
--- about its age. The stamp is what tells them apart, and it is what a reader of the daemon's
--- state looks at to see whether the recorded state is still being refreshed or has simply stopped
--- being read.
+-- when it was read, so a head the daemon read a minute ago and found 'blocked' cannot be told from
+-- one nothing has read for a day: both rows hold the same state and the same silence about its age.
+-- The stamp is what tells them apart, and it is what a reader of the daemon's state looks at to see
+-- how old the recorded state is. The daemon makes no periodic read: a head is read again only at
+-- the daemon's start, after a handoff, and on the merge-state ladder, which a review round or a
+-- push onto the base asks for (daemon's issue_reads.go and merge_state_reads.go), so the stamp ages
+-- between those reads.
 --
 -- Every existing row takes the zero time, the default 20261108190000 set for a time column with
 -- nothing to derive. The zero time reads as "never read", exactly as merge_state's '' does: a row

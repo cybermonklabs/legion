@@ -590,8 +590,8 @@ func TestARoundOnANewHeadIsNotJudgedByTheRunsOfTheHeadItLeft(t *testing.T) {
 	}
 }
 
-// What record.PullRequest.StateReadAt records is the read, not the change: a head read on every
-// pass and found blocked each time must read differently from a head nothing has read for a day.
+// What record.PullRequest.StateReadAt records is the read, not the change: a head read a minute
+// ago and found blocked must read differently from a head nothing has read for a day.
 // So a read that answers exactly what is recorded - the same mergeability, the same merge state,
 // the same base - writes the row for the read time alone, and moves nothing else. A fact that
 // carries no read time was minted by something that read no GitHub, which is what every test that

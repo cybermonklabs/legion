@@ -6,7 +6,7 @@
 # when GitHub last moved the pull request, how many of the fence's check runs are that head's own
 # and the head and state the architect and the reviewer were told the round was stuck at; a read
 # that only confirms the state already recorded still moves that stamp, which is the whole of what
-# tells a head read on every pass from one nothing has read for a day; a read that changes the
+# tells a head read a minute ago from one nothing has read for a day; a read that changes the
 # answer moves both; a push that moves the head, and the approval of the new head that follows it,
 # move the object onto that head with no stamp until a read answers for it and the new head's own
 # check runs counted; an issue whose round waits on nothing and an issue whose pull request the

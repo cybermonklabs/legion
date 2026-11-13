@@ -337,7 +337,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		MergeState:      MergeStateClean,
 		ConflictingHead: "a0b1c2",
 		// The moment of the last read that answered is read back as it was written, so the column
-		// the daemon tells a head still being read from one nothing has read for a day by is
+		// the daemon tells a head read a minute ago from one nothing has read for a day by is
 		// carried by the write and the read rather than lost between them.
 		StateReadAt: updatedAt.Add(3 * time.Minute),
 		// A run's anchor keeps a settlement never made apart from an empty one, and so do its steps.

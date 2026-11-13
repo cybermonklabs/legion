@@ -44,7 +44,7 @@ const issueRead = 30 * time.Second
 // Every fact it applies goes through intake.ApplyFact under an event id of its own, and the
 // workflow's own fences decide each against the record: a second read of a pull request nothing
 // changed on records the moment of the read and nothing else (applyMergeability,
-// record.PullRequest.StateReadAt), which is what tells a head still being read from one nothing
+// record.PullRequest.StateReadAt), which is what tells a head read a minute ago from one nothing
 // has read for a day. A failed read is returned to the caller, which
 // logs it; the record then stands as it was, and the next read of the issue asks again.
 func (w *workflowRuntime) readIssuePullRequest(ctx context.Context, issue string) error {

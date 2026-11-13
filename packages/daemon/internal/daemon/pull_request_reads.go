@@ -107,8 +107,8 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 // the moment the answer was in hand (intake.PullRequestMergeability.ReadAt).
 //
 // A read that only confirms what is recorded applies the fact too, and then the read time is the
-// only thing that moves, which is the point of applying it: a head read on every pass and found
-// `blocked` each time must read differently from a head nothing has read for a day, and the stamp
+// only thing that moves, which is the point of applying it: a head read a minute ago and found
+// `blocked` must read differently from a head nothing has read for a day, and the stamp
 // is the only thing that tells them apart (record.PullRequest.StateReadAt). readAt is the moment
 // the caller had GitHub's answer in hand, read by the caller straight after readPullRequest
 // returned and before anything else it does with the answer: the per-issue read follows a head
