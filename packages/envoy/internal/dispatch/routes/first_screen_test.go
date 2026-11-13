@@ -89,6 +89,12 @@ func newFirstScreenRig(t *testing.T, budget ...time.Duration) *firstScreenRig {
 	if err := people.SignIn(context.Background(), "sami@d.example", "refresh-token"); err != nil {
 		t.Fatalf("record sign-in: %v", err)
 	}
+	// The reader is also a person the database knows has signed in: a project names a person a
+	// question falls to, and creating one refuses a login no one has signed in as
+	// (ASSIGNEE_NOT_ALLOWED), which reads the people table rather than the session store above.
+	if err := store.NewPgPeopleStore(database.Pool, testSigningKey, nil).Record(context.Background(), "sami@d.example"); err != nil {
+		t.Fatalf("record sami@d.example as a person who has signed in: %v", err)
+	}
 	sessions := &memorySessionStore{generations: map[string]int64{"sami@d.example": 0}}
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
