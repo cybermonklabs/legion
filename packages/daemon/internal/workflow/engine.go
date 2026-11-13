@@ -1281,7 +1281,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), false, movedBack); err != nil {
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), movedBack); err != nil {
 			return err
 		}
 	}

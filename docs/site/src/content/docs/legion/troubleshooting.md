@@ -1299,11 +1299,15 @@ the issue back to the implementer with the base to merge forward and told the ar
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one, and retro writes no
-handoff record, so it is refused (`HANDOFF_STALE_ENTRY`) whatever head it names; the implementer
-merges the base forward in the implementing task's own turn and completes that work with a
-handoff of its own, never retro's commit; the merger's phases row still names the entry merging
-gave it, so a completion it sends for the phase it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`).
+entry retro handed it while its phases row is on the implementing one. The issue is in
+`implementing` by then, so the `legion` tool sends it as the implementer's completion of
+implementing, with the newest `implement` record and the head that record names, which can be the
+head the record holds; it is refused (`HANDOFF_STALE_ENTRY`) because retro back to `implementing`
+is a move back, which raised the entry the phase stands on, and the refusal names that move. The
+implementer merges the base forward in the implementing task's own turn and completes that work
+with a handoff of its own, never retro's commit; the merger's phases row still names the entry
+merging gave it, so a completion it sends for the phase it lost is refused
+(`HANDOFF_NOT_CURRENT_PHASE`).
 The work comes back through testing, review, acceptance and retro to a new merge. A red check
 sends nothing back from anywhere.
 

@@ -262,29 +262,6 @@ func (r *behindEntryFenceLive) waitFor(what string, want func(api.Issue) bool) a
 	return last
 }
 
-// phaseRow is role's phases row as the daemon's own store holds it. It is read for what no route
-// shows: the fence's own input, whether the start that raised the entry the row stands on moved the
-// issue back (record.PhaseRow.EntryMovedBack), and the verdict and handoff commit a refused
-// completion must leave unwritten. The entry number beside them is on the state route as well
-// (api.Issue.PhaseEntry), and every step reads it there.
-func (r *behindEntryFenceLive) phaseRow(role claim.Role) record.PhaseRow {
-	t := r.t
-	t.Helper()
-	ctx := context.Background()
-	var row record.PhaseRow
-	if err := r.st.Tx(ctx, func(tx pgx.Tx) error {
-		rows, err := r.records.Phases(ctx, tx, r.key)
-		if err != nil {
-			return err
-		}
-		row = record.PhaseRowOf(rows, role)
-		return nil
-	}); err != nil {
-		t.Fatalf("read the %s's phases row of %s: %v", role, r.key, err)
-	}
-	return row
-}
-
 // behindFenceClaimant is one role's claim as its agent reaches it: the shim that dialled the
 // worker stream with the boot token of the launch the fake runtime recorded, the registration that
 // exchanged it for the session's capability secret, and the prompt whose turn is running.
@@ -501,7 +478,7 @@ func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 	if got.PullRequest == nil || got.PullRequest.Head != behindFenceSecondHead {
 		t.Fatalf("the record holds %+v for %s, want the pull request at %s, the head the implementer pushed", got.PullRequest, r.key, behindFenceSecondHead)
 	}
-	if row := r.phaseRow(claim.RoleTester); row.Entry != got.PhaseEntry || row.EntryMovedBack {
+	if row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester); row.Entry != got.PhaseEntry || row.EntryMovedBack {
 		t.Fatalf("the tester's phases row = entry %d, moved back %t; want entry %d raised by no move back: implementing moves forward into testing",
 			row.Entry, row.EntryMovedBack, got.PhaseEntry)
 	}
@@ -574,7 +551,7 @@ func (r *behindEntryFenceLive) reviewerMovesTheWorkBack() {
 	if got.PullRequest == nil || got.PullRequest.Head != behindFenceSecondHead {
 		t.Fatalf("the record holds %+v for %s, want the pull request still at %s: nothing was pushed with the move back", got.PullRequest, r.key, behindFenceSecondHead)
 	}
-	row := r.phaseRow(claim.RoleTester)
+	row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester)
 	if row.Entry != got.PhaseEntry || !row.EntryMovedBack {
 		t.Fatalf("the tester's phases row = entry %d, moved back %t; want entry %d raised by a move back: reviewing came back to testing",
 			row.Entry, row.EntryMovedBack, got.PhaseEntry)
@@ -621,7 +598,7 @@ func (r *behindEntryFenceLive) refused(commit string, says ...string) {
 		t.Fatalf("%s is in %s on entry %d after the refused completion, want testing on entry %d: a refusal records nothing",
 			r.key, after.Phase, after.PhaseEntry, r.entry)
 	}
-	row := r.phaseRow(claim.RoleTester)
+	row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester)
 	if row.Verdict != "" || row.HandoffCommit != "" {
 		t.Fatalf("the tester's phases row holds verdict %q at commit %q after the refusal, want neither: the refusal is before the fact and records nothing",
 			row.Verdict, row.HandoffCommit)

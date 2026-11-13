@@ -11,14 +11,16 @@
 // scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
 // and the PostgreSQL it runs against.
 //
-// What this proof reads, and why it reads it there. Unit tests already hold each of those rules
-// in the composed prompts and in the parts they come from
+// What this proof reads, and why it reads it there. Unit tests already hold the pod memory rule
+// in each composed prompt and in the one part per tree it comes from
 // (packages/daemon/internal/prompts/prompts_test.go and
-// packages/daemon/internal/prompts/roles_test.go). Neither file starts anything, so neither
-// says that a role process was ever launched with that text. This driver reads the text from the
-// one place that says it: the Oh My Pi process's own command line, /proc/<pid>/cmdline. The pid
-// the claim's locator carries is the `legion worker-shim`'s (parseLocalIncarnation, over the
-// incarnation localruntime_live_test.go's launch mints), and the shim starts Oh My Pi as a child
+// packages/daemon/internal/prompts/roles_test.go), and the planner's rule in the planner's own
+// part alone (roles_test.go's TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst).
+// Neither file starts anything, so neither says that a role process was ever launched with that
+// text. This driver reads the text from the one place that says it: the Oh My Pi process's own
+// command line, /proc/<pid>/cmdline. The pid the claim's locator carries is the
+// `legion worker-shim`'s (parseLocalIncarnation, over the incarnation localruntime_live_test.go's
+// launch mints), and the shim starts Oh My Pi as a child
 // rather than exec'ing into it (internal/shim/shim.go's exec.Command), so the proof walks /proc
 // for the child of that shim whose argv[0] is LEGION_OMP_PATH and reads that child. Reading the
 // shim's own argv would pass a shim that dropped or rewrote the prompt, which is not what this

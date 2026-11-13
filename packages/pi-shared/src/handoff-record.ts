@@ -27,15 +27,17 @@ import { staleGitLockNote } from "./git-lock";
  * the record holds. It is read from the record and never from the workspace, because a sibling
  * role's push moves `legion/<issue>@origin` under a worker whose evidence is older. A record
  * whose body does not parse, holds no `head`, or holds one of another shape reports no commit for
- * the planner, the tester and the reviewer, whose completion still goes and whose behind-entry
- * completion the daemon then refuses as it does today. The implementer's implementing round holds
- * that head to its branch: the head its record names must be on `legion/<issue>@origin` in the
- * pane's jj, and a record naming no readable head, or one the branch does not carry, is refused
- * naming what to write or what to push. Every other completion — retro, the merger's, a role
- * reporting a phase it does not run (which the daemon refuses naming whose phase it is) — reports
- * the commit the workspace stands on, `@-`, and no record. The implementer's report on its closed
- * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
- * one.
+ * the planner, the tester and the reviewer, whose completion still goes; the daemon refuses it
+ * `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, since a completion naming no commit
+ * says nothing about a head. The implementer's implementing round holds that head to its branch:
+ * the head its record names must be on `legion/<issue>@origin` in the pane's jj, at the branch's
+ * tip or behind it. A record naming no readable head is refused naming what to write, and one
+ * naming a head the branch does not carry is refused naming both ways out: the push, when that
+ * head is new work of the worker's own, and otherwise a record naming the head the branch
+ * carries. Every other completion — retro, the merger's, a role reporting a phase it does not run
+ * (which the daemon refuses naming whose phase it is) — reports the commit the workspace stands
+ * on, `@-`, and no record. The implementer's report on its closed issue's production check
+ * resolves neither: `legion-phase-ops.ts` never asks this module for one.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
@@ -46,15 +48,19 @@ import { staleGitLockNote } from "./git-lock";
  * throws on a non-zero exit. */
 export type JjRunner = (args: readonly string[], cwd: string) => Promise<string>;
 
+/** The newest handoff record of a phase as `LatestHandoff` answers it (envoy-client's `Handoff`
+ * carries these fields among others). `body` is the record's exact text, the JSON object the
+ * phase's role wrote, which names the head its work was done against. */
+export interface LatestHandoffRecord {
+  readonly id: string;
+  readonly version: number;
+  readonly body: string;
+}
+
 /** The newest handoff record of `issue`'s phase `word` (envoy-client's
- * `DispatchClient.latestHandoff`, whose `Handoff` carries these fields among others): throws
- * Dispatch's answer, a `404 HANDOFF_NOT_FOUND` when the phase has none. `body` is the record's
- * exact text, the JSON object the phase's role wrote, which names the head its work was done
- * against. */
-export type LatestHandoff = (
-  issue: string,
-  word: string
-) => Promise<{ readonly id: string; readonly version: number; readonly body: string }>;
+ * `DispatchClient.latestHandoff`): throws Dispatch's answer, a `404 HANDOFF_NOT_FOUND` when the
+ * phase has none. */
+export type LatestHandoff = (issue: string, word: string) => Promise<LatestHandoffRecord>;
 
 /** The fields a completion adds to its request (`LegionHandoffCompleteRequest`), each present only
  * when the completion carries it. */
@@ -194,8 +200,8 @@ const RECORD_HEAD = /^[0-9a-f]{40}$/;
 /** The head a handoff record's `body` names, the commit the work that record reports was done
  * against, or `undefined` when the body is no JSON object, carries no `head`, or carries one of
  * another shape. A body this cannot read throws nothing: the planner, the tester and the reviewer
- * complete without a commit, and the daemon refuses a behind-entry completion of theirs as it
- * does today. */
+ * complete without a commit, and the daemon refuses such a completion `HANDOFF_STALE_ENTRY` when
+ * it is of an earlier phase entry, since it says nothing about a head. */
 function recordHead(body: string): string | undefined {
   let parsed: unknown;
   try {
@@ -232,7 +238,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
     return { commit: await jj(STANDING, requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF)) };
   }
   const { issue, bookmark } = issueBranch(env, FOR_HANDOFF);
-  let record: { readonly id: string; readonly version: number; readonly body: string };
+  let record: LatestHandoffRecord;
   try {
     record = await input.latestHandoff(issue, handoff.word);
   } catch (error) {
@@ -257,9 +263,9 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   const head = recordHead(record.body);
   if (role !== "implementer") return head === undefined ? report : { commit: head, ...report };
 
-  // The implementer's round is of the head its record names, which is its pushed tip: the pull
-  // request's head, which the daemon holds the round's CI to. Work the branch does not carry is
-  // not pushed.
+  // The implementer's round is of the head its record names, and all that is held of that head
+  // here is that `legion/<issue>@origin` carries it, at the branch's tip or behind it. A head the
+  // branch does not carry is work not pushed, or a record naming a commit that is not the round's.
   if (head === undefined) {
     throw new Error(
       `the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names no head: write the handoff again with \`head\` set to the 40-character lower-case commit you pushed as ${bookmark}@origin's tip (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`), then complete again`
@@ -282,7 +288,7 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   );
   if (carried === "") {
     throw new Error(
-      `the head the newest ${handoff.word} handoff of ${issue} names, ${head}, is not on ${bookmark}@origin: push it with \`jj bookmark set ${bookmark} -r ${head} && jj git push --bookmark ${bookmark}\`, then complete again`
+      `the head the newest ${handoff.word} handoff of ${issue} names, ${head}, is not on ${bookmark}@origin: when it is new work of yours, push it with \`jj bookmark set ${bookmark} -r ${head} && jj git push --bookmark ${bookmark}\`; otherwise write the handoff again with \`head\` set to the commit ${bookmark}@origin carries (\`jj log -r ${bookmark}@origin --no-graph -T commit_id\` prints it) and \`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`; then complete again`
     );
   }
   return { commit: head, ...report };

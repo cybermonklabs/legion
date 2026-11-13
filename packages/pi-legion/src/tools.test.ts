@@ -1078,7 +1078,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     [
       paneJj(false),
       paneDispatch(),
-      `the head the newest implement handoff of LEGION-208 names, ${TIP}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r ${TIP} && jj git push --bookmark legion/LEGION-208\`, then complete again`,
+      `the head the newest implement handoff of LEGION-208 names, ${TIP}, is not on legion/LEGION-208@origin: when it is new work of yours, push it with \`jj bookmark set legion/LEGION-208 -r ${TIP} && jj git push --bookmark legion/LEGION-208\`; otherwise write the handoff again with \`head\` set to the commit legion/LEGION-208@origin carries (\`jj log -r legion/LEGION-208@origin --no-graph -T commit_id\` prints it) and \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`; then complete again`,
     ],
     [
       paneJj(),

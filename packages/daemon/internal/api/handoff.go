@@ -29,13 +29,14 @@ import (
 // reads as the newest record of the phase before posting. The daemon reads that record back from
 // Dispatch and holds it to the issue, the phase's word, the version and the claim's session
 // (handoffRecord); it reads no body, which is the next role's to read. Commit is the commit the
-// completion is of: the implementer's pushed tip for an implementing round, the commit it stands
-// on for retro, the commit the merger's own completion stands on, and for the planner, the tester
-// and the reviewer the head the handoff record names, the commit their work was done against,
-// which the entry fence reads against the head the record holds (behindAtRecordedHead). The
-// workflow refuses a record the role already named for its previous phase
-// (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open pull
-// request on its branch, or a merged one recorded (implementationPullRequest:
+// completion is of: for the planner, the implementer's implementing round, the tester and the
+// reviewer the head the handoff record names, the commit their work was done against, which the
+// `legion` tool reads out of the record's body and, for the implementer, holds to be on
+// legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
+// merger's own completion stands on. The entry fence reads it against the head the record holds
+// (behindAtRecordedHead). The workflow refuses a record the role already named for its previous
+// phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
+// pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
 // written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
@@ -259,10 +260,8 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// so the two heads read alike and the heads alone would take this completion — over an entry
 	// that exists to have the work done again, which the verdict of the entry before it is
 	// exactly what must not stand in for. The record says which it was, written onto the entry
-	// by the transition that raised it (record.PhaseRow.EntryMovedBack), so the fence reads the
-	// move rather than guessing at it from the heads or from a count: every move back raises the
-	// implementer's pass and a phase is never re-entered without one, so no count can tell this
-	// case from the one above.
+	// by the transition that raised it, so the fence reads the move rather than guessing at it
+	// from the heads (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
 	if entry != 0 && position.entry != 0 && entry != position.entry {
 		if entry > position.entry {
 			writeFailure(w, http.StatusConflict, staleEntryCode, unraisedEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry))
@@ -502,8 +501,8 @@ func recordedHead(pr *record.PullRequest) string {
 // phase stands on was raised by no move back, the second reading that fence makes
 // (handoffComplete). A verdict is a fact about a head rather than about an entry: when the phase
 // was entered again at that same head, the work the current entry's task asks for is the work this
-// completion reports, and refusing it would send the worker over the same commit for the same
-// answer and then meet the answer it already gave (HANDOFF_ALREADY_RECORDED).
+// completion reports, and refusing it would have the worker do the same work again at the same
+// head for the same answer.
 //
 // recordBacked says the phase ends with a Dispatch handoff record this role writes
 // (phase.Handoff), which is what makes the completion readable as this phase's own answer: the
@@ -851,18 +850,21 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	implementer := record.PhaseRowOf(rows, claim.RoleImplementer)
 	completing := record.PhaseRowOf(rows, role)
 	pass, lastHandoff := implementer.Pass, implementer.LastHandoff
-	// The pull request has two readers in this route and is read for whichever of them this
-	// completion can reach, never for one neither can: the check-report branch, which every
-	// production check's report takes, reads no head at all. The implementer's completion holds
-	// its move to testing to an open pull request (implementationPullRequest), in implementing
-	// and in no other phase. The entry fence asks whether a completion behind its entry is a
-	// verdict on the head the record holds (behindAtRecordedHead), in every phase that ends with
-	// a handoff record, the tester's and the reviewer's as much as the implementer's — and only
-	// a row at entry 2 or above can have a completion behind it: entries start at 1 and rise by
-	// one, so a row at 1 has no earlier entry a completion could be of, and a row at 0 is one
-	// that fence does not compare at all (handoffComplete).
+	// The pull request has two readers in this route, and it is read only where one of them can
+	// reach it: the check-report branch, which every production check's report takes, reads no
+	// head at all. The implementer's completion holds its move to testing to an open pull request
+	// (implementationPullRequest), in implementing and in no other phase, so the record is read in
+	// implementing whoever completes. The entry fence reads the head the record holds
+	// (behindAtRecordedHead) only for a completion behind its entry of a phase that ends with a
+	// handoff record this role writes, the tester's and the reviewer's as much as the
+	// implementer's, since it refuses any other behind completion whatever head it names; and
+	// only a row at entry 2 or above can have a completion behind it: entries start at 1 and rise
+	// by one, so a row at 1 has no earlier entry a completion could be of, and a row at 0 is one
+	// that fence does not compare at all (handoffComplete). So outside implementing the record is
+	// read where this role writes the phase's record and its row stands at entry 2 or above.
 	var pr *record.PullRequest
-	if issue.Phase == phase.Implementing || completing.Entry > 1 {
+	_, writer, handoffPhase := phase.Handoff(issue.Phase)
+	if issue.Phase == phase.Implementing || (completing.Entry > 1 && handoffPhase && writer == role) {
 		if pr, err = s.records.PullRequest(ctx, tx, key); err != nil {
 			return completionPosition{}, err
 		}

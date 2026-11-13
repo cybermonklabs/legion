@@ -413,6 +413,10 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 		t.Fatalf("the tester's completion naming its own record = %d %+v, want 200", status, failure)
 	}
 	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict pass): %d", tester.session, rewritten.id, status)
+	// The tester's turn ends with its completion, as a worker's does. Main's supervision holds a
+	// phase task while another role of the issue is in a turn, since the two would share the
+	// working copy (supervise's sendPending), so the reviewer is prompted only once it has.
+	tester.endTurn()
 	got := r.waitPhase(r.a7, phase.Reviewing)
 	r.note("read back: %s is in %s", r.a7, got.Phase)
 
@@ -444,6 +448,9 @@ func (r *handoffRecordsLive) notNew() {
 		t.Fatalf("the implementer's round-1 completion = %d %+v, want 200", status, failure)
 	}
 	r.note("POST /legion/v1/handoff/complete as %s naming %s: %d", implementer.session, first.id, status)
+	// The implementer's turn ends with its completion, as the tester's does below: the tester's
+	// task is held while another role of the issue is in a turn (supervise's sendPending).
+	implementer.endTurn()
 	r.waitPhase(r.renew, phase.Testing)
 	r.note("read back: %s is in testing", r.renew)
 
@@ -493,8 +500,8 @@ func (r *handoffRecordsLive) notNew() {
 //
 // The control is those same three against records naming no head - the body every other step of
 // this proof writes, and the body every role wrote before the head moved into the record: the
-// completion carries no commit at all, and the daemon refuses a behind-entry completion of theirs
-// as it did before.
+// completion carries no commit at all, and the daemon refuses such a completion
+// HANDOFF_STALE_ENTRY when it is of an earlier phase entry, since it says nothing about a head.
 func (r *handoffRecordsLive) completionHead() {
 	t := r.t
 	roles := []struct{ phase, word, role, session string }{

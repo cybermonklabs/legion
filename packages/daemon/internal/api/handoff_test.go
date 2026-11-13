@@ -504,7 +504,7 @@ func TestHandoffCompleteOnAMergedPullRequestMovesTheIssueToTesting(t *testing.T)
 // A file-backed phase's completion is held to the handoff record it names, read back from
 // Dispatch: the record must be the issue's, of the phase's word, at the version reported, and
 // written by the claim's own session. Every refusal is made before the fact is applied, so nothing
-// is recorded, and the corrected completion - a planner's here, which reports no commit - is then
+// is recorded, and the corrected completion - a planner's here, which names no commit - is then
 // applied under the same key.
 func TestHandoffCompleteHoldsTheCompletionToTheRecordItNames(t *testing.T) {
 	for _, tc := range []struct {

@@ -533,7 +533,7 @@ func TestABehindCompletionOfAPhaseWithNoRecordIsRefused(t *testing.T) {
 // every task is sent under: a task carries the phase it was queued for, and the issue has left
 // that phase, so the delivery is dropped rather than sent (supervise's phaseHolds). Without that
 // the worker would be given the second entry's task after its own answer had moved the issue on,
-// work the head it had already reported on, and meet HANDOFF_ALREADY_RECORDED at the end of it.
+// and would do the same work again at the same head for the same answer.
 func TestTheCurrentEntrysTaskIsDroppedAfterAnAcceptedBehindCompletion(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	holdPhases(h)
@@ -707,9 +707,10 @@ func recordedCompletions(t *testing.T, h *harness, role claim.Role) int {
 }
 
 // holdPhases wires the supervisor to the issue record the way daemon.go wires
-// workflowRuntime.phaseHolds in production: a task carries the phase and the run it was queued
-// for, and one the issue has left is dropped rather than sent. The harness wires none of its own,
-// so every delivery holds until a test asks for this.
+// workflowRuntime.phaseHolds in production, with the predicate that function answers with
+// (record.PhaseHolds): a task carries the phase and the run it was queued for, and one the issue
+// has left is dropped rather than sent. The harness wires none of its own, so every delivery
+// holds until a test asks for this.
 //
 // It must be called before the test creates its first claim: testSupervisor.Create copies deps
 // by value into each machine it makes (supervise.NewMachine), so a machine made before this call
@@ -725,7 +726,7 @@ func holdPhases(h *harness) {
 		}); err != nil {
 			return false, err
 		}
-		return issue == nil || (issue.Phase == queuedFor && (generation == 0 || generation == issue.Generation)), nil
+		return record.PhaseHolds(issue, queuedFor, generation), nil
 	}
 }
 

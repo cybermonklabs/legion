@@ -355,10 +355,13 @@ Legion uses GitHub's own review mechanisms rather than labels:
   move back, which asks for that phase's work to be done again. From retro the implementer keeps
   its turn, is told the same way, and is handed the implementing task after it; a retro
   completion that reaches the daemon after the move reports the entry retro handed it while its
-  phases row is on the implementing one, and retro writes no handoff record, so it is refused
-  `HANDOFF_STALE_ENTRY` whatever head it names; the implementer merges the base forward in the
-  implementing task's own turn and completes that work with a handoff of its own, never retro's
-  commit.
+  phases row is on the implementing one. The issue is in `implementing` by then, so that
+  completion goes as the implementer's completion of implementing, naming the newest
+  `implement` record and the head that record names, which can be the head the record holds;
+  what refuses it `HANDOFF_STALE_ENTRY` is the move, since retro back to `implementing` is a
+  move back and raised the entry the phase stands on. The implementer merges the base forward in
+  the implementing task's own turn and completes that work with a handoff of its own, never
+  retro's commit.
 - **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
   until one is open on its branch, and the daemon's read of that issue tells its architect
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`

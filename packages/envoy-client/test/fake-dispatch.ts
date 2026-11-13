@@ -497,15 +497,19 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
 }
 
 /**
- * The newest handoff record of an issue's phase, as pi-shared's `LatestHandoff` reads it: its id,
+ * The newest handoff record of an issue's phase, as pi-shared's `LatestHandoffRecord` is: its id,
  * its version and `body`, the record's exact text, which names the head the phase's work was done
  * against. Declared here structurally for the reason `FakeRecordClient` is: pi-shared depends on
  * this package.
  */
-export type FakeLatestHandoff = (
-  issue: string,
-  word: string
-) => Promise<{ readonly id: string; readonly version: number; readonly body: string }>;
+export interface FakeHandoffRecord {
+  readonly id: string;
+  readonly version: number;
+  readonly body: string;
+}
+
+/** The newest handoff record of an issue's phase, as pi-shared's `LatestHandoff` reads it. */
+export type FakeLatestHandoff = (issue: string, word: string) => Promise<FakeHandoffRecord>;
 
 /** A Dispatch answering one thing for every phase's newest record, and every read it was asked. */
 export interface FakeHandoffDispatch {
@@ -516,9 +520,7 @@ export interface FakeHandoffDispatch {
 }
 
 /** A Dispatch answering `answer` for every phase's newest record, recording each read. */
-export function fakeLatestHandoff(
-  answer: () => Promise<{ readonly id: string; readonly version: number; readonly body: string }>
-): FakeHandoffDispatch {
+export function fakeLatestHandoff(answer: () => Promise<FakeHandoffRecord>): FakeHandoffDispatch {
   const reads: string[] = [];
   return {
     latestHandoff: async (issue, word) => {

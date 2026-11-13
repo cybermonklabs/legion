@@ -253,9 +253,7 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 // The entry a start raises carries the move that raised it: whether that start was a move back
 // to an earlier phase. One rule reads it, the completion route's entry fence
 // (record.PhaseRow.EntryMovedBack, api/handoff.go), and nothing else of the record can answer
-// it. A count cannot: every move back raises the implementer's pass and a phase is never
-// re-entered without one, so a count is raised by the move this exists to catch and by the move
-// it exists to let through alike, and no earlier count is kept to compare with.
+// it (record.PhaseRow.EntryMovedBack says why no count can).
 //
 // Both readings are written, never only the true one: a row whose standing entry a move back
 // raised is handed a forward move's entry next, and a value left behind would make the fence

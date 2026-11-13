@@ -609,10 +609,13 @@ func TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst(t *testing.T) {
 		}
 	}
 	// One field, not two: the reviewer's handoff named the head it reviewed under a longer name
-	// before this rule, and a part carrying both names leaves the daemon reading one while the
-	// role writes the other. The retired name is joined from its halves, as
-	// TestNoPartSaysLegionNeverMerges keeps its phrases a pattern, so that a grep for it over the
-	// repository finds the frozen changelog that records the rename and never this test.
+	// before this rule, and a part carrying both names has the role write one while the `legion`
+	// tool reads the other: the tool reads `head` out of the record's body (pi-shared's
+	// findHandoffReport) and sends it as the completion's commit, and the daemon reads no body at
+	// all. The retired name is joined from its halves, as TestNoPartSaysTheDaemonMerges keeps its
+	// claim a pattern, so that a grep for it over the repository finds the daemon's changelog
+	// fragment that records the rename (packages/daemon/.changes/unreleased), the frozen history
+	// that named the field before it, and never this test.
 	retired := "head" + "Reviewed"
 	err := eachPart(roleParts, "roles", func(name string, body []byte) error {
 		if strings.Contains(string(body), retired) {

@@ -381,7 +381,7 @@ Each item below names a script, then what it proves.
 ## On a GitHub-hosted runner
 
 [`.github/workflows/e2e.yaml`](../../.github/workflows/e2e.yaml) runs one proof per job on `ubuntu-24.04`, against a Postgres service.
-Six scripts run there: `child-adoption.sh`, `conflict-no-takeover.sh`, `dispatch-claimant-delivery.sh`, `handoff-records.sh`, `verification-results.sh` and `stage1-skeleton.sh`, which the `test` job of `ci.yaml` also runs.
+Eight scripts run there: `behind-entry-fence.sh`, `child-adoption.sh`, `conflict-no-takeover.sh`, `dispatch-claimant-delivery.sh`, `handoff-records.sh`, `phase-entry-converge.sh`, `verification-results.sh` and `stage1-skeleton.sh`, which the `test` job of `ci.yaml` also runs.
 None of them needs a secret, and none there may:
 Sami answered that no API key goes into this repository, and that a smoke test which calls a model runs in the deployment repository on workload identity federation (sjawhar/legion#2512).
 Every other script needs a devbox, a throwaway kind cluster, a real cluster or a model key, and the workflow refuses it by name with what its own header says it needs.
@@ -4384,7 +4384,7 @@ LEGION_OMP_PATH=/opt/omp/bin/omp \
 dispatch://INFRA-3079's live proof that a role process is launched with the rules its own system prompt carries, which dispatch://INFRA-3146 extended by a rule of the planner's own.
 The pod memory rule is the paragraph every phase worker is given (`packages/daemon/internal/prompts/roles/mechanics/headless.md`, "What you run in the pod") and the paragraph every architect is given (`packages/daemon/internal/prompts/go/architect-common.md`).
 The planner's own rule is that its completion reports work already done: the paragraph that names the `head` its handoff body carries and what the daemon does with it (`internal/prompts/roles/planner.md`, "Plan handoff").
-Unit tests already read those rules out of the composed prompts and hold each to the part it comes from (`internal/prompts/prompts_test.go` and `internal/prompts/roles_test.go`).
+Unit tests already read the pod memory rule out of each composed prompt and hold it to one part of each tree (`internal/prompts/prompts_test.go` and `internal/prompts/roles_test.go`), and hold the planner's rule in the planner's own part alone (`internal/prompts/roles_test.go`).
 Neither file starts anything, so neither says a role process was ever launched with the text, and that is what this proof is for.
 It runs on any Linux host with `go`, `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`claim-compaction.sh`](#claim-compactionsh), the DSN's host must be loopback as it must there, and the broker is the run's own.
@@ -4500,7 +4500,7 @@ Four of the issues are seeded in the daemon's store, each the root of its own tr
 two in `planning`, one in `testing` and one `implementing` on open pull requests, each phase's worker a launch a previous daemon began, which the boot relaunches serving run 1.
 Each worker is brought to ready over the daemon's worker stream as its pane's shim brings it (answering the daemon's negotiation, state probes and prompts, each prompt starting a turn the step ends after its completion), registered under a session the step names, and completes with a grant minted for it over `POST /legion/v1/handoff/complete`.
 Every handoff is written and read with the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts`) as that session (`DISPATCH_HOST=omp`, `DISPATCH_SESSION_ID`, `DISPATCH_URL`, `DISPATCH_TOKEN`), with a home, configuration file (absent) and session state of the run's own.
-The `completion head` step's reports are the real `findHandoffReport` itself, run under bun by `completion-head.ts` with the pane's own two lines — the session's envoy.json by the pane's rule (`sessionConfigFile("omp", …)`, as pi-legion's extension writes it) and `paneLatestHandoff` on it — so each report reads its record from this run's Dispatch over HTTP with that session's own credential, and the program prints the completion that call would send as one line of JSON.
+The `completion head` step's reports are the real `findHandoffReport` itself, run under bun by `completion-head.ts` through the pane's own call — `paneHandoffReport` on the session's envoy.json by the pane's rule (`sessionConfigFile("omp", …)`), as pi-legion's extension makes it — so each report reads its record from this run's Dispatch over HTTP with that session's own credential, and the program prints the completion that call would send as one line of JSON.
 
 | step | driven by | read back as |
 | :--- | :--- | :--- |

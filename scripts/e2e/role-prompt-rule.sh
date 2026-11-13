@@ -32,8 +32,9 @@
 # and 45 s of them; the same pod's first run took
 # 179 s, which is that cache cold and the pinned nats-server installed by the run itself. The
 # proof waits on no clock of its own. Its one wait is the two panes starting Oh My Pi, loading the
-# two plugins and reporting ready, which took 10 s of the driver's time in each of the three runs;
-# the command line it reads is on each process from the moment that process began.
+# two plugins and reporting ready, which took 10 s of the driver's time in each of the three runs
+# measured before the fourth step; the command line it reads is on each process from the moment
+# that process began.
 #
 # Run it from a checkout on a Linux host with go, awk, bash, tar, bun and python3, as
 #   LEGION_OMP_PATH=/opt/omp/bin/omp \

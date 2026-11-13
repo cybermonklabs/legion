@@ -170,14 +170,14 @@ test("no record, or a Dispatch that does not answer, is refused naming what to d
   }
 });
 
-test("an implementer whose record names a head its branch does not carry is refused naming the push", async () => {
+test("an implementer whose record names a head its branch does not carry is refused naming the push and the rewrite", async () => {
   const { jj, calls } = fakeJj(false);
   const { latestHandoff } = recordingDispatch();
   await expect(
     findHandoffReport({ phase: "implementing", role: "implementer", env, jj, latestHandoff })
   ).rejects.toThrow(
     new Error(
-      `the head the newest implement handoff of LEGION-208 names, ${HEAD}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r ${HEAD} && jj git push --bookmark legion/LEGION-208\`, then complete again`
+      `the head the newest implement handoff of LEGION-208 names, ${HEAD}, is not on legion/LEGION-208@origin: when it is new work of yours, push it with \`jj bookmark set legion/LEGION-208 -r ${HEAD} && jj git push --bookmark legion/LEGION-208\`; otherwise write the handoff again with \`head\` set to the commit legion/LEGION-208@origin carries (\`jj log -r legion/LEGION-208@origin --no-graph -T commit_id\` prints it) and \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`; then complete again`
     )
   );
   expect(calls).toEqual([

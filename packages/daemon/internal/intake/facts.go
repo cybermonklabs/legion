@@ -826,9 +826,10 @@ type HandoffComplete struct {
 	Generation uint64
 	Summary    string
 	Verdict    string
-	// Commit is the commit the completion reports: the implementer's pushed tip for an implementing
-	// round, and the commit retro and merging stand on; none for the planner, the tester or the
-	// reviewer.
+	// Commit is the commit the completion reports: for the planner, the implementer's implementing
+	// round, the tester and the reviewer the head their handoff record names, empty where a
+	// planner's, a tester's or a reviewer's record names none; and the commit retro and merging
+	// stand on.
 	Commit string
 	// HandoffRecord and HandoffVersion name the Dispatch handoff record the completion of a phase
 	// with a handoff ends with (phase.Handoff): the route read it back from Dispatch and held it to
