@@ -538,6 +538,12 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 		"POST /api/v1/artifacts/{id}/rebuild",
 		"POST /api/v1/artifacts/{id}/reviews",
+		// The title correction is this change's own row: a document's title is what every
+		// reader sees it by, so the person whose credential it is corrects one.
+		"PATCH /api/v1/artifacts/{id}",
+		// The removal is this change's own row: a document made by mistake is removed by the
+		// person whose credential it is, as that person's title correction is.
+		"DELETE /api/v1/artifacts/{id}",
 		"GET /api/v1/me/state",
 		"PUT /api/v1/me/issues/{key}/state",
 		"GET /api/v1/me/agents/state",
