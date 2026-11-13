@@ -1,5 +1,8 @@
 import type { HocuspocusProvider } from "@hocuspocus/provider";
-import { DOCUMENT_SCHEMA_CLOSE_CODE } from "@legion/contracts/dispatch-constants";
+import {
+  DOCUMENT_SCHEMA_CLOSE_CODE,
+  NO_DOCUMENT_SERVER_CLOSE_CODE,
+} from "@legion/contracts/dispatch-constants";
 import type { Awareness } from "y-protocols/awareness";
 import type { Doc } from "yjs";
 
@@ -77,6 +80,13 @@ export interface ConnectionCallbacks {
    * schema. The connection has stopped reconnecting; a fresh read decides what comes next.
    */
   onOutsideSchema(): void;
+  /**
+   * Fires when the socket closes with `NO_DOCUMENT_SERVER_CLOSE_CODE`, which only the stubbed
+   * browser layer sends (`packages/dispatch/e2e/stub/`): that origin serves no document socket,
+   * so no document and no first batch is coming. The Go server never sends it. The connection
+   * has stopped reconnecting, as it does for `onOutsideSchema`.
+   */
+  onNoDocumentServer(): void;
   onStatus(state: ConnectionState): void;
   /** Reports browser-held edits as IndexedDB changes or this admission's restore completes. */
   onPending(state: PendingState): void;
@@ -208,6 +218,13 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
         if (event.code === DOCUMENT_SCHEMA_CLOSE_CODE) {
           provider.disconnect();
           callbacks.onOutsideSchema();
+        }
+        // And this one says there is no document server behind the page at all, which only the
+        // stubbed layer says (`NO_DOCUMENT_SERVER_CLOSE_CODE`): a reconnect would be answered the
+        // same way, so the provider stops here too.
+        if (event.code === NO_DOCUMENT_SERVER_CLOSE_CODE) {
+          provider.disconnect();
+          callbacks.onNoDocumentServer();
         }
       },
       onMessage: ({ event }) => {

@@ -3,7 +3,7 @@ name: Dispatch browser nightly
 # Two jobs on a schedule: the full browser lane, and the re-record of the stubbed layer's
 # recordings. ci.yaml's dispatch-browser job runs the pull-request lane on a pull request that
 # carries no `full-ci` label, the rows a pull request is held to, and the full lane - all eight
-# parallel projects, the five `-alone` ones, the two stub ones and the two-process job - on
+# parallel projects, the six `-alone` ones, the two stub ones and the two-process job - on
 # every other run, so the merge group runs it on the tree a change lands as. This run covers a
 # day with no such event, and is what runs the full lane on main's tip
 # (.github/workflows/dispatch-browser.yaml, which holds every step). The re-record job's own
@@ -26,7 +26,7 @@ name: Dispatch browser nightly
 on:
   schedule:
     # Nightly, hours from e2e.yaml's 04:41, the repository's other schedule: a full lane takes
-    # five shard machines, four alone machines, a visual machine, a two-process machine and a
+    # five shard machines, six alone machines, a visual machine, a two-process machine and a
     # fake-embedder machine at once, and two nightlies starting together would queue behind each
     # other for the account's runners.
     - cron: "17 2 * * *"

@@ -1,4 +1,8 @@
 import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import {
+  NO_DOCUMENT_SERVER_CLOSE_CODE,
+  NO_DOCUMENT_SERVER_CLOSE_REASON,
+} from "@legion/contracts/dispatch-constants";
 import { waitFor } from "@testing-library/react";
 import { createDecoder, readVarString, readVarUint, readVarUint8Array } from "lib0/decoding";
 import * as Y from "yjs";
@@ -107,6 +111,16 @@ class OpenSocket extends EventTarget {
     this.dispatchEvent(new MessageEvent("message", { data: data.slice().buffer }));
   }
 
+  /** Closes the socket as the stubbed browser layer does, which serves no document socket. */
+  closeAsTheStub(): void {
+    this.dispatchEvent(
+      new CloseEvent("close", {
+        code: NO_DOCUMENT_SERVER_CLOSE_CODE,
+        reason: NO_DOCUMENT_SERVER_CLOSE_REASON,
+      })
+    );
+  }
+
   /** The server closes the socket, as a dropped connection does; the provider reconnects. */
   drop(): void {
     this.dispatchEvent(new CloseEvent("close", { code: 1006 }));
@@ -131,6 +145,8 @@ interface ProviderHarness {
   pending: PendingState[];
   /** Whether the host was told that the first admission's restore finished. */
   synced(): boolean;
+  /** How many times the host was told there is no document server behind the page. */
+  noDocumentServer(): number;
   /** The `index`th socket the provider opened, once the provider has written to it. */
   socket(index: number): Promise<OpenSocket>;
   /** Sets the share of the reconnect spread (`Math.random()`) each socket draws when it opens. */
@@ -158,10 +174,14 @@ async function withProvider(
   try {
     const connect = await loadDocumentTransport();
     let synced = false;
+    let noDocumentServer = 0;
     const admissions: boolean[] = [];
     const pending: PendingState[] = [];
     connection = connect(artifact, {
       onAdmission: (readOnly) => admissions.push(readOnly),
+      onNoDocumentServer: () => {
+        noDocumentServer += 1;
+      },
       onOutsideSchema() {},
       onPending: (state) => pending.push(state),
       onStatus() {},
@@ -174,6 +194,7 @@ async function withProvider(
       admissions,
       connection,
       draw: (next) => random.mockReturnValue(next),
+      noDocumentServer: () => noDocumentServer,
       pending,
       async socket(index) {
         await waitFor(() => expect(OpenSocket.opened[index]?.sent.length).toBeGreaterThan(0));
@@ -702,6 +723,42 @@ test("a document's first connect opens at once, and each reconnect after a serve
       },
       0.999
     );
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// The stubbed browser layer's close (`NO_DOCUMENT_SERVER_CLOSE_CODE`, which the Go server never
+// sends) tells the host once that no document server is behind the page, and the provider stops
+// there: a reconnect would be answered the same way. A dropped socket first, which the provider
+// reconnects without a word to the host, so the row also reads that only that code says it.
+test("a socket the stubbed layer closes as having no document server says so once and reconnects no more", async () => {
+  const artifact = artifactId();
+  try {
+    await withProvider(artifact, async ({ noDocumentServer }) => {
+      jest.useFakeTimers();
+      await settle();
+      const first = OpenSocket.opened[0] as OpenSocket;
+      first.drop();
+      // The dropped socket is reconnected, after whatever delay its draw of the spread gives.
+      for (let step = 0; step < 12 && OpenSocket.opened.length < 2; step += 1) {
+        jest.advanceTimersByTime(500);
+        await settle();
+      }
+      expect(OpenSocket.opened).toHaveLength(2);
+      expect(noDocumentServer()).toBe(0);
+
+      (OpenSocket.opened[1] as OpenSocket).closeAsTheStub();
+      await settle();
+      expect(noDocumentServer()).toBe(1);
+      // Well past the provider's longest backoff (`maxDelay`, 30 s): no socket after it.
+      for (let step = 0; step < 12; step += 1) {
+        jest.advanceTimersByTime(5_000);
+        await settle();
+      }
+      expect(OpenSocket.opened).toHaveLength(2);
+      expect(noDocumentServer()).toBe(1);
+    });
   } finally {
     jest.useRealTimers();
   }

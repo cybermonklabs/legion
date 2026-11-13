@@ -55,21 +55,21 @@
  *  wall-clock path behind `--shuffle`, which Playwright takes as the seed" and "a wall-clock
  *  path behind `--only-changed`, which Playwright takes as a git ref".
  *
- *    --list --shuffle e2e/claim.e2e.ts       listed 1,476 tests in 198 files, exit 0: the
+ *    --list --shuffle e2e/claim.e2e.ts       listed 1,493 tests in 204 files, exit 0: the
  *                                            default selection, the path taken as the seed and
  *                                            no file filtered
  *    --list --only-changed e2e/claim.e2e.ts  listed 0 tests in 0 files, exit 1, `--only-changed
  *                                            <path>` printing `Cannot detect changed files for
  *                                            --only-changed mode: git diff <path> --name-only`
  *
- *  Those 1,476 rows are what a listing that names no project holds, and not the whole suite:
- *  the five wall-clock projects carry `default: false` (`clockProjectNames`,
+ *  Those 1,493 rows are what a listing that names no project holds, and not the whole suite:
+ *  the six `-alone` projects carry `default: false` (`clockProjectNames`,
  *  `e2e/configurations.ts`) and stand outside it. Measured at this head against
- *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1476 tests in 198 files`, `--list`
- *  naming `chromium-alone`, `firefox-alone`, `webkit-alone`, `iphone-alone` and
- *  `iphone-measure-alone` lists
- *  `Total: 59 tests in 6 files`, and `--list` naming all seventeen projects of the config lists
- *  `Total: 1535 tests in 204 files`, which is the suite.
+ *  `e2e/playwright.config.ts`, `--list` alone lists `Total: 1493 tests in 204 files`, `--list`
+ *  naming `chromium-alone`, `firefox-alone`, `webkit-alone`, `iphone-alone`,
+ *  `iphone-measure-alone` and `iphone-long-build-alone` lists
+ *  `Total: 59 tests in 7 files`, and `--list` naming all eighteen projects of the config lists
+ *  `Total: 1552 tests in 210 files`, which is the suite.
  *
  *  Together the two sets of readings settle every class. A REQUIRED-value option takes the next
  *  token whatever it looks like, a `--ui` included, which is why `--grep --ui` lists rows. An

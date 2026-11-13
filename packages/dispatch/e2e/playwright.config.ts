@@ -6,6 +6,8 @@ import {
   clockProjectNames,
   clockSpecPattern,
   clockSpecsNamed,
+  phoneAloneSpecPattern,
+  phoneAloneSpecsNamed,
   stubProjectNames,
   tagged,
 } from "./configurations";
@@ -134,7 +136,7 @@ const stub = stubSelection({
 });
 
 // A command that names a wall-clock spec file as a filter while naming no project
-// (`clockFileOnCommandLine`, e2e/configurations.ts). The five wall-clock projects
+// (`clockFileOnCommandLine`, e2e/configurations.ts). The six `-alone` projects
 // (`clockProjectNames`, e2e/configurations.ts) are out of the default selection, so no run that
 // names no project holds a row of the file such a command named, whatever Playwright then does
 // with the rest of the line - for example, answer "No tests found", or run the whole default
@@ -350,9 +352,20 @@ const parallelProjects = [
     grepInvert: [phoneOnlyTagged, webkitPhoneDeliveryRow],
     use: { ...devices["Desktop Chrome"] },
   },
+  // The phone half of every `@phone` row, but for the files whose phone half is a leg of its own
+  // (`phoneAloneSpecPattern`, e2e/configurations.ts): `large-documents-long-build.e2e.ts`, whose
+  // three rows `iphone-long-build-alone` runs at the end of this list. `chromium` keeps that
+  // file's desktop half.
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecPattern, visualSpecs, stubSpecs],
+    testIgnore: [
+      plainHttpSpecs,
+      multiprocessSpecs,
+      clockSpecPattern,
+      phoneAloneSpecPattern,
+      visualSpecs,
+      stubSpecs,
+    ],
     grep: phoneRowTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -505,16 +518,17 @@ const parallelProjects = [
 
 /**
  * The projects a command names: the rows whose claim is a wall-clock time, with the machine to
- * themselves.
+ * themselves, and the phone half of the one file too costly for a shard
+ * (`iphone-long-build-alone`, last below).
  *
- * Each sets `default: false`, which leaves all five out of a run that names no project and
+ * Each sets `default: false`, which leaves all six out of a run that names no project and
  * takes nothing from a run that names one. `filterProjects` answers
  * `projects.filter(p => includeNonDefault || p.default)` where the command line named no
  * project, and ignores `default` altogether where it named any (`function filterProjects` at
  * node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2134);
  * `default?: boolean` is a field of `TestProject` and is `true` where it is unset
  * (playwright/types/test.d.ts:170). So `--project=chromium-alone` selects this project as it
- * always did, `bun run e2e:clock` selects all five, and a run that names none holds no row of
+ * always did, `bun run e2e:clock` selects all six, and a run that names none holds no row of
  * theirs.
  *
  * That field is also what keeps a file filter cheap, and it replaced something that did not.
@@ -648,6 +662,25 @@ const aloneProjects = [
     name: "iphone-measure-alone",
     default: false,
     testMatch: clockSpecsNamed("large-documents-measured"),
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    workers: 1,
+    retries: 0,
+  },
+  // The phone half of `large-documents-long-build.e2e.ts`, which is this project's whole
+  // selection, on the same device profile as the two above and selected the same way, by file
+  // (`phoneAloneSpecsNamed`, e2e/configurations.ts). Its three rows read no number from the wall
+  // clock; what puts them on a leg of their own is their cost. Each builds the 406,000-character
+  // document under 4x CPU throttling, and in `iphone` they stood at the tail of the listing
+  // Playwright cuts its shards from by row count, so all three landed in the last shard: 1.8 min,
+  // 51.8 s and 39.3 s of the 499 s `shard (5)` took of its 540 s in run 43421318396. `iphone`
+  // ignores the file now, and `chromium` keeps its desktop half where it was, four workers wide.
+  // One worker and no retry, as every project of this list: the build-time row holds two builds'
+  // own times to a ratio, which a second attempt would only blur. The leg's budget is derived from
+  // these rows' own measurement in .github/workflows/dispatch-browser.yaml (dispatch://INFRA-341).
+  {
+    name: "iphone-long-build-alone",
+    default: false,
+    testMatch: phoneAloneSpecsNamed("large-documents-long-build"),
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,
     retries: 0,
@@ -810,7 +843,7 @@ export default defineConfig({
   // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
   // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
   // at, and `bun run e2e` is read as pass or fail. This is the value of every project that sets
-  // none of its own: the five `-alone` projects, the two `visual` ones, the two stubbed ones
+  // none of its own: the six `-alone` projects, the two `visual` ones, the two stubbed ones
   // and the multiprocess one each set `retries: 0`, each for a reason its own comment gives.
   retries: process.env.CI ? 1 : 0,
   // `failure-reporter.ts` writes nothing and prints nothing, and is the one way `globalTeardown`

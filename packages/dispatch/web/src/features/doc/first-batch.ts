@@ -83,6 +83,12 @@ export const LONGEST_HOLD_MS = 20_000;
  * above costs - the reads' head start, with the reader's place kept under the chrome that
  * lands (`readers-place.ts`) - and what it buys is the way out of a document the server is
  * not sending.
+ *
+ * The one origin that knows no document is coming says so rather than waiting this out: the
+ * stubbed browser layer serves no document socket, and closes the page's with
+ * `NO_DOCUMENT_SERVER_CLOSE_CODE`, which the surface answers by releasing the hold
+ * (`ProofDocument`'s `onNoDocumentServer`). The Go server never sends that code, so a reader on a
+ * real server whose socket is slow is held for these ten seconds as before.
  */
 export const LONGEST_WAIT_FOR_THE_DOCUMENT_MS = 10_000;
 

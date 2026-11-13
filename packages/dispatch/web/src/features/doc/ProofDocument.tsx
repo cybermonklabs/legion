@@ -422,6 +422,16 @@ function admitTheDocument(admission: Admission): void {
           admission.setConnection("connecting");
           run.refusalTimer = window.setTimeout(() => admitTheDocument(admission), delay);
         },
+        // Only the stubbed browser layer closes with this, because nothing behind it serves a
+        // document (`NO_DOCUMENT_SERVER_CLOSE_CODE`): no first batch is coming, so the page's
+        // other reads stop waiting for one. That is all it does - the reader keeps the draw,
+        // nothing is reported, and the connection reads what its last status said - so a page
+        // on a real server, which never sends it, is held exactly as before.
+        onNoDocumentServer: () => {
+          if (run.mounted) {
+            admission.hold.release();
+          }
+        },
         onStatus: (status) => {
           if (!run.failed) {
             admission.setConnection(status);

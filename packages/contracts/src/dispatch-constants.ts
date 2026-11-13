@@ -432,6 +432,30 @@ export const DOCUMENT_SCHEMA_CLOSE_CODE = 4409;
  *  `contracts.DocumentSchemaCloseReason`. */
 export const DOCUMENT_SCHEMA_CLOSE_REASON = "DOC_SCHEMA";
 
+/**
+ * The close code the stubbed browser layer answers a page's document websocket with, because
+ * that layer serves no document socket: its origin is a static file server over the build under
+ * test and a recording of the API (`packages/dispatch/e2e/stub/`), and nothing behind it holds a
+ * document to sync. **The Go server never sends it**, and nothing in `generated.go` names it.
+ *
+ * What the page does on it is one thing: the document surface stops holding the page's other
+ * reads for an editor's first batch (`features/doc/first-batch.ts`), since no batch is coming.
+ * The provider stops reconnecting, as it does on `DOCUMENT_SCHEMA_CLOSE_CODE`, and nothing else
+ * moves: the page keeps its own draw of the document, shows no alert, and reads the socket as
+ * offline, which is what it read while the stub answered the upgrade with a page of HTML. A
+ * reader on a real server whose socket is slow never meets this code, so they are held as
+ * before, up to `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`.
+ *
+ * 4404 is free on every path that closes a socket of this product: the Go server sends 4001
+ * (`LIVE_SOCKET_MAX_AGE_CLOSE`), 4409 (`DOCUMENT_SCHEMA_CLOSE_CODE`) and the standard 1008,
+ * 1011, 1012 and 1013; the page closes a silent live socket with 4000; ygo and Hocuspocus use
+ * 4205, 4401, 4403 and 4408, and 1009.
+ */
+export const NO_DOCUMENT_SERVER_CLOSE_CODE = 4404;
+
+/** The reason the stubbed layer's document websocket closes with `NO_DOCUMENT_SERVER_CLOSE_CODE`. */
+export const NO_DOCUMENT_SERVER_CLOSE_REASON = "NO_DOCUMENT_SERVER";
+
 /** The close code Dispatch ends a live socket with once the socket reaches its age, a random point
  *  in [LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS). It is in the private 4000-4999 range, apart
  *  from the 4000 a page closes a silent socket with: the page reopens at once and resumes every

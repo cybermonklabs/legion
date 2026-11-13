@@ -1,4 +1,4 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http } from "msw";
@@ -9,6 +9,7 @@ import {
   type FakeDocumentRuntime,
   fakeDocumentRuntime,
 } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
@@ -27,7 +28,11 @@ import { installFakeParseWorker, restoreParseWorker } from "../refs/parse-worker
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
 import type { ConstructEditor } from "./editor";
-import { afterTheFirstBatch, theFirstBatchIsAwaited } from "./first-batch";
+import {
+  afterTheFirstBatch,
+  LONGEST_WAIT_FOR_THE_DOCUMENT_MS,
+  theFirstBatchIsAwaited,
+} from "./first-batch";
 
 answerTextReadsWithTheSeededText();
 
@@ -150,6 +155,57 @@ test("the reads the page holds go out once the batch's blocks are in the editor,
     await sync();
     await waitFor(() => expect(past.onceItLanded).toBe(true));
     expect(past.asItBegan).toBe(false);
+  } finally {
+    view.unmount();
+    theFirstBatchIsAwaited(false);
+  }
+});
+
+// The product's own path, which the stubbed layer's close below must leave as it was: a page
+// whose socket is open and whose server sends no document back is held for
+// `LONGEST_WAIT_FOR_THE_DOCUMENT_MS` and no less, since nothing else tells a silent server from a
+// slow one (`first-batch.ts`). The fake clock is installed before the hold is armed, so the
+// release this row reads at ten seconds is that deadline and not the twenty-second one over
+// the whole load.
+test("a page whose socket answers no document holds its reads for the server's deadline, and no less", async () => {
+  jest.useFakeTimers();
+  theFirstBatchIsAwaited(true);
+  const { connections, view } = renderProofDocument({ surface: "page" });
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    await tick(LONGEST_WAIT_FOR_THE_DOCUMENT_MS - 1_000);
+    expect(afterTheFirstBatch()).toBe(false);
+    await tick(1_000);
+    expect(afterTheFirstBatch()).toBe(true);
+  } finally {
+    view.unmount();
+    theFirstBatchIsAwaited(false);
+    realClock();
+  }
+});
+
+// The stubbed browser layer serves no document socket and says so with
+// `NO_DOCUMENT_SERVER_CLOSE_CODE` (`e2e/stub/stub-test.ts`), which the Go server never sends. The
+// page answers it by releasing the hold and with nothing else: the connection stands, no alert
+// is raised, the status is the one the socket last reported, and no editor is bound.
+test("the stubbed layer's no-document close lets the page's reads go at once, and changes nothing else", async () => {
+  theFirstBatchIsAwaited(true);
+  const { connections, editors, noDocumentServer, toolbar, view } = renderProofDocument({
+    surface: "page",
+  });
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    expect(afterTheFirstBatch()).toBe(false);
+    const before = toolbar.current?.connection;
+    act(() => noDocumentServer());
+    expect(afterTheFirstBatch()).toBe(true);
+    expect(within(view.container).queryByRole("alert")).toBeNull();
+    expect(connections).toHaveLength(1);
+    expect(connections[0]?.destroyed).toBe(false);
+    expect(toolbar.current?.connection).toBe(before);
+    expect(editors).toHaveLength(0);
   } finally {
     view.unmount();
     theFirstBatchIsAwaited(false);

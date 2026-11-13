@@ -72,6 +72,9 @@ export interface FakeDocumentRuntime {
   constructions: FakeEditor[];
   /** Those of them the host has bound to a document, in order. */
   editors: FakeEditor[];
+  /** The stubbed layer's answer: the current socket closes with `NO_DOCUMENT_SERVER_CLOSE_CODE`,
+   *  because nothing behind the page serves a document (`features/doc/connection.ts`). */
+  noDocumentServer(): void;
   pending(state: PendingState): void;
   /** The server refuses the current socket because the stored document is outside the Proof
    * schema; a destroyed provider hears nothing more, so earlier connections are not told. */
@@ -290,6 +293,9 @@ export function fakeDocumentRuntime(seed: { text?: string } = {}): FakeDocumentR
     connections,
     constructions,
     editors,
+    noDocumentServer() {
+      callbacks.at(-1)?.onNoDocumentServer();
+    },
     pending(state) {
       for (const callback of callbacks) {
         callback.onPending(state);

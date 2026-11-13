@@ -3,12 +3,12 @@ name: Dispatch browser suite
 # Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 # on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-# over five shard machines, the five `-alone` projects get a machine each, the two-process job,
+# over five shard machines, the six `-alone` projects get a machine each, the two-process job,
 # the fake-embedder job and the containerised visual review take one each, and one merge job
 # joins what the shard and alone legs wrote into a single report and publishes the run's flake
 # rate.
 #
-# Two of those five legs are the phone, where there was one until dispatch://INFRA-341: the two
+# Three of those six legs are the phone, where there was one until dispatch://INFRA-341: the two
 # rows that measure a first editable block take three
 # readings each and hold the median of them to R11's targets, so they are
 # `large-documents-measured.e2e.ts`, which `iphone-measure-alone` runs with a budget of its
@@ -19,12 +19,16 @@ name: Dispatch browser suite
 # measured in this job at head f79cb07f (run 43098661012), the rows that stay in `iphone-alone`
 # are 10.3 s and 19.8 s and the two that left were 16.2 s and 20.7 s at one reading apiece,
 # which three readings put at about 110.7 s. So `iphone-alone`'s browser step keeps 4 minutes
-# and `iphone-measure-alone`'s takes 3; the alone job's head derives both.
+# and `iphone-measure-alone`'s takes 3; the alone job's head derives both. The third is
+# `iphone-long-build-alone`, the phone half of `large-documents-long-build.e2e.ts`: three builds
+# of the larger document under 4x CPU throttling that read no clock but cost 1.8 min, 51.8 s and
+# 39.3 s in `shard (5)` of run 43421318396, where as the tail of the `iphone` listing they all
+# landed together. Its 4 minutes are derived from those three rows in the alone job's head too.
 #
 # Two lanes, one input. `pull-request` runs the projects a pull request is held to - `chromium`,
 # `iphone` and the two stubbed ones - over the rows tagged `@pr` and no others, with the
 # fake-embedder job, which holds a check of the pull request it is on; `full` runs every
-# parallel project, the five `-alone` ones, the two-process job, the visual review and that
+# parallel project, the six `-alone` ones, the two-process job, the visual review and that
 # same embedder job, over every row. So an unlabelled pull request pays for the rows that
 # answer it, and the merge queue, a labelled pull request, a workflow_dispatch and the nightly
 # run pay for the rest, each of which has the wall time for them.
@@ -349,28 +353,30 @@ jobs:
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
-    # again at this branch's head, the suite holds 1,535 rows in 204 files, which is two
-    # listings rather than one: the five `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,476 rows in 198
-    # files and one that names those five lists 59 more, in 6 files, every one of them theirs
-    # alone - a wall-clock project selects whole files since sjawhar/legion#2697, so no file is
-    # in both listings any more. The ten projects this job's
-    # shard command names below hold 1,456 rows in 197 files; the four of those the
-    # pull-request lane names hold 1,355, of which that lane's `@pr` grep selects 283, 147 of
+    # again at this branch's head, the suite holds 1,552 rows in 210 files, which is two
+    # listings rather than one: the six `-alone` projects are out of the default selection
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,493 rows in 204
+    # files and one that names those six lists 59 more, in 7 files. One file is in both:
+    # large-documents-long-build.e2e.ts, whose desktop half `chromium` runs and whose phone half
+    # is `iphone-long-build-alone`'s; every other file of the second listing is a wall-clock
+    # file that project selects whole since sjawhar/legion#2697. The ten projects this job's
+    # shard command names below hold 1,473 rows in 203 files; the four of those the
+    # pull-request lane names hold 1,372, of which that lane's `@pr` grep selects 286, 150 of
     # them on the real stack. The two `visual` projects hold 20, which the visual job runs one
-    # row at a time, and the 59 wall-clock rows are the alone job's - 24, 14, 17, 2 and 2. The
-    # 24 is `chromium-alone`'s 17 heavy-bodies rows, its two nested-directive rows, its four
+    # row at a time, and the 59 rows of the alone job are 23, 13, 16, 2, 2 and 3. The
+    # 23 is `chromium-alone`'s 16 heavy-bodies rows, its two nested-directive rows, its four
     # agent-workspace-timing rows and the one row of large-documents-desktop-build.e2e.ts;
-    # the 14 and the 17 are heavy-bodies.e2e.ts
+    # the 13 and the 16 are heavy-bodies.e2e.ts
     # on `firefox-alone`, which inverts the three rows that read a reader's place, and whole on
     # `webkit-alone`; the two 2s are the two rows of large-documents-build-serves.e2e.ts, the
     # timer row and the decision row, on `iphone-alone`, and the two measurements of
     # large-documents-measured.e2e.ts on
-    # `iphone-measure-alone` (dispatch://INFRA-341).
+    # `iphone-measure-alone`; the 3 is large-documents-long-build.e2e.ts on
+    # `iphone-long-build-alone` (dispatch://INFRA-341).
     #
-    # Those 1,456 cut five ways, each leg listed at this head with the ten projects named below
-    # and this job's own denominator (`--shard=<i>/5 --list`): 292, 291, 291, 291 and 291 rows,
-    # which sum to the 1,456. Equal row counts are all Playwright's cut promises, and the
+    # Those 1,473 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 295, 295, 295, 294 and 294 rows,
+    # which sum to the 1,473. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
     timeout-minutes: 13
     strategy:
@@ -536,6 +542,24 @@ jobs:
         # sits 136 s inside this 540 and the rule's own arithmetic on that estimate would give
         # eight minutes. A prediction is not a measurement: the first green run at five legs is
         # what may lower this.
+        #
+        # A later full-lane run measured more than the estimate, and the 540 s held with less
+        # room than it gave: at head 1aaa9135 (run 43421318396) the five browser steps took 433,
+        # 277, 329, 369 and 499 s, `shard (5)` holding 295 rows and 1,795.7 row-seconds by its
+        # own list reporter. Two things of this branch's own were in that last leg, and neither
+        # is in it now. 24 stub rows that open a document waited out the page's ten-second
+        # wait for a document the stubbed layer has no server for
+        # (`NO_DOCUMENT_SERVER_CLOSE_CODE`, packages/contracts; e2e/stub/stub-test.ts now
+        # answers that socket with it): 337.8 row-seconds there, 323.7 of them the 23 that
+        # main's run 43421089840 also holds, which took 51.2 there; the 24th is new on this
+        # branch. And the three phone builds of
+        # large-documents-long-build.e2e.ts, 1.8 min, 51.8 s and 39.3 s, are
+        # `iphone-long-build-alone`'s leg now. Re-listed at this head, `shard (5)` holds 294
+        # rows; priced at run 43421318396's own cost per row, with the 23 stub rows at main's
+        # and the 24th at its 14.1 s less the 8.8 s the local before-and-after run measured it
+        # spending in that wait, they sum to 1,333.1 + 5.3 = 1,338.4 row-seconds. At that run's
+        # own 499 s for 1,795.7 row-seconds, that is 1,338.4 x 499 / 1,795.7 = 372 s of this
+        # step's 540. It is a projection, and the next full-lane run is its measurement.
         timeout-minutes: 9
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
@@ -620,14 +644,14 @@ jobs:
           # selects, so a project this leg does not name is a project it would spread over these
           # five machines. `visual` and `visual-phone` are in the default selection, and their
           # image comparisons belong to the `visual` job, which runs them one row at a time, so
-          # naming the projects above is what keeps them off these machines. The five `-alone`
+          # naming the projects above is what keeps them off these machines. The six `-alone`
           # projects stay out because this list does not name them, and for no other reason:
           # `filterProjects` reads `default` only where the command line named no project
           # (`projects.filter((project) => includeNonDefault || project.default)` at
           # node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/runner/index.js:2136,
           # under the `if (!projectNames)` at :2135), and both lanes above name theirs: four in
           # the pull-request lane and ten in the full one. The `default: false` each `-alone`
-          # project carries (the five entries of `aloneProjects` in e2e/playwright.config.ts) is
+          # project carries (the six entries of `aloneProjects` in e2e/playwright.config.ts) is
           # what keeps them out of a run that names no project, which this is not. The alone job
           # names them, one machine each.
           #
@@ -752,11 +776,13 @@ jobs:
     needs: binaries
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The five projects whose rows are read from the wall clock, one machine each. Each leg runs
-    # one worker and names one project, and a wall-clock project takes nothing else with it - it
-    # names no `dependencies` since dispatch://INFRA-1280 - so nothing else is on the machine
-    # while it measures. The full lane alone: a pull request runs no clock row, since a shard
-    # job's machine cannot hold one still enough to measure.
+    # The six `-alone` projects, one machine each: the five whose rows are read from the wall
+    # clock, and `iphone-long-build-alone`, the phone half of large-documents-long-build.e2e.ts,
+    # whose rows read no clock but are three builds too costly for a shard (its budget below says
+    # what they cost). Each leg runs one worker and names one project, and such a project takes
+    # nothing else with it - it names no `dependencies` since dispatch://INFRA-1280 - so nothing
+    # else is on the machine while it measures. The full lane alone: a pull request runs no clock
+    # row, since a shard job's machine cannot hold one still enough to measure.
     #
     # Its steps are the shard job's, with three differences - one worker rather than four, the
     # Playwright command below, and no file store on the machine - and their commands are kept
@@ -769,8 +795,9 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:69c3a3164d28695253c43615af3f9bbc4f7e1994f4522ae68a41a0224b1ffdb5
       options: --user 1001 --ipc=host --init
     # This job takes the container because its matrix holds webkit-alone and firefox-alone,
-    # which launch the two engines the image exists for; chromium-alone, iphone-alone and
-    # iphone-measure-alone are legs of a container job and ride in it, which is what keeps one
+    # which launch the two engines the image exists for; chromium-alone, iphone-alone,
+    # iphone-measure-alone and iphone-long-build-alone are legs of a container job and ride in
+    # it, which is what keeps one
     # job list and not two
     # (dispatch://INFRA-1443). The shard job's head says what each option is for and why the
     # digest is a literal.
@@ -846,6 +873,26 @@ jobs:
     # for the timer row and the decision row, which this change did not touch. A budget that
     # covers work it did not measure cannot fail for the right reason.
     #
+    # `iphone-long-build-alone` is derived the same way, from its own three rows, and lands on
+    # 4 minutes by its own arithmetic rather than by the pool's. Its rows have no reading of this
+    # job yet: until this change they ran in the `iphone` project, four workers wide, and what
+    # they cost there is `shard (5)` of run 43421318396 at head 1aaa9135 (job 131872821142), the
+    # list reporter's own lines:
+    #
+    #   ✓  5 [iphone] › ... another person's edit reaches the larger document ... (39.3s)
+    #   ✓  6 [iphone] › ... builds over the whole drawn document ... one screenful @phone (51.8s)
+    #   ✓  1 [iphone] › ... the measurement's window stays open until ... editor opens (1.8m)
+    #
+    # The reporter prints a row over a minute to a tenth of one, so the third is read from the
+    # log's own timestamps: the leg printed `Running 295 tests` at 12:03:20.344Z, before any row
+    # began, and that row ended at 12:05:08.916Z, so it took at most 108.6 s. One worker runs the
+    # three one after another: 108.6 + 51.8 + 39.3 = 199.7 s, and the 7 s of the step that is
+    # not a row, which `iphone-alone`'s leg measured above, puts the step at 206.7 s.
+    # 206.7 x 1.15 = 237.7 s, 3 min 58 s, rounded up to the 4 minutes that leg carries below.
+    # Read four lanes wide, those rows carry the other three workers' load as well, so the figure
+    # over-states this leg, which is the side to be wrong on; the first full-lane run of this
+    # head replaces it with a reading of the leg itself.
+    #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193 and not on the
     # digest this file pins, for the reason the shard job's head gives, which also says why a
     # reading taken on that build carries across the rebuilds after it: the figures it replaces
@@ -894,9 +941,10 @@ jobs:
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
     # that budget plus the maxima above of every step without one, which sum to 137 s. That is
-    # two sums, because the browser step's budget is now two numbers: 240 + 137 = 377 s,
-    # 6 min 17 s, rounded up to 7 minutes for the four legs whose browser step has 4 minutes,
-    # and 180 + 137 = 317 s, 5 min 17 s, rounded up to 6 minutes for `iphone-measure-alone`.
+    # two sums, because the browser step's budget is two numbers: 240 + 137 = 377 s,
+    # 6 min 17 s, rounded up to 7 minutes for the five legs whose browser step has 4 minutes,
+    # `iphone-long-build-alone`'s derived 4 among them, and 180 + 137 = 317 s, 5 min 17 s,
+    # rounded up to 6 minutes for `iphone-measure-alone`.
     # Each is a backstop above the sum of that leg's step budgets, as this file's head says a
     # job budget is. The two steps that carry a budget read `matrix.project` for it rather than
     # taking a matrix column of their own, which would put the number into each leg's name
@@ -907,7 +955,12 @@ jobs:
       fail-fast: false
       matrix:
         project:
-          [chromium-alone, firefox-alone, webkit-alone, iphone-alone, iphone-measure-alone]
+          - chromium-alone
+          - firefox-alone
+          - webkit-alone
+          - iphone-alone
+          - iphone-measure-alone
+          - iphone-long-build-alone
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -969,15 +1022,18 @@ jobs:
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
         # legs run uploads or downloads anything. Each project selects whole files, out of the
-        # one list of them (`clockSpecNames` in e2e/configurations.ts, named per project by
-        # `clockSpecsNamed` in that project's `testMatch`): chromium-alone runs
+        # two lists of them in e2e/configurations.ts (`clockSpecNames`, named per project by
+        # `clockSpecsNamed` in that project's `testMatch`, and `phoneAloneSpecNames`, named by
+        # `phoneAloneSpecsNamed`): chromium-alone runs
         # agent-workspace-timing, heavy-bodies and nested-directive, and with them
         # large-documents-desktop-build.e2e.ts, the one row read at a desktop width;
         # firefox-alone and webkit-alone run heavy-bodies alone; iphone-alone runs
         # large-documents-build-serves.e2e.ts, the
-        # timer row and the decision row; and iphone-measure-alone runs
+        # timer row and the decision row; iphone-measure-alone runs
         # large-documents-measured.e2e.ts, the two measurements of a first editable block,
-        # which take three readings each (dispatch://INFRA-341). Each large-documents row
+        # which take three readings each; and iphone-long-build-alone runs the phone half of
+        # large-documents-long-build.e2e.ts, three builds of the larger document
+        # (dispatch://INFRA-341). Each large-documents row
         # seeds its document through the API and reads it. And e2e/harness-pool.ts's
         # `stackBucket` (:183) makes no bucket at one stack: it answers `undefined` on
         # `count === 1` (:190). A store serving nothing would be charged to the very reading
@@ -1002,7 +1058,10 @@ jobs:
         # over the nine legs the job's head lists is 69 s, well under that 194 s, and no leg of
         # those nine ran the desktop guard or any of the four phone rows. The fifth leg,
         # `iphone-measure-alone`, takes the 3 minutes derived from its own two rows as run
-        # 43098661012 timed them, at three readings apiece.
+        # 43098661012 timed them, at three readings apiece. The sixth,
+        # `iphone-long-build-alone`, takes 4 minutes too, and by its own derivation: its three
+        # rows as run 43421318396's `shard (5)` timed them, 199.7 s, plus the 7 s that is not a
+        # row, x 1.15 = 237.7 s.
         timeout-minutes: ${{ matrix.project == 'iphone-measure-alone' && 3 || 4 }}
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory the stack pool
@@ -1524,7 +1583,7 @@ jobs:
   # What the legs together ran. It joins every shard's and every alone leg's blob report into one
   # report, publishes three readings of it - the rows, the flake rate and the legs that did not
   # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
-  # and not ten, one per leg that uploads a report: five shards and five `-alone` projects.
+  # and not eleven, one per leg that uploads a report: five shards and six `-alone` projects.
   #
   # This job must never be skipped: .github/scripts/ci-ok.sh fails a selected job whose result is
   # `skipped`, and a shard leg that failed would otherwise skip it and take ci-ok with it. It

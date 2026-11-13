@@ -1930,12 +1930,12 @@ A wider run is refused for the rows that measure through `e2e/main-thread-hold.t
 `e2e/agent-workspace-timing.e2e.ts` and the three `e2e/large-documents-*` files the wall-clock
 projects run, which read a clock of their own, take their one worker
 from this command.
-The third runs every wall-clock row there is: `e2e:clock` is
-the one script that names the five projects, and it names `--workers=1` beside them, so the
+The third runs every `-alone` row there is: `e2e:clock` is
+the one script that names the six projects, and it names `--workers=1` beside them, so the
 command the whole wall-clock run is made of says what its readings rest on. Each of `e2e` and
 `e2e:clock` builds `@legion/contracts` and the dashboard first, so a reader running both from an
 unchanged tree can skip the second build by calling what `e2e:clock` calls:
-`bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --workers=1`.
+`bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --project=iphone-long-build-alone --workers=1`.
 CI's alone legs run that same command with one `--project` each, a machine per project
 (`.github/workflows/dispatch-browser.yaml`).
 
@@ -2075,7 +2075,7 @@ different stacks, and a file whose rows must run in order says so itself, with
 Every other mode runs on that default one worker, and so one stack: the deployed
 run (`bun run e2e:deployed`, `PLAYWRIGHT_BASE_URL`), two-process mode
 (`bun run e2e:multiprocess`), the wall-clock run (`bun run e2e:clock`, which
-writes that one worker out as `--workers=1` beside its five projects, since a
+writes that one worker out as `--workers=1` beside its six projects, since a
 reading of the clock rests on it), a run
 against servers a person started (`DISPATCH_E2E_REUSE_SERVERS=1`),
 `e2e/local-instance.ts` (`bun run dispatch:local`), `docs/site/media/harness.ts`,
@@ -2090,7 +2090,7 @@ A pull request without the label `full-ci` runs the `pull-request` lane: the pro
 shard machines, each leg running `--shard=N/5` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
-run the `full` lane: all eight parallel projects over those same five shards, the five `-alone`
+run the `full` lane: all eight parallel projects over those same five shards, the six `-alone`
 projects each on a machine of its own at one worker, and the two-process job.
 So the five rows over a large document whose numbers are read from the wall
 clock - the two measurements of a first editable block, which are
@@ -2103,6 +2103,11 @@ the merge group
 and the nightly rather than by an unlabelled pull request's own run, for the reason those
 files give: a row that differs from itself by three seconds between two attempts on one
 runner is measuring the runner, and a shard machine running four lanes is that runner.
+The phone half of `e2e/large-documents-long-build.e2e.ts` runs in `iphone-long-build-alone` on a
+machine of its own for another reason, its cost: its three rows read no clock, but each builds the
+larger document under 4x CPU throttling, and as the tail of the `iphone` listing Playwright cuts
+its shards from, all three landed in the last shard together (1.8 min, 51.8 s and 39.3 s of the
+499 s `shard (5)` took in run 43421318396). `chromium` keeps the file's desktop half.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
 line rather than in an `env:`, for the reason that step's comment gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
@@ -2110,8 +2115,8 @@ steps', drops `e2e/run-server.sh`'s `go build` out of `.github/scripts/check-ci-
 reduction.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
-that reports ci-ok, so a run gets one verdict and not ten: the legs that upload those reports
-are the five shards and the five `-alone` projects, and each would otherwise post its own.
+that reports ci-ok, so a run gets one verdict and not eleven: the legs that upload those reports
+are the five shards and the six `-alone` projects, and each would otherwise post its own.
 The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
 tests and build, beside the proof editor's, and runs no browser row.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
@@ -2137,9 +2142,10 @@ samplers, run from `packages/dispatch` with a Postgres provider the stacks above
 `DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/5 --workers 4`.
 The `full` lane's leg names all eight parallel projects in place of those two.
 A local run retries nothing; CI retries a failed row once
-(`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the five `-alone`
+(`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the six `-alone`
 projects and the two-process project, which set `retries: 0` of their own: a row whose claim is a
-wall-clock time has nothing to gain from a second attempt, and the two-process job writes no blob
+wall-clock time has nothing to gain from a second attempt (`iphone-long-build-alone`'s entry in
+that config gives its own reason), and the two-process job writes no blob
 report, so a retried row there would be published nowhere.
 That retry is what makes a flaky row reportable: a row that fails and then passes is `flaky` in
 the merged report rather than failed, and the rate the `merge` job publishes counts those rows.
@@ -2196,7 +2202,7 @@ the program cannot resolve — leaves its row refused with no fixtures, since
 fixtures the check did not read are not fixtures it saw. It reads four
 Playwright listings first, to prove it scanned the files the suite runs: the
 default selection, that selection under `DISPATCH_E2E_PROCESSES=2` and under
-`DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the five wall-clock
+`DISPATCH_E2E_SIGNIN=oidc` with it, and one that names the six `-alone`
 projects, whose rows a listing naming no project holds none of. The four
 collect at once, and the readings the timing comment above
 `listingTimeout` carries (`e2e/__tests__/no-browser-rows.test.ts`) are of
@@ -2975,8 +2981,8 @@ rather than leaving the route unanswered, because Chromium sends a paused reques
 server once its page closes. They skip on an `https:` `PLAYWRIGHT_BASE_URL` as the two specs
 above do.
 
-The five `-alone` projects run the rows whose claim is a wall-clock time, with the machine to
-themselves.
+The six `-alone` projects run the rows whose claim is a wall-clock time, with the machine to
+themselves, and the phone half of one file whose rows cost too much for a shard.
 `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws
 without holding the main thread for a second, both through `e2e/main-thread-hold.ts`),
 `e2e/agent-workspace-timing.e2e.ts` (a sleeping live view of an ordinary conversation comes back
@@ -2991,28 +2997,36 @@ the longest main-thread task of a build at a desktop width;
 `firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts`, which ran in those engines
 before, for the reasons given under `webkit` and `firefox` above; `iphone-alone` runs
 `e2e/large-documents-build-serves.e2e.ts`, the timer row and the decision row, on the iPhone 13
-profile they are measured on; and `iphone-measure-alone` runs
+profile they are measured on; `iphone-measure-alone` runs
 `e2e/large-documents-measured.e2e.ts`, the two measurements of a first editable block, on the
-same profile.
-Those two are a project of their own, and a CI leg of their own, because each takes three
+same profile; and `iphone-long-build-alone` runs the phone half of
+`e2e/large-documents-long-build.e2e.ts`, on the same profile again.
+The measurements are a project of their own, and a CI leg of their own, because each takes three
 readings and holds the median of them to R11's targets, which is three times the wall clock
 one reading is: a budget is derived from what the rows under it measured, so the leg those two
-left keeps the budget its own rows earned and theirs is derived from theirs
-(`.github/workflows/dispatch-browser.yaml`'s alone job prints both derivations,
+left keeps the budget its own rows earned and theirs is derived from theirs.
+The long-build rows read no clock and run on a machine of their own for their cost: three builds
+of the larger document under 4x CPU throttling, which as the tail of the `iphone` listing all
+landed in the last shard (1.8 min, 51.8 s and 39.3 s of the 499 s `shard (5)` took in run
+43421318396). `iphone` ignores that file (`phoneAloneSpecNames` in `e2e/configurations.ts`) and
+`chromium` keeps its desktop half
+(`.github/workflows/dispatch-browser.yaml`'s alone job prints each leg's derivation,
 dispatch://INFRA-341).
-Each selects whole files and no row by its title, out of the one list of wall-clock files
-(`clockSpecNames` in `e2e/configurations.ts`, named per project by `clockSpecsNamed` in that
-project's `testMatch`), and no project above them runs any of those six files, so each row
-runs once. Three of the five rows above shared a file with rows that are not read from the
+Each selects whole files and no row by its title, out of the two lists of them in
+`e2e/configurations.ts`: the wall-clock files (`clockSpecNames`, named per project by
+`clockSpecsNamed` in that project's `testMatch`), which no project above them runs, and the files
+whose phone half runs alone (`phoneAloneSpecNames`, named by `phoneAloneSpecsNamed`), which
+`iphone` does not run, so each row runs once in each configuration. Three of the five
+wall-clock rows over a large document shared a file with rows that are not read from the
 clock until sjawhar/legion#2697, and the projects picked them out of it by patterns over their
 titles: renaming such a row - or adding one beside it under a title no pattern matched - ran
 it four workers wide in `chromium` or `iphone` instead, with every suite green, which is why
 the file is the selector now and why
 `e2e/__tests__/row-configurations.test.ts` holds each project to the rows it owns.
-Each of the five sets `default: false`, which leaves it out of a run
+Each of the six sets `default: false`, which leaves it out of a run
 that names no project and takes nothing from a run that names one, so the commands at the top
 of this section name them and a bare `bun run e2e` holds none of their 59 rows (a listing of
-the five at this head: 59 tests in 6 files, 24 + 14 + 17 + 2 + 2). Until dispatch://INFRA-1280
+the six at this head: 59 tests in 7 files, 23 + 13 + 16 + 2 + 2 + 3). Until dispatch://INFRA-1280
 each named every
 project before it in `dependencies` instead, which ordered the run and also pulled the whole
 suite in behind any command naming one of the files they take, because a filter narrows
@@ -3154,7 +3168,7 @@ every file whose rows stayed, each with the server behaviour those rows depend o
 `bun e2e/tools/row-map.ts --write` writes it and `e2e/__tests__/row-map.test.ts` fails when the
 committed file and a fresh generation differ. The generation reads two listings and takes the
 rows of both, because one listing is no longer the suite: a listing that names no project holds
-no wall-clock row, so a second names the five `-alone` projects, and `heavy-bodies.e2e.ts` and
+no `-alone` row, so a second names the six `-alone` projects, and `heavy-bodies.e2e.ts` and
 `nested-directive.e2e.ts` reach the map from it alone. The two cost about four seconds together
 on a two-core pod, the reading the comment above that tool's own `defaultListing` and
 `clockListing` carries (`e2e/tools/row-map.ts`: the default listing about three and a half

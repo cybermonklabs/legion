@@ -4,11 +4,17 @@
 // person's edit crosses a build instead of waiting for it, and that a build over a page
 // already holding the whole drawn document takes no longer than one over a screenful.
 //
-// No row here is read from the clock, which is why they run in the parallel projects, four
-// workers wide, like every other row of this suite. The last of them does read two builds'
-// own times, and holds their ratio: both are measured in the one run, one after the other, so
-// what they are compared against is the same machine under the same load rather than a number
-// a quiet machine earned (its own comment says what the ratio rules out).
+// No row here is read from the clock. The last of them does read two builds' own times, and
+// holds their ratio: both are measured in the one run, one after the other, so what they are
+// compared against is the same machine under the same load rather than a number a quiet machine
+// earned (its own comment says what the ratio rules out).
+//
+// The desktop half runs in `chromium`, four workers wide, like every other row of this suite.
+// The phone half is `iphone-long-build-alone`'s, a leg of its own, and `iphone` ignores this file
+// (`phoneAloneSpecNames`, e2e/configurations.ts): those three builds under 4x CPU throttling
+// cost 1.8 min, 51.8 s and 39.3 s in `shard (5)` of run 43421318396, and as the tail of the
+// `iphone` listing Playwright cuts its shards from they all landed in that last shard, which
+// stood at 499 s of its 540 s.
 //
 // Each row seeds the larger document, because each needs a build that lasts: a window read
 // over a build of a few seconds says nothing about a build of minutes, the edit has to cross
@@ -101,8 +107,9 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
   browser,
 }, testInfo) => {
   test.skip(
-    testInfo.project.name !== "iphone",
-    "the measurement set-up is the iphone project's viewport, touch and Chromium"
+    testInfo.project.name !== "iphone-long-build-alone",
+    "the measurement set-up is the phone's viewport, touch and Chromium, which is " +
+      "iphone-long-build-alone's"
   );
   test.setTimeout(900_000);
   const { path } = await seedDocument("specs-large.md", largeDocument);
