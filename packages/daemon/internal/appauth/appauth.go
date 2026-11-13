@@ -154,9 +154,8 @@ type Tokens interface {
 	// under that repository alone, a controller holds one for every owner it has, and the
 	// Kubernetes runtime's provisioning token is one of the implement App for the issue's own
 	// owner cached under the one repository its pod clones, which every issue pod's
-	// workspace-fetch and every repository cache clones with (implementTokens, internal/daemon);
-	// there alone an installation that refuses the narrowing is served the owner's own token instead
-	// (ErrNarrowingRefused). An App on token_command gets what its command's read-only release
+	// workspace-fetch and every repository cache clones with (implementTokens, internal/daemon).
+	// An App on token_command gets what its command's read-only release
 	// holds instead, which the command decides: the secrets broker's is the same four (its
 	// readOnlyPermissions). With a key of its own the mint asks for what the installation is
 	// granted of those four and leaves the rest out (exchangeGranted), so an installation whose
@@ -597,9 +596,10 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 // builds the refusal (mintFromCommand), so excluding it here is a guard for a later producer. It
 // is the one predicate every caller that acts on a refusal reads — a Manager deciding what to
 // remember (refusals), a bundle deciding which repositories a directory holds (credential.go's
-// dirEntry), the provisioning adapter's fallback (internal/daemon's implementTokens) and the
-// controller route's answer (internal/api) — so that none of them reads a rate limit as an
-// answer about what an installation grants.
+// dirEntry) and the controller route's answer (internal/api) — so that none of them reads a rate
+// limit as an answer about what an installation grants. The daemon's provisioning adapter reads
+// it no longer: it returns every error of its mint as it came (internal/daemon's
+// implementTokens).
 func NarrowingRefused(err error) bool {
 	var trouble *TransientError
 	return errors.Is(err, ErrNarrowingRefused) && !errors.As(err, &trouble)
@@ -731,15 +731,15 @@ var errInstallationGone = errors.New("the installation is gone")
 // request names one (exchange), so there is none for GitHub to refuse. In token mode it is the
 // secrets broker refusing the narrowing its own release names (brokerNarrowingRefused).
 //
-// It is exported because its callers read it rather than fail on it: the daemon's provisioning
-// adapter falls back on it (implementTokens in internal/daemon), where an installation that
-// refuses a read token's narrowing is served the owner's own token instead; a role's gh bundle
-// drops the repositories a refused read lease is cached under and keeps the rest (mintBundle),
-// and refuses a bundle whose own default owner it leaves out (bundleDefault), which the API's
+// It is exported because its callers read it rather than fail on it: a role's gh bundle drops
+// the repositories a refused read lease is cached under and keeps the rest (mintBundle), and
+// refuses a bundle whose own default owner it leaves out (bundleDefault), which the API's
 // controller route answers as a refusal of its own (internal/api's controllerGitHubCredential).
 // The Manager remembers it per scope and serves it without asking GitHub again while the window
 // holds (lease, narrowingRefusalWindow), which it does for no other refusal. No other refusal is
-// read any of these ways.
+// read any of these ways. The daemon's provisioning adapter once fell back on it, serving the
+// owner's own write token where the reading lease was refused; it does so no longer, and returns
+// every error of its mint as it came (implementTokens in internal/daemon).
 var ErrNarrowingRefused = errors.New("the installation does not hold the permissions asked for")
 
 // ErrNotInstalled is a mint refused because the App has no installation on the owner: an answer

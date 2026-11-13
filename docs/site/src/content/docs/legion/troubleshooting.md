@@ -550,9 +550,9 @@ listing alone. What follows the colon says where to look:
 - `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
   could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
   configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
-  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
-  wider token in its place.
+- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
+  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+  pull requests and metadata read. The daemon asks for no wider token in its place.
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.

@@ -614,8 +614,7 @@ const (
 // once per App role, owner and repository for the life of the process (saidLeftOut): the role's
 // other repositories are served, and what its bundle does not hold is said once rather than at
 // every launch and every refresh. It carries no token, a bundle's shortfall being about the ask.
-// A caller that holds no logger of its own (sandbox.Options.Log is one) says it on slog.Default,
-// as the daemon's own fallback line does (implementTokens.warnOwnToken).
+// A caller that holds no logger of its own (sandbox.Options.Log is one) says it on slog.Default.
 func sayLeftOut(log *slog.Logger, role AppRole, owner, repo, because string) {
 	key := leftOutRepository{role: role, owner: strings.ToLower(strings.TrimSpace(owner)), repo: strings.ToLower(strings.TrimSpace(repo))}
 	saidLeftOutMu.Lock()
