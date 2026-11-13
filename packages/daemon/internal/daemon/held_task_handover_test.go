@@ -153,7 +153,12 @@ type heldTaskRig struct {
 	decided   int
 }
 
-func newHeldTaskRig(t *testing.T) *heldTaskRig {
+// heldTaskOption sets a part of a heldTaskRig up before newHeldTaskRig launches its architect,
+// which is the last moment it can: each claim's machine copies the supervisor's deps when it is
+// made (supervise.NewMachine), so a dep changed after the launch reaches no machine of the rig.
+type heldTaskOption func(*heldTaskRig)
+
+func newHeldTaskRig(t *testing.T, options ...heldTaskOption) *heldTaskRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -192,6 +197,9 @@ func newHeldTaskRig(t *testing.T) *heldTaskRig {
 	}
 	rig.put(rig.root)
 	rig.put(rig.child)
+	for _, option := range options {
+		option(rig)
+	}
 	rig.launchArchitect()
 	return rig
 }
