@@ -256,11 +256,11 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 	// The words name DEMO-1 and DEMO-2, so every invocation on them may run at once.
 	want := goingProposal{Offers: []goingOffer{
 		{Action: "dispatch_issue_update", Offered: true, Invocations: []goingInvocation{
-			{Arguments: map[string]any{"issue": "DEMO-1", "status": "done"}, Automatic: true},
-			{Arguments: map[string]any{"issue": "DEMO-2", "status": "done"}, Automatic: true},
+			{Arguments: map[string]any{"issue": "DEMO-1", "status": "done"}, Automatic: true, TargetArgument: "issue"},
+			{Arguments: map[string]any{"issue": "DEMO-2", "status": "done"}, Automatic: true, TargetArgument: "issue"},
 		}},
 		{Action: "dispatch_comment", Offered: true, Invocations: []goingInvocation{
-			{Arguments: map[string]any{"issue": "DEMO-1", "body": "Closing both."}, Automatic: true},
+			{Arguments: map[string]any{"issue": "DEMO-1", "body": "Closing both."}, Automatic: true, TargetArgument: "issue"},
 		}},
 	}}
 	if !reflect.DeepEqual(proposal, want) {
@@ -274,13 +274,11 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 	if !run.Finished || len(run.Writes) != 0 || run.StructuredOutput == nil || *run.StructuredOutput != going.StructuredOutputAccepted {
 		t.Errorf("the record reads finished=%v writes=%v structured_output=%v, want finished, no write, accepted", run.Finished, run.Writes, run.StructuredOutput)
 	}
-	var recordedDecision goingDecision
-	var recordedProposal goingProposal
-	if json.Unmarshal(run.Decision, &recordedDecision) != nil || !reflect.DeepEqual(recordedDecision, decision) {
-		t.Errorf("the record keeps the decision %s, want the frame's %+v", run.Decision, decision)
+	if run.Decision == nil || !reflect.DeepEqual(*run.Decision, decision) {
+		t.Errorf("the record keeps the decision %+v, want the frame's %+v", run.Decision, decision)
 	}
-	if json.Unmarshal(run.Proposal, &recordedProposal) != nil || !reflect.DeepEqual(recordedProposal, proposal) {
-		t.Errorf("the record keeps the proposal %s, want the frame's %+v", run.Proposal, proposal)
+	if run.Proposal == nil || !reflect.DeepEqual(*run.Proposal, proposal) {
+		t.Errorf("the record keeps the proposal %+v, want the frame's %+v", run.Proposal, proposal)
 	}
 }
 
@@ -426,7 +424,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		&going.Final{Arguments: `{"dispatch_claim":[{}]}`},
 		goingRunStart{chip: chip, actions: browser})
 	if got := offer(claimOnPage, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 ||
-		!reflect.DeepEqual(got.Invocations[0], goingInvocation{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true}) {
+		!reflect.DeepEqual(got.Invocations[0], goingInvocation{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true, TargetArgument: "issue"}) {
 		t.Errorf("on the page the claim is offered as %+v, want the chip's issue filled and nothing missing", got)
 	}
 	if got := offer(claimOnPage, "dispatch_resolve_ask"); got.Offered || len(got.Invocations) != 0 {
@@ -437,7 +435,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_claim"}},
 		&going.Final{Arguments: `{}`},
 		goingRunStart{chip: chip, actions: browser})
-	want := goingInvocation{Arguments: map[string]any{}, Missing: &goingMissingArgument{Field: "issue", Kind: goingPromptItem, Item: "issue"}, Automatic: true}
+	want := goingInvocation{Arguments: map[string]any{}, Missing: &goingMissingArgument{Field: "issue", Kind: goingPromptItem, Item: "issue"}, Automatic: true, TargetArgument: "issue"}
 	if got := offer(claimNamed, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 || !reflect.DeepEqual(got.Invocations[0], want) {
 		t.Errorf("about items the words name, the claim is offered as %+v, want the issue asked for as an item", got)
 	}
@@ -447,8 +445,9 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		&going.Final{Arguments: `{"dispatch_follow":[{"ask":"0199e2a0-2222-7000-8000-000000000002"}]}`},
 		goingRunStart{actions: session, session: "0199e2a0-1111-7000-8000-000000000001"})
 	wantFollow := goingInvocation{
-		Arguments: map[string]any{"ask": "0199e2a0-2222-7000-8000-000000000002"},
-		Missing:   &goingMissingArgument{Field: "action", Kind: goingPromptEnum, Choices: []string{"follow", "unfollow"}},
+		Arguments:      map[string]any{"ask": "0199e2a0-2222-7000-8000-000000000002"},
+		Missing:        &goingMissingArgument{Field: "action", Kind: goingPromptEnum, Choices: []string{"follow", "unfollow"}},
+		TargetArgument: "ask",
 	}
 	if got := offer(follow, "dispatch_follow"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{wantFollow}) {
 		t.Errorf("a session's follow is offered as %+v, want its action asked for among follow and unfollow", got)
@@ -465,7 +464,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_issue_update"}},
 		&going.Final{Arguments: `{"dispatch_issue_update":[{"issue":12},{"issue":"DEMO-3","colour":"red"},{"issue":"DEMO-4","status":"done"}]}`},
 		goingRunStart{actions: browser})
-	if got := offer(dropped, "dispatch_issue_update"); !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-4", "status": "done"}}}) {
+	if got := offer(dropped, "dispatch_issue_update"); !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-4", "status": "done"}, TargetArgument: "issue"}}) {
 		t.Errorf("the update is offered as %+v, want the one element its schema accepts", got)
 	}
 
@@ -473,8 +472,39 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		goingDecision{Context: going.ContextPage, offered: []string{"dispatch_claim"}},
 		nil,
 		goingRunStart{chip: chip, actions: browser})
-	if got := offer(fallback, "dispatch_claim"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true}}) {
+	if got := offer(fallback, "dispatch_claim"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true, TargetArgument: "issue"}}) {
 		t.Errorf("with no structured reply the claim is offered as %+v, want it filled from the page", got)
+	}
+}
+
+// The argument an invocation names its item by is the item's own, as the row it reaches binds
+// it: none for a write that makes its item - a new issue, a new project - whose line names the
+// item once it is made; a document edit's document, on the project's route as on the issue's,
+// and never the project or issue it sits under; and an ask, not the caller's own session.
+func TestGoingTargetArgumentNamesTheItemItself(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ action, pattern, want string }{
+		{"dispatch_issue", "/api/v1/issues", ""},
+		{"dispatch_project", "/api/v1/projects", ""},
+		{"dispatch_doc_edit", "/api/v1/projects/{key}/artifacts/{slug}/edits", "artifact"},
+		{"dispatch_doc_edit", "/api/v1/issues/{key}/artifacts/{slug}/edits", "artifact"},
+		{"dispatch_issue_update", "/api/v1/issues/{key}", "issue"},
+		{"dispatch_follow", "/api/v1/asks/{id}/followers/{session_id}", "ask"},
+	} {
+		action, held := catalogue.Lookup(tc.action)
+		if !held {
+			t.Fatalf("the catalogue holds no %s", tc.action)
+		}
+		index := slices.IndexFunc(action.Routes, func(route GoingRoute) bool { return route.Pattern == tc.pattern })
+		if index < 0 {
+			t.Fatalf("%s has no row %s", tc.action, tc.pattern)
+		}
+		if got := goingTargetArgument(action.Routes[index]); got != tc.want {
+			t.Errorf("%s through %s names its item by %q, want %q", tc.action, tc.pattern, got, tc.want)
+		}
 	}
 }
 

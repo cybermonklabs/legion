@@ -666,5 +666,15 @@ test("a write an item's stored text asks for on another issue is offered, and a 
   ]);
   expect((await listComments(named)).map((comment) => comment.body)).toContain(asked);
   expect((await listComments(other)).map((comment) => comment.body)).not.toContain(injected);
-  expect(((await newestRun()).writes ?? []).map((write) => write.target)).toEqual([named]);
+  // The run records the one write, of invocation 0, the comment its proposal wrote on the named
+  // issue: a write's target is the comment it made, so the issue is read off that invocation.
+  const run = await newestRun();
+  const recorded = run.writes ?? [];
+  expect(recorded.map((write) => [write.action, write.invocation, write.outcome.ok])).toEqual([
+    ["dispatch_comment", 0, true],
+  ]);
+  const commented = run.proposal?.offers?.find((offer) => offer.action === "dispatch_comment")
+    ?.invocations?.[recorded[0]?.invocation ?? -1]?.arguments?.issue;
+  expect(commented).toBe(named);
+  expect(commented).not.toBe(other);
 });

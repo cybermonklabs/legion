@@ -19,7 +19,6 @@ import {
 } from "../../theme/classes";
 import { useWrites } from "../writes/write-store";
 import {
-  ALWAYS_ASK,
   actionName,
   actionOn,
   type GoingApproval,
@@ -50,6 +49,14 @@ export function offerOptionId(action: string): string {
 
 type Decision = GoingDecisionEvent["data"];
 type Proposal = GoingProposalEvent["data"];
+
+/** The two actions the bar sends through offers of its own, which always ask (`NewIssueOffer`,
+ *  `SendToAgentOffer`), rather than through a row of the operation group. */
+const OWN_OFFERS: Readonly<Record<string, true>> = {
+  dispatch_issue: true,
+  dispatch_send_to_agent: true,
+};
+
 /** The value of each invocation's missing argument the person gave, by invocation. */
 type Fills = Readonly<Record<number, string>>;
 
@@ -116,13 +123,6 @@ function offerWith(offer: GoingOffer, indexes: readonly number[]): GoingOffer {
   return { ...offer, invocations: offer.invocations.filter((_, index) => indexes.includes(index)) };
 }
 
-/** The action the decision acts on by itself: its choice at or above the action threshold, and
- *  none of the writes that always ask. Undefined where it acts on none. */
-function actedAction(decision: Decision): string | undefined {
-  const chosen = decision.actions[0]?.action;
-  return decision.act && chosen !== undefined && ALWAYS_ASK[chosen] !== true ? chosen : undefined;
-}
-
 /** The value a fill sends for the argument it fills: a number field's as a number. */
 function fillValue(missing: GoingMissingArgument, text: string): unknown {
   return missing.kind === "number" ? Number(text) : text;
@@ -131,7 +131,11 @@ function fillValue(missing: GoingMissingArgument, text: string): unknown {
 /** The items an offer acts on, in the words of one row: `CORE-1, CORE-2 and CORE-3`. */
 function targetsOf(offer: GoingOffer | undefined): string {
   const targets = [
-    ...new Set((offer?.invocations ?? []).map((invocation) => targetOf(invocation.arguments))),
+    ...new Set(
+      (offer?.invocations ?? []).map((invocation) =>
+        targetOf(invocation.arguments, invocation.target_argument)
+      )
+    ),
   ].filter((target) => target !== "");
   if (targets.length <= 1) return targets[0] ?? "";
   return `${targets.slice(0, -1).join(", ")} and ${targets.at(-1)}`;
@@ -160,7 +164,10 @@ function nextStep(
       ? { kind: "idle", words }
       : { ...wanted, kind: "preparing", words };
   }
-  const action = wanted.action ?? actedAction(answer.decision);
+  // The decision's choice at or above the action threshold, which Dispatch's `act` says, and
+  // never one of the writes that always ask.
+  const action =
+    wanted.action ?? (answer.decision.act ? answer.decision.actions[0]?.action : undefined);
   if (action === undefined) return { kind: "idle", words };
   if (answer.proposal === undefined) {
     return answerSettled(answer)
@@ -294,6 +301,7 @@ export function useGoingOperations({
                 }),
             invocation: index,
             runId,
+            target: invocation.target_argument,
             words: current.words,
           },
         ];
@@ -329,7 +337,7 @@ export function useGoingOperations({
   const options: OperationOption[] = [];
   let sectionLabel = "";
   if (decision !== undefined) {
-    const acted = actedAction(decision);
+    const acted = decision.act ? decision.actions[0]?.action : undefined;
     if (acted !== undefined) {
       sectionLabel = "Operation";
       const actedOffer = offerOf(proposal, acted);
@@ -379,7 +387,7 @@ export function useGoingOperations({
     } else {
       sectionLabel = "Suggested actions: pick one to run it";
       for (const { action } of decision.actions) {
-        if (action === "none" || ALWAYS_ASK[action] === true || ran.has(action)) continue;
+        if (action === "none" || OWN_OFFERS[action] === true || ran.has(action)) continue;
         if (proposal !== undefined && offerOf(proposal, action) === undefined) continue;
         const label = rowLabel(action, offerOf(proposal, action));
         options.push({
@@ -408,13 +416,15 @@ export function useGoingOperations({
               ? undefined
               : (store, write) =>
                   fileNewIssue(store, write, async (through, filing) => {
+                    const invocation = issueOffer.invocations[0];
                     const written = await runGoingWrite(through, {
                       action: "dispatch_issue",
                       approved: "person",
-                      arguments: issueOffer.invocations[0]?.arguments ?? {},
+                      arguments: invocation?.arguments ?? {},
                       invocation: 0,
                       replace: newIssueFields(filing),
                       runId,
+                      target: invocation?.target_argument ?? "",
                       words: current.words,
                     });
                     // The write's line names the issue it made: the key is all the filing reads.
@@ -426,25 +436,22 @@ export function useGoingOperations({
     runId === undefined || current === undefined || sendOffer === undefined
       ? undefined
       : async (store, { block, issue, session, words: typed }) => {
+          const invocation = sendOffer.invocations[0];
           const written = await runGoingWrite(store, {
             action: "dispatch_send_to_agent",
             approved: "person",
-            arguments: sendOffer.invocations[0]?.arguments ?? {},
+            arguments: invocation?.arguments ?? {},
             invocation: 0,
             replace: { body: handoffBody(issue, block, typed), delivery: "aside", session },
             runId,
+            target: invocation?.target_argument ?? "",
             words: current.words,
           });
           // Dispatch writes the message under a 201 even where its delivery failed, so the line's
           // record of that delivery says whether the words reached the session.
-          const delivery =
-            typeof written?.now === "object" && written.now !== null
-              ? (written.now as { delivery_state?: unknown; delivery_error?: unknown })
-              : undefined;
-          if (delivery?.delivery_state !== "failed") return undefined;
-          return typeof delivery.delivery_error === "string"
-            ? delivery.delivery_error
-            : "Dispatch gave no reason.";
+          const delivery = written?.delivery;
+          if (delivery?.state !== "failed") return undefined;
+          return delivery.error ?? "Dispatch gave no reason.";
         };
 
   const stageShown = stage !== undefined && stage.kind !== "idle";
@@ -544,7 +551,7 @@ function MissingArguments({
   return (
     <form className="space-y-2" data-testid="going-operation-fill" onSubmit={submitted}>
       {asked.map(({ index, invocation, missing }, position) => {
-        const target = targetOf(invocation.arguments);
+        const target = targetOf(invocation.arguments, invocation.target_argument);
         const label = `Fill ${missing.field === "@session" ? "the session" : missing.field}${
           target === "" ? "" : ` for ${target}`
         }`;
@@ -621,7 +628,7 @@ function ConfirmStep({
       ? [
           {
             key: `${action}:${index}`,
-            text: `${actionOn(action, targetOf(invocation.arguments))}: asks first`,
+            text: `${actionOn(action, targetOf(invocation.arguments, invocation.target_argument))}: asks first`,
           },
         ]
       : []
@@ -673,11 +680,12 @@ function lineText(line: TurnLine): string {
       const written = line.written;
       if (written === undefined) return `${named}: done; Dispatch kept no answer naming it`;
       const item = written.item === "" ? named : written.item;
-      return written.field === ""
+      const fields = (written.fields ?? []).join(", ");
+      return fields === ""
         ? `${item}: done`
-        : `${item} · ${written.field}: ${shownValue(written.before, written.field)} → ${shownValue(
+        : `${item} · ${fields}: ${shownValue(written.before, written.fields)} → ${shownValue(
             written.now,
-            written.field
+            written.fields
           )}`;
     }
   }
@@ -702,15 +710,17 @@ function TurnLines({
             data-before={
               line.written === undefined
                 ? undefined
-                : shownValue(line.written.before, line.written.field)
+                : shownValue(line.written.before, line.written.fields)
             }
             data-code={line.refusal?.code}
-            data-field={line.written?.field}
+            data-field={
+              line.written === undefined ? undefined : (line.written.fields ?? []).join(", ")
+            }
             data-item={line.written?.item ?? line.target}
             data-now={
               line.written === undefined
                 ? undefined
-                : shownValue(line.written.now, line.written.field)
+                : shownValue(line.written.now, line.written.fields)
             }
             data-state={line.state}
             data-testid="going-write-line"

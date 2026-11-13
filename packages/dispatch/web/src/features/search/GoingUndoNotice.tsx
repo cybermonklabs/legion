@@ -32,18 +32,24 @@ export function GoingUndoNotice(): ReactNode {
       </p>
       {undo.lines.length === 0 ? null : (
         <ul className="mt-1 space-y-1">
-          {undo.lines.map((line) => (
-            <li
-              className={`text-xs ${line.outcome.ok ? textMutedOnSurface : dangerText}`}
-              data-item={line.item}
-              data-testid="going-undo-notice-line"
-              data-undo={line.outcome.ok ? "ok" : "refused"}
-              key={line.write_id}
-            >
-              {line.item === "" ? actionName(line.action) : line.item}
-              {line.field === "" ? "" : ` · ${line.field}`}: {undoneText(line)}
-            </li>
-          ))}
+          {undo.lines.map((line) => {
+            const fields = (line.fields ?? [])
+              .map((field) => field.field)
+              .filter((field) => field !== "")
+              .join(", ");
+            return (
+              <li
+                className={`text-xs ${line.outcome.ok ? textMutedOnSurface : dangerText}`}
+                data-item={line.item}
+                data-testid="going-undo-notice-line"
+                data-undo={line.outcome.ok ? "ok" : "refused"}
+                key={line.write_id}
+              >
+                {line.item === "" ? actionName(line.action) : line.item}
+                {fields === "" ? "" : ` · ${fields}`}: {undoneText(line)}
+              </li>
+            );
+          })}
         </ul>
       )}
       <div className="mt-2 flex items-center justify-between gap-2">

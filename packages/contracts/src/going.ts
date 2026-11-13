@@ -3,6 +3,12 @@
  * holds, and the answer is streamed to the browser as server-sent events. Every name, code and
  * bound of that stream is declared here once, and generated into Go (`contracts.Going*`), so the
  * server that writes a frame and the page that reads it cannot drift apart.
+ *
+ * The frames' shapes are written by hand here and in Go (`going_decision.go`, `going/blocks.go`,
+ * `going_reads.go`), since a frame union is no OpenAPI response. `fixtures/going/` holds the two
+ * together: the server's own Go test writes each frame's data there
+ * (`TestTheGoingFrameFixturesAreWhatTheServerWrites`), and `going.test.ts` holds every fixture to
+ * the types below key for key, so a field one side gains or loses fails a test.
  */
 
 /** The frame carrying the next piece of the answer's text, in the order the model wrote it.
@@ -223,11 +229,14 @@ export interface GoingMissingArgument {
  *  run at once on submit: only where every item it names is the chip's issue or project, where the
  *  words are about the page, or is named whole in the person's own words. Any other invocation
  *  came from text someone stored and is an offer the person picks, which the server refuses to
- *  run as `auto` (`GOING_NOT_AUTOMATIC`). */
+ *  run as `auto` (`GOING_NOT_AUTOMATIC`). `target_argument` is the argument naming the item the
+ *  invocation acts on, as the row it reaches binds that item into its path, `""` for none: a write
+ *  that makes its item, or one addressing the caller's own session. */
 export interface GoingInvocation {
   readonly arguments: Readonly<Record<string, unknown>>;
   readonly missing: GoingMissingArgument | null;
   readonly automatic: boolean;
+  readonly target_argument: string;
 }
 
 /** One action the decision offered: one invocation per item it changes, and `offered` false

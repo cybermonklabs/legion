@@ -21,12 +21,16 @@ import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
 const noteClassName = `text-xs ${textMutedOnSurface}`;
 
+/** One thing the bar cannot do on this Dispatch, with the test id a check reads it by. */
+export interface CapabilityGap {
+  readonly id: string;
+  readonly text: string;
+}
+
 /** What the bar cannot do on this Dispatch, one line for each part the capability read says is
- *  missing, each with the test id a check reads it by. */
-export function capabilityGaps(
-  capability: GoingCapability
-): readonly { readonly id: string; readonly text: string }[] {
-  const gaps: { id: string; text: string }[] = [];
+ *  missing. */
+export function capabilityGaps(capability: GoingCapability): readonly CapabilityGap[] {
+  const gaps: CapabilityGap[] = [];
   if (!capability.answer.configured) {
     gaps.push({
       id: "going-cannot-answer",
@@ -105,7 +109,7 @@ export function AnswerPanel({
   gaps,
 }: {
   readonly answer: GoingAnswer | undefined;
-  readonly gaps: readonly { readonly id: string; readonly text: string }[];
+  readonly gaps: readonly CapabilityGap[];
 }): ReactNode {
   const answering = answer !== undefined && !answerSettled(answer);
   return (

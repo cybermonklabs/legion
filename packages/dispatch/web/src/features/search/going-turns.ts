@@ -25,15 +25,6 @@ import { refusalText } from "./offer";
  *  by a person whose setting asks before every write (`confirmed`). */
 export type GoingApproval = GoingWriteInput["approved"];
 
-/** The two writes the bar never runs at once, whatever the decision's confidence: a request
- *  handed to a live agent spends that agent a turn, and a wrong new issue is a husk. Each goes
- *  through the bar's own offer, which always asks (`SendToAgentOffer`, `NewIssueOffer`); Dispatch
- *  refuses `auto` for both as well. */
-export const ALWAYS_ASK: Readonly<Record<string, true>> = {
-  dispatch_issue: true,
-  dispatch_send_to_agent: true,
-};
-
 /** Where one write of a turn stands: out or waiting its turn, landed, refused by Dispatch, or
  *  stopped by an undo before it was sent. */
 export type TurnLineState = "sending" | "done" | "refused" | "stopped";
@@ -170,26 +161,11 @@ export function actionOn(action: string, target: string): string {
   return `${actionName(action)}${target === "" ? "" : ` ${target}`}`;
 }
 
-/** The arguments that name the item a write acts on, in the order the bar reads them. */
-const TARGET_ARGUMENTS = [
-  "issue",
-  "ask",
-  "comment",
-  "artifact",
-  "in_reply_to",
-  "retract",
-  "session",
-  "project",
-  "key",
-] as const;
-
-/** The item an invocation's arguments name, `""` where they name none. */
-export function targetOf(args: Readonly<Record<string, unknown>>): string {
-  for (const name of TARGET_ARGUMENTS) {
-    const value = args[name];
-    if (typeof value === "string" && value !== "") return value;
-  }
-  return "";
+/** The item an invocation's arguments name: the value of `argument`, the argument Dispatch says
+ *  names it (`GoingInvocation.target_argument`), and `""` where it names none. */
+export function targetOf(args: Readonly<Record<string, unknown>>, argument: string): string {
+  const value = argument === "" ? undefined : args[argument];
+  return typeof value === "string" ? value : "";
 }
 
 const SHOWN_MAX = 80;
@@ -205,14 +181,15 @@ function shown(value: unknown): string {
   return cut(JSON.stringify(value));
 }
 
-/** The value a write read before or after it, for the field it names: a read of an issue answers
- *  an object keyed by the fields the write changed, and the line shows the fields' own values. */
-export function shownValue(value: unknown, field: string): string {
+/** The value a write read before or after it, for the fields it changed: a read of an issue
+ *  answers an object keyed by the fields the write changed, and the line shows the fields' own
+ *  values. */
+export function shownValue(value: unknown, fields: readonly string[] | null): string {
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
     const record = value as Readonly<Record<string, unknown>>;
-    const fields = field.split(", ").filter((name) => name !== "");
-    if (fields.length > 0 && fields.every((name) => name in record)) {
-      return fields.map((name) => shown(record[name])).join(", ");
+    const named = (fields ?? []).filter((name) => name !== "");
+    if (named.length > 0 && named.every((name) => name in record)) {
+      return named.map((name) => shown(record[name])).join(", ");
     }
   }
   return shown(value);
@@ -238,6 +215,8 @@ export interface GoingWriteSpec {
   readonly invocation: number;
   /** The invocation's own arguments, which its line is named from. */
   readonly arguments: Readonly<Record<string, unknown>>;
+  /** The argument naming the item the invocation acts on (`target_argument`), `""` for none. */
+  readonly target: string;
   readonly approved: GoingApproval;
   /** The argument the invocation was missing, and the value the person gave it. */
   readonly fill?: { readonly field: string; readonly value: unknown };
@@ -261,7 +240,7 @@ export function runGoingWrite(
   if (already !== undefined) return already;
   const named: Record<string, unknown> = { ...spec.arguments, ...spec.replace };
   if (spec.fill !== undefined) named[spec.fill.field] = spec.fill.value;
-  const target = targetOf(named);
+  const target = targetOf(named, spec.target);
   const line: TurnLine = {
     action: spec.action,
     change: changeOf(named, target),

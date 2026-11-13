@@ -352,133 +352,175 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 		cancel()
 	}()
 
-	recorded := start.login != ""
-	if recorded {
-		if err := s.recordGoingRun(storing, request.ID, start.login, request.Words, start.chip); err != nil {
-			slog.Warn("dispatch going: record the run", "request", request.ID, "error", err)
-			recorded = false
-		}
-	}
-	fill := func(parts goingRunParts) {
-		if !recorded {
-			return
-		}
-		if err := s.fillGoingRun(storing, request.ID, parts); err != nil {
-			slog.Warn("dispatch going: fill the run's record", "request", request.ID, "error", err)
-		}
-	}
-
+	run := s.beginGoingRun(storing, running, request, start)
 	if s.deps.Answerer == nil {
 		if _, err := s.endGoingRun(storing, request.ID, going.Fault(contracts.GoingErrorNoModelConfigured)); err != nil {
 			slog.Warn("dispatch going: store the no-model-configured frame", "request", request.ID, "error", err)
 		}
-		fill(goingRunParts{Finished: true})
+		run.fill(goingRunParts{Finished: true})
 		return
 	}
 	answering, endAnswering := context.WithDeadline(running, request.EndsAt)
 	defer endAnswering()
-	emit := func(event going.Event) error {
-		if event.Terminal() {
-			_, err := s.endGoingRun(storing, request.ID, event)
-			return err
-		}
-		_, err := s.appendGoingEvent(storing, request.ID, event)
-		return err
-	}
 
-	decision, decided := s.goingDecide(answering, request.Words, start)
-	if running.Err() != nil {
-		// Cancelled while it decided: nothing is asked of the answer.
+	decision, err := run.decide(answering)
+	if err != nil || running.Err() != nil {
+		// Cancelled while it decided, or its decision frame could not be stored: nothing is
+		// asked of the answer.
+		goingRunStopped(request.ID, err)
 		return
 	}
-	var offer going.Offer
-	if decided {
-		if err := emit(going.Event{Name: contracts.GoingEventDecision, Data: decision}); err != nil {
-			goingRunStopped(request.ID, err)
-			return
-		}
-		encoded, err := json.Marshal(decision)
-		if err == nil {
-			fill(goingRunParts{Decision: encoded})
-		}
-		offer = decision.offer(start)
-	}
+	goingRunStopped(request.ID, run.answer(answering, decision))
+}
 
-	// Every hit the answer's searches found, for the record: the search tool runs on
+// goingRunning is one run as it answers: its request and start, the context its frames and its
+// record are stored on and the one a cancel ends, whether its record is kept, every hit its
+// searches found, and whether it reached its outcome.
+type goingRunning struct {
+	s        *server
+	request  goingRequest
+	start    goingRunStart
+	storing  context.Context
+	running  context.Context
+	recorded bool
+	ended    bool
+	// found is every hit the answer's searches found, for the record: the search tool runs on
 	// agentloop's goroutines, and the record is written from the answer's own.
-	var found struct {
+	found struct {
 		sync.Mutex
 		hits []going.Hit
 	}
-	search := s.goingSearch(request.Project)
-	hits := func() []going.Hit {
-		found.Lock()
-		defer found.Unlock()
-		return append([]going.Hit{}, found.hits...)
+}
+
+// beginGoingRun writes the run's record where its caller is a person (goingRunStart.login), and
+// answers the run that fills it.
+func (s *server) beginGoingRun(storing, running context.Context, request goingRequest, start goingRunStart) *goingRunning {
+	run := &goingRunning{s: s, request: request, start: start, storing: storing, running: running, recorded: start.login != ""}
+	if run.recorded {
+		if err := s.recordGoingRun(storing, request.ID, start.login, request.Words, start.chip); err != nil {
+			slog.Warn("dispatch going: record the run", "request", request.ID, "error", err)
+			run.recorded = false
+		}
 	}
-	// The read tools the caller may call, each made as the run's author; the
-	// block's fill makes its read through the same functions, and the roster read is what the
-	// roster frame reports.
-	reads := s.goingRunReads(request, start)
-	ended := false
-	err := s.deps.Answerer.Run(answering, going.Request{
-		Words: request.Words,
+	return run
+}
+
+// fill writes parts onto the run's record, where it keeps one.
+func (g *goingRunning) fill(parts goingRunParts) {
+	if !g.recorded {
+		return
+	}
+	if err := g.s.fillGoingRun(g.storing, g.request.ID, parts); err != nil {
+		slog.Warn("dispatch going: fill the run's record", "request", g.request.ID, "error", err)
+	}
+}
+
+// emit stores one frame of the run, ending it with a terminal frame.
+func (g *goingRunning) emit(event going.Event) error {
+	if event.Terminal() {
+		_, err := g.s.endGoingRun(g.storing, g.request.ID, event)
+		return err
+	}
+	_, err := g.s.appendGoingEvent(g.storing, g.request.ID, event)
+	return err
+}
+
+// hits is every hit the run's searches found so far.
+func (g *goingRunning) hits() []going.Hit {
+	g.found.Lock()
+	defer g.found.Unlock()
+	return append([]going.Hit{}, g.found.hits...)
+}
+
+// decide makes the run's decision, and stores its frame and its record: nil with no decision,
+// which the answer runs without, and an error where its frame could not be stored.
+func (g *goingRunning) decide(ctx context.Context) (*goingDecision, error) {
+	decision, decided := g.s.goingDecide(ctx, g.request.Words, g.start)
+	if !decided || g.running.Err() != nil {
+		return nil, nil
+	}
+	if err := g.emit(going.Event{Name: contracts.GoingEventDecision, Data: decision}); err != nil {
+		return nil, err
+	}
+	g.fill(goingRunParts{Decision: &decision})
+	return &decision, nil
+}
+
+// answer asks the answer of the run, told the actions decision offered (none for no decision),
+// with every read tool its caller may call, each made as the run's author: the block's fill makes
+// its read through the same functions, and the roster read is what the roster frame reports. A
+// run that never reached its outcome keeps what it found and reads unfinished.
+func (g *goingRunning) answer(ctx context.Context, decision *goingDecision) error {
+	var offer going.Offer
+	if decision != nil {
+		offer = decision.offer(g.start)
+	}
+	search := g.s.goingSearch(g.request.Project)
+	reads := g.s.goingRunReads(g.request, g.start)
+	err := g.s.deps.Answerer.Run(ctx, going.Request{
+		Words: g.request.Words,
 		Search: func(ctx context.Context, q string) ([]going.Hit, error) {
 			result, err := search(ctx, q)
-			found.Lock()
-			found.hits = append(found.hits, result...)
-			found.Unlock()
+			g.found.Lock()
+			g.found.hits = append(g.found.hits, result...)
+			g.found.Unlock()
 			return result, err
 		},
-		Bodies: s.goingBodies,
+		Bodies: g.s.goingBodies,
 		Offer:  offer,
 		Reads:  reads.funcs,
 		OnOutcome: func(outcome going.Outcome) error {
-			if running.Err() != nil {
-				// Cancelled under the answer on this process: the answer's ending is the
-				// cancel's, so the run stores no ending and no proposal and its record reads
-				// unfinished, as a cancel landing on another process leaves it.
-				return running.Err()
-			}
-			parts := goingRunParts{Hits: hits(), Finished: true}
-			if outcome.StructuredOutput != "" {
-				parts.StructuredOutput = &outcome.StructuredOutput
-				// After every text frame and before the proposal and the ending (R2): the block
-				// the structured reply wrote, filled from its read, and how fresh the roster the
-				// run read was. Neither counts against the answer's word cut.
-				if block, drawn := reads.block(answering, outcome.Final, request.Words, decision.Display.Chart); drawn {
-					if err := emit(going.Event{Name: contracts.GoingEventBlock, Data: block}); err != nil {
-						return err
-					}
-				}
-				if roster, read := reads.rosterRead(); read {
-					if err := emit(going.Event{Name: contracts.GoingEventRoster, Data: roster}); err != nil {
-						return err
-					}
-				}
-			}
-			// A run whose answer came to nothing - it failed before the model answered or
-			// refused - proposes nothing either.
-			if decided && outcome.StructuredOutput != "" {
-				proposal := goingPropose(decision, outcome.Final, start)
-				if err := emit(going.Event{Name: contracts.GoingEventProposal, Data: proposal}); err != nil {
-					return err
-				}
-				if encoded, err := json.Marshal(proposal); err == nil {
-					parts.Proposal = encoded
-				}
-			}
-			fill(parts)
-			ended = true
-			return nil
+			return g.finish(ctx, reads, decision, outcome)
 		},
-	}, emit)
-	if !ended {
+	}, g.emit)
+	if !g.ended {
 		// Cancelled, ended under the answer, or failed before it was told anything: the record
 		// keeps what the run found and reads unfinished.
-		fill(goingRunParts{Hits: hits()})
+		g.fill(goingRunParts{Hits: g.hits()})
 	}
-	goingRunStopped(request.ID, err)
+	return err
+}
+
+// finish is the run's outcome, once the answer has written its last text frame: the block the
+// structured reply wrote and the roster frame, the proposal of the decision, and the record,
+// finished.
+func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision *goingDecision, outcome going.Outcome) error {
+	if g.running.Err() != nil {
+		// Cancelled under the answer on this process: the answer's ending is the cancel's, so the
+		// run stores no ending and no proposal and its record reads unfinished, as a cancel
+		// landing on another process leaves it.
+		return g.running.Err()
+	}
+	parts := goingRunParts{Hits: g.hits(), Finished: true}
+	if outcome.StructuredOutput != "" {
+		parts.StructuredOutput = &outcome.StructuredOutput
+		// After every text frame and before the proposal and the ending (R2): the block the
+		// structured reply wrote, filled from its read, and how fresh the roster the run read
+		// was. Neither counts against the answer's word cut.
+		chart := decision != nil && decision.Display.Chart
+		if block, drawn := reads.block(ctx, outcome.Final, g.request.Words, chart); drawn {
+			if err := g.emit(going.Event{Name: contracts.GoingEventBlock, Data: block}); err != nil {
+				return err
+			}
+		}
+		if roster, read := reads.rosterRead(); read {
+			if err := g.emit(going.Event{Name: contracts.GoingEventRoster, Data: roster}); err != nil {
+				return err
+			}
+		}
+		// A run whose answer came to nothing - it failed before the model answered or refused -
+		// proposes nothing either.
+		if decision != nil {
+			proposal := goingPropose(*decision, outcome.Final, g.start)
+			if err := g.emit(going.Event{Name: contracts.GoingEventProposal, Data: proposal}); err != nil {
+				return err
+			}
+			parts.Proposal = &proposal
+		}
+	}
+	g.fill(parts)
+	g.ended = true
+	return nil
 }
 
 // goingRunStopped says why a run's frames stopped short, where that is worth an operator's

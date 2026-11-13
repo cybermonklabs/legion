@@ -8,7 +8,11 @@ body: |-
   `GoingMissingArgument`), the arguments of each offered action; `block` (`GoingBlockEvent`,
   `GoingBlockKind`, `GoingBlockData`, `GoingBlockSource` and the chart, table, metric and
   progress specs), one typed block filled from a read the server serves; and `roster`
-  (`GoingRosterEvent`), how fresh the roster the answer read was.
+  (`GoingRosterEvent`), how fresh the roster the answer read was. Each invocation carries
+  `target_argument`, the argument naming the item it acts on. `fixtures/going/` holds the data
+  of each frame as the Dispatch server's own Go types write it, and `src/going.test.ts` holds
+  every fixture to these types key for key.
   `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry the shapes of the new
   routes: the capability read's new shape, the writes and undo routes, the person's command-bar
-  setting, `GET /api/v1/me/going-runs` and `GET /api/v1/projects/{key}/activity`.
+  setting, `GET /api/v1/me/going-runs` (whose decision and proposal are typed as
+  `GoingRunDecision` and `GoingRunProposal`) and `GET /api/v1/projects/{key}/activity`.

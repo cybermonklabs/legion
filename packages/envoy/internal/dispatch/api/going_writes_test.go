@@ -224,9 +224,7 @@ func (rig goingWritesRig) recorded(t *testing.T, login string, act bool, action,
 	if err := rig.served.recordGoingRun(ctx, id, model.CanonicalLogin(login), words, nil); err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
-	encodedDecision, _ := json.Marshal(decision)
-	encodedProposal, _ := json.Marshal(proposal)
-	if err := rig.served.fillGoingRun(ctx, id, goingRunParts{Decision: encodedDecision, Proposal: encodedProposal, Finished: true}); err != nil {
+	if err := rig.served.fillGoingRun(ctx, id, goingRunParts{Decision: &decision, Proposal: &proposal, Finished: true}); err != nil {
 		t.Fatalf("fill the run: %v", err)
 	}
 	return id
@@ -588,12 +586,11 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 		}
 		line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_send_to_agent", "invocation": 0, "approved": goingApprovedConfirmed})
 		var now struct {
-			ID            string  `json:"id"`
-			DeliveryState string  `json:"delivery_state"`
-			DeliveryError *string `json:"delivery_error"`
+			ID string `json:"id"`
 		}
-		if err := json.Unmarshal(line.Now, &now); err != nil || now.ID == "" || now.DeliveryState != "sent" || now.DeliveryError != nil {
-			t.Fatalf("the confirmed send's line now = %s (%v), want the message sent, with its delivery's state", line.Now, err)
+		if err := json.Unmarshal(line.Now, &now); err != nil || now.ID == "" || line.Delivery == nil ||
+			line.Delivery.State != "sent" || line.Delivery.Error != nil {
+			t.Fatalf("the confirmed send's line = %+v, now %s (%v), want the message sent, with its delivery's state", line, line.Now, err)
 		}
 	})
 	t.Run("below the action threshold", func(t *testing.T) {
@@ -722,10 +719,9 @@ func TestGoingWriteOfASendToAgentRecordsItsLastDeliverysState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("observe the send: %v", err)
 	}
-	value, _ := after.value.(map[string]any)
-	failure, _ := value["delivery_error"].(*string)
-	if after.target != "msg-1" || value["delivery_state"] != "failed" || failure == nil || *failure != "no live session s1" {
-		t.Errorf("the send's value after = %#v (target %q), want msg-1 with its last delivery failed and why", after.value, after.target)
+	if after.target != "msg-1" || after.delivery == nil || after.delivery.State != "failed" ||
+		after.delivery.Error == nil || *after.delivery.Error != "no live session s1" {
+		t.Errorf("the send's delivery after = %+v (target %q), want msg-1 with its last delivery failed and why", after.delivery, after.target)
 	}
 }
 
@@ -761,7 +757,7 @@ func TestGoingWritesStoreTheValueBeforeTheValueAfterAndTheOutcome(t *testing.T) 
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Before and after", "The spec.\n").Key
 	run := rig.proposed(t, "alice", true, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress", "title": "Under way"})
 	line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedAuto})
-	if line.Item != issue || line.Field != "status, title" || !line.Outcome.OK || line.Outcome.Status != http.StatusOK {
+	if line.Item != issue || !slices.Equal(line.Fields, []string{"status", "title"}) || !line.Outcome.OK || line.Outcome.Status != http.StatusOK {
 		t.Fatalf("the line is %+v, want %s's status and title, ok", line, issue)
 	}
 	if !jsonEqual(t, line.Before, `{"status":"triage","title":"Before and after"}`) || !jsonEqual(t, line.Now, `{"status":"in_progress","title":"Under way"}`) {
@@ -833,7 +829,7 @@ func goingLineOf(t *testing.T, response *httptest.ResponseRecorder) goingWriteLi
 // outcome, and the same values before and now.
 func sameGoingLine(t *testing.T, got, want goingWriteLine) {
 	t.Helper()
-	if got.WriteID != want.WriteID || got.Action != want.Action || got.Item != want.Item || got.Field != want.Field ||
+	if got.WriteID != want.WriteID || got.Action != want.Action || got.Item != want.Item || !slices.Equal(got.Fields, want.Fields) ||
 		got.Outcome != want.Outcome || !jsonEqual(t, got.Before, string(want.Before)) || !jsonEqual(t, got.Now, string(want.Now)) {
 		t.Fatalf("the line is %+v, want the first write's %+v", got, want)
 	}

@@ -1,0 +1,21 @@
+{
+  "actions": [
+    {
+      "action": "dispatch_issue_update",
+      "confidence": 0.91,
+      "probability": 0.84
+    },
+    {
+      "action": "dispatch_comment",
+      "confidence": null,
+      "probability": 0.12
+    }
+  ],
+  "act": true,
+  "context": "page",
+  "display": {
+    "choice": "chart",
+    "confidence": 0.77,
+    "chart": true
+  }
+}

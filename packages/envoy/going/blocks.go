@@ -52,18 +52,37 @@ const (
 	chartPointMin = 2
 )
 
-// The tables a kind with a fixed table reads, and the fields its rows are drawn with.
+// The tables a kind with a fixed table reads, which the server's reads write their rows under
+// (internal/dispatch/api's going reads), so a read and the block it fills name one table.
 const (
-	tableIssues   = "issues"
-	tableSessions = "sessions"
-	tableProgress = "progress"
-	tableEvents   = "events"
+	TableIssues   = "issues"
+	TableSessions = "sessions"
+	TableProgress = "progress"
+	TableEvents   = "events"
+)
+
+// The fields of those tables' rows a block draws: an issue list's issues, an agent status's
+// sessions, a timeline's events and a progress block's bars by default. A read writes each of its
+// rows' fields under these names.
+const (
+	FieldKey          = "key"
+	FieldTitle        = "title"
+	FieldStatus       = "status"
+	FieldSessionID    = "session_id"
+	FieldState        = "state"
+	FieldOpenAsks     = "open_asks"
+	FieldLastActivity = "last_activity"
+	FieldAt           = "at"
+	FieldLane         = "lane"
+	FieldLabel        = "label"
+	FieldDone         = "done"
+	FieldTotal        = "total"
 )
 
 var (
-	issueListFields   = []string{"key", "title", "status"}
-	agentStatusFields = []string{"session_id", "title", "state", "open_asks", "last_activity"}
-	timelineFields    = []string{"at", "lane", "label"}
+	issueListFields   = []string{FieldKey, FieldTitle, FieldStatus}
+	agentStatusFields = []string{FieldSessionID, FieldTitle, FieldState, FieldOpenAsks, FieldLastActivity}
+	timelineFields    = []string{FieldAt, FieldLane, FieldLabel}
 )
 
 // blockSources is the reads that fill each kind. A kind with none of its reads among the run's
@@ -290,16 +309,16 @@ func (s *blockSpec) settle(kind string) error {
 		}
 		return required("table", "field")
 	case BlockProgress:
-		s.Table = cmp.Or(strings.TrimSpace(s.Table), tableProgress)
-		s.Label = cmp.Or(strings.TrimSpace(s.Label), "label")
-		s.Done = cmp.Or(strings.TrimSpace(s.Done), "done")
-		s.Total = cmp.Or(strings.TrimSpace(s.Total), "total")
+		s.Table = cmp.Or(strings.TrimSpace(s.Table), TableProgress)
+		s.Label = cmp.Or(strings.TrimSpace(s.Label), FieldLabel)
+		s.Done = cmp.Or(strings.TrimSpace(s.Done), FieldDone)
+		s.Total = cmp.Or(strings.TrimSpace(s.Total), FieldTotal)
 	case BlockIssueList:
-		s.Table = tableIssues
+		s.Table = TableIssues
 	case BlockAgentStatus:
-		s.Table = tableSessions
+		s.Table = TableSessions
 	case BlockTimeline:
-		s.Table = tableEvents
+		s.Table = TableEvents
 	}
 	return nil
 }
@@ -462,8 +481,8 @@ func fillTimeline(rows []map[string]any) ([]map[string]any, error) {
 		return nil, err
 	}
 	drawn = slices.DeleteFunc(drawn, func(row map[string]any) bool {
-		at, isText := row["at"].(string)
-		_, lane := row["lane"].(string)
+		at, isText := row[FieldAt].(string)
+		_, lane := row[FieldLane].(string)
 		if !isText || !lane {
 			return true
 		}

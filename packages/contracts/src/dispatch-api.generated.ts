@@ -1281,7 +1281,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo its catalogue row states and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released - none where the caller held it before the write, which changed nothing - a release taken back only where the caller held the claim before, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the request renewed an ask already open); close_created posts reason, or a default, on an issue the turn created and then closes it; trace records the write undone and erases nothing. A field another writer changed since the write is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of a claim someone else held is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder; a write whose action the catalogue no longer holds is refused 409 GOING_UNDO_UNKNOWN, since its undo is unknown, and one whose row states an undo this server has no way to run is refused 501 GOING_UNDO_UNSERVED. Answers 200 {lines: [{write_id, action, item, field, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, each recorded on the run's undos; an undo that was ok or refused with a verdict a retry would repeat settles its write, so a later undo of the run does not try it again, while one that failed on the server, or was refused 401, 408, 429 or CLAIM_CONTENDED, leaves it undoable. The undo claims every write it undoes on the run, pending, before it undoes any, holding no lock, so a second undo of the run while one is under way is 429 GOING_UNDO_IN_PROGRESS with a Retry-After, whose retry reads what the first did. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in. */
+    /** @description Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo its catalogue row states and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released - none where the caller held it before the write, which changed nothing - a release taken back only where the caller held the claim before, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the request renewed an ask already open); close_created posts reason, or a default, on an issue the turn created and then closes it; trace records the write undone and erases nothing. A field another writer changed since the write is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of a claim someone else held is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder; a write whose action the catalogue no longer holds is refused 409 GOING_UNDO_UNKNOWN, since its undo is unknown, and one whose row states an undo this server has no way to run is refused 501 GOING_UNDO_UNSERVED. Answers 200 {lines: [{write_id, action, item, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, fields one per field of the item the write changed, each recorded on the run's undos; an undo that was ok or refused with a verdict a retry would repeat settles its write, so a later undo of the run does not try it again, while one that failed on the server, or was refused 401, 408, 429 or CLAIM_CONTENDED, leaves it undoable. The undo claims every write it undoes on the run, pending, before it undoes any, holding no lock, so a second undo of the run while one is under way is 429 GOING_UNDO_IN_PROGRESS with a Retry-After, whose retry reads what the first did. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in. */
     post: operations["postApiV1GoingRunsByIdUndo"];
     delete?: never;
     options?: never;
@@ -1298,7 +1298,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it and the value after just after, the same way. Answers 200 {write_id, action, item, field, before, now, outcome {ok, status, code, message}} and records the write on the run; the now of dispatch_send_to_agent is {id, delivery_state, delivery_error}, the state and error of the message's last delivery, since its route answers 201 when the delivery failed too. A write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and recorded with that outcome. Each invocation of a run is written once: the write claims its invocation on the run, pending, before it reads or sends anything, holding no lock; a request for an invocation whose write went through writes nothing and answers 200 with that write's line as the run recorded it, one for an invocation another request is writing is 429 GOING_WRITE_IN_PROGRESS with a Retry-After, whose retry answers that write's line, and one for an invocation claimed longer ago than any request can still run and never recorded is 409 GOING_WRITE_UNSETTLED, since that write may have landed and is never written again; an invocation whose write was refused may be written again. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer; 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_NOT_AUTOMATIC for auto on an invocation the proposal did not mark automatic, one naming an item neither the page nor the words named; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send. One write per request. */
+    /** @description Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it and the value after just after, the same way. Answers 200 {write_id, action, item, fields, before, now, outcome {ok, status, code, message}, delivery?} and records the write on the run, fields the names of the item's fields it changed; a dispatch_send_to_agent carries delivery {state, error}, the state and error of the message's last delivery, since its route answers 201 when the delivery failed too. A write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and recorded with that outcome. Each invocation of a run is written once: the write claims its invocation on the run, pending, before it reads or sends anything, holding no lock; a request for an invocation whose write went through writes nothing and answers 200 with that write's line as the run recorded it, one for an invocation another request is writing is 429 GOING_WRITE_IN_PROGRESS with a Retry-After, whose retry answers that write's line, and one for an invocation claimed longer ago than any request can still run and never recorded is 409 GOING_WRITE_UNSETTLED, since that write may have landed and is never written again; an invocation whose write was refused may be written again. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer; 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_NOT_AUTOMATIC for auto on an invocation the proposal did not mark automatic, one naming an item neither the page nor the words named; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send. One write per request. */
     post: operations["postApiV1GoingRunsByIdWrites"];
     delete?: never;
     options?: never;
@@ -2056,7 +2056,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, invocation, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at, landed?}, invocation the index of the invocation of the action's offer it ran, landed the ids of what the write made before its own request (a reasoned close's posted reason), whether that request then went through or was refused, each undo {write_id, outcome, settled, fields [{field, ok, message}], at}, settled when the undo reached a verdict a retry would only repeat (ok, or refused because another writer changed what the write left), the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo settled; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    /** @description The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision and the proposal (each the data of its stream frame, null where the run wrote none), each write {id, action, invocation, target, fields, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at, landed?, delivery?}, invocation the index of the invocation of the action's offer it ran, fields the names of the target's fields it changed, landed the ids of what the write made before its own request (a reasoned close's posted reason), whether that request then went through or was refused, delivery {state, error} the last delivery of the message a dispatch_send_to_agent wrote, each undo {write_id, outcome, settled, fields [{field, ok, message}], at}, settled when the undo reached a verdict a retry would only repeat (ok, or refused because another writer changed what the write left), the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo settled; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
     get: operations["getApiV1MeGoingRuns"];
     put?: never;
     post?: never;
@@ -4718,6 +4718,10 @@ export interface components {
       model: string;
       reachable: boolean;
     };
+    GoingDelivery: {
+      error: null | string;
+      state: string;
+    };
     GoingDisplayFit: {
       off: boolean;
     };
@@ -4744,24 +4748,66 @@ export interface components {
       context: components["schemas"]["GoingContext"] | null;
       /** Format: date-time */
       created_at: string;
-      decision: unknown;
+      decision: components["schemas"]["GoingRunDecision"] | null;
       finished: boolean;
       /** Format: date-time */
       finished_at: null | string;
       hits: components["schemas"]["GoingRunHit"][] | null;
       id: string;
       issues: string[] | null;
-      proposal: unknown;
+      proposal: components["schemas"]["GoingRunProposal"] | null;
       structured_output: null | string;
       undos: components["schemas"]["GoingRunUndo"][] | null;
       words: string;
       writes: components["schemas"]["GoingRunWrite"][] | null;
+    };
+    GoingRunDecidedAction: {
+      action: string;
+      confidence: null | number;
+      probability: null | number;
+    };
+    GoingRunDecidedDisplay: {
+      chart: boolean;
+      /** @enum {string} */
+      choice: "chart" | "prose";
+      /** Format: double */
+      confidence: number;
+    };
+    GoingRunDecision: {
+      act: boolean;
+      actions: components["schemas"]["GoingRunDecidedAction"][] | null;
+      /** @enum {string} */
+      context: "page" | "named" | "none";
+      display: components["schemas"]["GoingRunDecidedDisplay"];
     };
     GoingRunHit: {
       href: string;
       id: string;
       kind: string;
       title: string;
+    };
+    GoingRunInvocation: {
+      arguments: {
+        [key: string]: unknown;
+      } | null;
+      automatic: boolean;
+      missing: components["schemas"]["GoingRunMissingArgument"] | null;
+      target_argument: string;
+    };
+    GoingRunMissingArgument: {
+      choices?: string[];
+      field: string;
+      item?: string;
+      /** @enum {string} */
+      kind: "text" | "number" | "enum" | "item";
+    };
+    GoingRunOffer: {
+      action: string;
+      invocations: components["schemas"]["GoingRunInvocation"][] | null;
+      offered: boolean;
+    };
+    GoingRunProposal: {
+      offers: components["schemas"]["GoingRunOffer"][] | null;
     };
     GoingRunUndo: {
       /** Format: date-time */
@@ -4780,7 +4826,8 @@ export interface components {
       /** Format: date-time */
       at: string;
       before: unknown;
-      field: string;
+      delivery?: components["schemas"]["GoingDelivery"];
+      fields: string[] | null;
       id: string;
       invocation: number;
       landed?: string[];
@@ -4821,7 +4868,6 @@ export interface components {
     };
     GoingUndoLine: {
       action: string;
-      field: string;
       fields: components["schemas"]["GoingUndoField"][] | null;
       item: string;
       now: unknown;
@@ -4843,7 +4889,8 @@ export interface components {
     GoingWriteLine: {
       action: string;
       before: unknown;
-      field: string;
+      delivery?: components["schemas"]["GoingDelivery"];
+      fields: string[] | null;
       item: string;
       now: unknown;
       outcome: components["schemas"]["GoingWriteOutcome"];
@@ -13907,12 +13954,20 @@ export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
 export type GoingContext = components["schemas"]["GoingContext"];
 export type GoingContextInput = components["schemas"]["GoingContextInput"];
 export type GoingDecisionCapability = components["schemas"]["GoingDecisionCapability"];
+export type GoingDelivery = components["schemas"]["GoingDelivery"];
 export type GoingDisplayFit = components["schemas"]["GoingDisplayFit"];
 export type GoingDisplayFitInput = components["schemas"]["GoingDisplayFitInput"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
 export type GoingRun = components["schemas"]["GoingRun"];
+export type GoingRunDecidedAction = components["schemas"]["GoingRunDecidedAction"];
+export type GoingRunDecidedDisplay = components["schemas"]["GoingRunDecidedDisplay"];
+export type GoingRunDecision = components["schemas"]["GoingRunDecision"];
 export type GoingRunHit = components["schemas"]["GoingRunHit"];
+export type GoingRunInvocation = components["schemas"]["GoingRunInvocation"];
+export type GoingRunMissingArgument = components["schemas"]["GoingRunMissingArgument"];
+export type GoingRunOffer = components["schemas"]["GoingRunOffer"];
+export type GoingRunProposal = components["schemas"]["GoingRunProposal"];
 export type GoingRunUndo = components["schemas"]["GoingRunUndo"];
 export type GoingRunWrite = components["schemas"]["GoingRunWrite"];
 export type GoingRunsPage = components["schemas"]["GoingRunsPage"];

@@ -374,7 +374,7 @@ func TestGoingUndoPutsARankBackBetweenItsOldNeighbours(t *testing.T) {
 
 	t.Run("a move is undone between the old neighbours", func(t *testing.T) {
 		run, line := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": moved, "after": first, "before": second}, nil)
-		if !between(t, moved, first, second) || !strings.Contains(line.Field, "rank") {
+		if !between(t, moved, first, second) || !slices.Contains(line.Fields, "rank") {
 			t.Fatalf("the move answered %+v and did not put %s between %s and %s", line, moved, first, second)
 		}
 		oneLine(t, rig.undo(t, "alice", run, nil), true)
@@ -645,7 +645,7 @@ func TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled(t *testing.T)
 	}
 
 	undoer := goingUndoer{s: rig.served}
-	write := goingRunWrite{ID: "w-rank", Action: "dispatch_issue_update", Target: issue, Field: goingRank,
+	write := goingRunWrite{ID: "w-rank", Action: "dispatch_issue_update", Target: issue, Fields: []string{goingRank},
 		Before: json.RawMessage(`{"rank":{"rank":"a"}}`), After: json.RawMessage(`{"rank":{"rank":"b"}}`), Outcome: goingWriteOutcome{OK: true}}
 	read := func([]string) (map[string]any, error) {
 		return map[string]any{goingRank: map[string]any{"rank": "b"}}, nil
@@ -673,7 +673,7 @@ func TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused(t *testing.T) {
 		catalogue.actions[resolve].Routes[index].Undo = GoingUndo{Kind: goingUndoReverse, Routes: []string{goingAskResolveRoute}}
 	}
 	undoer := goingUndoer{s: &server{going: catalogue}}
-	line := undoer.undo(context.Background(), goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Field: "state", Outcome: goingWriteOutcome{OK: true}})
+	line := undoer.undo(context.Background(), goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"}, Outcome: goingWriteOutcome{OK: true}})
 	if line.Outcome.OK || line.Outcome.Status != http.StatusNotImplemented || line.Outcome.Code != codeGoingUndoUnserved || goingUndoSettles(line.Outcome) {
 		t.Fatalf("the undo of a reverse row with no reverse answered %+v, want 501 %s, unsettled", line.Outcome, codeGoingUndoUnserved)
 	}

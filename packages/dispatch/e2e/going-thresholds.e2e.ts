@@ -33,8 +33,12 @@ const UPDATE = "dispatch_issue_update";
 const COMMENT = "dispatch_comment";
 
 /** The words of every row: words that ask for no block, so a chart is drawn only where the
- *  display choice says so. */
-const words = "how are the CORE bearing issues spread across statuses";
+ *  display choice says so, and that name the issue the writing model's update and comment act
+ *  on, since a write runs on submit only on an item the page or the person's own words name (the
+ *  proposal's `automatic`). */
+function wordsFor(fixture: Fixture): string {
+  return `how are the CORE bearing issues spread across statuses, starting with ${fixture.keys[0] ?? ""}`;
+}
 
 interface Fixture {
   readonly keys: readonly string[];
@@ -73,9 +77,9 @@ function reply(fixture: Fixture, chart: boolean): ChatReply {
   };
 }
 
-async function ask(page: Page): Promise<void> {
+async function ask(page: Page, fixture: Fixture): Promise<void> {
   await openBarOver(page, "/projects/CORE/issues");
-  await askAndWait(page, words);
+  await askAndWait(page, wordsFor(fixture));
   await expect(answerText(page)).toContainText("Most of them are still to do.");
 }
 
@@ -96,7 +100,7 @@ test("a choice at the action threshold is acted on: the submit runs it with no p
   await scriptChat({ default: reply(fixture, false) });
   const writes = countGoingWrites(page);
 
-  await ask(page);
+  await ask(page, fixture);
   await expect(operationRow(page)).toBeVisible();
   await expect(offerRow(page, UPDATE)).toHaveCount(0);
   await expect(offerRow(page, COMMENT)).toHaveCount(0);
@@ -120,7 +124,7 @@ test("the same choice below the action threshold offers the two best actions and
   await scriptChat({ default: reply(fixture, false) });
   const writes = countGoingWrites(page);
 
-  await ask(page);
+  await ask(page, fixture);
   await expect(offerRow(page, UPDATE)).toBeVisible();
   await expect(offerRow(page, COMMENT)).toBeVisible();
   await expect(operationRow(page)).toHaveCount(0);
@@ -158,7 +162,7 @@ test("display confidence above the chart threshold with action confidence below 
   await scriptChat({ default: reply(fixture, true) });
   const writes = countGoingWrites(page);
 
-  await ask(page);
+  await ask(page, fixture);
   const block = answerPanel(page).getByTestId("going-block");
   await expect(block).toHaveAttribute("data-kind", "chart");
   await expect(page.getByTestId("going-block-chart")).toHaveAttribute("data-chart-drawn", "true");
@@ -192,7 +196,7 @@ test("display confidence below the chart threshold with action confidence above 
   await scriptChat({ default: reply(fixture, true) });
   const writes = countGoingWrites(page);
 
-  await ask(page);
+  await ask(page, fixture);
   await expect(answerPanel(page).getByTestId("going-block")).toHaveCount(0);
   await expect(operationRow(page)).toBeVisible();
   await submitOperation(page);

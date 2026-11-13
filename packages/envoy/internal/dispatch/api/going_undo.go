@@ -29,6 +29,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -74,14 +75,13 @@ type goingUndoInput struct {
 	Reason string `json:"reason"`
 }
 
-// goingUndoLine is how one write's undo went: the write, its item and field, the undo its row
-// states, the value the item holds now where the undo read it, the outcome, and how each field
-// of the write went.
+// goingUndoLine is how one write's undo went: the write, its item, the undo its row states, the
+// value the item holds now where the undo read it, the outcome, and how each field of the write
+// went, by the field's name.
 type goingUndoLine struct {
 	WriteID string            `json:"write_id"`
 	Action  string            `json:"action"`
 	Item    string            `json:"item"`
-	Field   string            `json:"field"`
 	Undo    goingUndoKind     `json:"undo" enum:"reverse,write_back,close_created,trace"`
 	Now     json.RawMessage   `json:"now"`
 	Outcome goingWriteOutcome `json:"outcome"`
@@ -241,7 +241,7 @@ type goingUndoer struct {
 // the undo of its own action. A row whose kind names an undo this server has none of for its
 // action is refused, 501 GOING_UNDO_UNSERVED, rather than recorded undone with nothing undone.
 func (u goingUndoer) undo(ctx context.Context, write goingRunWrite) goingUndoLine {
-	line := goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Field: write.Field, Now: json.RawMessage("null")}
+	line := goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Now: json.RawMessage("null")}
 	action, held := u.s.going.Lookup(write.Action)
 	if !held || len(action.Routes) == 0 {
 		line.Undo = goingUndoTrace
@@ -296,7 +296,15 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite) goingUndoLin
 			Message: fmt.Sprintf("the catalogue states a %s undo for %s, which this server has no way to run, so nothing was undone", line.Undo, write.Action)}
 	}
 	if fields == nil {
-		fields = []goingUndoField{{Field: write.Field, OK: outcome.OK, Message: outcome.Message}}
+		// One outcome, the write's, for each field it changed.
+		names := write.Fields
+		if len(names) == 0 {
+			names = []string{""}
+		}
+		fields = make([]goingUndoField, 0, len(names))
+		for _, field := range names {
+			fields = append(fields, goingUndoField{Field: field, OK: outcome.OK, Message: outcome.Message})
+		}
 	}
 	line.Now, line.Outcome, line.Fields = goingJSONOrNull(now), outcome, fields
 	return line
@@ -327,8 +335,7 @@ func (u goingUndoer) send(ctx context.Context, route string, values map[string]s
 	defer response.Body.Close()
 	answer, _ := io.ReadAll(response.Body)
 	if response.StatusCode >= http.StatusMultipleChoices {
-		refusal := goingRefusalOf(response, answer)
-		return goingWriteOutcome{Status: refusal.Status, Code: refusal.Code, Message: refusal.Message}
+		return goingRefusalOf(response, answer).outcome()
 	}
 	return goingWriteOutcome{OK: true, Status: response.StatusCode}
 }
@@ -340,7 +347,7 @@ func (u goingUndoer) send(ctx context.Context, route string, values map[string]s
 func goingFailed(err error) goingWriteOutcome {
 	var refusal goingRefusal
 	if errors.As(err, &refusal) {
-		return goingWriteOutcome{Status: refusal.Status, Code: refusal.Code, Message: refusal.Message}
+		return refusal.outcome()
 	}
 	slog.Error("dispatch: a going write or undo failed", "error", err)
 	return goingWriteOutcome{Status: http.StatusInternalServerError, Code: codeInternal, Message: "internal server error"}
@@ -395,6 +402,56 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 	return u.writeBack(ctx, write, read, goingIssuePatchRoute, map[string]string{"key": write.Target}, restoreOf)
 }
 
+// rankRestore is how a write back puts an issue at the place it held: between the two neighbours
+// it had, those of them that are still issues of its project, or both where they still stand in
+// order, and why it cannot where neither is. A read of the neighbours that failed is its error,
+// never a reason: the undo answers it as the server's own failure, which leaves the write
+// undoable.
+func (o goingObserver) rankRestore(ctx context.Context, key string, place goingRankPlace) (map[string]any, string, error) {
+	names := make([]string, 0, 2)
+	for _, neighbour := range []*string{place.After, place.Before} {
+		if neighbour != nil {
+			names = append(names, *neighbour)
+		}
+	}
+	// A neighbour that is no longer an issue of the project is passed over: it leaves that side
+	// of the place unnamed.
+	ranks := map[string]string{}
+	if len(names) > 0 {
+		rows, err := o.s.deps.Store.Pool.Query(ctx, `
+			select n.key, n.rank from issues n join issues i on i.key = $2 and i.project_key = n.project_key
+			where n.key = any($1)
+		`, names, key)
+		if err != nil {
+			return nil, "", fmt.Errorf("read the ranks of the issues %s stood between: %w", key, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name, rank string
+			if err := rows.Scan(&name, &rank); err != nil {
+				return nil, "", fmt.Errorf("read the ranks of the issues %s stood between: %w", key, err)
+			}
+			ranks[name] = rank
+		}
+		if err := rows.Err(); err != nil {
+			return nil, "", fmt.Errorf("read the ranks of the issues %s stood between: %w", key, err)
+		}
+	}
+	restore := map[string]any{}
+	if place.After != nil && ranks[*place.After] != "" {
+		restore["after"] = *place.After
+	}
+	if place.Before != nil && ranks[*place.Before] != "" {
+		if after, both := restore["after"].(string); !both || ranks[after] < ranks[*place.Before] {
+			restore["before"] = *place.Before
+		}
+	}
+	if len(restore) == 0 {
+		return nil, "rank: neither issue it stood between is an issue of its project now, so its place cannot be named back", nil
+	}
+	return restore, "", nil
+}
+
 // goingNeighbourText names a rank neighbour, or says there is none.
 func goingNeighbourText(key *string) string {
 	if key == nil {
@@ -415,6 +472,22 @@ func goingWriteBackValue(field string, before json.RawMessage) any {
 		return ""
 	}
 	return goingJSONOrNullRaw(before)
+}
+
+// goingSameJSON reports whether two JSON values are the same value, whatever their spelling.
+func goingSameJSON(left, right json.RawMessage) bool {
+	var a, b any
+	if json.Unmarshal(goingJSONOrNullRaw(left), &a) != nil || json.Unmarshal(goingJSONOrNullRaw(right), &b) != nil {
+		return false
+	}
+	return reflect.DeepEqual(a, b)
+}
+
+func goingJSONOrNullRaw(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("null")
+	}
+	return raw
 }
 
 // askFields writes back each part of the ask the edit changed that still holds what the edit
@@ -548,12 +621,13 @@ func (u goingUndoer) holds(holder *goingHolder) bool {
 	return false
 }
 
-// goingHolderText names a claim's holder, or says nobody holds it.
+// goingHolderText names a claim's holder as a claim refusal names one (claimHolder), or says
+// nobody holds it.
 func goingHolderText(holder *goingHolder) string {
 	if holder == nil {
 		return "nobody"
 	}
-	return holder.Kind + " " + holder.ID
+	return claimHolder(model.Actor{Kind: holder.Kind, ID: holder.ID}, "")
 }
 
 // claim undoes a claim by releasing it, while the holder the claim left still holds it, and a

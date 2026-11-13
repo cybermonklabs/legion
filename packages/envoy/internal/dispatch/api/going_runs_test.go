@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -92,7 +93,7 @@ func goingRunIDs(page goingRunsPage) []string {
 // statusWrite is a write of an issue's status that went through.
 func statusWrite(id, issue string) goingRunWrite {
 	return goingRunWrite{
-		ID: id, Action: "dispatch_issue_update", Target: issue, Field: "status",
+		ID: id, Action: "dispatch_issue_update", Target: issue, Fields: []string{"status"},
 		Before: json.RawMessage(`"todo"`), After: json.RawMessage(`"in_progress"`),
 		Outcome:  goingWriteOutcome{OK: true, Status: http.StatusOK},
 		Approved: "auto", At: time.Now().UTC().Truncate(time.Microsecond),
@@ -169,22 +170,31 @@ func TestGoingRunsAnAbandonedRunKeepsItsOutcomesAndReadsUnfinished(t *testing.T)
 	ctx := context.Background()
 	id := rig.run(t, "alice", "assign DEMO-12 and DEMO-13 to me")
 	structured := "refused"
+	confidence := 0.93
+	decision := goingDecision{
+		Actions: []goingDecidedAction{{Action: "dispatch_issue_update", Confidence: &confidence}},
+		Act:     true, Context: going.ContextNamed, Display: goingDecidedDisplay{Choice: going.DisplayProse},
+	}
+	proposal := goingProposal{Offers: []goingOffer{{Action: "dispatch_issue_update", Offered: true, Invocations: []goingInvocation{
+		{Arguments: map[string]any{"issue": "DEMO-12", "assignee": "alice"}, TargetArgument: "issue"},
+		{Arguments: map[string]any{"issue": "DEMO-13", "assignee": "alice"}, TargetArgument: "issue"},
+	}}}}
 	if err := rig.server.fillGoingRun(ctx, id, goingRunParts{
 		Hits:             []going.Hit{{Kind: "issue", ID: "DEMO-13", Title: "Thirteen", Href: "/issues/DEMO-13"}},
-		Decision:         json.RawMessage(`{"actions":[{"action":"dispatch_issue_update","confidence":0.93}],"act":true}`),
-		Proposal:         json.RawMessage(`{"dispatch_issue_update":[{"key":"DEMO-12"},{"key":"DEMO-13"}]}`),
+		Decision:         &decision,
+		Proposal:         &proposal,
 		StructuredOutput: &structured,
 	}); err != nil {
 		t.Fatalf("fill the run: %v", err)
 	}
 	applied := goingRunWrite{
-		ID: "w-applied", Action: "dispatch_issue_update", Target: "DEMO-12", Field: "assignee",
+		ID: "w-applied", Action: "dispatch_issue_update", Target: "DEMO-12", Fields: []string{"assignee"},
 		Before: json.RawMessage(`null`), After: json.RawMessage(`"alice"`),
 		Outcome:  goingWriteOutcome{OK: true, Status: http.StatusOK},
 		Approved: "person", At: time.Now().UTC().Truncate(time.Microsecond),
 	}
 	refused := goingRunWrite{
-		ID: "w-refused", Action: "dispatch_issue_update", Target: "DEMO-13", Field: "assignee",
+		ID: "w-refused", Action: "dispatch_issue_update", Target: "DEMO-13", Fields: []string{"assignee"},
 		Before: json.RawMessage(`"bob"`), After: json.RawMessage(`"bob"`),
 		Outcome:  goingWriteOutcome{Status: http.StatusForbidden, Code: "SCOPE_REQUIRED", Message: "not yours to assign"},
 		Approved: "confirmed", At: time.Now().UTC().Truncate(time.Microsecond),
@@ -205,7 +215,7 @@ func TestGoingRunsAnAbandonedRunKeepsItsOutcomesAndReadsUnfinished(t *testing.T)
 	}
 	for index, want := range []goingRunWrite{applied, refused} {
 		got := run.Writes[index]
-		if got.ID != want.ID || got.Target != want.Target || got.Field != want.Field || got.Approved != want.Approved ||
+		if got.ID != want.ID || got.Target != want.Target || !slices.Equal(got.Fields, want.Fields) || got.Approved != want.Approved ||
 			string(got.Before) != string(want.Before) || string(got.After) != string(want.After) ||
 			got.Outcome != want.Outcome || !got.At.Equal(want.At) {
 			t.Fatalf("write %d reads %+v (before %s, after %s), want %+v (before %s, after %s)",
@@ -216,9 +226,9 @@ func TestGoingRunsAnAbandonedRunKeepsItsOutcomesAndReadsUnfinished(t *testing.T)
 		t.Fatalf("the run's issues = %v, want the hit's and both writes' once each, DEMO-12 and DEMO-13", run.Issues)
 	}
 	if len(run.Hits) != 1 || run.Hits[0].ID != "DEMO-13" || run.StructuredOutput == nil || *run.StructuredOutput != "refused" ||
-		!jsonEqual(t, run.Decision, `{"actions":[{"action":"dispatch_issue_update","confidence":0.93}],"act":true}`) ||
-		!jsonEqual(t, run.Proposal, `{"dispatch_issue_update":[{"key":"DEMO-12"},{"key":"DEMO-13"}]}`) {
-		t.Fatalf("the run's parts read hits %+v, decision %s, proposal %s, structured_output %v; want what it stored",
+		run.Decision == nil || !reflect.DeepEqual(*run.Decision, decision) ||
+		run.Proposal == nil || !reflect.DeepEqual(*run.Proposal, proposal) {
+		t.Fatalf("the run's parts read hits %+v, decision %+v, proposal %+v, structured_output %v; want what it stored",
 			run.Hits, run.Decision, run.Proposal, run.StructuredOutput)
 	}
 

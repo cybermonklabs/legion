@@ -241,15 +241,15 @@ func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage
 			continue
 		}
 		sessions = append(sessions, map[string]any{
-			"session_id": row.SessionID, "title": row.Title, "state": row.State, "roles": row.Roles,
-			"open_asks": row.OpenAsks, "last_activity": row.LastActivity,
+			going.FieldSessionID: row.SessionID, going.FieldTitle: row.Title, going.FieldState: row.State, "roles": row.Roles,
+			going.FieldOpenAsks: row.OpenAsks, going.FieldLastActivity: row.LastActivity,
 		})
 	}
 	return going.Read{
 		Facts: map[string]any{"source": frame.Source, "age_ms": frame.AgeMS},
 		Tables: map[string][]map[string]any{
-			"sessions": sessions,
-			"totals":   {{"sessions": len(rows), "live": live, "unresponsive": unresponsive, "open_asks": openAsks}},
+			going.TableSessions: sessions,
+			"totals":            {{"sessions": len(rows), "live": live, "unresponsive": unresponsive, "open_asks": openAsks}},
 		},
 	}, nil
 }
@@ -434,18 +434,18 @@ func (g *goingReadRun) issueProgress(ctx context.Context, key string) (going.Rea
 	}
 	bars := []map[string]any{}
 	if progress.Tasks != nil {
-		bars = append(bars, map[string]any{"label": "tasks", "done": progress.Tasks.Done, "total": progress.Tasks.Total})
+		bars = append(bars, map[string]any{going.FieldLabel: "tasks", going.FieldDone: progress.Tasks.Done, going.FieldTotal: progress.Tasks.Total})
 	}
 	if progress.Children != nil {
-		bars = append(bars, map[string]any{"label": "children", "done": progress.Children.Done, "total": progress.Children.Total})
+		bars = append(bars, map[string]any{going.FieldLabel: "children", going.FieldDone: progress.Children.Done, going.FieldTotal: progress.Children.Total})
 	}
 	items := append([]going.Hit{issueHit(issue.Key, issue.Title)}, issueHits(children)...)
 	return going.Read{
 		Facts: map[string]any{"issue": issue.Key, "title": issue.Title, "status": issue.Status, "project": issue.Project, "href": "/issues/" + issue.Key},
 		Tables: map[string][]map[string]any{
-			"progress": bars,
-			"statuses": statuses,
-			"issues":   issueRows(children),
+			going.TableProgress: bars,
+			"statuses":          statuses,
+			going.TableIssues:   issueRows(children),
 		},
 		Items: items,
 	}, nil
@@ -477,9 +477,9 @@ func (g *goingReadRun) projectProgress(ctx context.Context, project string) (goi
 	return going.Read{
 		Facts: map[string]any{"project": project, "issues": total, "open_issues": openTotal},
 		Tables: map[string][]map[string]any{
-			"progress": {{"label": "issues", "done": done, "total": total}},
-			"statuses": statuses,
-			"issues":   issueRows(open),
+			going.TableProgress: {{going.FieldLabel: "issues", going.FieldDone: done, going.FieldTotal: total}},
+			"statuses":          statuses,
+			going.TableIssues:   issueRows(open),
 		},
 		Items: issueHits(open),
 	}, nil
@@ -536,7 +536,7 @@ func (s *server) goingStatusCounts(ctx context.Context, project, parent string) 
 func issueRows(issues []model.IssueSummary) []map[string]any {
 	rows := make([]map[string]any, 0, len(issues))
 	for _, issue := range issues {
-		rows = append(rows, map[string]any{"key": issue.Key, "title": issue.Title, "status": issue.Status, "priority": issue.Priority})
+		rows = append(rows, map[string]any{going.FieldKey: issue.Key, going.FieldTitle: issue.Title, going.FieldStatus: issue.Status, "priority": issue.Priority})
 	}
 	return rows
 }
@@ -745,7 +745,7 @@ func deliveryTimelineRead(facts map[string]any, answer deliveryTimelineWithMeasu
 			continue
 		}
 		events = append(events, map[string]any{
-			"at": pr.MergedAt.UTC().Format(time.RFC3339), "lane": "merge", "label": fmt.Sprintf("%s#%d %s", pr.Repo, pr.Number, pr.Title),
+			going.FieldAt: pr.MergedAt.UTC().Format(time.RFC3339), going.FieldLane: "merge", going.FieldLabel: fmt.Sprintf("%s#%d %s", pr.Repo, pr.Number, pr.Title),
 		})
 	}
 	for _, run := range answer.Runs {
@@ -754,13 +754,15 @@ func deliveryTimelineRead(facts map[string]any, answer deliveryTimelineWithMeasu
 			conclusion = string(*run.Conclusion)
 		}
 		events = append(events, map[string]any{
-			"at": run.StartedAt.UTC().Format(time.RFC3339), "lane": "deploy", "label": fmt.Sprintf("run %d: %s", run.ID, conclusion),
+			going.FieldAt: run.StartedAt.UTC().Format(time.RFC3339), going.FieldLane: "deploy", going.FieldLabel: fmt.Sprintf("run %d: %s", run.ID, conclusion),
 		})
 	}
-	sort.SliceStable(events, func(left, right int) bool { return events[left]["at"].(string) < events[right]["at"].(string) })
+	sort.SliceStable(events, func(left, right int) bool {
+		return events[left][going.FieldAt].(string) < events[right][going.FieldAt].(string)
+	})
 	merges, runs := 0, len(answer.Runs)
 	for _, event := range events {
-		if event["lane"] == "merge" {
+		if event[going.FieldLane] == "merge" {
 			merges++
 		}
 	}
@@ -770,8 +772,8 @@ func deliveryTimelineRead(facts map[string]any, answer deliveryTimelineWithMeasu
 	return going.Read{
 		Facts: facts,
 		Tables: map[string][]map[string]any{
-			"events": events,
-			"totals": {{"merges": merges, "runs": runs}},
+			going.TableEvents: events,
+			"totals":          {{"merges": merges, "runs": runs}},
 		},
 	}
 }

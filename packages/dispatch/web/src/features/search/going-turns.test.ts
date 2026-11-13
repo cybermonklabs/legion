@@ -36,7 +36,7 @@ function statusLine(item: string, invocation: number): GoingWriteLine {
   return {
     action: "dispatch_issue_update",
     before: { status: "todo" },
-    field: "status",
+    fields: ["status"],
     item,
     now: { status: "in_progress" },
     outcome: { code: "", message: "", ok: true, status: 200 },
@@ -52,6 +52,7 @@ function statusChanges(): GoingWriteSpec[] {
     arguments: { issue, status: "in_progress" },
     invocation,
     runId: RUN,
+    target: "issue",
     words: "start the three CORE issues",
   }));
 }
@@ -73,10 +74,65 @@ test("each invocation is one write of the run, sent as it came to run, and its l
     [RUN, { approved: "auto", invocation: 2, offer: "dispatch_issue_update" }],
   ]);
   const lines = turnOf(RUN)?.lines ?? [];
-  expect(lines.map((line) => [line.state, line.written?.item, line.written?.field])).toEqual([
-    ["done", "CORE-1", "status"],
-    ["done", "CORE-2", "status"],
-    ["done", "CORE-3", "status"],
+  expect(
+    lines.map((line) => [line.state, line.target, line.written?.item, line.written?.fields])
+  ).toEqual([
+    ["done", "CORE-1", "CORE-1", ["status"]],
+    ["done", "CORE-2", "CORE-2", ["status"]],
+    ["done", "CORE-3", "CORE-3", ["status"]],
+  ]);
+});
+
+test("a line names a document edit's document while it is out, and a new issue's or project's key once it is made", async () => {
+  const writes = new Writes(signedIn());
+  const held = Promise.withResolvers<GoingWriteLine>();
+  const made = (action: string, item: string, invocation: number): GoingWriteLine => ({
+    action,
+    before: null,
+    fields: [action === "dispatch_doc_edit" ? "content" : action.replace("dispatch_", "")],
+    item,
+    now: { id: item },
+    outcome: { code: "", message: "", ok: true, status: 201 },
+    write_id: `write-${invocation}`,
+  });
+  answerRoute<WriteAnswer>("POST", "/api/v1/going/runs/*/writes").mockImplementation(
+    (_run, input) =>
+      input.offer === "dispatch_doc_edit"
+        ? held.promise
+        : Promise.resolve(
+            made(input.offer, input.offer === "dispatch_issue" ? "DEMO-9" : "NEWP", 0)
+          )
+  );
+  const spec = (action: string, args: Record<string, unknown>, target: string): GoingWriteSpec => ({
+    action,
+    approved: "person",
+    arguments: args,
+    invocation: 0,
+    runId: RUN,
+    target,
+    words: "edit the spec and make DEMO's issue and project",
+  });
+
+  // Dispatch names a document edit's item by its document (`target_argument` "artifact"), and a
+  // write that makes its item by nothing until it is made.
+  const written = runGoingWrites(writes, [
+    spec("dispatch_doc_edit", { artifact: "spec", project: "DEMO" }, "artifact"),
+    spec("dispatch_issue", { project: "DEMO", title: "A new one" }, ""),
+    spec("dispatch_project", { key: "NEWP", name: "New" }, ""),
+  ]);
+  await waitFor(() => expect(turnOf(RUN)?.lines).toHaveLength(3));
+  expect(turnOf(RUN)?.lines.map((line) => [line.action, line.state, line.target])).toEqual([
+    ["dispatch_doc_edit", "sending", "spec"],
+    ["dispatch_issue", "sending", ""],
+    ["dispatch_project", "sending", ""],
+  ]);
+
+  held.resolve(made("dispatch_doc_edit", "doc-1", 0));
+  await written;
+  expect(turnOf(RUN)?.lines.map((line) => [line.action, line.state, line.written?.item])).toEqual([
+    ["dispatch_doc_edit", "done", "doc-1"],
+    ["dispatch_issue", "done", "DEMO-9"],
+    ["dispatch_project", "done", "NEWP"],
   ]);
 });
 
@@ -115,7 +171,6 @@ test("an undo stops a write still waiting before it is sent, waits for the one o
     lines: [
       {
         action: "dispatch_issue_update",
-        field: "status",
         fields: [{ field: "status", message: "", ok: true }],
         item: "CORE-1",
         now: { status: "todo" },
@@ -181,7 +236,6 @@ test("the undo key undoes the newest undoable run Dispatch holds, where this pag
     lines: [
       {
         action: "dispatch_issue_update",
-        field: "status",
         fields: [{ field: "status", message: "status is in_review now", ok: false }],
         item: "CORE-1",
         now: { status: "in_review" },

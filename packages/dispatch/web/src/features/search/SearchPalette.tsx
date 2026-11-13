@@ -12,7 +12,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { goingCapabilityQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
+import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
@@ -43,19 +43,12 @@ import {
   type DispatchReferenceRoute,
   nodeRouteFromHref,
 } from "../refs/routes";
-import {
-  appKeymap,
-  DIALOG_SCOPE,
-  type KeymapAction,
-  MOD_KEY_LABEL,
-  useKeymap,
-} from "../shell/keymap";
+import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
-import { AnswerPanel, capabilityGaps } from "./AnswerPanel";
+import { AnswerPanel } from "./AnswerPanel";
 import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
-import { useGoingOperations } from "./OperationRows";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
 import { type RecentItem, readRecents } from "./recents";
 import { SearchFilterBar } from "./SearchFilterBar";
@@ -71,7 +64,7 @@ import {
   stepActive,
 } from "./search-model";
 import { useBarScope } from "./useBarScope";
-import { useGoingAnswer } from "./useGoingAnswer";
+import { useGoingBar } from "./useGoingBar";
 import { useTieredSearch } from "./useTieredSearch";
 
 const emptyResults: SearchResult[] = [];
@@ -531,46 +524,19 @@ function PaletteDialog({
         ),
       }))
     : [];
-  // Dispatch's answer to the words, asked on the same pause the meaning search waits for and only
-  // where this Dispatch answers at all, with the chip the bar acts through and the project the
-  // filter chip narrows to. It is drawn once the hits it sits beside are on the screen, so the
-  // list paints first and the answer joins it; the last answer drawn again as the bar opens
-  // waits on nothing, since an empty box lists no hits.
-  const capability = useQuery(goingCapabilityQuery());
-  const { answer: goingAnswer, askNow } = useGoingAnswer({
+  // Dispatch's answer to the words and the bar's operations (useGoingBar): the operation the
+  // decision acts on, or the two best actions to pick from, as rows above the hits; what they
+  // wrote, one line each, under the list. A new issue and a send to this issue's agent stay the
+  // two offers below, which always ask, and write through the run where the decision chose them.
+  const { gaps, operations, runHint, shownAnswer } = useGoingBar({
     context: scope.context,
-    enabled: queryEnabled && capability.data?.answer.configured === true,
+    enabled: queryEnabled,
+    hits: results,
     login: whoAmI.data?.login,
     project: filters.project ?? "",
+    showHits,
     words: searchText,
   });
-  const shownAnswer =
-    goingAnswer !== undefined && (goingAnswer.replayed || showHits) ? goingAnswer : undefined;
-  // What this Dispatch cannot do, said under the hits of every query, so a person reading the
-  // hits alone knows whether an answer is still to come.
-  const gaps = showHits && capability.data !== undefined ? capabilityGaps(capability.data) : [];
-  // The bar's operations, from the answer's decision and proposal: the operation the decision
-  // acts on, or the two best actions to pick from, as rows above the hits; what they wrote, one
-  // line each, under the list. A new issue and a send to this issue's agent stay the two offers
-  // below, which always ask, and write through the run where the decision chose them.
-  const operations = useGoingOperations({
-    answer: goingAnswer,
-    askNow,
-    hits: results,
-    words: searchText,
-  });
-  // The bar's submit runs the operation from anywhere in the bar, the box included; Enter keeps
-  // its one meaning, opening the row the highlight is on.
-  useKeymap(DIALOG_SCOPE, [
-    {
-      id: "search-run",
-      inEditable: true,
-      keys: "$mod+Enter",
-      label: "Run the bar's operation",
-      palette: false,
-      run: operations.submit,
-    },
-  ]);
   // Words the search answered and matched nothing with: the bar offers them as a new issue,
   // under the rows this page can do and the projects they name, and never above them - the
   // offer is the last thing left when nothing else answers. Where the bar's decision chose a new
@@ -999,13 +965,7 @@ function PaletteDialog({
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
               to open
             </span>
-            {operations.section === undefined ? null : (
-              <span className="inline-flex items-center gap-1">
-                <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>{MOD_KEY_LABEL}</kbd>
-                <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Enter</kbd>
-                to run
-              </span>
-            )}
+            {runHint}
             <span className="inline-flex items-center gap-1">
               <kbd className={`rounded px-1 py-0.5 font-medium ${kbdHint}`}>Esc</kbd>
               to close

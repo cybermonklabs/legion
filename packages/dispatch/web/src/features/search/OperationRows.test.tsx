@@ -47,7 +47,7 @@ function landedLine(input: GoingWriteInput): GoingWriteLine {
   return {
     action: input.offer,
     before: { status: "todo" },
-    field: "status",
+    fields: ["status"],
     item: `LEGION-${3 + (input.invocation ?? 0)}`,
     now: { status: "in_progress" },
     outcome: { code: "", message: "", ok: true, status: 200 },
@@ -110,11 +110,13 @@ const proposal: GoingProposalEvent = {
             arguments: { issue: "LEGION-3", status: "in_progress" },
             automatic: true,
             missing: null,
+            target_argument: "issue",
           },
           {
             arguments: { issue: "LEGION-4", status: "in_progress" },
             automatic: true,
             missing: null,
+            target_argument: "issue",
           },
         ],
         offered: true,
@@ -122,7 +124,12 @@ const proposal: GoingProposalEvent = {
       {
         action: "dispatch_comment",
         invocations: [
-          { arguments: { body: "On it.", issue: "LEGION-3" }, automatic: true, missing: null },
+          {
+            arguments: { body: "On it.", issue: "LEGION-3" },
+            automatic: true,
+            missing: null,
+            target_argument: "issue",
+          },
         ],
         offered: true,
       },
@@ -352,8 +359,14 @@ const injected: GoingProposalEvent = {
             arguments: { issue: "LEGION-3", status: "in_progress" },
             automatic: true,
             missing: null,
+            target_argument: "issue",
           },
-          { arguments: { issue: "LEGION-4", status: "done" }, automatic: false, missing: null },
+          {
+            arguments: { issue: "LEGION-4", status: "done" },
+            automatic: false,
+            missing: null,
+            target_argument: "issue",
+          },
         ],
         offered: true,
       },
@@ -437,6 +450,7 @@ test("an invocation missing one argument asks for it, and the write carries the 
                   arguments: { action: "follow", ask: "ask-1" },
                   automatic: true,
                   missing: { field: "@session", kind: "text" },
+                  target_argument: "ask",
                 },
               ],
               offered: true,
@@ -480,7 +494,7 @@ test("a new issue the run made is the issue its write names, with no read of it 
       ({
         action: input.offer,
         before: null,
-        field: "",
+        fields: null,
         item: "LEGION-9",
         now: { key: "LEGION-9" },
         outcome: { code: "", message: "", ok: true, status: 201 },
@@ -503,6 +517,7 @@ test("a new issue the run made is the issue its write names, with no read of it 
                   arguments: { project: "LEGION", title: "astrolabe" },
                   automatic: true,
                   missing: null,
+                  target_argument: "",
                 },
               ],
               offered: true,
@@ -554,7 +569,14 @@ test("a send through the run whose delivery failed answers why, as the direct se
       offers: [
         {
           action: "dispatch_send_to_agent",
-          invocations: [{ arguments: { session: "session-1" }, automatic: true, missing: null }],
+          invocations: [
+            {
+              arguments: { session: "session-1" },
+              automatic: true,
+              missing: null,
+              target_argument: "session",
+            },
+          ],
           offered: true,
         },
       ],
@@ -579,15 +601,16 @@ test("a send through the run whose delivery failed answers why, as the direct se
     }
   );
   // Dispatch answers the send 201 whatever became of its delivery; the line records the delivery.
-  const delivered = (now: unknown) =>
+  const delivered = (delivery: GoingWriteLine["delivery"], id: string) =>
     written.mockImplementation(
       async (_run, input) =>
         ({
           action: input.offer,
           before: null,
-          field: "",
-          item: "",
-          now,
+          delivery,
+          fields: ["message"],
+          item: id,
+          now: { id },
           outcome: { code: "", message: "", ok: true, status: 201 },
           write_id: "write-send",
         }) satisfies GoingWriteLine
@@ -608,15 +631,11 @@ test("a send through the run whose delivery failed answers why, as the direct se
     return said;
   };
   try {
-    delivered({
-      delivery_error: "the session takes no aside",
-      delivery_state: "failed",
-      id: "m-1",
-    });
+    delivered({ error: "the session takes no aside", state: "failed" }, "m-1");
     expect(await send("run-1")).toBe("the session takes no aside");
-    delivered({ delivery_error: null, delivery_state: "failed", id: "m-2" });
+    delivered({ error: null, state: "failed" }, "m-2");
     expect(await send("run-2")).toBe("Dispatch gave no reason.");
-    delivered({ delivery_error: null, delivery_state: "delivered", id: "m-3" });
+    delivered({ error: null, state: "delivered" }, "m-3");
     expect(await send("run-3")).toBeUndefined();
   } finally {
     hook.unmount();

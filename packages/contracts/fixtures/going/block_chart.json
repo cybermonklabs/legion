@@ -1,0 +1,24 @@
+{
+  "kind": "chart",
+  "title": "Events by week",
+  "spec": {
+    "source": "read_project_activity",
+    "params": {
+      "project": "DEMO"
+    },
+    "table": "weeks",
+    "x": "week",
+    "y": "events",
+    "mark": "line"
+  },
+  "rows": [
+    {
+      "events": 3,
+      "week": "2026-W44"
+    },
+    {
+      "events": 5,
+      "week": "2026-W45"
+    }
+  ]
+}

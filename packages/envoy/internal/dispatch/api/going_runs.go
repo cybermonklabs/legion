@@ -69,10 +69,10 @@ type goingWriteOutcome struct {
 
 // goingRunWrite is one write a run made: the write store's id for it, the catalogue action it
 // ran and the index of the invocation of that action's offer it ran, the item it changed (target)
-// and the field of that item, the value before it and the value after it as read back, how it
-// went, how it came to run - the run made it at once (auto), the person ran it from the bar
-// (person), or the person confirmed it when asked (confirmed) - when, and the items it made
-// before its own request.
+// and the fields of that item it changed, the value before it and the value after it as read
+// back, how it went, how it came to run - the run made it at once (auto), the person ran it from
+// the bar (person), or the person confirmed it when asked (confirmed) - when, the items it made
+// before its own request, and for a send to an agent the message's last delivery.
 //
 // Pending is a write claimed and not yet recorded: the request making it is under way, or it
 // ended - its process died, or its record could not be written - after its write may have
@@ -84,7 +84,7 @@ type goingRunWrite struct {
 	Action     string            `json:"action"`
 	Invocation int               `json:"invocation"`
 	Target     string            `json:"target"`
-	Field      string            `json:"field"`
+	Fields     []string          `json:"fields"`
 	Before     json.RawMessage   `json:"before"`
 	After      json.RawMessage   `json:"after"`
 	Outcome    goingWriteOutcome `json:"outcome"`
@@ -95,6 +95,17 @@ type goingRunWrite struct {
 	// reasoned close posts as its reason. It stands whether the row's own request then went
 	// through or was refused, so a refused close still names the reason it left posted.
 	Landed []string `json:"landed,omitempty"`
+	// Delivery is the last delivery of the message a send to an agent wrote, absent for every
+	// other write and for a message that has none: the route answers a send 201 even where its
+	// delivery failed, so this is what tells a failed send.
+	Delivery *goingDelivery `json:"delivery,omitempty"`
+}
+
+// goingDelivery is one delivery of a message as a send to an agent records it: its state
+// (`delivered`, `failed`, ...) and the error a failed one gave, null for none.
+type goingDelivery struct {
+	State string  `json:"state"`
+	Error *string `json:"error"`
 }
 
 // goingRunUndo is one undo of a write of the run, named by the write's id, with how it went,
@@ -131,8 +142,8 @@ type goingRun struct {
 	Words            string          `json:"words"`
 	Context          *goingContext   `json:"context"`
 	Hits             []goingRunHit   `json:"hits"`
-	Decision         json.RawMessage `json:"decision"`
-	Proposal         json.RawMessage `json:"proposal"`
+	Decision         *goingDecision  `json:"decision"`
+	Proposal         *goingProposal  `json:"proposal"`
 	Writes           []goingRunWrite `json:"writes"`
 	Undos            []goingRunUndo  `json:"undos"`
 	Issues           []string        `json:"issues"`
@@ -155,8 +166,8 @@ type goingRunsPage struct {
 // finish keeps the first moment.
 type goingRunParts struct {
 	Hits             []going.Hit
-	Decision         json.RawMessage
-	Proposal         json.RawMessage
+	Decision         *goingDecision
+	Proposal         *goingProposal
 	StructuredOutput *string
 	Finished         bool
 }
@@ -225,6 +236,14 @@ func (s *server) fillGoingRun(ctx context.Context, id string, parts goingRunPart
 		}
 		hits = string(encoded)
 	}
+	decision, err := nullableJSON(parts.Decision)
+	if err != nil {
+		return err
+	}
+	proposal, err := nullableJSON(parts.Proposal)
+	if err != nil {
+		return err
+	}
 	tag, err := s.deps.Store.Pool.Exec(ctx, `
 		update going_runs set
 		  hits = coalesce($2::jsonb, hits),
@@ -234,8 +253,7 @@ func (s *server) fillGoingRun(ctx context.Context, id string, parts goingRunPart
 		  finished_at = case when $6::boolean then coalesce(finished_at, now()) else finished_at end,
 		  issues = array(select distinct key from unnest(issues || $7::text[]) key order by key)
 		where id = $1::uuid
-	`, id, hits, nullableJSON(parts.Decision), nullableJSON(parts.Proposal), parts.StructuredOutput,
-		parts.Finished, hitIssues)
+	`, id, hits, decision, proposal, parts.StructuredOutput, parts.Finished, hitIssues)
 	if err != nil {
 		return err
 	}
@@ -545,19 +563,33 @@ func scanGoingRun(row pgx.Row, extra ...any) (goingRun, error) {
 	if err := json.Unmarshal(undos, &run.Undos); err != nil {
 		return goingRun{}, fmt.Errorf("decode going run undos: %w", err)
 	}
-	run.Decision = json.RawMessage(decision)
-	run.Proposal = json.RawMessage(proposal)
+	if decision != nil {
+		run.Decision = &goingDecision{}
+		if err := json.Unmarshal(decision, run.Decision); err != nil {
+			return goingRun{}, fmt.Errorf("decode going run decision: %w", err)
+		}
+	}
+	if proposal != nil {
+		run.Proposal = &goingProposal{}
+		if err := json.Unmarshal(proposal, run.Proposal); err != nil {
+			return goingRun{}, fmt.Errorf("decode going run proposal: %w", err)
+		}
+	}
 	run.Finished = run.FinishedAt != nil
 	return run, nil
 }
 
-// nullableJSON is raw as a jsonb parameter: SQL null where it holds nothing, so a coalesce keeps
-// what the row holds.
-func nullableJSON(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
+// nullableJSON is part as a jsonb parameter: SQL null where the run has not reached it (nil), so a
+// coalesce keeps what the row holds.
+func nullableJSON[T any](part *T) (any, error) {
+	if part == nil {
+		return nil, nil
 	}
-	return string(raw)
+	encoded, err := json.Marshal(part)
+	if err != nil {
+		return nil, err
+	}
+	return string(encoded), nil
 }
 
 // sweepGoingRuns deletes every run older than goingRunsKept. The reads above already leave such

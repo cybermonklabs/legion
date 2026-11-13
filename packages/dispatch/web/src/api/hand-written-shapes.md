@@ -81,7 +81,13 @@ Each is in `packages/contracts/src/dispatch-api.ts`:
   `GoingMissingArgument`), `GoingBlockEvent` (with `GoingBlockKind`, `GoingBlockData`,
   `GoingBlockSource` and each kind's spec, `GoingChartSpec`, `GoingTableSpec`, `GoingMetricSpec`
   and `GoingProgressSpec`) and `GoingRosterEvent`. A frame union is not an OpenAPI response, and
-  `packages/contracts/src/going.ts` holds them.
+  `packages/contracts/src/going.ts` holds them. `packages/contracts/fixtures/going/` holds them
+  against the server as `fixtures/live/` does the socket's: the Go test
+  `TestTheGoingFrameFixturesAreWhatTheServerWrites` writes each frame's data from the server's
+  own types, and `packages/contracts/src/going.test.ts` holds every fixture to these types key
+  for key. A run's record (`GET /api/v1/me/going-runs`) keeps the decision and the proposal
+  typed, and the document names those schemas `GoingRun*` (`GoingRunDecision`,
+  `GoingRunProposal`, ...), apart from the frames' own names.
 - **`DispatchEvent` and the event payloads.** Go's `model.Event.Payload` is bytes, so the
   document can only say `payload: unknown`; `DispatchEvent` is the union over the same bytes,
   per event type, and is what every event read is typed as. The payloads themselves travel the

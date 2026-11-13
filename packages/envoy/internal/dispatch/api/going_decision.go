@@ -145,7 +145,7 @@ func (start goingRunStart) action(name string) (GoingAction, bool) {
 type goingDecision struct {
 	Actions []goingDecidedAction `json:"actions"`
 	Act     bool                 `json:"act"`
-	Context string               `json:"context"`
+	Context string               `json:"context" enum:"page,named,none"`
 	Display goingDecidedDisplay  `json:"display"`
 	// offered are the actions the answer is told to write arguments for, best first: the two
 	// best that are actions, or none where the decision is sure the words ask for none.
@@ -164,7 +164,7 @@ type goingDecidedAction struct {
 // goingDecidedDisplay is the display choice with its confidence, and Chart whether that choice
 // draws a chart unasked: a chart at or above the measured chart-display threshold.
 type goingDecidedDisplay struct {
-	Choice     string  `json:"choice"`
+	Choice     string  `json:"choice" enum:"chart,prose"`
 	Confidence float64 `json:"confidence"`
 	Chart      bool    `json:"chart"`
 }
@@ -311,20 +311,22 @@ type goingOffer struct {
 }
 
 // goingInvocation is one run of an action: the arguments the answer and the page filled, each
-// checked against the action's own schema, the one argument the bar still has to ask for, and
+// checked against the action's own schema, the one argument the bar still has to ask for,
 // whether it may run at once, on submit, rather than only when the person picks it
-// (goingAutomatic).
+// (goingAutomatic), and the argument naming the item it acts on, as the row it reaches binds
+// that item into its path (goingTargetArgument).
 type goingInvocation struct {
-	Arguments map[string]any        `json:"arguments"`
-	Missing   *goingMissingArgument `json:"missing"`
-	Automatic bool                  `json:"automatic"`
+	Arguments      map[string]any        `json:"arguments"`
+	Missing        *goingMissingArgument `json:"missing"`
+	Automatic      bool                  `json:"automatic"`
+	TargetArgument string                `json:"target_argument"`
 }
 
 // goingMissingArgument is the one argument an invocation still needs, of a kind the bar prompts
 // for: a text, a number, one of Choices, or an item of the search kind Item.
 type goingMissingArgument struct {
 	Field   string   `json:"field"`
-	Kind    string   `json:"kind"`
+	Kind    string   `json:"kind" enum:"text,number,enum,item"`
 	Choices []string `json:"choices,omitempty"`
 	Item    string   `json:"item,omitempty"`
 }
@@ -479,7 +481,7 @@ func goingInvocationOf(action GoingAction, arguments map[string]any, chip *going
 			return goingInvocation{}, false
 		}
 	}
-	missing, routed := goingMissingArguments(action, arguments, session)
+	route, missing, routed := goingClosestRoute(action, arguments, session)
 	if !routed {
 		return goingInvocation{}, false
 	}
@@ -489,40 +491,43 @@ func goingInvocationOf(action GoingAction, arguments map[string]any, chip *going
 				arguments[name] = value
 			}
 		}
-		missing, routed = goingMissingArguments(action, arguments, session)
+		route, missing, routed = goingClosestRoute(action, arguments, session)
 		if !routed {
 			return goingInvocation{}, false
 		}
 	}
+	invocation := goingInvocation{Arguments: arguments, TargetArgument: goingTargetArgument(route)}
 	switch len(missing) {
 	case 0:
 		if checkGoingArguments(action.Request, arguments) != "" {
 			return goingInvocation{}, false
 		}
-		return goingInvocation{Arguments: arguments}, true
+		return invocation, true
 	case 1:
 		prompt, promptable := goingPromptFor(fields, missing[0])
 		if !promptable {
 			return goingInvocation{}, false
 		}
-		return goingInvocation{Arguments: arguments, Missing: &prompt}, true
+		invocation.Missing = &prompt
+		return invocation, true
 	}
 	return goingInvocation{}, false
 }
 
-// goingMissingArguments is what a call with these arguments still needs: every required argument
-// it does not name, and what the row it comes closest to reaching needs in its path besides,
-// goingCallerSession standing for the caller's own session where the credential proved none. It
-// answers false where no row of the action takes the call at all, whatever is filled: a guard
-// such as a claim's release picks no row the caller may call.
-func goingMissingArguments(action GoingAction, arguments map[string]any, session string) ([]string, bool) {
+// goingClosestRoute is the row of the action a call with these arguments comes closest to
+// reaching, and what the call still needs: every required argument it does not name, and what
+// that row needs in its path besides, goingCallerSession standing for the caller's own session
+// where the credential proved none. It answers false where no row of the action takes the call at
+// all, whatever is filled: a guard such as a claim's release picks no row the caller may call.
+func goingClosestRoute(action GoingAction, arguments map[string]any, session string) (GoingRoute, []string, bool) {
 	var required []string
 	for _, field := range action.Request {
 		if _, named := arguments[field.Name]; field.Required && !named {
 			required = append(required, field.Name)
 		}
 	}
-	var closest []string
+	var closest GoingRoute
+	var closestNeeds []string
 	routed := false
 	for _, route := range action.Routes {
 		if !route.takes(arguments) {
@@ -540,12 +545,30 @@ func goingMissingArguments(action GoingAction, arguments map[string]any, session
 				needs = append(needs, argument)
 			}
 		}
-		if !routed || len(needs) < len(closest) {
-			closest, routed = needs, true
+		if !routed || len(needs) < len(closestNeeds) {
+			closest, closestNeeds, routed = route, needs, true
 		}
 	}
-	slices.Sort(closest)
-	return closest, routed
+	slices.Sort(closestNeeds)
+	return closest, closestNeeds, routed
+}
+
+// goingTargetPlaceholders are a row's path placeholders that name the item a call acts on, the
+// item's own before the issue or project it sits under: a document edit's slug names the
+// document, and its key only the issue or project the document belongs to.
+var goingTargetPlaceholders = []string{"id", "session_id", "slug", "key"}
+
+// goingTargetArgument is the argument naming the item a call through route acts on: the one the
+// row binds to the first of goingTargetPlaceholders its path holds, and "" for a row whose path
+// names none - a write that makes its item, whose line names that item once it is made - or names
+// only the caller's own session.
+func goingTargetArgument(route GoingRoute) string {
+	for _, placeholder := range goingTargetPlaceholders {
+		if argument := route.path[placeholder]; argument != "" && argument != goingCallerSession {
+			return argument
+		}
+	}
+	return ""
 }
 
 // goingChipValue is the value the context chip holds for one argument: the issue the page names
