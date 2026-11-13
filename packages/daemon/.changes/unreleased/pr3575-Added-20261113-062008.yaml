@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  A project declares named, weighted experiments under `projects.<KEY>.experiments.<name>`: a
+  mode (`off`, `on` or `random`), a unit (`tree` or `issue`) and an ordered list of variants, each
+  with a weight and the overlay files and instructions file its roles run with. The daemon draws
+  each experiment once for its unit, records the answer in a table of its own, launches every role
+  with the arms its unit was drawn into, and serves each issue's `assignments` on
+  `GET /legion/v1/state` at daemon API contract 99; a caller below 99 is served the state without
+  them. The `memory` block stays the experiment named `memory` and is accepted and refused as
+  before, and its draws recorded before the upgrade are copied into the new table. `legion
+  config-reference --json` prints every key of `legion.yaml`, nested keys included, with its
+  default, whether it is required and what it does.

@@ -119,9 +119,9 @@ var (
 // record added, nor the answers, nor the cause, nor the assignments; a pod from 75 to 84 those
 // nine keys too, and no issue's answer, no field of the line beside its place and its length,
 // no claim view's `leakCheckCause` and no assignments; a pod at 85 or 86 the answers and the
-// line's own fields too, and still neither the cause nor the assignments; a pod from 87 to 96
+// line's own fields too, and still neither the cause nor the assignments; a pod from 87 to 98
 // the cause too, and the assignments are then the one field still held back; a pod below 46
-// none of the fourteen; and a pod at 97, this daemon's declared contract, a pod whose claims
+// none of the fourteen; and a pod at 99, this daemon's declared contract, a pod whose claims
 // record no contract and a caller in no pod — the operator's `legion state`, whose memory line
 // reads the draws, whose experiment lines read the assignments, whose queue line reads the wakes
 // and whose tool-call line reads the step records — are served all of them.
@@ -153,18 +153,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		wakes   bool
 		retired bool
 		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// the contract forty below this daemon's own, so a pod at 57 is served the record
+		// the contract forty-two below this daemon's own, so a pod at 57 is served the record
 		// and a pod still running an older plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), thirty-nine contracts below this daemon's own, so a pod at it is
+		// (waitingLineContract), forty-one contracts below this daemon's own, so a pod at it is
 		// served the places and a pod still running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), the contract thirty-five below this daemon's own.
+		// has made (backwardMovesContract), the contract thirty-seven below this daemon's own.
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
-		// stale-plugin lane has left (claimsToRefreshContract), the contract twenty-four below
+		// stale-plugin lane has left (claimsToRefreshContract), the contract twenty-six below
 		// this daemon's own, so a pod at 73 or 74 is served the count and every older pod is not.
 		refresh bool
 		// failure is whether the caller is served the nine keys recordFieldsContract added
@@ -181,11 +181,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		assigned bool
 		// answers is whether the caller is served each issue's one rendered answer and the
 		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, the
-		// contract twelve below this daemon's own): one strip takes both, so a pod below it reads
+		// contract fourteen below this daemon's own): one strip takes both, so a pod below it reads
 		// every member with its `place` and its `length` alone and no issue with a `why`.
 		answers bool
 		// leak is whether the caller is served a claim view's `leakCheckCause`
-		// (leakCheckCauseContract, the contract ten below this daemon's own), the sentence a
+		// (leakCheckCauseContract, the contract twelve below this daemon's own), the sentence a
 		// launch try was refused with because the shared public leak check could not be
 		// installed.
 		leak bool
@@ -241,7 +241,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the answers and the line's own fields are served too, and the claim views'
 		// `leakCheckCause` and the assignments are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true},
-		// The band from 87 to 96, from leakCheckCauseContract to below assignmentsContract, the
+		// The band from 87 to 98, from leakCheckCauseContract to below assignmentsContract, the
 		// last band under the declared contract: the claim views' `leakCheckCause` is served
 		// too, and the assignments are the one key held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true},

@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  The plugin speaks daemon API contract 99, so its `legion` tool's `read_record` takes each issue's
+  `assignments`: the experiments the issue was drawn for, each with its variant, the mode it was
+  drawn under and the instant. Pin it together with a daemon at contract 99.

@@ -212,7 +212,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract twenty-four below this daemon's own.
+		// claimsToRefreshContract added, the contract twenty-six below this daemon's own.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -282,7 +282,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with the `waitingLine` key itself for a caller this far back
 			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
 			// sentence contract 87 added (withoutLeakCheckCause), and with each issue's
-			// `assignments` gone, the experiment answers contract 97 added (withoutAssignments).
+			// `assignments` gone, the experiment answers contract 99 added (withoutAssignments).
 			// Every row that reaches here is below all of them, so those fourteen keys go
 			// whatever the row is.
 			var want, got map[string]any
