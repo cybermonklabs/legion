@@ -257,22 +257,25 @@ describe("app-logins.ts", () => {
     holdsNoToken(stderr);
   });
 
-  test("a token command runs as the daemon runs it: no NATS seed, stdin closed, owner and read-only set empty", async () => {
+  test("a token command runs as the daemon runs it: no NATS seed, stdin closed, owner and read-only set empty, and no inherited LEGION_GITHUB_ value", async () => {
     // An unset variable prints `unset`, so a set-empty owner and read-only flag each print
-    // nothing.
+    // nothing. LEGION_GITHUB_REPOS is the name this change deleted, and any other name under that
+    // prefix reads the same: the runner drops what it inherited, as the daemon does, so a command
+    // never reads a narrowing value no mint gave it.
     const probe =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
-      'printf "%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
+      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "${LEGION_GITHUB_REPOS-unset}" "$(cat)" >&2; exit 4';
     const { code, stderr } = await run(config(app("101", probe), app("202")), {
       NATS_NKEY_SEED: "pane-seed",
       NATS_DAEMON_NKEY_SEED: "daemon-seed",
       NATS_NKEY_SEED_FILE: "/seed-file",
       LEGION_GITHUB_OWNER: "leaked-owner",
       LEGION_GITHUB_READ_ONLY: "1",
+      LEGION_GITHUB_REPOS: "leaked-owner/leaked-repo",
     });
     expect(code).toBe(1);
     expect(stderr).toBe(
-      "||/seed-file|||app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 4): ||/seed-file|||"
+      "||/seed-file|||unset|app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 4): ||/seed-file|||unset|"
     );
   });
 
