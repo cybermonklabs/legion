@@ -55,15 +55,16 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
  *  first of them, the largest of the three, so every such sleep outlasts its own row. A sleep no
  *  stop ended is then still running at every read its row makes, and never meets a check that it
  *  is gone by ending on its own. */
-const outlastsRow = rowLimit("short", "short", "short", "short", "short") / 1000;
+const outlastsRow = rowLimit("short", "short", "short") / 1000;
 
 /** Sends SIGKILL to `pid`, a process or, when negative, a process group, where it is still
- *  alive: what a stop under test left behind, so a failed row leaves no sleep running. */
+ *  alive: what a stop under test left behind, so a failed row leaves no sleep running. A process
+ *  the stop ended answers ESRCH, which is no failure; any other error is the row's own. */
 function killLeft(pid: number): void {
   try {
     process.kill(pid, "SIGKILL");
-  } catch {
-    // ESRCH: the stop ended it, as it should.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
 }
 
@@ -73,29 +74,42 @@ const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 /** A `Supervisor.stop` the row started and did not await. A stop that never sees a leader exit
  *  never returns, so the row waits for `returned` with `eventually`, which fails naming the stop,
- *  rather than awaiting a promise that only the runner's clock ends. The handlers below catch
- *  every outcome, so the promise never rejects unhandled while the row fails on another line:
- *  a stop that throws counts as returned, and `forced` throws what it threw. */
-function underway(stopping: Promise<boolean>): {
+ *  rather than awaiting a promise that only the runner's clock ends. `read` runs in the stop's own
+ *  settle handler, the moment the stop returns: the runtime reaps a child and raises its exit
+ *  only between macrotasks, so nothing ends after the return and before `read`, and `atReturn`
+ *  answers what `read` saw then. The handlers below catch every outcome, so the promise never
+ *  rejects unhandled while the row fails on another line: a stop that throws counts as returned,
+ *  and `forced` and `atReturn` throw what it threw. */
+function underway<Read>(
+  stopping: Promise<boolean>,
+  read: () => Read
+): {
   readonly returned: () => boolean;
   readonly forced: () => boolean;
+  readonly atReturn: () => Read;
 } {
-  let outcome: { readonly forced: boolean } | { readonly error: unknown } | undefined;
+  let outcome:
+    | { readonly forced: boolean; readonly read: Read }
+    | { readonly error: unknown }
+    | undefined;
   stopping.then(
     (forced) => {
-      outcome = { forced };
+      const seen = read();
+      outcome = { forced, read: seen };
     },
     (error: unknown) => {
       outcome = { error };
     }
   );
+  const settled = () => {
+    if (outcome === undefined) throw new Error("the stop has not returned");
+    if ("error" in outcome) throw outcome.error;
+    return outcome;
+  };
   return {
+    atReturn: () => settled().read,
+    forced: () => settled().forced,
     returned: () => outcome !== undefined,
-    forced: () => {
-      if (outcome === undefined) throw new Error("the stop has not returned");
-      if ("error" in outcome) throw outcome.error;
-      return outcome.forced;
-    },
   };
 }
 
@@ -126,12 +140,17 @@ describe("Supervisor.stop", () => {
       let grandchild: number | undefined;
       try {
         grandchild = await pidFrom(pidFile);
+        const alone = grandchild;
         expect(groupAlive(leader)).toBe(true);
         expect(groupAlive(quiet)).toBe(true);
 
         // The force-kill fires at half the short bound, inside the wait below: a stop that leaves
-        // one group to it rather than to SIGTERM returns in time and fails on `forced`.
-        const stop = underway(made.stop(30_000));
+        // one group to it rather than to SIGTERM returns in time and fails on `forced`. Each
+        // leader is the supervisor's own child, so the runtime has reaped it by the return.
+        const stop = underway(made.stop(bounds.short / 2), () => ({
+          leader: processAlive(leader),
+          quiet: groupAlive(quiet),
+        }));
         await eventually(
           `the stop of the leader ${leader} and the quiet process ${quiet} to return`,
           stop.returned
@@ -139,25 +158,28 @@ describe("Supervisor.stop", () => {
         expect(stop.forced(), "the stop's force-kill ran: SIGTERM did not end every group").toBe(
           false
         );
-
-        // A killed process still answers `kill(pid, 0)` as a zombie until its parent or init
-        // reaps it, which raises no event here, so each is read until it is gone.
-        await eventually(`the group of the leader ${leader} to end`, () => !groupAlive(leader));
-        await eventually(
-          `the group of the quiet process ${quiet} to end`,
-          () => !groupAlive(quiet)
+        const atReturn = stop.atReturn();
+        expect(atReturn.leader, `the leader ${leader} outlived the stop`).toBe(false);
+        expect(atReturn.quiet, `the group of the quiet process ${quiet} outlived the stop`).toBe(
+          false
         );
-        const alone = grandchild;
-        await eventually(`the grandchild ${alone} to end`, () => !processAlive(alone));
+
+        // The grandchild is no child of the supervisor: once its parent is gone, its zombie
+        // answers `kill(pid, 0)` until init reaps it, which raises no event here and can come
+        // after the return. So the leader's group, the grandchild in it, is read until it is gone.
+        await eventually(
+          `the group of the leader ${leader}, its grandchild ${alone} included, to end`,
+          () => !groupAlive(leader) && !processAlive(alone)
+        );
       } finally {
         killLeft(-leader);
         killLeft(-quiet);
         if (grandchild !== undefined) killLeft(grandchild);
       }
     },
-    // Five waits this row ends at a bound itself, one after another: the grandchild's pid in its
-    // file, the stop's return, then the two groups and the grandchild leaving the process table.
-    rowLimit("short", "short", "short", "short", "short")
+    // Three waits the short bound of `eventually` ends, one after another: the grandchild's pid
+    // in its file, the stop's return, then the leader's group leaving the process table.
+    rowLimit("short", "short", "short")
   );
 
   test(
@@ -168,7 +190,7 @@ describe("Supervisor.stop", () => {
       try {
         // The force-kill fires after the short bound, past the wait below, so a stop that waits
         // for that delay rather than for the leader to exit fails on the wait, naming the stop.
-        const stop = underway(made.stop(2 * bounds.short));
+        const stop = underway(made.stop(2 * bounds.short), () => groupAlive(quiet));
         await eventually(
           `the stop of the quiet process ${quiet} to return before its force-kill`,
           stop.returned
@@ -176,7 +198,7 @@ describe("Supervisor.stop", () => {
         // The force-kill cannot have run inside the wait above, so this reads only whether the
         // stop threw, which `forced()` rethrows.
         stop.forced();
-        expect(groupAlive(quiet), "the leader's group outlived the stop").toBe(false);
+        expect(stop.atReturn(), "the leader's group outlived the stop").toBe(false);
       } finally {
         killLeft(-quiet);
       }
@@ -198,12 +220,13 @@ describe("Supervisor.stop", () => {
         await expect(step).rejects.toBeInstanceOf(Interrupted);
         // The force-kill fires at half the short bound, inside the wait below: a stop that leaves
         // the step to it rather than to SIGTERM returns in time and fails on `forced`.
-        const stop = underway(made.stop(30_000));
+        const group = pid;
+        const stop = underway(made.stop(bounds.short / 2), () => groupAlive(group));
         await eventually(`the stop of the interrupted step ${pid} to return`, stop.returned);
         expect(stop.forced(), "the stop's force-kill ran: SIGTERM did not end the step").toBe(
           false
         );
-        expect(groupAlive(pid), "the interrupted step's group outlived the stop").toBe(false);
+        expect(stop.atReturn(), "the interrupted step's group outlived the stop").toBe(false);
       } finally {
         if (pid !== undefined) killLeft(-pid);
       }

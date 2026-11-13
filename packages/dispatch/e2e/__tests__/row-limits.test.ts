@@ -211,23 +211,23 @@ test("the scan reads a test file of a subdirectory, which the lane runs too", ()
 });
 
 // The control for a false refusal, which belongs here rather than in either file below: a wrong
-// refusal of the judge's `2_000` or of the supervisor's `30_000` leaves both those files green,
-// so running them proves nothing and this row is where it would show. Both numbers are arguments
-// of ordinary calls, which none of the five places a limit is written reaches, and
-// `check-slow-rows.test.ts` writes whole spec files - `test(` calls and all - inside template
-// literals, which the scan parses as the strings they are.
+// refusal of the judge's `2_000` or of the `100` the supervisors' `afterEach` passes to `stop`
+// leaves both those files green, so running them proves nothing and this row is where it would
+// show. Both numbers are arguments of ordinary calls, which none of the five places a limit is
+// written reaches, and `check-slow-rows.test.ts` writes whole spec files - `test(` calls and all -
+// inside template literals, which the scan parses as the strings they are.
 test("a number that is no row's or hook's own limit is read nowhere", () => {
   const files = ["__tests__/check-slow-rows.test.ts", "__tests__/local-instance-support.test.ts"];
   const sources = files.map((file) => readFileSync(join(e2eDirectory, file), "utf8"));
   expect(sources[0]).toContain("judge(");
   expect(sources[0]).toContain("2_000");
   expect(sources[0]).toContain("test(");
-  expect(sources[1]).toContain("stop(30_000)");
+  expect(sources[1]).toContain("made.stop(100)");
 
   const limits = limitsOfFiles(e2eDirectory, files);
   expect(limits.length).toBeGreaterThan(0);
   expect(limits.map((limit) => limit.stated?.text)).not.toContain("2_000");
-  expect(limits.map((limit) => limit.stated?.text)).not.toContain("30_000");
+  expect(limits.map((limit) => limit.stated?.text)).not.toContain("100");
   expect(limits.filter((limit) => limit.file === files[0])).toEqual([]);
   expect(refusedLimits(limits)).toEqual([]);
 });
@@ -387,7 +387,7 @@ test("a row or hook that waits for a bounded child states its limit as a rowLimi
 // one and states no limit runs under the lane's `--timeout 60000`, which ties with that bound,
 // and the row's clock can fire first and the failure names no state. The fixture plants a row
 // that calls each and states no limit, both refused, and one under `rowLimit("short")`, which
-// passes. Every real row that polls is read as waiting under that bound, and none is refused.
+// passes. No real row that polls is refused, whether its own `rowLimit` or its file's covers it.
 test("a row that polls with whether or eventually states a rowLimit of the short bound", () => {
   expect(planted(171).waitsFor).toEqual(["`eventually`"]);
   expect(planted(171).bound).toBe("short");
@@ -419,7 +419,6 @@ test("a row that polls with whether or eventually states a rowLimit of the short
       "__tests__/round-robin-proxy.test.ts",
     ])
   );
-  for (const limit of polling) expect(limit.stated?.fromBounds).toBe(true);
   expect(realRefused.filter((refusal) => polling.includes(refusal.limit))).toEqual([]);
 });
 

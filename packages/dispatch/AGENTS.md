@@ -2063,9 +2063,8 @@ polls, and the rows of `e2e/__tests__/local-instance-support.test.ts` that wait
 for its `Supervisor`'s processes state one for each `eventually`. Otherwise it
 keeps a number, with the reason it is that long on the line directly above it:
 the six rows of `e2e/__tests__/delivery-live-probe.test.ts` that read the
-probe's lines and stop it with SIGINT, the two hooks of
-`e2e/__tests__/psql-session.test.ts`, and the row of
-`local-instance-support.test.ts` whose limit outlasts a stop's 30 s force-kill.
+probe's lines and stop it with SIGINT, and the two hooks of
+`e2e/__tests__/psql-session.test.ts`.
 `e2e/row-limits.ts`, which
 `e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
 any depth, that the lane's `bun test` collects there - measured with bun 1.4.4
@@ -2098,9 +2097,10 @@ names a row that waits that way: a bounded function passed as a value
 (`const rows = lane.then(rowsOf)`); a name a destructuring declaration binds
 (`const [lane] = [listing(...)]`); a name a property or a destructuring
 assignment writes (`state.lane = listing(...)`, `[lane] = [listing(...)]`); and
-a method of a class declaration, static or not, that calls `runBounded` or
-`listing` (a class expression or an object literal bound to a name is read,
-since that name's initializer holds the call). A name bound to an
+a method of a class declaration, static or not, that calls `runBounded`,
+`listing`, `whether` or `eventually` (a class expression or an object literal
+bound to a name is read, since that name's initializer holds the call). A name
+bound to an
 awaited call (`const options = await helpOptions()`) is no wait either, since it
 holds what the call answered, but only where the `await` is outermost:
 `const code = (await runBounded(...)).code` is read as a waiting name, so a row

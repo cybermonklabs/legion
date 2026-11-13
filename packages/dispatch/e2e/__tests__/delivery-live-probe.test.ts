@@ -188,11 +188,16 @@ function runProbeToEnd(args: readonly string[]) {
   });
 }
 
-function args(
-  dispatch: FakeDispatchServer<LiveClientFrame>,
-  token = TOKEN,
-  minutes = "1"
-): string[] {
+/** The `open` lines of the probe's whole stdout. */
+function opensOf(stdout: string): ProbeOpenLine[] {
+  return stdout
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as ProbeLine)
+    .filter((line): line is ProbeOpenLine => line.type === "open");
+}
+
+function args(dispatch: { readonly url: string }, token = TOKEN, minutes = "1"): string[] {
   const tokenFile = join(scratch(), "token");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
   return [
@@ -556,12 +561,18 @@ test(
   "the watch ends on its own after --minutes",
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
-    const started = Date.now();
     // 0.01 minutes is 600 ms of the probe's own clock, in another process, which no fake timer
-    // here reaches: the test waits for that process to end and checks it ended no sooner.
+    // here reaches, counted from the socket's open. The test waits for that process to end and
+    // checks it ended no sooner than 600 ms after the open its own `open` line records.
     const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
+    const ended = Date.now();
     expect(run.code).toBe(0);
-    expect(Date.now() - started).toBeGreaterThanOrEqual(600);
+    const opens = opensOf(run.stdout);
+    expect(opens).toHaveLength(1);
+    expect(
+      ended - Date.parse(opens[0].at),
+      "the probe ended its watch before 600 ms had passed since its open"
+    ).toBeGreaterThanOrEqual(600);
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
   },
   rowLimit("short")
@@ -606,15 +617,9 @@ test(
   "the watch subscribes and ends on its own when its socket opens late",
   async () => {
     const dispatch = heldDispatch(2_500);
-    const argv = args(probeDispatch({ onSubscribe() {} }), TOKEN, "0.01");
-    argv[argv.indexOf("--url") + 1] = dispatch.url;
-    const run = await runProbeToEnd(argv);
+    const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
     expect(run.code).toBe(0);
-    const opens = run.stdout
-      .split("\n")
-      .filter((line) => line !== "")
-      .map((line) => JSON.parse(line) as ProbeLine)
-      .filter((line): line is ProbeOpenLine => line.type === "open");
+    const opens = opensOf(run.stdout);
     expect(dispatch.released).toHaveLength(1);
     expect(opens).toHaveLength(1);
     expect(Date.parse(opens[0].at)).toBeGreaterThanOrEqual(dispatch.released[0]);
@@ -638,8 +643,7 @@ test(
       socket: { data() {}, open() {} },
     });
     try {
-      const argv = args(probeDispatch({ onSubscribe() {} }), TOKEN, "0.01");
-      argv[argv.indexOf("--url") + 1] = `http://127.0.0.1:${silent.port}`;
+      const argv = args({ url: `http://127.0.0.1:${silent.port}` }, TOKEN, "0.01");
       argv.push("--open-within", "1");
       const run = await runProbeToEnd(argv);
       expect(run.code).toBe(1);
@@ -695,10 +699,7 @@ function slowDispatch(answer: (url: URL) => Response | Promise<Response>) {
 /** The probe's argv for a watch of `url` that compares once it ends, each read given
  *  `readWithin` seconds of silence. */
 function compareArgs(url: string, readWithin: string): string[] {
-  const argv = args(probeDispatch({ onSubscribe() {} }));
-  argv[argv.indexOf("--url") + 1] = url;
-  argv.push("--compare", "--read-within", readWithin);
-  return argv;
+  return [...args({ url }), "--compare", "--read-within", readWithin];
 }
 
 // A `--compare` read that receives nothing for `--read-within` fails the probe, naming its route,

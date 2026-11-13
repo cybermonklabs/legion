@@ -126,18 +126,18 @@
  *   `[lane] = [listing(...)]`, `({ lane } = ...)` - because only an identifier is read as
  *   assigned, by `=`, `??=`, `||=` or `&&=`, so a row that awaits `state.lane`, or that `lane`,
  *   waits for nothing here;
- * - a method of a class declaration, static or not, that calls `runBounded` or `listing`: the
- *   file's own functions are its function declarations and its variables bound to an arrow or a
- *   function expression, and a call through a member - `Helpers.run()` - reaches none of them. A
- *   class expression or an object literal bound to a name is read, since that name's initializer
- *   holds the call;
+ * - a method of a class declaration, static or not, that calls `runBounded`, `listing`, `whether`
+ *   or `eventually`: the file's own functions are its function declarations and its variables
+ *   bound to an arrow or a function expression, and a call through a member - `Helpers.run()` -
+ *   reaches none of them. A class expression or an object literal bound to a name is read, since
+ *   that name's initializer holds the call;
  * - a bounded function passed as a value - `.map(runBounded)`, `.map(listing)`, a waiting
  *   function of the file's own handed to another call - which is no call the scan sees.
  *
  * A row that waits through one of them still states `rowLimit`, because its writer knows it
- * waits. A bare reference to `runBounded` or `listing` that calls neither - the `void runBounded`
- * that `e2e/__tests__/fixtures/row-limits.fixture.ts` plants - is no wait at all, because only a
- * call starts a child.
+ * waits. A bare reference to `runBounded`, `listing`, `whether` or `eventually` that calls none
+ * of them - the `void runBounded` that `e2e/__tests__/fixtures/row-limits.fixture.ts` plants - is
+ * no wait at all, because only a call starts a child or a poll.
  *
  * A name bound or assigned to an awaited call - `const options = await helpOptions()` - holds
  * what the call answered, so a reference to it waits for nothing and is not read; the binding's
@@ -165,11 +165,12 @@
  * `rowLimit(...list.map(...))` - the names are not checked and the limit is taken as stated.
  *
  * WHAT IS NOT A LIMIT. A number that is not a row's or a hook's own. `check-slow-rows.test.ts`
- * hands `2_000` to the judge it tests and `local-instance-support.test.ts` hands `30_000` to a
- * supervisor's stop; both are arguments of ordinary calls, which none of the five places above
- * reaches. The scan parses rather than matching text, so a `test(` written inside a template
- * literal - `check-slow-rows.test.ts` holds two files' worth of them - is a string and no call
- * at all, and a row of `e2e/__tests__/row-limits.test.ts` holds that over those two files.
+ * hands `2_000` to the judge it tests and `local-instance-support.test.ts` hands `100` to the
+ * stop of each supervisor its `afterEach` ends; both are arguments of ordinary calls, which none
+ * of the five places above reaches. The scan parses rather than matching text, so a `test(`
+ * written inside a template literal - `check-slow-rows.test.ts` holds two files' worth of them -
+ * is a string and no call at all, and a row of `e2e/__tests__/row-limits.test.ts` holds that
+ * over those two files.
  *
  * WHAT IS READ. Every file under `e2e/__tests__`, at any depth, that the lane's
  * `bun test e2e/__tests__` collects there, and no other: `collectedTestFile` and
@@ -1146,7 +1147,8 @@ function unstatedRefusal(
   if (fileLimits.length === 0) {
     return (
       `${at} waits for ${waits} and states no limit, so the lane's \`--timeout\` stops it, and ` +
-      "that clock can fire before the bound of the child it waits for and name no child: " +
+      "that clock can fire before the bound of the child or the poll it waits for, and name " +
+      "neither: " +
       waitingRemedy(limit)
     );
   }

@@ -4,11 +4,10 @@ import { fileURLToPath } from "node:url";
 import { limitsOfFiles, refusedLimits } from "../row-limits";
 import { eventually, rowLimit } from "./bounded-subprocess";
 
-// RED TEST of the testing phase, dispatch://INFRA-3082, 2026-11-13. This file holds one correctly
-// bounded polling row in a file of its own: the row waits on `eventually` and states
-// `rowLimit("short")`, as the rule asks. The guard reads it so and refuses it nothing. The polling
-// row of `row-limits.test.ts` compared the files that poll with an exact list of four, so a file
-// like this one turned that row red although the rule refuses nothing in it.
+// One correctly bounded polling row in a file of its own: the row waits on `eventually` and
+// states `rowLimit("short")`, as the rule asks. The guard reads it as waiting under the short
+// bound and refuses it nothing, so a file like this one leaves the guard green, here and in the
+// polling row of `row-limits.test.ts`, which asks only that the files that poll include its four.
 const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 const thisFile = "__tests__/row-limits-polling.test.ts";
 

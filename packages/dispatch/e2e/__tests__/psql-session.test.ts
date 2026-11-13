@@ -186,16 +186,18 @@ test.skipIf(!live)(
       );
       await sql("INSERT INTO overlap_release VALUES (1)");
     } catch (error) {
-      // The held statement gives up inside the same short bound. Settled here, its rejection
-      // lands in no later row, and this row reports its own failure.
+      // The held statement gives up once the short bound has passed since it reached the
+      // server. It is awaited here so that neither its rejection nor its connection reaches a
+      // later row, and this row reports its own failure.
       await holding.catch(() => {});
       throw error;
     }
     await holding;
   },
   // The one wait this row ends at a bound itself: the overlapping call seeing the session's
-  // statement, which the short bound of `eventually` ends. The held statement gives up inside
-  // that same bound, so the row fails on its error and not on this clock.
+  // statement, which the short bound of `eventually` ends. The held statement gives up once that
+  // same bound has passed since it reached the server, a moment after that wait began and well
+  // inside the 30 000 ms the limit adds, so the row fails on its error and not on this clock.
   rowLimit("short")
 );
 
