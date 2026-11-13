@@ -261,8 +261,9 @@ admission_cap=4
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
-# root in `awaiting_merge` holds none and keeps its pod. The peak of pods is the peak of slots
-# here: tree 1, tree 3 and children 3 and 4 at children-first-acceptance, and the four of
+# started issue that gave its slot back to wait on another issue holds none and keeps its pod.
+# The peak of pods is the peak of slots here: tree 1, tree 3 and children 3 and 4 at
+# children-first-acceptance, and the four of
 # issue-independence before them. The run launches no controller pod: its controller starts from
 # the operator shell (controller). preflight refuses, BLOCKED, a pool with room for fewer.
 run_pods_at_once=$admission_cap
@@ -6392,8 +6393,8 @@ closed_last=$(log_lines "workflow: a merged root closes once its last child left
   fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
-# No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached
-# awaiting_merge, its children's at their parks, and the close frees whatever is left.
+# No issue of tree 1 holds an admission slot once it closes: the root keeps its row in merging
+# until the close, its children's rows went at their parks, and the close frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"
