@@ -97,8 +97,8 @@ refused naming that number. The split of the one plugin into this package and `@
 number is the one `DaemonAPIVersion` declares, last bumped by contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
-each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
-the daemon reads in one order, of which `at_work` names no issue today (see
+each row carrying the issue, one word for why the daemon does not start it — a closed list of
+eleven words the daemon reads in one order, of which `at_work` names no issue today (see
 `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where no issue holds the one
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission

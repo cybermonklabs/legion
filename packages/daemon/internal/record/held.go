@@ -7,7 +7,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
-// HeldReason is the one word for why the daemon runs nothing of an issue its own record holds in
+// HeldReason is the one word for why the daemon does not start an issue its own record holds in
 // the workflow and queues it nowhere: an issue that stands in neither the active set nor the
 // waiting line stands in the held list with this word beside it (C1 of dispatch://INFRA-3107).
 // The words are a closed list, read in one order by one ladder (HeldReasonOf), so that the

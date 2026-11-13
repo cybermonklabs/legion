@@ -29,8 +29,8 @@ controller that starts later finds such a root by the last row, as its start pro
 ## `admission.held`: what nothing starts
 
 `admission.held` is every issue the daemon's record holds in the workflow that stands in neither
-`admission.active` nor `admission.waiting`. Each row carries the issue, one word for why nothing
-of it runs, and `heldBy`, the issues that hold it, which is absent where no issue holds it. The
+`admission.active` nor `admission.waiting`. Each row carries the issue, one word for why the
+daemon does not start it, and `heldBy`, the issues that hold it, which is absent where no issue holds it. The
 daemon reads the words in the order of the table below and takes the first that is true, so one
 issue reads one word, and that word is the same in `read_state` and in the `tick` notice. The
 list names no issue `admission.active` or `admission.waiting` names, so the three lists together

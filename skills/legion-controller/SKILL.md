@@ -196,8 +196,8 @@ Every move to `todo` you make is one of these:
 - stopped-session work that a person's directive in the weekly plan moves to Legion.
 
 `admission.held` is every issue the daemon's record holds in the workflow that stands in neither
-`admission.active` nor `admission.waiting`: each row gives the issue, one word for why nothing of
-it runs, and the issues that hold it. Read it beside `admission.blocked`, which names Dispatch
+`admission.active` nor `admission.waiting`: each row gives the issue, one word for why the daemon
+does not start it, and the issues that hold it. Read it beside `admission.blocked`, which names Dispatch
 links and children-first waits alone. The daemon starts none of the issues in `admission.held` by
 itself, so a row ends when a person acts or when the tree that owns the work moves;
 `skill://legion-controller/references/admission.md` gives the word for each row and what ends it.

@@ -428,7 +428,7 @@ type Admission struct {
 	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
 	// Held is every issue the daemon's record holds in the workflow that stands in neither
-	// `active` nor `waiting`: the work the daemon runs nothing of and queues nowhere, each row
+	// `active` nor `waiting`: the work the daemon does not start and queues nowhere, each row
 	// carrying the one word for why (record.HeldReason) and the issues that hold it, sorted by
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
@@ -454,8 +454,8 @@ type Admission struct {
 // read two ways, and the row is declared once, under both.
 type BlockedIssue = record.BlockedIssue
 
-// HeldIssue is one issue of Held: the issue, the one word for why nothing of it runs, and the
-// issues that hold it where there are any. It is record.HeldIssue, as BlockedIssue is
+// HeldIssue is one issue of Held: the issue, the one word for why the daemon does not start it,
+// and the issues that hold it where there are any. It is record.HeldIssue, as BlockedIssue is
 // record.BlockedIssue: the state's `admission.held` and the controller tick's notice are the
 // same list read two ways, and the row is declared once, under both.
 type HeldIssue = record.HeldIssue

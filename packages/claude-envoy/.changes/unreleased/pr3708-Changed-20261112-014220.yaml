@@ -1,5 +1,5 @@
 kind: Changed
-body: 'Declares daemon API contract 98, which adds `admission.held` to the state: every issue the daemon''s record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.'
+body: 'Declares daemon API contract 98, which adds `admission.held` to the state: every issue the daemon''s record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why the daemon does not start it and the issues that hold it.'
 time: 2026-11-12T01:42:20.000000000Z
 custom:
     Issue: pr3708

@@ -385,7 +385,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
-	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
+	// What the daemon does not start and queues nowhere, beside the two lists above: every
 	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
 	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
 	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate

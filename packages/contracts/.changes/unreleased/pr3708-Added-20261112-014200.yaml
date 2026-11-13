@@ -1,5 +1,5 @@
 kind: Added
-body: 'Daemon API contract 98: the state carries `admission.held`, every issue the daemon''s record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`. Each row names the issue, one word for why nothing of it runs — one of eleven the daemon reads in a fixed order — and `heldBy`, the issues that hold it, which is absent where no issue holds it. A row names no issue of `active` or `waiting`, and a caller from a pod below 98 is served the admission block without the key.'
+body: 'Daemon API contract 98: the state carries `admission.held`, every issue the daemon''s record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`. Each row names the issue, one word for why the daemon does not start it — one of eleven the daemon reads in a fixed order — and `heldBy`, the issues that hold it, which is absent where no issue holds it. A row names no issue of `active` or `waiting`, and a caller from a pod below 98 is served the admission block without the key.'
 time: 2026-11-12T01:42:00.000000000Z
 custom:
     Issue: pr3708
