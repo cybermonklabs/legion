@@ -20,13 +20,14 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // record of what each claim's agent last did, the six keys the decided claim record added and,
 // on LEGION-210's failed implementer, the sentence a launch try was refused with because the
 // shared public leak check could not be installed, and its issues the three that record added
-// to an issue; its admission block names the live trees, its stranded claims hold a retired one,
-// it carries the wakes the pacing holds and the count of claims the refresh lane has left, an
+// to an issue; its admission block names the live trees and the issues the record holds in the
+// workflow that neither of its other lists names, its stranded claims hold a retired one, it
+// carries the wakes the pacing holds and the count of claims the refresh lane has left, an
 // implementer of it carries its issue's counts of the moves back, every root of it carries the
 // deployment's gated step, the two issues of its admission line carry their place in it with the
 // line's own fields beside that place, every issue of it that is not working now carries its
 // answer under `why`, and the two issues whose current phase names a phase worker role carry the
-// entry that role stands on and the entry it was given, so one state proves all fourteen
+// entry that role stands on and the entry it was given, so one state proves all fifteen
 // downgrades and that they compose.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
@@ -104,22 +105,24 @@ var (
 // none of the memory draws, the trees, the wakes the pacing holds, the gated steps, the retired
 // stranded entries, the step records, the places in the admission line, the counts of the moves
 // back, the count of claims the refresh lane has left, the failure record, the issues' answers,
-// the leak check's cause and the two entry numbers; a pod at 49 or 50 the memory draws as well,
-// and still none of the rest; a pod at 51 or 52 the trees too; a pod at 53 or 54 the wakes too;
-// a pod at 55 the steps too, and still none of the retired entries, the step records, the
-// places, the counts of the moves back, the refresh count, the failure record, the answers, the
-// cause and the entry numbers; a pod at 56 the retired entries too; a pod at 57 the step records
-// too; a pod at 58 to 61 the places too, and neither count nor the record nor the answers nor
-// the cause nor the entry numbers; a pod from 62 to 72 the counts of the moves back too, and
-// still no refresh count; a pod at 73 or 74 the refresh count too, and none of the nine keys the
-// decided record added; a pod from 75 to 84 those nine too, and no issue's answer, no field of
-// the line beside its place and its length, no claim view's `leakCheckCause` and neither entry
-// number; a pod at 85 or 86 the answers and the line's fields too, and still no
-// `leakCheckCause` and neither entry number; a pod from 87 to 93 the cause too, and not the
-// entry numbers; a pod below 46 none of them; and a pod at 94, a pod at 95, this daemon's
-// declared contract, a pod whose claims record no contract and a caller in no pod — the
-// operator's `legion state`, whose memory line reads the draws, whose queue line reads the wakes
-// and whose tool-call line reads the step records — are served all of them.
+// the leak check's cause, the two entry numbers and the held list; a pod at 49 or 50 the memory
+// draws as well, and still none of the rest; a pod at 51 or 52 the trees too; a pod at 53 or 54
+// the wakes too; a pod at 55 the steps too, and still none of the retired entries, the step
+// records, the places, the counts of the moves back, the refresh count, the failure record, the
+// answers, the cause, the entry numbers and the held list; a pod at 56 the retired entries too;
+// a pod at 57 the step records too; a pod at 58 to 61 the places too, and neither count nor the
+// record nor the answers nor the cause nor the entry numbers nor the held list; a pod from 62
+// to 72 the counts of the moves back too, and still no refresh count; a pod at 73 or 74 the
+// refresh count too, and none of the nine keys the decided record added; a pod from 75 to 84
+// those nine too, and no issue's answer, no field of the line beside its place and its length,
+// no claim view's `leakCheckCause`, neither entry number and no held list; a pod at 85 or 86 the
+// answers and the line's fields too, and still neither the cause, nor either entry number, nor
+// the held list; a pod from 87 to 93 the cause too, and still neither entry number nor the held
+// list; a pod from 94 to 97 the two entry numbers too, and still no held list; a pod below 46
+// none of them; and a pod at 98, a pod at 99, this daemon's declared contract, a pod whose
+// claims record no contract and a caller in no pod — the operator's `legion state`, whose
+// memory line reads the draws, whose queue line reads the wakes and whose tool-call line reads
+// the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -147,21 +150,21 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		steps   bool
 		wakes   bool
 		retired bool
-		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// a contract below this daemon's own, so a pod at 57 is served the record
-		// and a pod still running an older plugin is not.
+		// stall is whether the caller is served the claim views' `step` (stallRecordContract,
+		// 57), so a pod at 57 or above is served the record and a pod still running an older
+		// plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), a contract below this daemon's own, so a pod at it is
-		// served the places and a pod still running an older plugin is not.
+		// (waitingLineContract, 58), so a pod at 58 or above is served the places and a pod still
+		// running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), a contract below this daemon's own, so a pod at 62
-		// or above is served the counts and a pod still running an older plugin is not.
+		// has made (backwardMovesContract, 62), so a pod at 62 or above is served the counts and
+		// a pod still running an older plugin is not.
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
-		// stale-plugin lane has left (claimsToRefreshContract), a contract below this daemon's
-		// own, so a pod at 73 or 74 is served the count and every older pod is not.
+		// stale-plugin lane has left (claimsToRefreshContract, 73), so a pod at 73 or above is
+		// served the count and every older pod is not.
 		refresh bool
 		// contract is the contract the body is shaped at: the one the row's claims record, and
 		// this daemon's own where no claim of the caller's pod records one and where the caller
@@ -177,82 +180,99 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// is served none of the nine, whatever this daemon declares.
 		failure bool
 		// answers is whether the caller is served each issue's one rendered answer and the
-		// waiting line's own fields beside each member's place (whyAndLineFieldsContract): one
-		// serving-down takes both, so a pod below it reads every member with its `place` and its
-		// `length` alone and no issue with a `why`.
+		// waiting line's own fields beside each member's place (whyAndLineFieldsContract, 85):
+		// one serving-down takes both, so a pod below it reads every member with its `place`
+		// and its `length` alone and no issue with a `why`.
 		answers bool
-		// leak is whether the caller is served a claim view's `leakCheckCause`
-		// (leakCheckCauseContract, a contract below this daemon's own), the sentence a launch
-		// try was refused with because the shared public leak check could not be installed.
+		// leak is whether the caller is served a claim view's `leakCheckCause`, the sentence a
+		// launch try was refused with because the shared public leak check could not be
+		// installed (leakCheckCauseContract, 87), so a pod at 87 or above is served it and every
+		// older pod is not.
 		leak bool
 		// entries is whether the caller is served each issue's `phaseEntry` and `givenEntry`
-		// (phaseEntriesContract, a contract below this daemon's own).
+		// (phaseEntriesContract, 94), so a pod at 94 or above is served them and every older
+		// pod is not.
 		entries bool
+		// held is whether the caller is served `admission.held`, the issues the record holds in
+		// the workflow that stand in neither `active` nor `waiting` (heldContract, 98), so a pod
+		// at 98 or above is served the list and every older pod is not.
+		held bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},
-		{name: "a pod below PodUpdateContract, below all eighteen strips", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1), contract: supervise.PodUpdateContract - 1},
+		{name: "a pod below PodUpdateContract, below all nineteen strips", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1), contract: supervise.PodUpdateContract - 1},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true, contract: memoryContract - 1},
 		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
 		// is served and the two tree keys, `wakesWaiting`, the gated steps, the retired stranded
-		// entries, the step record, the places in the admission line and the counts of the moves
-		// back are not.
+		// entries, the step record, the places in the admission line, the counts of the moves
+		// back, the refresh count, the nine keys of the decided record, the answers, the leak
+		// check's cause, the two entry numbers and the held list are not.
 		{name: "a pod at memoryContract", remote: statePodAddr + ":41000", claims: podClaims(memoryContract), memory: true, rounds: true, contract: memoryContract},
 		// The band at 51 and 52, from treeContract to below wakesWaitingContract: the trees are
 		// served too, and none of `wakesWaiting`, the gated steps, the retired entries, the step
-		// record, the places and the counts is. This row is at treeContract, its lower edge.
+		// record, the places, the counts, the refresh count, the nine keys of the decided
+		// record, the answers, the leak check's cause, the two entry numbers and the held list
+		// is. This row is at treeContract, its lower edge.
 		{name: "a pod at treeContract", remote: statePodAddr + ":41000", claims: podClaims(treeContract), memory: true, trees: true, rounds: true, contract: treeContract},
 		// The band at 53 and 54, from wakesWaitingContract to below gatedStepsContract: none of
-		// the gated steps, the retired entries, the step record, the places and the counts is
-		// served.
+		// the gated steps, the retired entries, the step record, the places, the counts, the
+		// refresh count, the nine keys of the decided record, the answers, the leak check's
+		// cause, the two entry numbers and the held list is served.
 		{name: "a pod at wakesWaitingContract", remote: statePodAddr + ":41000", claims: podClaims(wakesWaitingContract), memory: true, trees: true, rounds: true, wakes: true, contract: wakesWaitingContract},
 		// The band at 55 alone, from gatedStepsContract to below retiredStrandedContract: the
 		// gated steps are served too, and none of the retired entries, the step record, the
-		// places and the counts is.
+		// places, the counts, the refresh count, the nine keys of the decided record, the
+		// answers, the leak check's cause, the two entry numbers and the held list is.
 		{name: "a pod at gatedStepsContract", remote: statePodAddr + ":41000", claims: podClaims(gatedStepsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, contract: gatedStepsContract},
 		// The band at 56 alone, from retiredStrandedContract to below stallRecordContract: the
-		// retired entries are served too, and none of the step record, the places and the counts
-		// is.
+		// retired entries are served too, and none of the step record, the places, the counts,
+		// the refresh count, the nine keys of the decided record, the answers, the leak check's
+		// cause, the two entry numbers and the held list is.
 		{name: "a pod at retiredStrandedContract", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, contract: retiredStrandedContract},
 		// The band at 57 alone, from stallRecordContract to below waitingLineContract: the step
-		// record is served too, and the places in the admission line, the counts of the moves
-		// back, the count of claims the refresh lane has left, each issue's answer, the leak
-		// check's cause and the two entry numbers are all held back.
+		// record is served too, and none of the places, the counts, the refresh count, the nine
+		// keys of the decided record, the answers, the leak check's cause, the two entry numbers
+		// and the held list is.
 		{name: "a pod at stallRecordContract", remote: statePodAddr + ":41000", claims: podClaims(stallRecordContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, contract: stallRecordContract},
 		// The band from waitingLineContract to below backwardMovesContract: the places in the
-		// admission line are served too, and none of the counts of the moves back, the count of
-		// claims the refresh lane has left, each issue's answer, the leak check's cause and the
-		// two entry numbers is.
+		// admission line are served too, and none of the counts of the moves back, the refresh
+		// count, the nine keys of the decided record, the answers, the leak check's cause, the
+		// two entry numbers and the held list is.
 		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, contract: waitingLineContract},
 		// The band from backwardMovesContract to below claimsToRefreshContract: the counts of
 		// the moves back are served too, and `claimsToRefresh`, the nine keys of the decided
-		// record, each issue's answer, the leak check's cause and the two entry numbers are held
-		// back.
+		// record, the answers, the leak check's cause, the two entry numbers and the held list
+		// are held back.
 		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, contract: backwardMovesContract},
 		// The band at 73 and 74, from claimsToRefreshContract to below recordFieldsContract: the
 		// count of claims the refresh lane has left is served too, and the nine keys of the
-		// decided record, each issue's answer, the leak check's cause and the two entry numbers
-		// are held back.
+		// decided record, the answers, the leak check's cause, the two entry numbers and the
+		// held list are held back.
 		{name: "a pod at claimsToRefreshContract", remote: statePodAddr + ":41000", claims: podClaims(claimsToRefreshContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, contract: claimsToRefreshContract},
 		// The band from 75 to 84, from recordFieldsContract to below whyAndLineFieldsContract:
 		// the nine keys of the decided record are served too, and each issue's answer with the
-		// line's own fields, the leak check's cause and the two entry numbers are held back.
+		// line's own fields, the leak check's cause, the two entry numbers and the held list are
+		// held back.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, contract: recordFieldsContract},
 		// The band at 85 and 86, from whyAndLineFieldsContract to below leakCheckCauseContract:
 		// each issue's answer and the line's own fields are served too, and the claim views'
-		// `leakCheckCause`, the two entry numbers and the keys contract 95 added to a claim view
-		// are held back.
+		// `leakCheckCause`, the two entry numbers, the held list and the keys contract 99 added
+		// to a claim view are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, contract: whyAndLineFieldsContract},
 		// The band from 87 to 93, from leakCheckCauseContract to below phaseEntriesContract: the
-		// claim views' `leakCheckCause` is served too, and the two entry numbers and the keys
-		// contract 95 added to a claim view are held back.
+		// claim views' `leakCheckCause` is served too, and the two entry numbers, the held list
+		// and the keys contract 99 added to a claim view are held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, contract: leakCheckCauseContract},
-		// The band at 94, from phaseEntriesContract to below this daemon's own: the two entry
-		// numbers are served too, and the keys contract 95 added to a claim view are what such a
-		// caller is still without.
+		// The band from 94 to 97, from phaseEntriesContract to below heldContract: the two entry
+		// numbers are served too, and the held list and the keys contract 99 added to a claim
+		// view are held back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, contract: phaseEntriesContract},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, contract: DaemonAPIVersion},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, contract: DaemonAPIVersion},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, contract: DaemonAPIVersion},
+		// The band at 98, from heldContract to below this daemon's own: the held list is served
+		// too, and the keys contract 99 added to a claim view are what such a caller is still
+		// without.
+		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, contract: heldContract},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, contract: DaemonAPIVersion},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, contract: DaemonAPIVersion},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, contract: DaemonAPIVersion},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -355,6 +375,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if !tc.trees {
 				delete(want["admission"].(map[string]any), "trees")
 			}
+			// A pod below heldContract is served no `admission.held`, the one key that contract
+			// added (api's withoutHeld), which is every pod of every band below this one.
+			if !tc.held {
+				delete(want["admission"].(map[string]any), "held")
+			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)
 				if !tc.memory {
@@ -416,7 +441,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						delete(view, "step")
 					}
 					// A caller below shapedAnswersContract is served no claim view carrying the
-					// four keys contract 95 added to one, which is every band of this table but
+					// four keys contract 99 added to one, which is every band of this table but
 					// the last three rows.
 					if tc.contract < shapedAnswersContract {
 						for _, key := range roundReportKeys {

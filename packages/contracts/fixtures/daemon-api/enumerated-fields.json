@@ -163,23 +163,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 95
+        "since": 99
       },
       {
         "value": "asked",
-        "since": 95
+        "since": 99
       },
       {
         "value": "none",
-        "since": 95
+        "since": 99
       },
       {
         "value": "open",
-        "since": 95
+        "since": 99
       },
       {
         "value": "push-check-reask",
-        "since": 95
+        "since": 99
       }
     ]
   },
@@ -189,23 +189,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 95
+        "since": 99
       },
       {
         "value": "asked",
-        "since": 95
+        "since": 99
       },
       {
         "value": "none",
-        "since": 95
+        "since": 99
       },
       {
         "value": "open",
-        "since": 95
+        "since": 99
       },
       {
         "value": "push-check-reask",
-        "since": 95
+        "since": 99
       }
     ]
   },
@@ -920,6 +920,56 @@
     ]
   },
   {
+    "answer": "state",
+    "keyPath": "admission.held.*.reason",
+    "values": [
+      {
+        "value": "accepted_ancestor",
+        "since": 98
+      },
+      {
+        "value": "ancestry",
+        "since": 98
+      },
+      {
+        "value": "at_work",
+        "since": 98
+      },
+      {
+        "value": "children_first",
+        "since": 98
+      },
+      {
+        "value": "design_gate",
+        "since": 98
+      },
+      {
+        "value": "dispatch_blocker",
+        "since": 98
+      },
+      {
+        "value": "label_off",
+        "since": 98
+      },
+      {
+        "value": "root_awaiting_person",
+        "since": 98
+      },
+      {
+        "value": "tree_closed",
+        "since": 98
+      },
+      {
+        "value": "tree_parked",
+        "since": 98
+      },
+      {
+        "value": "unclassified",
+        "since": 98
+      }
+    ]
+  },
+  {
     "answer": "issue-record",
     "keyPath": "phase",
     "values": [
@@ -1083,23 +1133,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 95
+        "since": 99
       },
       {
         "value": "asked",
-        "since": 95
+        "since": 99
       },
       {
         "value": "none",
-        "since": 95
+        "since": 99
       },
       {
         "value": "open",
-        "since": 95
+        "since": 99
       },
       {
         "value": "push-check-reask",
-        "since": 95
+        "since": 99
       }
     ]
   },
@@ -1109,23 +1159,23 @@
     "values": [
       {
         "value": "answered",
-        "since": 95
+        "since": 99
       },
       {
         "value": "asked",
-        "since": 95
+        "since": 99
       },
       {
         "value": "none",
-        "since": 95
+        "since": 99
       },
       {
         "value": "open",
-        "since": 95
+        "since": 99
       },
       {
         "value": "push-check-reask",
-        "since": 95
+        "since": 99
       }
     ]
   },

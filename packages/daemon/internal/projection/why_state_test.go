@@ -25,10 +25,7 @@ import (
 //     LEGION-301, whose own blocked_by link holds it under its parent, the open children below
 //     LEGION-300, and the Dispatch links LEGION-110 waits on — and LEGION-601, which both of
 //     the last two hold at once and which reads both sentences, the children and then the link;
-//   - unlisted, the issue this build records no cause for (LEGION-401). The second fill this
-//     test had went with the phase it read: on this contract no issue stands in
-//     `awaiting_merge`, since the merger merges the head it reads and the daemon closes the
-//     issue when it reads that merge (dispatch://INFRA-714 R2).
+//   - unlisted, the issue whose cause the record carries (LEGION-401).
 //
 // And four issues carry no answer at all: LEGION-500, at work in a slot with its implementer
 // running; LEGION-501, at phase.Held, which holds a slot and so stands among the issues at work;
@@ -59,8 +56,9 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			// Dispatch children below it, and a link of its own that is not done.
 			lineIssue("LEGION-600", "LEGION-600", "in_progress", phase.Admitted, "N"),
 			lineIssue("LEGION-601", "LEGION-600", "todo", phase.Admitted, "O"),
-			// The issue the lists do not place: the record holds it in the workflow with no cause
-			// this build can name.
+			// The issue the lists do not place: the record holds it in the workflow under the
+			// word design_gate — it is the root of its own tree, and this fixture records no gate
+			// row for that root, so record.TreeGate.Open() is false of it.
 			lineIssue("LEGION-401", "LEGION-401", "in_progress", phase.Implementing, "I"),
 			// The four that carry no answer: at work, held in a slot, done, and on the backlog.
 			lineIssue("LEGION-500", "LEGION-500", "in_progress", phase.Implementing, "J"),
@@ -77,6 +75,10 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		// phase of theirs a member of the line the children-first wait then holds back.
 		lifecycles: []string{"LEGION-300", "LEGION-600"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
+			// A root at accepting has opened its gate; without this row LEGION-110 would read
+			// design_gate's sentence.
+			"LEGION-100": {record.DesignStepSpec: {Issue: "LEGION-100", Step: record.DesignStepSpec,
+				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 6, At: opened}, EverOpened: true}},
 			"LEGION-300": {record.DesignStepSpec: {Issue: "LEGION-300", Step: record.DesignStepSpec,
 				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: opened}, EverOpened: true}},
 			"LEGION-600": {record.DesignStepSpec: {Issue: "LEGION-600", Step: record.DesignStepSpec,
@@ -180,8 +182,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			Reason: "Its own first phase waits for the open issues below it: LEGION-602 and LEGION-603. " +
 				"It waits on LEGION-900, which is not done."},
 		"LEGION-401": {State: api.WhyUnlisted,
-			Reason: "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
-				"so no slot has been offered to it. This build records no cause."},
+			Reason: "The design gate of its tree stands shut: LEGION-401 waits for a person's approval of each gated " +
+				"step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 	}
 	for key, view := range got.Issues {
 		answer, answered := answers[key]

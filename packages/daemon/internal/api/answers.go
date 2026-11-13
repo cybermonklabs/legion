@@ -38,7 +38,7 @@ const ServingFloor = 46
 // The last is the constant rather than its number, because this change's own entry is the last
 // one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
 // one of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, shapedAnswersContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, shapedAnswersContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer
@@ -87,11 +87,11 @@ type Answer struct {
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor},
-	// version.go's 95: the per-issue record route a role reads in place of the whole state.
-	// This change adds the route, so no contract below 95 records it.
+	// version.go's 99: the per-issue record route a role reads in place of the whole state.
+	// This change adds the route, so no contract below 99 records it.
 	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: shapedAnswersContract},
-	// version.go's 95: the typed health body (`api.Health`), which this change puts in place of
-	// the one untyped key the route answered, so the typed body has no record below 95 either.
+	// version.go's 99: the typed health body (`api.Health`), which this change puts in place of
+	// the one untyped key the route answered, so the typed body has no record below 99 either.
 	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: shapedAnswersContract},
 	// Older than the floor: a role's registration answer (`claim.RegisterResponse`).
 	{ID: AnswerRegister, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
@@ -316,6 +316,11 @@ var stateEnumeratedFields = []EnumeratedField{
 	// four facts holds it (api.WhyView.State). It arrived beside the line's own fields and is
 	// served down with them.
 	{Answer: AnswerState, KeyPath: "issues.*.why.state", Values: whyStates},
+	// `reason` of one row of the admission's held list, the one word for why nothing of that
+	// issue runs (api.HeldIssue, record.HeldReason). It arrived with `admission.held`, which is
+	// served down below that contract whole (shaping.go's withoutHeld), so no body below 98
+	// carries a value of it.
+	{Answer: AnswerState, KeyPath: "admission.held.*.reason", Values: heldReasons},
 }
 
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
@@ -409,6 +414,14 @@ var failureCauses = valuesFrom(recordFieldsContract,
 var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
 var lineKinds = valuesFrom(whyAndLineFieldsContract, "returning", "answered", "queued_root", "first_phase")
 var whyStates = valuesFrom(whyAndLineFieldsContract, WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted)
+
+// heldReasons is every word of a held row's `reason`, recorded at heldContract, the contract
+// `admission.held` arrived at. It names each constant rather than reading record.HeldReasons,
+// because a word added to the ladder later arrives at its own contract and not at this one.
+var heldReasons = valuesFrom(heldContract,
+	record.HeldTreeClosed, record.HeldTreeParked, record.HeldLabelOff, record.HeldAncestry,
+	record.HeldRootAwaitingPerson, record.HeldDesignGate, record.HeldDispatchBlocker,
+	record.HeldChildrenFirst, record.HeldAcceptedAncestor, record.HeldAtWork, record.HeldUnclassified)
 
 // claimViewStates is every value of a claim view's `state`, in the order a launch reaches them.
 // The field is older than the floor and the list has not moved since.

@@ -1195,7 +1195,7 @@ package api
 // `mergeState`, `pass`, `lastTurnStart` and `lastTurnEnd` are keys a plugin of an older contract
 // does not name, which one built before sjawhar/legion#2788 refuses the body for and one built
 // after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
-// (The entry at 95 below serves this contract's own shape down, so none of the keys above
+// (The entry at 99 below serves this contract's own shape down, so none of the keys above
 // reaches a caller under 86. Three claim-view keys ride with the four this entry names and are
 // served down with them: `lastDeathCause`, `lastStartFailure` and `lastReady`. Two more keys go
 // at 86 beside `checksVerdict`. `checksVerdict` and `HandoffCompleteResponse.note` are written
@@ -1206,7 +1206,7 @@ package api
 // `merge_queue_role` — leave those records for the same reason read a second way:
 // `legionSettings` types two keys and passes the rest loosely, and `projects` is typed by
 // nothing, so no reader names those keys at all. The `ready` this contract takes out of the
-// request is read by name again for the plugins below 86 that still send it, which entry 95
+// request is read by name again for the plugins below 86 that still send it, which entry 99
 // says.)
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
@@ -1353,7 +1353,49 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 95: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
+// 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
+// the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
+// eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
+// `record.HeldAtWork` says) and the issues that hold it where any do (`heldBy`, absent where none
+// does — a root whose Legion label is off, an issue none of the other words is true of). The
+// three lists together are every issue of the workflow and what each is doing, which `active` and
+// `waiting` alone never were: an issue in neither was simply missing, and a reader could not tell
+// one the daemon was about to start from one nothing will start again.
+// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
+// refuses a value it does not name rather than stripping it like an unknown key, so a word added
+// to the ladder later bumps this number again. The key itself is written on every body, empty
+// rather than null, and a caller from a pod whose claims record a contract below 98 is served the
+// admission block without it (shaping.go's shapeState, withoutHeld), as a caller below 94 is served every
+// issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
+// `leakCheckCause`, one below 85 every issue without its rendered answer and every member of the
+// waiting line without that contract's own fields, one below 75 the body without the nine keys
+// of the decided record and its contract mark, one below 73 without `claimsToRefresh`, one below
+// 62 the workers without their counts of the moves back and one below 51 the admission block
+// without its trees; the fifteen strips compose, and every reader from 98 on takes the key as
+// optional for exactly those stripped bodies. No other key of the wire moves: no list above it
+// changes, though `why.reason` now follows the held word for some issues in `admission.blocked`
+// and `unlisted` alike, for every caller at 85 or above (the sentence table of
+// `internal/projection/why.go` is the one statement of which), which moves no contract, since the
+// reason is free text. The rows are read from the judgement the state already made
+// (`blockers.JudgeLine`, which now answers the rows the pass left behind beside the line it
+// built), so the body costs no further read of the store.
+// (The base declares 94, main's #3677 entry right above this one, landed by
+// cybermonklabs/legion#3677 (INFRA-2800). By the rule of 2026-11-13T06:29Z this change keeps 98
+// while it stands above its base and no other open head declares it, and renumbers only when the
+// base takes 98 or a number above it. It declared 76 when this pull request opened, then 78 and
+// 86, each renumbered when another change took the number first, then 94, which it left for 98
+// because an open head declared a higher number that could land first; 86 was read at
+// 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
+// already declared it, merged at 18:19Z. A reading
+// of the open heads is of this file at refs/pull/<n>/head for every open pull request, not of a
+// file list: GitHub cuts a pull request's file list short, so one that changes more files than
+// the page holds answers without this path. Read the base's own number and every open pull
+// request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 99: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
 // one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
 // request carries the caller's contract in the
@@ -1381,7 +1423,8 @@ package api
 // the handoff completion's answer. Contract 87 is one of the contracts served down here too: a
 // caller below 87 is served every claim view without `leakCheckCause` (`withoutLeakCheckCause`).
 // Contract 94 is one of them as well: a caller below 94 is served every issue without
-// `phaseEntry` and `givenEntry` (`withoutPhaseEntries`).
+// `phaseEntry` and `givenEntry` (`withoutPhaseEntries`). Contract 98 is one of them too: a
+// caller below 98 is served the admission block without `admission.held` (`withoutHeld`).
 // A value is served down as a key is: an issue's
 // `waitingOn.answeredBy` carries a value only to a caller whose own contract admits it, and the
 // records under `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this
@@ -1406,15 +1449,18 @@ package api
 // left at and what ignoring it means. `ready` is that table's first row. (This
 // entry first took 60, when the base carried 59, then 81 at the forward merge of 2026-11-12
 // that brought main in at 68, 81 again at the merge of that day that brought main in at 73, 87
-// at the merge that brought main in at 85, 89 at the merge that brought main in at 86, and 95 at
-// the merge that brought main in at 94. 87 was free when this head took it and was gone when the
+// at the merge that brought main in at 85, 89 at the merge that brought main in at 86, 95 at
+// the merge that brought main in at 94, and 99 at the merge that brought main in at 98. 87 was
+// free when this head took it and was gone when the
 // head was pushed: the gate holds a head against main alone and sees no other head's number, so
 // a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
 // repository is what finds them. That reading, made when this entry took 89, gives main 85,
 // #3730 at 88, #3575 at 87 and five heads at 86, so 89 was the lowest number above the base's
 // that no open head declared. 89 stayed above main through the merges that brought it in at 86
 // and at 87, so neither forced a renumber. main's #3677 (INFRA-2800) then declared 94, so the
-// merge that brought main in at 94 took this entry to 95, the number above it. The reading is
+// merge that brought main in at 94 took this entry to 95, the number above it. main's #3708
+// (INFRA-3107) then declared 98, so the merge that brought main in at 98 took this entry to 99,
+// the number above it. The reading is
 // taken again before each push rather than read off this line. The reading is
 // of this file at refs/pull/<n>/head for every open pull request, not of a file list: GitHub
 // cuts a pull request's file list short, so one that changes more files than the page holds
@@ -1426,4 +1472,4 @@ package api
 // answers.go gives the two answers this change adds as their arrival, and it is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)
-const DaemonAPIVersion = 95
+const DaemonAPIVersion = 99
