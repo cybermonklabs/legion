@@ -303,9 +303,9 @@ func TestPodUpdateRescuesWhatAFailedClaimLeftOnTheDisk(t *testing.T) {
 }
 
 // A push the remote refuses leaves the pod where it is: nothing is replaced, the round stays
-// open, and once the notice bound has passed since the last answer the controller is told once,
-// naming the claim the check ran through, the workspace and the error. A later sweep checks again,
-// and once the remote takes the push the pod is replaced.
+// open, and once the round's bound has come the controller is told once, naming the claim the
+// check ran through, the workspace and the error. A later sweep checks again, and once the
+// remote takes the push the pod is replaced.
 func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 	d := rescuetest.New(t, podUpdateIssue)
 	d.Write(d.Workspace, "feature.txt", "work the remote will not take\n")
@@ -327,11 +327,11 @@ func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 		t.Fatalf("the round = %q after a failed push check, want it still open", c.UpdateRound)
 	}
 	if notices := rig.notices(); len(notices) != 0 {
-		t.Fatalf("the controller was told %d times before the notice bound", len(notices))
+		t.Fatalf("the controller was told %d times before the round's bound", len(notices))
 	}
 
-	rig.clock.advance(podUpdateGrace)
-	rig.awaitRescues(len(rig.rt.CallsOf("RescueUnpushed"))+1, "past the notice bound")
+	rig.clockAt(podUpdateBound)
+	rig.awaitRescues(len(rig.rt.CallsOf("RescueUnpushed"))+1, "at the round's bound")
 	rig.tick()
 	rig.tick()
 	notices := rig.notices()
