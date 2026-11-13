@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -42,7 +40,7 @@ const taskWithinOfReady = 2 * time.Minute
 // Postgres, so readyWorkerTask sees the claim and its pending task as the daemon's does.
 type readyWorkerRig struct {
 	t       *testing.T
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	sup     *supervisor
 	rt      *fake.Runtime
 	runner  *outbox

@@ -1288,9 +1288,11 @@ export class DispatchClient {
     );
   }
 
-  /** Each check of an issue's Verification document with every result recorded against it.
+  /** Each check of an issue's Verification document with every result recorded against it, and
+   *  for a check CI proves the one result Dispatch derives from its check run.
    *  `at` pins every check to that one commit, which `GET .../results?at=` takes as 40 lowercase
-   *  hex characters, and Dispatch reads GitHub for none of it. */
+   *  hex characters. Dispatch then reads GitHub for nothing but the check runs of a check CI
+   *  proves, at the issue's newest pull request head as on every read. */
   async issueResults(issue: string, at?: string): Promise<IssueCheckResults> {
     return this.#json(
       "GET",

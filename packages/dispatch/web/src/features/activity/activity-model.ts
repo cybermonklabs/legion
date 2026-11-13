@@ -1,4 +1,5 @@
 import type { Actor, DispatchEvent } from "../../api/types";
+import { blockInvalidDescription } from "../issue/event-description";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 export function dateKey(iso: string): string {
@@ -215,7 +216,7 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "block.repaired":
       return `repaired server-owned state on block ${event.payload.block_id}`;
     case "block.invalid":
-      return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
+      return blockInvalidDescription(event.payload);
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
     case "result.retracted":
