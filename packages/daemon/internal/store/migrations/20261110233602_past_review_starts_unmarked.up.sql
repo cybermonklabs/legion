@@ -3,10 +3,10 @@
 -- daemon will never run (INFRA-2560).
 --
 -- An issue holds one of the admission cap's slots from the moment the daemon starts it until its
--- work is past its review, and accepting, retro, merging and awaiting_merge hold none
--- (record.KeepsSlot). The release before this one kept a slot through the first three of those,
--- so workflow.StartOrOwe marked every start of a phase worker for a slot, a retro's and a
--- merger's among them, and the mark is what record.Store's outboxInOrder holds such a row by.
+-- work is past its review, and accepting, retro and merging hold none (record.KeepsSlot). The
+-- release before this one kept a slot through all three, so workflow.StartOrOwe marked every
+-- start of a phase worker, a retro's and a merger's among them, and the mark is what
+-- record.Store's outboxInOrder holds such a row by.
 --
 -- Without this statement such a row never runs again. outboxInOrder holds a queued start marked
 -- for a slot unclaimable while the slots table names no row of its issue, and after this change
@@ -21,8 +21,12 @@
 -- phase and generation fences still end a stale one, and record.validateOutboxPayload asks a
 -- task and a phase of a marked row alone, so a payload this leaves unmarked passes it.
 --
--- The statement names the four phases rather than every marked start, so a start of a phase that
--- still holds a slot keeps its mark and goes on waiting for the row its issue keeps.
+-- The statement names the phases past the review rather than every marked start, so a start of a
+-- phase that still holds a slot keeps its mark and goes on waiting for the row its issue keeps.
+-- It names awaiting_merge beside them, which was the fourth such phase until
+-- 20261029120700_merging_closes_the_issue deleted it: no row of any deployment stands in a phase
+-- that no longer exists, so that value matches nothing on any path, and it is left where it
+-- stands rather than edited out of a forward-only statement for the sake of a name.
 --
 -- Migrations here are forward-only and this one has no down file. Rolling the image back costs
 -- these rows their wait: the earlier release reads a start with no mark as one claimable at

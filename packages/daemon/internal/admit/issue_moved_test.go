@@ -301,6 +301,41 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	})
 	assertMoved("a pull request write that is news of nothing", at(24))
 
+	// A CI settlement the record takes, which is the sixth kind and the other half of the write
+	// above: the listener settles a commit once every check it has seen there is terminal, and
+	// the first report of a settlement standing for the head is news of the pull request — the
+	// head it settled on, the runs it names and what each of them concluded are all new to the
+	// record (workflow's checks, through putPullRequest). A GitHub event of the issue's pull
+	// request is a movement (dispatch://INFRA-2560, R3), and a settlement is the one GitHub
+	// sends when nothing else of the pull request has changed: a tree whose last news was its
+	// checks settling must be measured from that settlement, and a daemon that wrote the fence
+	// without the mark would measure it from whatever moved the issue before, which on a tree
+	// that stopped waiting for its CI is hours earlier.
+	//
+	// The settlement is made in the shape the listener sends and no other: it names the head the
+	// record stands at, so it stands for that head (classify.SettlementFor), and the record
+	// holds no settlement of it yet, so it is applied rather than dropped as the duplicate above
+	// was (classify.ApplyCheckSettlement). The engine's clock stands past every time this test
+	// has asserted, so the mark this write leaves is newer than the one the record carries and
+	// this assertion sees it: writing the settlement with record.Store.PutPullRequest, which
+	// marks nothing, fails this case. The fence the row takes is what says the write happened at
+	// all.
+	now = at(27)
+	applyMovement(t, pool, admission, engine, "github", "checks-settled",
+		intake.PullRequestChecks{Repo: "acme/widgets", Number: 7, HeadSHA: "a1", Generation: 1, Snapshot: "settled-a1",
+			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 70}}, Failing: []string{}, Cancelled: []string{}})
+	inTx(t, pool, func(tx pgx.Tx) {
+		pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+		if err != nil || pr == nil {
+			t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
+		}
+		if pr.CheckedHead != "a1" || pr.Snapshot != "settled-a1" {
+			t.Fatalf("the settlement left the pull request of %s checked at %q behind fence %q, want head a1 at settled-a1: the write must be one the record takes, or this case proves nothing",
+				movedIssue, pr.CheckedHead, pr.Snapshot)
+		}
+	})
+	assertMoved("a CI settlement the record takes", at(27))
+
 	// The four writes of a phase or of a start that no fact of the issue carries, and that no
 	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
 	// person (workflow's enterAwaiting), the promotion of a root the waiting line was holding

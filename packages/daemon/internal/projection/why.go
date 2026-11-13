@@ -281,10 +281,12 @@ func linkReason(waitsOn []string) string {
 // of the sort, and an issue served `unlisted` between two turns of the worker doing its work
 // would tell a reader the work had stopped.
 //
-// The phase is read as the record writes it and never through record.StandsAt, because a hold is
-// what stops the work: an issue held from its retro stands past its review in every rule the slot
-// is judged by (record.PastReview, which reads the phase the hold came from), and no worker of it
-// runs, so the sentence below is true of it and the hold is what a reader of it asks about.
+// A held issue answers false here whatever phase its hold came from, which is the first term of
+// the pair below and not a reading of the raw phase: record.PastReview reads the phase a hold
+// came from (record.StandsAt), so an issue held from its retro stands past its review in every
+// rule the slot is judged by, and the term beside it is what puts the record's own `held` back
+// for this one question. A hold is what stops the work: no worker of a held issue runs, so the
+// sentence below is true of it and the hold is what a reader of it asks about.
 func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
 	if issue.Phase == phase.Held || !record.PastReview(issue) {
 		return false

@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    An issue holds one of the admission cap's slots from the moment the daemon starts it until its work is past its review, so `accepting`, `retro` and `merging` hold none: the work after a review runs outside the cap, and the first admission pass of this release takes back the rows those phases held. A start already queued for one of them loses its slot mark and is claimable at once.
+
+    The daemon also keeps when it last saw each issue move, measures a tree's quiet time from the movements of its issues and the steps of their claims, and tells the project's controller a `tree-stalled` notice for a tree quiet past `stalled_tree_notice_hours` (six by default), at work nowhere and waiting by no rule of the daemon's own, once for each stall. `GET /legion/v1/state` carries `treeMovedAt` and `quietHours` for every issue of a live tree. Rolling the release back takes `stalled_tree_notice_hours` out of `legion.yaml` and deletes any queued `tree-stalled` notice before the earlier image is pinned; `docs/kubernetes.md` holds the steps.
+time: 2026-11-13T00:23:10.032064867Z
+custom:
+    Issue: pr3573

@@ -276,8 +276,8 @@ projects:
 gates:
   design: root-issues
 # Four: since dispatch://INFRA-2560 an issue holds one of the cap's slots from the moment the
-# daemon starts it until its work is past its review — accepting, retro, merging and
-# awaiting_merge hold none — or until it is done or Dispatch takes it out of the workflow. The
+# daemon starts it until its work is past its review — accepting, retro and merging hold none —
+# or until it is done or Dispatch takes it out of the workflow. The
 # four roots that wait on a person at trees-wait-on-a-person — trees 1, 2, 4 and 5 — hold a row
 # each at once, since awaiting_person is short of the review, and that is this lane's peak. It is
 # the peak again later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running

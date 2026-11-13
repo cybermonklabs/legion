@@ -1319,9 +1319,14 @@ package api
 // right above, and is the number the base now carries: 86 is no longer above the base, so
 // .github/scripts/check-daemon-api-contract.sh was run as CI runs it, refused this tree for
 // declaring 86 against a base at 86, and named 91 — the lowest number above the base's that no
-// open pull request of this repository declares, read by that script at refs/pull/<n>/head for
 // every open pull request and never from a file list, which passed over 87 (#3939), 88
 // (#3730), 89 (#3519 and #3659) and 90 (#3575, #3830 and #3937) — which is the number this
-// change now declares. Read the base's own number and every open head again at the next
+// change declares. Each of those is the number that head declared at that reading and no
+// head's for good: read again on 2026-11-13, in each head's own copy of this file, #3939
+// declares 87, #3730 declares 88, #3659 declares 89, #3830 declares 90, #3519 and #3712
+// declare 91, and #3575 and #3937 declare 93. So 91 is now a three-way collision, which the
+// check decides at the merge and not here: the first of the three to land refuses the other
+// two, and the refusal names the free number the later tree takes, which is why this line is a
+// reading and never the rule. Read the base's own number and every open head again at the next
 // forward merge rather than from this line.)
 const DaemonAPIVersion = 91

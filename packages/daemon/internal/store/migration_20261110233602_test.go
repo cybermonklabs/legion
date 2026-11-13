@@ -11,14 +11,14 @@ const pastReviewStartsVersion = 20261110233602
 
 // 20261110233602 takes the admission-slot mark off every queued start of a phase that holds no
 // slot any more. An issue keeps one of the cap's slots until its work is past its review, so
-// accepting, retro, merging and awaiting_merge hold none (record.KeepsSlot), and a start the
-// previous release marked for a slot in one of those phases would wait for a row its issue never
-// takes again: record.Store's outboxInOrder holds a marked start unclaimable while the slots
-// table names no row of its issue, so the row would stand in the outbox for ever and the tree
-// would stop at its retro.
+// accepting, retro and merging hold none (record.KeepsSlot), and a start the previous release
+// marked for a slot in one of those phases would wait for a row its issue never takes again:
+// record.Store's outboxInOrder holds a marked start unclaimable while the slots table names no
+// row of its issue, so the row would stand in the outbox for ever and the tree would stop at its
+// retro.
 //
 // The rows here are written as the previous release wrote them, through SQL rather than through
-// workflow.StartOrOwe, which no longer marks a start of those four phases at all. The negative
+// workflow.StartOrOwe, which no longer marks a start of those phases at all. The negative
 // controls are the three rows the statement must leave alone: a marked start in implementing,
 // which still holds a slot and still waits for it; a supervise row that is no start; and a row
 // of another kind whose payload carries the same field name.
@@ -37,7 +37,10 @@ func TestTheStartsPastReviewLoseTheSlotMarkAfter20261110233602(t *testing.T) {
 		return `{"op":"start","tree":"LEGION-1","role":"` + role + `","generation":1,"phase":"` + phase +
 			`","task":"Continue ` + issue + `.","resumeTask":true,"needsSlot":true}`
 	}
-	// The four phases that hold no slot now, each with the start its transition owed.
+	// The three phases that hold no slot now, each with the start its transition owed, and a
+	// fourth row naming awaiting_merge, which the statement names beside them: that phase went
+	// with the release before this one, so no deployment holds a start for it, and the row is
+	// here to say what the statement does where one stood.
 	queue("supervise", "LEGION-201", start("LEGION-201", "accepting", "architect"))
 	queue("supervise", "LEGION-202", start("LEGION-202", "retro", "implementer"))
 	queue("supervise", "LEGION-203", start("LEGION-203", "merging", "merger"))

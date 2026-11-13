@@ -41,13 +41,14 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 				return intake.Result{}, err
 			}
 		}
-		// The write above is the one pull-request write of this package that marks no movement
-		// of the issue (record.Issue.MovedAt, the rule in engine.go's dispatchIssue). It
-		// records the fence the daemon read and decides nothing — no run and no outcome
-		// changed — so it is the daemon learning what it already knew, which is never a
-		// movement. Marking it would refresh a stopped tree's quiet time at every duplicate
-		// settlement the listener sends, and a tree that stopped with a settled head would
-		// never be found at all.
+		// The write above is one of the two pull-request writes of this package that mark no
+		// movement of the issue (record.Issue.MovedAt, the rule in engine.go's dispatchIssue),
+		// the other being a push onto the base branch, which is no news of the pull request
+		// either (base_push.go). It records the fence the daemon read and decides nothing — no
+		// run and no outcome changed — so it is the daemon learning what it already knew, which
+		// is never a movement. Marking it would refresh a stopped tree's quiet time at every
+		// duplicate settlement the listener sends, and a tree that stopped with a settled head
+		// would never be found at all.
 		//
 		// A settlement that does not stand for the head tells nobody, and GitHub's merge state is
 		// read for the head all the same (Apply's askMergeState): a run GitHub counts for the head
@@ -55,8 +56,15 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		// that says so.
 		return intake.Result{}, nil
 	}
+	// The settlement that applies is the other half of that pair, and it is news: the head it
+	// settled on, the runs it reports and what each of them concluded are new to the record, and
+	// a GitHub event of the issue's pull request is a movement of the issue
+	// (dispatch://INFRA-2560 R3). So this write goes through the helper that marks it
+	// (putPullRequest) while the duplicate above does not, and a tree whose last news was its CI
+	// settling is measured from that settlement rather than from whatever moved the issue before
+	// it.
 	*pr = settled
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.tellChecks(ctx, tx, pr, told, woken)

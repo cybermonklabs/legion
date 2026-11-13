@@ -1833,7 +1833,7 @@ This release adds two columns to `issues`: `moved_at` (`20261111010031_issue_mov
 A rollback needs no statement for either one.
 An earlier image names neither column anywhere — it neither selects it nor inserts it — so a column it never reads costs it nothing, and only a column a release drops needs a statement to put it back.
 `moved_at` keeps its `not null default now()` under that daemon's writes, since the default fills it for every insert that names it nowhere, and a marked row keeps its `tree_stalled_told_at` for the roll forward.
-A third migration, `20261110233602_past_review_starts_unmarked`, takes the admission-slot mark off every queued start of `accepting`, `retro`, `merging` and `awaiting_merge`, and a rollback needs no statement for that either: the earlier release reads a start with no mark as one claimable at once, which is what it does with every start that carries none.
+A third migration, `20261110233602_past_review_starts_unmarked`, takes the admission-slot mark off every queued start of `accepting`, `retro` and `merging`, and a rollback needs no statement for that either: the earlier release reads a start with no mark as one claimable at once, which is what it does with every start that carries none.
 
 **A queued `tree-stalled` notice must go before the earlier image is pinned.**
 The payload carries only fields an earlier release's `record.ControllerNotice` already names, so the strict decode (`DisallowUnknownFields` in `record/outbox.go`) passes it.
@@ -1854,7 +1854,7 @@ Take the line out, and `legion start --check-config` on the earlier image reads 
 
 What the rollback brings back is the earlier release's slot rule: an issue holds one of the cap's slots through every phase up to its merge, so an issue in `accepting`, `retro` or `merging` counts against the cap again.
 That release's first admission pass gives each of them a row again out of its cap, and its `legion state` counts them among the slot holders.
-An issue in `awaiting_merge` holds none under either release, and a cap sized for this release's issues at work holds fewer trees in progress once those three count again.
+A cap sized for this release's issues at work holds fewer trees in progress once those three count again.
 
 **Every daemon sharing the database moves together.**
 Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issues` is one table for all of them, so this release's backfill stamps every project's rows with the moment its migration ran, not only the rows of the daemon that ran it.

@@ -432,7 +432,11 @@ func (a *Admission) lineCanMove(issues []record.Issue, slots []record.Slot,
 // in `held` is no wait either — it waits for its architect, which is the tree's own work — and
 // the pass holds it for nothing, so it answers record.StartHoldNone and its tree is told like
 // any other stall. An issue whose merge is still to land stands in `merging`, where the merger
-// works, so the measure reads it as work rather than as a wait.
+// works, and is read the same way: the pass holds that issue for nothing either, so it answers
+// record.StartHoldNone, silences nothing, and its tree is named once every claim of the tree is
+// at rest and nothing of it has moved inside the bound. A merger at work is what keeps such a
+// tree unnamed, and that is read from the claim and never from the phase
+// (record.TreeQuiet.AtWork, which the caller asks before this walk).
 func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds map[string]record.StartHold) bool {
 	for _, issue := range members {
 		if silences(holds[issue.Key]) {
