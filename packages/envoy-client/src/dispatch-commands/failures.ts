@@ -49,18 +49,29 @@ export function dispatchAnswered(error: unknown, status: number): error is Dispa
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
 }
 
+/** The message an older build's comment edit refuses the `actor` this client sends with: its
+ *  `decodeJSON` (`api/server.go`) writes "invalid JSON body: " and the decoder's error, which Go's
+ *  `encoding/json` words `json: unknown field "actor"`. */
+const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"';
+
 /**
  * The answer of `call`, with an older Dispatch's refusal of a post correction replaced by the one
  * sentence that names the real cause. The plugins release from main as this merges while
  * Dispatch's own server is deployed by hand (dispatch://INFRA-1464), so for a while these
- * commands run against a server that has none of their routes: its router answers
- * `404 NOT_FOUND` "no route for …" (`isNoRoute`) to the edit, the delete and the history read,
- * and its comment edit, the one route that was there before, answers an agent's token
- * `403 OAUTH_SCOPE_REQUIRED` because that build required the person scope. The route at this head
- * names no scope, so only an older build answers that code there, and only the comment edit reads
- * it as the server's age; a person's own token gets `403 NOT_AUTHOR` there, which is the same
- * refusal this release gives and is passed through. Without this, an agent is told its credential
- * lacks a scope and goes asking a person for one.
+ * commands run against a server with no route by which an agent edits or deletes a post or reads
+ * the bodies one replaced: its router answers `404 NOT_FOUND` "no route for …" (`isNoRoute`) to
+ * both deletes, the message edit and the history reads. Its comment edit, the one route that was
+ * there before, refuses this release's call in one of two ways, by the credential. It first reads
+ * the person it acts for (`actingPerson`), which answers a credential without the person scope
+ * `403 OAUTH_SCOPE_REQUIRED`; the route at this head names no scope, so only an older build
+ * answers that code there. A credential with that scope, a person's own token included, passes,
+ * and the body is then decoded into an input that holds only `body`, `base_revision` and `blocks`,
+ * with unknown fields disallowed; the body this client sends always carries `actor`, so that build
+ * answers `400 INVALID_JSON` naming the unknown field `actor` before it compares the author. This
+ * release's input takes `actor`, so only an older build answers that. Only the comment edit reads
+ * either code as the server's age, and only in those exact forms: an `INVALID_JSON` naming any
+ * other field is passed through. Without this, an agent is told its credential lacks a scope, or
+ * that its own request was malformed, and goes asking a person for one or rewriting the call.
  */
 export async function throughPostCorrections<T>(
   tool: string,
@@ -70,15 +81,17 @@ export async function throughPostCorrections<T>(
   try {
     return await call;
   } catch (error) {
-    const scopeIsAge =
+    const commentEditIsAge =
       tool === "dispatch_edit_comment" &&
-      dispatchAnswered(error, 403) &&
-      error.code === "OAUTH_SCOPE_REQUIRED";
-    if (!isNoRoute(error) && !scopeIsAge) throw error;
+      ((dispatchAnswered(error, 403) && error.code === "OAUTH_SCOPE_REQUIRED") ||
+        (dispatchAnswered(error, 400) &&
+          error.code === "INVALID_JSON" &&
+          error.message === OLDER_COMMENT_EDIT_ACTOR));
+    if (!isNoRoute(error) && !commentEditIsAge) throw error;
     throw new Error(
-      `This Dispatch (${url}) predates post corrections: it has no route that edits a post, ` +
-        "deletes one or reads the bodies one replaced. Until it is deployed with this release's " +
-        "server, a correction is one more post saying what changed."
+      `This Dispatch (${url}) predates post corrections: it has no route by which an agent edits ` +
+        "or deletes a post or reads the bodies one replaced. Until it is deployed with this " +
+        "release's server, a correction is one more post saying what changed."
     );
   }
 }

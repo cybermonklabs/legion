@@ -15176,12 +15176,13 @@ test("a post nobody edited lists no earlier body, and --history is refused off o
 
 // The plugins release from main as this merges, while Dispatch's own server is deployed by hand
 // (dispatch://INFRA-1464), so each of these commands runs for a while against a server that has
-// none of its routes. Each says that itself, as `dispatch answers` says a build is older than
-// the answers route, rather than handing on a refusal that sends an agent asking for a scope.
+// no route by which an agent edits or deletes a post or reads the bodies one replaced. Each says
+// that itself, as `dispatch answers` says a build is older than the answers route, rather than
+// handing on a refusal that sends an agent asking for a scope.
 const OLDER_DISPATCH =
-  "This Dispatch (http://dispatch.test) predates post corrections: it has no route that edits a " +
-  "post, deletes one or reads the bodies one replaced. Until it is deployed with this release's " +
-  "server, a correction is one more post saying what changed.";
+  "This Dispatch (http://dispatch.test) predates post corrections: it has no route by which an " +
+  "agent edits or deletes a post or reads the bodies one replaced. Until it is deployed with " +
+  "this release's server, a correction is one more post saying what changed.";
 
 /** One call against a Dispatch older than the post corrections: the routes that build has answer
  *  through `answer`, and every other request gets its router's no-route 404. */
@@ -15247,13 +15248,12 @@ test("dispatch edit-comment told its credential lacks the person scope reads the
   ).rejects.toThrow(OLDER_DISPATCH);
 });
 
-// A person's own token is refused NOT_AUTHOR by that build and by this one alike, so it says
-// what it always said: only the age of the server is reworded.
-test("a comment edit refused NOT_AUTHOR keeps that refusal, whatever the server's age", async () => {
-  const notAuthor = async (): Promise<Response> =>
-    response({ code: "NOT_AUTHOR", error: "only the author may edit this comment" }, 403);
-
-  const error: unknown = await executeDispatchTool({
+/** A comment edit that build refuses `400 INVALID_JSON` with `message`, the way its decoder
+ *  refuses a body carrying a field its input does not hold. */
+function commentEditRefusedInvalidJson(message: string): Promise<DispatchToolResult> {
+  const invalidJson = async (): Promise<Response> =>
+    response({ code: "INVALID_JSON", error: message }, 400);
+  return executeDispatchTool({
     tool: "dispatch_edit_comment",
     args: { comment: correctedComment, body: "corrected text" },
     cwd: "/workspace",
@@ -15262,9 +15262,26 @@ test("a comment edit refused NOT_AUTHOR keeps that refusal, whatever the server'
     config,
     env: {},
     exec: repoExec("owner/repo"),
-    fetchImpl: notAuthor as unknown as typeof fetch,
-  }).catch((thrown: unknown) => thrown);
-  expect((error as Error).message).toContain("only the author may edit this comment");
+    fetchImpl: invalidJson as unknown as typeof fetch,
+  });
+}
+
+// A credential that holds the person scope, a person's own token included, passes that build's
+// scope check and reaches its decoder, whose input holds only body, base_revision and blocks and
+// refuses an unknown field; this client always sends actor, which this release's input takes.
+// So that refusal, named for actor, is the server's age and nothing else.
+test("dispatch edit-comment refused the unknown field actor reads the server's age instead", async () => {
+  await expect(
+    commentEditRefusedInvalidJson('invalid JSON body: json: unknown field "actor"')
+  ).rejects.toThrow(OLDER_DISPATCH);
+});
+
+// Any other unknown field is no sign of the server's age, and its refusal is handed on as it came.
+test("a comment edit refused INVALID_JSON naming another field keeps that refusal", async () => {
+  const error: unknown = await commentEditRefusedInvalidJson(
+    'invalid JSON body: json: unknown field "actors"'
+  ).catch((thrown: unknown) => thrown);
+  expect((error as Error).message).toContain('invalid JSON body: json: unknown field "actors"');
   expect((error as Error).message).not.toContain("predates post corrections");
 });
 

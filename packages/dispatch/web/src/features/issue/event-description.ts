@@ -86,7 +86,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return deletedPost(event.payload, "Message") ?? "Message deleted";
     case "message.created":
     case "message.answered":
-      return deletedPost(event.payload, "Message") ?? event.payload.body;
+      // The body is absent only on a deleted post, which deletedPost answers first.
+      return deletedPost(event.payload, "Message") ?? event.payload.body ?? "";
     case "message.delivery":
       // A duplicate attempt reached the listener and the stream stored nothing new; its state is
       // still `sent`, so reporting the state alone would read as a fresh delivery.
@@ -103,7 +104,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
         : "Ask re-anchored after an edit";
     case "comment.created":
     case "comment.answered":
-      return deletedPost(event.payload, "Comment") ?? event.payload.body;
+      // The body is absent only on a deleted post, which deletedPost answers first.
+      return deletedPost(event.payload, "Comment") ?? event.payload.body ?? "";
     case "comment.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Comment lost its quote"

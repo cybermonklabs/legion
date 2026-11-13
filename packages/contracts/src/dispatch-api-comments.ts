@@ -122,7 +122,10 @@ export const commentEventPayloadFields = {
   /** When the comment's author deleted it, and who they are; both absent on a comment nobody
    *  deleted and on every event written before the post corrections. A deleted comment's events
    *  carry no body: the read of the event takes `body`, `body_truncated` and `suggestion` out of
-   *  the payload and stamps these two in their place. */
+   *  the payload and stamps these two in their place, so `body` and `suggestion` are optional
+   *  here though every comment row has them. */
+  body: commentFields.body.optional(),
+  suggestion: commentFields.suggestion.optional(),
   deleted_at: commentFields.deleted_at.optional(),
   deleted_by: commentFields.deleted_by.optional(),
   artifact_name: z.string(),

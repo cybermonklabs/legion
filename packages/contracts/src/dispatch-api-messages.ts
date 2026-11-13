@@ -101,7 +101,9 @@ export const messageEventPayloadFields = {
    *  are. Events are retained verbatim and the three fields were added by the post corrections,
    *  so every message event written before them carries none; a read row (`Message`) always has
    *  all three. A deleted message's events carry no body: the read of the event takes `body` and
-   *  `body_truncated` out of the payload and stamps the two marks in their place. */
+   *  `body_truncated` out of the payload and stamps the two marks in their place, so `body` is
+   *  optional here though every message row has one. */
+  body: messageFields.body.optional(),
   edited_at: messageFields.edited_at.optional(),
   deleted_at: messageFields.deleted_at.optional(),
   deleted_by: messageFields.deleted_by.optional(),
