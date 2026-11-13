@@ -250,14 +250,21 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 }
 
 // wordFor is the held row the projected state gives one issue: the word for why nothing of it
-// runs and the issues that hold it. It fails where the issue stands in no held row at all, and
-// says where it stands instead, because that is the other way a case of the ladder can go wrong.
+// runs and the issues that hold it (heldRow).
 func wordFor(t *testing.T, store projectionStore, key string) api.HeldIssue {
 	t.Helper()
 	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
+	return heldRow(t, state, key)
+}
+
+// heldRow is the row of admission.held that state gives key. It fails where the issue stands in
+// no held row at all, and says where it stands instead, because that is the other way a case of
+// the ladder can go wrong.
+func heldRow(t *testing.T, state api.State, key string) api.HeldIssue {
+	t.Helper()
 	for _, row := range state.Admission.Held {
 		if row.Issue == key {
 			return row

@@ -220,7 +220,7 @@ func TestAClosedTreesMemberIsAdoptedByTheTreeThatTakesIt(t *testing.T) {
 			if lifecycleRows(t, pool, key) != 0 {
 				t.Fatalf("%s has a tree lifecycle of its own, want none: the release made a root of none of them", key)
 			}
-			if want := []string{key + " joined the tree of " + liveTree + " from the admission queue"}; !reflect.DeepEqual(joinedNotices(t, pool, key), want) {
+			if want := []string{key + " joined the tree of " + liveTree + " from the closed tree of " + closedTree}; !reflect.DeepEqual(joinedNotices(t, pool, key), want) {
 				t.Fatalf("child-status notices of %s = %q, want %q", key, joinedNotices(t, pool, key), want)
 			}
 		}

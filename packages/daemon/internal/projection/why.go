@@ -209,7 +209,7 @@ func blockedReason(cycle string, wait record.ChildWait, links []string) string {
 		for _, child := range wait.Open {
 			open = append(open, child.Key)
 		}
-		children := childrenReason(open)
+		children := fmt.Sprintf("Its own first phase waits for the open issues below it: %s.", englishIssues(open))
 		if clause := linkReason(links); clause != "" {
 			return children + " " + clause
 		}
@@ -233,17 +233,6 @@ func linkReason(waitsOn []string) string {
 	return fmt.Sprintf("It waits on %s, which are not done.", englishIssues(waitsOn))
 }
 
-// childrenReason is the sentence that names the open Dispatch children an issue's own first
-// phase waits for: the first sentence of the children fill of `blocked` (blockedReason), and
-// the whole of the children_first fill of `unlisted` (unlistedReason), so the same children
-// read one way wherever they are rendered. An empty list renders nothing, as linkReason's does.
-func childrenReason(open []string) string {
-	if len(open) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("Its own first phase waits for the open issues below it: %s.", englishIssues(open))
-}
-
 // unlistedReason is the sentence of an issue the record holds in the workflow that stands in
 // none of the three lists that place one (api.WhyUnlisted). The word is `unlisted` and not
 // `held`, because `held` is a phase of the workflow, whose issues hold a slot and stand in
@@ -251,24 +240,19 @@ func childrenReason(open []string) string {
 //
 // Two fills, read in this order. First the cause the record carries: one sentence per word of
 // record.HeldReason, each true of what that word means, over the row record.HeldList published
-// for the issue. The ladder that chooses the word is the authority on which issue reads which
-// (record.HeldReasonOf), and each constant's own doc comment is the authority on what the word
-// means, so a word added to that ladder is given its sentence here; given none, it reads the
-// fallback, which says less than the row beside it knows. The two words whose issues this file
-// already renders elsewhere read that render — the links of dispatch_blocker through
-// linkReason, the open children of children_first through childrenReason — so one list of
-// issues reads one way wherever it is served, and every other list of keys renders through
-// englishIssues. at_work, the word of an issue in a phase that keeps no admission slot, has its
-// sentence too, though no phase has kept no slot since cybermonklabs/legion#2539 took
-// `awaiting_merge` away, so no issue reads it today.
+// for the issue, with its list of keys rendered through englishIssues. The ladder that chooses
+// the word is the authority on which issue reads which (record.HeldReasonOf), and each
+// constant's own doc comment is the authority on what the word means, so a word added to that
+// ladder is given its sentence here; given none, it reads the fallback, which says less than the
+// row beside it knows. dispatch_blocker and children_first have no sentence here, because every
+// issue the ladder gives either word stands in `admission.blocked` and reads blockedReason
+// (whyStates). at_work, the word of an issue in a phase that keeps no admission slot, has its
+// sentence, though it cannot run today: no issue reads at_work (record.HeldAtWork).
 //
 // And the fallback, for unclassified, the ladder's own last word, which says that no rule of
 // the held list names what the issue waits for; a key the held list carries no row for at all
 // reads it too (whyStates).
 func unlistedReason(cause record.HeldIssue) string {
-	// The two words that name issues name at least one, since the ladder reads each off a list
-	// it found filled, and a row that named none would render nothing here rather than a
-	// sentence naming none, which is the rule those two renders carry already.
 	switch cause.Reason {
 	case record.HeldTreeClosed:
 		return fmt.Sprintf("Its tree is closed: %s has finished, or lingers after leaving the workflow, "+
@@ -288,10 +272,6 @@ func unlistedReason(cause record.HeldIssue) string {
 	case record.HeldDesignGate:
 		return fmt.Sprintf("The design gate of its tree stands shut: %s waits for a person's approval of each gated "+
 			"step's document at its current version, and nothing of that tree starts until it opens.", englishIssues(cause.HeldBy))
-	case record.HeldDispatchBlocker:
-		return linkReason(cause.HeldBy)
-	case record.HeldChildrenFirst:
-		return childrenReason(cause.HeldBy)
 	case record.HeldAcceptedAncestor:
 		return fmt.Sprintf("The daemon has accepted the reviewed head of %s, which stands above it, "+
 			"so its own work starts when that issue closes.", englishIssues(cause.HeldBy))

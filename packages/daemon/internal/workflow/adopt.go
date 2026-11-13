@@ -217,20 +217,14 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 		return err
 	}
 	for _, member := range members {
-		// Only the issue the release names takes what the release read of it; every other member
-		// of its tree hangs where its own record says it does, and waits on what the mirror says.
-		named := intake.AdoptedChild{}
-		if member.Key == issue.Key {
-			named = child
-		}
-		if err := e.moveIntoTree(ctx, tx, member, root, named); err != nil {
+		if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 			return err
 		}
 	}
 	if err := e.catchUpOnWhatTheTreeIsOwed(ctx, tx, root); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, joinedTheTree(issue.Key, root.Key)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, joinedTheTree(issue.Key, root.Key, "the admission queue")); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a queued root joined a live tree", "issue", issue.Key, "tree", root.Tree, "generation", issue.Generation+1)
@@ -251,19 +245,20 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // child at done, which a todo runs again (ReenterChild), with no linger, hold or Dispatch chain
 // (record.Issue.Ancestry: a member waits in no line).
 //
-// named is the release's own read of member (intake.AdoptedChild) when the release names it:
-// the member then takes that Dispatch parent, and enterChild holds it on the blockers that read
-// found as well as on the mirror's row. The zero value, for a member no release named, leaves it
-// the parent its own record carries and the mirror's row alone. Everything is written in the
-// caller's transaction; the notice, the catch-up and the log line are each route's own.
-func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root record.Issue, named intake.AdoptedChild) error {
+// child is the release's own read of the issue it names (intake.AdoptedChild). The member it
+// names takes that Dispatch parent, and enterChild holds it on the blockers that read found as
+// well as on the mirror's row. Any other member — the zero value, or a child naming another
+// issue — keeps the parent its own record carries and the mirror's row alone. Everything is
+// written in the caller's transaction; the notice, the catch-up and the log line are each
+// route's own.
+func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root record.Issue, child intake.AdoptedChild) error {
 	if member.Generation == ^uint64(0) {
 		return fmt.Errorf("adopt %s into %s: generation overflows", member.Key, root.Tree)
 	}
 	fact := RecordedFact(member)
-	if named.Issue == member.Key {
-		member.Parent = record.ParentOf(named.Parent)
-		fact.Parent, fact.Blockers = named.Parent, named.BlockedBy
+	if child.Issue == member.Key {
+		member.Parent = record.ParentOf(child.Parent)
+		fact.Parent, fact.Blockers = child.Parent, child.BlockedBy
 	}
 	next := member.Generation + 1
 	if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
@@ -281,13 +276,13 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 }
 
 // joinedTheTree is the child-status notice an adoption sends the architect of the tree that
-// takes an issue, so that architect reads that the issue joined. Both routes send it — a queued
-// root with its own tree's members (Adopt) and the one member of a closed tree a release takes
-// (AdoptMember, C4 of dispatch://INFRA-3107) — and it is written here once, so the architect
-// reads one sentence whichever route moved the issue.
-func joinedTheTree(issue, root string) record.Notice {
+// takes an issue, so that architect reads that the issue joined and where it came from. Both
+// routes send it, each naming its own from: a queued root with its own tree's members (Adopt)
+// comes from the admission queue, and the one member of a closed tree a release takes
+// (AdoptMember, C4 of dispatch://INFRA-3107) comes from the closed tree of its old root.
+func joinedTheTree(issue, root, from string) record.Notice {
 	return record.Notice{Kind: "child-status", Role: claim.RoleArchitect,
-		Reason: fmt.Sprintf("%s joined the tree of %s from the admission queue", issue, root)}
+		Reason: fmt.Sprintf("%s joined the tree of %s from %s", issue, root, from)}
 }
 
 // catchUpOnWhatTheTreeIsOwed writes root's architect a catch-up when a person's decision is kept
@@ -337,7 +332,7 @@ func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue
 	if err := e.catchUpOnWhatTheTreeIsOwed(ctx, tx, root); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, member.Key, joinedTheTree(member.Key, root.Key)); err != nil {
+	if err := e.notice(ctx, tx, member.Key, joinedTheTree(member.Key, root.Key, "the closed tree of "+member.Tree)); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a closed tree's member joined a live tree", "issue", member.Key,

@@ -23,10 +23,11 @@ import (
 // of some other word's.
 
 // heldWhy is the held row and the rendered answer one projection gives one issue: the word for
-// why nothing of it runs (admission.held) and the sentence a reader meets on the issue's own
-// view (api.Issue.Why). Both come from one pass, because the point of this fill is that the two
-// agree. It fails where the issue carries no answer at all, which is the other way the fill can
-// go wrong — a sentence that renders nothing is served as no `why` (whyStates).
+// why nothing of it runs (admission.held, heldRow) and the sentence a reader meets on the
+// issue's own view (api.Issue.Why). Both come from one pass, because the point of this fill is
+// that the two agree. It fails where the issue carries no answer at all or stands in no held
+// row, which are the other ways the fill can go wrong — a sentence that renders nothing is
+// served as no `why` (whyStates).
 func heldWhy(t *testing.T, store projectionStore, key string) (api.HeldIssue, api.WhyView) {
 	t.Helper()
 	state, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, nil, projectedAt)
@@ -41,13 +42,7 @@ func heldWhy(t *testing.T, store projectionStore, key string) (api.HeldIssue, ap
 		t.Fatalf("%s carries no why; held = %#v, active = %v, waiting = %v",
 			key, state.Admission.Held, state.Admission.Active, state.Admission.Waiting)
 	}
-	var row api.HeldIssue
-	for _, held := range state.Admission.Held {
-		if held.Issue == key {
-			row = held
-		}
-	}
-	return row, *view.Why
+	return heldRow(t, state, key), *view.Why
 }
 
 // A member of a tree a person closed reads the sentence of `tree_closed` with the root that
