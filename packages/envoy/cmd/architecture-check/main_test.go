@@ -69,9 +69,10 @@ func TestBuildSetOverTestdata(t *testing.T) {
 		if len(found) != 1 {
 			t.Fatalf("problems %q, want one", found)
 		}
-		// yaml.v3 answers an unknown key over two lines, which the command prints as one.
-		line := oneLine(found[0].Error())
-		if !strings.HasPrefix(line, "beta.md: front matter: ") || !strings.Contains(line, "field bogus not found") || strings.Contains(line, "\n") {
+		// yaml.v3 answers an unknown key over two lines, which printable writes as one, its line
+		// break as \n.
+		line := printable(found[0].Error())
+		if !strings.HasPrefix(line, "beta.md: front matter: ") || !strings.Contains(line, `:\n  line 2: field bogus not found`) || strings.Contains(line, "\n") {
 			t.Errorf("problem %q, want one line naming beta.md and its unknown key bogus", line)
 		}
 	})
@@ -154,7 +155,7 @@ func TestBuildSetOverMemory(t *testing.T) {
 			case row.problem == "" && err != nil:
 				t.Errorf("notes.Parse: %v, want a valid set", err)
 			case row.problem != "" && (err == nil || !slices.ContainsFunc(problems(err), func(problem error) bool {
-				return strings.Contains(oneLine(problem.Error()), row.problem)
+				return strings.Contains(problem.Error(), row.problem)
 			})):
 				t.Errorf("notes.Parse: %v, want a problem holding %q", err, row.problem)
 			}
@@ -227,8 +228,9 @@ func TestBuildSetNamesANoteItCannotReadByItsAbsolutePath(t *testing.T) {
 	}
 }
 
-// printable leaves an ordinary name as it is, a name that is not ASCII included, and escapes each
-// control character and each byte that is not UTF-8 as a Go string literal writes it.
+// printable leaves an ordinary name as it is, a name that is not ASCII included, escapes each
+// control character, each format character and each byte that is not UTF-8 as a Go string
+// literal writes it, and writes the "[" of every "##[" as \x5b.
 func TestPrintable(t *testing.T) {
 	t.Parallel()
 	for _, row := range []struct{ name, in, want string }{
@@ -241,6 +243,14 @@ func TestPrintable(t *testing.T) {
 		{name: "a delete", in: "a\x7fb", want: `a\x7fb`},
 		{name: "a C1 next line", in: "a\u0085b", want: `a\u0085b`},
 		{name: "a byte that is not UTF-8", in: "a\xffb", want: `a\xffb`},
+		{name: "a command of the second form", in: "##[", want: `##\x5b`},
+		{name: "three number signs", in: "###[", want: `###\x5b`},
+		{name: "two commands of the second form", in: "##[##[", want: `##\x5b##\x5b`},
+		{name: "a command of the second form inside a name", in: "x##[error]y", want: `x##\x5berror]y`},
+		{name: "a soft hyphen", in: "#\u00ad#[error]y", want: `#\u00ad#[error]y`},
+		{name: "a zero-width joiner", in: "#\u200d#[error]y", want: `#\u200d#[error]y`},
+		{name: "a byte order mark", in: "\ufeff::error::forged", want: `\ufeff::error::forged`},
+		{name: "a right-to-left override", in: "a\u202eb.md", want: `a\u202eb.md`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -253,7 +263,8 @@ func TestPrintable(t *testing.T) {
 
 // The built binary answers in three ways: exit 0 for a valid set, 1 for a refused one, and 2 for a
 // directory it cannot judge or arguments that do not name one directory. Every path it prints is
-// absolute, and no text it takes from the directory or its arguments starts a line of its own.
+// absolute, and no text it takes from the directory or its arguments starts a line of its own or
+// holds a "##[".
 func TestTheBuiltBinary(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "architecture-check")
@@ -272,7 +283,7 @@ func TestTheBuiltBinary(t *testing.T) {
 			t.Errorf("exit %d, stdout %q; want exit 1, stdout %q", got.code, got.stdout, want)
 		}
 		if prefix := "architecture-check: " + dir + ": beta.md: front matter: "; !strings.HasPrefix(got.stderr, prefix) ||
-			!strings.Contains(got.stderr, "field bogus not found") || strings.Count(got.stderr, "\n") != 1 {
+			!strings.Contains(got.stderr, `: yaml: unmarshal errors:\n  line 2: field bogus not found in type notes.frontMatter`) || strings.Count(got.stderr, "\n") != 1 {
 			t.Errorf("stderr %q, want one line starting %q and naming the unknown key bogus", got.stderr, prefix)
 		}
 	})
@@ -288,13 +299,15 @@ func TestTheBuiltBinary(t *testing.T) {
 	})
 	t.Run("a file given as the directory exits 2", func(t *testing.T) {
 		t.Parallel()
-		path := filepath.Join(t.TempDir(), "api.md")
+		parent := t.TempDir()
+		path := filepath.Join(parent, "api\n::error::forged.md")
 		writeFile(t, path, []byte("A note.\n"))
 		got := runBinary(t, binary, "", path)
-		if prefix := "architecture-check: " + path + ": cannot be read: "; got.code != 2 || got.stdout != "" ||
+		if prefix := "architecture-check: " + parent + `/api\n::error::forged.md: cannot be read: `; got.code != 2 || got.stdout != "" ||
 			!strings.HasPrefix(got.stderr, prefix) || strings.Count(got.stderr, "\n") != 1 {
 			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and one line starting %q", got.code, got.stdout, got.stderr, prefix)
 		}
+		expectNoCommand(t, "stderr", got.stderr)
 	})
 	for _, row := range []struct {
 		name string
@@ -347,32 +360,50 @@ func TestTheBuiltBinary(t *testing.T) {
 		t.Parallel()
 		dir := t.TempDir()
 		writeFile(t, filepath.Join(dir, "a.md"), []byte("---\ntitle: A\n---\nA valid note.\n"))
-		// A file that is not a note, named to put a workflow command on a line of its own, and a
-		// note whose name notes.Parse refuses, whose \r a runner reads as the end of a line.
+		// A file that is not a note, named to put a workflow command on a line of its own, and three
+		// notes whose names notes.Parse refuses: one whose \r a runner reads as the end of a line,
+		// one whose name holds a \n and one whose name starts with a tab. Each name prints exactly,
+		// escaped.
 		writeFile(t, filepath.Join(dir, "x\n::error title=Injected::forged annotation"), []byte("x"))
-		writeFile(t, filepath.Join(dir, "y\r::warning::forged.md"), []byte("---\ntitle: Y\n---\nA note.\n"))
+		note := []byte("---\ntitle: Y\n---\nA note.\n")
+		writeFile(t, filepath.Join(dir, "y\r::warning::forged.md"), note)
+		writeFile(t, filepath.Join(dir, "a\nb.md"), note)
+		writeFile(t, filepath.Join(dir, "\tq.md"), note)
 		got := runBinary(t, binary, "", dir)
-		if want := "architecture-check: " + dir + ": 2 notes, the set is refused\n"; got.code != 1 || got.stdout != want {
+		if want := "architecture-check: " + dir + ": 4 notes, the set is refused\n"; got.code != 1 || got.stdout != want {
 			t.Errorf("exit %d, stdout %q; want exit 1, stdout %q", got.code, got.stdout, want)
 		}
-		warning := "architecture-check: warning: " + dir + `/x\n::error title=Injected::forged annotation: not a note (file); the importer passes over it` + "\n"
-		problem := "architecture-check: " + dir + `: y\r::warning::forged.md: file name must be <slug>.md`
-		if !strings.HasPrefix(got.stderr, warning) || !strings.HasPrefix(got.stderr[len(warning):], problem) || strings.Count(got.stderr, "\n") != 2 {
-			t.Errorf("stderr %q, want the line %q and then one line starting %q", got.stderr, warning, problem)
+		// The warning, and then notes.Parse's problems in name order: the tab, the \n, the \r.
+		warning := "architecture-check: warning: " + dir + `/x\n::error title=Injected::forged annotation: not a note (file); the importer passes over it`
+		refusals := []string{
+			"architecture-check: " + dir + `: \tq.md: file name must be <slug>.md`,
+			"architecture-check: " + dir + `: a\nb.md: file name must be <slug>.md`,
+			"architecture-check: " + dir + `: y\r::warning::forged.md: file name must be <slug>.md`,
+		}
+		lines := strings.Split(strings.TrimSuffix(got.stderr, "\n"), "\n")
+		if len(lines) != 1+len(refusals) || lines[0] != warning || !strings.HasPrefix(lines[1], refusals[0]) ||
+			!strings.HasPrefix(lines[2], refusals[1]) || !strings.HasPrefix(lines[3], refusals[2]) {
+			t.Errorf("stderr %q, want the line %q and then one line starting with each of %q", got.stderr, warning, refusals)
 		}
 		expectNoCommand(t, "stdout", got.stdout)
 		expectNoCommand(t, "stderr", got.stderr)
 	})
-	t.Run("a directory argument holding a newline is escaped in its exit 2 line", func(t *testing.T) {
+	t.Run("the second command form in the directory is escaped", func(t *testing.T) {
 		t.Parallel()
-		parent := t.TempDir()
-		path := filepath.Join(parent, "api\n::error::forged.md")
-		writeFile(t, path, []byte("A note.\n"))
-		got := runBinary(t, binary, "", path)
-		if prefix := "architecture-check: " + parent + `/api\n::error::forged.md: cannot be read: `; got.code != 2 || got.stdout != "" ||
-			!strings.HasPrefix(got.stderr, prefix) || strings.Count(got.stderr, "\n") != 1 {
-			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and one line starting %q", got.code, got.stdout, got.stderr, prefix)
-		}
+		dir := t.TempDir()
+		writeFile(t, filepath.Join(dir, "a.md"), []byte("---\ntitle: A\n---\nA valid note.\n"))
+		// A file that is not a note and a note's parent, each holding "##[", which a runner reads
+		// as a workflow command anywhere in a line.
+		writeFile(t, filepath.Join(dir, "x##[error]y"), []byte("x"))
+		writeFile(t, filepath.Join(dir, "b.md"), []byte("---\ntitle: B\nparent: \"##[warning]y\"\n---\nA note.\n"))
+		got := runBinary(t, binary, "", dir)
+		expect(t, got, result{
+			code:   1,
+			stdout: "architecture-check: " + dir + ": 2 notes, the set is refused\n",
+			stderr: "architecture-check: warning: " + dir + `/x##\x5berror]y: not a note (file); the importer passes over it` + "\n" +
+				"architecture-check: " + dir + `: b.md: unknown parent "##\x5bwarning]y"` + "\n",
+		})
+		expectNoCommand(t, "stdout", got.stdout)
 		expectNoCommand(t, "stderr", got.stderr)
 	})
 	t.Run("an unknown flag holding a newline is escaped in its error line", func(t *testing.T) {
@@ -417,13 +448,17 @@ func expect(t *testing.T, got, want result) {
 	}
 }
 
-// expectNoCommand fails the test unless out holds no \r and no line of it starts with "::", which
-// a GitHub runner reads as a workflow command. The runner ends a line at \n and at \r alike, so
-// out is split at both.
+// expectNoCommand fails the test unless out holds no \r, no "##[" and no line that starts with
+// "::": a GitHub runner reads a workflow command in both forms, a "##[" anywhere in a line and a
+// line that starts with "::". The runner ends a line at \n and at \r alike, so out is split at
+// both.
 func expectNoCommand(t *testing.T, stream, out string) {
 	t.Helper()
 	if strings.Contains(out, "\r") {
 		t.Errorf("%s %q holds a \\r", stream, out)
+	}
+	if strings.Contains(out, "##[") {
+		t.Errorf("%s %q holds a ##[, which a runner reads as a workflow command", stream, out)
 	}
 	for _, line := range strings.FieldsFunc(out, func(r rune) bool { return r == '\n' || r == '\r' }) {
 		if strings.HasPrefix(line, "::") {

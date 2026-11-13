@@ -64,7 +64,12 @@ A caller sets `allow-empty: true` only while it has no note, and reads `count`.
 The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
 Each line names the directory by its absolute path.
-The command escapes every control character in a path or a problem that it prints, as `\n`, `\r` or `\x1b`, so text in the directory cannot end its line or start a line of its own in the log, where a runner reads a line that starts with `::` as a workflow command.
+A runner reads a workflow command in the log in two forms: a line that starts with `::`, and `##[` anywhere in a line.
+So the command escapes every control character, every format character (such as a soft hyphen or a zero-width joiner) and every byte that is not UTF-8 in each line that it prints, as `\n`, `\r`, `\x1b`, `\u00ad` or `\xff`.
+The runner matches text in a way that can pass over a format character, so `#`, a soft hyphen and `#[` can read as `##[`.
+The command also writes the `[` of every `##[` as `\x5b`.
+So text from the directory can neither start a `::` line nor hold a `##[` command.
+A problem whose text has several lines prints on one line, with each line break as `\n`.
 
 - **Exit 0: the set is valid.**
   The log holds the line `architecture-check: <directory>: <n> notes, the set is valid`, with `note` for one note.

@@ -2937,12 +2937,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A refused set is exit 1:
   one line on stderr for each problem, `architecture-check: <directory>: <problem>`, then `architecture-check: <directory>: <n> notes, the set is refused` on stdout.
   A problem is one of the errors `notes.Parse` joins, each starting with its note's file name, or one `notes.CheckSize` refusal naming the note's absolute path, after which no note is parsed;
-  a problem of several lines (yaml.v3's `unmarshal errors:` for an unknown key) is printed as one, its lines trimmed and joined with `; `.
+  a line break in a problem (yaml.v3's `unmarshal errors:` for an unknown key has one) prints as `\n`.
   A directory it cannot judge is exit 2 and one line on stderr naming it and the case, `does not exist`, `cannot be read: <error>` or `holds no note`, and a usage error (no directory argument, two of them, an unknown flag) is exit 2 and the usage line;
   neither prints a count line.
   Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
   the importer passes over such an entry in silence, and its author expects it to count.
-  It escapes every control character in a path, an error or a problem it prints as a Go string literal writes it (`\n`, `\r`, `\x1b`), so text in the directory cannot end its line or start a line of its own in the log, where a GitHub runner reads a line starting `::` as a workflow command.
+  Every line but the usage goes through `say`, which escapes the whole line with `printable`:
+  each control (Cc) and format (Cf) character as a Go string literal writes it (`\n`, `\u00ad`), each byte that is not UTF-8 as `\xNN`, and the `[` of every `##[` as `\x5b`.
+  A GitHub runner reads a workflow command from a line starting `::` and from a `##[` anywhere in a line, ends a line at `\n` and `\r`, and its matching can pass over a format character;
+  so text from the directory can neither start a `::` line nor hold a `##[` command.
   `--allow-empty` reads a directory that holds no note, and one that does not exist, as the empty set, exit 0 with a count of 0, as the server reads a missing directory as the empty model;
   git keeps no empty directory, so a repository with no note yet has no directory at all.
   It opens no database and reaches no network.

@@ -25,8 +25,13 @@
 // exit status. With --allow-empty, a directory that does not exist or holds no note is the empty
 // set, which the parser accepts: exit 0 with a count of 0, for a repository with no note yet.
 //
-// Every path, error and problem a line holds is written with its control characters escaped, as
-// printable writes them, so no name in the directory can end its line or start a line of its own.
+// Every line the command prints, the usage aside, is written by say, which escapes the whole line
+// as printable does: each control character, each format character and each byte that is not
+// UTF-8 as an escape, and the "[" of every "##[" as \x5b. A GitHub runner reads a workflow command
+// in two forms, a line that starts with "::" and a "##[" anywhere in a line, so no text the
+// directory or an argument holds can start a "::" line or hold a "##[" command. A problem whose
+// text spans several lines, as yaml.v3's answer for an unknown key does, prints on one line with
+// each line break as \n.
 package main
 
 import (
@@ -55,13 +60,15 @@ func main() {
 // refused one, 2 for a directory it cannot judge or arguments that do not name one directory.
 func run(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("architecture-check", flag.ContinueOnError)
+	// The usage line and the flag list PrintDefaults writes are this program's own fixed text,
+	// the one output that does not pass through say.
 	flags.Usage = func() {
 		fmt.Fprintln(flags.Output(), usage)
 		flags.PrintDefaults()
 	}
 	allowEmpty := flags.Bool("allow-empty", false, "read a directory that does not exist or holds no note as the empty set, which is valid")
 	// The flag package prints a parse error with the argument in it as it is, so Parse prints
-	// nothing and run prints the error through printable, then the usage as Parse would.
+	// nothing and run prints the error through say, then the usage as Parse would.
 	flags.SetOutput(io.Discard)
 	err := flags.Parse(args)
 	flags.SetOutput(stderr)
@@ -70,24 +77,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 		flags.Usage()
 		return 0
 	case err != nil:
-		fmt.Fprintln(stderr, printable(err.Error()))
+		say(stderr, "%s", err)
 		flags.Usage()
 		return 2
 	}
 	if flags.NArg() != 1 {
-		fmt.Fprintf(stderr, "architecture-check: want one directory argument, got %d\n", flags.NArg())
+		say(stderr, "architecture-check: want one directory argument, got %d", flags.NArg())
 		flags.Usage()
 		return 2
 	}
 	dir, err := filepath.Abs(flags.Arg(0))
 	if err != nil {
-		fmt.Fprintf(stderr, "architecture-check: %s: cannot be read: %s\n", printable(flags.Arg(0)), printable(err.Error()))
+		say(stderr, "architecture-check: %s: cannot be read: %s", flags.Arg(0), err)
 		return 2
 	}
 
 	files, rejects, err := buildSet(os.DirFS(dir), dir)
 	for _, entry := range rejects {
-		fmt.Fprintf(stderr, "architecture-check: warning: %s: not a note (%s); the importer passes over it\n", printable(entry.path), entry.kind)
+		say(stderr, "architecture-check: warning: %s: not a note (%s); the importer passes over it", entry.path, entry.kind)
 	}
 	var refused *sizeRefusal
 	switch {
@@ -97,16 +104,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		// Git keeps no empty directory, so a repository with no note yet has no directory at all,
 		// and the server reads a missing directory as the empty model.
 	case err != nil:
-		fmt.Fprintf(stderr, "architecture-check: %s: %s\n", printable(dir), printable(err.Error()))
+		say(stderr, "architecture-check: %s: %s", dir, err)
 		return 2
 	case len(files) == 0 && !*allowEmpty:
-		fmt.Fprintf(stderr, "architecture-check: %s: holds no note\n", printable(dir))
+		say(stderr, "architecture-check: %s: holds no note", dir)
 		return 2
 	}
 	if _, err := notes.Parse(files); err != nil {
 		return refuse(stdout, stderr, dir, len(files), problems(err))
 	}
-	fmt.Fprintf(stdout, "architecture-check: %s: %s, the set is valid\n", printable(dir), count(len(files)))
+	say(stdout, "architecture-check: %s: %s, the set is valid", dir, count(len(files)))
 	return 0
 }
 
@@ -206,56 +213,58 @@ func problems(err error) []error {
 }
 
 // refuse prints a refused set of held notes, each problem as one line of standard error and then
-// the count line on standard output, and answers exit 1. oneLine joins a problem's lines, and
-// printable escapes each control character left in it, a \r in a note's name among them.
+// the count line on standard output, and answers exit 1. say keeps each problem on one line: a
+// line break in it, in yaml.v3's answer for an unknown key or in a note's name, prints as \n.
 func refuse(stdout, stderr io.Writer, dir string, held int, problems []error) int {
-	shown := printable(dir)
 	for _, problem := range problems {
-		fmt.Fprintf(stderr, "architecture-check: %s: %s\n", shown, printable(oneLine(problem.Error())))
+		say(stderr, "architecture-check: %s: %s", dir, problem)
 	}
-	fmt.Fprintf(stdout, "architecture-check: %s: %s, the set is refused\n", shown, count(held))
+	say(stdout, "architecture-check: %s: %s, the set is refused", dir, count(held))
 	return 1
 }
 
-// oneLine writes a problem whose text spans several lines, as yaml.v3's "unmarshal errors:"
-// answer for an unknown key does, as one line: its lines trimmed of surrounding space, the empty
-// ones dropped, and the rest joined with "; ".
-func oneLine(text string) string {
-	var lines []string
-	for line := range strings.Lines(text) {
-		if line = strings.TrimSpace(line); line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return strings.Join(lines, "; ")
+// say writes one line to w: format filled with args, the whole line escaped by printable. Every
+// line the command prints but the usage is written here, so no print site can leave an argument
+// unescaped, and a "##[" that an argument and the format text make together is escaped too.
+func say(w io.Writer, format string, args ...any) {
+	fmt.Fprintln(w, printable(fmt.Sprintf(format, args...)))
 }
 
-// printable is s as a line of the command prints it: s itself when it is valid UTF-8 and holds
-// no control character, and otherwise s with each control character (unicode.IsControl: C0, DEL
-// and C1, U+0085 among them) escaped as a Go string literal writes it, `\n`, `\r`, `\t`, `\x1b`
-// or `\u0085`, each byte that is not UTF-8 as `\xNN`, and every other rune as it is. A GitHub
-// runner ends a line of the log at `\n` and at `\r` alike, and reads a line that starts with "::"
-// as a workflow command. A file name in a pull request is its author's text, so no text the
-// command takes from the directory or its argument may end its line or start a line of its own.
+// printable is s as a line of the command prints it. A GitHub runner ends a line of the log at
+// \n and at \r alike, and reads a workflow command in two forms: a line that starts with "::",
+// and a "##[" anywhere in a line. It finds both with .NET's culture-sensitive string matching,
+// which can pass over a format character as if it were not there, so "#\u00ad#[" may read as
+// "##[". A file name or a front-matter value in a pull request is its author's text, so printable
+// writes each control character (Unicode category Cc: C0, DEL and C1) and each format character
+// (Cf: the soft hyphen, the zero-width joiner and non-joiner, the bidi controls, the byte order
+// mark) as a Go string literal writes it, `\n`, `\r`, `\x1b`, `\u00ad` or `\ufeff`, and each byte
+// that is not UTF-8 as `\xNN`. Then it writes the "[" of every "##[" as `\x5b`, so "###[" prints
+// as `###\x5b` and "##[##[" as `##\x5b##\x5b`. No escape holds a "#" or a "[", so no "##[" is
+// left. Text that is valid UTF-8 and holds none of these is s itself.
 func printable(s string) string {
-	if utf8.ValidString(s) && !strings.ContainsFunc(s, unicode.IsControl) {
-		return s
-	}
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		r, size := utf8.DecodeRuneInString(s[i:])
-		switch {
-		case r == utf8.RuneError && size == 1:
-			fmt.Fprintf(&b, `\x%02x`, s[i])
-		case unicode.IsControl(r):
-			quoted := strconv.QuoteRune(r)
-			b.WriteString(quoted[1 : len(quoted)-1])
-		default:
-			b.WriteString(s[i : i+size])
+	if !utf8.ValidString(s) || strings.ContainsFunc(s, escaped) {
+		var b strings.Builder
+		for i := 0; i < len(s); {
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if (r == utf8.RuneError && size == 1) || escaped(r) {
+				// strconv quotes a lone byte that is not UTF-8 as \xNN, and r as its escape.
+				var quoted [12]byte // `"\U0010ffff"`, the longest a rune quotes to
+				escape := strconv.AppendQuote(quoted[:0], s[i:i+size])
+				b.Write(escape[1 : len(escape)-1])
+			} else {
+				b.WriteString(s[i : i+size])
+			}
+			i += size
 		}
-		i += size
+		s = b.String()
 	}
-	return b.String()
+	return strings.ReplaceAll(s, "##[", `##\x5b`)
+}
+
+// escaped reports whether printable writes r as an escape: a control character (Unicode category
+// Cc) or a format character (Cf).
+func escaped(r rune) bool {
+	return unicode.In(r, unicode.Cc, unicode.Cf)
 }
 
 // count is the count line's "<n> notes", with "note" for one.

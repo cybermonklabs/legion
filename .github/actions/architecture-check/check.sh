@@ -84,7 +84,7 @@ run() {
   case "$ARCHITECTURE_CHECK_ALLOW_EMPTY" in
     true) set -- --allow-empty "$dir" ;;
     false) set -- "$dir" ;;
-    *) refuse "the input allow-empty is ${ARCHITECTURE_CHECK_ALLOW_EMPTY@Q}, and it must be 'true' or 'false'" ;;
+    *) refuse "the input allow-empty must be 'true' or 'false'" ;;
   esac
   [ -x "$binary" ] || refuse "no command at $binary: run check.sh build first"
 
