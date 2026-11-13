@@ -43,7 +43,7 @@ func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 		registry:  registry,
 		roleKV:    registryRoleKV(t, registry),
 		logs:      logs,
-		subscribe: subscribeHandler(&listenerDeps{registry: registry, sessions: sessions}, "test-machine", logging.NewWithWriter("test", logs)),
+		subscribe: subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.NewWithWriter("test", logs)),
 	}
 }
 
@@ -88,11 +88,12 @@ func (r *roleClaimRenewalRig) stored(role string) store.RoleClaim {
 }
 
 // register is the heartbeat POST /v1/interests/subscribe a running client repeats, stating the
-// process making it. It fails the test unless the registration was answered 200: no renewal of
-// any outcome may cost a session its registration.
+// process making it and asking for the session's own consumer, as every registration this build
+// stores does. It fails the test unless the registration was answered 200: no renewal of any
+// outcome may cost a session its registration.
 func (r *roleClaimRenewalRig) register(sessionID, instance string) {
 	r.t.Helper()
-	body := fmt.Sprintf(`{"session_id":%q,"topics":["notifications.team.heartbeat"],"client_instance_id":%q}`, sessionID, instance)
+	body := fmt.Sprintf(`{"session_id":%q,"topics":["notifications.team.heartbeat"],"delivery":{"consumer":true,"epoch":"e"},"client_instance_id":%q}`, sessionID, instance)
 	recorder := httptest.NewRecorder()
 	r.subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
 	if recorder.Code != http.StatusOK {

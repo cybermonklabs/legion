@@ -26,6 +26,7 @@ import (
 // bar cannot yet propose. TestTheMutatingRoutesNoToolSpecNames holds the list to the table, so a
 // write added later is named here or in goingToolRoutes and never silently missing.
 var goingMutatingRoutesWithNoTool = []string{
+	"DELETE /api/v1/artifacts/{id}",
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 	"DELETE /api/v1/delivery/session-groups/{id}",
 	"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
@@ -33,6 +34,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"DELETE /api/v1/me/asks/{id}/snooze",
 	"DELETE /api/v1/projects/{key}/architecture-sources/{owner}/{repo}",
 	"DELETE /api/v1/settings/repo-projects/{owner}/{repo}",
+	"PATCH /api/v1/artifacts/{id}",
 	"PATCH /api/v1/comments/{id}",
 	"PATCH /api/v1/delivery/session-groups/{id}",
 	"PATCH /api/v1/me/agent-tokens/{id}",
@@ -56,6 +58,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/going/requests",
 	"POST /api/v1/issues/{key}/artifacts/{slug}/versions",
 	"POST /api/v1/machine-logins/{id}/revoke",
+	"POST /api/v1/markdown/round-trip",
 	"POST /api/v1/me/agent-tokens",
 	"POST /api/v1/me/inbox/dismiss",
 	"POST /api/v1/me/inbox/read",
@@ -67,6 +70,7 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/projects/{key}/related",
 	"POST /api/v1/signins/{id}/revoke",
 	"PUT /api/v1/asks/{id}/asked-of",
+	"PUT /api/v1/issues/{key}/design-gates",
 	"PUT /api/v1/me/agents/{session_id}/state",
 	"PUT /api/v1/me/asks/{id}/snooze",
 	"PUT /api/v1/me/documents/{id}/read",

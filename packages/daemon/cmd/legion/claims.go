@@ -53,8 +53,13 @@ type claimsCall struct {
 	asJSON *bool
 }
 
+// newClaimsCall is one `legion claims` subcommand's flags: the operator's three, --json, and the
+// --wait that bounds the whole call. Every subcommand takes it, so every one of them answers —
+// done, held until when, or refused with a reason — inside a bound the operator set
+// (dispatch://INFRA-714 R10).
 func newClaimsCall(sub string, stdout, stderr io.Writer) *claimsCall {
 	c := newOperatorCall("claims "+sub, "usage: legion claims "+sub+" [flags]", "file holding the operator bearer the daemon's operator_token_file names (required)", stdout, stderr)
+	c.withWait("how long the whole command may take before it refuses with what it was waiting for")
 	return &claimsCall{operatorCall: c, asJSON: c.flags.Bool("json", false, "print the daemon's answer as it served it")}
 }
 
@@ -90,14 +95,7 @@ func decodeAnswer(answer []byte, into any) error {
 	return decoder.Decode(into)
 }
 
-// printClaim is the one line a claim prints as: token, role, issue, state, generation, the plugin
-// contract its registration declared (0 when none is recorded), the update round the claim is
-// in with the head its worker reported when it answered (`-` for a claim in no round, and `-` for
-// a head no worker has reported yet), and the tool call its agent is in (openCallWord). A claim
-// whose idle pod the daemon released prints
-// `suspended:released` for its state (claimStateWord): it is not a suspension anyone is waiting
-// to lift — its next delivery resumes it in a pod of its own — so an operator reading the list
-// must not read it as one.
+// printClaim is the claim a route answered, as the one line writeClaimLine writes.
 //
 // A second line follows it when the answer says nothing restarted the claim's phase, which only
 // `retry --fresh-session` sets (api.OperatorClaim.PhaseNotRestarted): the claim is back in a new
@@ -189,8 +187,17 @@ func issuesOrNone(name string, issues []string) string {
 	return fmt.Sprintf("%s: %d — %s", name, len(issues), strings.Join(named, ", "))
 }
 
+// writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed
+// (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
+// recorded), the update round the claim is in with the head its worker reported when it
+// answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), and
+// the tool call its agent is in (openCallWord). A claim whose idle pod the daemon released
+// prints `suspended:released` for its state (claimStateWord): it is not a suspension anyone is
+// waiting to lift — its next delivery resumes it in a pod of its own — so an operator reading
+// the list must not read it as one.
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
-	fmt.Fprintf(w, "%s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), c.Generation, c.PluginContract,
+	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
+		c.Generation, c.PluginContract,
 		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)))
 }
 
@@ -227,6 +234,20 @@ func claimStateWord(c api.OperatorClaim) string {
 		return c.State + ":" + c.SuspendedBy
 	}
 	return c.State
+}
+
+// claimCauseWord is why the claim failed as the line prints it: the one word the site that
+// failed it chose (supervise.FailureCause), which the line carries beside the state rather than
+// the sentence written with it, because one word is what fits a column and what an operator
+// sorts a listing by; the sentence, the moment and the counts are read with --json
+// (api.ClaimFailureView). It is empty for a claim the daemon holds no failure record for — one
+// that never failed, one that has been given another run since, which clears the record, and one
+// holding a cause with no sentence (api.FailureViewOf) — which the line prints as `-`.
+func claimCauseWord(c api.OperatorClaim) string {
+	if c.Failure == nil {
+		return ""
+	}
+	return string(c.Failure.Cause)
 }
 
 // orNone is a field a claim need not have, as the line prints it.
@@ -368,15 +389,18 @@ func printCompaction(w io.Writer, answer []byte) error {
 
 // runClaimsRetry retries --claim, or with --failed every claim the daemon holds failed, in the
 // order the daemon lists them: an architect is relaunched on its session with fresh budgets, a
-// phase worker whose issue holds its phase is relaunched through that phase's retry, a phase
-// worker an operator stopped is relaunched on the task of the phase it was stopped in, and the
-// daemon refuses the rest, naming why (api's retryClaim). Under --failed each retried claim prints
-// its line as --claim prints it, each refusal is reported naming its claim, and the command fails
-// once any was refused, having asked for every one. A claim an operator stopped is retired rather
-// than failed, so --failed passes over it: name it with --claim.
+// phase worker is relaunched by the start of its issue's phase — the phase it is held from, or the
+// one it stands in, which is where an operator's stop leaves it — and the daemon refuses the rest,
+// naming why (api's retryClaim). Under --failed each retried claim prints its line as --claim
+// prints it, each refusal is reported naming its claim, and the command fails once any was
+// refused, having asked for every one. A claim an operator stopped is retired rather than failed,
+// so --failed passes over it: name it with --claim.
 //
 // --fresh-session starts the claim in a new session rather than resuming the recorded one, which
 // is what a claim whose provider refused its session needs: resuming it would be refused again.
+// The daemon starts one of its own accord for a claim the provider refused out of its budget,
+// whoever retried it, so the flag is for every other reason an operator has to leave a session
+// behind — an agent wedged in a way no budget counts among them.
 func runClaimsRetry(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	c := newClaimsCall("retry", stdout, stderr)
 	token := c.flags.String("claim", "", "the claim's token (this, or --failed)")
@@ -434,11 +458,13 @@ const suspendPoll = 250 * time.Millisecond
 
 // runClaimsSuspend suspends --claim. The daemon suspends a claim whose agent is in no turn at once
 // (200), and holds the suspension of one in a turn (202; supervise's holdSuspension), which the
-// command then waits out (awaitSuspended). It prints the claim as it ends, suspended.
+// command then waits out (awaitSuspended) inside its --wait. It prints the claim as it ends,
+// suspended. A suspend of a worker whose start is still running is answered 200: the request
+// stops that start before it waits for the claim's decision (supervise's Handle), and the start
+// is charged nothing.
 func runClaimsSuspend(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	c := newClaimsCall("suspend", stdout, stderr)
 	token := c.flags.String("claim", "", "the claim's token (required)")
-	wait := c.flags.Duration("wait", time.Minute, "how long to wait for a suspension the daemon holds for the agent's turn to land")
 	if code, ok := c.parse(args, "claim"); !ok {
 		return code
 	}
@@ -452,7 +478,7 @@ func runClaimsSuspend(ctx context.Context, args []string, stdout, stderr io.Writ
 		return 1
 	}
 	if status == http.StatusAccepted {
-		if answer, ok = c.awaitSuspended(ctx, op, legionclaim.Token(*token), *wait); !ok {
+		if answer, ok = c.awaitSuspended(ctx, op, legionclaim.Token(*token)); !ok {
 			return 1
 		}
 		path = claimsRoute
@@ -463,9 +489,11 @@ func runClaimsSuspend(ctx context.Context, args []string, stdout, stderr io.Writ
 // awaitSuspended reads the claims until token is suspended, and answers the claim as the list
 // served it. Every other end stops the wait, reported as what it is and answering false: the claim
 // failed, retired, or left the daemon; the daemon holds its suspension no longer (a start run
-// against the claim dropped it, or the daemon restarted); or wait ran out while it is still held.
-func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legionclaim.Token, wait time.Duration) ([]byte, bool) {
-	deadline := time.Now().Add(wait)
+// against the claim dropped it, or the daemon restarted); or the command's --wait ran out while it
+// is still held. That bound is the call's own, fixed when the flags were parsed and shared with
+// every request it makes (operatorCall.bound), so the suspend request and this wait together take
+// no longer than the operator asked for.
+func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legionclaim.Token) ([]byte, bool) {
 	for {
 		_, answer, ok := c.request(ctx, op, http.MethodGet, claimsRoute, nil)
 		if !ok {
@@ -500,9 +528,9 @@ func (c *claimsCall) awaitSuspended(ctx context.Context, op operator, token legi
 				"the claim dropped it, or the daemon restarted\n", c.name, token, seen.State)
 			return nil, false
 		}
-		if !time.Now().Before(deadline) {
-			fmt.Fprintf(c.stderr, "%s: %s is still %s after %s, its suspension held: its agent's turn has not ended, or the "+
-				"runtime refused the stop, which is tried again every probe interval\n", c.name, token, seen.State, wait)
+		if !c.until.IsZero() && !time.Now().Add(suspendPoll).Before(c.until) {
+			fmt.Fprintf(c.stderr, "%s: %s is still %s after the --wait bound of %s, its suspension held: its agent's turn has not ended, or the "+
+				"runtime refused the stop, which is tried again every probe interval\n", c.name, token, seen.State, *c.wait)
 			return nil, false
 		}
 		select {

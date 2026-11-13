@@ -108,6 +108,95 @@ func (e *ErrQuoteNotFound) Error() string {
 
 func (e *ErrQuoteNotFound) Unwrap() error { return pmdoc.ErrTargetNotFound }
 
+// ErrBlockNotFound names a block id an operation wrote that the document does not carry. A block
+// id is read from the document rather than written by the caller, and a later version of the
+// document can hold the same words under another id, so the refusal names the quote form of the
+// field the id was written in, which the document's own words answer, and the id the block whose
+// text the operation quotes carries now.
+type ErrBlockNotFound struct {
+	opIndex
+	// Block is the id the operation wrote, Op the operation that wrote it, and Field the
+	// operation field it stood in: "after", "before" or "block".
+	Block string
+	Op    string
+	Field string
+	// Quote is the text the operation carries that identifies a block - a replace's find, a
+	// delete's quote - and Current the id the block holding that text carries now. Both are empty
+	// where the operation carries no such text, and where two or more blocks hold it, since
+	// neither is the block the caller meant.
+	Quote   string
+	Current string
+}
+
+func (e *ErrBlockNotFound) Error() string {
+	current := ""
+	if e.Current != "" {
+		current = fmt.Sprintf(" The block whose text is %q now has the id %q.", e.Quote, e.Current)
+	}
+	return fmt.Sprintf("%sblock %q is not in the document.%s%s", e.prefix(), e.Block, current, e.quoteForm())
+}
+
+// quoteForm is the quote form of the field the missing id stood in: an insert's or a move's anchor
+// takes the anchored block's own text in place of `block:<id>`, and a delete takes the removed
+// block's text in find. The block a move, a retype or a table operation names is addressed by id
+// alone, so that refusal names no quote form.
+func (e *ErrBlockNotFound) quoteForm() string {
+	switch {
+	case e.Field == "after" || e.Field == "before":
+		return fmt.Sprintf(" Anchor by quote instead: write the text of that block in %s, in place of \"block:%s\".", e.Field, e.Block)
+	case e.Op == "delete":
+		return " Name the block by its text instead: write that text in find."
+	}
+	return ""
+}
+
+func (e *ErrBlockNotFound) Unwrap() error { return pmdoc.ErrTargetNotFound }
+
+// blockNotFound dresses a refusal of blockID, written in field, which the tree does not carry: the
+// pmdoc call reports it as a target miss, and the caller reads ErrBlockNotFound's words instead.
+// Any other error is the caller's to read as it is.
+func blockNotFound(tree *batchTree, op model.EditOp, field, blockID string, err error) error {
+	if !errors.Is(err, pmdoc.ErrTargetNotFound) {
+		return err
+	}
+	missing := &ErrBlockNotFound{Block: blockID, Op: op.Op, Field: field}
+	// find is the one field of an operation that identifies a block by its text: a replace's
+	// find, a delete's quote.
+	if current, named := blockHoldingText(tree, op.Find); named {
+		missing.Quote, missing.Current = op.Find, current
+	}
+	return missing
+}
+
+// blockHoldingText is the id of the one block whose text quote matches. It names none where the
+// quote matches nothing, where it matches in two or more blocks, since neither is the block the
+// caller meant, and where the tree cannot be read at all, which the operation itself reports.
+func blockHoldingText(tree *batchTree, quote string) (string, bool) {
+	if quote == "" {
+		return "", false
+	}
+	finder, err := tree.finder()
+	if err != nil {
+		return "", false
+	}
+	matches, err := finder.NearestFirst(quote, 0)
+	if err != nil {
+		return "", false
+	}
+	current := ""
+	for _, match := range matches {
+		blockID, err := pmdoc.BlockIDForRange(tree.node, match)
+		if err != nil || blockID == "" {
+			return "", false
+		}
+		if current != "" && current != blockID {
+			return "", false
+		}
+		current = blockID
+	}
+	return current, current != ""
+}
+
 // ErrAnchorAmbiguous names a quote or a `heading:` anchor that resolved in several places, with
 // the candidates the API hands back so the caller can pick one.
 type ErrAnchorAmbiguous struct {
@@ -211,6 +300,11 @@ var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 type ErrPreconditionFailed struct {
 	CurrentDocument string
 	Mismatches      []model.EditPreconditionMismatch
+	// Advice is the way back from a block the document no longer holds, which a whole-document
+	// upload mints a fresh id for whenever it changed that block: the quote anchor form, and the
+	// id that block carries now where the batch's own text names exactly one
+	// (adviseRemovedPreconditionBlock). It is empty for every other mismatch.
+	Advice string
 }
 
 func (e *ErrPreconditionFailed) Error() string {
@@ -226,7 +320,37 @@ func (e *ErrPreconditionFailed) Error() string {
 		}
 		reasons = append(reasons, fmt.Sprintf("block %q changed", mismatch.BlockID))
 	}
-	return "document edit precondition failed: " + strings.Join(reasons, ", ")
+	return "document edit precondition failed: " + strings.Join(reasons, ", ") + e.Advice
+}
+
+// adviseRemovedPreconditionBlock adds that way back to a precondition refused for a block the
+// document no longer holds. A batch prepared from an earlier listing fails here on exactly the
+// blocks another session changed, and the refusal alone leaves the caller with an id that names
+// nothing: so it names the quote anchor form, and the id the block carries now where the batch's
+// own text identifies one block (blockHoldingText, which names none where two or more hold it).
+func adviseRemovedPreconditionBlock(tree *batchTree, ops []model.EditOp, err error) error {
+	var failed *ErrPreconditionFailed
+	if !errors.As(err, &failed) || failed.Advice != "" {
+		return err
+	}
+	removed := false
+	for _, mismatch := range failed.Mismatches {
+		removed = removed || (mismatch.Scope == "block" && mismatch.Current == nil)
+	}
+	if !removed {
+		return err
+	}
+	failed.Advice = " A block the document no longer holds took a fresh id when another session" +
+		" changed it: read the document's blocks again, and name each block by its text."
+	for _, op := range ops {
+		current, named := blockHoldingText(tree, op.Find)
+		if !named {
+			continue
+		}
+		failed.Advice += fmt.Sprintf(" The block whose text is %q now has the id %q.", op.Find, current)
+		break
+	}
+	return failed
 }
 
 // nodeToken hashes a canonical semantic Proof representation, including inline marks but excluding
@@ -437,29 +561,72 @@ func requirePreconditionCoverage(tree *batchTree, ops []model.EditOp, preconditi
 func operationPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, error) {
 	switch op.Op {
 	case "replace":
-		return quotePreconditionBlock(tree, op.Find, op.Occurrence)
+		return quotePreconditionBlock(tree, "find", op.Find, op.Occurrence)
 	case "delete":
 		if op.Block != "" {
-			if err := requireBlock(tree, op.Block); err != nil {
+			if err := requireBlock(tree, op, "block", op.Block); err != nil {
 				return nil, err
 			}
 			return []string{op.Block}, nil
 		}
-		return quotePreconditionBlock(tree, op.Find, op.Occurrence)
+		return quotePreconditionBlock(tree, "find", op.Find, op.Occurrence)
 	case "retype", "delete_row", "delete_column":
-		if err := requireBlock(tree, op.Block); err != nil {
+		if err := requireBlock(tree, op, "block", op.Block); err != nil {
 			return nil, err
 		}
 		return []string{op.Block}, nil
 	case "insert", "move":
-		return nil, &ErrInvalidPrecondition{Reason: "document token is required for " + op.Op}
+		return anchoredPreconditionBlocks(tree, op)
 	default:
 		return nil, nil
 	}
 }
 
-func quotePreconditionBlock(tree *batchTree, quote string, occurrence *int) ([]string, error) {
-	range_, _, err := findEditQuote(tree, "find", quote, occurrence)
+// anchoredPreconditionBlocks is what a block guard covers for an insert or a move: the block the
+// anchor resolves to - the one a `block:<id>` anchor names, or the one holding the text a quote
+// anchor matched - and, for a move, the block it relocates. The document's edges and a `heading:`
+// anchor resolve to no block of their own, so an operation naming none is refused and the batch
+// takes the document token instead.
+func anchoredPreconditionBlocks(tree *batchTree, op model.EditOp) ([]string, error) {
+	blocks := make([]string, 0, 2)
+	if op.Op == "move" && op.Block != "" {
+		if err := requireBlock(tree, op, "block", op.Block); err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, op.Block)
+	}
+	anchor, after, err := anchorOf(op)
+	if err != nil {
+		return nil, err
+	}
+	field := anchorField(after)
+	if blockID, ok := strings.CutPrefix(anchor, "block:"); ok {
+		if blockID == "" {
+			return nil, invalidOp("block")
+		}
+		if err := requireBlock(tree, op, field, blockID); err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, blockID)
+	} else if anchor != "start" && anchor != "end" && !strings.HasPrefix(anchor, "heading:") {
+		anchored, err := quotePreconditionBlock(tree, field, anchor, op.Occurrence)
+		if err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, anchored...)
+	}
+	if len(blocks) == 0 {
+		return nil, &ErrInvalidPrecondition{Reason: fmt.Sprintf(
+			"%s anchored on %q names no block to guard. The document token guards that operation.", op.Op, anchor,
+		)}
+	}
+	return blocks, nil
+}
+
+// quotePreconditionBlock is the block holding the text quote matched, written in field: a
+// replace's or a delete's find, or an insert's or a move's anchor.
+func quotePreconditionBlock(tree *batchTree, field, quote string, occurrence *int) ([]string, error) {
+	range_, _, err := findEditQuote(tree, field, quote, occurrence)
 	if err != nil {
 		return nil, err
 	}
@@ -474,14 +641,18 @@ func quotePreconditionBlock(tree *batchTree, quote string, occurrence *int) ([]s
 }
 
 // requireBlock refuses a precondition naming a block the tree does not carry, as
-// pmdoc.ValidDocument.BlockRange refuses it, over the batch's one validation of that tree.
-func requireBlock(tree *batchTree, blockID string) error {
+// pmdoc.ValidDocument.BlockRange refuses it, over the batch's one validation of that tree. The
+// refusal is the one an operation naming that block gets (blockNotFound): field is the operation
+// field the id was written in.
+func requireBlock(tree *batchTree, op model.EditOp, field, blockID string) error {
 	valid, err := tree.validated("BlockRange")
 	if err != nil {
 		return err
 	}
-	_, err = valid.BlockRange(blockID)
-	return err
+	if _, err = valid.BlockRange(blockID); err != nil {
+		return blockNotFound(tree, op, field, blockID, err)
+	}
+	return nil
 }
 
 type batchRemoval struct {
@@ -948,7 +1119,7 @@ func applyBatch(start *batchTree, ops []model.EditOp, validate operationValidato
 					return editBatch{}, stampOperation(index, err)
 				}
 				if removedIDs, err = valid.BlockDescendantIDs(op.Block); err != nil {
-					return editBatch{}, stampOperation(index, err)
+					return editBatch{}, stampOperation(index, blockNotFound(tree, op, "block", op.Block, err))
 				}
 			}
 		}
@@ -1283,7 +1454,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			if err == nil {
 				out, err = valid.DeleteBlock(op.Block)
 			}
-			return out, invalidSchemaOp("block", err)
+			return out, invalidSchemaOp("block", blockNotFound(tree, op, "block", op.Block, err))
 		}
 		if op.Find == "" {
 			return nil, invalidOp("find or block")
@@ -1320,7 +1491,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if err != nil {
 			return nil, err
 		}
-		target, plainText, err := insertTarget(tree, anchorField(after), anchor, op.Occurrence)
+		target, plainText, err := insertTarget(tree, op, anchorField(after), anchor, op.Occurrence)
 		if err != nil {
 			return nil, err
 		}
@@ -1356,6 +1527,21 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		with, err := parseFragmentInput(op.Markdown, opensDocument(tree.node, at.From), budget)
 		if err != nil {
 			return nil, invalidMarkdownOp("markdown", err)
+		}
+		// List content anchored inside a list joins that list: beside the item the anchor stands
+		// in, or as the last item of the list whose own block it is (pmdoc.ListBoundary). Every
+		// other content keeps the document-level boundary read above, so a paragraph anchored on a
+		// block of a list lands after the whole list, and one on a block of a decision beside the
+		// decision. A fragment that is list content holds no front matter, so the reading above is
+		// the same wherever it lands.
+		if anchor != "start" && anchor != "end" && pmdoc.ListContent(with) {
+			inside, inList, err := valid.ListBoundary(target, after)
+			if err != nil {
+				return nil, err
+			}
+			if inList {
+				at = pmdoc.Range{From: inside, To: inside}
+			}
 		}
 		out, err := valid.Splice(at, with)
 		if err != nil {
@@ -1407,7 +1593,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			return nil, err
 		}
 		field := anchorField(after)
-		target, plainText, err := insertTarget(tree, field, anchor, op.Occurrence)
+		target, plainText, err := insertTarget(tree, op, field, anchor, op.Occurrence)
 		if err != nil {
 			return nil, err
 		}
@@ -1428,6 +1614,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 		if err == nil {
 			out, err = valid.MoveBlock(op.Block, target, after)
 		}
+		err = blockNotFound(tree, op, "block", op.Block, err)
 		if errors.Is(err, pmdoc.ErrMoveInsideItself) {
 			return nil, &ErrInvalidOp{Field: field, Reason: err.Error()}
 		}
@@ -1443,6 +1630,7 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			return nil, invalidOp("type")
 		}
 		out, err := pmdoc.RetypeBlock(tree.node, op.Block, op.Type, pmdoc.Attrs(op.Attributes))
+		err = blockNotFound(tree, op, "block", op.Block, err)
 		if errors.Is(err, pmdoc.ErrSchema) {
 			field := "attributes"
 			switch {
@@ -1842,7 +2030,7 @@ func tableCellAt(doc *pmdoc.Node, position int) (*pmdoc.Node, bool) {
 	return at.Node, true
 }
 
-func insertTarget(tree *batchTree, field, anchor string, occurrence *int) (pmdoc.Range, bool, error) {
+func insertTarget(tree *batchTree, op model.EditOp, field, anchor string, occurrence *int) (pmdoc.Range, bool, error) {
 	switch anchor {
 	case "start":
 		return pmdoc.Range{}, false, nil
@@ -1876,7 +2064,10 @@ func insertTarget(tree *batchTree, field, anchor string, occurrence *int) (pmdoc
 			return pmdoc.Range{}, false, err
 		}
 		r, err := valid.BlockRange(blockID)
-		return r, false, err
+		if err != nil {
+			return pmdoc.Range{}, false, blockNotFound(tree, op, field, blockID, err)
+		}
+		return r, false, nil
 	}
 	r, _, err := resolveEditQuote(tree, field, anchor, occurrence)
 	if err != nil {

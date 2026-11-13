@@ -6,6 +6,7 @@ import type { Window as HappyDOMWindow } from "happy-dom";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
@@ -533,6 +534,16 @@ function withAskCard(children: ReactNode): ReactNode {
   );
 }
 
+/** The one line the card draws under a decision block a reader meets in a body. */
+const textOnlyLine =
+  "This question is text: it must be opened as an ask before anyone can answer it.";
+
+/** What a reader could press to answer where the block stands: a card in a body draws none of
+ *  it, so the counts below are zero. */
+function answerControls(shell: HTMLElement): Element[] {
+  return Array.from(shell.querySelectorAll("button, input, textarea, select"));
+}
+
 const askBody = "Which one?\n\n- A: first\n- B: second\n:::\n";
 
 /** The `ask` shell a body drew, once it has drawn one. */
@@ -639,6 +650,78 @@ test("a malformed ask block in a body names why and keeps its source list, with 
     expect(view.container.textContent).not.toContain("re-activates");
     expect(shell).not.toHaveAttribute("data-dispatch-ask-options");
     expect(shell.querySelectorAll("[data-proof-block-content] ul li")).toHaveLength(2);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a well-formed ask block in a body keeps its record and says the question is text", async () => {
+  const view = render(
+    withAskCard(<MarkdownBody markdown={`:::ask{urgency="high"}\n${askBody}`} />)
+  );
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Decision")).toBeDefined();
+    expect(header.querySelector('[data-dispatch-ask-pill="high"]')?.textContent).toBe("High");
+    const [first, second] = await findRecordRows(shell);
+    expect(within(first as HTMLElement).getByText("A")).toBeDefined();
+    expect(within(second as HTMLElement).getByText("B")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+    expect(line?.textContent).toBe(textOnlyLine);
+    // The line stands under the record, which is the last thing the footer drew before it.
+    expect(line?.previousElementSibling).toBe(footer.querySelector("[data-dispatch-ask-record]"));
+    expect(answerControls(shell)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The reader opens an `ask` container on an opening line carrying no attributes, as it does on
+// one carrying urgency, and draws the same card for it. The server refuses every body it opens
+// one in (INFRA-1201), so this is what a reader meets in a body stored before that rule stood.
+test("an ask block in a body whose opening line carries no attributes draws the card and its one line", async () => {
+  const view = render(withAskCard(<MarkdownBody markdown={`:::ask\n${askBody}`} />));
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Decision")).toBeDefined();
+    const [first, second] = await findRecordRows(shell);
+    expect(within(first as HTMLElement).getByText("A")).toBeDefined();
+    expect(within(second as HTMLElement).getByText("B")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+    expect(line?.textContent).toBe(textOnlyLine);
+    expect(answerControls(shell)).toHaveLength(0);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a malformed ask block in a body says the question is text, where it drew nothing before", async () => {
+  const view = render(
+    withAskCard(
+      <MarkdownBody
+        markdown={':::ask{urgency="high"}\nWhich one?\n\n- A: first\n- : no label\n:::\n'}
+      />
+    )
+  );
+
+  try {
+    const shell = await findAskShell(view.container);
+    const header = shell.querySelector<HTMLElement>("[data-dispatch-ask-header]") as HTMLElement;
+    expect(await within(header).findByText("Malformed")).toBeDefined();
+    const footer = shell.querySelector<HTMLElement>("[data-dispatch-ask-footer]") as HTMLElement;
+    await waitFor(() => {
+      const line = footer.querySelector<HTMLElement>("[data-dispatch-ask-text-only]");
+      expect(line?.textContent).toBe(textOnlyLine);
+    });
+    expect(footer.querySelector("[data-dispatch-ask-record]")).toBeNull();
+    expect(view.container.textContent).not.toContain("re-activates");
+    expect(answerControls(shell)).toHaveLength(0);
   } finally {
     view.unmount();
   }
@@ -816,6 +899,7 @@ test("a clock time such as 16:25Z renders as Markdown, not as the literal-text f
 });
 
 test("a bare dispatch ask reference renders an inline link to the ask route with the resolved question", async () => {
+  await warmMarkdownRenderer();
   const askRead: AskRead = {
     ask: {
       artifact_id: null,
@@ -828,6 +912,7 @@ test("a bare dispatch ask reference renders an inline link to the ask route with
       kind: "question",
       author: { id: "alice", kind: "user" },
       question: "Ship it?",
+      question_tree: displayTree("Ship it?"),
       options: [],
       multiple: false,
       urgency: "med",
@@ -873,6 +958,7 @@ test("a bare dispatch ask reference renders an inline link to the ask route with
 });
 
 test("a block reference reads as the headline of its text: the pinned version's, opening that version, or the current one, opening the block", async () => {
+  await warmMarkdownRenderer();
   // The pinned link's path names the spec's slug, which the issue's summary carries: no link to
   // a block reads the full issue.
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
@@ -892,6 +978,7 @@ test("a block reference reads as the headline of its text: the pinned version's,
     project: "CORE",
     ref: "dispatch://CORE-1/spec#b-p1",
     text: "Ship it on **Monday**.",
+    text_tree: displayTree("Ship it on **Monday**."),
   };
   const getReferences = spyOn(api, "getReferences").mockImplementation((reference) =>
     Promise.resolve(
@@ -900,7 +987,13 @@ test("a block reference reads as the headline of its text: the pinned version's,
             edges: [],
             node: {
               ...node,
-              pin: { ref: reference, state: "changed", text: "Ship it on Friday.", version: 2 },
+              pin: {
+                ref: reference,
+                state: "changed",
+                text: "Ship it on Friday.",
+                text_tree: displayTree("Ship it on Friday."),
+                version: 2,
+              },
             },
           }
         : { edges: [], node }
@@ -958,6 +1051,7 @@ test("an external URL unrelated to the app renders as an ordinary link", async (
 });
 
 test("two references in one body each resolve their own inline link and title, reading only what each shows", async () => {
+  await warmMarkdownRenderer();
   const askRead: AskRead = {
     ask: {
       artifact_id: null,
@@ -970,6 +1064,7 @@ test("two references in one body each resolve their own inline link and title, r
       kind: "question",
       author: { id: "alice", kind: "user" },
       question: "Ship it?",
+      question_tree: displayTree("Ship it?"),
       options: [],
       multiple: false,
       urgency: "med",
@@ -1048,6 +1143,7 @@ test("the inline variant drops a later paragraph's code span instead of leaking 
 });
 
 test("a hand-authored Markdown link to a dispatch:// target resolves through data-dispatch-href", async () => {
+  await warmMarkdownRenderer();
   const askRead: AskRead = {
     ask: {
       artifact_id: null,
@@ -1060,6 +1156,7 @@ test("a hand-authored Markdown link to a dispatch:// target resolves through dat
       kind: "question",
       author: { id: "alice", kind: "user" },
       question: "Ship it?",
+      question_tree: displayTree("Ship it?"),
       options: [],
       multiple: false,
       urgency: "med",
@@ -1506,9 +1603,8 @@ describe("A long body parsed in the worker", () => {
 
   // Every edit of a long comment, and a streamed turn that crossed the threshold after a short
   // paint, is a source the element does not hold - and 16,000 elements of it. Put in with one
-  // `replaceChildren` that is 918-971 ms of WebKit's thread (`MarkdownBody.tsx`, `ATTACH_BATCH`),
-  // so what decides is the source, not whether anything is painted here already
-  // (sjawhar/legion#2519).
+  // `replaceChildren` that is 918-971 ms of WebKit's thread (`ATTACH_BATCH`), so what decides is
+  // the source, not whether anything is painted here already (sjawhar/legion#2519).
   test("slices the paint of a changed source into a body it already shows formatted", async () => {
     const worker = installFakeParseWorker();
     const first = paragraphBody("A long comment before its edit");

@@ -468,14 +468,14 @@ test("models answer changes, ask answer history, and the answers page", () => {
     issue_key: "CORE-1",
     artifact_id: null,
     block_id: null,
-    author: { kind: "session", id: "session-1" },
-    kind: "question",
+    author: { kind: "session", id: "session-1" } as const,
+    kind: "question" as const,
     question: "Ship it?",
     options: [{ label: "Ship" }, { label: "Hold" }],
     multiple: false,
-    urgency: "med",
+    urgency: "med" as const,
     anchor: null,
-    state: "answered",
+    state: "answered" as const,
     answer,
     opened_event_id: 7,
     created_at: "2026-10-08T00:00:00Z",
@@ -761,34 +761,34 @@ test("models full orphaned anchor refresh events without a notification", () => 
     quote: "Removed text",
     version: 3,
   };
-  const ask: Ask = {
+  const ask = {
     anchor,
     artifact_id: null,
     block_id: null,
     anchor_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
     answer: null,
-    author: { id: "session-1", kind: "session" },
+    author: { id: "session-1", kind: "session" } as const,
     created_at: "2026-09-18T00:00:00Z",
     edited_at: null,
     id: "ask-1",
     issue_key: "CORE-1",
-    kind: "question",
+    kind: "question" as const,
     multiple: false,
     opened_event_id: 7,
     options: [{ label: "Review the revised plan" }],
     question: "The release is ready, but the revised plan needs review. How should we proceed?",
-    state: "open",
-    urgency: "med",
+    state: "open" as const,
+    urgency: "med" as const,
     asked_of: null,
     asked_of_by: null,
     asked_of_at: null,
-  };
-  const comment: Comment = {
+  } satisfies Ask;
+  const comment = {
     anchor,
     answers: null,
     artifact_id: null,
     reply_block: null,
-    author: { id: "session-1", kind: "session" },
+    author: { id: "session-1", kind: "session" } as const,
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
     deliveries: [],
@@ -803,7 +803,7 @@ test("models full orphaned anchor refresh events without a notification", () => 
     suggestion: { accepted: null, replace_with: "Replacement" },
     ask_id: null,
     turn: null,
-  };
+  } satisfies Comment;
   const events: DispatchEvent[] = [
     {
       actor,
@@ -967,8 +967,8 @@ test("models anchors pinned to a block while preserving mark selectors", () => {
 });
 
 test("models comment thread lifecycle events and author edits", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
     answers: null,
     artifact_id: null,
@@ -988,7 +988,7 @@ test("models comment thread lifecycle events and author edits", () => {
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
   const input: EditCommentInput = { body: "Edited discussion" };
   const reopened: DispatchEvent = {
     actor,
@@ -1069,8 +1069,8 @@ test("models comment mention inputs and hydrated delivery records", () => {
 });
 
 test("keeps the comment id, author, and message id when parsing event payloads", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
     answers: null,
     artifact_id: null,
@@ -1090,7 +1090,7 @@ test("keeps the comment id, author, and message id when parsing event payloads",
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
 
   expect(CommentEventPayloadSchema.parse({ ...comment, artifact_name: "spec.md" })).toMatchObject({
     id: "comment-1",
@@ -1141,7 +1141,7 @@ test("parses a message reply's in_reply_to, reply_body preview, and thread targe
 });
 
 test("a reply names the block it answers, and an event recorded before reads no block", () => {
-  const actor: Actor = { id: "bob", kind: "user" };
+  const actor = { id: "bob", kind: "user" } as const satisfies Actor;
   const commentInput: CreateCommentInput = {
     body: "On the second paragraph.",
     reply_to: "comment-1",

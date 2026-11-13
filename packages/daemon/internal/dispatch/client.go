@@ -133,6 +133,24 @@ func (c *HTTPClient) SetStatus(ctx context.Context, key, status string) (Issue, 
 	return response.issue(), nil
 }
 
+// SetStatusAt is SetStatus fenced on the issue's sequence as the caller read it
+// (expected_sequence), as HandOver fences its own write: Dispatch refuses the write with
+// ISSUE_CHANGED when anything was recorded on the issue since that read, rather than writing over
+// it. Every event moves the sequence, the daemon's own messages among them, so a refusal says only
+// that the read is stale: the caller reads the issue again and decides from what it then shows
+// (the outbox's status row).
+func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string) (Issue, error) {
+	var response issueResponse
+	if err := c.request(ctx, http.MethodPatch, "/api/v1/issues/"+url.PathEscape(issue.Key), daemonWrite{
+		Status:           status,
+		ExpectedSequence: issue.LastSeq,
+		Actor:            daemonActor(issue.Key),
+	}, &response); err != nil {
+		return Issue{}, err
+	}
+	return response.issue(), nil
+}
+
 // ReleaseClaim clears the issue's Dispatch claim through DELETE /api/v1/issues/{key}/claim, as
 // the daemon's own session. The actor body is required, not an extra: Dispatch's route decodes
 // the request and refuses one that carries no Content-Type: application/json, which request sets
@@ -158,6 +176,25 @@ func (c *HTTPClient) PutGatedSteps(ctx context.Context, project string, steps []
 	return c.request(ctx, http.MethodPut, "/api/v1/projects/"+url.PathEscape(project)+"/gated-steps", gatedStepsWrite{
 		Steps: steps,
 		Actor: daemonActor(project),
+	}, nil)
+}
+
+// PutDesignGates publishes the document each of the issue's design-gate steps records onto its
+// row through PUT /api/v1/issues/{key}/design-gates, as the daemon's own session, the actor
+// every write of this client carries. The write replaces the issue's whole set, appends no event
+// and notifies nobody. The list is always sent, empty for an issue whose gates record no
+// document: Dispatch refuses a body that names no list rather than read it as the empty one, so a
+// nil slice would be refused where it means the same thing. Dispatch answers 400 INVALID_ISSUE
+// for a set it will not take and 404 ISSUE_NOT_FOUND for an issue it does not know; a Dispatch
+// older than the route answers its router's 404 under the code NOT_FOUND, which the caller
+// retries until the server release that has it.
+func (c *HTTPClient) PutDesignGates(ctx context.Context, key string, gates []DesignGateDocument) error {
+	if gates == nil {
+		gates = []DesignGateDocument{}
+	}
+	return c.request(ctx, http.MethodPut, "/api/v1/issues/"+url.PathEscape(key)+"/design-gates", designGatesWrite{
+		Gates: gates,
+		Actor: daemonActor(key),
 	}, nil)
 }
 
@@ -596,4 +633,11 @@ type daemonWrite struct {
 type gatedStepsWrite struct {
 	Steps []string `json:"steps"`
 	Actor actor    `json:"actor"`
+}
+
+// designGatesWrite is the body of the design-gates publish: the set, never omitted, and the
+// daemon's actor.
+type designGatesWrite struct {
+	Gates []DesignGateDocument `json:"gates"`
+	Actor actor                `json:"actor"`
 }

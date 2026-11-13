@@ -366,9 +366,13 @@ Three probes read the pod's own loopback, two routes between them:
 
 The pod's preStop waits 5 seconds, the time its removal from the Service's endpoints takes to
 reach every node's proxy, so a connection a node still forwards is still answered. That wait and
-the listener's own stop of 28 seconds fit in the pod's grace period of 35 seconds, and 35 seconds
-is under the 135-second bind deadline, so the stopping pod frees the durable before the starting
-one gives up.
+the listener's own stop of 28 seconds are 33 seconds together, inside the pod's grace period of
+40 seconds, which leaves a margin of 7 seconds (`listenerGraceMargin`). The margin covers the
+kubelet's own latency between the preStop hook's return and SIGTERM, the container's teardown
+and a late tick on a loaded node. It does not cover a listener that runs over its own deadlines.
+A hung pod holds its durable for the whole grace, so the replacement pod's time to its first
+`/healthz` answer plus that grace has to stay under the 135-second bind deadline. At 40 seconds
+the start allowance is 95 seconds.
 
 One pod has one cost: while that pod is unready or restarting, the Tailscale Service's port
 9020 refuses connections. Port 4222 stays up through it, which is what the split is for.
@@ -443,10 +447,16 @@ keeps them), and with them the JetStream store, until
 The component creates nothing outside `namespace` and reads only the PriorityClass. Before the
 first `pulumi up`:
 
-- The cluster has nodes in three zones and enforces NetworkPolicy, as GKE Autopilot does with GKE
-  Dataplane V2: the policy is all that keeps a pod other than the hub's from joining the cluster on
-  6222, since the routes carry no credential. Google Managed Prometheus's managed collection is on,
-  so the `PodMonitoring` kind exists.
+- The cluster enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane V2, and has nodes
+  in three zones. The policy is what keeps a pod other than the hub's from joining the cluster on
+  6222, since the routes carry no credential. It is also what keeps every other pod of the cluster
+  off the session listener's `/v1` on 9020, which that listener serves with no credential at all
+  (`ENVOY_API_ALLOW_UNAUTHENTICATED=1`, and the component takes no token input for it). A caller
+  the policy admits reaches `/v1` with `Host: localhost`, so the listener's own `Host` check stops
+  a page that rebinds its own name and not such a caller. A cluster whose network plugin does not
+  enforce NetworkPolicy accepts both objects and admits every caller, and the deployment looks
+  healthy either way. Google Managed Prometheus's managed collection is on, so the `PodMonitoring`
+  kind exists.
 - `namespace` exists, and so does the PriorityClass `priorityClassName` names, if any.
 - The kubeconfig's identity may create, read (get, list, watch), update, patch and delete, in
   `namespace`: Deployments and StatefulSets (`apps`); Services, ConfigMaps, Secrets and
@@ -614,7 +624,7 @@ those is, the sandbox in the paragraph under it.
 | ServiceAccount `<hostname>-tailnet`, Role and RoleBinding `<hostname>-tailnet-tls` | The front door's pods run as an account of their own, which the Role lets `get` and `patch` the one Secret `<hostname>-tailnet-tls` and nothing else (no `create`, since the component creates it, and no `update`, since the pods send merge patches), so neither the app nor the listener, nor the account `serviceAccountSubject` names, can write the certificate. The pod does not automount the account's token: only `cert-publish`, which calls the API server, mounts it, so the tailnet-facing `tailscale` and `advertiser` containers hold no credential for the Secret. The RoleBinding names the Role by an output that waits on the Role's ID, so a preview that creates the Role leaves the name unknown and pulumi-kubernetes sends no server-side dry run of the binding, which an account without the `bind` verb would see refused as "not found" while the Role does not exist. | Not built |
 | Secret `<hostname>-tailnet-tls` | The Tailscale Service's certificate, its key and the ACME account key (keys `tls.crt`, `tls.key` and `acme-account.key.pem`), which the front door's pods publish and seed from ([The front door](#the-front-door)). The component declares it with no data and ignores its contents, so a later preview never plans to undo what the pods wrote, and no pod template carries its checksum, so a renewed certificate rolls no pod. | Not built |
 | Three ClusterIP Services and three NetworkPolicies (two Services with `natsInCluster`) | Dispatch's API on port 8766, to the `allowedNamespaces` and the front door; the front door's SOCKS5 proxy on port 1055, to the app and the listener, neither the Service nor that rule rendered with `natsInCluster`, which leaves the front door's policy admitting nothing; the listener's API on port 9020, to the app. Each policy admits those sources alone among pods (Kubernetes still admits each pod's own node). | Not built |
-| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener have a 35-second termination grace period, a five-second pre-stop wait and the stop each is built for; the front door 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
+| Three Deployments | The app at `replicas` pods, the front door at `frontDoorReplicas` (2 by default) and the listener at `listenerReplicas` (1 by default), each `Recreate` at one pod and `RollingUpdate` (`maxUnavailable: 0`, `maxSurge: 1`) above one, by its own count. Every pod carries required pod anti-affinity on `kubernetes.io/hostname` and a `topology.kubernetes.io/zone` spread with `minDomains: 2`, both over its own Deployment's pods, and every serving container a startup and a liveness probe ([The pods](#the-pods)). The app and the listener each have a five-second pre-stop wait and the stop each is built for, and their termination grace periods differ: the app 35 seconds, the listener 40. The front door has 60 seconds, for its drain ([The front door](#the-front-door)). Every container has equal requests and limits. A pod template whose Deployment has no PodDisruptionBudget carries `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`; one whose Deployment has a budget does not. | Not built |
 | Up to three PodDisruptionBudgets | `<hostname>` with `appPdbMinAvailable`, `<hostname>-tailnet` with `frontDoorPdbMinAvailable` and `<hostname>-listener` with `listenerPdbMinAvailable`, each over its own Deployment's pods (`app=<name>`) alone, with that `minAvailable` and Kubernetes' default `unhealthyPodEvictionPolicy`, so a drain cannot take that workload below that many ready pods. | Not built |
 
 The ordering among them is the component's own. The Tailscale Service and the front door's
@@ -1298,15 +1308,18 @@ ready pod takes the tailnet name down and leaves their NATS traffic alone.
 A stopping app or listener pod keeps serving for five seconds after it is told to stop, which is
 the window its removal from routing has to propagate, and is what its pre-stop wait (`sleep 5`)
 is for. The kubelet runs that wait inside the pod's one `terminationGracePeriodSeconds` and
-signals the container only once it returns, so each pod asks for 35 seconds. For the app, that is
-the five of the wait added to the thirty `envoy-dispatch`'s own shutdown is built for (`stopGrace`
-in `packages/envoy/cmd/dispatch/shutdown.go`) rather than taken out of them; whoever tunes either
+signals the container only once it returns, so each pod asks for the wait plus its own stop, and
+the two ask for different numbers. The app asks for 35 seconds: the five of the wait added to
+the thirty `envoy-dispatch`'s own shutdown is built for (`stopGrace` in
+`packages/envoy/cmd/dispatch/shutdown.go`) rather than taken out of them; whoever tunes either
 number moves both, since a wait the grace period does not cover is paid for out of the server's
-drain, which spends its document service's reserve and kills a slow write mid-commit. For the
-listener, it is the five of the wait added to its own stop of about 26 seconds, with a margin.
-Whether five seconds is enough to lose no request across a real release is unmeasured; the
-consuming stack's release measures it, with a poll every 250 milliseconds. The front door drains
-its node instead ([The front door](#the-front-door)).
+drain, which spends its document service's reserve and kills a slow write mid-commit. The
+listener asks for 40 seconds: the five of the wait added to its own stop of 28 seconds, with a
+margin of 7 seconds (`listenerGraceMargin`) for the kubelet's own latency between the pre-stop
+hook's return and SIGTERM, the container's teardown and a late tick on a loaded node. Whether
+five seconds is enough to lose no request across a real release is unmeasured; the consuming
+stack's release measures it, with a poll every 250 milliseconds. The front door drains its node
+instead ([The front door](#the-front-door)).
 
 Above one replica the app runs that many `envoy-dispatch` processes against one Postgres and one
 NATS, and a rolling update runs the previous build beside the new one: "Running more than one
@@ -2940,17 +2953,16 @@ but the session consumers' is the base `HostPermissions` and `DispatchPermission
 It publishes to:
 
 - every notification topic, `notifications.>`: the subjects of the `ENVOY_NOTIFICATIONS` stream,
-  the role lanes, every exception lane, and the ad-hoc topics `/v1/messages/publish` sends over
-  core NATS (any `notifications.` topic the stream does not capture);
+  the role lanes, every exception lane, and every other `notifications.` topic a caller may
+  publish straight onto NATS (one the stream does not capture);
 - the stream's `$JS.API.STREAM.INFO`, `CREATE` and `UPDATE`, its stored-message get
   `$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`, its durable consumer `listener-<m>`'s
   `$JS.API.CONSUMER.INFO` and `CREATE`, the durable's acknowledgements
-  `$JS.ACK.ENVOY_NOTIFICATIONS.listener-<m>.>`, and `$JS.API.INFO`. The stored-message get is the
-  read `POST /v1/replay` makes to return the retained notifications a session missed while its
-  NATS subscription was down; it reads one stored message at a time and can create, change or
+  `$JS.ACK.ENVOY_NOTIFICATIONS.listener-<m>.>`, and `$JS.API.INFO`. The stored-message get reads
+  one stored message at a time and can create, change or
   delete nothing. `HostPermissions` and `DispatchPermissions` hold it through those same base
-  entries; `SessionPermissions` does not, so a session holding that set alone reads what it missed
-  only through the listener;
+  entries; `SessionPermissions` does not, so a session holding that set alone reads no stored
+  message itself and takes its own from the consumer its listener relays;
 - for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`, `legion_agents`
   (the Legion agent registry) and `envoy_ci_state`, the calls nats.go's key-value store makes: the
   info, create and update of the bucket's stream `KV_<bucket>`, its direct and stream message gets,
@@ -2985,15 +2997,20 @@ consumer of the stream, other listeners' durables and Dispatch's included, and l
 create a push consumer that delivers the stream's messages to any subject. That reach is why only
 a user no session shares holds them: `HostPermissions` and `DispatchPermissions` keep the
 per-durable scope of the base entries above. A listener connecting as one of those users keeps its
-own durable alone; the server refuses its consumer calls, so it answers every registration that
-asks for consumer delivery `core` with reason `no_grant` (one probe and one refusal per ten-minute
-episode), and those sessions read on their own NATS subscriptions and catch up through
-`POST /v1/replay`.
+own durable alone; the server refuses its consumer calls, so it refuses every registration that
+asks for consumer delivery `503 no_grant` (one probe and one refusal per ten-minute
+episode), writing nothing, and a session registering through it is not registered at all and
+receives nothing until that user's grant carries the session consumers.
 
 `SessionPermissions()` is what any agent session needs, with `*` for the session id. It publishes
-to `_INBOX.>`, for the receipt a role delivery waits for and the replies to a session consumer's
-relay frames, and `agentstream.*.frames`, and subscribes to `notifications.>`, which holds its relay
-subject `notifications.envoy.deliver.<session id>`, and `agentstream.*.control`. It does not
+to `_INBOX.>`, for the replies to a session consumer's
+relay frames, and `agentstream.*.frames`, and subscribes to its own relay subject
+`notifications.envoy.deliver.*` and its agent stream's control subject `agentstream.*.control`,
+and to nothing else — no other `notifications.` subject,
+so a session can read no topic the listener does not relay to it. While sessions share one user,
+each holds the same set, so the relay subject carries `*` and one session can read another's
+relay frames, until the per-session credentials
+of dispatch://INFRA-840. It does not
 subscribe to `_INBOX.>`, so a client holding this set alone may answer a request but not make one:
 sessions that share one user holding it, as a `gcp:NatsHub`'s `sessionUser` does, would otherwise
 each receive every other session's replies, so request/reply from such a session is refused by
@@ -3001,16 +3018,18 @@ design. A host's user, holding `HostPermissions`, subscribes to `_INBOX.>` for i
 
 `HostPermissions(machineID)` is the grant of a host's one NATS user, which its listener and every
 session on the host share: in each direction the listener's base entries, the session consumers'
-left out, then each of the session's the base lacks, so a listener connecting as this user serves
-its sessions over core NATS. A `gcp:NatsHub` user with `machineId` holds it, and a hub's own
+left out, then each of the session's the base lacks, and `notifications.>` itself, which keeps a
+shared host user's sessions at today's reach until dispatch://INFRA-840;
+a listener connecting as this user can give its sessions no consumer, so it refuses their
+registrations `no_grant`. A `gcp:NatsHub` user with `machineId` holds it, and a hub's own
 `listener` holds `ListenerPermissions` for the hub's hostname. Sharing one user makes the host one
 trust domain: any process that reaches the server as it, a listener's own process or any session on
 the host, holds the whole grant above, host sessions included, since sessions run as the Unix user
 that already reads the host's seed. This repository's listener and a session, connected as one
 user holding `HostPermissions`, and connected as a user holding `ListenerPermissions` beside a
 credential-free session user holding `SessionPermissions`, are checked against real nats-server
-2.10 and 2.15.1 servers, the listener's `/v1/replay` read of a send stored while its session had
-no subscription open and the session user's refusal of that JetStream read included, as are a
+2.10 and 2.15.1 servers, the session user's refusal of the stream's stored-message get included,
+as are a
 session consumer the listener's user creates, pulls, acks, restarts and deletes, both of its role
 lane queue groups, and the session user's refusal of a consumer create; `AGENTS.md` in this
 directory says how.
@@ -3020,8 +3039,9 @@ shares: `ListenerPermissions(machineID)`, the session consumers' calls included,
 `notifications.>` subscribe that no Envoy program uses any more. A `gcp:NatsHub` user with
 `listenerMachineId` holds it, for a listener whose process is the only thing holding that seed: a
 session connecting as it could create, pull and delete any session's consumer. A host whose
-sessions share the listener's user takes `machineId` and `HostPermissions` instead, and keeps its
-sessions on the core path. The two sets therefore allow the same calls a listener makes; the
+sessions share the listener's user takes `machineId` and `HostPermissions` instead, whose
+listener can give its sessions no consumer and so refuses their registrations `no_grant`. The two
+sets therefore allow the same calls a listener makes; the
 subscribe stays rather than being dropped because a change to a set rewrites every hub's rendered
 authorization, which replaces a VM hub's instance and reaches a clustered hub only as a live
 reload. This repository's listener runs under this set against the real servers below: it answers
@@ -3049,7 +3069,7 @@ delete and acknowledgements of Dispatch's `delivery-events` and `delivery-jobs`
 durables; the key-value calls for `envoy_webhook_redelivery`; publication of every session's
 agent-stream control subject; and subscription to every session's agent-stream frames. A
 `gcp:NatsHub` user with `dispatchMachineId` holds it. No session shares the user, so it holds none
-of `SessionPermissions`: it is a direct publish to a session's agent-stream frames that is refused.
+of `SessionPermissions`: it is a direct publish to a session's agent-stream frames, or a read of a session's relay subject, that is refused.
 Whatever holds its seed, `envoy-dispatch` or the listener beside it, can still read every session's
 frames and send control to any session; its filtered create on `delivery-events` lets it create
 that durable on any filter, so it can read any retained notification; and, since NATS checks no

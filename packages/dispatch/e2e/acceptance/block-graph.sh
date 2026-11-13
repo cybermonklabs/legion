@@ -207,9 +207,10 @@ doc_edit() {
 }
 
 # upload SECTION NAME FILE [ISSUE]: uploads FILE as the document NAME of ISSUE (default $key)
-# through `dispatch artifact`; sets $doc_ref and $doc_id.
+# through `dispatch artifact`; sets $doc_ref and $doc_id. --force writes the next version of a
+# name the issue already holds, so the helper uploads a name twice as it uploads a new one.
 upload() {
-  run "$1" "upload $2" artifact --issue "${4:-$key}" --name "$2" --path "$3"
+  run "$1" "upload $2" artifact --issue "${4:-$key}" --name "$2" --path "$3" --force
   [[ "$(<"$work/out")" =~ (dispatch://[^\);[:space:]]+)\) ]] ||
     fail "$1" "upload $2" "no reference in: $(<"$work/out")"
   doc_ref="${BASH_REMATCH[1]}"

@@ -76,8 +76,9 @@ import json
 import sys
 
 # The one message every paced lane writes when its wake runs: a role process launch ("launch"),
-# the update task of a stale-plugin round ("plugin-task"), and the catch-up notice an outbox row
-# holds ("catch-up"). All three write the same fields, so one pass over the log reads every lane.
+# the relaunch of a process whose plugin is stale ("plugin-refresh"), and the catch-up notice an
+# outbox row holds ("catch-up"). All three write the same fields, so one pass over the log reads
+# every lane.
 MESSAGE = "supervise: wake ran"
 
 

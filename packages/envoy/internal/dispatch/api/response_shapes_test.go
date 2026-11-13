@@ -20,7 +20,22 @@ func TestResponseShapes(t *testing.T) {
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	artifact := model.Artifact{ID: "art-1", Project: "TEST", Slug: "spec", Name: "Spec", Kind: "doc"}
 	version := model.Version{Number: 7, Named: true, Summary: new("a named version"), CreatedAt: at}
-	checks := []model.CheckBlock{{BlockID: "b-1", Ref: "check-1", IssueKey: "TEST-1", Text: "go build"}}
+	// The results read's check carries what it compared with, whether a pass of it stands, and
+	// on each result where that result's commit stands, whether the check's words moved and the
+	// retraction standing against it, so the row below marshals the whole of that surface.
+	moved := false
+	readResult := model.CheckResult{
+		ID: "res-1", IssueKey: "TEST-1", CheckBlockID: "b-1", Verdict: "pass",
+		CommitStands:    &model.ResultCommitStands{Answer: model.CommitAtBasis},
+		CheckWordsMoved: &moved,
+		Retracted:       &model.CheckResultRetracted{Reason: "The run was wrong.", CreatedAt: at},
+	}
+	checks := []model.CheckBlock{{
+		BlockID: "b-1", Ref: "check-1", IssueKey: "TEST-1", Text: "go build",
+		Results:      []model.CheckResult{readResult},
+		ComparedWith: []model.CheckBasis{{Kind: model.CheckBasisBranch, Branch: "main"}},
+		PassStands:   model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"implementer"}},
+	}}
 	result := model.CheckResult{ID: "res-1", IssueKey: "TEST-1", CheckBlockID: "b-1", Verdict: "pass"}
 	ask := model.Ask{ID: "ask-1", Question: "Approve?"}
 	comment := model.Comment{ID: "com-1", Body: "a comment"}
@@ -29,6 +44,18 @@ func TestResponseShapes(t *testing.T) {
 	edits := []model.AskEdit{{Previous: model.AskEditPrevious{Question: "Approve it?"}, At: "2026-03-04T05:06:07Z"}}
 	answers := []model.AskAnswer{{ID: "ans-1", User: "alice", Selected: []string{"yes"}, At: at}}
 	reach := askReach{Claimant: new("alice"), Route: new("implementing")}
+	// A read of an ask, a comment or a thread answers the shaped row in front of the stored one,
+	// which carries the tree of each of its texts for a caller that sent `Dispatch-Trees: 1`
+	// (display_trees.go). Those are the rows the handlers write, so they are the rows these
+	// shapes hold: every tree field is omitempty, so a row with no tree in it marshals to the
+	// bytes the route wrote before the trees existed.
+	shapedAskRow := shapedAsk{Ask: ask}
+	shapedReplies := []shapedComment{{Comment: replies[0]}}
+	shapedEdits := []askEditRead{{AskEdit: edits[0], Previous: askEditPreviousRead{AskEditPrevious: edits[0].Previous}}}
+	shapedAnswers := []model.AskAnswerWithTree{{AskAnswer: answers[0]}}
+	shapedThread := askThread{
+		Replies: shapedReplies, Edits: shapedEdits, Answers: shapedAnswers, Followers: followers, askReach: reach,
+	}
 	approval := model.ArtifactApproval{State: "awaiting", LatestVersion: 7}
 	issueState := userIssueState{Pinned: true, LastReadSeq: 11, Dismissed: []string{"d-1"}, Seq: 12}
 	agentState := userAgentState{ClearedBefore: new("2026-03-04T05:06:07Z"), ReadThrough: new("2026-03-04T05:06:08Z"), UnreadReplies: 3}
@@ -47,12 +74,12 @@ func TestResponseShapes(t *testing.T) {
 	// approvalRequestResponseBefore is POST /api/v1/artifacts/{id}/approval-requests's own
 	// handler struct, kept here as the field order the named type must marshal in.
 	type approvalRequestResponseBefore struct {
-		Ask            *model.Ask             `json:"ask"`
-		ArtifactID     string                 `json:"artifact_id"`
-		Version        int                    `json:"version"`
-		Approval       model.ArtifactApproval `json:"approval"`
-		Coverage       []string               `json:"coverage"`
-		CoverageUnread bool                   `json:"coverage_unread,omitempty"`
+		Ask            *shapedAsk           `json:"ask"`
+		ArtifactID     string               `json:"artifact_id"`
+		Version        int                  `json:"version"`
+		Approval       artifactApprovalRead `json:"approval"`
+		Coverage       []string             `json:"coverage"`
+		CoverageUnread bool                 `json:"coverage_unread,omitempty"`
 	}
 
 	for _, shape := range []struct {
@@ -132,16 +159,12 @@ func TestResponseShapes(t *testing.T) {
 			before: map[string]userAgentState{"s-1": agentState, "s-2": agentState},
 		},
 		{
-			name: "askRead",
-			named: askRead{Ask: ask, askThread: askThread{
-				Replies: replies, Edits: edits, Answers: answers, Followers: followers, askReach: reach,
-			}},
+			name:  "askRead",
+			named: askRead{Ask: shapedAskRow, askThread: shapedThread},
 			before: struct {
-				Ask model.Ask `json:"ask"`
+				Ask shapedAsk `json:"ask"`
 				askThread
-			}{Ask: ask, askThread: askThread{
-				Replies: replies, Edits: edits, Answers: answers, Followers: followers, askReach: reach,
-			}},
+			}{Ask: shapedAskRow, askThread: shapedThread},
 		},
 		{
 			name:  "askFollowersRead",
@@ -152,11 +175,11 @@ func TestResponseShapes(t *testing.T) {
 		},
 		{
 			name:  "commentRead",
-			named: commentRead{Comment: comment, Replies: replies},
+			named: commentRead{Comment: shapedComment{Comment: comment}, Replies: shapedReplies},
 			before: struct {
-				Comment model.Comment   `json:"comment"`
-				Replies []model.Comment `json:"replies"`
-			}{Comment: comment, Replies: replies},
+				Comment shapedComment   `json:"comment"`
+				Replies []shapedComment `json:"replies"`
+			}{Comment: shapedComment{Comment: comment}, Replies: shapedReplies},
 		},
 		{
 			name:  "artifactVersionText",
@@ -169,12 +192,16 @@ func TestResponseShapes(t *testing.T) {
 		{
 			name: "approvalRequestResponse",
 			named: approvalRequestResponse{
-				Ask: &ask, ArtifactID: "art-1", Version: 7,
-				Approval: approval, Coverage: []string{"a requirement with no check"}, CoverageUnread: true,
+				Ask: &shapedAskRow, ArtifactID: "art-1", Version: 7,
+				Approval:       artifactApprovalRead{ArtifactApproval: approval},
+				Coverage:       []string{"a requirement with no check"},
+				CoverageUnread: true,
 			},
 			before: approvalRequestResponseBefore{
-				Ask: &ask, ArtifactID: "art-1", Version: 7,
-				Approval: approval, Coverage: []string{"a requirement with no check"}, CoverageUnread: true,
+				Ask: &shapedAskRow, ArtifactID: "art-1", Version: 7,
+				Approval:       artifactApprovalRead{ArtifactApproval: approval},
+				Coverage:       []string{"a requirement with no check"},
+				CoverageUnread: true,
 			},
 		},
 		{

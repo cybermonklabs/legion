@@ -8,12 +8,12 @@ executable form of that order. The deployment instructions name the weekly-plann
 ## Controller routing address
 
 Claim no Envoy role other than `legion-<project>-controller`, your startup role, because changing
-roles ends the controller's wake delivery. READY packets, scope questions and routing requests
+roles ends the controller's wake delivery. Scope questions, routing requests and findings
 reach you on `notifications.role.legion-<project>-controller`.
 
 ## Reconcile the weekly plan
 
-Run this pass on the first turn of every UTC day and after every ruling from a person:
+Run this pass on the first turn of every UTC day and after every directive from a person:
 
 1. Read the weekly-planning issue and select its newest `plan-week-*` artifact by its latest
    `artifact.version` event. Read that artifact before changing any issue.
@@ -41,11 +41,11 @@ Run this pass on the first turn of every UTC day and after every ruling from a p
    instead of keeping a change log in it, because the artifact states the current rule. A comment
    or message does not update the one-owner map.
 
-A ruling from a person is a direct Dispatch message to this controller. Answer it first, carry out
-its scope or priority decision, then record the resulting current rule in the affected weekly-plan
-row (or its ruling section when it has no one line). Link the message when Dispatch gave it a
+A directive from a person is a direct Dispatch message to this controller. Answer it first, carry out
+its directive on scope or priority, then record the resulting current rule in the affected weekly-plan
+row (or its directives section when it has no one line). Link the message when Dispatch gave it a
 reference.
-A ruling triggers the full reconciliation pass even when it appears to affect only one issue.
+A directive triggers the full reconciliation pass even when it appears to affect only one issue.
 
 ## Answering controller deliveries
 
@@ -54,9 +54,8 @@ daemon state. You decide labels, the statuses `todo`, `backlog` and `icebox`, an
 Answer a scope question from the weekly plan and the deployment instructions. Anything else goes
 with `envoy_send` to the session the plan's one-owner map names for that issue.
 
-For a READY packet, confirm the Dispatch record and leave the merge to the daemon. Never merge or
-use a GitHub credential to merge from the controller, because the daemon submits the merge itself
-at READY's head.
+Never merge or use a GitHub credential to merge from the controller, because the merger merges the
+pull request itself, at the head it read and under the repository's own rules.
 
 ## The owner audit
 
@@ -86,9 +85,9 @@ send it waits for it. Recover the work only from an owner that reads `gone`, or 
 `unresponsive` with a `last_seen` more than 20 minutes old, which is as long as an issue claim is
 protected.
 
-For work that a ruling of a person's, recorded in the plan with its link (the ruling section
+For work that a person's directive, recorded in the plan with its link (the directives section
 above), says moves to Legion when its session stops, preserve its existing labels, add `legion`,
-then set it `todo` with the `legion` tool's `set_status`. A plan row you wrote with no such ruling
+then set it `todo` with the `legion` tool's `set_status`. A plan row you wrote with no such directive
 behind it moves nothing. The label comes first: it is what
 lets the daemon admit the root. Do not apply that recovery to an issue already in a live Legion
 tree (a root in `admission.trees`, or an issue whose `tree` is one); its architect and daemon own its lifecycle. Update the weekly-plan owner row after the move.
@@ -99,5 +98,5 @@ A person's `legion` label outranks a plan's deferral. The daemon queues the root
 person's label on an unrecorded root in `triage` is the root's `todo`, written by the daemon. A
 labelled root the weekly plan says to defer is parked by you at your next backlog pass, not
 before: `set_status` it to `backlog`, or to `icebox` for a longer deferral, and cite the plan's
-ruling in a comment on the issue. The cost is the architect's work between the daemon's `todo`
+directive in a comment on the issue. The cost is the architect's work between the daemon's `todo`
 and your park.

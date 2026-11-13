@@ -151,10 +151,10 @@ components spell a user's key and rules alike.
 
 `ListenerPermissions`, and through it `ListenerHostPermissions`, `HostPermissions` and
 `DispatchPermissions`, holds the notification stream's stored-message get,
-`$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`: the read-only read the listener's `POST /v1/replay`
-makes to return the retained notifications a session missed while its NATS subscription was down.
-It can create, change or delete nothing. `SessionPermissions` does not hold it, so the session
-user reads what it missed only through a listener. The same sets hold, for each key-value bucket
+`$JS.API.STREAM.MSG.GET.ENVOY_NOTIFICATIONS`: a read-only read of one stored message at a time.
+It can create, change or delete nothing. `SessionPermissions` does not hold it, so no session
+reads the stream's stored messages itself; each takes its own from the consumer its listener
+relays. The same sets hold, for each key-value bucket
 they open, the update of the bucket's stream, `$JS.API.STREAM.UPDATE.KV_<bucket>`, beside its info
 and create: a start, and the program's keeper every 30 seconds after, raises a bucket with fewer
 copies than `ENVOY_NATS_REPLICAS` with that update. This hub is one server, which refuses a
@@ -170,10 +170,10 @@ at once reads instead of one info each), with which a listener keeps one pull co
 session. A NATS wildcard is a whole token, so those entries reach every consumer of the stream,
 other listeners' and Dispatch's included, which is why a user any session shares holds none:
 `HostPermissions` and `DispatchPermissions` keep their per-durable scope. A listener connecting as
-a `machineId` or a `dispatchMachineId` user therefore keeps its own durable alone and answers
-every registration that asks for consumer delivery `core` with the reason `no_grant`, and those
-sessions receive on their own NATS subscriptions and catch up through the listener's
-`POST /v1/replay`. Every set above subscribes to the role lanes in the queue group every listener
+a `machineId` or a `dispatchMachineId` user therefore keeps its own durable alone and refuses
+every registration that asks for consumer delivery `503 no_grant`, so a session registering
+through it is not registered at all and receives nothing until its listener's grant carries the
+session consumers. Every set above subscribes to the role lanes in the queue group every listener
 shares, `envoy-roles`, beside the machine's own, since each user runs a listener.
 
 `nkey` is the public key `envoy-infra seed generate` prints, and the seed stays in the secret
@@ -192,10 +192,12 @@ client holding its seed would only be the same session user. The rendered file, 
 VM's metadata holds it in the clear.
 
 A session user lets anything that reaches 4222 publish and subscribe as `SessionPermissions()`
-allows: it reads every notification topic, answers any reply inbox it sees there (a role
-delivery's receipt included), and publishes agent stream frames and answers stream replay requests
-for any session id, so it can fake any agent's live stream in Dispatch. With one, the tailnet's
-policy is the gate on 4222: which devices it lets reach the hub's 4222 decides who is on the bus.
+allows: it reads the relay subject of any session, so it can take another session's messages and
+acknowledge them away, and it publishes agent stream frames and answers stream replay requests
+for any session id, so it can fake any agent's live stream in Dispatch. Beyond the relay
+subjects and the agent stream's control subject it reads no notification topic at all. With one,
+the tailnet's policy is the gate on 4222: which devices it lets reach the hub's 4222 decides who
+is on the bus.
 A `listener` opens a second door, port 9020, with or without a session user, and it grants far
 more ([The hub's listener](#the-hubs-listener)).
 
@@ -248,11 +250,10 @@ who may call it; on the clustered hub the listener's own NetworkPolicy is a seco
 Either way a caller that gets through gets the whole API with no credential: it can publish to any
 topic outside the agent topics with a `source` of its choosing, under the listener's user's
 publish grant (Dispatch, GitHub, Slack, Legion and role notifications included), claim a role,
-list every session and delete one, and read any session's stored inbox for the last 72 hours by
-naming its id (`POST /v1/replay`: the listener does not check that the session is live or that
-the caller is that session). That holds whether or not the hub has a `sessionUser`, so a hub
-without one still has an open bus for any device the policy lets reach 9020: grant 9020 only to
-devices that may act as any agent.
+list every session and delete one, and read any session's row by naming its id (the listener
+does not check that the caller is that session). That holds whether or not the hub has a
+`sessionUser`, so a hub without one still has an open bus for any device the policy lets reach
+9020: grant 9020 only to devices that may act as any agent.
 
 Because the API takes no bearer, a web page open on any device the policy lets reach 9020 could
 otherwise post to it: a browser sends a cross-site form without asking. The listener refuses any
@@ -874,15 +875,24 @@ file would keep the old limit, and the reload that later lowers it would be refu
 reload after it. A disk growth whose limit follows `diskSizeGb` therefore rolls the pods too,
 unless `maxFileStoreGb` holds the limit the hub runs with (the README's disk-growth steps).
 
-### Routes, guarded by the NetworkPolicy alone
+### Two ports, guarded by the NetworkPolicy alone
 
 The servers' routes carry no credential: any process that reaches a hub pod's port 6222 can join
 the cluster as a server. The NetworkPolicy `<n>` admits 6222 from the hub pods alone, and that is
-the routes' only guard, so the hub needs a cluster that enforces NetworkPolicy, as GKE Autopilot
-does with GKE Dataplane V2. The policy's rules are pinned by the unit tests
-(`TestClusteredNatsHubNetworkPolicy`); the local cluster test runs its three servers on loopback
-with no policy at all, so it proves the routes and the rendered configuration, never the policy's
-enforcement, which is the cluster's.
+the routes' only guard.
+
+The session listener's `/v1` on 9020 is the second port a policy guards. That listener carries
+`ENVOY_API_ALLOW_UNAUTHENTICATED=1` and no `ENVOY_API_TOKEN`, and the component takes no token
+input for it, so its `/v1` answers with no credential at all. The NetworkPolicy `<n>-listener`
+admits TCP 9020 from the tailnet hosts' pods alone, and that is what keeps every other pod of the
+cluster off `/v1` ([The session listener](#the-session-listener)).
+
+Both guards need a cluster that enforces NetworkPolicy, as GKE Autopilot does with GKE Dataplane
+V2. A cluster whose network plugin does not enforce it accepts both objects and admits every
+caller, and the deployment looks healthy either way. The two policies' rules are pinned by the
+unit tests (`TestClusteredNatsHubNetworkPolicy` and `TestClusteredNatsHubListenerNetworkPolicy`);
+the local cluster test runs its three servers on loopback with no policy at all, so it proves the
+routes and the rendered configuration, never the policy's enforcement, which is the cluster's.
 
 ### The tailnet hosts
 
@@ -924,11 +934,11 @@ How it is reached. Each host forwards the Tailscale Service's port 9020 to the S
 tailnet hosts' pods alone, and every other port of the listener's pod is admitted to nobody. The
 listener binds `0.0.0.0` and carries `ENVOY_API_ALLOW_UNAUTHENTICATED=1`, which is what lets its
 `/v1` answer with no credential off loopback. It carries no `ENVOY_API_TOKEN`: the NetworkPolicy
-is what keeps `/v1` to the hosts. The listener answers 421 to every `Host` that is neither a
-loopback name or address nor one of `ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its
-own name rather than a caller the NetworkPolicy admits, since such a caller reaches `/v1` with
-`Host: localhost`. The hub's own NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the
-hosts.
+is what keeps `/v1` to the hosts, and it keeps it only where the cluster enforces NetworkPolicy.
+The listener answers 421 to every `Host` that is neither a loopback name or address nor one of
+`ENVOY_ALLOWED_HOSTS`, which stops a page that rebinds its own name rather than a caller the
+NetworkPolicy admits, since such a caller reaches `/v1` with `Host: localhost`. The hub's own
+NetworkPolicy `<n>` admits this pod to NATS's 4222 beside the hosts.
 
 How it is updated. A change of the listener's image, size or environment rolls the one pod with
 `maxUnavailable: 0` and `maxSurge: 1`, so the new pod starts before the old one stops. Readiness
@@ -938,11 +948,15 @@ for the durable from the moment the new pod's container starts, and the old pod 
 only once the new pod is Ready, so the window where both exist is the new pod's time to its first
 `/healthz` answer plus the old pod's 33 seconds: it keeps answering for 5 seconds, the time its
 removal from the Service's endpoints takes to reach every node's proxy, and then stops in 28
-seconds, inside its grace period of 35. What has to hold that whole window is the new pod's own
-135-second bind deadline, counted from its own start, not the old pod's grace. A new pod that
-never becomes Ready leaves the old one serving: nothing stops it, and the new one restarts on its
-bind deadline. The Tailscale Service's port 9020 refuses connections while no listener pod is
-ready, and its port 4222 serves through it.
+seconds, inside its grace period of 40. That is a margin of 7 seconds (`listenerGraceMargin`),
+which covers the kubelet's own latency between the preStop hook's return and SIGTERM, the
+container's teardown and a late tick on a loaded node. It does not cover a listener that runs
+over its own deadlines. What has to hold that whole window is the new pod's own 135-second bind
+deadline, counted from its own start, not the old pod's grace. A hung old pod holds its durable
+for all 40 seconds, which leaves the new pod 95 seconds to its first `/healthz` answer. A new
+pod that never becomes Ready leaves the old one serving: nothing stops it, and the new one
+restarts on its bind deadline. The Tailscale Service's port 9020 refuses connections while no
+listener pod is ready, and its port 4222 serves through it.
 
 What is watched. The startup and liveness probes read `/livez` with `curl -sS`, which the
 listener answers 204 without reading the bus, and which exits 0 whatever the HTTP status, so a
