@@ -161,7 +161,6 @@ func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 		`INFRA-1/claim.planner="working"`,
 		`INFRA-1/phase="planning"`,
 		`INFRA-1/slot=0`,
-		`INFRA-1/status="doing"`,
 	}
 	if len(first) != len(want) {
 		t.Fatalf("the first pass wrote %v, want %v: a field the issue carries none of writes no first row", first, want)
@@ -272,7 +271,7 @@ func TestTwoProcessesStoreEachChangeOnce(t *testing.T) {
 		t.Errorf("legion_reads = %v, want one row for one period", rows)
 	}
 	stored := observations(t, database, "INFRA")
-	if len(stored) != 4 {
+	if len(stored) != 3 {
 		t.Fatalf("observations = %v, want each change stored once", stored)
 	}
 

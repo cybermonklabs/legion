@@ -70,9 +70,8 @@ type BlockedIssue struct {
 
 // Issue is one issue of the daemon's record, in the fields Dispatch observes.
 type Issue struct {
-	Key    string `json:"key"`
-	Phase  string `json:"phase"`
-	Status string `json:"status"`
+	Key   string `json:"key"`
+	Phase string `json:"phase"`
 	// Tree is the issue's tree root (dispatch://INFRA-980), absent from every daemon before it: a
 	// pointer so "the daemon sent no tree field" and "the daemon named a root" stay apart.
 	Tree *string `json:"tree,omitempty"`
@@ -105,7 +104,6 @@ type Worker struct {
 // The fields a read observes, one row of legion_observations each where the value moved.
 const (
 	FieldPhase     = "phase"
-	FieldStatus    = "status"
 	FieldSlot      = "slot"
 	FieldWaitingOn = "waiting_on"
 	// FieldTree is the issue's tree root as the daemon named it (dispatch://INFRA-980). It is
@@ -185,16 +183,17 @@ type Observation struct {
 // AdmissionKey: the admission block, the settings the daemon reports and where each came from,
 // none of which belongs to an issue.
 //
-// Phase, status, slot and the wait are observed on every issue, `null` where the issue carries
-// none, so a slot released or a wait answered is a change like any other; a first `null` writes no
-// row (store.go's insert). A claim is observed for each role the read names — the architect and
-// each worker — and a tree only for an issue the daemon named one for, since a field the daemon
-// does not name has not changed: it is simply not this daemon's. The issue's pull request is not
-// observed, since neither the board nor the metrics reads it.
+// Phase, slot and the wait are observed on every issue, `null` where the issue carries none, so a
+// slot released or a wait answered is a change like any other; a first `null` writes no row
+// (store.go's insert). A claim is observed for each role the read names — the architect and each
+// worker — and a tree only for an issue the daemon named one for, since a field the daemon does
+// not name has not changed: it is simply not this daemon's. The issue's status and its pull
+// request are not observed, since neither the board nor the metrics reads either: the metrics
+// read an issue's status from Dispatch's own events (metrics' readStatusMarks).
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	// The four fields every issue carries and one claim each, and the project's three.
-	observations := make([]Observation, 0, len(keys)*5+3)
+	// The three fields every issue carries and one claim each, and the project's three.
+	observations := make([]Observation, 0, len(keys)*4+3)
 	for _, project := range []struct {
 		field string
 		value any
@@ -213,7 +212,6 @@ func (s State) Observations() []Observation {
 			observations = append(observations, Observation{IssueKey: key, Field: field, Value: encodeValue(value)})
 		}
 		add(FieldPhase, issue.Phase)
-		add(FieldStatus, issue.Status)
 		if issue.Tree != nil {
 			add(FieldTree, optional(*issue.Tree))
 		}

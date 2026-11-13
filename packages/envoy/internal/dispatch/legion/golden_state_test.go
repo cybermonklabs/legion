@@ -70,8 +70,8 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 		t.Errorf("phase observations = %d, want one per issue (%d)", fields[FieldPhase], len(state.Issues))
 	}
 	for field := range fields {
-		if strings.HasPrefix(field, "pull_request") {
-			t.Errorf("a read of the golden observes %s, want nothing of the pull request: neither the board nor the metrics reads it", field)
+		if strings.HasPrefix(field, "pull_request") || field == "status" {
+			t.Errorf("a read of the golden observes %s, want nothing of the issue's status or its pull request: neither the board nor the metrics reads either", field)
 		}
 	}
 }

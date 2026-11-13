@@ -30,8 +30,9 @@
 --
 -- legion_observations is append-only, one row per value a read found changed: the sampler writes a
 -- row only where the value differs from the newest row that project, issue and field already hold,
--- so a minute in which nothing moved writes nothing. The fields are `phase`, `status`, `slot`,
--- `waiting_on` and `claim.<role>` (internal/dispatch/legion/state.go).
+-- so a minute in which nothing moved writes nothing. The fields are an issue's `phase`, `slot`,
+-- `waiting_on`, `tree` and `claim.<role>`, and the project's own `admission`, `settings` and
+-- `setting_sources` (internal/dispatch/legion/state.go).
 --
 -- - issue_key is the daemon's own issue key and no foreign key: the daemon records issues of its
 --   project, and Dispatch records what the daemon says whether or not it holds that issue itself.
