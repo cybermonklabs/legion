@@ -523,7 +523,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head is a different commit, so record each `before_merge` check again at the new head.",
+    "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update task is the exception: that task has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
@@ -555,6 +555,26 @@ test("the worker skill tells a role to read the pull request's head after its ow
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
     "When the last read still is not your commit, carry the pull request with a commit of its own, an empty one when your work is complete and an empty one just as much when `@` holds work of yours, since a push of a commit the branch already holds moves no ref; the push section of your role prompt gives the one `jj` recipe, which leaves `@` and everything in it where it is."
   );
+});
+
+// dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
+// runs it or records its result, and `dispatch results` derives that result. The worker skill's
+// page holds the whole rule, and each skill text that orders a check run, recorded or judged, or
+// lists a check's attributes, carries the exception in one phrase, counted once per file, as does
+// the worker prompt's copy of the push step above. The role prompt parts are pinned in
+// roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`, and `dispatch-writing-specs` in the
+// Envoy plugin's guard.
+test("each text that orders a check run or recorded leaves out a check CI proves", () => {
+  countedOncePerFile("check carrying `ci_check` is CI's", [
+    "skills/legion-worker/references/ci-checks.md",
+    "skills/legion-worker/SKILL.md",
+    "skills/legion-worker/references/pr-body.md",
+    "skills/legion-worker/references/merge-gate.md",
+    "skills/legion-retro/SKILL.md",
+    "skills/legion-architect/SKILL.md",
+    "skills/legion-architect/references/design-gate.md",
+    "packages/daemon/internal/prompts/go/worker-common.md",
+  ]);
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites

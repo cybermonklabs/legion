@@ -24,7 +24,7 @@ Part | Content
 `Problem` | What goes wrong, for whom, with counts
 `Goals and non-goals` | What is in and out of scope
 `Requirements` | a `:::requirement` block each, `**R1.**` on, its source (`From:`)
-`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run`, `when`, `negative_control`
+`Verification` | the issue's `verification.md`, a `:::check` block each: `serves`, `surface`, `run`, `when`, `negative_control`. A check carrying `ci_check` is CI's and takes no `run`
 `Design` | How it meets them; a value and its reason for each limit, size and time
 `Decisions` | One line: `The decisions are in dispatch://KEY/artifact/decisions-md.`
 
@@ -37,8 +37,8 @@ For each spec, ask, comment and message:
 - Write in `skill://asd-ste100`'s strict mode.
 - Write about the current design, never the person or how people reached it, and never quote or upload their words.
 - Link each source where the person wrote it. With no link, state the design.
-- Treat a person's stated preference or past answer as evidence of their taste, never as a decision that settles the question: an answer given once is not a standing rule. A commit attributed to a person is not their decision, because agents commit the work.
-- In a spec, cite code by file and symbol, never a line number: it goes stale at the next edit.
+- Treat a person's stated preference or past answer as evidence of their taste, never as a decision: an answer given once is not a standing rule. A commit attributed to a person is not their decision, because agents commit the work.
+- In a spec, cite code by file and symbol, never a line number, which goes stale.
 - A sentence citing a gate passing (test, review, check) also says what the pass does not show: "Tests pass: a wrong verdict, not a missing one."
 - Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).
 - In an ask, ask block, comment or message, name a requirement or check by what it is, never its number.
