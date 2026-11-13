@@ -425,6 +425,7 @@ jobs:
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/contracts/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
@@ -477,6 +478,7 @@ jobs:
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -641,6 +643,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
@@ -682,6 +685,7 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
@@ -1133,6 +1137,10 @@ jobs:
               - 'packages/pi-shared/src/**'
               - 'packages/pi-shared/test/**'
               - 'packages/envoy-client/src/**'
+              # extensions/legion.test.ts reaches the Envoy plugin's own test helper for a
+              # registration answer (packages/envoy-client/test/subscribe-answer.ts), so the tsc
+              # program of this package compiles that file too.
+              - 'packages/envoy-client/test/subscribe-answer.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
