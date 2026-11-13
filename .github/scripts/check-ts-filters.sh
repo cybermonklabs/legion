@@ -45,7 +45,7 @@
 # predicate-quantifier the changes job declares that filter under, over the filter's patterns
 # with its anchors flattened into the list that names them - the patterns and the quantifier
 # both from the engine of check-ci-filters.sh (ci_filter_coverage.changes_filters, which reads
-# every paths-filter step of the job, and the job declares its filters in two of them) rather
+# every paths-filter step of the job, and the job declares its filters in three of them) rather
 # than this check reading those steps a second way. It read the patterns as GitHub's `paths`
 # instead
 # until rule 17 of check-ci-filters.sh began writing into most filters the `!` patterns that
@@ -167,9 +167,9 @@ def listed(project: str) -> list | None:
 
 def read_workflow() -> tuple:
     """ci.yaml's text and the changes job's filters with their quantifiers. changes_filters reads
-    every dorny/paths-filter step of the job, which declares its filters in two of them (ci.yaml's
-    `changes` job says why), so both strings are covered here; the steps a filter is declared in
-    are rule 19's, not this check's. Read again after the write mode writes."""
+    every dorny/paths-filter step of the job, which declares its filters in three of them
+    (ci.yaml's `changes` job says why), so all three strings are covered here; the steps a filter
+    is declared in are rule 19's, not this check's. Read again after the write mode writes."""
     text = (engine.REPO / engine.WORKFLOW).read_text()
     filters, quantifiers, _steps = engine.changes_filters(yaml.safe_load(text), problems)
     return text.splitlines(), filters, quantifiers

@@ -22,7 +22,7 @@
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
-# passes -run must have a filter covering every file the tag step's filter covers, each gate
+# passes -run must have a filter covering every file the tag step reads, each gate
 # filter must hold exactly the generated `!` patterns that keep it off the Go test files its job
 # does not read, which the write mode writes, no paths-filter step's filters string may come
 # near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in,
@@ -926,9 +926,10 @@ check "names it" "$(contains "$out" 'PUSH_WORKFLOWS names .github/workflows/site
 
 # A step that runs a package under a build tag and selects with -run runs only what the tag adds,
 # so the job TAG_RUNS pairs it with must run that package's untagged tests in every run it runs:
-# its filter must cover every file the tag step's filter covers. The image job stands in for the
-# tag step here (its filter is EXCLUDED, so no Run claims its command), the app job for the one
-# that runs the untagged tests.
+# its filter must cover every file the tag step reads. The image job stands in for the tag step
+# here (its filter is EXCLUDED, so no Run claims its command, and the check computes no read set
+# for it: what that filter selects stands for what its step reads), the app job for the one that
+# runs the untagged tests.
 
 # tag_run <root> <entry>: TAG_RUNS holds one entry, <entry> being its TagRun arguments.
 tag_run() {
@@ -972,9 +973,9 @@ check "names both jobs, the step and the path" \
 check "counts it" \
   "$(contains "$out" '^image step "Build": 1 files selected by filter image, 1 uncovered by app (filter app)$')"
 
-# Rule 15 holds the untagged job's filter to every file the tag step's filter selects, a tagged
-# test file its own job never compiles among them, so rule 17 must write no `!` pattern keeping
-# that filter off such a file: the two rules would then refuse every block the other accepts.
+# Rule 15 holds the untagged job's filter to every file the tag step reads, a tagged test file
+# its own job never compiles among them, so rule 17 must write no `!` pattern keeping that filter
+# off such a file: the two rules would then refuse every block the other accepts.
 # mod/other/live_test.go is that file here: the image job's tag step runs it, and the app job,
 # whose filter rule 15 holds to it, compiles nothing of mod/other.
 echo "case: a tagged test file rule 15 holds the untagged job's filter to"
@@ -1880,8 +1881,9 @@ READS = (
 )
 
 doc = yaml.safe_load(Path(sys.argv[1]).read_text())
-# Both paths-filter steps of the changes job: it declares its filters in two of them (rule 18),
-# and a group both write out is the same patterns in each (rule 19), so one dict holds the lot.
+# Every paths-filter step of the changes job: it declares its filters in three of them (rule 18),
+# and a group more than one writes out is the same patterns in each (rule 19), so one dict holds
+# the lot.
 filters = {}
 for step in doc["jobs"]["changes"]["steps"]:
     if str(step.get("uses", "")).startswith("dorny/paths-filter"):
@@ -2267,11 +2269,65 @@ check "fails" "$(is "$status" 1)"
 check "names the list and says nothing computes its block" \
   "$(contains "$out" '::error file=.github/workflows/ci.yaml::site has a generated block, and it is no filter of a gate this check computes a read set for')"
 
+# A tag step can lean on its own job: envoy-go's NATS matrix step runs ./internal/testnats under
+# natslive with -run while envoy-go's own unit step runs that package's untagged tests, so
+# TAG_RUNS pairs the envoy_go filter with itself, and envoy_infra_go too. What rule 15 holds the
+# untagged job's filter to is then what the tag step reads, never what the filter selects: held
+# to its own selection, a filter is held to every file its own patterns reach, so rule 17 would
+# want no `!` pattern of it and rule 9's second direction would refuse none of its patterns. These
+# cases of rule 15 sit here, after rule 17's, because they build on unread_package.
+# self_tag_run <root>: the app job gains a step running ./lib under the live tag with -run,
+# pinned whole (a -run is outside the simple form) to a Run of ./lib under that tag, and
+# TAG_RUNS pairs that step with the app job's own untagged test step.
+self_tag_run() {
+  replace "$1/.github/workflows/ci.yaml" $'        working-directory: mod\n      - name: Report ci-ok' \
+    $'        working-directory: mod\n      - name: Test what the live tag adds\n        run: go test -tags live -run TestLive ./lib\n        working-directory: mod\n      - name: Report ci-ok'
+  replace "$1/.github/scripts/ci_job_reads.py" 'from ci_filter_coverage import Read, at, gate, run' \
+    'from ci_filter_coverage import Read, TagRun, at, exact, gate, run'
+  replace "$1/.github/scripts/ci_job_reads.py" \
+    '    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),' \
+    $'    ], exact=[\n        exact("Test what the live tag adds", "mod", "go test -tags live -run TestLive ./lib", [\n            run("mod", ["./lib"], at("app", "Test what the live tag adds") + " (its pinned script): go test -tags live ./lib",\n                tags="live"),\n        ]),\n    ], reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]),'
+  replace "$1/.github/scripts/ci_job_reads.py" 'TAG_RUNS = []' \
+    'TAG_RUNS = [TagRun("app", "app", "Test what the live tag adds", "app", "app", "the app job runs ./lib untagged")]'
+}
+
+# mod/lib/sub is a package the app filter selects through mod/lib/** and no step of the app job
+# compiles, so the filter's generated block holds the one line keeping it off sub_test.go.
+echo "case: a self-paired tag step's filter whose generated line a hand deleted"
+root=$(fixture self-tag-run-deleted)
+self_tag_run "$root"
+unread_package "$root"
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
+  $'              - \'fixtures/**\'\n              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read\n              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.\n              - \'!mod/lib/sub/**/*_test.go\'\n              # END generated'
+run_check "$root"
+check "passes while the filter holds its generated line" "$(is "$status" 0)"
+check "and holds the filter to what the tag step reads" \
+  "$(contains "$out" '^app step "Test what the live tag adds": [0-9][0-9]* files read by app (filter app), 0 uncovered by app (filter app)$')"
+replace "$root/.github/workflows/ci.yaml" $'\n              - \'!mod/lib/sub/**/*_test.go\'' ''
+run_check "$root"
+check "fails once the line is deleted" "$(is "$status" 1)"
+check "rule 17 names the filter and the line its block lacks" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter app's generated block lacks '!mod/lib/sub/\*\*/\*_test.go'")"
+run_check "$root" write
+check "the write mode passes" "$(is "$status" 0)"
+check "and writes the line back" \
+  "$(contains "$(<"$root/.github/workflows/ci.yaml")" "^              - '!mod/lib/sub/\*\*/\*_test.go'$")"
+
+# mod/other/* matches mod/other/other.go alone, which no step of the app job compiles.
+echo "case: a self-paired tag step's filter with a pattern matching nothing its job reads"
+root=$(fixture self-tag-run-dead)
+self_tag_run "$root"
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" $'              - \'fixtures/**\'\n              - \'mod/other/*\''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "rule 9 names the pattern, the filter and the job" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter app has mod/other/\*, which matches no file app reads, though it matches 1 of the repository's")"
+
 # Rules 18 and 19: the changes job declares its filters in more than one dorny/paths-filter step,
 # because Actions hands each `filters` input to the action as one environment variable and Linux
 # caps one of those at 131,072 bytes. Every rule above reads the steps as one set of filters,
-# each output names the step its own filter is in, and a group both strings need is written out
-# in both, since a YAML anchor reaches no further than the string it is in.
+# each output names the step its own filter is in, and a group more than one string needs is
+# written out in each, since a YAML anchor reaches no further than the string it is in.
 
 # second_step <root>: the fixture's image and site filters moved into a second paths-filter step,
 # with the group they share written out again there and the image output naming that step.

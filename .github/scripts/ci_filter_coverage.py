@@ -514,9 +514,10 @@ class Expander:
 
 class Selection:
     """The files a filter selects, in the repository's own order, computed once per filter: rule
-    15 (check_tag_runs) and rule 9's second direction, through rule_required_files, ask for the
-    same TAG_RUNS filters, and a sweep is a covers() call per file of the repository. An answer
-    is shared with every caller, so none of them may change the list it is given."""
+    15 (check_tag_runs), rule 9's second direction and rule 17 ask, through tag_step_files, for
+    the same TAG_RUNS filters this check computes no read set for, and a sweep is a covers() call
+    per file of the repository. An answer is shared with every caller, so none of them may change
+    the list it is given."""
 
     def __init__(self, filters: dict, quantifiers: dict, files: list):
         self.filters, self.quantifiers, self.files = filters, quantifiers, files
@@ -1501,13 +1502,13 @@ def tag_run_steps(documents: dict) -> list:
     return found
 
 
-def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, selection: Selection,
-                   problems: list) -> list:
+def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, gate_files: dict,
+                   selection: Selection, problems: list) -> list:
     """A step that runs a package under a build tag and passes `-run` runs only the tests the tag
     adds, so the package's untagged tests must run elsewhere in every run that step runs. The job
-    that runs them is declared (TAG_RUNS), and its filter must cover every file the tag step's
-    filter covers; otherwise a change to a file only the tag step's filter matches runs the tagged
-    tests alone and the untagged ones nowhere. The table is no entry's to opt into: a `go test`
+    that runs them is declared (TAG_RUNS), and its filter must cover every file the tag step reads
+    (tag_step_files); otherwise a change to a file only the tag step reads runs the tagged tests
+    alone and the untagged ones nowhere. The table is no entry's to opt into: a `go test`
     step of ci.yaml or of a workflow it calls passing both -tags and -run that no entry names is
     a failure of its own, and
     so is a stale entry - one naming a filter the changes job does not have, a job its own
@@ -1550,16 +1551,16 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, sele
                             f"-run, so it runs the package's untagged tests itself; drop the entry")
             continue
         untagged = PathsFilter(filters[entry.untagged_filter], quantifiers[entry.untagged_filter])
-        selected = selection.of(entry.filter)
-        uncovered = [f for f in selected if not untagged.covers(f)]
-        report.append(f"{where}: {len(selected)} files selected by filter {entry.filter}, {len(uncovered)} "
-                      f"uncovered by {entry.untagged_job} (filter {entry.untagged_filter})")
+        held, counted, named = tag_step_files(entry, gate_files, selection)
+        uncovered = [f for f in held if not untagged.covers(f)]
+        report.append(f"{where}: {len(held)} files {counted}, {len(uncovered)} uncovered by {entry.untagged_job} "
+                      f"(filter {entry.untagged_filter})")
         if uncovered:
             more = f", and {len(uncovered) - SHOWN} more" if len(uncovered) > SHOWN else ""
             problems.append(f"::error file={entry.workflow}::{where} runs only what its tag adds (-run), so {entry.untagged_job} "
                             f"must run that package's untagged tests in every run it runs ({entry.why}), but filter "
-                            f"{entry.untagged_filter} does not match {' '.join(uncovered[:SHOWN])}{more}, which filter "
-                            f"{entry.filter} matches: a change to one of them runs the tagged tests alone and the "
+                            f"{entry.untagged_filter} does not match {' '.join(uncovered[:SHOWN])}{more}, which "
+                            f"{named}: a change to one of them runs the tagged tests alone and the "
                             f"untagged ones nowhere")
     # The other side of the rule: an entry holds the step it names, and this holds every step no
     # entry names - a step added without one, or an entry deleted while its step stayed. A step
@@ -1614,20 +1615,48 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list)
                         f"the repository, so it holds its filter to nothing; correct the path or drop the read")
 
 
-def tag_held_files(data, filters: dict, selection: Selection) -> dict:
-    """Per filter, the files rule 15 holds it to: every file the filter of a TAG_RUNS step
-    selects, held on the filter of the job that runs that package's untagged tests, so a change
-    that starts the tagged run starts the untagged one with it. Rule 9's second direction passes
-    over them (rule_required_files) and rule 17 writes no `!` pattern for one (wanted_negations):
-    either would be refusing the rule that put the file there."""
+def tag_step_files(entry, gate_files: dict, selection: Selection) -> tuple:
+    """What the tag step of a TAG_RUNS entry reads, which rule 15 holds the filter of the job that
+    runs the package's untagged tests to, as (the files, sorted; how the report counts them; how a
+    refusal names them). A change that starts the tagged run and that the tag step reads must
+    start the untagged one with it: the tag's own test files, the package's untagged ones the
+    tagged build compiles too, and what the tag step's gate declares besides - the
+    go-tagged-tests.sh a soak takes its -run from, and the gate's own workflow files. They are
+    the read set main() builds for the gates on the entry's filter (gate_files), the set rule 1
+    holds that filter to; the entry names that filter as the tag step's gate.
+
+    The read set and never what the filter selects: a filter's selection is its patterns net of
+    its generated block, so an entry pairing a filter with itself (envoy_go, envoy_infra_go) would
+    hold the filter to every file its own patterns reach. Rule 17 would then want no `!` pattern
+    of it, so a generated line deleted by hand would pass, and rule 9's second direction would
+    refuse none of its patterns. Only a tag step's filter this check computes no read set for (an
+    EXCLUDED one, which carries no generated block) is stood for by what it selects, since that
+    is all the check knows of what its step reads."""
+    if entry.filter in gate_files:
+        files = gate_files[entry.filter]
+        whose = " and ".join(files.wheres)
+        return (sorted(files.reads), f"read by {whose} (filter {entry.filter})",
+                f"{whose} {'read' if len(files.wheres) > 1 else 'reads'}")
+    return (selection.of(entry.filter), f"selected by filter {entry.filter}", f"filter {entry.filter} matches")
+
+
+def tag_held_files(data, filters: dict, gate_files: dict, selection: Selection) -> dict:
+    """Per filter, the files rule 15 holds it to: every file a TAG_RUNS step reads
+    (tag_step_files), held on the filter of the job that runs that package's untagged tests, so a
+    change that starts the tagged run starts the untagged one with it. Rule 9's second direction
+    passes over them (rule_required_files) and rule 17 writes no `!` pattern for one
+    (wanted_negations): either would be refusing the rule that put the file there. An entry
+    pairing a filter with itself adds nothing here, since what its tag step reads is already
+    what that filter's gate reads."""
     held: dict = defaultdict(set)
     for entry in data.TAG_RUNS:
         if entry.filter in filters and entry.untagged_filter in filters:
-            held[entry.untagged_filter].update(selection.of(entry.filter))
+            held[entry.untagged_filter].update(tag_step_files(entry, gate_files, selection)[0])
     return held
 
 
-def rule_required_files(data, filters: dict, selection: Selection, listed: dict, expander: Expander) -> dict:
+def rule_required_files(data, filters: dict, gate_files: dict, selection: Selection, listed: dict,
+                        expander: Expander) -> dict:
     """Per filter, the files another rule holds that filter to whatever this check computes its
     job reads, which rule 9's second direction has to pass over: refusing one of those patterns
     would be refusing the rule that put it there.
@@ -1637,9 +1666,9 @@ def rule_required_files(data, filters: dict, selection: Selection, listed: dict,
     docs filter holds .github/workflows/docs-pages.yaml so that main's docs build runs when its
     own workflow changes, which is a run of that file rather than a read by ci.yaml's docs job.
     Rule 15 holds the filter of the job that runs a package's untagged tests to every file the
-    tag step's filter covers, so a change that starts the tagged run starts the untagged one with
-    it: envoy_go_race holds .github/scripts/go-tagged-tests.sh, which listener-server-change's
-    soak takes its -run from and no step of envoy-go-race reads.
+    tag step reads (tag_held_files), so a change that starts the tagged run starts the untagged
+    one with it: envoy_go_race holds .github/scripts/go-tagged-tests.sh, which
+    listener-server-change's soak takes its -run from and no step of envoy-go-race reads.
 
     And .github/scripts/check-ts-filters.sh does it from outside: it writes into a filter a
     listed block (TS_LISTED below) of the files of a tree that a job's tsc program compiles, and
@@ -1654,7 +1683,7 @@ def rule_required_files(data, filters: dict, selection: Selection, listed: dict,
     for name, path in data.PUSH_WORKFLOWS.items():
         if name in filters:
             required[name].add(path)
-    for name, held in tag_held_files(data, filters, selection).items():
+    for name, held in tag_held_files(data, filters, gate_files, selection).items():
         required[name].update(held)
     for name, block in listed.items():
         if name in filters and block.begin >= 0:
@@ -1688,7 +1717,7 @@ def check_dead_gate_patterns(data, filters: dict, gate_files: dict, expander: Ex
     pattern whose every file another rule holds the filter to (rule_required_files above, given
     `listed`, the changes job's listed blocks), which is the one case where a pattern matching no
     read is right rather than idle."""
-    required = rule_required_files(data, filters, selection, listed, expander)
+    required = rule_required_files(data, filters, gate_files, selection, listed, expander)
     for name in sorted(gate_files):
         reads, wheres = gate_files[name].reads, gate_files[name].wheres
         where = " and ".join(wheres) + (" read" if len(wheres) > 1 else " reads")
@@ -1939,9 +1968,9 @@ def filter_blocks(lines: list, problems: list, marks: Marks = GENERATED) -> dict
     """Per key of the changes job's `filters: |` blocks - every gate filter and every group an
     anchor names - where its list ends in ci.yaml's text and which of its lines are a generated
     block of `marks`' kind. The job declares its filters in more than one such block (rule 18),
-    so every one of them is read; a group both of them write out is one key here, the first,
-    since a generated block belongs to a gate filter alone and a gate filter is in one step
-    (rule 19)."""
+    so every one of them is read; a group more than one of them writes out is one key here, the
+    first, since a generated block belongs to a gate filter alone and a gate filter is in one
+    step (rule 19)."""
     keys = [i for i, line in enumerate(lines) if FILTERS_KEY.match(line)]
     if not keys:
         problems.append(f"::error file={WORKFLOW}::no `filters: |` block, where this check reads the ones the "
@@ -1983,9 +2012,11 @@ def wanted_negations(filters: dict, quantifiers: dict, gate_files: dict, blocks:
     exclude. A filter the changes job declares under `some` gets none: a `!` pattern there
     matches every file outside it, which rule 6 refuses, and these patterns would then mean the
     opposite of what they say. A test file rule 15 holds the filter to (`held`, tag_held_files)
-    is kept as a read file is: listener_server_change selects cmd/listener's tagged soak test,
+    is kept as a read file is: listener-server-change's soak reads cmd/listener's tagged test,
     which envoy-go-race does not compile, and rule 15 holds envoy_go_race to selecting it so
-    that a change to it runs that package's untagged tests too."""
+    that a change to it runs that package's untagged tests too. What rule 15 holds a filter to is
+    what a tag step reads (tag_step_files), never a selection a generated block narrows, so this
+    set does not grow when a hand deletes a `!` pattern."""
     wanted = {}
     for name in sorted(gate_files):
         if quantifiers[name] != "some-with-excludes":
@@ -2155,13 +2186,13 @@ def main() -> int:
                              listed_owners(documents, lines, problems), problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
-    report += check_tag_runs(documents, data, filters, quantifiers, selection, problems)
+    report += check_tag_runs(documents, data, filters, quantifiers, gate_files, selection, problems)
     # Rule 17, last of the rules that read a filter: it needs the files each gate reads, which
     # the loop above has just finished, and the text of ci.yaml, read above.
     blocks = filter_blocks(lines, problems)
     tests = [f for f in files if f.endswith(TEST_SUFFIX)]
     wanted = wanted_negations(filters, quantifiers, gate_files, blocks, expander, tests,
-                              tag_held_files(data, filters, selection))
+                              tag_held_files(data, filters, gate_files, selection))
     if mode == "write":
         rewrite(WORKFLOW, lines, blocks, wanted)
         # Rule 8 holds a PUSH_WORKFLOWS workflow's on.push.paths equal to its filter, so the

@@ -126,8 +126,8 @@
 #      on.push.paths equal to its filter and a workflow that does not name itself never runs on a
 #      change to itself, so the docs filter holds .github/workflows/docs-pages.yaml to keep
 #      main's docs build running when its own workflow changes, and rule 15 holds the filter of
-#      the job that runs a package's untagged tests to every file the tag step's filter covers,
-#      so envoy_go_race holds .github/scripts/go-tagged-tests.sh, which
+#      the job that runs a package's untagged tests to every file the tag step reads, so
+#      envoy_go_race holds .github/scripts/go-tagged-tests.sh, which
 #      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; a
 #      pattern of a listed block check-ts-filters.sh writes (rule 1 above) is exempt from the
 #      second for the same reason, since that check holds the filter to the file, which a tsc
@@ -223,8 +223,17 @@
 #      is missing or no longer holds. A step that runs a package under a build tag and passes
 #      `-run` runs only the tests the tag adds, so the package's untagged tests must run
 #      elsewhere in every run that step runs. The job that runs them is declared, and its filter
-#      must cover every file the tag step's filter covers; otherwise a change to a file only the
-#      tag step's filter matches runs the tagged tests alone and the untagged ones nowhere. It
+#      must cover every file the tag step reads: the read set this check computes for the gate on
+#      the tag step's filter, the set rule 1 holds that filter to, or, for a filter EXCLUDED
+#      names, which has none, every file that filter selects. Otherwise a change to a file the
+#      tag step reads runs the tagged tests alone and the untagged ones nowhere. The read set
+#      and never the filter's selection, which its generated block narrows: TAG_RUNS pairs
+#      envoy_go and envoy_infra_go with themselves, since each job's own unit step runs the
+#      package's untagged tests, and held to its own selection a filter would be held to every
+#      file its patterns reach, so rule 17 would accept a generated `!` line deleted by hand and
+#      rule 9 would refuse none of that filter's patterns. Rules 9 and 17 pass over the files
+#      this rule holds a filter to, and the three read one set, so none refuses what another
+#      requires. It
 #      fails naming both jobs, the step and those paths (up to 20, with how many more there
 #      are). The table is no entry's to opt into: every `go test` step of those files that
 #      passes
@@ -283,26 +292,26 @@
 #      #2945): the whole block in one step measured 137,498 bytes of this branch's text once the
 #      520 generated `!` patterns rule 17 wrote at that measurement were in it (137,494 when
 #      that issue measured it), against 76,669 bytes on main. The cure is that the changes job
-#      declares its filters in two paths-filter steps rather than one, and this rule is what
-#      keeps the next filter from growing one of
+#      declares its filters in more than one paths-filter step - three today, each string below
+#      the cap - and this rule is what keeps the next filter from growing one of
 #      them back over the cap: it fails here, on the pull request that writes it, rather than
 #      on a runner. The margin is a quarter of the cap. No step's size is kept here, since every
 #      filter edit moves it, and the check prints a size only in the refusal of a step that
 #      reaches the margin; the 14 bytes of `INPUT_FILTERS=` the kernel counts beside the value
 #      are many times over inside that margin. Every rule above reads the filters of all those
 #      steps as one set, since that is what the job's outputs hand on; a group an anchor names that
-#      filters of both steps share is written out in both, because a YAML anchor reaches no
-#      further than the string it is in, and the two copies must be the same patterns under the
-#      same quantifier or this rule's own refusal names both steps,
+#      filters of more than one step share is written out in each of them, because a YAML anchor
+#      reaches no further than the string it is in, and the copies must be the same patterns under
+#      the same quantifier or this rule's own refusal names two steps that differ,
 #  19. an output of the changes job reading `steps.<id>.outputs.<name>` where <id> is no step of
 #      the job, or is a paths-filter step that does not declare filter <name>, or where <name>
 #      is declared in two paths-filter steps, naming the output, the reference and the step that
-#      does declare the filter. With the filters split over two steps (rule 18) an output names
-#      the step its own filter is in, and one naming the other step is empty on every run, which
+#      does declare the filter. With the filters split over three steps (rule 18) an output names
+#      the step its own filter is in, and one naming another step is empty on every run, which
 #      reads as a filter that never matched: the job it gates would be skipped on every change
 #      it selects, and nothing else here would say so. A reference to a step that is no
 #      paths-filter step carries no filter and is held only to being a step of the job: that is
-#      the step merging the two steps' verdicts into the `filter_verdicts` output
+#      the step merging the three steps' verdicts into the `filter_verdicts` output
 #      .github/scripts/ci-ok.jq reads as one object.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of

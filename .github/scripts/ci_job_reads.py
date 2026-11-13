@@ -30,7 +30,7 @@ header says what is proved).
             run, the paths main's.
   TAG_RUNS  one entry per step that runs a package under a build tag and passes -run: the job
             whose untagged run of that package that -run leans on, whose filter must therefore
-            cover every file the tag step's filter covers.
+            cover every file the tag step reads (the read set of the gate on its filter).
 
 A Read's glob is expanded over the repository's files; a why cites the step (at()) or the
 source line that reads it - the line that performs the read, not the one naming its path, and
@@ -1855,9 +1855,14 @@ GATES = [
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:112 sources it"),
-        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:95 sources it"),
-        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:136,150 runs it to hold a port for the daemon"),
+        ("scripts/e2e/lib/loopback-dsn.sh", "scripts/e2e/lib/rig.sh:93 sources it"),
+        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:102 sources it"),
+        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:143,157 runs it to hold a port for the daemon"),
         ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:145 runs it over the checkout"),
+        ("packages/pi-legion/package.json", "scripts/e2e/stage1-skeleton.sh:202 copies its name, version and legion "
+                                            "block with jq into the pi-legion plugin the proof's home holds"),
+        ("packages/pi-envoy/package.json", "scripts/e2e/stage1-skeleton.sh:203 copies its name and version with jq "
+                                           "into the pi-envoy plugin the proof's home holds"),
         (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
         (".github/ci-tools.yaml", ".github/actions/install-uv/action.yml:25 installs the uv row's binary"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-uv/action.yml:20 sources it, and ci_tools_fetch "
@@ -2800,7 +2805,9 @@ GATES = [
 # tests, the judgement the check cannot derive. The last two entries pair a job with itself: the
 # untagged run is a step of the same job, so the filters are the same one and the subset holds
 # trivially; they are here all the same, so the rule covers every -run step and a later move of
-# one to another job is caught.
+# one to another job is caught. What the check holds an untagged job's filter to is what the tag
+# step's gate reads, never what the tag filter selects, so these two hold their filter to nothing
+# its own gate does not read already, and rules 9 and 17 judge it as they judge any other.
 TAG_RUNS = [
     TagRun("dispatch_memory", "dispatch-memory", MEMORY_STEP, "envoy_go", "envoy-go",
            f"envoy-go's \"{UNIT_TEST_STEP}\" runs ./cmd/dispatch's untagged tests",

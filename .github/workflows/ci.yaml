@@ -242,11 +242,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      # Each output names the step its filter is declared in. There are two of them because
+      # Each output names the step its filter is declared in. There are three of them because
       # Actions hands a step's input to the action as one environment variable and Linux caps
-      # one of those at 131,072 bytes (the comment above the second step says what that cost
-      # here); rule 19 of .github/scripts/check-ci-filters.sh refuses an output naming a step
-      # that does not declare its filter, so the two cannot drift.
+      # one of those at 131,072 bytes (the comments above the second and third steps say what
+      # that cost here); rule 19 of .github/scripts/check-ci-filters.sh refuses an output naming
+      # a step that does not declare its filter, so an output and its step cannot drift.
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
       # The daemon's Go suite, a job of its own since dispatch://INFRA-1413: the test job used
@@ -866,21 +866,27 @@ jobs:
               - 'packages/contracts/fixtures/dispatch-public-url.json'
               - 'packages/contracts/fixtures/github-envelopes/*'
               - 'packages/contracts/fixtures/project-tokens.json'
-              # The one file of pi-legion this suite reads: internal/prompts/roles_test.go:261
-              # stats agents/<name>.md. The pack and prompt probes, which read the rest of it,
-              # are the plugin-pack job's.
+              # pi-legion's agents: internal/prompts/roles_test.go:261 stats agents/<name>.md.
+              # With its manifest, which the Stage 1 proof below reads, they are the files of
+              # pi-legion this suite reads. The pack and prompt probes, which read the rest of
+              # it, are the plugin-pack job's.
               - 'packages/pi-legion/agents/*.md'
               # The one page of skills/ this job still reads: the tools reference
               # internal/prompts/roles_test.go:689 holds roles/mechanics/headless.md's four CI
               # runs to, the skill that paragraph sends a role to.
               - 'skills/legion-worker/references/tools.md'
               - 'scripts/e2e/lib/github-apps.sh'
-              # The Stage 1 proof: the script, the rig it sources and the helpers the rig runs.
+              # The Stage 1 proof: the script, the rig it sources, the helpers the rig runs, and
+              # the two plugin manifests it copies with jq into the plugins its home holds
+              # (stage1-skeleton.sh:202-203).
               - 'scripts/e2e/stage1-skeleton.sh'
               - 'scripts/e2e/lib/rig.sh'
+              - 'scripts/e2e/lib/loopback-dsn.sh'
               - 'scripts/e2e/lib/port-file.sh'
               - 'scripts/e2e/lib/held-port.py'
               - 'scripts/e2e/lib/built-from.sh'
+              - 'packages/pi-legion/package.json'
+              - 'packages/pi-envoy/package.json'
               - 'deploy/kubernetes/daemon/controller.yaml.example'
               - 'deploy/kubernetes/daemon/legion.yaml.example'
               - 'deploy/kubernetes/operator-route/pod.yml'
@@ -2298,12 +2304,13 @@ jobs:
               # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
               - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
 
-      # The second of the two filter strings. Actions hands a step's input to the action as one
+      # The second of the three filter strings. Actions hands a step's input to the action as one
       # environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
       # whole block in one step came to 137,498 bytes once the generated `!` patterns were
       # written into it, and the job could not start at all ("An error occurred trying to start
       # process ... Argument list too long", dispatch://INFRA-1413). So the filters are declared
-      # in two steps, each string its own YAML document. Which filter is in which step is
+      # in more than one step, each string its own YAML document; the third step's comment says
+      # why there are three. Which filter is in which step is
       # grouping, not meaning: the split keeps every filter that shares a group with another in
       # the step that holds the group, so only the seven cheapest groups are written twice, and
       # rule 18 of .github/scripts/check-ci-filters.sh refuses a string that comes near the cap
@@ -2323,10 +2330,10 @@ jobs:
           filters: |
             # The groups the filters below share. Each is the first step's list pattern for
             # pattern, written again because a YAML anchor reaches no further than the string it
-            # is in and these are two strings; the comment above each one there says what the
-            # group is. Rule 18 of .github/scripts/check-ci-filters.sh refuses a pair that drifts
-            # apart. dispatch-memory and dispatch-multiprocess's group moved here whole instead,
-            # since no filter of the first step names it.
+            # is in and each step's is a string of its own; the comment above each one there says
+            # what the group is. Rule 18 of .github/scripts/check-ci-filters.sh refuses a pair
+            # that drifts apart. dispatch-memory and dispatch-multiprocess's group moved here
+            # whole instead, since no filter of the first step names it.
             ci_router:
               - &ci_router '.github/workflows/ci.yaml'
             bun_install: &bun_install
@@ -3011,10 +3018,6 @@ jobs:
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/**'
-              # delivery/pull_request_heads.go imports internal/dispatch/refs, which imports
-              # internal/dispatch/text, so the natslive run compiles that package and the check
-              # counts its testdata among what this job reads.
-              - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/logtest/*'
@@ -3049,19 +3052,11 @@ jobs:
               # imports @legion/contracts.
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
-              # internal/dispatch/api/openapi_test.go's
-              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
-              # so an edit of it alone must start this job.
-              - 'packages/contracts/schemas/dispatch-openapi.json'
-              # Fixtures its Go tests read: cmd/listener/api_test.go:191,
-              # internal/contracts/dedupe_test.go:14, golden_test.go:72,
-              # internal/dispatch/api/delivery_live_diff_test.go:982,1011,
+              # Fixtures its Go tests read: internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/docs/approval_carry_test.go:26,
               # internal/cistore/settlement_fixture_test.go:56.
-              - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dedupe-keys.json'
               - 'packages/contracts/fixtures/github-envelopes/**'
-              - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
               # The daemon's own fixture, the server.started envelope its intake decodes:
@@ -3883,10 +3878,13 @@ jobs:
               - 'packages/envoy/go.sum'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
-            # list -deps -test -race` in packages/envoy). internal/dispatch/store's
-            # search_text_test.go:104-120 walks every .md file under packages/envoy, so this
-            # filter keeps the wide root rather than the package list that closure would give. No
-            # bun_install anchor: no test of these packages runs bun.
+            # list -deps -test -race` in packages/envoy), and every .md file under packages/envoy,
+            # which internal/dispatch/store's search_text_test.go:104-120 walks (the RULES row for
+            # that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
+            # filter names the wide root rather than that package list and that glob, and its
+            # generated block keeps it off the Go test files the job does not compile, and
+            # listener_server_change's tagged soak test, which rule 15 holds this filter to, is
+            # not among them. No bun_install anchor: no test of these packages runs bun.
             envoy_go_race:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-race.yaml'
