@@ -896,7 +896,7 @@ The architect's `catch-up` at each launch names, in its `reason`, every issue of
 **The merge closes the issue:** the daemon reads the merged pull request and writes `done`.
 A child's close tells its architect `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
 a root's close frees the slot and lingers the tree.
-A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, no slot freed, and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
+A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, and no slot freed by the merge itself (an unfinished `blocked_by` link still takes the root's row back while it waits), and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
 — and closes that way once the last open member of the tree is done or parked.
 A person's own close of a root from the Dispatch dashboard lingers the tree at once, children and all.
 The architect does nothing after the merge.
@@ -1072,7 +1072,7 @@ no child of it starts while it waits, even once its design gate is open, and the
 Taking the `legion` label off a waiting root, or a person or a session outside the tree claiming it, takes it out of the workflow with an `unslotted` notice;
 it is never resumed under another owner.
 A session outside the tree writing a lifecycle status on a waiting root is set back, as on a root holding its slot, and its live architect is told.
-A root whose Dispatch claim a person or outside session already holds keeps its slot at `admitted` while its architect asks that holder to release it, and so does an admitted root whose label was taken off, since only a labelled root is resumed.
+A root whose Dispatch claim a person or outside session already holds stays at `admitted` while its architect asks that holder to release it, and so does an admitted root whose label was taken off, since only a labelled root is resumed; each keeps its slot unless a wait under **Admission** takes it back.
 Deliveries out of Dispatch's order can decide otherwise than the same events in order, each decision being right for the record it read:
 a person's act around the hand-back — say the architect's request that a person release the root's claim, the person's answer, then the release
 — applied in the order release, then answer, starts the wait and gives the live architect its answer task, where in order the answer is taken in and the slot kept;

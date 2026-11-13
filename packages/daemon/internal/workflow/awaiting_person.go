@@ -19,8 +19,9 @@ import (
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
 // session and a session that claims within the tree are legitimate holders. The claim is the one
 // the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim). ReconcileAwaiting
-// keeps a root it answers no for at admitted, holding its slot, and admission removes an awaiting
-// root, and skips an answered one, that it answers no for.
+// keeps a root it answers no for at admitted, where it holds its slot unless it waits on another
+// issue (blockers.waitsOf), and admission removes an awaiting root, and skips an answered one,
+// that it answers no for.
 func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (string, error) {
 	switch {
 	case !issue.HandedOver:

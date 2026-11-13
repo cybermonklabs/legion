@@ -258,7 +258,7 @@ stream=ENVOY_NOTIFICATIONS
 # twice. At
 # issue-independence: tree 1's root and its two children beside tree 2's root, which is where the
 # cap stands full and tree 3, set todo there, waits for it. At children-first-acceptance: tree 1's
-# root, which keeps its slot in `accepting` now, beside tree 3 and children 3 and 4 — tree 2 has
+# root, which waits on no other issue and so keeps its slot in `accepting` now, beside tree 3 and children 3 and 4 — tree 2 has
 # left the workflow by then (issue-cap-moves) and child 2 is parked again (child-reentered), so
 # those four are the whole of it. Trees 3 and 4 each take a slot the issues before them leave:
 # tree 3 the one child 1's close and child 2's park free, tree 4 the one tree 3's own backlog
@@ -267,7 +267,7 @@ admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
 # each in an issue pod of its own under tree 1's architect and each holding a slot of its own.
 # Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting
-# holding its own slot, and are parked there; with tree 2 gone and child 2 parked they raise no
+# holding its own slot, as it waits on no other issue, and are parked there; with tree 2 gone and child 2 parked they raise no
 # peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
@@ -4838,8 +4838,8 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
 # the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
-# children-first-acceptance's prompt. A root in accepting keeps the admission slot it took when
-# the daemon started it: no worker of it runs, and the slot is not a worker.
+# children-first-acceptance's prompt. A root in accepting that waits on no other issue keeps the
+# admission slot it took when the daemon started it: no worker of it runs, and the slot is not a worker.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
 until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
@@ -4871,7 +4871,7 @@ begin children-first-acceptance
 #
 # They are filed here, and nowhere earlier or later, for three reasons. They live through no
 # checkpoint that judges every live claim of tree 1 (the restart and both address moves all come
-# later). The root in accepting keeps its own slot, so it, tree 3 and these two children are the
+# later). The root in accepting waits on no other issue and keeps its own slot, so it, tree 3 and these two children are the
 # four of admission_cap 4 — tree 2 left the workflow at issue-cap-moves and child 2 is parked
 # again — which keeps the run within the cap and within the pods preflight sized the pool for. And an issue
 # may not enter a tree whose root is already accepted: from retro onwards the daemon holds such a
@@ -6436,8 +6436,8 @@ closed_last=$(log_lines "workflow: a merged root closes once its last child left
   fail "the daemon logged \"a merged root closes once its last child left the workflow\" for $tree1 $closed_last times, want once, at $child4's park"
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
-# No issue of tree 1 holds an admission slot once it closes: the root keeps its row in merging
-# until the close, its children's rows went at their parks, and the close frees whatever is left.
+# No issue of tree 1 holds an admission slot once it closes: the root, which waits on no other issue,
+# keeps its row in merging until the close, its children's rows went at their parks, and the close frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"

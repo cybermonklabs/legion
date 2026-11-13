@@ -187,7 +187,7 @@ from its own read of the issue — and writes `done`. An issue that reaches `mer
 request GitHub has already merged closes at once.
 
 - A root whose merge lands while another issue of its tree is still in the workflow stays in
-  `merging`, its workers kept and live and its admission slot kept with them, until the last of
+  `merging`, its workers kept and live, until the last of
   them is done or parked. One
   `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
   request on GitHub.

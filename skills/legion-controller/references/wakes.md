@@ -188,7 +188,7 @@ releases the hold only on a root standing at `phase: held`: a root whose tree li
 at `admitted` with a new generation of its own.
 
 When an escalated hold's cause is not gone, do not park the tree. The tree stays admitted and
-keeps its slot. Ask the person whether to park it, as
+keeps working ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says. Its `<cause>` is what the held
 phase waits on: the payload's `phase` and `role`, and the held issue's `dispatch read`. Its
 `<key>` is `held <ISSUE> in <heldFrom> (<role>) at <failure.at>`: `<ISSUE>` is the held issue's
@@ -216,7 +216,7 @@ The `held` wake's escalated hold, a tree that waits on an event outside Legion, 
 `worker-died` wake send you here when a tree's wait has a cause that stays, with that cause as
 `<cause>`. Each of those sections also gives the cause a fixed key, `<key>`: its text is the same
 at every run, while the text of `<cause>` can change from one run to the next. The tree stays
-admitted and keeps its slot while you ask. A comment or a reply from any session counts as yours
+admitted and keeps working while you ask ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). A comment or a reply from any session counts as yours
 here, because the controller's session id changes when it restarts or is taken over.
 
 1. Look for the ask you opened for this key already. List the root's comments that name an ask:
@@ -287,8 +287,8 @@ in its `blocked_by` links, the waiting issue gives its slot back while that issu
 and takes one again by itself, unless it is one of the three roots that keep their
 slot through a wait ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)): it holds no slot for that wait, so there is
 nothing to park or ask.
-An event no `blocked_by` link names keeps the slot.
-Do not park such a tree: it stays admitted and keeps its slot. Ask the person whether to park it, as
+An event no `blocked_by` link names is no such wait.
+Do not park such a tree: it stays admitted and keeps working. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the event as `<cause>`. Its
 `<key>` is `event: <the event>`. `<the event>` is the one thing the tree waits on, named by a
 fixed reference: an issue's `dispatch://` reference, a pull request's or a release's URL, or the
@@ -320,7 +320,7 @@ architect's last message on the root issue. When you find none, or it is gone, r
 (`set_status` the root to `backlog`, then, in the same turn, to `todo`: a new generation whose
 architect starts with fresh budgets). That pair is a restart and not a park: the daemon re-admits
 only a root whose tree lingers or is done, so the `backlog` write is how a restart reaches `todo`.
-When the cause stays, the tree stays admitted and keeps its slot, because a relaunch would fail
+When the cause stays, the tree stays admitted and keeps working ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), because a relaunch would fail
 the same way. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the architect's cause as
 `<cause>`. Its `<key>` is `architect failed: <cause word> at <failure.at>`, where `<cause word>`

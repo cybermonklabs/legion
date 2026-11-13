@@ -85,7 +85,7 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 }
 
 // A merged root's close waits for the rest of its tree: the merge leaves the root standing in
-// merging, still holding its slot — merging is a worker's phase and keeps its row — and no child
+// merging, still holding its slot — merging is a worker's phase and keeps its row while the issue waits on no other issue — and no child
 // disturbed, and the close comes once the last of them leaves — here the architect parking
 // each. That close lingers the tree and opens the root's production check, whose first look its
 // implementer reports, since the tree's close waits for an open check (the workflow's check

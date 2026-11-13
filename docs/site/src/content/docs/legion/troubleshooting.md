@@ -391,9 +391,13 @@ start it by hand. Without `answeredAt`, check, in order:
 
 A root whose architect registered its spec while the approval request waits on the person is in
 `awaiting_person` with `waitingOn.kind` `gate`, once nothing else of its tree is at work; one still
-`admitted` waiting on its design gate keeps its slot for one of the reasons above, or because
+`admitted` waiting on its design gate stays there for one of the reasons above, or because
 Dispatch shows the request on the architect's turn (a reply or a newer version since the request),
-when the architect has nothing handed to the person. A root waiting on its gate at a daemon's deploy
+when the architect has nothing handed to the person.
+It keeps its slot there,
+unless its gate has opened once and it waits on another issue
+([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
+A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an

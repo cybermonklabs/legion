@@ -5319,7 +5319,7 @@ each issue's pod (every role of it alike) and the image probe's.
   To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
   `legion claims stop` is not a second way to do that:
   it ends the agent's process and retires its claim, and for a phase worker no pass the daemon makes on its own starts that claim again, not even the one that refills a slot whose worker holds no task.
-  The stop leaves the issue where it stood, in its phase, and if it held an admission slot it keeps that slot, with no worker in it;
+  The stop leaves the issue where it stood, in its phase, and the stop frees no slot: an admission slot the issue held stays held, with no worker in it;
   an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
   A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
   What starts a stopped phase worker again is the workflow's own next start of its role:

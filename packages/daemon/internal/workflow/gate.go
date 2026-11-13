@@ -38,8 +38,8 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // held before; once every step the deployment gates is open the registration advances the
 // admitted tree. What register_gate read of Dispatch's approval travels with the registration, so
 // a person's review given before the architect registered is applied here: an approval of the
-// latest version (ApprovedVersion) records the gate open, and the root keeps its slot and starts
-// planning; a changes request on it (ChangesRequestedVersion) records it closed with the architect
+// latest version (ApprovedVersion) records the gate open, and the root starts planning, keeping
+// its slot unless it waits on another issue (blockers.waitsOf), since the gate has now opened; a changes request on it (ChangesRequestedVersion) records it closed with the architect
 // told, unless the gate already records that same review as told, and the root keeps its slot at
 // admitted to revise. The architect is told the version the gate opened at, which an approval
 // carried to a later version makes the later one, and is not told it again when the gate of that

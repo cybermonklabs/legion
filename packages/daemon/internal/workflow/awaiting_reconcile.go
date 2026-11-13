@@ -506,7 +506,8 @@ func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue
 }
 
 // tellInPlace gives the architect of a root it would have released the resume task naming the act
-// that already answered its hand-back: the root keeps its slot and its phase.
+// that already answered its hand-back. It moves nothing: the root stays in its phase, and its
+// slot row is as admission left it.
 func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, decision awaitDecision) error {
 	waiting := decision.Waiting
 	at := e.now()
