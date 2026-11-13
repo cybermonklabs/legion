@@ -336,6 +336,73 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	})
 	assertMoved("a CI settlement the record takes", at(27))
 
+	// Three facts GitHub reports of the pull request itself, each written alone, so that the one
+	// field it changes is the whole of what the helper judges (workflow's pullRequestNews): the
+	// base branch the pull request targets and GitHub's merge state are news of the pull request,
+	// and the commit the record last saw its base branch moved to is not. Each write goes through
+	// GitHub's merge-state read (workflow's mergeability), which writes the record only where its
+	// answer differs and writes it through the helper, so each case reaches the judgement and
+	// nothing else of it: the issue stands in testing, the head merges, and no round is read.
+	//
+	// The first read only brings the record to a known answer: it fills the base and GitHub's two
+	// verdicts, which a read is news of.
+	read := func(id string, base string, state record.MergeState) {
+		t.Helper()
+		applyMovement(t, pool, admission, engine, "github", id, intake.PullRequestMergeability{Repo: "acme/widgets",
+			Number: 7, Base: base, HeadSHA: "a1", Mergeable: record.MergeabilityMergeable, MergeState: state})
+	}
+	recordedPR := func() record.PullRequest {
+		t.Helper()
+		var got record.PullRequest
+		inTx(t, pool, func(tx pgx.Tx) {
+			pr, err := record.NewStore().PullRequest(ctx, tx, movedIssue)
+			if err != nil || pr == nil {
+				t.Fatalf("read the pull request of %s = %+v, %v", movedIssue, pr, err)
+			}
+			got = *pr
+		})
+		return got
+	}
+	now = at(28)
+	read("merge-state-first", "main", record.MergeStateClean)
+	assertMoved("GitHub's first merge-state read of the pull request", at(28))
+
+	// A push onto the base branch records the commit it left the base at, so the next read is
+	// known to be needed. It is written beside the helper and marks nothing (workflow's basePush).
+	now = at(29)
+	applyMovement(t, pool, admission, engine, "github", "base-push", intake.BasePush{Repo: "acme/widgets", Branch: "main", After: "b1"})
+	if got := recordedPR().BaseMoved; got != "b1" {
+		t.Fatalf("the base push left the pull request of %s with its base moved to %q, want b1: the push must be one the record takes, or the case below proves nothing", movedIssue, got)
+	}
+	assertMoved("a push onto the base branch", at(28))
+
+	// The read that push called for answers what the record already holds, so the one field it
+	// changes is the moved base it clears. That is the daemon's own bookkeeping of a read it
+	// asked for, and no news of the pull request: counting it would move a tree on every push
+	// to its base, which on a busy main is all day. Making the moved base news fails this case.
+	now = at(30)
+	read("merge-state-after-base-push", "main", record.MergeStateClean)
+	if got := recordedPR().BaseMoved; got != "" {
+		t.Fatalf("the read after the base push left the pull request of %s with its base moved to %q, want none: the read must be one the record takes, or this case proves nothing", movedIssue, got)
+	}
+	assertMoved("a merge-state read that only clears the moved base", at(28))
+
+	// GitHub's merge state changing alone, clean to blocked, is news of the pull request: it is
+	// what holds an approved head from its merge. Taking the merge state out of the judgement
+	// fails this case.
+	now = at(31)
+	read("merge-state-blocked", "main", record.MergeStateBlocked)
+	assertMoved("a merge-state read that changes GitHub's merge state alone", at(31))
+
+	// The base branch the pull request targets changing alone is news of the pull request: a
+	// person retargeted it. Taking the base out of the judgement fails this case.
+	now = at(32)
+	read("merge-state-retargeted", "release", record.MergeStateBlocked)
+	if got := recordedPR().Base; got != "release" {
+		t.Fatalf("the retargeted read left the pull request of %s on base %q, want release: the read must be one the record takes, or this case proves nothing", movedIssue, got)
+	}
+	assertMoved("a merge-state read that changes the base branch alone", at(32))
+
 	// The four writes of a phase or of a start that no fact of the issue carries, and that no
 	// Dispatch event, pull request or completion would ever mark: a root entering its wait on a
 	// person (workflow's enterAwaiting), the promotion of a root the waiting line was holding
