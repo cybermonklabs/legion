@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  `agent-secrets NAME --wait <duration> -- command` no longer stops waiting for a person's
+  approval when one status poll fails to reach the broker. A poll that got no answer about the
+  request — a connection refused, reset or cut off mid-answer, a timeout, a TLS or name-resolution
+  failure, or a 429, 502, 503 or 504 from the broker or the front door before it — is polled again
+  on the wait's own backoff until `--wait` runs out, and stderr says once per run of such failures
+  that the command keeps waiting for the request. Before, the first such poll ended the wait with
+  exit 1, however much of `--wait` was left, so a person who approved later approved a grant
+  nothing collected. Every answer about the request still ends the wait as before: granted,
+  denied (77), cancelled, expired, an unknown request or a refused proof. A wait that runs out
+  while polls still fail exits 75, as a wait on a pending request does, and names the request,
+  the last failure and `agent-secrets status <id>`, which still collects the grant.

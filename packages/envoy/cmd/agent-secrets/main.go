@@ -1183,6 +1183,11 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	}
 
 	state, grantID, requestID, detail := result.State, result.GrantID, result.RequestID, result.Detail
+	// pollErr is the last status poll's failure while the polls fail in a way a retry can cure
+	// (retryable), and nil once one reads the request again. Such a poll does not end the wait:
+	// the approver may still decide before --wait runs out, and a grant this command has stopped
+	// waiting for is one nothing collects.
+	var pollErr error
 	if state == "pending" {
 		reportPending(stderr, requestID, result.Approver, result.ApproveURL, *wait, src())
 		deadline := time.Now().Add(*wait)
@@ -1193,18 +1198,31 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				break
 			}
 			time.Sleep(minDuration(backoff, remaining))
+			backoff = nextBackoff(backoff)
 			status, _, err := c.GetRequest(ctx, signer, requestID)
-			if err != nil {
+			switch {
+			case err == nil:
+				pollErr = nil
+				state, grantID, detail = status.State, status.GrantID, status.Detail
+			case retryable(err):
+				// Said once per run of failed polls, not once per poll.
+				if pollErr == nil {
+					fmt.Fprintf(stderr, "agent-secrets: %s; still waiting for request %s\n", refusalText(src(), err), requestID)
+				}
+				pollErr = err
+			default:
 				refuse(stderr, "agent-secrets", src(), err)
 				return 1
 			}
-			state, grantID, detail = status.State, status.GrantID, status.Detail
-			backoff = nextBackoff(backoff)
 		}
 	}
 	switch state {
 	case "granted":
 	case "pending":
+		if pollErr != nil {
+			fmt.Fprintf(stderr, "agent-secrets: the wait for request %s to %s ran out while its status could not be read: %v; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), pollErr, requestID)
+			return exitPending
+		}
 		fmt.Fprintf(stderr, "agent-secrets: request %s to %s is still waiting for approval; nothing was run. Check it with: agent-secrets status %s\n", requestID, src(), requestID)
 		return exitPending
 	case "denied":
