@@ -27,12 +27,14 @@ func firedAt(t *testing.T, pool *pgxpool.Pool, hook string) []int {
 	return counts
 }
 
-// clearsConflicting is the daemon's read of GitHub that judges the pull request's own head
-// mergeable again, which takes the conflict mark off it (workflow's mergeability).
-func clearsConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
+// clearsConflicting is the daemon's read of GitHub that judges head, the pull request's own
+// recorded head, mergeable again, which takes the conflict mark off it (workflow's
+// mergeability). A read naming another head than the record holds is dropped whole, so the head
+// is named here.
+func clearsConflicting(t *testing.T, pool *pgxpool.Pool, engine *Engine, head string) {
 	t.Helper()
 	applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42,
-		Base: "main", Mergeable: record.MergeabilityMergeable})
+		Base: "main", HeadSHA: head, Mergeable: record.MergeabilityMergeable})
 }
 
 // A hook counts the moves back it selects and fires on its own multiple of them.
@@ -54,7 +56,7 @@ func TestAHookFiresOnTheMovesItSelects(t *testing.T) {
 			Roles: []claim.Role{claim.RoleImplementer}, Prompt: saySoFar},
 		Hook{Name: "review-loop", On: HookEventWorkBack, Moves: []string{"reviewing-implementing"}, Every: 3,
 			Roles: []claim.Role{claim.RoleReviewer}, Prompt: readTheThreads})
-	seedWorkBackIssue(t, pool, "h0")
+	seedWorkBackIssue(t, pool, headOne)
 
 	for _, step := range []struct {
 		// moved says what the step drives and what it leaves the counts at, in the failure
@@ -70,48 +72,48 @@ func TestAHookFiresOnTheMovesItSelects(t *testing.T) {
 		},
 		{
 			moved: "a review's request for changes, the 2nd move back and the 1st the review-loop hook counts",
-			drive: func() { reviewerRequestsChanges(t, pool, engine, "1", "h0") },
+			drive: func() { reviewerRequestsChanges(t, pool, engine, "1", headOne) },
 		},
 		{
 			moved: "a review's request for changes, the 3rd move back and the 2nd the review-loop hook counts",
-			drive: func() { reviewerRequestsChanges(t, pool, engine, "2", "h0") },
+			drive: func() { reviewerRequestsChanges(t, pool, engine, "2", headOne) },
 		},
 		{
 			moved:      "a review's request for changes, the 4th move back and the 3rd the review-loop hook counts",
-			drive:      func() { reviewerRequestsChanges(t, pool, engine, "3", "h0") },
+			drive:      func() { reviewerRequestsChanges(t, pool, engine, "3", headOne) },
 			reviewLoop: []int{3},
 		},
 		{
-			moved:      "a red CI verdict while the architect holds the issue, the 5th move back and the 3rd the review-loop hook counts",
-			drive:      func() { ciTurnsRed(t, pool, engine, phase.Accepting, "needs_review", "h0", "h1", 1) },
+			moved:      "the architect's own move back to the implementer, the 5th move back and the 3rd the review-loop hook counts",
+			drive:      func() { architectMovesBack(t, pool, engine, phase.Implementing) },
 			everyMove:  []int{5},
 			reviewLoop: []int{3},
 		},
 		{
 			moved: "a tester's fail at a head the record holds conflicting with its base, which raises no pair",
 			drive: func() {
-				marksConflicting(t, pool, engine)
+				marksConflicting(t, pool, engine, headOne)
 				testerFails(t, pool, engine, "2")
-				clearsConflicting(t, pool, engine)
+				clearsConflicting(t, pool, engine, headOne)
 			},
 			everyMove:  []int{5},
 			reviewLoop: []int{3},
 		},
 		{
 			moved:      "a review's request for changes, the 6th move back and the 4th the review-loop hook counts",
-			drive:      func() { reviewerRequestsChanges(t, pool, engine, "4", "h1") },
+			drive:      func() { reviewerRequestsChanges(t, pool, engine, "4", headOne) },
 			everyMove:  []int{5},
 			reviewLoop: []int{3},
 		},
 		{
 			moved:      "a review's request for changes, the 7th move back and the 5th the review-loop hook counts",
-			drive:      func() { reviewerRequestsChanges(t, pool, engine, "5", "h1") },
+			drive:      func() { reviewerRequestsChanges(t, pool, engine, "5", headOne) },
 			everyMove:  []int{5},
 			reviewLoop: []int{3},
 		},
 		{
 			moved:      "a review's request for changes, the 8th move back and the 6th the review-loop hook counts",
-			drive:      func() { reviewerRequestsChanges(t, pool, engine, "6", "h1") },
+			drive:      func() { reviewerRequestsChanges(t, pool, engine, "6", headOne) },
 			everyMove:  []int{5},
 			reviewLoop: []int{3, 6},
 		},

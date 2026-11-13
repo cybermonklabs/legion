@@ -97,14 +97,20 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // it (died states why). At the limit the charge is died's whole, so a second report of the end it
 // charged is died's second report and charged nothing more.
 //
-// An end that finds the claim with no work outstanding — no task held, or an agent that never
-// became ready (workOutstanding) — is neither counted nor charged: it is displaced as it always
-// was, and the count stays where it stood. The rule is about a task that keeps ending its own
-// pod, and a death is charged only while there is work for one to be charged against
-// (chargeDeath reads the same condition). A claim idle between assignments completes no turn, so
-// a count it could still raise would only grow, and a pod the cluster repacks once a week would
-// cost that claim a launch failure and a backoff from its third repacking on, for work it was
-// not doing.
+// An end that finds the claim with no work outstanding — no task held and no turn open, or an
+// agent that never became ready (workOutstanding) — is neither counted nor charged: it is
+// displaced as it always was, and the count stays where it stood. The rule is about work that
+// keeps ending its own pod, and a death is charged only while there is work for one to be charged
+// against (chargeDeath reads the same condition). A claim idle between assignments completes no
+// turn, so a count it could still raise would only grow, and a pod the cluster repacks once a
+// week would cost that claim a launch failure and a backoff from its third repacking on, for work
+// it was not doing.
+//
+// An end that is counted ends the turn it interrupted (Claim.LastTurnEnd), as a charged death
+// does (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is gone
+// and never ends it, so without that record every later end of the relaunched agent, idle with
+// nothing pending, would find the dead turn open and be counted against it. At the limit the
+// turn is left for died's charge to end, since that charge reads the same open turn.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
 	if !m.workOutstanding() {
 		return m.displaced(ctx, observation)
@@ -118,6 +124,7 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 		return m.died(ctx, observation)
 	}
 	m.claim.DeathCharged = true
+	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	return errors.Join(m.persist(ctx), m.displaced(ctx, observation))
 }
 

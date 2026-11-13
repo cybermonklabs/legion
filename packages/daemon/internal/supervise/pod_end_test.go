@@ -12,6 +12,7 @@ package supervise
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -445,4 +446,37 @@ func TestAnEvictionAfterTheTaskItsRunWasCountedAgainstEndedIsTheFirstOfANewRunAn
 	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
 	h.relaunched()
 	h.wantOwed("round two")
+}
+
+// An end from outside the pod counted against an open turn ends that turn, as a charged death
+// does (chargeDeath, TestADeathEndsTheTurnItInterruptedSoLaterIdleDeathsAreNotCharged): a turn a
+// message started is work outstanding with no task behind it, so the first end is counted, and
+// nothing else records the end of a turn whose agent is gone. Left open, that turn would make
+// every later end of the parked relaunched agent — idle, with nothing pending — count against it
+// too, and the third would charge a death for work that was never there.
+func TestAnEndFromOutsideThePodEndsTheTurnItInterruptedSoLaterIdleEndsAreNotCounted(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	h := newHarness(t)
+	h.reach(StateIdle)
+	h.advance(time.Minute)
+	h.must(StreamTurnStart{Claim: testToken})
+	h.advance(time.Minute)
+
+	h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
+	h.wantBudgets(Budgets{PodEndsNotOurs: 1})
+	h.relaunched()
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("the relaunched claim holds %+v, want nothing pending", p)
+	}
+
+	for end := 2; end <= limit+1; end++ {
+		h.observePodEnd(runtime.Gone, runtime.PodEndNotOurs)
+		if got := h.budgets(); got != (Budgets{PodEndsNotOurs: 1}) {
+			t.Fatalf("end %d of the parked agent left budgets %+v, want {PodEndsNotOurs:1}: "+
+				"the turn the first end interrupted is over", end, got)
+		}
+		h.wantState(StateLaunching)
+		h.relaunched()
+	}
+	h.wantState(StateReady)
 }

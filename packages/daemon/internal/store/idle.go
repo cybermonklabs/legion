@@ -238,6 +238,30 @@ func (s *Store) ReleaseIdleIssue(ctx context.Context, project, issue string, dec
 			project, issue, int64(mark.Generation), first, boundary, last, started, wake, role, kind); err != nil {
 			return fmt.Errorf("mark the release of %s: %w", issue, err)
 		}
+		// The pod this release stops is gone, so a resume of it still open — a wake whose pod
+		// came back and whose role took no turn the daemon saw — belongs to that pod and not to
+		// the next one. Closing them here, in the transaction that marks the release, is what
+		// lets the next wake of each role take its own (store's TakePodWake, one open resume per
+		// role).
+		//
+		// A release that suspends no role is no wake's to end, so it closes none. It stops a pod
+		// whose every claim is failed, retired or suspended, which is a pod no wake of this issue
+		// is waiting on: a claim an earlier release left `released` is waiting for the pod that
+		// release took, not for this one, and its resume is the record of that wait. Closing it
+		// here would stamp that release woken and never turned up, and charge it from its own
+		// moment to every later read — the distortion the records exist to remove, moved onto the
+		// row beside it. internal/daemon's
+		// TestAnIssueWithNoLiveClaimHasItsSandboxReleased/"the pod holding a claim an earlier
+		// release left released" is what holds this, and the teardown's own reading in that
+		// package's outbox arms no backstop here for the same reason. A resume this release
+		// leaves open is closed by the next wake of its role, which reads that a release was
+		// recorded after that wake was taken (store's ClosePodGoneResume, the workflow's
+		// wakeReleased).
+		if !mark.SuspendsNoRole {
+			if err := CloseOpenResumes(ctx, tx, project, issue); err != nil {
+				return err
+			}
+		}
 		marked = true
 		return nil
 	})
