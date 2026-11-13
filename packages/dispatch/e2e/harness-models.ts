@@ -18,13 +18,14 @@
  * trusts the certificate when it scripts the fakes (`e2e/fake-models-helpers.ts`).
  *
  * A deployed run (`PLAYWRIGHT_BASE_URL`) starts no server, so it starts no fake model either and
- * a row that reads one is skipped. This module reads the environment and the file system only
- * when a function of it is called, so any process may import it.
+ * a row that reads one is skipped. This module reads the file system only when a function of it
+ * is called, and the environment only as it loads (`usesFakeModels`), so any process may import
+ * it.
  */
 
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const usesFakeModels =
@@ -61,6 +62,21 @@ export function modelsFilesIn(dir: string | undefined, who: string): ModelsFiles
     );
   }
   return modelsFiles(dir);
+}
+
+/** What one fake model serves with, from the stack's models directory `dir` (refused for `who`
+ *  naming the variable when unset): the `Authorization` header it requires of every model call,
+ *  from its own token file, and the certificate and key it serves https with. */
+export function fakeModelServing(
+  dir: string | undefined,
+  token: "chatToken" | "decisionToken",
+  who: string
+): { readonly authorization: string; readonly tls: { cert: string; key: string } } {
+  const files = modelsFilesIn(dir, who);
+  return {
+    authorization: `Bearer ${readFileSync(files[token], "utf8").trim()}`,
+    tls: { cert: readFileSync(files.certificate, "utf8"), key: readFileSync(files.key, "utf8") },
+  };
 }
 
 /** Writes a models directory's files into `dir`, which exists and is empty: a certificate for

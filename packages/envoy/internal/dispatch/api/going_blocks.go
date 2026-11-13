@@ -9,7 +9,7 @@ import (
 )
 
 // block is the block frame of an answer's structured reply, and false where the answer draws
-// none (R2, decision 17): no structured reply or kind none; a block of a kind the words do not name
+// none (R2): no structured reply or kind none; a block of a kind the words do not name
 // - a chart the decision did not settle on drawing unasked included; a kind outside the seven or
 // a spec that does not parse against its kind's schema (going.ParseBlock); a read the run may not
 // make; a read that refuses or fails; or a read whose answer cannot fill the block, a chart of

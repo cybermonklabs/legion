@@ -1,7 +1,7 @@
 // going_undo_test.go holds the undo of a command-bar turn to R4: every row of the catalogue
 // states its undo, each kind of undo puts back what its write changed - or, for a trace, records
 // the turn undone and erases nothing - a field another writer changed since is left as it is now
-// while the rest is undone, a release is taken back only for the caller's own claim (decision 8),
+// while the rest is undone, a release is taken back only for the caller's own claim,
 // and a run past thirty days takes no undo.
 package api
 
@@ -131,6 +131,9 @@ func TestGoingUndoWritesBackAnIssuesFieldsAnAsksTextAndADocumentsContent(t *test
 
 	t.Run("an issue's fields", func(t *testing.T) {
 		run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress", "title": "Renamed by the bar"}, nil)
+		if written := rig.issueRead(t, issue); written.Status != "in_progress" || written.Title != "Renamed by the bar" {
+			t.Fatalf("the write left the issue %s %q, want it in_progress and renamed", written.Status, written.Title)
+		}
 		line := oneLine(t, rig.undo(t, "alice", run, nil), true)
 		after := rig.issueRead(t, issue)
 		if line.Undo != goingUndoWriteBack || after.Status != before.Status || after.Title != before.Title {
@@ -140,6 +143,9 @@ func TestGoingUndoWritesBackAnIssuesFieldsAnAsksTextAndADocumentsContent(t *test
 	t.Run("an ask's text", func(t *testing.T) {
 		ask := rig.ask(t, issue, "Ship it on Friday?")
 		run, _ := rig.runOne(t, "dispatch_edit_ask", map[string]any{"ask": ask, "question": "Ship it on Monday?"}, nil)
+		if written := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask, nil)); written.Ask.Question != "Ship it on Monday?" {
+			t.Fatalf("the edit left the ask reading %q, want its new words", written.Ask.Question)
+		}
 		oneLine(t, rig.undo(t, "alice", run, nil), true)
 		read := decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+ask, nil))
 		if read.Ask.Question != "Ship it on Friday?" {
@@ -442,7 +448,7 @@ func TestGoingUndoTwoUndosOfOneRunTakeTurns(t *testing.T) {
 	}
 }
 
-// TestGoingUndoTakesBackAReleaseOnlyWhereTheCallerHeldTheClaim is decision 8: the undo of a
+// TestGoingUndoTakesBackAReleaseOnlyWhereTheCallerHeldTheClaim: the undo of a
 // release takes the claim back where the caller held it before, and refuses, naming the holder,
 // where someone else did, since taking it would make the caller a holder it never was.
 func TestGoingUndoTakesBackAReleaseOnlyWhereTheCallerHeldTheClaim(t *testing.T) {
@@ -494,5 +500,25 @@ func TestGoingUndoOfARunPastThirtyDaysIsRefusedAndOneInsideThemIsUndone(t *testi
 	oneLine(t, rig.undo(t, "alice", kept, nil), true)
 	if labels := rig.issueRead(t, issue).Labels; len(labels) != 1 || labels[0] != "gone" {
 		t.Fatalf("the issue's labels read %v after the 29-day run's undo, want the labels before it", labels)
+	}
+}
+
+// TestGoingUndoOfAWriteWhoseActionIsGoneIsRefusedAsUnknown: a write whose action the catalogue no
+// longer holds has no undo to run, so its undo is refused with a code of its own, and the issue
+// is left as the write left it.
+func TestGoingUndoOfAWriteWhoseActionIsGoneIsRefusedAsUnknown(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Orphaned", "The spec.\n").Key
+	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"left"}}, nil)
+	if _, err := rig.database.Pool.Exec(context.Background(),
+		`update going_runs set writes = jsonb_set(writes, '{0,action}', '"dispatch_retired"') where id = $1::uuid`, run); err != nil {
+		t.Fatalf("retire the write's action: %v", err)
+	}
+	line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if line.Outcome.Status != http.StatusConflict || line.Outcome.Code != codeGoingUndoUnknown {
+		t.Fatalf("the undo of a retired action answered %+v, want 409 %s", line.Outcome, codeGoingUndoUnknown)
+	}
+	if labels := rig.issueRead(t, issue).Labels; len(labels) != 1 || labels[0] != "left" {
+		t.Fatalf("the issue's labels read %v, want the write's left in place", labels)
 	}
 }

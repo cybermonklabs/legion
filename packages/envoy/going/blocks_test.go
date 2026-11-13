@@ -11,7 +11,7 @@ import (
 	"github.com/sjawhar/envoy/going"
 )
 
-// The words decide an explicit block request (decision 17): each kind is named by its own words,
+// The words decide an explicit block request: each kind is named by its own words,
 // a plain question names none, and the words other kinds of question use - the command bar, a
 // line of work - name no chart.
 func TestKindsNamedReadsTheTypedWords(t *testing.T) {

@@ -25,9 +25,11 @@ import {
   answerText,
   askAndWait,
   bar,
+  closeBar,
   countGoingWrites,
   decided,
   openBarOver,
+  openShell,
   operationRow,
   submitOperation,
   withArguments,
@@ -100,10 +102,8 @@ async function landed(page: Page, count: number): Promise<void> {
 /** Leaves the bar for `path` and presses the undo key there; answers what the shell says of the
  *  undo once Dispatch answered it. */
 async function undoFrom(page: Page, path = "/settings"): Promise<Locator> {
-  await page.keyboard.press("Escape");
-  await expect(bar(page)).toHaveCount(0);
-  await page.goto(path);
-  await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
+  await closeBar(page);
+  await openShell(page, path);
   await page.locator("body").focus();
   await page.keyboard.press("Control+z");
   const notice = page.getByTestId("going-undo-notice");

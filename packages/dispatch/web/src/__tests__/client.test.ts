@@ -1424,3 +1424,60 @@ test("API client exposes the current state with a stale state-write conflict", a
 
   expect(error).toMatchObject({ code: "STATE_STALE", state: staleState, status: 409 });
 });
+
+// A frame the page could not take is not in hand: the stream is opened again after the last frame
+// it did take, so that frame comes again rather than being skipped, and the connection it threw
+// out of is closed rather than left open behind the new one.
+test("an answer stream resumes after the last frame handed on, and closes the body it left", async () => {
+  const encoder = new TextEncoder();
+  let firstCancelled = false;
+  const bodies = [
+    new ReadableStream<Uint8Array>({
+      cancel() {
+        firstCancelled = true;
+      },
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'id: 1\nevent: text\ndata: {"text":"One "}\n\nid: 2\nevent: text\ndata: {"text":"two"}\n\n'
+          )
+        );
+      },
+    }),
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'id: 2\nevent: text\ndata: {"text":"two"}\n\nid: 3\nevent: end\ndata: {"items":0,"words":2}\n\n'
+          )
+        );
+        controller.close();
+      },
+    }),
+  ];
+  const stub = stubFetch(
+    () => new Response(bodies.shift() ?? null, { headers: { "Content-Type": "text/event-stream" } })
+  );
+  const api = createApiClient(stub.fetch);
+  const handed: string[] = [];
+  let refused = false;
+
+  await api.streamGoingAnswer(
+    "run-1",
+    (frame) => {
+      const text = frame.event === "text" ? frame.data.text : frame.event;
+      if (text === "two" && !refused) {
+        refused = true;
+        throw new Error("the page could not take this frame");
+      }
+      handed.push(text);
+    },
+    new AbortController().signal
+  );
+
+  expect(handed).toEqual(["One ", "two", "end"]);
+  expect(
+    stub.requests.map((request) => new Headers(request.init?.headers).get("Last-Event-ID"))
+  ).toEqual(["0", "1"]);
+  expect(firstCancelled).toBe(true);
+});

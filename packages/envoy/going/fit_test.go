@@ -200,8 +200,8 @@ func TestTheCaseSetCoversTheCatalogue(t *testing.T) {
 			unnamed[c.Action]++
 		}
 	}
-	if len(cases) < 80 || worthy < 20 {
-		t.Errorf("%d cases, %d chart-worthy; R7 needs at least 80 and 20", len(cases), worthy)
+	if len(cases) < going.LeastCases || worthy < going.LeastChartCases {
+		t.Errorf("%d cases, %d chart-worthy; R7 needs at least %d and %d", len(cases), worthy, going.LeastCases, going.LeastChartCases)
 	}
 	for _, action := range catalogue.Actions() {
 		if named[action.Action] < 2 || unnamed[action.Action] < 1 {

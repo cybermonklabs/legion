@@ -70,10 +70,23 @@ const (
 		"Every request to change something is answered in prose."
 )
 
+// The context and display questions never change, so each is built once: context, a choice of
+// the page's item, items the words name, or none; and display, a choice of chart or prose.
+var (
+	contextQuestion = agentloop.Question{Type: "choice", Instructions: contextInstructions, Criteria: choiceCriteria(map[string]string{
+		ContextPage:  contextPageCriterion,
+		ContextNamed: contextNamedCriterion,
+		ContextNone:  contextNoneCriterion,
+	})}
+	displayQuestion = agentloop.Question{Type: "choice", Instructions: displayInstructions, Criteria: choiceCriteria(map[string]string{
+		DisplayChart: displayChartCriterion,
+		DisplayProse: displayProseCriterion,
+	})}
+)
+
 // DecisionQuestions are the three questions of one decision: action, a choice among actions and
-// ActionNone whose criteria are each action's own description; context, a choice of the page's
-// item, items the words name, or none; and display, a choice of chart or prose. Each answer
-// carries its own confidence.
+// ActionNone whose criteria are each action's own description, beside the context and display
+// questions. Each answer carries its own confidence.
 func DecisionQuestions(actions []Action) map[string]agentloop.Question {
 	criteria := make(map[string]string, len(actions)+1)
 	for _, action := range actions {
@@ -81,16 +94,9 @@ func DecisionQuestions(actions []Action) map[string]agentloop.Question {
 	}
 	criteria[ActionNone] = actionNoneCriterion
 	return map[string]agentloop.Question{
-		QuestionAction: {Type: "choice", Instructions: actionInstructions, Criteria: choiceCriteria(criteria)},
-		QuestionContext: {Type: "choice", Instructions: contextInstructions, Criteria: choiceCriteria(map[string]string{
-			ContextPage:  contextPageCriterion,
-			ContextNamed: contextNamedCriterion,
-			ContextNone:  contextNoneCriterion,
-		})},
-		QuestionDisplay: {Type: "choice", Instructions: displayInstructions, Criteria: choiceCriteria(map[string]string{
-			DisplayChart: displayChartCriterion,
-			DisplayProse: displayProseCriterion,
-		})},
+		QuestionAction:  {Type: "choice", Instructions: actionInstructions, Criteria: choiceCriteria(criteria)},
+		QuestionContext: contextQuestion,
+		QuestionDisplay: displayQuestion,
 	}
 }
 

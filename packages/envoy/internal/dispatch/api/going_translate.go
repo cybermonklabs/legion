@@ -247,8 +247,8 @@ func (r goingReader) projectDocument(ctx context.Context, project, reference str
 }
 
 // session is the id of the live session name names: the session whose id it is, or the one
-// session whose title it is, whatever its case (decision 7: a person names a session by the
-// title they know it by). None is 404 GOING_SESSION_NOT_FOUND and more than one 409
+// session whose title it is, whatever its case, since a person names a session by the title they
+// know it by. None is 404 GOING_SESSION_NOT_FOUND and more than one 409
 // GOING_SESSION_AMBIGUOUS, each naming what was asked for. A whole id is taken as it is when the
 // roster cannot be read, so a write naming a session exactly is refused by its own route rather
 // than by the roster.

@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -42,9 +41,8 @@ func resolveDecisionModel(env settingValues) (decisionConfig, error) {
 	case cfg.Endpoint == "":
 		return cfg, nil
 	}
-	parsed, err := url.Parse(cfg.Endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(cfg.Endpoint, "?#") {
-		return decisionConfig{}, fmt.Errorf("DISPATCH_DECISION_MODEL_ENDPOINT=%q (expected an absolute https URL with a host and no query or fragment, the base URL the System One route is appended to)", cfg.Endpoint)
+	if err := httpsBaseURL("DISPATCH_DECISION_MODEL_ENDPOINT", cfg.Endpoint, "System One route"); err != nil {
+		return decisionConfig{}, err
 	}
 	return cfg, nil
 }

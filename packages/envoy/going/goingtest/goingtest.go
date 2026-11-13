@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/going"
 )
 
 // defaultChunk is how many runes a frame carries when a Reply names no size: small enough that
@@ -211,28 +213,22 @@ func (r Reply) content(structured bool) string {
 	}
 	kind := r.Final.Block.Kind
 	if kind == "" {
-		kind = "none"
+		kind = going.BlockNone
 	}
-	// Written field by field, so the answer is the object's first property as the schema
-	// orders it and streams first, as a model honouring the schema writes it.
-	var out strings.Builder
-	out.WriteString(`{"answer":`)
-	out.WriteString(quote(r.Final.Answer))
-	out.WriteString(`,"block":{"kind":`)
-	out.WriteString(quote(kind))
-	out.WriteString(`,"title":`)
-	out.WriteString(quote(r.Final.Block.Title))
-	out.WriteString(`,"spec":`)
-	out.WriteString(quote(r.Final.Block.Spec))
-	out.WriteString(`},"arguments":`)
-	out.WriteString(quote(r.Final.Arguments))
-	out.WriteString(`}`)
-	return out.String()
-}
-
-func quote(s string) string {
-	b, _ := json.Marshal(s)
-	return string(b)
+	// Marshalled in the fields' declared order, so the answer is the object's first property as
+	// the schema orders it and streams first, as a model honouring the schema writes it.
+	final := struct {
+		Answer string `json:"answer"`
+		Block  struct {
+			Kind  string `json:"kind"`
+			Title string `json:"title"`
+			Spec  string `json:"spec"`
+		} `json:"block"`
+		Arguments string `json:"arguments"`
+	}{Answer: r.Final.Answer, Arguments: r.Final.Arguments}
+	final.Block.Kind, final.Block.Title, final.Block.Spec = kind, r.Final.Block.Title, r.Final.Block.Spec
+	out, _ := json.Marshal(final)
+	return string(out)
 }
 
 // stream writes the reply as a real completion does: the content in frames of Chunk runes, then

@@ -40,15 +40,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 )
 
-// R7's floors and its least case counts.
-const (
-	namedFloor     = 0.90
-	otherFloor     = 0.70
-	p95Ceiling     = 500.0 // milliseconds, exclusive
-	leastCases     = 80
-	leastChartCase = 20
-)
-
 // callTime bounds one decision call, its one retry included. It is far past the p95 ceiling, so
 // a slow call is measured as slow rather than cut short.
 const callTime = 20 * time.Second
@@ -115,31 +106,34 @@ func run() error {
 	if *keyFile == "" {
 		return errors.New("no key: --key-file names no file, so no model was measured and no fit is recorded")
 	}
-	if key, err := os.ReadFile(*keyFile); err != nil || strings.TrimSpace(string(key)) == "" {
+	ctx := context.Background()
+	token := going.FileTokenSource{Path: *keyFile}.Token
+	if _, err := token(ctx); err != nil {
 		return fmt.Errorf("no key: the key file %s cannot be read or is empty, so no model was measured and no fit is recorded", *keyFile)
-	}
-	token := func(context.Context) (string, error) {
-		raw, err := os.ReadFile(*keyFile)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(raw)), nil
 	}
 
 	catalogue, err := api.BuildGoingCatalogue()
 	if err != nil {
 		return fmt.Errorf("the catalogue: %w", err)
 	}
-	actions := make([]going.Action, 0, len(catalogue.Actions()))
-	for _, entry := range catalogue.Actions() {
-		actions = append(actions, going.Action{Name: entry.Action, Description: entry.Description})
-	}
+	actions := api.GoingDecisionActions(catalogue.Actions())
 	cases, err := readCases(*casesArg, actions)
 	if err != nil {
 		return err
 	}
+	// A void run measures nothing, names no choice and writes nothing (c12): every model is put
+	// every case, so the case set alone says whether a run would stand.
+	worthy := 0
+	for _, c := range cases {
+		if c.ChartWorthy {
+			worthy++
+		}
+	}
+	if len(cases) < going.LeastCases || worthy < going.LeastChartCases {
+		return fmt.Errorf("%w: the cases hold %d cases, %d chart-worthy, under R7's %d and %d, so nothing is measured or written",
+			errVoid, len(cases), worthy, going.LeastCases, going.LeastChartCases)
+	}
 
-	ctx := context.Background()
 	served, err := servedModels(ctx, *endpoint, token)
 	if err != nil {
 		return err
@@ -147,6 +141,9 @@ func run() error {
 	names := slices.Sorted(maps.Keys(served))
 	if *models != "" {
 		names = strings.Split(*models, ",")
+		for index, name := range names {
+			names[index] = strings.TrimSpace(name)
+		}
 	}
 	for _, name := range names {
 		if _, ok := served[name]; !ok {
@@ -175,15 +172,6 @@ func run() error {
 		results = append(results, m)
 	}
 
-	// A void run names no choice and writes nothing (c12).
-	var void error
-	for _, m := range results {
-		if m.record.ChartWorthyCases < leastChartCase || m.record.Cases < leastCases {
-			void = fmt.Errorf("%w: %s ran %d cases, %d chart-worthy, under R7's %d and %d, so nothing is written",
-				errVoid, m.record.Model, m.record.Cases, m.record.ChartWorthyCases, leastCases, leastChartCase)
-			break
-		}
-	}
 	ranked := choose(results)
 	chosen := ranked
 	if *chooseArg != "" && ranked != nil {
@@ -197,15 +185,9 @@ func run() error {
 			return fmt.Errorf("--choose %q names no measured model that meets R7's floors", *chooseArg)
 		}
 	}
-	if void != nil {
-		chosen, ranked = nil, nil
-	}
-	fmt.Print(render(results, chosen, ranked, void, len(served), unmeasured))
+	fmt.Print(render(results, chosen, ranked, len(served), unmeasured))
 	for _, m := range results {
 		printMisses(os.Stderr, m)
-	}
-	if void != nil {
-		return void
 	}
 	if chosen == nil {
 		return errors.New("no model meets R7's floors with an action fit that holds, so no record is written")
@@ -415,7 +397,7 @@ func score(m *measured) {
 		r.ChartThreshold = &chart.Threshold
 	}
 	r.DisplayRates = displayRates(m.answers)
-	m.meetsFloors = action.Holds && r.NamedAccuracy >= namedFloor && r.OtherAccuracy >= otherFloor && r.P95MS < p95Ceiling
+	m.meetsFloors = action.Holds && r.NamedAccuracy >= going.NamedFloor && r.OtherAccuracy >= going.OtherFloor && r.P95MS < going.P95CeilingMS
 }
 
 // percentile is the nearest-rank percentile of sorted values, zero for none.
@@ -485,14 +467,14 @@ func better(a, b *measured) bool {
 }
 
 // render is the markdown table of the run.
-func render(results []*measured, chosen, ranked *measured, void error, served int, unmeasured []string) string {
+func render(results []*measured, chosen, ranked *measured, served int, unmeasured []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "## Decision model bake-off\n\n")
 	fmt.Fprintf(&b, "%d case(s) per model, one `systemone` call each, run one at a time. The endpoint serves %d model(s)", len(results[0].answers), served)
 	if len(unmeasured) > 0 {
 		fmt.Fprintf(&b, "; not measured: %s", strings.Join(unmeasured, ", "))
 	}
-	fmt.Fprintf(&b, ". Floors (R7): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. A threshold holds where at least 60%% of its cases are at or above it (R5).\n\n", namedFloor*100, otherFloor*100, p95Ceiling)
+	fmt.Fprintf(&b, ". Floors (R7): at least %.0f%% on the cases that name their action, at least %.0f%% on the rest, p95 under %.0f ms. A threshold holds where at least 60%% of its cases are at or above it (R5).\n\n", going.NamedFloor*100, going.OtherFloor*100, going.P95CeilingMS)
 	b.WriteString("| Model | Released | Named accuracy | Rest accuracy | p50 ms | p95 ms | Action threshold | Cases at or above | Chart threshold | Chart-worthy at or above | Chart-worthy cases used | Unanswered | Floors met |\n")
 	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, m := range results {
@@ -513,8 +495,6 @@ func render(results []*measured, chosen, ranked *measured, void error, served in
 	}
 	b.WriteString("\n")
 	switch {
-	case void != nil:
-		fmt.Fprintf(&b, "**Choice:** none. The run is %v.\n", void)
 	case chosen == nil:
 		b.WriteString("**Choice:** none. No model meets R7's floors with an action threshold that holds.\n")
 	case chosen != ranked:

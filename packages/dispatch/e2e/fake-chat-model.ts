@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-
-import { modelsDirVariable, modelsFilesIn } from "./harness-models";
+import { fakeModelServing, modelsDirVariable } from "./harness-models";
 import { harnessPorts, stackValue } from "./harness-ports";
 
 // The writing model Dispatch answers the command bar through, as a deployment's
@@ -144,8 +142,11 @@ function emptyState(): FakeChatState {
 
 let state = emptyState();
 
-const files = modelsFilesIn(stackValue(process.env, modelsDirVariable), "the fake chat model");
-const bearer = `Bearer ${readFileSync(files.chatToken, "utf8").trim()}`;
+const serving = fakeModelServing(
+  stackValue(process.env, modelsDirVariable),
+  "chatToken",
+  "the fake chat model"
+);
 
 /** `value` as the JSON text the wire carries: a string as it is, anything else as its JSON. */
 function jsonText(value: unknown, empty: string): string {
@@ -188,15 +189,21 @@ function refuse(status: number, message: string): Response {
 }
 
 /** One streamed turn: each frame a `data:` event, written `delayMs` apart, then `[DONE]`. A caller
- *  that goes away before `[DONE]` is counted as abandoned, once, and nothing more is written. */
-function stream(request: Request, frames: readonly unknown[], delayMs: number): Response {
+ *  that goes away before `[DONE]` is counted as abandoned, once, on the counts of the row the call
+ *  arrived in (`owner`), whenever it goes, and nothing more is written. */
+function stream(
+  request: Request,
+  owner: FakeChatState,
+  frames: readonly unknown[],
+  delayMs: number
+): Response {
   const encoder = new TextEncoder();
   let done = false;
   let counted = false;
   const abandon = () => {
     if (done || counted) return;
     counted = true;
-    state.abandoned++;
+    owner.abandoned++;
   };
   request.signal.addEventListener("abort", abandon, { once: true });
   const body = new ReadableStream<Uint8Array>({
@@ -296,15 +303,18 @@ function replyFor(body: ChatRequestBody): Chosen | undefined {
 }
 
 async function complete(request: Request): Promise<Response> {
-  if (request.headers.get("authorization") !== bearer) {
-    state.unauthorized++;
+  // The call counts on the row it arrived in: a reset between rows replaces `state`, and a stream
+  // of this call abandoned after one still counts here, never on the next row.
+  const owner = state;
+  if (request.headers.get("authorization") !== serving.authorization) {
+    owner.unauthorized++;
     return refuse(401, "a call whose bearer is not the one DISPATCH_CHAT_TOKEN_FILE holds");
   }
   const body = (await request.json()) as ChatRequestBody;
   const structured = body.response_format !== undefined && body.response_format !== null;
-  state.calls++;
-  if (structured) state.structured++;
-  state.requests = [...state.requests, body].slice(-keptRequests);
+  owner.calls++;
+  if (structured) owner.structured++;
+  owner.requests = [...owner.requests, body].slice(-keptRequests);
   const chosen = replyFor(body);
   if (chosen === undefined) {
     return refuse(500, "the fake chat model has no reply scripted for this call");
@@ -319,7 +329,7 @@ async function complete(request: Request): Promise<Response> {
     if (queued) state.queue.unshift(reply);
     return refuse(400, "response_format is not supported by this model");
   }
-  return stream(request, turn(reply, structured, toolTurn), reply.delayMs ?? 0);
+  return stream(request, owner, turn(reply, structured, toolTurn), reply.delayMs ?? 0);
 }
 
 // FAKE_CHAT_MODEL_PORT, or with it unset port 0, so the OS chooses; the line at the end reports
@@ -329,10 +339,7 @@ const server = Bun.serve({
   hostname: "127.0.0.1",
   idleTimeout: 0,
   port: harnessPorts().fakeChatModel.port,
-  tls: {
-    cert: readFileSync(files.certificate, "utf8"),
-    key: readFileSync(files.key, "utf8"),
-  },
+  tls: serving.tls,
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname.endsWith("/chat/completions")) {
@@ -350,18 +357,10 @@ const server = Bun.serve({
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/script") {
       const script = (await request.json()) as ChatScript;
-      state = {
-        ...state,
-        fallback: script.default,
-        pending: new Map(),
-        queue: [...(script.replies ?? [])],
-      };
-      return Response.json({ ok: true });
-    }
-    if (request.method === "PUT" && url.pathname === "/__fixture/calls") {
-      // The counts alone, so a row that made the server call while it was setting its fixture
-      // up can count from zero without scripting again.
-      state = { ...state, abandoned: 0, calls: 0, requests: [], structured: 0, unauthorized: 0 };
+      // In place, so a call already counting on this row's counts keeps counting on them.
+      state.fallback = script.default;
+      state.pending = new Map();
+      state.queue = [...(script.replies ?? [])];
       return Response.json({ ok: true });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/reset") {

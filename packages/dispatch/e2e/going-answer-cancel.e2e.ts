@@ -54,11 +54,21 @@ test("one more character cancels the run that began: its model call is abandoned
     await expect(answerPanel(page)).toHaveAttribute("data-state", "streaming");
     expect((await chatCalls()).abandoned).toBe(0);
 
-    // From the keystroke on, every text the panel shows is recorded.
+    // From the keystroke itself on, every text the panel shows is recorded: a chunk of the first
+    // answer that lands before the key is pressed is still its to show.
     await page.evaluate(() => {
       const shown: string[] = [];
       Reflect.set(window, "__goingShown", shown);
+      let armed = false;
+      document.addEventListener(
+        "keydown",
+        () => {
+          armed = true;
+        },
+        { capture: true, once: true }
+      );
       new MutationObserver(() => {
+        if (!armed) return;
         const text = document.querySelector('[data-testid="going-answer-text"]')?.textContent;
         if (text !== undefined && text !== null) shown.push(text);
       }).observe(document.body, { characterData: true, childList: true, subtree: true });

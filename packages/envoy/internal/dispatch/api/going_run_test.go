@@ -284,7 +284,7 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 }
 
 // The actions a run offers are the ones the caller's credential may run, read from the route
-// table's own auth class (decision 7): a person at a browser is never offered a handoff, which
+// table's own auth class: a person at a browser is never offered a handoff, which
 // only a bearer may write, while the same person's own token is.
 func TestGoingDecisionOffersOnlyTheActionsTheCallersCredentialMayRun(t *testing.T) {
 	standIn := newDecisionStandIn(t)
@@ -312,7 +312,7 @@ func TestGoingDecisionOffersOnlyTheActionsTheCallersCredentialMayRun(t *testing.
 
 // act is the bar running the first action at once on submit: true at or above the measured action
 // threshold, false below it, false for none, and false for the two writes that always ask however
-// sure the decision is (decision 27).
+// sure the decision is.
 func TestGoingDecisionActsOnlyAtOrAboveTheThresholdAndNeverForTheTwoThatAlwaysAsk(t *testing.T) {
 	threshold, _ := measuredThresholds(t)
 	standIn := newDecisionStandIn(t)
@@ -346,8 +346,9 @@ func TestGoingDecisionActsOnlyAtOrAboveTheThresholdAndNeverForTheTwoThatAlwaysAs
 }
 
 // A chart is drawn unasked only at or above the measured chart-display threshold, and never while
-// the display-fit test hook is on, which is a deployment whose model has no display fit
-// (decision 14); turned off, the record's threshold holds again.
+// the display-fit test hook is on, which is a deployment whose model has no display fit; turned
+// off, the record's threshold holds again. A body that names no off is refused and changes
+// nothing.
 func TestGoingDecisionDrawsNoChartUnaskedWithTheDisplayFitHookOn(t *testing.T) {
 	_, chartThreshold := measuredThresholds(t)
 	standIn := newDecisionStandIn(t)
@@ -377,6 +378,12 @@ func TestGoingDecisionDrawsNoChartUnaskedWithTheDisplayFitHookOn(t *testing.T) {
 	if chartOf() {
 		t.Fatal("with the display-fit hook on, a chart answered at full confidence draws unasked")
 	}
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/going/display-fit/_test", map[string]any{}, "alice"); response.Code != http.StatusBadRequest {
+		t.Fatalf("display-fit hook with no off: status=%d body=%s, want 400", response.Code, response.Body.String())
+	}
+	if chartOf() {
+		t.Fatal("a display-fit body with no off turned the hook off")
+	}
 	setFit(false)
 	if got, want := chartOf(), chartThreshold != nil; got != want {
 		t.Fatalf("with the hook off, chart=%v, want %v (the record's chart threshold is %v)", got, want, chartThreshold)
@@ -400,7 +407,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		t.Fatal(err)
 	}
 	browser := catalogue.runnableBy(goingCredential{cookie: true, credential: personCredential})
-	session := catalogue.runnableBy(goingCredential{credential: &model.Credential{Session: "0199e2a0-1111-7000-8000-000000000001"}, session: "0199e2a0-1111-7000-8000-000000000001"})
+	session := catalogue.runnableBy(goingCredential{credential: &model.Credential{Session: "0199e2a0-1111-7000-8000-000000000001"}})
 	chip := &goingContext{Path: "/issues/DEMO-12", Project: "DEMO", Issue: "DEMO-12"}
 	offer := func(proposal goingProposal, action string) goingOffer {
 		t.Helper()

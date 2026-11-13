@@ -1,6 +1,6 @@
 import { GOING_ANSWER_WORD_MAX } from "@legion/contracts";
 
-import { createIssue, createProject, getGoingCapability, search } from "./api";
+import { getGoingCapability } from "./api";
 import {
   chatCalls,
   decisionCalls,
@@ -9,6 +9,7 @@ import {
   scriptChat,
 } from "./fake-models-helpers";
 import {
+  ANSWER_ENDS_MS,
   answerPanel,
   answerText,
   askAndWait,
@@ -18,6 +19,7 @@ import {
   plainWords,
   prose,
   searchBox,
+  seedIssue,
   shownWords,
 } from "./going-panel";
 import { expect, type Page, test } from "./test";
@@ -33,19 +35,6 @@ import { asUser } from "./users";
 /** The words a person asks, which the seeded issue's title answers. */
 const question = "quasar sightings log";
 const title = "Quasar sightings log";
-
-/** The seeded issue and the href search gives its hit, which is the link the model is given. */
-async function seedIssue(): Promise<{ readonly key: string; readonly href: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title });
-  const hit = ((await search(question)).results ?? []).find(
-    (result) => result.owner.kind === "issue" && result.owner.key === issue.key
-  );
-  if (hit === undefined) {
-    throw new Error(`search for "${question}" does not find ${issue.key}`);
-  }
-  return { href: hit.href, key: issue.key };
-}
 
 /** Records, in the page, the order in which the hits, the answer's first text and the answer's
  *  end reached the screen, and whether text was on the screen while the answer still streamed. */
@@ -99,7 +88,7 @@ test("the stack answers and decides through the fakes, and a question a seeded i
   expect((await chatCalls()).calls).toBe(0);
   expect((await decisionCalls()).calls).toBe(0);
 
-  const issue = await seedIssue();
+  const issue = await seedIssue(question, title);
   await scriptChat({
     default: prose(
       `The sightings are kept in [${title}](${issue.href}). ${plainWords("sighting", 40)}`,
@@ -139,7 +128,7 @@ test("the stack answers and decides through the fakes, and a question a seeded i
 test("a 300-word reply is cut to 120 words and the bar says it was cut", async ({ browser }) => {
   modelsLane();
   test.setTimeout(90_000);
-  await seedIssue();
+  await seedIssue(question, title);
   await scriptChat({ default: prose(plainWords("alpha", 300)) });
   const context = await asUser(browser, "alice");
   try {
@@ -164,7 +153,7 @@ test("a link to an item the model was not given is dropped and the bar says the 
 }) => {
   modelsLane();
   test.setTimeout(90_000);
-  await seedIssue();
+  await seedIssue(question, title);
   await scriptChat({
     default: prose("The plan is in [the hidden plan](/issues/ZZZ-404) and nowhere else."),
   });
@@ -191,7 +180,7 @@ test("a reply with no answer text shows no answer: the bar says it found none an
 }) => {
   modelsLane();
   test.setTimeout(90_000);
-  const issue = await seedIssue();
+  const issue = await seedIssue(question, title);
   await scriptChat({ default: prose("") });
   const context = await asUser(browser, "alice");
   try {
@@ -212,7 +201,7 @@ test("a reply with no answer text shows no answer: the bar says it found none an
 test("an answer that kept no link is shown, saying it rests on no source", async ({ browser }) => {
   modelsLane();
   test.setTimeout(90_000);
-  await seedIssue();
+  await seedIssue(question, title);
   await scriptChat({ default: prose("The sightings are written down in the log every night.") });
   const context = await asUser(browser, "alice");
   try {
@@ -229,14 +218,14 @@ test("an answer that kept no link is shown, saying it rests on no source", async
   }
 });
 
-// SLOW(>=2s): a question typed a key at a time, a count of both fakes' calls after every key,
-// and the one answer the pause asks for.
+// SLOW(>=2s): a question typed a key at a time faster than the pause, both fakes' counts read
+// after the last key, and the one answer the pause asks for.
 test("no model call is made on a keystroke: only the pause after the last one asks", async ({
   browser,
 }) => {
   modelsLane();
   test.setTimeout(90_000);
-  await seedIssue();
+  await seedIssue(question, title);
   await scriptChat({ default: prose("The log holds them.") });
   const context = await asUser(browser, "alice");
   try {
@@ -244,17 +233,18 @@ test("no model call is made on a keystroke: only the pause after the last one as
     await openBarOver(page, "/projects/CORE/issues");
     const asked = countAskedRuns(page);
 
-    // Each key lands inside the pause the key before it started, and after each one neither fake
-    // has been called and the bar has asked nothing.
-    for (const key of question) {
-      await searchBox(page).press(key === " " ? "Space" : key);
-      expect(asked.words).toEqual([]);
-      expect((await chatCalls()).calls).toBe(0);
-      expect((await decisionCalls()).calls).toBe(0);
-    }
+    // Every key lands inside the pause the key before it started, so once the last is in, the
+    // bar has asked nothing and neither fake has been called.
+    await searchBox(page).pressSequentially(question, { delay: 25 });
+    const [chat, decision] = await Promise.all([chatCalls(), decisionCalls()]);
+    expect(asked.words).toEqual([]);
+    expect(chat.calls).toBe(0);
+    expect(decision.calls).toBe(0);
 
     // The pause after the last key asks once, and that one question is what the fakes answer.
-    await expect(answerPanel(page)).toHaveAttribute("data-state", "ended", { timeout: 40_000 });
+    await expect(answerPanel(page)).toHaveAttribute("data-state", "ended", {
+      timeout: ANSWER_ENDS_MS,
+    });
     expect(asked.words).toEqual([question]);
     expect((await decisionCalls()).calls).toBe(1);
     expect((await chatCalls()).calls).toBeGreaterThanOrEqual(1);

@@ -266,6 +266,33 @@ func TestGoingStatusUnavailableRosterIsServedFromStoredRows(t *testing.T) {
 	}
 }
 
+// A run's roster read while the process drains after a shutdown, on a server with no listener
+// configured, answers from the stored rows: there is no listener to ask on the run's own context,
+// so the read neither asks one nor fails, and its frame says stored.
+func TestGoingStatusRosterWithNoListenerDuringAShutdownIsServedFromStoredRows(t *testing.T) {
+	lifetime, shutdown := context.WithCancel(t.Context())
+	shutdown()
+	rig := newBlockRig(t, testServerOptions{lifetime: lifetime})
+	seedStatusFixture(t, rig)
+
+	reads := rig.served.goingRunReads(goingRequest{}, goingRunStart{reads: []string{going.ReadRoster}})
+	read, err := reads.funcs[going.ReadRoster](t.Context(), json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("read_roster during a shutdown with no listener = %v, want the stored rows", err)
+	}
+	if frame, ok := reads.rosterRead(); !ok || frame.Source != goingRosterStored {
+		t.Errorf("roster frame = %+v (%t), want stored: no listener is configured", frame, ok)
+	}
+	got := map[string]bool{}
+	for _, row := range read.Tables["sessions"] {
+		session, _ := row["session_id"].(string)
+		got[session] = true
+	}
+	if len(got) != 2 || !got["ses-a"] || !got["ses-claim"] {
+		t.Errorf("stored sessions = %v, want the asker of the open ask and the claim holder", got)
+	}
+}
+
 // When the listener answers 503 refilling with a Retry-After, the roster read waits it out and
 // reads again, and the roster frame reports the live roster.
 func TestGoingStatusRefillingRosterIsWaitedOutThenLive(t *testing.T) {

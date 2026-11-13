@@ -326,7 +326,7 @@ func TestGoingBlockUnderTwoPointsDrawsNoChart(t *testing.T) {
 }
 
 // A block the model writes unasked for a plain question is dropped, and so is a kind outside the
-// seven: the words decide, and the list is closed (R2, decision 17). The structured call is told
+// seven: the words decide, and the list is closed (R2). The structured call is told
 // to write no block, since the words name none.
 func TestGoingBlockUnaskedOrOfAnUnknownKindIsDropped(t *testing.T) {
 	table := `{"source":"read_project_activity","params":{"project":"DEMO"},"table":"kinds","columns":["kind","count"]}`

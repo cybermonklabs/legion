@@ -117,17 +117,10 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roster, err := s.readRouteRoster(r.Context())
+	roster, err := s.agentRoster(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
-	}
-	if !roster.answered && s.lifetime.Err() != nil {
-		// The process is shutting down: the shared fetch runs on its lifetime, so it has ended or
-		// failed at once, and its silence says nothing about the listener. A request the drain
-		// still serves asks the listener on its own context instead, as every agents list did
-		// before the copy existed.
-		roster = s.listRouteRoster(r.Context())
 	}
 	if !roster.answered {
 		// The roster's reason is the one every process reads, stored on the row beside the
@@ -147,6 +140,24 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, rows)
+}
+
+// agentRoster is the roster the agents list and the going run's roster read serve: the stored
+// copy every process shares (readRouteRoster), or, once the process is shutting down and that
+// copy did not answer, the listener asked on ctx. The shared fetch runs on the process's
+// lifetime, so it has ended or failed at once and its silence says nothing about the listener; a
+// request the drain still serves asks the listener on its own context instead, as every agents
+// list did before the copy existed. With no listener configured there is none to ask, and the
+// unanswered copy stands.
+func (s *server) agentRoster(ctx context.Context) (routeRoster, error) {
+	roster, err := s.readRouteRoster(ctx)
+	if err != nil {
+		return routeRoster{}, err
+	}
+	if !roster.answered && s.lifetime.Err() != nil && s.deps.Envoy != nil {
+		roster = s.listRouteRoster(ctx)
+	}
+	return roster, nil
 }
 
 // agentRows is the agents list's rows for the listed sessions: newest seen first, each with its

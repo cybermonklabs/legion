@@ -2,13 +2,14 @@ package api
 
 // going_reads.go holds the reads a command-bar run's tools make beside the search (R8), each one
 // a read a route of this table serves and made through the same functions that route answers
-// with, in process, for the run's author (decision 22): GET /api/v1/agents, GET /api/v1/issues and
+// with, in process, for the run's author: GET /api/v1/agents, GET /api/v1/issues and
 // an issue's progress, GET /api/v1/projects/{key}/architecture and /activity, and the three
 // delivery reads. A block's spec names one of them, and the run fills the block by making that
 // read again (going_blocks.go). The tools themselves - their names, what the model is told and
 // their budget - are going's (going/reads.go).
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -33,7 +34,7 @@ import (
 
 // goingReadRoutes is the rows of the route table each read tool reads through. A caller is
 // offered a tool only where its credential may call every row the tool reads (goingReadsFor), as
-// a caller is offered an action only where it may call the action's rows (decision 7), and
+// a caller is offered an action only where it may call the action's rows, and
 // register refuses a table that does not serve every row named here.
 var goingReadRoutes = map[string][]string{
 	going.ReadRoster:          {"GET /api/v1/agents"},
@@ -45,7 +46,7 @@ var goingReadRoutes = map[string][]string{
 
 // goingDeploymentReads are the reads that are no one project's: the roster names every
 // project's sessions and the delivery reads every project's pull requests and issues. A
-// credential scoped to one project reads nothing outside it through the bar (decision 22), so it
+// credential scoped to one project reads nothing outside it through the bar, so it
 // is offered neither; every other read is held to the run's project (goingReadRun.project).
 var goingDeploymentReads = map[string]bool{going.ReadRoster: true, going.ReadDelivery: true}
 
@@ -113,7 +114,7 @@ func (s *server) goingReadsFor(caller goingCredential, scoped bool) []string {
 	return reads
 }
 
-// goingRosterFrame is the roster frame's data (contracts GoingRosterEvent, decision 18): how old
+// goingRosterFrame is the roster frame's data (contracts GoingRosterEvent): how old
 // Dispatch's copy of the listener's session list was when the run read it, and whether it was that
 // live copy or, the listener being unavailable, the sessions Dispatch's own rows name.
 type goingRosterFrame struct {
@@ -165,7 +166,7 @@ func (g *goingReadRun) rosterRead() (goingRosterFrame, bool) {
 }
 
 // project is the project a read reads: the one the model named, else the run's, else the page's.
-// A run asked of one project reads that project alone, whatever the model names (decision 22):
+// A run asked of one project reads that project alone, whatever the model names:
 // a credential scoped to one project asks only of it (createGoingRequest), and search is held to
 // it the same way (goingSearch).
 func (g *goingReadRun) project(named string) (string, error) {
@@ -186,7 +187,7 @@ func (g *goingReadRun) project(named string) (string, error) {
 
 // decodeGoingArguments decodes a read's arguments into value, refusing a field it does not take.
 func decodeGoingArguments(arguments json.RawMessage, value any) error {
-	decoder := json.NewDecoder(strings.NewReader(string(arguments)))
+	decoder := json.NewDecoder(bytes.NewReader(arguments))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(value); err != nil {
 		return going.Refuse("the arguments do not fit the tool: %v", err)
@@ -258,14 +259,9 @@ func (g *goingReadRun) readRoster(ctx context.Context, arguments json.RawMessage
 // stored rows otherwise (readRoster says when).
 func (s *server) goingRoster(ctx context.Context) ([]agentResponse, goingRosterFrame, error) {
 	for {
-		roster, err := s.readRouteRoster(ctx)
+		roster, err := s.agentRoster(ctx)
 		if err != nil {
 			return nil, goingRosterFrame{}, err
-		}
-		if !roster.answered && s.lifetime.Err() != nil {
-			// The process is shutting down, as listAgents reads it: the listener is asked on the
-			// run's own context.
-			roster = s.listRouteRoster(ctx)
 		}
 		if roster.answered {
 			rows, err := s.agentRows(ctx, roster.sessions)

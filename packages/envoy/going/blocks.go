@@ -2,6 +2,7 @@ package going
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,13 +13,14 @@ import (
 )
 
 // A block is drawn beside the answer when the typed words name its kind, or, for a chart alone,
-// when the decision's display choice is a chart at or above the chart-display threshold (R2,
-// decision 17): the words decide, and no confidence does. The model writes the block's spec - the
+// when the decision's display choice is a chart at or above the chart-display threshold (R2):
+// the words decide, and no confidence does. The model writes the block's spec - the
 // read that fills it, that read's arguments, the table and fields it draws, never a number - and
 // the server runs that read again as the run's author and fills the block from its answer alone,
 // so every number a block shows is a value the read returned (R2, R9).
 
-// The seven kinds of block, the closed list of R2.
+// The seven kinds of block, the closed list of R2, and BlockNone, the kind a structured reply
+// that draws no block names.
 const (
 	BlockChart       = "chart"
 	BlockProgress    = "progress"
@@ -27,6 +29,7 @@ const (
 	BlockAgentStatus = "agent_status"
 	BlockMetric      = "metric"
 	BlockTimeline    = "timeline"
+	BlockNone        = "none"
 )
 
 // BlockKinds is every kind, in the order a call is told them.
@@ -75,7 +78,7 @@ var blockSources = map[string][]string{
 	BlockTimeline:    {ReadDelivery},
 }
 
-// blockLexicon is the words that name each kind (decision 17), matched as whole words in the
+// blockLexicon is the words that name each kind, matched as whole words in the
 // typed words lowercased. "bar" and "line" name a chart only beside chart, graph or plot, since
 // alone they are words of every other kind of question ("the command bar", "in line with").
 var blockLexicon = []struct {
@@ -116,9 +119,10 @@ func Drawn(kind, words string, chart bool) bool {
 // OfferedKinds is the kinds an answer to words may draw, given whether the decision settled on a
 // chart and the reads the run has: each kind Drawn allows that one of the run's reads fills.
 func OfferedKinds(words string, chart bool, reads map[string]ReadFunc) []string {
+	named := KindsNamed(words)
 	var offered []string
 	for _, kind := range BlockKinds {
-		if !Drawn(kind, words, chart) {
+		if !(kind == BlockChart && chart) && !slices.Contains(named, kind) {
 			continue
 		}
 		if slices.ContainsFunc(blockSources[kind], func(source string) bool { _, held := reads[source]; return held }) {
@@ -234,8 +238,7 @@ func ParseBlock(final FinalBlock) (Block, error) {
 		}
 	}
 	var spec blockSpec
-	decoder := json.NewDecoder(strings.NewReader(final.Spec))
-	if err := decoder.Decode(&spec); err != nil {
+	if err := json.Unmarshal([]byte(final.Spec), &spec); err != nil {
 		return Block{}, fmt.Errorf("going: the %s block's spec does not fit its schema: %w", kind, err)
 	}
 	if !slices.Contains(blockSources[kind], spec.Source) {
@@ -268,7 +271,7 @@ func (s *blockSpec) settle(kind string) error {
 	}
 	switch kind {
 	case BlockChart:
-		s.Mark = cmpOr(s.Mark, MarkBar)
+		s.Mark = cmp.Or(strings.TrimSpace(s.Mark), MarkBar)
 		if s.Mark != MarkBar && s.Mark != MarkLine {
 			return fmt.Errorf("going: a chart is drawn as %s or %s, not %q", MarkBar, MarkLine, s.Mark)
 		}
@@ -279,18 +282,18 @@ func (s *blockSpec) settle(kind string) error {
 		}
 		return required("table")
 	case BlockMetric:
-		s.Label = cmpOr(s.Label, s.Field)
+		s.Label = cmp.Or(strings.TrimSpace(s.Label), strings.TrimSpace(s.Field))
 		if s.Compare != "" {
-			s.CompareLabel = cmpOr(s.CompareLabel, s.Compare)
+			s.CompareLabel = cmp.Or(strings.TrimSpace(s.CompareLabel), strings.TrimSpace(s.Compare))
 		} else {
 			s.CompareLabel = ""
 		}
 		return required("table", "field")
 	case BlockProgress:
-		s.Table = cmpOr(s.Table, tableProgress)
-		s.Label = cmpOr(s.Label, "label")
-		s.Done = cmpOr(s.Done, "done")
-		s.Total = cmpOr(s.Total, "total")
+		s.Table = cmp.Or(strings.TrimSpace(s.Table), tableProgress)
+		s.Label = cmp.Or(strings.TrimSpace(s.Label), "label")
+		s.Done = cmp.Or(strings.TrimSpace(s.Done), "done")
+		s.Total = cmp.Or(strings.TrimSpace(s.Total), "total")
 	case BlockIssueList:
 		s.Table = tableIssues
 	case BlockAgentStatus:
@@ -471,14 +474,4 @@ func fillTimeline(rows []map[string]any) ([]map[string]any, error) {
 		drawn = drawn[len(drawn)-timelineEventMax:]
 	}
 	return drawn, nil
-}
-
-// cmpOr is the first of values that is not empty, after trimming.
-func cmpOr(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
 }

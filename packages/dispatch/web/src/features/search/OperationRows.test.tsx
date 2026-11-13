@@ -1,29 +1,33 @@
 import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, renderHook, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { answerRoute } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { api, type WriteBounds } from "../../api/client";
 import type {
-  GoingCapability,
+  ArtifactUploadResponse,
   GoingDecisionEvent,
   GoingEvent,
   GoingProposalEvent,
   GoingWriteInput,
   GoingWriteLine,
-  IssueReferenceSummary,
 } from "../../api/types";
-import { KeymapProvider } from "../shell/KeymapProvider";
+import { writesOf } from "../writes/write-store";
+import {
+  type GoingBarSpies,
+  BAR_HIT as hit,
+  type OpenedStream,
+  renderBar,
+  spyOnGoingBar,
+} from "./going-bar-fixture";
 import { forgetTurns } from "./going-turns";
-import { OPERATION_OPTION_ID, offerOptionId } from "./OperationRows";
-import { SearchPalette } from "./SearchPalette";
-import { searchAnswer } from "./search-fixture";
+import { OPERATION_OPTION_ID, offerOptionId, useGoingOperations } from "./OperationRows";
 import { optionId } from "./search-model";
-import { forgetAnsweredRun } from "./useGoingAnswer";
+import { forgetAnsweredRun, type GoingAnswer } from "./useGoingAnswer";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
 // The bar's operations as the person meets them: the operation the decision acts on is a row of
@@ -32,64 +36,17 @@ import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 // best are offered and only a pick runs one; a missing argument is asked for; and with the
 // person's setting on every write asks first. The clock is held, as in AnswerPanel.test.tsx.
 
-const configured: GoingCapability = {
-  answer: { blocks: true, configured: true, model: "e2e-chat" },
-  decision: { configured: true, model: "e2e-decide", reachable: true },
-  label: { configured: true },
-  session: { configured: true },
-};
-
-const hit = {
-  href: "/issues/LEGION-3",
-  id: "LEGION-3",
-  kind: "issue",
-  owner: { key: "LEGION-3", kind: "issue", status: "todo", title: "Instruments" },
-  rank: 1,
-  snippet: "The <mark>astrolabe</mark>.",
-} as const;
-
-let streams: { readonly send: (frame: GoingEvent) => void }[];
+let streams: OpenedStream[];
 let settings: Mock<typeof api.myGoingSettings>;
-let spies: { mockRestore: () => void }[];
+let spies: GoingBarSpies;
 type WriteAnswer = (run: string, input: GoingWriteInput, bounds: WriteBounds) => Promise<unknown>;
 let written: Mock<WriteAnswer>;
 
 beforeEach(() => {
   jest.useFakeTimers();
-  streams = [];
+  spies = spyOnGoingBar();
+  streams = spies.streams;
   settings = spyOn(api, "myGoingSettings").mockResolvedValue({ confirm_writes: false });
-  spies = [
-    settings,
-    spyOn(api, "createGoingRequest").mockImplementation(async (input) => ({
-      author: { id: "alice", kind: "user" },
-      created_at: new Date().toISOString(),
-      ends_at: new Date(Date.now() + 30_000).toISOString(),
-      id: "run-1",
-      project: input.project ?? "",
-      words: input.words,
-    })),
-    spyOn(api, "cancelGoingRequest").mockImplementation(async (id) => ({
-      cancelled_at: new Date().toISOString(),
-      id,
-    })),
-    spyOn(api, "goingCapability").mockResolvedValue(configured),
-    spyOn(api, "search").mockResolvedValue(searchAnswer([hit])),
-    spyOn(api, "getIssueSummary").mockImplementation((key) =>
-      Promise.resolve({
-        documents: [],
-        key,
-        project: "LEGION",
-        status: "todo",
-        title: "Instruments",
-      } satisfies IssueReferenceSummary)
-    ),
-    spyOn(api, "streamGoingAnswer").mockImplementation((_id, onFrame, signal) => {
-      streams.push({ send: (frame) => onFrame(frame, 1) });
-      const { promise, reject } = Promise.withResolvers<void>();
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-      return promise;
-    }),
-  ];
   written = answerRoute<WriteAnswer>("POST", "/api/v1/going/runs/*/writes");
   written.mockImplementation(async (_run, input) => {
     const line: GoingWriteLine = {
@@ -106,30 +63,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  for (const spy of spies) spy.mockRestore();
+  spies.restore();
+  settings.mockRestore();
   forgetAnsweredRun();
   forgetTurns();
   realClock();
 });
-
-function renderBar(): { unmount: () => void } {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter initialEntries={["/projects/LEGION/issues"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <SearchPalette onClose={() => {}} open />
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  return {
-    unmount: () => {
-      view.unmount();
-      queryClient.clear();
-    },
-  };
-}
 
 /** Types `words`, waits for their hits, and lets the pause ask the question. */
 async function ask(user: UserEvent, words: string): Promise<void> {
@@ -356,5 +295,156 @@ test("an invocation missing one argument asks for it, and the write carries the 
     );
   } finally {
     bar.unmount();
+  }
+});
+
+test("a new issue the run made is the issue its write names, with no read of it that could fail", async () => {
+  const newIssueSettings = spyOn(api, "getNewIssueSettings").mockResolvedValue({
+    label: "",
+    session: "",
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(
+    {} as ArtifactUploadResponse
+  );
+  // A read of the issue after its create would fail here, as a timed-out read does.
+  const getIssue = spyOn(api, "getIssue").mockRejectedValue(new Error("the read timed out"));
+  written.mockImplementation(
+    async (_run, input) =>
+      ({
+        action: input.offer,
+        before: null,
+        field: "",
+        item: "LEGION-9",
+        now: { key: "LEGION-9" },
+        outcome: { code: "", message: "", ok: true, status: 201 },
+        write_id: "write-issue",
+      }) satisfies GoingWriteLine
+  );
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(
+      decision(false, ["dispatch_issue"]),
+      {
+        data: {
+          offers: [
+            {
+              action: "dispatch_issue",
+              invocations: [
+                { arguments: { project: "LEGION", title: "astrolabe" }, missing: null },
+              ],
+              offered: true,
+            },
+          ],
+        },
+        event: "proposal",
+      } satisfies GoingProposalEvent,
+      ended
+    );
+
+    await user.click(await screen.findByRole("option", { name: /^Make a new issue from/ }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("search-new-issue-said")).toHaveTextContent("LEGION-9 is made.")
+    );
+    expect(sent()).toEqual([
+      {
+        approved: "person",
+        arguments: { project: "LEGION", title: "astrolabe" },
+        invocation: 0,
+        offer: "dispatch_issue",
+      },
+    ]);
+    expect(uploadArtifact.mock.calls.map(([owner]) => owner)).toEqual([{ issue: "LEGION-9" }]);
+    expect(getIssue).not.toHaveBeenCalled();
+    // The issue is made, so its row opens it and nothing offers to make it again.
+    expect(screen.getByRole("option", { name: /^Open LEGION-9/ })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: /^Make a new issue/ })).not.toBeInTheDocument();
+  } finally {
+    bar.unmount();
+    for (const spy of [newIssueSettings, uploadArtifact, getIssue]) spy.mockRestore();
+  }
+});
+
+test("a send through the run whose delivery failed answers why, as the direct send does", async () => {
+  const words = "tell the agent";
+  const answer: GoingAnswer = {
+    block: undefined,
+    changed: undefined,
+    cut: undefined,
+    decision: decision(false, ["dispatch_send_to_agent"]).data,
+    end: { items: 0, words: 3 },
+    error: undefined,
+    items: [],
+    none: false,
+    proposal: {
+      offers: [
+        {
+          action: "dispatch_send_to_agent",
+          invocations: [{ arguments: { session: "session-1" }, missing: null }],
+          offered: true,
+        },
+      ],
+    },
+    replayed: false,
+    roster: undefined,
+    runId: "run-1",
+    state: "ended",
+    text: "",
+    unreachable: undefined,
+    words,
+  };
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const hook = renderHook(
+    () => useGoingOperations({ answer, askNow: () => false, hits: [], words }),
+    {
+      wrapper: ({ children }: { readonly children: ReactNode }) => (
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  // Dispatch answers the send 201 whatever became of its delivery; the line records the delivery.
+  const delivered = (now: unknown) =>
+    written.mockImplementation(
+      async (_run, input) =>
+        ({
+          action: input.offer,
+          before: null,
+          field: "",
+          item: "",
+          now,
+          outcome: { code: "", message: "", ok: true, status: 201 },
+          write_id: "write-send",
+        }) satisfies GoingWriteLine
+    );
+  const send = async () => {
+    const sendToAgent = hook.result.current.sendToAgent;
+    expect(sendToAgent).toBeDefined();
+    let said: string | undefined;
+    await act(async () => {
+      said = await sendToAgent?.(writesOf(client), {
+        block: undefined,
+        issue: "LEGION-3",
+        session: "session-1",
+        words,
+      });
+    });
+    return said;
+  };
+  try {
+    delivered({
+      delivery_error: "the session takes no aside",
+      delivery_state: "failed",
+      id: "m-1",
+    });
+    expect(await send()).toBe("the session takes no aside");
+    delivered({ delivery_error: null, delivery_state: "failed", id: "m-2" });
+    expect(await send()).toBe("Dispatch gave no reason.");
+    delivered({ delivery_error: null, delivery_state: "delivered", id: "m-3" });
+    expect(await send()).toBeUndefined();
+  } finally {
+    hook.unmount();
+    client.clear();
   }
 });

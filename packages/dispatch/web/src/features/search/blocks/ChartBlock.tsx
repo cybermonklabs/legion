@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { CHART_AXIS_COLORS } from "../../../theme/chart-colors";
 import { borderDefault } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { type BlockOf, cellNumber, cellText } from "./block-cells";
@@ -11,12 +12,8 @@ import { blockCellClassName, blockHeadClassName } from "./TableBlock";
 // the shell loads earlier pulls it in. The bar is part of the shell; a static import here would
 // put echarts in the entry chunk every page pays for.
 
-/** The chart draws on a canvas, so its colours are values: the delivery timeline's axis colours,
+/** The chart draws on a canvas, so its colours are values: the axis colours every chart shares,
  *  and one series colour that reads on either scheme. */
-const CHART_COLORS = {
-  dark: { axis: "#334155", label: "#94a3b8", split: "#1e293b" },
-  light: { axis: "#cbd5e1", label: "#64748b", split: "#e2e8f0" },
-};
 const SERIES_COLOR = "#0284c7";
 
 /**
@@ -30,7 +27,7 @@ export function ChartBlock({ block }: { readonly block: BlockOf<"chart"> }): Rea
   const container = useRef<HTMLDivElement>(null);
   const [drawn, setDrawn] = useState(false);
   const dark = useMediaQuery("(prefers-color-scheme: dark)");
-  const palette = dark ? CHART_COLORS.dark : CHART_COLORS.light;
+  const palette = dark ? CHART_AXIS_COLORS.dark : CHART_AXIS_COLORS.light;
   const { mark, x, y } = block.spec;
   const points = useMemo(
     () =>

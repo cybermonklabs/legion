@@ -71,7 +71,9 @@ export function eventStreamDecoder(
 /**
  * Reads `body` to its end, handing each event to `onEvent` as its blank line arrives; `onEvent`
  * answers `true` to stop reading there, which releases the body. Resolves `true` when it was
- * stopped and `false` when the body ended first; a body that fails rejects with its failure.
+ * stopped and `false` when the body ended first; a body that fails rejects with its failure, and
+ * an `onEvent` that throws rejects with its throw. A body left before its end - stopped, failed or
+ * thrown out of - is cancelled, so its connection closes rather than staying open behind the next.
  */
 export async function readEventStream(
   body: ReadableStream<Uint8Array>,
@@ -84,6 +86,7 @@ export async function readEventStream(
   const reader = body.getReader();
   const text = new TextDecoder();
   let stopped = false;
+  let ended = false;
   const decode = eventStreamDecoder((event) => {
     if (!stopped && onEvent(event)) {
       stopped = true;
@@ -93,6 +96,7 @@ export async function readEventStream(
     while (!stopped) {
       const piece = await reader.read();
       if (piece.done) {
+        ended = true;
         decode(text.decode(), true);
         return stopped;
       }
@@ -100,7 +104,7 @@ export async function readEventStream(
     }
     return true;
   } finally {
-    if (stopped) {
+    if (!ended) {
       await reader.cancel().catch(() => undefined);
     }
     reader.releaseLock();

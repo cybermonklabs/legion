@@ -1,9 +1,9 @@
 package api
 
 // going_decision.go holds what a run of the command bar decides before it answers and offers
-// once it has: the actions a caller may be offered (decision 7), the one decision call and the
-// decision frame it becomes (decisions 1 and 9), and the proposal frame the answer's arguments
-// become (decision 2). The run itself, which calls these in order, is startGoingRun's.
+// once it has: the actions a caller may be offered, the one decision call and the decision frame
+// it becomes, and the proposal frame the answer's arguments become. The run itself, which calls
+// these in order, is startGoingRun's.
 
 import (
 	"cmp"
@@ -20,7 +20,7 @@ import (
 )
 
 // goingAlwaysAsk are the two writes the bar never runs at once, whatever the decision's
-// confidence (R4, decision 27): handing a request to a live agent spends that agent a turn, and a
+// confidence (R4): handing a request to a live agent spends that agent a turn, and a
 // wrong new issue leaves a husk.
 var goingAlwaysAsk = map[string]bool{"dispatch_send_to_agent": true, "dispatch_issue": true}
 
@@ -49,20 +49,23 @@ const (
 
 // goingCredential is what decides which rows of the catalogue a caller may be offered: whether
 // the credential is a browser's cookie, which a bearer-only row refuses, the scopes it holds,
-// and the session it proved, which fills a row addressing the caller's own session.
+// and the session it proved (session), which fills a row addressing the caller's own session.
 type goingCredential struct {
 	cookie     bool
 	credential *model.Credential
-	session    string
 }
 
 // goingCredentialOf is the asking request's credential as goingCredential reads it.
 func goingCredentialOf(actor model.Actor, cookie bool) goingCredential {
-	caller := goingCredential{cookie: cookie, credential: actor.Credential}
-	if actor.Credential != nil {
-		caller.session = actor.Credential.Session
+	return goingCredential{cookie: cookie, credential: actor.Credential}
+}
+
+// session is the session the credential proved, "" for none or no credential.
+func (c goingCredential) session() string {
+	if c.credential == nil {
+		return ""
 	}
-	return caller
+	return c.credential.Session
 }
 
 // runnableBy reports whether the route table lets this caller call the row: a bearer-only row
@@ -80,7 +83,7 @@ func (route GoingRoute) runnableBy(caller goingCredential) bool {
 	return true
 }
 
-// runnableBy is the catalogue as one caller may run it (decision 7): each action keeps the rows
+// runnableBy is the catalogue as one caller may run it: each action keeps the rows
 // the caller may call, and an action left with none is not offered at all, so a person is never
 // offered a handoff or a reply to a delivery, which only a session's bearer may write.
 func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
@@ -152,7 +155,7 @@ type goingDecidedDisplay struct {
 	Chart      bool    `json:"chart"`
 }
 
-// goingDecide makes the run's one decision call (decision 9), the action asked among the
+// goingDecide makes the run's one decision call, the action asked among the
 // actions the caller may run, and answers the decision it came to. It answers false - no
 // decision, and so no decision frame and no proposal - with no decider configured, and for a call
 // that could not be made or answered nothing usable: the answer runs as it would with none.
@@ -161,10 +164,8 @@ func (s *server) goingDecide(ctx context.Context, words string, start goingRunSt
 	if decider == nil {
 		return goingDecision{}, false
 	}
-	choices := make([]going.Action, 0, len(start.actions))
 	known := make(map[string]bool, len(start.actions)+1)
 	for _, action := range start.actions {
-		choices = append(choices, going.Action{Name: action.Action, Description: action.Description})
 		known[action.Action] = true
 	}
 	known[going.ActionNone] = true
@@ -172,7 +173,7 @@ func (s *server) goingDecide(ctx context.Context, words string, start goingRunSt
 	if start.chip != nil {
 		page = going.PageContext{Path: start.chip.Path, Project: start.chip.Project, Issue: start.chip.Issue, Block: start.chip.Block}
 	}
-	result, err := decider.Decide(ctx, going.DecisionQuestions(choices), going.DecisionState(words, page))
+	result, err := decider.Decide(ctx, going.DecisionQuestions(GoingDecisionActions(start.actions)), going.DecisionState(words, page))
 	switch {
 	case err != nil:
 		slog.Warn("dispatch going: the decision call could not be made, so the run answers with no decision", "error", err)
@@ -218,6 +219,18 @@ func (s *server) goingDecide(ctx context.Context, words string, start goingRunSt
 		}
 	}
 	return decision, true
+}
+
+// GoingDecisionActions is actions as the decision model chooses among them: each action's name
+// and the catalogue's own description of it, in the catalogue's order. The server's decision call
+// and the bake-off (cmd/going-bakeoff) both put their action question through it, so the
+// thresholds the bake-off fits are fitted on what the server asks.
+func GoingDecisionActions(actions []GoingAction) []going.Action {
+	choices := make([]going.Action, 0, len(actions))
+	for _, action := range actions {
+		choices = append(choices, going.Action{Name: action.Action, Description: action.Description})
+	}
+	return choices
 }
 
 // goingTopTwo is the model's own choice, then the choice it gave the most probability among the
@@ -300,12 +313,12 @@ type goingMissingArgument struct {
 }
 
 // goingPropose is the proposal of a decision once the answer has written: for each action the
-// decision offered, the answer's arguments for it (decision 2), each element held to that
+// decision offered, the answer's arguments for it, each element held to that
 // action's own schema, a target the words left out filled from the chip where the decision read
 // the words as about the page, and every invocation that still needs more than one argument, or
 // one the bar cannot prompt for, dropped. An action the answer wrote arguments for that the
 // decision did not offer - one outside the catalogue among them - is no part of the proposal and
-// so never runs. With no structured reply (final nil, decision 20), or no arguments for an
+// so never runs. With no structured reply (final nil), or no arguments for an
 // action, the action is offered on what the page and one prompted argument fill.
 func goingPropose(decision goingDecision, final *going.Final, start goingRunStart) goingProposal {
 	written := map[string]json.RawMessage{}
@@ -418,7 +431,7 @@ func goingMissingArguments(action GoingAction, arguments map[string]any, session
 	var closest []string
 	routed := false
 	for _, route := range action.Routes {
-		if route.whenArgument != "" && arguments[route.whenArgument] != route.whenValue {
+		if !route.takes(arguments) {
 			continue
 		}
 		needs := slices.Clone(required)
@@ -455,7 +468,7 @@ func goingChipValue(chip *goingContext, argument string) string {
 
 // goingPromptFor is how the bar asks for one missing argument, and false for one it cannot ask
 // for: a boolean, a list or an object. A session the caller's own credential did not prove is
-// asked for by the name the person knows it by, which the write resolves (decision 7).
+// asked for by the name the person knows it by, which the write resolves.
 func goingPromptFor(fields map[string]contracts.ToolField, name string) (goingMissingArgument, bool) {
 	if name == goingCallerSession {
 		return goingMissingArgument{Field: name, Kind: goingPromptText}, true
@@ -488,15 +501,16 @@ type goingDisplayFit struct {
 // reason newIssueSettingsInput is one: a request's required field and a response's are reflected
 // apart.
 type goingDisplayFitInput struct {
-	Off bool `json:"off" required:"true"`
+	Off *bool `json:"off" required:"true"`
 }
 
 // setGoingDisplayFit is POST /api/v1/going/display-fit/_test, {off}: with off true this process
 // treats the configured decision model as having no display fit, so no decision draws a chart
-// unasked, which is "the chart-display threshold unset" of a deployment whose model has none
-// (decision 14), and with off false it reads the record's threshold again. It removes a measured
-// number and adds none, and acts on the process the call lands on, as the new-issue settings hook
-// does. Test-only: mounted only under Deps.TestHooksEnabled.
+// unasked, which is "the chart-display threshold unset" of a deployment whose model has none, and
+// with off false it reads the record's threshold again. A body without off is 400 INVALID_STATE,
+// as the settings route answers one without confirm_writes. It removes a measured number and adds
+// none, and acts on the process the call lands on, as the new-issue settings hook does.
+// Test-only: mounted only under Deps.TestHooksEnabled.
 func (s *server) setGoingDisplayFit(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -506,6 +520,10 @@ func (s *server) setGoingDisplayFit(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.displayFitOff.Store(input.Off)
-	WriteJSON(w, http.StatusOK, goingDisplayFit{Off: input.Off})
+	if input.Off == nil {
+		writeError(w, "INVALID_STATE", http.StatusBadRequest, "off is required: true or false")
+		return
+	}
+	s.displayFitOff.Store(*input.Off)
+	WriteJSON(w, http.StatusOK, goingDisplayFit{Off: *input.Off})
 }

@@ -10,6 +10,7 @@ import {
   offerRow,
   openBarOver,
   operationRow,
+  STATUS_CHART_SPEC,
   submitOperation,
   writeLines,
 } from "./going-panel";
@@ -66,20 +67,7 @@ function reply(fixture: Fixture, chart: boolean): ChatReply {
         [UPDATE]: [{ issue: fixture.keys[0], status: "in_progress" }],
       },
       ...(chart
-        ? {
-            block: {
-              kind: "chart",
-              spec: {
-                mark: "bar",
-                params: { project: "CORE" },
-                source: "read_progress",
-                table: "statuses",
-                x: "status",
-                y: "count",
-              },
-              title: "CORE by status",
-            },
-          }
+        ? { block: { kind: "chart", spec: STATUS_CHART_SPEC, title: "CORE by status" } }
         : {}),
     },
   };

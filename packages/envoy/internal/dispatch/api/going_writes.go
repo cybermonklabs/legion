@@ -7,7 +7,7 @@ package api
 // request per write, so a refused write shows its refusal in its own line and an undo of a write
 // still queued stops it before it is sent.
 //
-// The write runs as the caller (decision 5): through the server's own route table, called
+// The write runs as the caller: through the server's own route table, called
 // in-process (server.inProcess), with the caller's credential copied from this request and
 // nothing else of it. Every check a route makes - its auth class, its scopes, the cross-site
 // origin check, the project and session checks, the claim's rules - runs on the copy exactly as
@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -136,13 +137,13 @@ const (
 
 // The writes route's own refusals.
 const (
-	codeGoingRunNotFound        = "GOING_RUN_NOT_FOUND"
-	codeGoingRunUnproposed      = "GOING_RUN_UNPROPOSED"
-	codeGoingNotProposed        = "GOING_NOT_PROPOSED"
-	codeGoingApprovalRequired   = "GOING_APPROVAL_REQUIRED"
-	codeGoingConfirmationNeeded = "GOING_CONFIRMATION_REQUIRED"
-	codeGoingArguments          = "GOING_ARGUMENTS"
-	codeGoingWriteInput         = "GOING_INPUT"
+	codeGoingRunNotFound          = "GOING_RUN_NOT_FOUND"
+	codeGoingRunUnproposed        = "GOING_RUN_UNPROPOSED"
+	codeGoingNotProposed          = "GOING_NOT_PROPOSED"
+	codeGoingApprovalRequired     = "GOING_APPROVAL_REQUIRED"
+	codeGoingConfirmationRequired = "GOING_CONFIRMATION_REQUIRED"
+	codeGoingArguments            = "GOING_ARGUMENTS"
+	codeGoingInput                = "GOING_INPUT"
 )
 
 // goingWriteInput is POST /api/v1/going/runs/{id}/writes's body: which invocation of which offer
@@ -182,10 +183,10 @@ type goingWriteLine struct {
 // is 404 GOING_RUN_NOT_FOUND, one answer for all three. The run must have proposed or ended
 // (409 GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
 // GOING_NOT_PROPOSED). `auto` is refused, 409 GOING_APPROVAL_REQUIRED, for the two writes that
-// always ask (decision 27) and for any but the action the decision chose at or above the action
+// always ask and for any but the action the decision chose at or above the action
 // threshold, and 409 GOING_CONFIRMATION_REQUIRED where the caller turned confirm_writes on. The
 // value before is read, the write performed and the value after read, each in-process as the
-// caller (decisions 5 and 6); the write, refused or not, is appended to the run. A refusal by the
+// caller; the write, refused or not, is appended to the run. A refusal by the
 // route the write ran through, or by a read the write needed, is answered as that route answered
 // it, status, code and all.
 func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
@@ -199,7 +200,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !slices.Contains([]string{goingApprovedAuto, goingApprovedPerson, goingApprovedConfirmed}, input.Approved) {
-		writeError(w, codeGoingWriteInput, http.StatusBadRequest, "approved must be auto, person or confirmed")
+		writeError(w, codeGoingInput, http.StatusBadRequest, "approved must be auto, person or confirmed")
 		return
 	}
 	run, ok := s.readCallersGoingRun(w, r, caller.ID)
@@ -227,10 +228,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	session := ""
-	if actor.Credential != nil {
-		session = actor.Credential.Session
-	}
+	session := goingCredentialOf(actor, false).session()
 	doer := s.goingDoer(r)
 	arguments, named, refused := goingArgumentsOf(invocation, input)
 	if refused != nil {
@@ -239,8 +237,8 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Approved: input.Approved}
 	if named != "" {
-		// The session the person named for a row addressing the caller's own session
-		// (decision 7), read off the roster as the person may read it.
+		// The session the person named for a row addressing the caller's own session, read off
+		// the roster as the person may read it.
 		resolved, err := (goingReader{doer: doer}).session(r.Context(), named)
 		if err != nil {
 			s.refuseGoingWrite(w, r, run.ID, caller.ID, write, goingObservation{}, err)
@@ -260,11 +258,12 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		s.refuseGoingWrite(w, r, run.ID, caller.ID, write, before, err)
 		return
 	}
-	response, err := performer.send(r.Context(), prepared)
+	response, landed, err := performer.send(r.Context(), prepared)
 	if err != nil {
 		s.writeHandlerError(w, fmt.Errorf("perform %s in-process: %w", input.Offer, err))
 		return
 	}
+	write.Landed = landed
 	answer, err := io.ReadAll(response.Body)
 	_ = response.Body.Close()
 	if err != nil {
@@ -279,9 +278,9 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	after, err := observer.observe(r.Context(), prepared, answer, before)
 	if err != nil {
 		// The write landed; only the read back of it failed, which the record says rather than
-		// losing the write.
+		// losing the write, in the words goingFailed gives it.
 		after = goingObservation{target: before.target, field: before.field, issue: before.issue}
-		write.Outcome.Message = "the write landed and the value after it could not be read: " + err.Error()
+		write.Outcome.Message = "the write landed and the value after it could not be read: " + goingFailed(err).Message
 	}
 	write.Target, write.Field = cmp.Or(after.target, before.target), cmp.Or(after.field, before.field)
 	write.Before, write.After = goingJSONOrNull(before.value), goingJSONOrNull(after.value)
@@ -382,7 +381,7 @@ func goingProposedInvocation(run goingRun, input goingWriteInput) (goingInvocati
 }
 
 // goingAutoRefusal is why a write may not run at once, nil where it may: the two writes that
-// always ask (decision 27), any action but the one the decision chose at or above the action
+// always ask, any action but the one the decision chose at or above the action
 // threshold (the decision's act), and a caller who asked to confirm every write.
 func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action, login string) error {
 	if goingAlwaysAsk[action] {
@@ -404,7 +403,7 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action, log
 		return err
 	}
 	if settings.ConfirmWrites {
-		return errorf(http.StatusConflict, codeGoingConfirmationNeeded,
+		return errorf(http.StatusConflict, codeGoingConfirmationRequired,
 			"this person asked to confirm every write of the command bar: send it as approved confirmed once they have")
 	}
 	return nil
@@ -416,16 +415,12 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action, log
 // named for the caller to resolve.
 func goingArgumentsOf(invocation goingInvocation, input goingWriteInput) (map[string]any, string, error) {
 	arguments := make(map[string]any, len(invocation.Arguments)+len(input.Arguments)+1)
-	for name, value := range invocation.Arguments {
-		arguments[name] = value
-	}
-	for name, value := range input.Arguments {
-		arguments[name] = value
-	}
+	maps.Copy(arguments, invocation.Arguments)
+	maps.Copy(arguments, input.Arguments)
 	filled := len(input.Fill) > 0 && string(input.Fill) != "null"
 	if invocation.Missing == nil {
 		if filled {
-			return nil, "", errorf(http.StatusBadRequest, codeGoingWriteInput, "this invocation is missing no argument, so it takes no fill")
+			return nil, "", errorf(http.StatusBadRequest, codeGoingInput, "this invocation is missing no argument, so it takes no fill")
 		}
 		return arguments, "", nil
 	}
@@ -433,16 +428,16 @@ func goingArgumentsOf(invocation goingInvocation, input goingWriteInput) (map[st
 		if _, given := arguments[invocation.Missing.Field]; given {
 			return arguments, "", nil
 		}
-		return nil, "", errorf(http.StatusBadRequest, codeGoingWriteInput, "fill is required: the value of %s", invocation.Missing.Field)
+		return nil, "", errorf(http.StatusBadRequest, codeGoingInput, "fill is required: the value of %s", invocation.Missing.Field)
 	}
 	var value any
 	if err := json.Unmarshal(input.Fill, &value); err != nil {
-		return nil, "", errorf(http.StatusBadRequest, codeGoingWriteInput, "fill is no JSON value: %v", err)
+		return nil, "", errorf(http.StatusBadRequest, codeGoingInput, "fill is no JSON value: %v", err)
 	}
 	if invocation.Missing.Field == goingCallerSession {
 		named, isText := value.(string)
 		if !isText || named == "" {
-			return nil, "", errorf(http.StatusBadRequest, codeGoingWriteInput, "fill names the session the write acts for by its id or its title")
+			return nil, "", errorf(http.StatusBadRequest, codeGoingInput, "fill names the session the write acts for by its id or its title")
 		}
 		return arguments, named, nil
 	}
@@ -459,7 +454,7 @@ type goingObservation struct {
 	issue  string
 }
 
-// goingObserver reads the value a write is about to change and the value it left (decision 6),
+// goingObserver reads the value a write is about to change and the value it left,
 // through the caller's own Doer. An issue's place in its project's ranking is read from the
 // store (rankPlace), since no route answers an issue's neighbours in rank order.
 type goingObserver struct {
@@ -522,15 +517,22 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 	case "dispatch_follow":
 		return o.following(ctx, path["id"], path["session_id"])
 	case "dispatch_doc_edit":
-		id := before.target
-		if id == "" {
-			resolved, err := o.editedDocument(ctx, prepared)
+		if before.target != "" {
+			// The read after: an edit changes neither the document's id nor its issue, which the
+			// read before read, so only its content is read again.
+			observed := goingObservation{target: before.target, field: before.field, issue: before.issue}
+			value, err := o.documentValue(ctx, before.target)
 			if err != nil {
-				return goingObservation{field: field, issue: issue}, err
+				return observed, err
 			}
-			id = resolved
+			observed.value = value
+			return observed, nil
 		}
-		return o.document(ctx, id)
+		resolved, err := o.editedDocument(ctx, prepared)
+		if err != nil {
+			return goingObservation{field: field, issue: issue}, err
+		}
+		return o.document(ctx, resolved)
 	}
 	if answer == nil {
 		// A write that makes an item: nothing of it is there before it.
@@ -558,7 +560,7 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		if err := json.Unmarshal(answer, &created); err != nil {
 			return goingObservation{}, fmt.Errorf("read the ask made: %w", err)
 		}
-		return goingObservation{target: created.ID, field: field, issue: goingDeref(created.IssueKey),
+		return goingObservation{target: created.ID, field: field, issue: deref(created.IssueKey),
 			value: map[string]any{"id": created.ID, "question": created.Question, "state": created.State}}, nil
 	case "dispatch_request_approval":
 		var requested struct {
@@ -577,6 +579,24 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 			value["ask"], target = requested.Ask.ID, requested.Ask.ID
 		}
 		return goingObservation{target: target, field: field, issue: issue, value: value}, nil
+	case "dispatch_send_to_agent":
+		// The route answers 201 even when the delivery failed, so the line carries the state of
+		// the message's last delivery and its error, for the bar to tell a failed send.
+		var sent struct {
+			ID         string `json:"id"`
+			Deliveries []struct {
+				State string  `json:"state"`
+				Error *string `json:"error"`
+			} `json:"deliveries"`
+		}
+		if err := json.Unmarshal(answer, &sent); err != nil {
+			return goingObservation{}, fmt.Errorf("read the message sent: %w", err)
+		}
+		value := map[string]any{"id": sent.ID, "delivery_state": "", "delivery_error": nil}
+		if last := len(sent.Deliveries) - 1; last >= 0 {
+			value["delivery_state"], value["delivery_error"] = sent.Deliveries[last].State, sent.Deliveries[last].Error
+		}
+		return goingObservation{target: sent.ID, field: field, issue: issue, value: value}, nil
 	}
 	made := goingMadeID(answer)
 	if made == "" {
@@ -704,17 +724,28 @@ func (o goingObserver) rankPlace(ctx context.Context, key string) (goingRankPlac
 // it had, those of them that are still issues of its project, or both where they still stand in
 // order, and why it cannot where neither is.
 func (o goingObserver) rankRestore(ctx context.Context, key string, place goingRankPlace) (map[string]any, string) {
-	ranks := map[string]string{}
+	names := make([]string, 0, 2)
 	for _, neighbour := range []*string{place.After, place.Before} {
-		if neighbour == nil {
-			continue
+		if neighbour != nil {
+			names = append(names, *neighbour)
 		}
-		var rank string
-		if err := o.s.deps.Store.Pool.QueryRow(ctx, `
-			select n.rank from issues n join issues i on i.key = $2 and i.project_key = n.project_key
-			where n.key = $1
-		`, *neighbour, key).Scan(&rank); err == nil {
-			ranks[*neighbour] = rank
+	}
+	// A neighbour that is no longer an issue of the project is passed over, and so is one whose
+	// read failed: either leaves that side of the place unnamed.
+	ranks := map[string]string{}
+	if len(names) > 0 {
+		rows, err := o.s.deps.Store.Pool.Query(ctx, `
+			select n.key, n.rank from issues n join issues i on i.key = $2 and i.project_key = n.project_key
+			where n.key = any($1)
+		`, names, key)
+		if err == nil {
+			for rows.Next() {
+				var name, rank string
+				if rows.Scan(&name, &rank) == nil {
+					ranks[name] = rank
+				}
+			}
+			rows.Close()
 		}
 	}
 	restore := map[string]any{}
@@ -814,7 +845,7 @@ func (o goingObserver) readAsk(ctx context.Context, id string) (goingAskRead, er
 // description, which an edit takes.
 func (o goingObserver) askFields(ctx context.Context, id string, fields []string) (goingObservation, error) {
 	read, err := o.readAsk(ctx, id)
-	observed := goingObservation{target: cmp.Or(read.Ask.ID, id), field: strings.Join(fields, ", "), issue: goingDeref(read.Ask.IssueKey)}
+	observed := goingObservation{target: cmp.Or(read.Ask.ID, id), field: strings.Join(fields, ", "), issue: deref(read.Ask.IssueKey)}
 	if err != nil {
 		return observed, err
 	}
@@ -846,7 +877,7 @@ func (o goingObserver) askFields(ctx context.Context, id string, fields []string
 // askState is the ask's state: open, answered or resolved.
 func (o goingObserver) askState(ctx context.Context, id string) (goingObservation, error) {
 	read, err := o.readAsk(ctx, id)
-	observed := goingObservation{target: cmp.Or(read.Ask.ID, id), field: "state", issue: goingDeref(read.Ask.IssueKey)}
+	observed := goingObservation{target: cmp.Or(read.Ask.ID, id), field: "state", issue: deref(read.Ask.IssueKey)}
 	if err != nil {
 		return observed, err
 	}
@@ -864,7 +895,7 @@ func (o goingObserver) commentResolved(ctx context.Context, id string) (goingObs
 		} `json:"comment"`
 	}
 	err := o.read.get(ctx, goingCommentPath(id), &read)
-	observed := goingObservation{target: cmp.Or(read.Comment.ID, id), field: "resolved", issue: goingDeref(read.Comment.IssueKey)}
+	observed := goingObservation{target: cmp.Or(read.Comment.ID, id), field: "resolved", issue: deref(read.Comment.IssueKey)}
 	if err != nil {
 		return observed, err
 	}
@@ -889,6 +920,7 @@ func (o goingObserver) following(ctx context.Context, ask, session string) (goin
 	return observed, nil
 }
 
+// follows reports whether session follows the ask.
 func (o goingObserver) follows(ctx context.Context, ask, session string) (bool, error) {
 	var read struct {
 		Followers []struct {
@@ -898,11 +930,12 @@ func (o goingObserver) follows(ctx context.Context, ask, session string) (bool, 
 	if err := o.read.get(ctx, goingAskPath(ask, "followers"), &read); err != nil {
 		return false, err
 	}
-	return slices.ContainsFunc(read.Followers, func(follower struct {
-		SessionID string `json:"session_id"`
-	}) bool {
-		return follower.SessionID == session
-	}), nil
+	for _, follower := range read.Followers {
+		if follower.SessionID == session {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // editedDocument is the id of the document an edit writes, resolved from the slug the issue and
@@ -939,7 +972,7 @@ func (o goingObserver) document(ctx context.Context, id string) (goingObservatio
 	if err := o.read.get(ctx, goingArtifactPath(id), &artifact); err != nil {
 		return goingObservation{target: id, field: "content"}, err
 	}
-	observed := goingObservation{target: artifact.ID, field: "content", issue: goingDeref(artifact.IssueKey)}
+	observed := goingObservation{target: artifact.ID, field: "content", issue: deref(artifact.IssueKey)}
 	value, err := o.documentValue(ctx, artifact.ID)
 	if err != nil {
 		return observed, err
@@ -985,11 +1018,4 @@ func goingJSONOrNullRaw(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage("null")
 	}
 	return raw
-}
-
-func goingDeref(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
 }

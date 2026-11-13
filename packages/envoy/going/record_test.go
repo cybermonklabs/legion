@@ -52,11 +52,12 @@ func TestTheRecordReadsBack(t *testing.T) {
 		switch {
 		case record.ActionThreshold == nil:
 			t.Errorf("the chosen %s has no action threshold", record.Model)
-		case record.Cases < 80 || record.ChartWorthyCases < 20:
-			t.Errorf("the chosen %s was measured on %d cases, %d chart-worthy; R7 needs 80 and 20", record.Model, record.Cases, record.ChartWorthyCases)
-		case record.NamedAccuracy < 0.9 || record.OtherAccuracy < 0.7 || record.P95MS >= 500:
-			t.Errorf("the chosen %s reaches %.3f named, %.3f on the rest at p95 %.0f ms; R7 needs 0.9, 0.7 and under 500",
-				record.Model, record.NamedAccuracy, record.OtherAccuracy, record.P95MS)
+		case record.Cases < going.LeastCases || record.ChartWorthyCases < going.LeastChartCases:
+			t.Errorf("the chosen %s was measured on %d cases, %d chart-worthy; R7 needs %d and %d",
+				record.Model, record.Cases, record.ChartWorthyCases, going.LeastCases, going.LeastChartCases)
+		case record.NamedAccuracy < going.NamedFloor || record.OtherAccuracy < going.OtherFloor || record.P95MS >= going.P95CeilingMS:
+			t.Errorf("the chosen %s reaches %.3f named, %.3f on the rest at p95 %.0f ms; R7 needs %v, %v and under %v",
+				record.Model, record.NamedAccuracy, record.OtherAccuracy, record.P95MS, going.NamedFloor, going.OtherFloor, going.P95CeilingMS)
 		}
 	}
 	if chosen != 1 {

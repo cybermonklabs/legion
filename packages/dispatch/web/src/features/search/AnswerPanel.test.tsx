@@ -1,17 +1,19 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, expect, jest, type Mock, test } from "bun:test";
+import { screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
 import { userOnFakeClock } from "../../__tests__/user";
-import { api } from "../../api/client";
-import type { GoingCapability, GoingEvent, IssueReferenceSummary } from "../../api/types";
+import type { api } from "../../api/client";
+import type { GoingEvent } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
-import { KeymapProvider } from "../shell/KeymapProvider";
-import { SearchPalette } from "./SearchPalette";
-import { searchAnswer } from "./search-fixture";
+import {
+  type GoingBarSpies,
+  type OpenedStream,
+  renderBar,
+  spyOnGoingBar,
+} from "./going-bar-fixture";
 import { forgetAnsweredRun } from "./useGoingAnswer";
 import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 
@@ -20,105 +22,23 @@ import { KEYSTROKE_DEBOUNCE_MS, MEANING_PAUSE_MS } from "./useTieredSearch";
 // drawn as its line, and the last answer drawn again as the bar reopens. The clock is held, as in
 // SearchPalette.test.tsx, so which of the bar's timers has fired is the row's to decide.
 
-const configured: GoingCapability = {
-  answer: { blocks: true, configured: true, model: "e2e-chat" },
-  decision: { configured: true, model: "e2e-decide", reachable: true },
-  label: { configured: true },
-  session: { configured: true },
-};
-
-/** One stream the bar opened: the frames a row hands it, and whether the bar let it go. */
-interface OpenedStream {
-  readonly id: string;
-  readonly lastEventId: number | undefined;
-  readonly send: (frame: GoingEvent) => void;
-  readonly signal: AbortSignal;
-}
-
 let streams: OpenedStream[];
 let createGoingRequest: Mock<typeof api.createGoingRequest>;
 let cancelGoingRequest: Mock<typeof api.cancelGoingRequest>;
 let goingCapability: Mock<typeof api.goingCapability>;
-let spies: { mockRestore: () => void }[];
+let spies: GoingBarSpies;
 
 beforeEach(() => {
   jest.useFakeTimers();
-  streams = [];
-  let runs = 0;
-  createGoingRequest = spyOn(api, "createGoingRequest").mockImplementation(async (input) => {
-    runs += 1;
-    return {
-      author: { id: "alice", kind: "user" },
-      created_at: new Date().toISOString(),
-      ends_at: new Date(Date.now() + 30_000).toISOString(),
-      id: `run-${runs}`,
-      project: input.project ?? "",
-      words: input.words,
-    };
-  });
-  cancelGoingRequest = spyOn(api, "cancelGoingRequest").mockImplementation(async (id) => ({
-    cancelled_at: new Date().toISOString(),
-    id,
-  }));
-  goingCapability = spyOn(api, "goingCapability").mockResolvedValue(configured);
-  spies = [
-    createGoingRequest,
-    cancelGoingRequest,
-    goingCapability,
-    spyOn(api, "search").mockResolvedValue(
-      searchAnswer([
-        {
-          href: "/issues/LEGION-3",
-          id: "LEGION-3",
-          kind: "issue",
-          owner: { key: "LEGION-3", kind: "issue", status: "todo", title: "Instruments" },
-          rank: 1,
-          snippet: "The <mark>astrolabe</mark>.",
-        },
-      ])
-    ),
-    spyOn(api, "getIssueSummary").mockImplementation((key) =>
-      Promise.resolve({
-        documents: [],
-        key,
-        project: "LEGION",
-        status: "todo",
-        title: "Instruments",
-      } satisfies IssueReferenceSummary)
-    ),
-    spyOn(api, "streamGoingAnswer").mockImplementation((id, onFrame, signal, lastEventId) => {
-      streams.push({ id, lastEventId, send: (frame) => onFrame(frame, 1), signal });
-      const { promise, reject } = Promise.withResolvers<void>();
-      signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-      return promise;
-    }),
-  ];
+  spies = spyOnGoingBar();
+  ({ cancelGoingRequest, createGoingRequest, goingCapability, streams } = spies);
 });
 
 afterEach(() => {
-  for (const spy of spies) spy.mockRestore();
+  spies.restore();
   forgetAnsweredRun();
   realClock();
 });
-
-function renderBar(): { unmount: () => void } {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const view = render(
-    <MemoryRouter initialEntries={["/projects/LEGION/issues"]}>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <SearchPalette onClose={() => {}} open />
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
-  return {
-    unmount: () => {
-      view.unmount();
-      queryClient.clear();
-    },
-  };
-}
 
 /** Types `words` and moves the clock past the keystroke's search, short of the pause. */
 async function type(user: UserEvent, words: string): Promise<void> {
@@ -156,13 +76,10 @@ test("the pause asks once with the chip's context, and the next keystroke cancel
       expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The first answer")
     );
 
-    // One more letter: the run is cancelled on Dispatch and its stream let go, so nothing it
-    // sends after reaches the panel.
+    // One more letter: the run is cancelled on Dispatch and its stream let go.
     await user.keyboard("s");
     await waitFor(() => expect(cancelGoingRequest.mock.calls.map(([id]) => id)).toEqual(["run-1"]));
     expect(first?.signal.aborted).toBe(true);
-    first?.send({ data: { text: " and more" }, event: "text" });
-    expect(screen.queryByTestId("going-answer-text")).not.toBeInTheDocument();
 
     // And the pause after it asks the new words, once.
     await tick(MEANING_PAUSE_MS);
@@ -171,6 +88,14 @@ test("the pause asks once with the chip's context, and the next keystroke cancel
       "astrolabe",
       "astrolabes",
     ]);
+    streams[1]?.send({ data: { text: "The second answer" }, event: "text" });
+    await waitFor(() =>
+      expect(screen.getByTestId("going-answer-text")).toHaveTextContent("The second answer")
+    );
+    // A frame the let-go stream still delivers reaches no panel, the new run's included.
+    first?.send({ data: { text: " and more" }, event: "text" });
+    await tick(0);
+    expect(screen.getByTestId("going-answer-text").textContent).toBe("The second answer");
   } finally {
     bar.unmount();
   }
@@ -295,7 +220,6 @@ test("reopening the bar draws the last answered run again from its stream's firs
   try {
     await waitFor(() => expect(streams).toHaveLength(2));
     expect(streams[1]?.id).toBe("run-1");
-    expect(streams[1]?.lastEventId).toBeUndefined();
     expect(createGoingRequest).toHaveBeenCalledTimes(1);
     expect(await screen.findByTestId("going-answer-replayed")).toHaveTextContent("astrolabe");
 
@@ -312,12 +236,7 @@ test("reopening the bar draws the last answered run again from its stream's firs
 
 test("a Dispatch that does not answer asks nothing and says what the bar cannot do", async () => {
   const user = userOnFakeClock();
-  goingCapability.mockResolvedValue({
-    answer: { blocks: "unknown", configured: false, model: "" },
-    decision: { configured: false, model: "", reachable: false },
-    label: { configured: false },
-    session: { configured: false },
-  });
+  goingCapability.mockResolvedValue(UNCONFIGURED_CAPABILITY);
   const bar = renderBar();
   try {
     await type(user, "astrolabe");

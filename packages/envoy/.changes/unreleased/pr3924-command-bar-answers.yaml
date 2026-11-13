@@ -16,5 +16,3 @@ body: |-
   `GET /api/v1/me/going-runs` lists the person's runs of the last 30 days,
   `POST /api/v1/going/requests/{id}/cancel` stops a run, and
   `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week.
-  `GET /api/v1/going/capability` now answers each part apart,
-  `{answer, decision, session, label}`, and no longer answers `model_configured`.

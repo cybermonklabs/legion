@@ -13,6 +13,7 @@ import { type ReactNode, useState } from "react";
 import { Link, MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { UNCONFIGURED_CAPABILITY } from "../../__tests__/network";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { IssueReferenceSummary, SearchResponse, SearchResult } from "../../api/types";
@@ -427,12 +428,7 @@ test("a hit in a long-named document previews that document", async () => {
     new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
   );
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
-  const goingCapability = spyOn(api, "goingCapability").mockResolvedValue({
-    answer: { blocks: "unknown", configured: false, model: "" },
-    decision: { configured: false, model: "", reachable: false },
-    label: { configured: false },
-    session: { configured: false },
-  });
+  const goingCapability = spyOn(api, "goingCapability").mockResolvedValue(UNCONFIGURED_CAPABILITY);
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/LEGION-2");

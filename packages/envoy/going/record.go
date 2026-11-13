@@ -15,6 +15,18 @@ import (
 //go:embed decision_models.json
 var decisionModelsJSON []byte
 
+// R7's floors and its least case counts: a model is chosen only where it reaches NamedFloor on
+// the cases that name their action and OtherFloor on the rest at a p95 under P95CeilingMS,
+// measured on at least LeastCases cases of which at least LeastChartCases are chart-worthy. The
+// bake-off chooses by them and the record's own test holds the chosen entry to them.
+const (
+	NamedFloor      = 0.90
+	OtherFloor      = 0.70
+	P95CeilingMS    = 500.0 // milliseconds, exclusive
+	LeastCases      = 80
+	LeastChartCases = 20
+)
+
 // Record is one measured model: its two fitted thresholds and the measurement they were fitted
 // on. A threshold is nil where its fit does not hold: a model with no action fit is never chosen
 // and acts on nothing, and one with no display fit draws a chart only on an explicit request
@@ -80,11 +92,6 @@ var decisionRecords = sync.OnceValues(func() ([]Record, error) {
 	}
 	return records, nil
 })
-
-// DecisionRecords is every entry of the record, in the order the bake-off wrote them.
-func DecisionRecords() ([]Record, error) {
-	return decisionRecords()
-}
 
 // DecisionRecord is the entry for the model of that name, and whether the record holds one. A
 // record the binary cannot read holds no model, which TestTheRecordReadsBack keeps from

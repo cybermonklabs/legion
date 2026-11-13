@@ -14,12 +14,13 @@ import {
   answerPanel,
   answerText,
   askAndWait,
-  bar,
+  closeBar,
   countAskedRuns,
+  openBar,
   openBarOver,
   plainWords,
   prose,
-  searchBox,
+  STATUS_CHART_SPEC,
   shownWords,
   withBlock,
 } from "./going-panel";
@@ -42,7 +43,6 @@ const FIXTURE = { done: 2, todo: 3 } as const;
 
 /** The read every progress-shaped block names: the project's issues, counted by status. */
 const projectRead = { params: { project: "CORE" }, source: "read_progress" } as const;
-const chartSpec = { ...projectRead, mark: "bar", table: "statuses", x: "status", y: "count" };
 
 interface Fixture {
   readonly open: readonly string[];
@@ -111,7 +111,7 @@ const kindCases: readonly KindCase[] = [
   {
     check: expectChart,
     kind: "chart",
-    spec: chartSpec,
+    spec: STATUS_CHART_SPEC,
     words: "chart the CORE issues by status",
   },
   {
@@ -273,7 +273,7 @@ test("a chart appears unasked at the chart-display threshold and not below it", 
       { display: { choice: "chart", confidence: threshold - 0.01 } },
     ],
   });
-  await scriptChat({ default: withBlock("chart", chartSpec) });
+  await scriptChat({ default: withBlock("chart", STATUS_CHART_SPEC) });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -297,7 +297,7 @@ test("with the chart-display threshold unset, a full-confidence chart choice dra
   test.setTimeout(90_000);
   await seedIssues();
   await scriptDecision({ default: { display: { choice: "chart", confidence: 1 } } });
-  await scriptChat({ default: withBlock("chart", chartSpec) });
+  await scriptChat({ default: withBlock("chart", STATUS_CHART_SPEC) });
   await setGoingDisplayFit(true);
   const context = await asUser(browser, "alice");
   try {
@@ -391,7 +391,7 @@ test("a chart is not stored: the issue and the project gain no artifact, and reo
   const fixture = await seedIssues();
   const issueBefore = await listIssueArtifacts(fixture.issue);
   const projectBefore = await listProjectArtifacts("CORE");
-  await scriptChat({ default: withBlock("chart", chartSpec) });
+  await scriptChat({ default: withBlock("chart", STATUS_CHART_SPEC) });
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
@@ -407,14 +407,11 @@ test("a chart is not stored: the issue and the project gain no artifact, and reo
 
     // Closed and opened again, with an empty box: the same run's stream, read from its first
     // frame, draws the chart again, and nothing is asked anew.
-    await page.keyboard.press("Escape");
-    await expect(bar(page)).toHaveCount(0);
+    await closeBar(page);
     const replayed = page.waitForRequest((request) =>
       request.url().endsWith(`/api/v1/going/requests/${run}/stream`)
     );
-    await page.locator("body").focus();
-    await page.keyboard.press("Control+k");
-    await expect(searchBox(page)).toBeFocused();
+    await openBar(page);
     expect((await replayed).headers()["last-event-id"]).toBe("0");
     await expect(page.getByTestId("going-answer-replayed")).toContainText(
       "chart the CORE issues by status"

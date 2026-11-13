@@ -60,6 +60,15 @@ const names: Record<FakeModel, string> = {
   fakeDecisionModel: "fake decision model",
 };
 
+/** The stack's certificate, read once per directory: every fixture call trusts it, and a row
+ *  reads the counters between keystrokes. */
+let trusted: { readonly path: string; readonly bytes: Buffer } | undefined;
+
+function certificate(path: string): Buffer {
+  if (trusted?.path !== path) trusted = { bytes: readFileSync(path), path };
+  return trusted.bytes;
+}
+
 /** One fixture call to `model`, answered with its body, refused naming the route on a status
  *  other than 200. */
 function fixture(
@@ -75,7 +84,7 @@ function fixture(
   return new Promise<string>((resolve, reject) => {
     const call = request(
       {
-        ca: readFileSync(files.certificate),
+        ca: certificate(files.certificate),
         headers: payload === undefined ? {} : { "Content-Type": "application/json" },
         host: "127.0.0.1",
         method,
@@ -122,15 +131,6 @@ export async function decisionCalls(): Promise<FakeDecisionCalls> {
   return JSON.parse(
     await fixture("fakeDecisionModel", "GET", "/__fixture/calls")
   ) as FakeDecisionCalls;
-}
-
-/** Forgets both fakes' counts and kept bodies, keeping what the row scripted, so a row that made
- *  the server call while it was setting its fixture up counts from zero. */
-export async function forgetModelCalls(): Promise<void> {
-  await Promise.all([
-    fixture("fakeChatModel", "PUT", "/__fixture/calls", {}),
-    fixture("fakeDecisionModel", "PUT", "/__fixture/calls", {}),
-  ]);
 }
 
 /** Clears both fakes between rows (`e2e/seed.ts`), so one row's script and counts reach none of

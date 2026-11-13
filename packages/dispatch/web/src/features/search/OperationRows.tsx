@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useCallback, useEffect } from "react";
 
-import { api } from "../../api/client";
 import { goingSettingsQuery } from "../../api/queries";
 import type {
   GoingDecisionEvent,
@@ -22,6 +21,7 @@ import { useWrites } from "../writes/write-store";
 import {
   ALWAYS_ASK,
   actionName,
+  actionOn,
   type GoingApproval,
   runGoingWrite,
   runGoingWrites,
@@ -34,10 +34,10 @@ import {
   useTurn,
 } from "./going-turns";
 import type { FileNewIssue } from "./NewIssueOffer";
-import { fileNewIssue } from "./new-issue";
+import { fileNewIssue, newIssueFields } from "./new-issue";
 import { barNoteClassName, type OfferRow, useWordsState } from "./offer";
 import { handoffBody, type SendToAgent } from "./send-to-agent";
-import type { GoingAnswer } from "./useGoingAnswer";
+import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
 /** The group the bar's operation rows sit in, above the hits, and the operation row's own id. */
 export const OPERATION_GROUP_ID = "search-group-going";
@@ -50,22 +50,23 @@ export function offerOptionId(action: string): string {
 
 type Decision = GoingDecisionEvent["data"];
 type Proposal = GoingProposalEvent["data"];
+/** The value of each invocation's missing argument the person gave, by invocation. */
+type Fills = Readonly<Record<number, string>>;
 
 /** What the person asked to run: the action the decision chose, `undefined` while the decision
  *  that names it has not arrived, and how the write came to run. */
 interface Wanted {
   readonly action: string | undefined;
   readonly approved: GoingApproval;
-  /** The value of each invocation's missing argument the person gave, by invocation. */
-  readonly fills: Readonly<Record<number, string>>;
+  readonly fills: Fills;
 }
 
 /**
  * Where the bar's operation stands for the words in the box, once the person submitted it or
- * picked an offer: waiting for the decision or the proposal (decision 4), asking for the one
- * argument an invocation is missing, asking first because the person's setting says so, or an
- * action the proposal offered nothing to run for. Nothing submitted is no state at all, and so is
- * a submit that had nothing to run (`idle`); once a write has gone, its lines say the rest.
+ * picked an offer: waiting for the decision or the proposal, asking for the one argument an
+ * invocation is missing, asking first because the person's setting says so, or an action the
+ * proposal offered nothing to run for. Nothing submitted is no state at all, and so is a submit
+ * that had nothing to run (`idle`); once a write has gone, its lines say the rest.
  */
 type Stage =
   | ({ readonly kind: "preparing"; readonly words: string } & Wanted)
@@ -77,7 +78,7 @@ type Stage =
       readonly kind: "confirming";
       readonly words: string;
       readonly action: string;
-      readonly fills: Readonly<Record<number, string>>;
+      readonly fills: Fills;
     }
   | { readonly kind: "unoffered"; readonly words: string; readonly action: string }
   | { readonly kind: "idle"; readonly words: string };
@@ -89,12 +90,19 @@ type Step =
       readonly kind: "run";
       readonly action: string;
       readonly approved: GoingApproval;
-      readonly fills: Readonly<Record<number, string>>;
+      readonly fills: Fills;
     };
 
 /** The offer of `action` the proposal offered something to run for. */
 function offerOf(proposal: Proposal | undefined, action: string): GoingOffer | undefined {
   return proposal?.offers.find((offer) => offer.action === action && offer.offered);
+}
+
+/** The action the decision acts on by itself: its choice at or above the action threshold, and
+ *  none of the writes that always ask. Undefined where it acts on none. */
+function actedAction(decision: Decision): string | undefined {
+  const chosen = decision.actions[0]?.action;
+  return decision.act && chosen !== undefined && ALWAYS_ASK[chosen] !== true ? chosen : undefined;
 }
 
 /** The value a fill sends for the argument it fills: a number field's as a number. */
@@ -119,8 +127,8 @@ function rowLabel(action: string, offer: GoingOffer | undefined): string {
 /**
  * The step a submit (`wanted.action` undefined: the operation the decision chose at or above the
  * action threshold) or a pick comes to, from what the run has streamed so far. A run that has not
- * decided, or a decision whose proposal has not arrived, is `preparing` (decision 4); an answer
- * that ended without either has nothing to run.
+ * decided, or a decision whose proposal has not arrived, is `preparing`; an answer that ended
+ * without either has nothing to run.
  */
 function nextStep(
   words: string,
@@ -129,17 +137,14 @@ function nextStep(
   confirmWrites: boolean | undefined
 ): Step {
   if (answer === undefined || answer.runId === undefined || answer.decision === undefined) {
-    const ended = answer !== undefined && (answer.state === "ended" || answer.state === "failed");
-    return ended ? { kind: "idle", words } : { ...wanted, kind: "preparing", words };
+    return answer !== undefined && answerSettled(answer)
+      ? { kind: "idle", words }
+      : { ...wanted, kind: "preparing", words };
   }
-  const decision = answer.decision;
-  const chosen = decision.actions[0]?.action;
-  const action =
-    wanted.action ??
-    (decision.act && chosen !== undefined && ALWAYS_ASK[chosen] !== true ? chosen : undefined);
+  const action = wanted.action ?? actedAction(answer.decision);
   if (action === undefined) return { kind: "idle", words };
   if (answer.proposal === undefined) {
-    return answer.state === "ended" || answer.state === "failed"
+    return answerSettled(answer)
       ? { action, kind: "unoffered", words }
       : { ...wanted, action, kind: "preparing", words };
   }
@@ -189,17 +194,17 @@ export interface GoingOperations {
 
 /**
  * The bar's operations, from the `decision` and `proposal` frames of the answer to the words in
- * the box (decision 3). Where the decision acts - its choice at or above the action threshold and
- * none of the writes that always ask - the operation is one row above the hits with a Run button,
- * and it runs on submit: `$mod+Enter` anywhere in the bar, the Run button, or Enter on the row,
- * which the highlight reaches only when the person moves it there. Below the threshold the two
- * best actions are rows of their own, and neither runs until the person picks it. A new issue and
- * a send to the agent on the issue go through the bar's own two offers, which always ask.
+ * the box. Where the decision acts - its choice at or above the action threshold and none of the
+ * writes that always ask - the operation is one row above the hits with a Run button, and it runs
+ * on submit: `$mod+Enter` anywhere in the bar, the Run button, or Enter on the row, which the
+ * highlight reaches only when the person moves it there. Below the threshold the two best actions
+ * are rows of their own, and neither runs until the person picks it. A new issue and a send to
+ * the agent on the issue go through the bar's own two offers, which always ask.
  *
  * A submit before the proposal arrives says it is preparing and runs when the proposal lands; one
- * with no run yet asks at once (decision 4). An invocation missing one argument asks for it first,
- * and with the person's setting on (`GET /api/v1/me/going/settings`) every write asks first and
- * is sent confirmed. Each invocation is one write (`runGoingWrite`), and each write one line.
+ * with no run yet asks at once. An invocation missing one argument asks for it first, and with
+ * the person's setting on (`GET /api/v1/me/going/settings`) every write asks first and is sent
+ * confirmed. Each invocation is one write (`runGoingWrite`), and each write one line.
  */
 export function useGoingOperations({
   answer,
@@ -235,11 +240,7 @@ export function useGoingOperations({
     field?.focus();
   }, []);
 
-  const run = (
-    action: string,
-    approved: GoingApproval,
-    fills: Readonly<Record<number, string>>
-  ) => {
+  const run = (action: string, approved: GoingApproval, fills: Fills) => {
     const offer = offerOf(proposal, action);
     if (runId === undefined || current === undefined || offer === undefined) return;
     setStage({ kind: "idle", words });
@@ -292,11 +293,12 @@ export function useGoingOperations({
   const options: OperationOption[] = [];
   let sectionLabel = "";
   if (decision !== undefined) {
-    const chosen = decision.actions[0]?.action;
-    if (decision.act && chosen !== undefined && ALWAYS_ASK[chosen] !== true) {
+    const acted = actedAction(decision);
+    if (acted !== undefined) {
       sectionLabel = "Operation";
-      if (!ran.has(chosen) && (proposal === undefined || offerOf(proposal, chosen) !== undefined)) {
+      if (!ran.has(acted) && (proposal === undefined || offerOf(proposal, acted) !== undefined)) {
         const waiting = stage?.kind === "preparing";
+        const label = rowLabel(acted, offerOf(proposal, acted));
         options.push({
           hint: waiting ? (
             <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>Preparing…</span>
@@ -314,13 +316,8 @@ export function useGoingOperations({
               Run
             </button>
           ),
-          label: rowLabel(chosen, offerOf(proposal, chosen)),
-          row: {
-            id: OPERATION_OPTION_ID,
-            kind: "offer",
-            label: rowLabel(chosen, offerOf(proposal, chosen)),
-            select: submit,
-          },
+          label,
+          row: { id: OPERATION_OPTION_ID, kind: "offer", label, select: submit },
         });
       }
     } else {
@@ -354,35 +351,26 @@ export function useGoingOperations({
             issueOffer === undefined
               ? undefined
               : (store, write) =>
-                  fileNewIssue(
-                    store,
-                    write,
-                    async (through, { project, settings: kept, words: typed }) => {
-                      const written = await runGoingWrite(through, {
-                        action: "dispatch_issue",
-                        approved: "person",
-                        arguments: issueOffer.invocations[0]?.arguments ?? {},
-                        invocation: 0,
-                        replace: {
-                          project,
-                          title: typed,
-                          ...(kept.label === "" ? {} : { labels: [kept.label] }),
-                        },
-                        runId,
-                        words: current.words,
-                      });
-                      return written === null || written.item === ""
-                        ? null
-                        : api.getIssue(written.item);
-                    }
-                  ),
+                  fileNewIssue(store, write, async (through, filing) => {
+                    const written = await runGoingWrite(through, {
+                      action: "dispatch_issue",
+                      approved: "person",
+                      arguments: issueOffer.invocations[0]?.arguments ?? {},
+                      invocation: 0,
+                      replace: newIssueFields(filing),
+                      runId,
+                      words: current.words,
+                    });
+                    // The write's line names the issue it made: the key is all the filing reads.
+                    return written === null || written.item === "" ? null : { key: written.item };
+                  }),
           offered: issueOffer !== undefined,
         };
   const sendToAgent: SendToAgent | undefined =
     runId === undefined || current === undefined || sendOffer === undefined
       ? undefined
       : async (store, { block, issue, session, words: typed }) => {
-          await runGoingWrite(store, {
+          const written = await runGoingWrite(store, {
             action: "dispatch_send_to_agent",
             approved: "person",
             arguments: sendOffer.invocations[0]?.arguments ?? {},
@@ -391,7 +379,16 @@ export function useGoingOperations({
             runId,
             words: current.words,
           });
-          return undefined;
+          // Dispatch writes the message under a 201 even where its delivery failed, so the line's
+          // record of that delivery says whether the words reached the session.
+          const delivery =
+            typeof written?.now === "object" && written.now !== null
+              ? (written.now as { delivery_state?: unknown; delivery_error?: unknown })
+              : undefined;
+          if (delivery?.delivery_state !== "failed") return undefined;
+          return typeof delivery.delivery_error === "string"
+            ? delivery.delivery_error
+            : "Dispatch gave no reason.";
         };
 
   const stageShown = stage !== undefined && stage.kind !== "idle";
@@ -461,10 +458,10 @@ function MissingArguments({
   onSubmit,
 }: {
   readonly focusField: (field: HTMLInputElement | HTMLSelectElement | null) => void;
-  readonly fills: Readonly<Record<number, string>>;
+  readonly fills: Fills;
   readonly hits: readonly SearchResult[];
   readonly offer: GoingOffer | undefined;
-  readonly onFill: (fills: Readonly<Record<number, string>>) => void;
+  readonly onFill: (fills: Fills) => void;
   readonly onSubmit: () => void;
 }): ReactNode {
   if (offer === undefined) return null;
@@ -547,13 +544,10 @@ function ConfirmStep({
   readonly onConfirm: () => void;
 }): ReactNode {
   // Each line named once, ahead of the list: an offer's invocations are its own, in its order.
-  const asking = (offer?.invocations ?? []).map((invocation, index) => {
-    const target = targetOf(invocation.arguments);
-    return {
-      key: `${action}:${index}`,
-      text: `${actionName(action)}${target === "" ? "" : ` ${target}`}: asks first`,
-    };
-  });
+  const asking = (offer?.invocations ?? []).map((invocation, index) => ({
+    key: `${action}:${index}`,
+    text: `${actionOn(action, targetOf(invocation.arguments))}: asks first`,
+  }));
   return (
     <div data-testid="going-confirm-step">
       <p className={barNoteClassName}>Your setting asks before every write. Run these?</p>
@@ -589,7 +583,7 @@ function ConfirmStep({
 /** What one line of a turn says: the item, the field, the value before and the value now once
  *  Dispatch answered; its refusal where it refused; and how its undo went. */
 function lineText(line: TurnLine): string {
-  const named = `${actionName(line.action)}${line.target === "" ? "" : ` ${line.target}`}`;
+  const named = actionOn(line.action, line.target);
   switch (line.state) {
     case "sending":
       return `${named}${line.change === "" ? "" : ` (${line.change})`}: sending…`;

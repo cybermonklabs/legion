@@ -8,7 +8,7 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { dismissLastUndo, undoneText, useLastUndo } from "./going-turns";
+import { actionName, dismissLastUndo, undoneText, useLastUndo } from "./going-turns";
 import { UndoSaid } from "./OperationRows";
 
 /**
@@ -40,7 +40,7 @@ export function GoingUndoNotice(): ReactNode {
               data-undo={line.outcome.ok ? "ok" : "refused"}
               key={line.write_id}
             >
-              {line.item === "" ? line.action : line.item}
+              {line.item === "" ? actionName(line.action) : line.item}
               {line.field === "" ? "" : ` · ${line.field}`}: {undoneText(line)}
             </li>
           ))}

@@ -151,7 +151,7 @@ func TestDecisionModelWithNoTokenFileIsUnreachable(t *testing.T) {
 	// In order: the file is absent first, then written empty.
 	for _, name := range []string{"absent", "empty"} {
 		if name == "empty" {
-			writeTokenFile(t, missing, " \n")
+			writeConfigFile(t, missing, " \n")
 		}
 		if decider.Reachable(t.Context()) {
 			t.Errorf("%s token file: Reachable = true, want unreachable", name)
@@ -164,7 +164,7 @@ func TestDecisionModelWithNoTokenFileIsUnreachable(t *testing.T) {
 		t.Fatalf("the endpoint was called %d times with no token to present, want none", len(calls))
 	}
 
-	writeTokenFile(t, missing, "written-later")
+	writeConfigFile(t, missing, "written-later")
 	if !decider.Reachable(t.Context()) {
 		t.Error("written token file: Reachable = false")
 	}
@@ -223,13 +223,5 @@ func TestDecisionModelMeasuredBuildsOneWithItsThresholds(t *testing.T) {
 	line := logged.String()
 	if strings.Count(line, "\n") != 1 || !strings.Contains(line, "model=jev-latest host=decide.example") || strings.Contains(line, cfg.TokenFile) {
 		t.Fatalf("logged %q, want one line naming the model and the host and no credential", line)
-	}
-}
-
-// writeTokenFile writes contents to path.
-func writeTokenFile(t *testing.T, path, contents string) {
-	t.Helper()
-	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
-		t.Fatal(err)
 	}
 }

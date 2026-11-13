@@ -157,8 +157,8 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Translate: goingTranslateIssueUpdate,
 		Undo:      goingWriteBack(goingIssuePatchRoute),
 	}},
-	// A release is undone by taking the claim back only where the caller held it before
-	// (decision 8), and a claim by releasing it.
+	// A release is undone by taking the claim back only where the caller held it before, and a
+	// claim by releasing it.
 	"dispatch_claim": {
 		{
 			Method: http.MethodDelete, Pattern: "/api/v1/issues/{key}/claim",
@@ -392,7 +392,7 @@ type GoingRoute struct {
 	// path and the guard are how a call reaches this row (goingToolRoute), translate what the
 	// row's route takes of the call, and auth and scopes are who the table lets call it
 	// (routeAuth, routeScopes), which decides whether a caller is offered it at all
-	// (goingRunnable); they are the caller's business rather than the reader's, so none is
+	// (GoingRoute.runnableBy); they are the caller's business rather than the reader's, so none is
 	// served.
 	path         map[string]string
 	whenArgument string
@@ -700,7 +700,8 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	if err != nil {
 		return nil, err
 	}
-	return c.send(ctx, prepared)
+	response, _, err := c.send(ctx, prepared)
+	return response, err
 }
 
 // prepare holds a call to the catalogue and the action's schema, chooses its row and translates
@@ -728,29 +729,34 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	return goingPrepared{action: action, route: route, arguments: arguments, call: call}, nil
 }
 
-// send sends a prepared call: each write that must land first, then the row's own. A write
+// send sends a prepared call: each write that must land first, then the row's own, and answers
+// the row's answer with the id of each item a write sent first made (goingMadeID). A write
 // refused before the row's is the answer.
-func (c GoingCaller) send(ctx context.Context, prepared goingPrepared) (*http.Response, error) {
+func (c GoingCaller) send(ctx context.Context, prepared goingPrepared) (*http.Response, []string, error) {
 	requests, err := prepared.call.requests(prepared.route)
 	if err != nil {
-		return nil, fmt.Errorf("encode %s: %w", prepared.action, err)
+		return nil, nil, fmt.Errorf("encode %s: %w", prepared.action, err)
 	}
+	var landed []string
 	for index, spec := range requests {
 		request, err := spec.build(ctx, c.BaseURL)
 		if err != nil {
-			return nil, err
+			return nil, landed, err
 		}
 		response, err := c.Doer.Do(request)
 		if err != nil {
-			return nil, err
+			return nil, landed, err
 		}
 		if index == len(requests)-1 || response.StatusCode >= http.StatusMultipleChoices {
-			return response, nil
+			return response, landed, nil
 		}
-		_, _ = io.Copy(io.Discard, response.Body)
+		answer, _ := io.ReadAll(response.Body)
 		_ = response.Body.Close()
+		if made := goingMadeID(answer); made != "" {
+			landed = append(landed, made)
+		}
 	}
-	return nil, fmt.Errorf("%s: its translation made no request", prepared.action)
+	return nil, landed, fmt.Errorf("%s: its translation made no request", prepared.action)
 }
 
 // reader is the reads a translation makes, through the caller's own Doer.
@@ -764,7 +770,7 @@ func (c GoingCaller) reader() goingReader {
 // the document alone takes the document's.
 func chooseGoingRoute(entry GoingAction, arguments map[string]any, session string) (GoingRoute, map[string]string, bool) {
 	for _, route := range entry.Routes {
-		if route.whenArgument != "" && arguments[route.whenArgument] != route.whenValue {
+		if !route.takes(arguments) {
 			continue
 		}
 		values, filled := make(map[string]string, len(route.path)), true
@@ -790,6 +796,12 @@ func chooseGoingRoute(entry GoingAction, arguments map[string]any, session strin
 		}
 	}
 	return GoingRoute{}, nil, false
+}
+
+// takes reports whether a call's arguments satisfy the row's guard: a row nothing guards takes
+// every call, and a guarded row only the calls naming its guard's value.
+func (route GoingRoute) takes(arguments map[string]any) bool {
+	return route.whenArgument == "" || arguments[route.whenArgument] == route.whenValue
 }
 
 // goingPath is pattern with each placeholder replaced by its value, escaped for a path.

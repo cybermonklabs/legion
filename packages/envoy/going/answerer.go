@@ -61,7 +61,7 @@ var searchToolSchema = json.RawMessage(`{
 // every service that serves structured outputs takes - one object, every property required,
 // additionalProperties false on every object, no union - which schema_test.go holds it to.
 // answer is the first property, so it is the first thing the model writes and the first thing
-// that streams (decision 19).
+// that streams.
 var finalSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -107,9 +107,6 @@ const (
 	// one before, so this run did not ask.
 	StructuredOutputRefused = "refused"
 )
-
-// BlockNone is the block kind of an answer that draws no block.
-const BlockNone = "none"
 
 // Final is the answer as the structured reply wrote it: the answer's text, the block drawn beside
 // it, and the arguments of the actions offered, as JSON text the caller parses against each
@@ -231,7 +228,7 @@ type Request struct {
 
 // Offer is what the decision model chose before the answer call, for that call to write: the
 // actions it offered, each with its own argument schema, whose arguments the reply's arguments
-// text carries (decision 2), and the display the answer is shown in.
+// text carries, and the display the answer is shown in.
 type Offer struct {
 	// Actions are the actions offered, best first: at most the decision's two best.
 	Actions []OfferedAction
@@ -255,7 +252,7 @@ type OfferedAction struct {
 // across the object's partial snapshots. A service that refuses that request with a 400, or
 // answers it with a reply that does not fit the schema, is asked the same again for prose, whose
 // text frames are the prose itself; the run then has no block and no arguments, and reports the
-// refusal (decision 20).
+// refusal.
 func (a *Answerer) Run(ctx context.Context, request Request, emit func(Event) error) error {
 	run := &answerRun{
 		request:   request,
@@ -420,8 +417,7 @@ func (a *Answerer) faultCode(ctx context.Context, run *answerRun, result agentlo
 		slog.Warn("going: the model service refused the run", "status", result.Status, "detail", result.Detail)
 		return contracts.GoingErrorAnswerFailed
 	default:
-		// A reply cut at answerOutputTokens, a refusal, or a structured reply that did not
-		// fit once its answer had streamed.
+		// A reply cut at answerOutputTokens, or a refusal.
 		slog.Warn("going: the model gave no answer the run could use", "fault", result.Fault)
 		return contracts.GoingErrorAnswerFailed
 	}
@@ -731,8 +727,9 @@ func (r *answerRun) ask(items string) string {
 // offerText is what the structured call is told beside the question: the blocks it may draw -
 // the kinds the words name, and a chart where the decision settled on one, each only where one
 // of the run's reads fills it (BlockGuide) - and the actions the decision offered, each with its
-// argument schema, whose arguments the reply's arguments text carries as decision 2 shapes it. A
-// run with no offer is told only that it offers nothing, so its arguments are {}.
+// argument schema, whose arguments the reply's arguments text carries, keyed by the action's
+// name, each a list of argument objects. A run with no offer is told only that it offers
+// nothing, so its arguments are {}.
 func (r *answerRun) offerText() string {
 	offer := r.request.Offer
 	chart := offer.Display == DisplayChart

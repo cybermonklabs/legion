@@ -94,11 +94,20 @@ func chatEndpoint(env settingValues, name, place string) (string, error) {
 	if endpoint == "" {
 		return "", fmt.Errorf("%s is required when DISPATCH_ANSWERER is %s", name, place)
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
-		return "", fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", name, endpoint)
+	if err := httpsBaseURL(name, endpoint, "chat completions route"); err != nil {
+		return "", err
 	}
 	return endpoint, nil
+}
+
+// httpsBaseURL refuses an endpoint setting that is not an absolute https URL with a host and no
+// query or fragment, naming the setting and the route its client appends to it.
+func httpsBaseURL(name, endpoint, route string) error {
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || strings.ContainsAny(endpoint, "?#") {
+		return fmt.Errorf("%s=%q (expected an absolute https URL with a host and no query or fragment, the base URL the %s is appended to)", name, endpoint, route)
+	}
+	return nil
 }
 
 // resolveAzureAnswerer is resolveAnswerer for DISPATCH_ANSWERER=azure. The Azure chat form takes

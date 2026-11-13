@@ -560,7 +560,7 @@ function PaletteDialog({
     words: searchText,
   });
   // The bar's submit runs the operation from anywhere in the bar, the box included; Enter keeps
-  // its one meaning, opening the row the highlight is on (decision 3).
+  // its one meaning, opening the row the highlight is on.
   useKeymap(DIALOG_SCOPE, [
     {
       id: "search-run",
@@ -682,8 +682,7 @@ function PaletteDialog({
   // does nothing, until they arrow.
   const chosen = rows.findIndex((row) => row.id === active.id);
   const reranked = listedQuery !== "" && listedQuery === active.hits;
-  const head =
-    leadRows.length > 0 ? 0 : hitRows.length > 0 ? leadRows.length + operationRows.length : -1;
+  const head = leadRows.length > 0 ? 0 : hitRows.length > 0 ? operationRows.length : -1;
   const activeIndex = chosen === -1 && !reranked ? head : chosen;
   const activeRow = rows[activeIndex];
   const shownId = activeRow?.id ?? null;
@@ -841,15 +840,7 @@ function PaletteDialog({
               ref={listRef}
               role="listbox"
             >
-              {commandSections.map((section) => (
-                <CommandGroup
-                  activeId={activeRow?.id}
-                  key={section.id}
-                  onSelect={selectRow}
-                  section={section}
-                />
-              ))}
-              {operationSections.map((section) => (
+              {[...commandSections, ...operationSections].map((section) => (
                 <CommandGroup
                   activeId={activeRow?.id}
                   key={section.id}

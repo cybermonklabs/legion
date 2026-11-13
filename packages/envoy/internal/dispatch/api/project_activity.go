@@ -2,9 +2,8 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -62,7 +61,7 @@ const projectActivityStatement = `
 // getProjectActivity answers GET /api/v1/projects/{key}/activity?weeks=N: the events of the
 // project's issues counted by kind per ISO week over the last N weeks (default 8, 1 to 52). A key
 // that is no project key is 400 INVALID_PROJECT, a project Dispatch does not hold 404
-// PROJECT_NOT_FOUND, and a weeks that is not an integer from 1 to 52 400 INVALID_QUERY.
+// PROJECT_NOT_FOUND, and a weeks that is not one integer from 1 to 52 400 INVALID_QUERY.
 func (s *server) getProjectActivity(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -72,14 +71,13 @@ func (s *server) getProjectActivity(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, projectKeyProblem("key", project))
 		return
 	}
-	weeks := projectActivityWeeksDefault
-	if r.URL.Query().Has("weeks") {
-		parsed, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("weeks")))
-		if err != nil || parsed < 1 || parsed > projectActivityWeeksMax {
-			writeError(w, "INVALID_QUERY", http.StatusBadRequest, "weeks must be an integer from 1 to 52")
-			return
-		}
-		weeks = parsed
+	weeks, present, valid := parseQueryInt(r.URL.Query(), "weeks", 1, projectActivityWeeksMax)
+	switch {
+	case !present:
+		weeks = projectActivityWeeksDefault
+	case !valid:
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, fmt.Sprintf("weeks must be an integer from 1 to %d", projectActivityWeeksMax))
+		return
 	}
 	activity, err := s.projectActivity(r.Context(), project, weeks)
 	if err != nil {

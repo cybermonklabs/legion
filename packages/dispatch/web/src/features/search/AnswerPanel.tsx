@@ -17,7 +17,7 @@ import {
 } from "../../theme/classes";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { AnswerBlock } from "./blocks/AnswerBlock";
-import type { GoingAnswer } from "./useGoingAnswer";
+import { answerSettled, type GoingAnswer } from "./useGoingAnswer";
 
 const noteClassName = `text-xs ${textMutedOnSurface}`;
 
@@ -107,8 +107,7 @@ export function AnswerPanel({
   readonly answer: GoingAnswer | undefined;
   readonly gaps: readonly { readonly id: string; readonly text: string }[];
 }): ReactNode {
-  const answering =
-    answer !== undefined && (answer.state === "asking" || answer.state === "streaming");
+  const answering = answer !== undefined && !answerSettled(answer);
   return (
     <section
       aria-busy={answering}
@@ -136,7 +135,7 @@ export function AnswerPanel({
 }
 
 function AnswerBody({ answer }: { readonly answer: GoingAnswer }): ReactNode {
-  const answering = answer.state === "asking" || answer.state === "streaming";
+  const answering = !answerSettled(answer);
   // An answer that ended citing nothing rests on no source of Dispatch's; one the model wrote no
   // text for says that instead, and its end frame's count of nothing says nothing more.
   const restsOnNothing = answer.end !== undefined && answer.end.items === 0 && !answer.none;
@@ -212,7 +211,11 @@ function AnswerBody({ answer }: { readonly answer: GoingAnswer }): ReactNode {
           </p>
         )}
         {answer.unreachable === undefined ? null : (
-          <p className={`text-xs ${dangerText}`} data-testid="going-answer-error" role="alert">
+          <p
+            className={`text-xs ${dangerText}`}
+            data-testid="going-answer-unreachable"
+            role="alert"
+          >
             Could not ask for an answer: {answer.unreachable}
           </p>
         )}

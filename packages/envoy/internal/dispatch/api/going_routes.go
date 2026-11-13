@@ -144,7 +144,7 @@ type goingSettingCapability struct {
 
 // goingBlocks is answer.blocks: true once a structured reply was accepted, false once the model
 // service refused the structured request, and "unknown" while neither has happened, which is also
-// what a deployment with no answering model reads (going.Answerer.Blocks, decision 20).
+// what a deployment with no answering model reads (going.Answerer.Blocks).
 type goingBlocks struct {
 	blocks, known bool
 }
@@ -213,7 +213,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	words := strings.TrimSpace(input.Words)
 	if words == "" {
-		writeError(w, "GOING_INPUT", http.StatusBadRequest, "words is required: the question to answer")
+		writeError(w, codeGoingInput, http.StatusBadRequest, "words is required: the question to answer")
 		return
 	}
 	// Counted as search counts its own query, after trimming, so a question this route accepts
@@ -248,7 +248,7 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 		chip:    chip,
 		login:   goingRunLogin(caller),
 		actions: s.going.runnableBy(credential),
-		session: credential.session,
+		session: credential.session(),
 		reads:   s.goingReadsFor(credential, scoped),
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
@@ -303,11 +303,11 @@ func goingContextFrom(input *goingContextInput) (*goingContext, error) {
 	case chip.Project != "" && !projectKeyPattern.MatchString(chip.Project):
 		return nil, errorf(http.StatusBadRequest, "INVALID_PROJECT", "%s", projectKeyProblem("context.project", chip.Project))
 	case chip.Issue != "" && !issueKeyPattern.MatchString(chip.Issue):
-		return nil, errorf(http.StatusBadRequest, "GOING_INPUT", "context.issue must be an issue key such as DEMO-12, or empty for none")
+		return nil, errorf(http.StatusBadRequest, codeGoingInput, "context.issue must be an issue key such as DEMO-12, or empty for none")
 	case itemblocks.Units16(chip.Path) > goingContextPathMax:
-		return nil, errorf(http.StatusBadRequest, "GOING_INPUT", "context.path is longer than %d characters", goingContextPathMax)
+		return nil, errorf(http.StatusBadRequest, codeGoingInput, "context.path is longer than %d characters", goingContextPathMax)
 	case itemblocks.Units16(chip.Block) > goingContextBlockMax:
-		return nil, errorf(http.StatusBadRequest, "GOING_INPUT", "context.block is longer than %d characters", goingContextBlockMax)
+		return nil, errorf(http.StatusBadRequest, codeGoingInput, "context.block is longer than %d characters", goingContextBlockMax)
 	}
 	return &chip, nil
 }
@@ -334,7 +334,7 @@ func goingRunLogin(caller model.Actor) string {
 // ended with the run could not store it.
 //
 // A run with a decider decides first and stores the decision frame before the answer is asked
-// anything (decision 1), so the answer is told the actions the decision offered; once the answer
+// anything, so the answer is told the actions the decision offered; once the answer
 // has written, the proposal frame carries their arguments, before the frame that ends the stream.
 // The run's record (going_runs) is written as the run starts and filled as it goes: a run its
 // author cancels keeps what it reached and reads unfinished.
@@ -415,7 +415,7 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 		defer found.Unlock()
 		return append([]going.Hit{}, found.hits...)
 	}
-	// The read tools the caller may call, each made as the run's author (decision 22); the
+	// The read tools the caller may call, each made as the run's author; the
 	// block's fill makes its read through the same functions, and the roster read is what the
 	// roster frame reports.
 	reads := s.goingRunReads(request, start)
@@ -442,11 +442,9 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest, start 
 			parts := goingRunParts{Hits: hits(), Finished: true}
 			if outcome.StructuredOutput != "" {
 				parts.StructuredOutput = &outcome.StructuredOutput
-			}
-			if outcome.StructuredOutput != "" {
 				// After every text frame and before the proposal and the ending (R2): the block
 				// the structured reply wrote, filled from its read, and how fresh the roster the
-				// run read was (decision 18). Neither counts against the answer's word cut.
+				// run read was. Neither counts against the answer's word cut.
 				if block, drawn := reads.block(answering, outcome.Final, request.Words, decision.Display.Chart); drawn {
 					if err := emit(going.Event{Name: contracts.GoingEventBlock, Data: block}); err != nil {
 						return err
@@ -702,7 +700,7 @@ func (s *server) readCallersGoingRequest(w http.ResponseWriter, r *http.Request)
 	return request, true
 }
 
-// cancelGoingRequest cancels one run: POST /api/v1/going/requests/{id}/cancel (decision 10). The
+// cancelGoingRequest cancels one run: POST /api/v1/going/requests/{id}/cancel. The
 // bar sends it on the first keystroke after a run began and when it closes, so a stale answer
 // stops rather than arriving later. Only the run's author may cancel it, and every other caller
 // is answered as the stream answers a stranger. The record marks the run cancelled, so whichever

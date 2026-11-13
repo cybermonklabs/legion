@@ -1,6 +1,5 @@
-import { createIssue, createProject, search } from "./api";
 import { modelsLane, scriptChat } from "./fake-models-helpers";
-import { answerPanel, answerText, askAndWait, openBarOver, prose } from "./going-panel";
+import { answerPanel, answerText, askAndWait, openBarOver, prose, seedIssue } from "./going-panel";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -22,12 +21,7 @@ test("the model's links, image, bare address and tag show as text, and the only 
 }) => {
   modelsLane();
   test.setTimeout(90_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title });
-  const hit = ((await search(question)).results ?? []).find(
-    (result) => result.owner.kind === "issue" && result.owner.key === issue.key
-  );
-  if (hit === undefined) throw new Error(`search for "${question}" does not find ${issue.key}`);
+  const hit = await seedIssue(question, title);
   await scriptChat({
     default: prose(
       "Read [click here](https://evil.example/x) and ![a picture](https://evil.example/p.png) " +

@@ -1,7 +1,7 @@
 // going_writes_test.go holds the writes a command-bar run makes to what they run through: every
 // row of the catalogue executes through GoingCaller.Do against the server's own route table, as
 // its caller (c8), and the writes route performs a proposed write as its caller, refusing what
-// its route refuses exactly as that route does (decision 5 and its ruling), with the person's own
+// its route refuses exactly as that route does, with the person's own
 // confirmation setting held on the server.
 package api
 
@@ -449,7 +449,7 @@ func TestEveryGoingRowExecutesThroughTheCallerAgainstTheServedTable(t *testing.T
 				invocation := proposal.Offers[0].Invocations[0]
 				doer := &goingRecordingDoer{doer: rig.served.goingDoer(goingCallerOf(t, rig, row.bearer))}
 				if row.session != "" {
-					// The session a person names by its title (decision 7), resolved as the person
+					// The session a person names by its title, resolved as the person
 					// may read the roster.
 					resolved, err := (goingReader{doer: doer}).session(context.Background(), row.session)
 					if err != nil {
@@ -559,7 +559,15 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 		if len(*rig.sent) != sends {
 			t.Fatal("a refused auto send reached the listener")
 		}
-		rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_send_to_agent", "invocation": 0, "approved": goingApprovedConfirmed})
+		line := rig.wrote(t, "alice", run, map[string]any{"offer": "dispatch_send_to_agent", "invocation": 0, "approved": goingApprovedConfirmed})
+		var now struct {
+			ID            string  `json:"id"`
+			DeliveryState string  `json:"delivery_state"`
+			DeliveryError *string `json:"delivery_error"`
+		}
+		if err := json.Unmarshal(line.Now, &now); err != nil || now.ID == "" || now.DeliveryState != "sent" || now.DeliveryError != nil {
+			t.Fatalf("the confirmed send's line now = %s (%v), want the message sent, with its delivery's state", line.Now, err)
+		}
 	})
 	t.Run("below the action threshold", func(t *testing.T) {
 		run := rig.proposed(t, "alice", false, "dispatch_claim", map[string]any{"issue": issue})
@@ -574,7 +582,7 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 			t.Fatalf("turn confirm_writes on: status=%d body=%s", response.Code, response.Body.String())
 		}
 		confirming := labels("confirming")
-		refusedAuto(t, confirming, "dispatch_issue_update", codeGoingConfirmationNeeded)
+		refusedAuto(t, confirming, "dispatch_issue_update", codeGoingConfirmationRequired)
 		rig.wrote(t, "alice", confirming, map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedConfirmed})
 		// Another person's setting is their own: bob never set his, so his auto write runs.
 		bobs := rig.proposed(t, "bob", true, "dispatch_issue_update", map[string]any{"issue": issue, "labels": []any{"bobs"}})
@@ -583,6 +591,50 @@ func TestGoingWritesRefuseAutoForTheTwoThatAlwaysAskBelowTheThresholdAndWithConf
 		rig.browser(t, "alice", http.MethodPut, "/api/v1/me/going/settings", map[string]any{"confirm_writes": false})
 		rig.wrote(t, "alice", labels("at-once"), map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedAuto})
 	})
+}
+
+// The route a send to an agent goes through answers 201 even when the delivery failed, so the
+// write's line carries the state and the error of the message's last delivery: a failed send is
+// told apart from one that reached the session.
+func TestGoingWriteOfASendToAgentRecordsItsLastDeliverysState(t *testing.T) {
+	prepared := goingPrepared{action: "dispatch_send_to_agent", call: goingCall{path: map[string]string{"session_id": goingPlanner}}}
+	answer := []byte(`{"id":"msg-1","deliveries":[
+		{"attempt":1,"state":"sent","error":null},
+		{"attempt":2,"state":"failed","error":"no live session s1"}
+	]}`)
+	after, err := (goingObserver{}).observe(t.Context(), prepared, answer, goingObservation{})
+	if err != nil {
+		t.Fatalf("observe the send: %v", err)
+	}
+	value, _ := after.value.(map[string]any)
+	failure, _ := value["delivery_error"].(*string)
+	if after.target != "msg-1" || value["delivery_state"] != "failed" || failure == nil || *failure != "no live session s1" {
+		t.Errorf("the send's value after = %#v (target %q), want msg-1 with its last delivery failed and why", after.value, after.target)
+	}
+}
+
+// A reasoned close posts its reason as a message before the close itself. When the close is then
+// refused, the message stays posted, and the write's record names it, so what landed is never
+// lost with the refusal.
+func TestGoingWriteOfARefusedReasonedCloseRecordsTheReasonItPosted(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "A close its parent refuses", "The spec.\n").Key
+	run := rig.proposed(t, "alice", false, "dispatch_issue_update", map[string]any{
+		"issue": issue, "status": "done", "reason": "Shipped in the last release.", "parent": "DEMO-999",
+	})
+	response := rig.write(t, "alice", run, map[string]any{"offer": "dispatch_issue_update", "invocation": 0, "approved": goingApprovedPerson})
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"PARENT_INPUT"`) {
+		t.Fatalf("the close naming no parent there is: status=%d body=%s, want the issue route's 400 PARENT_INPUT", response.Code, response.Body.String())
+	}
+	writes := rig.record(t, "alice", run).Writes
+	if len(writes) != 1 || writes[0].Outcome.OK || len(writes[0].Landed) != 1 {
+		t.Fatalf("the refused close was recorded as %+v, want one refused write naming the one message it posted", writes)
+	}
+	var body string
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select body from messages where id::text = $1 and issue_key = $2`, writes[0].Landed[0], issue).Scan(&body); err != nil || body != "Shipped in the last release." {
+		t.Errorf("the message the record names is %q (%v), want the close's reason posted on %s", body, err, issue)
+	}
 }
 
 // TestGoingWritesStoreTheValueBeforeTheValueAfterAndTheOutcome: a write answers the item, the
@@ -658,8 +710,8 @@ func goingRefusalSeenOf(t *testing.T, response *httptest.ResponseRecorder) going
 	return goingRefusalSeen{Status: response.Code, Code: body.Code, Error: body.Error}
 }
 
-// TestGoingWritesRefuseIdenticallyThroughTheWritesRouteAndTheNetwork is the architect's ruling A
-// on decision 5: a write refused for a scope, for a cross-site origin and for a claim rule is
+// TestGoingWritesRefuseIdenticallyThroughTheWritesRouteAndTheNetwork: a write refused for a
+// scope, for a cross-site origin and for a claim rule is
 // refused with the same status and code through the writes route as through a request off the
 // network straight to the write's route.
 func TestGoingWritesRefuseIdenticallyThroughTheWritesRouteAndTheNetwork(t *testing.T) {

@@ -1,6 +1,4 @@
-import { readFileSync } from "node:fs";
-
-import { modelsDirVariable, modelsFilesIn } from "./harness-models";
+import { fakeModelServing, modelsDirVariable } from "./harness-models";
 import { harnessPorts, stackValue } from "./harness-ports";
 
 // The decision model the command bar asks before it answers, as a deployment's
@@ -100,8 +98,11 @@ function emptyState(): FakeDecisionState {
 
 let state = emptyState();
 
-const files = modelsFilesIn(stackValue(process.env, modelsDirVariable), "the fake decision model");
-const bearer = `Bearer ${readFileSync(files.decisionToken, "utf8").trim()}`;
+const serving = fakeModelServing(
+  stackValue(process.env, modelsDirVariable),
+  "decisionToken",
+  "the fake decision model"
+);
 
 /** The choices a choice question offered: its criteria's names, in the order the call sent them. */
 function offered(criteria: unknown): string[] {
@@ -157,7 +158,7 @@ function answers(
 }
 
 async function decide(request: Request): Promise<Response> {
-  if (request.headers.get("authorization") !== bearer) {
+  if (request.headers.get("authorization") !== serving.authorization) {
     state.unauthorized++;
     return Response.json(
       { error: "a call whose bearer is not the one DISPATCH_DECISION_MODEL_TOKEN_FILE holds" },
@@ -192,10 +193,7 @@ async function decide(request: Request): Promise<Response> {
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: harnessPorts().fakeDecisionModel.port,
-  tls: {
-    cert: readFileSync(files.certificate, "utf8"),
-    key: readFileSync(files.key, "utf8"),
-  },
+  tls: serving.tls,
   async fetch(request) {
     const url = new URL(request.url);
     if (request.method === "POST" && url.pathname.endsWith("/v1/systemone")) {
@@ -212,10 +210,6 @@ const server = Bun.serve({
     if (request.method === "PUT" && url.pathname === "/__fixture/script") {
       const script = (await request.json()) as DecisionScript;
       state = { ...state, fallback: script.default, queue: [...(script.replies ?? [])] };
-      return Response.json({ ok: true });
-    }
-    if (request.method === "PUT" && url.pathname === "/__fixture/calls") {
-      state = { ...state, calls: 0, requests: [], unauthorized: 0 };
       return Response.json({ ok: true });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/reset") {

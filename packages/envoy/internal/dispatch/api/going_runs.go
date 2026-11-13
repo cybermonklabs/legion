@@ -65,7 +65,7 @@ type goingWriteOutcome struct {
 // ran, the item it changed (target) and the field of that item, the value before it and the
 // value after it as read back, how it went, how it came to run - the run made it at once
 // (auto), the person ran it from the bar (person), or the person confirmed it when asked
-// (confirmed) - and when.
+// (confirmed) - when, and the items it made before its own request.
 type goingRunWrite struct {
 	ID       string            `json:"id"`
 	Action   string            `json:"action"`
@@ -76,6 +76,10 @@ type goingRunWrite struct {
 	Outcome  goingWriteOutcome `json:"outcome"`
 	Approved string            `json:"approved" enum:"auto,person,confirmed"`
 	At       time.Time         `json:"at"`
+	// Landed is the id of each item a write sent before the row's own made: the message a
+	// reasoned close posts as its reason. It stands whether the row's own request then went
+	// through or was refused, so a refused close still names the reason it left posted.
+	Landed []string `json:"landed,omitempty"`
 }
 
 // goingRunUndo is one undo of a write of the run, named by the write's id, with how it went,

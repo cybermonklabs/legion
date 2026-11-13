@@ -11,7 +11,7 @@ import (
 // strictKeywords are the only keywords the Final schema may use: the subset of JSON Schema that
 // every service serving structured outputs takes, OpenAI's strict mode the narrowest of them.
 // A keyword outside it (a union, a format, a pattern, a default, a bound) is one some service
-// refuses with a 400, which costs every answer its block (decision 20).
+// refuses with a 400, which costs every answer its block.
 var strictKeywords = []string{"type", "properties", "required", "additionalProperties", "enum", "items", "description"}
 
 // The Final schema keeps to the strict subset written out here, so a service that serves
@@ -42,7 +42,7 @@ func TestTheFinalSchemaKeepsToTheStrictSubset(t *testing.T) {
 
 // The answer is the first property the schema names, so a model that writes the object in the
 // schema's order writes the answer first and the reader is given it while the block and the
-// arguments are still being written (decision 19).
+// arguments are still being written.
 func TestTheFinalSchemaNamesTheAnswerFirst(t *testing.T) {
 	decoder := json.NewDecoder(bytes.NewReader(finalSchema))
 	depth := 0

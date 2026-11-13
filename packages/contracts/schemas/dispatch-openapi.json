@@ -4627,7 +4627,7 @@
     },
     "/api/v1/going/display-fit/_test": {
       "post": {
-        "description": "Test hook: {off} with off true makes the process the call lands on treat the configured decision model as having no display fit, so no answer run draws a chart the words did not ask for, as with a model whose record holds no chart-display threshold; off false reads the record's threshold again. Answers {off}.",
+        "description": "Test hook: {off} (required, true or false; 400 INVALID_STATE without it) with off true makes the process the call lands on treat the configured decision model as having no display fit, so no answer run draws a chart the words did not ask for, as with a model whose record holds no chart-display threshold; off false reads the record's threshold again. Answers {off}.",
         "operationId": "postApiV1GoingDisplayFitTest",
         "parameters": [
           {
@@ -4819,7 +4819,7 @@
     },
     "/api/v1/going/runs/{id}/undo": {
       "post": {
-        "description": "Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo its catalogue row states and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released, a release taken back only where the caller held the claim before, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted); close_created posts reason, or a default, on an issue the turn created and then closes it; trace records the write undone and erases nothing. A field another writer changed since the write is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of a claim someone else held is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder. Answers 200 {lines: [{write_id, action, item, field, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, each appended to the run's undos; an undo that was ok or refused settles its write, so a later undo of the run does not try it again, and two undos of one run take turns. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in.",
+        "description": "Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo its catalogue row states and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released, a release taken back only where the caller held the claim before, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted); close_created posts reason, or a default, on an issue the turn created and then closes it; trace records the write undone and erases nothing. A field another writer changed since the write is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of a claim someone else held is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder; a write whose action the catalogue no longer holds is refused 409 GOING_UNDO_UNKNOWN, since its undo is unknown. Answers 200 {lines: [{write_id, action, item, field, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, each appended to the run's undos; an undo that was ok or refused settles its write, so a later undo of the run does not try it again, and two undos of one run take turns. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in.",
         "operationId": "postApiV1GoingRunsByIdUndo",
         "parameters": [
           {
@@ -4879,7 +4879,7 @@
     },
     "/api/v1/going/runs/{id}/writes": {
       "post": {
-        "description": "Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it and the value after just after, the same way. Answers 200 {write_id, action, item, field, before, now, outcome {ok, status, code, message}} and appends the write to the run; a write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and appended with that outcome. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer; 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send. One write per request.",
+        "description": "Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it and the value after just after, the same way. Answers 200 {write_id, action, item, field, before, now, outcome {ok, status, code, message}} and appends the write to the run; the now of dispatch_send_to_agent is {id, delivery_state, delivery_error}, the state and error of the message's last delivery, since its route answers 201 when the delivery failed too. A write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and appended with that outcome. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer; 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send. One write per request.",
         "operationId": "postApiV1GoingRunsByIdWrites",
         "parameters": [
           {
@@ -8160,7 +8160,7 @@
     },
     "/api/v1/me/going-runs": {
       "get": {
-        "description": "The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at}, each undo {write_id, outcome, settled, fields [{field, ok, message}], at}, settled when the undo reached a verdict a retry would only repeat (ok, or refused because another writer changed what the write left), the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo settled; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
+        "description": "The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision, the proposal, each write {id, action, target, field, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at, landed?}, landed the ids of what the write made before its own request (a reasoned close's posted reason), whether that request then went through or was refused, each undo {write_id, outcome, settled, fields [{field, ok, message}], at}, settled when the undo reached a verdict a retry would only repeat (ok, or refused because another writer changed what the write left), the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo settled; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}.",
         "operationId": "getApiV1MeGoingRuns",
         "parameters": [
           {
@@ -19449,7 +19449,10 @@
       "GoingDisplayFitInput": {
         "properties": {
           "off": {
-            "type": "boolean"
+            "type": [
+              "null",
+              "boolean"
+            ]
           }
         },
         "required": [
@@ -19688,6 +19691,12 @@
           },
           "id": {
             "type": "string"
+          },
+          "landed": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "outcome": {
             "$ref": "#/components/schemas/GoingWriteOutcome"

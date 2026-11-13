@@ -34,7 +34,8 @@ export interface RefusedWrite {
 
 /** What one acceptance made. */
 export interface FiledIssue {
-  readonly issue: Issue;
+  /** The issue made, by its key: the one thing of it the bar reads. */
+  readonly issue: Pick<Issue, "key">;
   /** The session the issue was routed to and its first message went to; `""` where the
    *  deployment names none, which is the issue made with no conversation started on it. */
   readonly session: string;
@@ -65,15 +66,21 @@ async function writeOnto<T>(
 
 /** How a filing makes the issue itself: the create, answered with the issue made, or `null` for a
  *  create Dispatch made and had no answer to give for. */
-export type CreateNewIssue = (writes: Writes, write: NewIssueWrite) => Promise<Issue | null>;
+export type CreateNewIssue = (
+  writes: Writes,
+  write: NewIssueWrite
+) => Promise<Pick<Issue, "key"> | null>;
+
+/** The fields a new issue from the bar is created with: the project, the person's words as its
+ *  title, and the label the deployment set, where it set one. */
+export function newIssueFields({ project, settings, words }: NewIssueWrite) {
+  return { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) };
+}
 
 /** The create through the issues route every other client creates through. */
-export const createThroughRoute: CreateNewIssue = (writes, { project, settings, words }) =>
-  press(writes, `New issue “${words}”`, (bounds) =>
-    api.createIssue(
-      { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) },
-      bounds
-    )
+const createThroughRoute: CreateNewIssue = (writes, write) =>
+  press(writes, `New issue “${write.words}”`, (bounds) =>
+    api.createIssue(newIssueFields(write), bounds)
   );
 
 /**

@@ -82,6 +82,39 @@ test("reading stops at the event the reader ends on, and reports whether it ende
   expect(ranOut).toBe(false);
 });
 
+test("an event handler that throws cancels the body it was reading, which is still open", async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    cancel() {
+      cancelled = true;
+    },
+    start(controller) {
+      // A live stream: one frame in, and the body neither ends nor fails.
+      controller.enqueue(new TextEncoder().encode('id: 1\nevent: text\ndata: {"text":"a"}\n\n'));
+    },
+  });
+  const thrown = new Error("a frame the reader could not take");
+  const read = readEventStream(body, () => {
+    throw thrown;
+  });
+  expect(await read.catch((error: unknown) => error)).toBe(thrown);
+  expect(cancelled).toBe(true);
+
+  // A body that ended is not cancelled: there is nothing left of it to close.
+  let endedCancelled = false;
+  const ended = new ReadableStream<Uint8Array>({
+    cancel() {
+      endedCancelled = true;
+    },
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frames));
+      controller.close();
+    },
+  });
+  expect(await readEventStream(ended, () => false)).toBe(false);
+  expect(endedCancelled).toBe(false);
+});
+
 test("a multi-byte character split across two pieces of bytes decodes whole", async () => {
   const encoded = new TextEncoder().encode('data: {"text":"é"}\n\n');
   const split = encoded.indexOf(0xc3) + 1;

@@ -1,11 +1,11 @@
 package going
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/agentloop"
@@ -166,7 +166,7 @@ func (r *answerRun) readCall(ctx context.Context, read ReadFunc, call agentloop.
 	}
 	r.reads++
 	arguments := call.Input
-	if len(strings.TrimSpace(string(arguments))) == 0 {
+	if len(bytes.TrimSpace(arguments)) == 0 {
 		arguments = json.RawMessage(`{}`)
 	}
 	answer, err := read(ctx, arguments)

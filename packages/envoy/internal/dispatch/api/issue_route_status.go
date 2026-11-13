@@ -86,7 +86,7 @@ type routeRoster struct {
 	// of the stored row it came from, or of the fetch that stored it. It is zero for an answer no
 	// fetch stored - an unconfigured listener's, or one a shutdown drain or an end-to-end
 	// process asked for on its own request - which was read just now. The roster's age is the
-	// database's now less it (the going run's roster frame, decision 18).
+	// database's now less it (the going run's roster frame).
 	sent time.Time
 }
 

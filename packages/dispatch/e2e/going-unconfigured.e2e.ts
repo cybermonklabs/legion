@@ -15,15 +15,25 @@ import { asUser } from "./users";
 // nothing configured opens the bar and says what it cannot do. The default stack starts the
 // server with no answering model, no deciding model, no session and no label; the bar opens, the
 // hits appear, it says what it cannot do and asks no answer, and the capability route reports each
-// of the four unset. The models lane configures both models, so this row skips there: run there,
-// the bar answers and the first assertion fails, which is the check's negative control.
+// of the four unset. The models lane configures both models, so this row skips there, unless the
+// run is the check's negative control, which turns the skip off to run the same row in the models
+// lane (`DISPATCH_E2E_MODELS=fake DISPATCH_E2E_CONTROL=unconfigured-in-models-lane bunx playwright
+// test --config e2e/playwright.config.ts --project=chromium going-unconfigured`): there the bar
+// answers, and the row fails at its first assertion of what the bar cannot do,
+// `going-cannot-answer`.
 
 /** Twice the bar's pause (`MEANING_PAUSE_MS`, 500 ms, `web/src/features/search/useTieredSearch.ts`,
  *  which imports the api client and so is no module a spec loads): a bar that answers has asked
  *  by then. */
 const ABSENCE_WINDOW_MS = 1_000;
 
-test.skip(usesFakeModels, "the models lane configures the models this row reads as unset");
+/** Whether this run is the negative control, which runs the row where the models are set. */
+const control = process.env.DISPATCH_E2E_CONTROL === "unconfigured-in-models-lane";
+
+test.skip(
+  usesFakeModels && !control,
+  "the models lane configures the models this row reads as unset"
+);
 
 // SLOW(>=2s): a seeded issue, the bar's two searches and its pause waited out.
 test("with nothing configured the bar opens, lists the hits, says what it cannot do and asks no answer", async ({

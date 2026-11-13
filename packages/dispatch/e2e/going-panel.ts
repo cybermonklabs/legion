@@ -1,12 +1,14 @@
 import type { GoingWriteInput } from "../web/src/api/types";
+import { createIssue, createProject, search } from "./api";
 import type { ChatReply } from "./fake-chat-model";
 import type { DecisionReply } from "./fake-decision-model";
 import { expect, type Locator, type Page } from "./test";
 
 // What the command bar's answer rows share: the bar, its answer panel, opening the bar over a
-// page, asking it a question, and the fake writing model's replies those rows script. The panel
-// and its lines are read by the test ids `features/search/AnswerPanel.tsx` gives them, the bar's
-// operations by those of `features/search/OperationRows.tsx`.
+// page, asking it a question, the issue a question is answered from, and the fake writing model's
+// replies those rows script. The panel and its lines are read by the test ids
+// `features/search/AnswerPanel.tsx` gives them, the bar's operations by those of
+// `features/search/OperationRows.tsx`.
 
 /** How long a row waits for one answer to end: the run's own window (`GOING_RUN_MS`, 30 s) and
  *  the stream's grace past it. */
@@ -28,14 +30,58 @@ export function answerText(page: Page): Locator {
   return page.getByTestId("going-answer-text");
 }
 
-/** Opens `path`, waits for the shell, and opens the bar over it with `Control+K`. */
-export async function openBarOver(page: Page, path: string): Promise<void> {
+/** Opens `path` and waits for the shell, whose search button opens the bar. */
+export async function openShell(page: Page, path: string): Promise<void> {
   await page.goto(path);
   await expect(page.getByRole("button", { name: /^search/i })).toBeVisible();
+}
+
+/** Opens the bar over the page with `Control+K`, from the page's body. */
+export async function openBar(page: Page): Promise<void> {
   await page.locator("body").focus();
   await page.keyboard.press("Control+k");
   await expect(searchBox(page)).toBeFocused();
 }
+
+/** Closes the bar with `Escape`. */
+export async function closeBar(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await expect(bar(page)).toHaveCount(0);
+}
+
+/** Opens `path`, waits for the shell, and opens the bar over it with `Control+K`. */
+export async function openBarOver(page: Page, path: string): Promise<void> {
+  await openShell(page, path);
+  await openBar(page);
+}
+
+/** Seeds project CORE and one issue titled `title`, and answers that issue's key and the href the
+ *  search for `question` gives its hit, which is the link the model is given. */
+export async function seedIssue(
+  question: string,
+  title: string
+): Promise<{ readonly key: string; readonly href: string }> {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title });
+  const hit = ((await search(question)).results ?? []).find(
+    (result) => result.owner.kind === "issue" && result.owner.key === issue.key
+  );
+  if (hit === undefined) {
+    throw new Error(`search for "${question}" does not find ${issue.key}`);
+  }
+  return { href: hit.href, key: issue.key };
+}
+
+/** A chart of project CORE's issues by status, as bars: the spec a model writes for it names a
+ *  read and its fields, never a number. */
+export const STATUS_CHART_SPEC = {
+  mark: "bar",
+  params: { project: "CORE" },
+  source: "read_progress",
+  table: "statuses",
+  x: "status",
+  y: "count",
+} as const;
 
 /** Puts `words` in the box in one input, so the bar's pause starts once, and waits for the answer
  *  the pause asks for to end. */
@@ -135,7 +181,7 @@ export function decided(
 }
 
 /** A structured reply whose answer is `answer` and whose arguments are `args`: each offered
- *  action's invocations, one per item it changes (decision 2). */
+ *  action's invocations, one per item it changes. */
 export function withArguments(
   args: Readonly<Record<string, readonly Readonly<Record<string, unknown>>[]>>,
   answer = "On it."

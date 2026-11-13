@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 import { ApiError, api, goingUndoRequest, goingWriteRequest } from "../../api/client";
 import type { GoingUndoLine, GoingWriteInput, GoingWriteLine } from "../../api/types";
 import { WriteDiscardedError } from "../writes/keyed-write";
-import { plainWrite, type Write, type Writes } from "../writes/write-store";
+import { plainWrite, type Write, type Writes, writeUnsettled } from "../writes/write-store";
 import { refusalText } from "./offer";
 
 /**
@@ -44,7 +44,6 @@ export type TurnLineState = "sending" | "done" | "refused" | "stopped";
 export interface TurnLine {
   readonly key: string;
   readonly action: string;
-  readonly invocation: number;
   /** The item the arguments name, `""` where they name none. */
   readonly target: string;
   /** What the arguments change, besides the item. */
@@ -82,7 +81,7 @@ export interface LastUndo extends TurnUndo {
 const TARGET_PREFIX = "going-run:";
 
 /** The line every write of one run goes out on, in press order. */
-export function goingRunTarget(runId: string): string {
+function goingRunTarget(runId: string): string {
   return `${TARGET_PREFIX}${runId}`;
 }
 
@@ -94,6 +93,9 @@ function runOfTarget(target: string | undefined): string | undefined {
 
 let turns: ReadonlyMap<string, Turn> = new Map();
 let lastUndo: LastUndo | undefined;
+/** The runs whose undo, out now, the shell says as it goes: an undo the key made, or one already
+ *  out from a turn's Undo that the key was pressed during. */
+const followed = new Set<string>();
 const listeners = new Set<() => void>();
 
 function publish(): void {
@@ -148,12 +150,18 @@ export function dismissLastUndo(): void {
 export function forgetTurns(): void {
   turns = new Map();
   lastUndo = undefined;
+  followed.clear();
   publish();
 }
 
 /** An action as the bar names it: the catalogue's name without its prefix. */
 export function actionName(action: string): string {
   return action.replace(/^dispatch_/, "").replaceAll("_", " ");
+}
+
+/** An action and the item it acts on, as a line names them: `issue update CORE-1`. */
+export function actionOn(action: string, target: string): string {
+  return `${actionName(action)}${target === "" ? "" : ` ${target}`}`;
 }
 
 /** The arguments that name the item a write acts on, in the order the bar reads them. */
@@ -247,7 +255,6 @@ export function runGoingWrite(
   const line: TurnLine = {
     action: spec.action,
     change: changeOf(named, target),
-    invocation: spec.invocation,
     key,
     refusal: undefined,
     state: "sending",
@@ -271,7 +278,7 @@ export function runGoingWrite(
       detail: null,
       inline: true,
       kind: plainWrite,
-      label: `${actionName(spec.action)}${target === "" ? "" : ` ${target}`}`,
+      label: actionOn(spec.action, target),
       presentation: "indicator",
       request: goingWriteRequest(spec.runId, input),
       target: goingRunTarget(spec.runId),
@@ -311,11 +318,6 @@ export async function runGoingWrites(
   await Promise.allSettled(specs.map((spec) => runGoingWrite(writes, spec)));
 }
 
-/** Whether a write of the store is still to be decided: waiting its turn or out. */
-function unsettled(write: Write): boolean {
-  return write.status === "queued" || write.status === "sending" || write.status === "late";
-}
-
 /** Stops every write of the runs `inRun` names that waits its turn and was never sent: it has not
  *  reached Dispatch, so undoing the turn is not sending it. Answers how many it stopped. */
 function stopWaiting(writes: Writes, inRun: (runId: string) => boolean): number {
@@ -334,7 +336,7 @@ function writesSettled(writes: Writes, inRun: (runId: string) => boolean): Promi
   const out = () =>
     writes.rows().some((write) => {
       const runId = runOfTarget(write.target);
-      return runId !== undefined && inRun(runId) && unsettled(write);
+      return runId !== undefined && inRun(runId) && writeUnsettled(write);
     });
   if (!out()) return Promise.resolve();
   const { promise, resolve } = Promise.withResolvers<void>();
@@ -353,8 +355,11 @@ function undoReason(words: string): string | undefined {
 }
 
 function setUndo(runId: string, words: string, undo: TurnUndo, notice: boolean): void {
-  if (notice)
-    lastUndo = { ...undo, runId, words: words === "" ? (turns.get(runId)?.words ?? "") : words };
+  if (notice) followed.add(runId);
+  if (followed.has(runId)) {
+    lastUndo = { ...undo, runId, words };
+    if (undo.state !== "undoing") followed.delete(runId);
+  }
   changeTurn(runId, words, (turn) => ({
     ...turn,
     lines: turn.lines.map((line) => {
@@ -377,12 +382,24 @@ export async function undoGoingTurn(
   words = "",
   notice = false
 ): Promise<void> {
-  if (turns.get(runId)?.undo?.state === "undoing") return;
+  // The words the turn's undo names: the caller's, else the turn's own.
+  const said = words === "" ? (turns.get(runId)?.words ?? "") : words;
+  const out = turns.get(runId)?.undo;
+  if (out?.state === "undoing") {
+    // An undo of this turn is out already, so this is that undo and not a second: the shell,
+    // where this one would have said itself, follows that one and settles when it does.
+    if (notice) {
+      followed.add(runId);
+      lastUndo = { ...out, runId, words: said };
+      publish();
+    }
+    return;
+  }
   const inRun = (id: string) => id === runId;
   const stopped = stopWaiting(writes, inRun);
-  setUndo(runId, words, { lines: [], message: undefined, state: "undoing", stopped }, notice);
+  setUndo(runId, said, { lines: [], message: undefined, state: "undoing", stopped }, notice);
   await writesSettled(writes, inRun);
-  const reason = undoReason(words === "" ? (turns.get(runId)?.words ?? "") : words);
+  const reason = undoReason(said);
   try {
     const answer = await writes.run({
       detail: null,
@@ -395,7 +412,7 @@ export async function undoGoingTurn(
     });
     setUndo(
       runId,
-      words,
+      said,
       {
         lines: answer?.lines ?? [],
         message:
@@ -410,7 +427,7 @@ export async function undoGoingTurn(
   } catch (error) {
     setUndo(
       runId,
-      words,
+      said,
       {
         lines: [],
         message: refusalText(error, "the undo did not reach Dispatch."),
@@ -429,9 +446,11 @@ export async function undoGoingTurn(
  * reload and from a page the bar was never opened on.
  */
 export async function undoNewestGoingTurn(writes: Writes): Promise<void> {
+  // A press while an undo is out is that undo's: a second would undo the turn again.
+  if (lastUndo?.state === "undoing") return;
   const writing = writes
     .rows()
-    .filter((write) => runOfTarget(write.target) !== undefined && unsettled(write))
+    .filter((write) => runOfTarget(write.target) !== undefined && writeUnsettled(write))
     .reduce<Write | undefined>(
       (newest, write) =>
         newest === undefined || write.pressedAt > newest.pressedAt ? write : newest,
@@ -442,34 +461,22 @@ export async function undoNewestGoingTurn(writes: Writes): Promise<void> {
     await undoGoingTurn(writes, local, "", true);
     return;
   }
-  lastUndo = { lines: [], message: undefined, runId: "", state: "undoing", stopped: 0, words: "" };
-  publish();
+  // What the key says before it knows which turn is the person's.
+  const say = (state: TurnUndo["state"], message: string | undefined) => {
+    lastUndo = { lines: [], message, runId: "", state, stopped: 0, words: "" };
+    publish();
+  };
+  say("undoing", undefined);
   try {
     const page = await api.myGoingRuns({ limit: 1, undoable: true });
     const run = page.rows?.[0];
     if (run === undefined) {
-      lastUndo = {
-        lines: [],
-        message: "Nothing to undo: no turn of the command bar has a write left to undo.",
-        runId: "",
-        state: "undone",
-        stopped: 0,
-        words: "",
-      };
-      publish();
+      say("undone", "Nothing to undo: no turn of the command bar has a write left to undo.");
       return;
     }
     await undoGoingTurn(writes, run.id, run.words, true);
   } catch (error) {
-    lastUndo = {
-      lines: [],
-      message: refusalText(error, "Dispatch did not say which turn is yours to undo."),
-      runId: "",
-      state: "refused",
-      stopped: 0,
-      words: "",
-    };
-    publish();
+    say("refused", refusalText(error, "Dispatch did not say which turn is yours to undo."));
   }
 }
 

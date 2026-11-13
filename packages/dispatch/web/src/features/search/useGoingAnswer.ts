@@ -33,6 +33,11 @@ import { MEANING_PAUSE_MS } from "./useTieredSearch";
  *  or failed - an `error` frame, or a request that never reached the stream. */
 export type GoingAnswerState = "asking" | "streaming" | "ended" | "failed";
 
+/** Whether the answer has settled: ended or failed, so no frame of it is still to come. */
+export function answerSettled(answer: GoingAnswer): boolean {
+  return answer.state === "ended" || answer.state === "failed";
+}
+
 /**
  * One run of Dispatch's answer to the words in the bar, as the frames of its stream have built
  * it so far. Every field is a frame's: the text is the `text` frames joined, the items are the
@@ -83,12 +88,12 @@ interface AnsweredRun {
 let lastAnswered: AnsweredRun | undefined;
 
 /** The run reopening the bar draws again: the last that answered, while Dispatch keeps it. */
-export function lastAnsweredRun(now: number = Date.now()): AnsweredRun | undefined {
+function lastAnsweredRun(): AnsweredRun | undefined {
   if (lastAnswered === undefined) {
     return undefined;
   }
   const created = Date.parse(lastAnswered.createdAt);
-  if (Number.isNaN(created) || now - created >= GOING_REQUEST_TTL_MS) {
+  if (Number.isNaN(created) || Date.now() - created >= GOING_REQUEST_TTL_MS) {
     lastAnswered = undefined;
   }
   return lastAnswered;
@@ -121,7 +126,7 @@ function freshAnswer(words: string, replayed: boolean, runId?: string): GoingAns
 }
 
 /** The answer with one more frame of its stream. */
-export function withFrame(answer: GoingAnswer, frame: GoingEvent): GoingAnswer {
+function withFrame(answer: GoingAnswer, frame: GoingEvent): GoingAnswer {
   switch (frame.event) {
     case GOING_EVENT_TEXT:
       return { ...answer, state: "streaming", text: answer.text + frame.data.text };
@@ -148,6 +153,15 @@ export function withFrame(answer: GoingAnswer, frame: GoingEvent): GoingAnswer {
     case GOING_EVENT_ERROR:
       return { ...answer, error: frame.data.code, state: "failed" };
   }
+}
+
+/** The answer as it stands once the page could not ask for it or read it, saying why. */
+function unreachableAnswer(answer: GoingAnswer, error: unknown): GoingAnswer {
+  return {
+    ...answer,
+    state: "failed",
+    unreachable: refusalText(error, "Dispatch did not answer."),
+  };
 }
 
 /** The run the bar has out: at most one per bar. `id` is unset while its request is out. */
@@ -179,7 +193,7 @@ export interface GoingAnswerHook {
  * an empty box draws it from the first frame of its stream, as Dispatch still serves it.
  *
  * Answers the run of the words in the box, the replay while the box is empty, or undefined, and
- * `askNow`: a submit made inside the pause (decision 4) asks at once rather than waiting it out.
+ * `askNow`: a submit made inside the pause asks at once rather than waiting it out.
  */
 export function useGoingAnswer({
   context,
@@ -278,11 +292,7 @@ export function useGoingAnswer({
           setAnswer(undefined);
           return;
         }
-        update((current) => ({
-          ...current,
-          state: "failed",
-          unreachable: refusalText(error, "Dispatch did not answer."),
-        }));
+        update((current) => unreachableAnswer(current, error));
       });
   }, []);
 
@@ -321,11 +331,7 @@ export function useGoingAnswer({
           run.ended = true;
           setAnswer((current) =>
             current?.words === asked && !current.replayed
-              ? {
-                  ...current,
-                  state: "failed",
-                  unreachable: refusalText(error, "Dispatch did not answer."),
-                }
+              ? unreachableAnswer(current, error)
               : current
           );
         }

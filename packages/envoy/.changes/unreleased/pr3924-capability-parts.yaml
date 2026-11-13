@@ -1,0 +1,5 @@
+kind: Changed
+body: |-
+  `GET /api/v1/going/capability` now answers each part of the command bar apart,
+  `{answer, decision, session, label}`, and no longer answers `model_configured`: a client that
+  read that field reads `answer.configured` instead.

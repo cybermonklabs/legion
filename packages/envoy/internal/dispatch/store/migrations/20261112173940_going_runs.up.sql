@@ -22,7 +22,9 @@
 -- - finished_at is when the run ended; null reads as unfinished, an abandoned run included, which
 --   keeps whatever it stored.
 --
--- going_runs_author_created is the route's own read, a person's runs newest first.
+-- going_runs_author_created is the route's own read, a person's runs newest first, and
+-- going_runs_created the thirty-day sweep's (sweepGoingRuns), which deletes by created_at alone
+-- every minute.
 --
 -- A new table no earlier release names: nothing existing is read or rewritten, and the release
 -- before this one neither reads nor writes it, so it rolls (cmd/dispatch/README.md, "Database
@@ -48,3 +50,5 @@ create table going_runs (
 create index going_runs_author_created on going_runs (author_login, created_at desc);
 
 create index going_runs_issues on going_runs using gin (issues);
+
+create index going_runs_created on going_runs (created_at);

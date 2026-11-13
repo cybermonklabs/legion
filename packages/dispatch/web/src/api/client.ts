@@ -1188,23 +1188,22 @@ export class DispatchApiClient {
   }
 
   /**
-   * `GET /api/v1/going/requests/{id}/stream`: one run's answer, each frame handed to `onFrame`
-   * with its sequence as it arrives, until the frame that ends the run (`end` or `error`). The
-   * stream is read after `lastEventId` (`Last-Event-ID`; 0 reads it from its first frame, which
-   * is how a run answered earlier is drawn again). A connection that ends before that last frame
-   * is opened again after the last frame in hand, so a dropped connection loses nothing and
-   * repeats nothing; one that keeps ending with nothing new is given up (`GOING_STREAM_REOPENS`).
-   * The stream may stay silent while the model thinks, so it is held to no silence deadline: the
-   * run's own window bounds it, and `signal` ends it sooner.
+   * `GET /api/v1/going/requests/{id}/stream`: one run's answer, each frame handed to `onFrame` as
+   * it arrives, from the stream's first frame (`Last-Event-ID: 0`, which is also how a run
+   * answered earlier is drawn again) until the frame that ends the run (`end` or `error`). A
+   * connection that ends before that last frame is opened again after the last frame `onFrame`
+   * took, so a dropped connection loses nothing and repeats nothing, and a frame whose handing
+   * threw is read again; one that keeps ending with nothing new is given up
+   * (`GOING_STREAM_REOPENS`). The stream may stay silent while the model thinks, so it is held to
+   * no silence deadline: the run's own window bounds it, and `signal` ends it sooner.
    */
   async streamGoingAnswer(
     id: string,
-    onFrame: (frame: GoingEvent, sequence: number) => void,
-    signal: AbortSignal,
-    lastEventId = 0
+    onFrame: (frame: GoingEvent) => void,
+    signal: AbortSignal
   ): Promise<void> {
     const path = routeUrl("/api/v1/going/requests/{id}/stream", { id });
-    let after = lastEventId;
+    let after = 0;
     let fruitless = 0;
     for (;;) {
       const response = await this.response(
@@ -1217,15 +1216,16 @@ export class DispatchApiClient {
       if (response.body !== null) {
         try {
           ended = await readEventStream(response.body, (event) => {
+            const framed = GOING_FRAMES.has(event.name);
+            if (framed) {
+              onFrame({ data: JSON.parse(event.data), event: event.name } as GoingEvent);
+            }
+            // In hand only once handed on: a frame whose parse or handing threw is not passed.
             const sequence = Number(event.id);
             if (Number.isInteger(sequence)) {
               after = sequence;
             }
-            if (!GOING_FRAMES.has(event.name)) {
-              return false;
-            }
-            onFrame({ data: JSON.parse(event.data), event: event.name } as GoingEvent, after);
-            return event.name === GOING_EVENT_END || event.name === GOING_EVENT_ERROR;
+            return framed && (event.name === GOING_EVENT_END || event.name === GOING_EVENT_ERROR);
           });
         } catch (error) {
           // The caller's abort is the caller's; a connection that dropped is opened again below.
@@ -1243,8 +1243,14 @@ export class DispatchApiClient {
         throw new NetworkError(path, new Error("the answer stream kept ending before its run did"));
       }
       const reopen = Promise.withResolvers<void>();
-      setTimeout(reopen.resolve, GOING_STREAM_REOPEN_MS);
+      const timer = setTimeout(reopen.resolve, GOING_STREAM_REOPEN_MS);
+      const aborted = () => {
+        clearTimeout(timer);
+        reopen.resolve();
+      };
+      signal.addEventListener("abort", aborted, { once: true });
       await reopen.promise;
+      signal.removeEventListener("abort", aborted);
       signal.throwIfAborted();
     }
   }
