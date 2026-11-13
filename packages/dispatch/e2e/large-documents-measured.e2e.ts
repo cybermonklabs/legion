@@ -64,19 +64,12 @@ import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
 interface Row {
-  /** How long the row waits for the editor to open, which is the end of its build and the end
-   *  of the window the longest task is read over. */
-  readonly buildTimeoutMs: number;
   /** The document an agent writes. */
   readonly content: string;
   /** How many diagrams it holds, which the row proves before it measures anything. */
   readonly diagrams: number;
   /** The target the first block has to be in the viewport within. */
   readonly firstBlockTargetMs: number;
-  /** How long the row waits for the first block. A build that draws it at all is read against
-   *  the target; this is the wait for one that never draws it, so a failure reads as the miss it
-   *  is rather than as a hang. */
-  readonly firstBlockTimeoutMs: number;
   /** The file it is written under. */
   readonly name: string;
   /** The row's own timeout for one reading, since the suite sets none and Playwright's 30 s
@@ -87,23 +80,46 @@ interface Row {
   readonly what: string;
 }
 
+// How long a reading waits for the editor's first block and then for the editor to open
+// (`measureDocument`). Each is a wait for something that never came, and it has to fail inside
+// `iphone-measure-alone`'s browser step, which has 3 minutes, 7 s of them no row
+// (.github/workflows/dispatch-browser.yaml derives both); a hung reading that outlives the step
+// ends the leg with no row named and no report kept.
+//
+// What a reading costs. On that leg's machine run 43098661012 read the first editable block at
+// 1,328 ms and 1,569 ms and the editor open at 1,838 ms and 2,767 ms, the two rows taking
+// 16.2 s and 20.7 s for one reading each, their seeding included. This pod, one worker on two
+// CPUs, read the first block at up to 8,982 ms and 11,241 ms and the editor open up to 4.8 s and
+// 21.6 s after it (three readings of each document, over two runs). 25 s is more than twice this
+// pod's slowest first block and 40 s nearly twice its slowest build; each is at least fifteen
+// times the leg's.
+//
+// What the leg leaves. The latest a reading can hang is the larger document's third, after the
+// smaller one's three readings (48.6 s at the leg's own cost) and the larger one's first two
+// (41.4 s): 7 + 48.6 + 41.4 = 97 s into the step, which leaves 83 s, and a hung reading fails at
+// 25 s, or at a first block of 11.2 s and 40 s, 51.2 s - 148.2 s of the 180. A page that hangs
+// every reading fails each row at its first, about 5 s of seeding plus 51.2 s: 7 + 2 x 56.2 =
+// 119.4 s.
+
+/** How long a reading waits for the editor's first block, from the navigation. */
+const firstBlockTimeoutMs = 25_000;
+
+/** How long a reading waits for the editor to open once its first block is in. */
+const buildTimeoutMs = 40_000;
+
 const rows: readonly [Row, Row] = [
   {
-    buildTimeoutMs: 240_000,
     content: smallDocument,
     diagrams: documentDiagrams.small,
     firstBlockTargetMs: 3_000,
-    firstBlockTimeoutMs: 120_000,
     name: "specs-small.md",
     timeoutMs: 300_000,
     what: documentNames.small,
   },
   {
-    buildTimeoutMs: 480_000,
     content: largeDocument,
     diagrams: documentDiagrams.large,
     firstBlockTargetMs: 5_000,
-    firstBlockTimeoutMs: 240_000,
     name: "specs-large.md",
     timeoutMs: 900_000,
     what: documentNames.large,
@@ -137,8 +153,8 @@ for (const row of rows) {
         const page = await alice.newPage();
         try {
           const measured = await measureDocument(page, path, {
-            buildTimeoutMs: row.buildTimeoutMs,
-            firstBlockTimeoutMs: row.firstBlockTimeoutMs,
+            buildTimeoutMs,
+            firstBlockTimeoutMs,
           });
           printMeasurement(what, measured, {
             firstBlockTargetMs: row.firstBlockTargetMs,

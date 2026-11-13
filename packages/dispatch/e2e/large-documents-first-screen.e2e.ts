@@ -179,6 +179,29 @@ test("a document's text is asked for before the entry's imports have evaluated @
   }
 });
 
+/**
+ * What the browser itself timed `page` asking for, by name: the Markdown engine's chunk, which is
+ * the headless editor's entry (`@legion/proof-editor/headless`,
+ * `packages/proof-editor/src/lib-headless.ts`) and which the build names after that module; the
+ * parse worker's, the chunk the queue creates for a body over the threshold; and the document's
+ * text. Nothing else on a document's page asks for either chunk.
+ */
+async function chunksAskedFor(
+  page: Page
+): Promise<{ engine: string[]; text: string[]; worker: string[] }> {
+  return await page.evaluate(() => {
+    const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+    const paths = resources.map((resource) => new URL(resource.name).pathname);
+    return {
+      engine: paths.filter((name) => /^\/assets\/lib-headless-[^/]*\.js$/.test(name)),
+      worker: paths.filter((name) => /^\/assets\/markdown-parse\.worker-[^/]*\.js$/.test(name)),
+      text: paths.filter((name) =>
+        /^\/api\/v1\/(issues\/[^/]+\/artifacts\/[^/]+|artifacts\/[^/]+)\/text$/.test(name)
+      ),
+    };
+  });
+}
+
 // The Markdown engine the page draws a document with - the headless Proof editor's chunk, 461 KB
 // to download and compile, and the engine built over it - used to be loaded before the page had
 // rendered anything: `openDocumentEarly` warmed it, and the shell warmed it again from its first
@@ -197,7 +220,11 @@ test("a document's text is asked for before the entry's imports have evaluated @
 // 546 ms of the main thread, built for a draw that never reached the reader.
 //
 // This row reads the browser's own resource timing after the reader has an editor they can type
-// in: neither the engine's chunk nor the parse worker's was ever asked for.
+// in: neither the engine's chunk nor the parse worker's was ever asked for. Both are read by
+// name (`chunksAskedFor`), so a name the build stopped giving a chunk would leave both lists
+// empty with the engine built all the same; the row therefore opens the same document a second
+// time with its socket held, where no build ever comes and the draw parses the whole document
+// itself once its wait for one is over, and holds each name to at least one path there.
 test("a page the server drew a document into builds no Markdown engine while its editor comes @phone", async ({
   browser,
 }, testInfo) => {
@@ -229,21 +256,7 @@ test("a page the server drew a document into builds no Markdown engine while its
       page.locator('.proof-editor[data-write-path="live"] [data-block-id]').first()
     ).toBeVisible({ timeout: 180_000 });
 
-    // What the browser itself timed. The engine's chunk is the headless editor's entry
-    // (`@legion/proof-editor/headless`, `packages/proof-editor/src/lib-headless.ts`), which the
-    // build names after that module, and the parse worker is the chunk the queue creates for a
-    // body over the threshold; nothing else on this page asks for either.
-    const asked = await page.evaluate(() => {
-      const resources = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
-      const paths = resources.map((resource) => new URL(resource.name).pathname);
-      return {
-        engine: paths.filter((name) => /^\/assets\/lib-headless-[^/]*\.js$/.test(name)),
-        worker: paths.filter((name) => /^\/assets\/markdown-parse\.worker-[^/]*\.js$/.test(name)),
-        text: paths.filter((name) =>
-          /^\/api\/v1\/(issues\/[^/]+\/artifacts\/[^/]+|artifacts\/[^/]+)\/text$/.test(name)
-        ),
-      };
-    });
+    const asked = await chunksAskedFor(page);
 
     expect(
       asked.text.length,
@@ -259,6 +272,29 @@ test("a page the server drew a document into builds no Markdown engine while its
       asked.worker,
       "the page posted the whole document to the parse worker while the editor was on its way"
     ).toEqual([]);
+
+    // The same document on a page whose socket never syncs: no build comes, so once its wait
+    // for one is over the draw parses the whole document itself (`DocumentPreview`), which
+    // builds the engine and posts the document to the worker. Each name above matches what
+    // that page asked for, so the two empty lists are a page that asked for neither and not a
+    // name that matches nothing.
+    const parsing = await alice.newPage();
+    await documentTransport(parsing, { holding: true });
+    await parsing.goto(path, { waitUntil: "commit" });
+    await expect
+      .poll(
+        async () => {
+          const { engine, worker } = await chunksAskedFor(parsing);
+          return { engine: engine.length > 0, worker: worker.length > 0 };
+        },
+        {
+          message:
+            "a page whose editor never came never asked for a chunk by the engine's name and " +
+            "the parse worker's, so neither name above is a name the build gives a chunk",
+          timeout: 120_000,
+        }
+      )
+      .toEqual({ engine: true, worker: true });
   } finally {
     await alice.close();
   }

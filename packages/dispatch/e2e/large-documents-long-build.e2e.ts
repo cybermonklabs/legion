@@ -39,12 +39,7 @@ import { type Browser, expect, type Page, test } from "@playwright/test";
 import { getArtifactText } from "./api";
 import { documentEditor, documentTransport } from "./editor";
 import { documentDiagrams, documentNames, documentTitle, largeDocument } from "./large-documents";
-import {
-  measureDocument,
-  theMomentThePageReached,
-  throttleTheCpu,
-  watchTheDocument,
-} from "./large-documents-page";
+import { measureDocument, throttleTheCpu, watchTheDocument } from "./large-documents-page";
 import {
   blocksBuilt,
   drawnBlocks,
@@ -60,26 +55,89 @@ import { asUser } from "./users";
 
 // What a row of this file waits for of the page - its first block in the viewport and its
 // editor open - is an announcement the page makes (`watchTheDocument`), and one that never
-// comes is a promise that never settles. Every such wait here is bounded by the two figures
-// below, which are the ones the first row gives `measureDocument`, so a page that never makes
-// the announcement fails the row by name. Left to the row's own timeout it failed nothing: in
-// run 43385477411 at b6c6a359 the build-time row below started 10 s into shard 5 of 5 and was
-// still waiting when that leg's 9-minute budget ended it, its other 293 rows green, with no row
-// named and no report kept. Where the page announces both it ends in 40 to 80 s
-// (dispatch://INFRA-341).
+// comes is a promise that never settles. Every such wait here is bounded, so a page that never
+// makes the announcement fails the row by name. Left to the row's own timeout it failed
+// nothing: in run 43385477411 at b6c6a359 the build-time row below started 10 s into shard 5 of
+// 5 and was still waiting when that leg's 9-minute budget ended it, its other 293 rows green,
+// with no row named and no report kept (dispatch://INFRA-341).
+//
+// So each bound is sized from what its wait costs and from what the leg the row runs in leaves
+// it. The three rows run in `iphone-long-build-alone`, one worker, in this order, under a
+// browser step of 240 s with no retry, 7 s of which is not a row
+// (.github/workflows/dispatch-browser.yaml derives both); the leg was sized from what they cost
+// four workers wide in `shard (5)` of run 43421318396, 108.6 s, 39.3 s and 51.8 s. The second
+// and third also run in a `chromium` shard leg, four workers wide, under 540 s with one retry.
+// The readings below are the page's own clock, from CI's shard legs and from this pod, one
+// worker on two CPUs, at 4x CPU throttling (dispatch://INFRA-341); the leg's own quiet machine
+// read the same page's first editable block at 1.6 s and its editor open at 2.8 s (run
+// 43098661012), so every figure here over-states the phone's leg.
+//
+// The first row's waits are its own (`theWindowsFirstBlockTimeoutMs`, `theWindowsBuildTimeoutMs`
+// below). Its first block cannot come before the row lets the socket through, which is after
+// the draw and the 20 s hold: this pod released at 36.5 s, had the first block at 40.0 s and
+// the editor open 32.4 s after it, over the whole drawn document. 90 s and 75 s are more than
+// twice each. The row is the leg's first, and a page that never announces fails it 9 s of
+// seeding plus 90 s in, or plus 40 s and 75 s: 124 s, and the other two rows' 91.1 s and the
+// step's 7 s bring the leg to 222 s of its 240, so it ends with its report.
+//
+// The second and third rows share `firstBlockTimeoutMs` and `buildTimeoutMs`. The first block
+// came at up to 11.1 s from the navigation (`iphone`, run 43421318396; 10.7 s in `chromium`,
+// run 42686241170; 10.4 s on this pod), and the editor opened up to 14.3 s after it on CI
+// (`iphone`, run 42682941869). This pod is slower: the third row's builds took up to 30.2 s
+// (`chromium`), and the second row's editor opened 42.3 s from the navigation in one run, which
+// is longer than its build alone. 30 s is near three times the slowest first block; 60 s is
+// about twice the slowest build and one and a half times that whole span from the navigation.
+// In the phone's leg the second row starts with 124.4 s of the 233 left and fails at about 10 s
+// of seeding plus 11.1 s and 60 s, 81.1 s; the third starts with 85.1 s left and fails its first
+// build at 6.7 s of seeding plus 11.1 s and 60 s, 77.8 s.
+//
+// The third row's second build has a bound of its own, because 60 s does not fit after
+// everything ahead of it: its first block is reached at 6.7 + 20.9 + 22.5 = 50.1 s at the most
+// (seeding, the first build whole, and the draw whole and released), and 85.1 s less that
+// leaves 35 s. `theDrawnBuildTimeoutMs` is 30 s, which ends that path at 80.1 s, 5 s inside. That
+// build took 2.2 to 10.6 s on CI four workers wide (runs 42628596511 to 43421318396) and 12.2
+// to 23.4 s on this pod, so 30 s is near three times CI's slowest and 1.3 times this pod's: the
+// room the leg leaves it, and no more.
+//
+// The rows' other waits are sized the same way: the first row's draw, at 3.9 s on this pod,
+// `theDrawWithinMs`; the second row's word in the open editor, which the page had already shown
+// before the editor opened, `theirWordStaysWithinMs`; and the third row's draw of the whole
+// document, inside the 22.5 s (`iphone`) and 32.5 s (`chromium`) its first block took from the
+// navigation, `theWholeDrawWithinMs`. Each path fits: 9 + 30 = 39 s of the first row's 233,
+// 10 + 42.3 + 30 = 82.3 s of the second's 124.4 - 112.3 s with the 30 s its write's own work
+// is then given (`owedWorkFinishesWithinMs`, `large-documents-rows.ts`) - and
+// 6.7 + 20.9 + 45 = 72.6 s of the third's 85.1.
+//
+// In the `chromium` shard leg a row fails an attempt at 92 s at the most (the third row's second
+// build, 6.7 + 22.6 + 32.5 + 30), so both attempts add at most 133 s to its worker, against the
+// 314 s that leg's rows took in run 43421318396: 447 s of its 540.
 
-/** How long a row here waits for the editor's first block to come into the viewport. */
-const firstBlockTimeoutMs = 240_000;
+/** How long the first row waits for the editor's first block, from the navigation. */
+const theWindowsFirstBlockTimeoutMs = 90_000;
 
-/** How long a row here waits for the editor to open, which is the end of its build. */
-const buildTimeoutMs = 480_000;
+/** How long the first row waits for the editor to open once its first block is in. */
+const theWindowsBuildTimeoutMs = 75_000;
 
-const neverInTheViewport =
-  "the editor's first visible block never came into the viewport: either no editor root ever " +
-  'carried `data-write-path="live"` with a block in it, or a taller page header has pushed ' +
-  "that block under the fold";
+/** How long the first row waits for the document's own draw to be on the page. */
+const theDrawWithinMs = 30_000;
 
-const neverOpened = "the editor never opened, so its build never ended";
+/** How long the second and third rows wait for the editor's first block, counted from the
+ *  navigation, or from the release where the socket was held. */
+const firstBlockTimeoutMs = 30_000;
+
+/** How long the second and third rows wait for the editor to open once its first block is in,
+ *  which is the end of its build; the third row's build over the whole drawn document waits
+ *  `theDrawnBuildTimeoutMs` instead. */
+const buildTimeoutMs = 60_000;
+
+/** How long the third row waits for the editor to open over the whole drawn document. */
+const theDrawnBuildTimeoutMs = 30_000;
+
+/** How long the second row waits for the open editor to hold the other person's word. */
+const theirWordStaysWithinMs = 30_000;
+
+/** How long the third row waits for the page's own draw to hold the whole document. */
+const theWholeDrawWithinMs = 45_000;
 
 /** How long the row below holds the socket after the document's own draw is on the screen.
  *  Well past the moment the page's own end is reached - the draw is a screenful and a few
@@ -118,7 +176,10 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
   try {
     const page = await alice.newPage();
     const transport = await documentTransport(page, { holding: true });
-    const measuring = measureDocument(page, path, { buildTimeoutMs, firstBlockTimeoutMs });
+    const measuring = measureDocument(page, path, {
+      buildTimeoutMs: theWindowsBuildTimeoutMs,
+      firstBlockTimeoutMs: theWindowsFirstBlockTimeoutMs,
+    });
     let closed = false;
     const noteClosed = () => {
       closed = true;
@@ -127,7 +188,7 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
 
     // The reader has the document's own draw, and no editor is being built behind it.
     const theDraw = page.locator('[aria-label="Document text"] [data-block-id]').first();
-    await expect(theDraw).toBeAttached({ timeout: 240_000 });
+    await expect(theDraw).toBeAttached({ timeout: theDrawWithinMs });
     await expect(documentEditor(page)).toHaveCount(0);
     // A window that stays open cannot be awaited: this is the hold above, long enough that a
     // window closing at the page's own end would have closed inside it (`heldAfterTheDrawMs`).
@@ -223,17 +284,15 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
   // same 406,000 characters: his word is one insert and one frame on her socket, where his page
   // spent a second or more laying the whole document out for it, which is what the row would
   // have been measuring instead of her build (`theOtherPersonsPen`). He is in the room before
-  // her page loads, so the only thing left for him to do while she builds is write. The pattern
-  // he stamps his words by is this one word taken literally: every character a pattern reads
-  // specially is escaped, the backslash among them, as `agent-name.e2e.ts` escapes a name, so a
-  // word that later holds one still matches only itself.
+  // her page loads, so the only thing left for him to do while she builds is write. Nothing here
+  // reads when his word left, so he is given no pattern to stamp it by.
   //
   // Opened inside the row's own `try`, as the timer row of
   // `large-documents-build-serves.e2e.ts` opens him: a room that refuses him
   // leaves neither him nor her context behind.
   let writer: TheOtherPersonsPen | undefined;
   try {
-    writer = await theOtherPersonsPen(artifactId, word.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&"));
+    writer = await theOtherPersonsPen(artifactId);
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
@@ -244,14 +303,10 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     // already built, the moment she has that batch: it is in her Yjs document as the insert
     // returns, and the only thing between it and her editor is the socket message that carries
     // it.
-    await theMomentThePageReached(reached.firstBlock, firstBlockTimeoutMs, neverInTheViewport);
+    await reached.firstBlock(firstBlockTimeoutMs);
     writer.write(word);
 
-    const openedMs = await theMomentThePageReached(
-      reached.editorOpened,
-      buildTimeoutMs,
-      neverOpened
-    );
+    const openedMs = await reached.editorOpened(buildTimeoutMs);
     const whole = await blocksBuilt(page);
     const landed = await page.evaluate(() => window.__theirWord);
     console.log(
@@ -274,7 +329,9 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     ).toBeLessThan(whole);
 
     // And it is the document's own word afterwards, not a redraw the binding undid.
-    await expect(documentEditor(page)).toContainText(`${title} ${word}`, { timeout: 240_000 });
+    await expect(documentEditor(page)).toContainText(`${title} ${word}`, {
+      timeout: theirWordStaysWithinMs,
+    });
     await everythingOwedFinished("the word another person wrote during the build");
     const { markdown } = await getArtifactText(artifactId);
     expect(markdown).toContain(`# ${title} ${word}`);
@@ -352,21 +409,15 @@ async function theBuildsTime(
         .poll(() => page.locator(drawnBlocks).count(), {
           intervals: [1_000],
           message: "the page never drew the whole document, so no build ran over one",
-          timeout: 300_000,
+          timeout: theWholeDrawWithinMs,
         })
         .toBeGreaterThanOrEqual(overTheWholeDraw ?? 0);
       await throttleTheCpu(page);
       await transport.release();
     }
-    const firstBlock = await theMomentThePageReached(
-      reached.firstBlock,
-      firstBlockTimeoutMs,
-      neverInTheViewport
-    );
-    const openedMs = await theMomentThePageReached(
-      reached.editorOpened,
-      buildTimeoutMs,
-      neverOpened
+    const firstBlock = await reached.firstBlock(firstBlockTimeoutMs);
+    const openedMs = await reached.editorOpened(
+      overTheWholeDraw === undefined ? buildTimeoutMs : theDrawnBuildTimeoutMs
     );
     return { buildMs: openedMs - firstBlock.at, firstBlockMs: firstBlock.at, openedMs };
   } finally {

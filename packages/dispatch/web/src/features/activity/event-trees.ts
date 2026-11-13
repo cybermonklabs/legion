@@ -1,4 +1,5 @@
 import type { DispatchEvent, DisplayTree } from "../../api/types";
+import type { AgentPart } from "../refs/AgentName";
 
 /** The tree of one stored text an event's payload carries, by that text's path in the envelope
  *  (`payload.body`, `payload.question`, `payload.resolution.reason`). A payload keeps the shape
@@ -12,4 +13,18 @@ import type { DispatchEvent, DisplayTree } from "../../api/types";
  *  component) read a tree by the same paths. */
 export function payloadTree(event: DispatchEvent, path: string): DisplayTree | undefined {
   return event.trees?.[path];
+}
+
+/** The ask events whose payload carries the question they are about. */
+export type QuestionEvent = Extract<
+  DispatchEvent,
+  { readonly type: `ask.${string}`; readonly payload: { readonly question: string } }
+>;
+
+/** The question an ask event quotes, with the reading Go sent of it: the one stored text an
+ *  ask event's line draws, so the line draws that reading and parses nothing (`QuotedPart`).
+ *  Both lines that quote one - the activity feed's (`activity-model.ts`) and the Pinned tab's
+ *  (`issue/event-description.ts`) - take it from here. */
+export function quotedQuestion(event: QuestionEvent): AgentPart {
+  return { markdown: event.payload.question, tree: payloadTree(event, "payload.question") };
 }

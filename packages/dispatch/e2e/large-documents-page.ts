@@ -138,15 +138,41 @@ interface Reached {
   readonly editorOpenedMs?: number;
 }
 
-/** The two announcements one measurement waits for. Each settles once, with what the page
- *  recorded; neither is ever rejected, so a wait of its own names what never came. */
-interface Announcements {
+/** What the page has announced, as it announced it: each settles once, with what the page
+ *  recorded, and neither is ever rejected. `watchTheDocument` hands them on bounded. */
+interface Announced {
   readonly editorOpened: Promise<number>;
   readonly firstBlock: Promise<NonNullable<Window["__largeDocumentFirstBlock"]>>;
 }
 
+/** The two announcements a row waits for, each as a wait the caller bounds. A promise the page
+ *  never settles is a row that waits until something else ends it - the row's own timeout, or
+ *  the leg's budget, which ends the whole leg with no row named and no report kept - so neither
+ *  is handed out unbounded: each fails where the page has not announced it inside `timeoutMs`,
+ *  with the message that says what never came. */
+export interface Announcements {
+  /** Resolves with `performance.now()` when the editor was first open, which is the end of its
+   *  build; fails with `neverOpened` past `timeoutMs`. */
+  readonly editorOpened: (timeoutMs: number) => Promise<number>;
+  /** Resolves with the editor's first visible block as the page recorded it; fails with
+   *  `neverInTheViewport` past `timeoutMs`. */
+  readonly firstBlock: (
+    timeoutMs: number
+  ) => Promise<NonNullable<Window["__largeDocumentFirstBlock"]>>;
+}
+
+/** What a row that waited too long for the editor's first block fails with. */
+const neverInTheViewport =
+  "the editor's first visible block never came into the viewport: either no editor root ever " +
+  'carried `data-write-path="live"` with a block in it, or a taller page header has pushed ' +
+  "that block under the fold";
+
+/** What a row that waited too long for the editor to open fails with. */
+const neverOpened =
+  "the editor never opened, so its build never ended: the page never named a finished editor";
+
 /** Installs the binding the page announces through, before any script of the page runs. */
-async function listenForThePage(page: Page): Promise<Announcements> {
+async function listenForThePage(page: Page): Promise<Announced> {
   const firstBlock = Promise.withResolvers<NonNullable<Window["__largeDocumentFirstBlock"]>>();
   const editorOpened = Promise.withResolvers<number>();
   await page.exposeFunction("__largeDocumentReached", (reached: Reached) => {
@@ -415,10 +441,10 @@ export async function throttleTheCpu(page: Page, rate = cpuThrottlingRate): Prom
  * thread. What it costs is a window that closes up to `editorPollMs` late, which is no target.
  *
  * It answers the two announcements the page makes as it writes those numbers, which is how the
- * run learns them (`listenForThePage`).
+ * run learns them (`listenForThePage`), each as a wait the caller bounds (`Announcements`).
  */
 export async function watchTheDocument(page: Page): Promise<Announcements> {
-  const announcements = await listenForThePage(page);
+  const announced = await listenForThePage(page);
   await page.addInitScript(
     ({
       drawn: drawnSelector,
@@ -559,7 +585,12 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
       root: editorRootSelector,
     }
   );
-  return announcements;
+  return {
+    editorOpened: (timeoutMs) =>
+      theMomentThePageReached(announced.editorOpened, timeoutMs, neverOpened),
+    firstBlock: (timeoutMs) =>
+      theMomentThePageReached(announced.firstBlock, timeoutMs, neverInTheViewport),
+  };
 }
 
 /**
@@ -825,21 +856,8 @@ export async function measureDocument(
   const reached = await watchTheDocument(page);
   await page.goto(path, { waitUntil: "commit" });
 
-  const firstBlock = await theMomentThePageReached(
-    reached.firstBlock,
-    firstBlockTimeoutMs,
-    "the editor's first visible block never came into the viewport: either no editor " +
-      'root ever carried `data-write-path="live"` with a block in it, or a taller page ' +
-      "header has pushed that block under the fold, where no scroll of this measurement " +
-      "reaches it"
-  );
-
-  const editorOpenedMs = await theMomentThePageReached(
-    reached.editorOpened,
-    buildTimeoutMs,
-    "the editor never opened, so there was no build to measure and no document to scroll: " +
-      "the page is still the document's own draw of its first blocks"
-  );
+  const firstBlock = await reached.firstBlock(firstBlockTimeoutMs);
+  const editorOpenedMs = await reached.editorOpened(buildTimeoutMs);
 
   // The loop runs in the page, so its steps are the page's own 100 ms apart rather than a round
   // trip's, and a step the throttled main thread runs late delays the next step rather than

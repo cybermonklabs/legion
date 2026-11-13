@@ -739,10 +739,15 @@ func TestADrawThatPanicsSendsTheShellAndTheServerLivesOn(t *testing.T) {
 		return response
 	}
 
+	// The slots held before either draw of this row begins. Read here and not after the control
+	// page returns: the control's goroutine hands its answer over on `drawn` before its deferred
+	// release runs (startDraw), so a count read once that page is out can still hold the
+	// control's own slot, and a panicking draw that kept its slot would then leave exactly that
+	// count behind.
+	held := len(firstScreenDrawSlots)
 	if drew := servePage().Body.String(); !strings.Contains(drew, theDrawnDocument) {
 		t.Fatalf("a draw that answers did not reach the page to begin with, so this budget proves nothing:\n%s", drew)
 	}
-	held := len(firstScreenDrawSlots)
 
 	panicking.Store(true)
 	response := servePage()
@@ -763,12 +768,14 @@ func TestADrawThatPanicsSendsTheShellAndTheServerLivesOn(t *testing.T) {
 
 	// And the draw's slot came back with it: the release is deferred, so it runs as the panic
 	// unwinds, and a draw that kept its slot would take one of the few this process has out of it
-	// for good. Not a verdict on the clock - the goroutine releases the slot and ends - so this
-	// bound only turns a slot that never comes back into a failure rather than a hung row.
+	// for good. Both draws of this row end, so the count goes back to what it was before the
+	// control began and no higher. Not a verdict on the clock - each goroutine releases its slot
+	// and ends - so this bound only turns a slot that never comes back into a failure rather
+	// than a hung row.
 	for begun := time.Now(); len(firstScreenDrawSlots) > held; {
 		if time.Since(begun) > 30*time.Second {
-			t.Fatalf("the slot of a draw that panicked never came back: %d of %d are held",
-				len(firstScreenDrawSlots), cap(firstScreenDrawSlots))
+			t.Fatalf("the slot of a draw that panicked never came back: %d of %d are held, against %d before this row's draws began",
+				len(firstScreenDrawSlots), cap(firstScreenDrawSlots), held)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

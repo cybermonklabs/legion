@@ -224,10 +224,6 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
 // be in her document before her socket had finished syncing.
 const aWordApartMs = 250;
 
-/** The pattern the other person's words are stamped by in the two rows below, which is every
- *  word either of them has him write (`theOtherPersonsPen`). */
-const theirWords = "Pangolin\\d+";
-
 test(`an edit made while ${documentNames.small}'s editor is being built is in it when the build ends @phone`, async ({
   browser,
 }) => {
@@ -246,7 +242,7 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
   // room which refuses him leaves neither him nor her context behind.
   let writer: TheOtherPersonsPen | undefined;
   try {
-    writer = await theOtherPersonsPen(artifactId, theirWords);
+    writer = await theOtherPersonsPen(artifactId);
     const page = await alice.newPage();
     await framesOfTheBuild(page);
     const transport = await documentTransport(page, { holding: true });
@@ -325,8 +321,10 @@ test("the other person's pen drops its socket and its copy when the room refuses
 
   let parts: ThePenIsMadeOf | undefined;
   await expect(
-    theOtherPersonsPen(artifactId, theirWords, (made) => {
-      parts = made;
+    theOtherPersonsPen(artifactId, {
+      made: (made) => {
+        parts = made;
+      },
     })
   ).rejects.toThrow(/read-only/);
   expect(
@@ -483,6 +481,10 @@ test("every block of a document is on the screen exactly once as its editor is b
  *  batch lands. */
 const editorRoot = ".proof-editor";
 
+/** The document's blocks inside that root. The row below holds it to none before the sync and
+ *  to some after it, so a selector that matched nothing could not pass the first for it. */
+const editorRootBlocks = `${editorRoot} [data-block-id]`;
+
 // The editor is built while its socket is still syncing, and only bound when the state frame
 // has been applied: nothing the construction is made of - Milkdown, the schema's typed blocks,
 // every plugin's view, Dispatch's own node views - depends on a block of the document, and the
@@ -518,12 +520,19 @@ test("the editor is built while the document's socket is still syncing @phone", 
     await expect(editorBeingBuilt(page)).toHaveCount(0);
     await expect(documentEditor(page)).toHaveCount(0);
     // And nothing of the document is in it: every block on the screen is the draw's.
-    expect(await page.locator(`${editorRoot} [data-block-id]`).count()).toBe(0);
+    expect(await page.locator(editorRootBlocks).count()).toBe(0);
 
     // The state frame, at last: the editor that was already standing takes the document.
     await transport.release();
     await expect(documentEditor(page)).toBeVisible({ timeout: 120_000 });
     await expect(documentEditor(page)).toContainText("The paragraph a reader meets first.");
+    // The same selector, now that the document is in the editor: it does find the editor's
+    // blocks, so the none it counted above was an editor holding none.
+    expect(
+      await page.locator(editorRootBlocks).count(),
+      "the editor holds the document, and the selector above counts none of its blocks: its " +
+        "count of none before the sync proved nothing"
+    ).toBeGreaterThan(0);
     await expect(connectedDot(page)).toBeVisible();
   } finally {
     await alice.close();

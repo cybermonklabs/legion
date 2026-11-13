@@ -38,6 +38,7 @@ import {
   getBlockSchema,
   sessionCookie,
 } from "./api";
+import { theMomentThePageReached } from "./large-documents-page";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 /** What one animation frame of the build held: how many of the document's top-level blocks
@@ -208,6 +209,26 @@ export const agent = {
   as: "agent" as const,
 };
 
+/** How long `everythingOwedFinished` waits for the server to owe nothing.
+ *
+ *  It runs in every leg a large-documents row runs in: inside `seedDocument`, so in the
+ *  shards (540 s, one retry) and in each `-alone` leg (`iphone-measure-alone`'s 180 s, and 240 s
+ *  for `iphone-alone`, `iphone-long-build-alone` and `chromium-alone`;
+ *  .github/workflows/dispatch-browser.yaml), and after a write in
+ *  `large-documents-long-build.e2e.ts` and `large-documents-reader.e2e.ts`. On this pod, one
+ *  worker on two CPUs (dispatch://INFRA-341), it took 1,013 to 1,036 ms after seeding the larger
+ *  document, 508 to 529 ms after seeding the smaller one, and 6 to 10 ms after the writes those
+ *  two files make during a build. 30 s is about thirty times the slowest.
+ *
+ *  A settlement that never empties then fails the row 30 s past where its wait began, and
+ *  every leg has that room at its worst: the last seeding of `iphone-long-build-alone` begins
+ *  about 155 s in (7 s of step and its first two rows' 147.9 s), and fails by 185 s of 240; the
+ *  wait after the second row's write comes 10 + 42.3 + 30 s into that row, with 124.4 s left to
+ *  it, and fails by 112.3 s; `iphone-measure-alone`'s second row seeds after the first row's
+ *  48.6 s and fails by 86 s of 180; `iphone-alone`'s second row by 47 s of 240; and
+ *  `chromium-alone`'s desktop row, after the 116 s of that leg's other rows, by 146 s. */
+const owedWorkFinishesWithinMs = 30_000;
+
 /**
  * Resolves once the server owes nothing this seed left it: no document settlement queued or
  * running, and no document owed a block index. A document of this size defers its block index
@@ -215,7 +236,7 @@ export const agent = {
  * the browser runs on, so a measurement taken while it runs measures the reconciliation too.
  * The wait runs against the one database this run holds (`sql`), and its callers are this
  * file's own `seedDocument`, `large-documents-long-build.e2e.ts` and
- * `large-documents-reader.e2e.ts`.
+ * `large-documents-reader.e2e.ts`. It fails by name past `owedWorkFinishesWithinMs`.
  */
 export async function everythingOwedFinished(what: string): Promise<void> {
   await expect
@@ -228,7 +249,7 @@ export async function everythingOwedFinished(what: string): Promise<void> {
       {
         intervals: [500],
         message: `${what}: the write's own work never finished`,
-        timeout: 180_000,
+        timeout: owedWorkFinishesWithinMs,
       }
     )
     .toBe("0 settlements, 0 block indexes");
@@ -329,12 +350,20 @@ export async function topLevelBlocks(artifactId: string): Promise<number> {
  *  order the page does things in, which no length of document changes. */
 export const shortDocument = "# The lease ledger\n\nThe paragraph a reader meets first.\n";
 
+/** How long the other person is given to be admitted to the document's room
+ *  (`theOtherPersonsPen`): authenticated, and his copy synced. That is a round trip and one
+ *  state frame, which took 278 ms for the larger document on this pod, one worker at a time
+ *  (dispatch://INFRA-341); 30 s is a hundred times that, and short of each leg's budget whatever
+ *  row he writes for. */
+const admissionTimeoutMs = 30_000;
+
 /** The other person, writing into the document from this process. */
 export interface TheOtherPersonsPen {
   /** Leaves the document's room and drops his copy of it. */
   close(): void;
   /** When each word left, by the word: `Date.now()` as the frame carrying it went out on his
-   *  socket, which is the same machine's clock her page stamps its own serving on. */
+   *  socket, which is the same machine's clock her page stamps its own serving on. Only the
+   *  words of the pattern the pen was given (`theirWords`), and empty where it was given none. */
   readonly sent: Readonly<Record<string, number>>;
   /** Writes one word into the document, as one insert and so one frame on her socket. */
   write(word: string): void;
@@ -401,18 +430,24 @@ export interface ThePenIsMadeOf {
  * frame arriving to within that, and the wait read against it carries the relay with it -
  * the direction that cannot flatter her page.
  *
- * `theirWords` is the pattern his words are stamped by; `made` is handed what he is made of as
- * he is made, for the probe row that reads what a refusal leaves.
+ * **How long he is given to be admitted.** `admissionTimeoutMs`. An admission that neither
+ * comes nor is refused - a room that never authenticates him, a copy that never syncs - fails
+ * there by name, through the same path a refusal takes, so his provider, its socket and his
+ * copy are dropped then and not held until the row's own timeout with no `close` in anyone's
+ * hand.
+ *
+ * `theirWords` is the pattern his words are stamped by, for the one row that reads when each
+ * left (`sent`); a row that only writes passes none and stamps nothing. `made` is handed what
+ * he is made of as he is made, for the probe row that reads what a refusal leaves.
  */
 export async function theOtherPersonsPen(
   artifactId: string,
-  theirWords: string,
-  made?: (parts: ThePenIsMadeOf) => void
+  { made, theirWords }: { made?: (parts: ThePenIsMadeOf) => void; theirWords?: string } = {}
 ): Promise<TheOtherPersonsPen> {
   const cookie = await sessionCookie("bob");
   const { version } = await getBlockSchema();
   const sent: Record<string, number> = {};
-  const theirs = new RegExp(theirWords, "g");
+  const theirs = theirWords === undefined ? undefined : new RegExp(theirWords, "g");
   const read = new TextDecoder();
   const his = new Y.Doc();
   const socket = new HocuspocusProviderWebsocket({
@@ -426,7 +461,7 @@ export async function theOtherPersonsPen(
       }
 
       override send(data: Parameters<WebSocket["send"]>[0]): void {
-        if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+        if (theirs !== undefined && (data instanceof ArrayBuffer || ArrayBuffer.isView(data))) {
           const sentAt = Date.now();
           for (const [word] of read.decode(data).matchAll(theirs)) {
             sent[word] ??= sentAt;
@@ -484,7 +519,12 @@ export async function theOtherPersonsPen(
   };
   void socket.connect();
   try {
-    await admitted.promise;
+    await theMomentThePageReached(
+      admitted.promise,
+      admissionTimeoutMs,
+      "the document's room neither admitted this writer nor refused him: it never " +
+        "authenticated him, or his copy never synced"
+    );
   } catch (refused) {
     // He is the caller's to close only once he is admitted, so this is the one path where
     // nobody else can: a provider left here reconnects to that room for the rest of the worker's
@@ -542,13 +582,15 @@ export interface TheBuildServed {
    *  asked for so far. */
   readonly built: () => number | undefined;
   /** Her next word about it, which is how the writer waits: for a step of her build rather
-   *  than for a span of anyone's clock. Settles with the count she says. */
-  readonly nextStep: () => Promise<number>;
+   *  than for a span of anyone's clock. Settles with the count she says; fails, naming what
+   *  never came, where she says nothing more inside `timeoutMs`. */
+  readonly nextStep: (timeoutMs: number) => Promise<number>;
   /** The count she said when her build reached the blocks the caller named - that many or
    *  more - or the count her editor was named holding, where the build never reached them,
    *  which the row fails on rather than waiting for a word that will never come. Settles
-   *  once, and only where the caller named a stop. */
-  readonly reachedTheStop: Promise<number>;
+   *  once, and only where the caller named a stop; fails, naming what never came, where
+   *  neither has happened inside `timeoutMs`. */
+  readonly reachedTheStop: (timeoutMs: number) => Promise<number>;
   /** That same count as soon as she has said it, and `undefined` until then: the writing loop
    *  stops between two of its own keystrokes rather than waiting on a promise, so the word it
    *  is in the middle of is the last one it sends. */
@@ -784,8 +826,19 @@ export async function whatTheBuildServes(
   );
   return {
     built: () => built,
-    nextStep: () => step.promise,
-    reachedTheStop: reached.promise,
+    nextStep: (timeoutMs) =>
+      theMomentThePageReached(
+        step.promise,
+        timeoutMs,
+        "her build said nothing more about how far it had got: no further step of it came"
+      ),
+    reachedTheStop: (timeoutMs) =>
+      theMomentThePageReached(
+        reached.promise,
+        timeoutMs,
+        "her build never reached the blocks the row stops him at, and her editor was never " +
+          "named holding fewer"
+      ),
     stopped: () => stopped,
   };
 }

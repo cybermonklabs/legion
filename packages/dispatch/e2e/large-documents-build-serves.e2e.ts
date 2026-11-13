@@ -247,6 +247,70 @@ const theWordsHerStepsAskFor = 4 * theFewestWordsRead;
  *  as a selector an init script can carry. */
 const theDraw = '[aria-label="Document text"]';
 
+/** The document's blocks in the editor a reader already has while the rest is built. The
+ *  decision row holds it to none before the release and to some after the first batch, so a
+ *  selector that matched nothing could not pass the first for it. */
+const liveEditorBlocks = `${liveEditorRoot} [data-block-id]`;
+
+// How long the timer row below waits for each of the two announcements it needs of the page
+// (`watchTheDocument`): one that never comes is a promise that never settles, and a row left to
+// its own 900 s timeout outlives the 4 minutes `iphone-alone`'s browser step has
+// (.github/workflows/dispatch-browser.yaml), which ends the leg with no row named and no report
+// kept. Each bound is sized from what the wait costs and from what that leg leaves the row.
+//
+// What the waits cost. On that leg, one worker on a machine of its own, run 43098661012 timed
+// the larger document's first editable block at 1,569 ms and its editor open at 2,767 ms of the
+// page's own clock, and this row's build at 1,123 ms; the row took 10.3 s and the decision row
+// after it 19.8 s. The slowest readings of the same page are four workers wide and on this pod
+// (`large-documents-long-build.e2e.ts`, `firstBlockTimeoutMs` there): a first block up to
+// 11.1 s from the navigation, and an editor open up to 14.3 s after it on CI and, on this pod,
+// 42.3 s from the navigation. 30 s and 60 s, the bounds that file's second and third rows wait
+// by, are near three times the first and about one and a half times the second.
+//
+// What the leg leaves. The row is the first of the leg's two. Everything of it but its page's
+// own 2.8 s came to 7.5 s - the seeding, his admission, her page, and what it reads after - and
+// that much ahead of its first wait over-states it. A page that never shows its first block
+// fails the row at 37.5 s; one whose build never reaches the stop he writes into, at 7.5 s plus
+// a first block of 11.1 s and `theStopWithinMs`, 63.6 s; one whose editor never opens after
+// that, 60 s later still, 123.6 s at the most. The decision row's 19.8 s and the 7 s of the
+// step that is no row end the step at about 150 s of its 240.
+
+/** How long the timer row waits for the editor's first block to come into the viewport. */
+const firstBlockTimeoutMs = 30_000;
+
+/** How long the timer row's writing window may last, from her first block until her build
+ *  says it has reached the stop he writes into: one deadline, which every step he waits for
+ *  inside the window shares. The stop is half her build (`theShareHeWritesInto`), and the
+ *  whole build took 1,123 ms on the leg (run 43098661012) and 30,150 ms on this pod; 45 s is
+ *  three times the half this pod took. */
+const theStopWithinMs = 45_000;
+
+/** How long the timer row waits, once her build has told him to stop, for the editor to open. */
+const buildTimeoutMs = 60_000;
+
+// The decision row's waits, sized the same way. Its page had the editor's first batch at
+// 10,904 ms of its own clock on the leg (run 43098661012) and 19,421 ms on this pod, with the
+// card drawn, picked and the socket let through before that; its answer left the page 78 ms
+// and 54 ms after the press, and the server holds an answer 30 to 180 ms after it (the row's
+// own comment). So the card is given 60 s to be on the screen and the first batch 45 s from the
+// release, about three times and twice that whole 19.4 s, and the answer 30 s to leave and 30 s
+// to reach the server, more than a hundred times what either took.
+//
+// The row is the leg's second. Ahead of its waits stand the step's 7 s, the timer row's 10.3 s
+// and its own seeding, about 5 s; a page that hangs at any one of them fails it 60 s past the
+// seeding at the card, or 19.4 + 45 s past it at the first batch - 69.4 s, which ends the step
+// at about 92 s of its 240, and at about 205 s with the timer row's own worst case ahead of it.
+
+/** How long the decision row waits for the card it presses to be on the screen. */
+const theCardWithinMs = 60_000;
+
+/** How long the decision row waits for the editor's first batch once the socket is let through. */
+const theFirstBatchWithinMs = 45_000;
+
+/** How long the decision row waits for the page's answer to leave it, and then for the server
+ *  to hold it. */
+const theAnswerWithinMs = 30_000;
+
 /** The words the other person writes in the row below, as a pattern both sides read their own
  *  frames for: one of his writes is one frame on the socket, and the word in it is what pairs
  *  the moment he sent that frame with the moment the reader's page served it. */
@@ -343,7 +407,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
   // made of before he throws, and the `finally` below closes her.
   let writer: TheOtherPersonsPen | undefined;
   try {
-    writer = await theOtherPersonsPen(artifactId, theirWordsPattern);
+    writer = await theOtherPersonsPen(artifactId, { theirWords: theirWordsPattern });
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
@@ -384,7 +448,9 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // word is an insert and a frame from Node, where it cost his page one to four seconds of
     // laying out the same 406,000 characters she holds, which is what used to decide how many
     // words a window carried (`theOtherPersonsPen`).
-    await reached.firstBlock;
+    await reached.firstBlock(firstBlockTimeoutMs);
+    // One deadline for the whole writing window, shared by every wait inside it.
+    const stopBy = Date.now() + theStopWithinMs;
     let words = 0;
     while (herBuild.stopped() === undefined && words < theWordsHerStepsAskFor) {
       // One word per step her build has crossed, and otherwise a wait for her next word about
@@ -396,7 +462,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         Math.floor((herBuild.built() ?? 0) / stepBlocks)
       );
       if (words >= owed) {
-        await herBuild.nextStep();
+        await herBuild.nextStep(stopBy - Date.now());
         continue;
       }
       writer.write(`Pan${words}`);
@@ -405,8 +471,8 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     // How far her build had got when it told him to stop, which is her page's own count: the
     // blocks this row stops him at or more, and the count her build ended on where it was
     // never told to stop at all, which is what the row fails on below.
-    const builtAtTheStop = await herBuild.reachedTheStop;
-    const openedMs = await reached.editorOpened;
+    const builtAtTheStop = await herBuild.reachedTheStop(stopBy - Date.now());
+    const openedMs = await reached.editorOpened(buildTimeoutMs);
 
     const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const everyTimer = (await page.evaluate(() => window.__servedTimers)) ?? [];
@@ -832,20 +898,27 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
     await page.goto(path);
 
     const card = page.locator(theCard);
-    await expect(card).toBeVisible({ timeout: 240_000 });
+    await expect(card).toBeVisible({ timeout: theCardWithinMs });
     await card.getByRole("radio", { name: "The next window" }).check();
     await expect(card.getByRole("button", { exact: true, name: "Answer" })).toBeEnabled();
     // And no batch has landed, so nothing below can be read as a press the build had finished
     // before: the editor's root is in the page from the construction, with none of the document
     // in it (`large-documents-build.e2e.ts`).
-    expect(await page.locator(`${liveEditorRoot} [data-block-id]`).count()).toBe(0);
+    expect(await page.locator(liveEditorBlocks).count()).toBe(0);
 
     // Throttled here and not before the load: the build the press crosses begins with the
     // release below, and the boot, the draw and the reader's own picking above it are setup no
     // reading of this row is taken of (`throttleTheCpu`).
     await throttleTheCpu(page);
     await transport.release();
-    const firstBatchMs = await build.firstBatch(300_000);
+    const firstBatchMs = await build.firstBatch(theFirstBatchWithinMs);
+    // The same selector once the first batch is in: it finds that batch's blocks, so the none
+    // it counted before the release was an editor holding none.
+    expect(
+      await page.locator(liveEditorBlocks).count(),
+      "the first batch is in, and the selector above counts none of its blocks: its count of " +
+        "none before the release proved nothing"
+    ).toBeGreaterThan(0);
 
     // The page has pressed the card and its answer has left - or it has said why it pressed
     // nothing, which is read first so a refusal is the failure rather than the wait that
@@ -861,7 +934,7 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
         {
           intervals: [250],
           message: "the page never answered the decision block it had been given",
-          timeout: 300_000,
+          timeout: theAnswerWithinMs,
         }
       )
       .toBe(true);
@@ -876,7 +949,7 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
         {
           intervals: [250],
           message: "the answer never reached the server",
-          timeout: 120_000,
+          timeout: theAnswerWithinMs,
         }
       )
       .toBe("answered");

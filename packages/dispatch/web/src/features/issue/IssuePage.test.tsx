@@ -2817,8 +2817,15 @@ const cachedSecondIssue: IssueDetails = {
 // arriving tree's layout effects before a leaving tree's passive cleanups, so a passive
 // `forgetTheReach` let go of the press after the next issue's header had already done it: `s`
 // on closed CORE-1 put the reader in CORE-2's Status pick, and a digit would have written
-// CORE-1's priority through a pick that had refused it (`reaching-the-chrome.ts`,
-// dispatch://INFRA-341).
+// CORE-1's priority through a pick that had refused it (dispatch://INFRA-341).
+//
+// Two things let that press go, and this row holds either of them: CORE-1's header and tab
+// strip both mount here, so `theChromeIsHere` drops the press once both have mounted past it
+// (`reaching-the-chrome.ts`), and the page forgets it in the layout phase as it leaves
+// (`IssuePage.tsx`). The row stays green with either one gone and fails only with both. The
+// drop's own job - a press kept after both parts mounted, on the same issue - is
+// `reaching-the-chrome.test.ts`'s row, and the forget's own is the row below, where nothing of
+// CORE-1 mounts to drop anything.
 test("a key pressed on one issue is not run by the next issue's header", async () => {
   const user = userEvent.setup();
   const closedIssue: IssueDetails = {

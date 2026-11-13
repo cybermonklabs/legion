@@ -59,6 +59,22 @@ import { asUser } from "./users";
  *  machine is the regression this guards, and the print is what says the machine was quiet. */
 const aDesktopBuildTaskAtMostMs = 500;
 
+/** How long the row below waits for the editor to open, counted from the navigation.
+ *
+ *  The opening is an announcement the page makes (`watchTheDocument`), and one that never comes
+ *  is a promise that never settles: left to the row's own 900 s timeout, it would outlive the 4
+ *  minutes `chromium-alone`'s browser step has (.github/workflows/dispatch-browser.yaml) and end
+ *  the leg with no row named and no report kept.
+ *
+ *  What the wait costs: on this leg, one worker on a machine of its own, the editor opened at
+ *  4,091 ms of the page's own clock (run 42697341170); in a `chromium` shard leg, four workers
+ *  wide, at 29,331, 52,991 and 58,754 ms (runs 42628596511, 42682941869 and 42686241170). What
+ *  the leg leaves: its other rows and everything of the step that is not a row took 116 s of
+ *  the 240 (run 42316487530, the job's head in that file), so 124 s are this row's, the seeding
+ *  among them. 90 s is half as long again as the slowest opening ever read, on a machine three
+ *  others were sharing, and leaves the seeding 34 s. */
+const editorOpensWithinMs = 90_000;
+
 // What cost a desktop width ten times a phone's longest task was not a batch. Traced per
 // animation frame through a whole build (`devtools.timeline`, 4x CPU throttling): the browser's
 // own `Layout` and `Paint` are flat in the blocks built - 10 to 40 ms and 4 to 8 ms a frame at
@@ -98,7 +114,7 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
     await page.goto(path, { waitUntil: "commit" });
     // Both moments are announcements the page makes rather than readings this side takes, so
     // nothing of this run is on the thread the row is measuring (`large-documents-page.ts`).
-    const openedMs = await reached.editorOpened;
+    const openedMs = await reached.editorOpened(editorOpensWithinMs);
 
     const ran = (await page.evaluate(() => window.__theBuildRan)) ?? {};
     const began = ran.firstBatchMs ?? 0;

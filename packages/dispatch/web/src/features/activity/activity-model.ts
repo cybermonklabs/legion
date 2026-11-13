@@ -1,12 +1,6 @@
 import type { Actor, DispatchEvent } from "../../api/types";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
-import { payloadTree } from "./event-trees";
-
-/** The question an ask event quotes, with the reading Go sent of it: the one stored text an
- *  ask event's line draws, so the line draws that reading and parses nothing (`QuotedPart`). */
-function quotedQuestion(event: DispatchEvent, question: string): AgentPart {
-  return { markdown: question, tree: payloadTree(event, "payload.question") };
-}
+import { quotedQuestion } from "./event-trees";
 
 export function dateKey(iso: string): string {
   const date = new Date(iso);
@@ -165,31 +159,27 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.opened":
-      return ["asked “", quotedQuestion(event, event.payload.question), "”"];
+      return ["asked “", quotedQuestion(event), "”"];
     case "ask.anchor_refreshed":
       return event.payload.anchor?.orphaned
-        ? ["made an ask lose its quote: “", quotedQuestion(event, event.payload.question), "”"]
-        : [
-            "re-anchored an ask after an edit: “",
-            quotedQuestion(event, event.payload.question),
-            "”",
-          ];
+        ? ["made an ask lose its quote: “", quotedQuestion(event), "”"]
+        : ["re-anchored an ask after an edit: “", quotedQuestion(event), "”"];
     case "ask.edited":
-      return ['edited the question "', quotedQuestion(event, event.payload.question), '"'];
+      return ['edited the question "', quotedQuestion(event), '"'];
     case "ask.handed_back":
-      return ["handed “", quotedQuestion(event, event.payload.question), "” back for approval"];
+      return ["handed “", quotedQuestion(event), "” back for approval"];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue, which is where an ask with no `asked_of` waits.
       return [
         "handed “",
-        quotedQuestion(event, event.payload.question),
+        quotedQuestion(event),
         `” to ${event.payload.asked_of ?? "the issue's assignee"}`,
       ];
     case "ask.answered":
       return event.payload.previous_answer === undefined
-        ? ["answered “", quotedQuestion(event, event.payload.question), "”"]
-        : ["changed the answer to “", quotedQuestion(event, event.payload.question), "”"];
+        ? ["answered “", quotedQuestion(event), "”"]
+        : ["changed the answer to “", quotedQuestion(event), "”"];
     case "message.created":
       return "sent a message";
     case "message.delivery":

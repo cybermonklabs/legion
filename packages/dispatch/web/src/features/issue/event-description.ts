@@ -1,13 +1,7 @@
 import type { DispatchEvent } from "../../api/types";
-import { payloadTree } from "../activity/event-trees";
+import { quotedQuestion } from "../activity/event-trees";
 import { capabilityLabel } from "../conversation/delivery";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
-
-/** The question an ask event quotes, with the reading Go sent of it: the one stored text this
- *  line draws, so it draws that reading and parses nothing (`QuotedPart`). */
-function quotedQuestion(event: DispatchEvent, question: string): AgentPart {
-  return { markdown: question, tree: payloadTree(event, "payload.question") };
-}
 
 /** An event's line in the Pinned tab, as `AgentPart`s: an agent it names keeps its identity
  *  until `EventBody` draws it through `AgentName`, and a question it quotes is a part of its
@@ -56,18 +50,18 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "ask.answered":
       return [
         event.payload.previous_answer === undefined ? "Ask answered: " : "Answer changed: ",
-        quotedQuestion(event, event.payload.question),
+        quotedQuestion(event),
       ];
     case "ask.edited":
-      return ["Ask edited: ", quotedQuestion(event, event.payload.question)];
+      return ["Ask edited: ", quotedQuestion(event)];
     case "ask.handed_back":
-      return ["Ask handed back: ", quotedQuestion(event, event.payload.question)];
+      return ["Ask handed back: ", quotedQuestion(event)];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue, which is where an ask with no `asked_of` waits.
       return [
         `Ask handed to ${event.payload.asked_of ?? "the issue's assignee"}: `,
-        quotedQuestion(event, event.payload.question),
+        quotedQuestion(event),
       ];
     case "comment.resolved":
       return "Comment resolved";
@@ -87,7 +81,7 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "message.accepted":
       return "Message taken as the session's own turn";
     case "ask.opened":
-      return ["Ask opened: ", quotedQuestion(event, event.payload.question)];
+      return ["Ask opened: ", quotedQuestion(event)];
     case "ask.anchor_refreshed":
       return event.payload.anchor?.orphaned
         ? "Ask lost its quote"
