@@ -869,24 +869,56 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 	return jobs, nil
 }
 
-// ListRunJobsForRuns lists every job of every run in runIDs on repo in one query (not one query
-// per run): the timeline handler's own lookback window can hold hundreds of runs, and this
-// package's other many-id reads pass their whole list as one array parameter for the same
-// reason. IssueAncestors (below) seeds its walk with `key = any($1)` as this read matches its
-// runs; ResolveSessionTitles (agents.go) hands its ids to `unnest($1::text[])` and joins each of
-// them to one ordered read of its own with a `cross join lateral`, which is the same one array
-// for the whole list, read per id because its answer is one row a session rather than a set of
-// rows to match. Returns a map keyed by run id for a caller to index directly, each run's jobs in
-// ListRunJobs' order. Each run's jobs are sorted here rather than by an order by: Postgres cannot
-// read delivery_run_jobs' primary key in (run_id, ...) order for `run_id = any($2)`, so an order by
-// sorts the whole 28-day read (about 50,000 rows), on disk past work_mem, where sorting each run's
-// few jobs costs a few milliseconds.
-func ListRunJobsForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
+// runJobsNamedForRunsQuery is ListRunJobsForRuns' read. Every one of its three conditions is a
+// key of delivery_run_jobs' primary key (repo, run_id, name), so the read is a descent of that
+// key for each run and name it asks for, and never a run's other jobs.
+const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
+
+// everyRunJobForRunsQuery is ListEveryRunJobForRuns' read: every job of each run.
+const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2)`
+
+// ListRunJobsForRuns lists the jobs named names of every run in runIDs on repo in one query (not
+// one query per run): the timeline handler's own lookback window can hold hundreds of runs, and
+// this package's other many-id reads pass their whole list as one array parameter for the same
+// reason, as IssueAncestors (below) seeds its walk with `key = any($1)`. A caller that judges a
+// run by some of its jobs reads those alone: the production jobs containment and the measures
+// judge a deploy by (Production.JudgedJobNames) and the Pipeline's deploy cards' jobs. A run of
+// the deploy workflow holds a handful of jobs and a pull-request run dozens, and the read with no
+// name in it cost 660 ms a call at ten times the stated run rate (dispatch://INFRA-2916, R13),
+// where `name = any($3)` keys each run's read to the jobs asked for (runJobsNamedForRunsQuery).
+// No name is no read. ListEveryRunJobForRuns is the read for a caller that needs every job a
+// run ran.
+//
+// Returns a map keyed by run id for a caller to index directly, each run's jobs in ListRunJobs'
+// order; a run holding none of the names has no entry.
+func ListRunJobsForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64, names []string) (map[int64][]DeliveryRunJob, error) {
+	if len(names) == 0 {
+		return make(map[int64][]DeliveryRunJob), nil
+	}
+	return runJobsByRun(ctx, pool, runIDs, runJobsNamedForRunsQuery, repo, runIDs, names)
+}
+
+// ListEveryRunJobForRuns lists every job of every run in runIDs on repo, as ListRunJobsForRuns
+// lists the named ones, for the callers that read every job a run ran: the timeline lists each
+// deploy run it shows with its failed jobs and the job that failed first (FailedJobs,
+// RootFailingJob), and the Pipeline's PR checks time every job of every run and tally every job
+// that failed (measures.PRChecks). No list of names can stand in for those, since the jobs they
+// report are whichever the runs hold.
+func ListEveryRunJobForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
+	return runJobsByRun(ctx, pool, runIDs, everyRunJobForRunsQuery, repo, runIDs)
+}
+
+// runJobsByRun runs query, a read of delivery_run_jobs over the runs runIDs, and answers its jobs
+// keyed by run id, each run's in ListRunJobs' order. Each run's jobs are sorted here rather than
+// by an order by: Postgres cannot read delivery_run_jobs' primary key in (run_id, ...) order for
+// `run_id = any($2)`, so an order by sorts the whole 28-day read (about 50,000 rows), on disk past
+// work_mem, where sorting each run's few jobs costs a few milliseconds.
+func runJobsByRun(ctx context.Context, pool *store.Pool, runIDs []int64, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
 	byRun := make(map[int64][]DeliveryRunJob, len(runIDs))
 	if len(runIDs) == 0 {
 		return byRun, nil
 	}
-	rows, err := pool.Query(ctx, `select `+JobColumns+` from delivery_run_jobs where repo = $1 and run_id = any($2)`, repo, runIDs)
+	rows, err := pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -974,15 +1006,32 @@ func ListRunsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind 
 	return runs, rows.Err()
 }
 
-// RunsWithJobs is a list of runs and every job of each, keyed by run id.
+// RunsWithJobs is a list of runs and the jobs read of each, keyed by run id.
 type RunsWithJobs struct {
 	Runs []DeliveryRun
 	Jobs map[int64][]DeliveryRunJob
 }
 
-// ListRunsWithJobsStartedIn is ListRunsStartedIn's runs with ListRunJobsForRuns' jobs of them: the
-// Pipeline page's two reads, the PR-checks runs and the deploy runs of its shown days.
-func ListRunsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time) (RunsWithJobs, error) {
+// ListRunsWithJobsStartedIn is ListRunsStartedIn's runs with ListRunJobsForRuns' jobs named names
+// of them: the Pipeline page's deploy runs of its shown days, read for the jobs its deploy cards
+// follow (measures.DeployJobs reads no other).
+func ListRunsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, names []string) (RunsWithJobs, error) {
+	return runsWithJobsStartedIn(ctx, pool, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
+		return ListRunJobsForRuns(ctx, pool, repo, runIDs, names)
+	})
+}
+
+// ListRunsWithEveryJobStartedIn is ListRunsStartedIn's runs with ListEveryRunJobForRuns' jobs of
+// them: the Pipeline page's PR-checks runs of its shown days, whose job timings and failing jobs
+// read every job a run ran.
+func ListRunsWithEveryJobStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time) (RunsWithJobs, error) {
+	return runsWithJobsStartedIn(ctx, pool, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {
+		return ListEveryRunJobForRuns(ctx, pool, repo, runIDs)
+	})
+}
+
+// runsWithJobsStartedIn is ListRunsStartedIn's runs with the jobs jobs reads of them.
+func runsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, jobs func(runIDs []int64) (map[int64][]DeliveryRunJob, error)) (RunsWithJobs, error) {
 	runs, err := ListRunsStartedIn(ctx, pool, repo, kind, branch, event, from, to)
 	if err != nil {
 		return RunsWithJobs{}, err
@@ -991,11 +1040,11 @@ func ListRunsWithJobsStartedIn(ctx context.Context, pool *store.Pool, repo strin
 	for i, run := range runs {
 		runIDs[i] = run.RunID
 	}
-	jobs, err := ListRunJobsForRuns(ctx, pool, repo, runIDs)
+	byRun, err := jobs(runIDs)
 	if err != nil {
 		return RunsWithJobs{}, err
 	}
-	return RunsWithJobs{Runs: runs, Jobs: jobs}, nil
+	return RunsWithJobs{Runs: runs, Jobs: byRun}, nil
 }
 
 // maxPullRequestsPerWindow bounds ListPullRequestsInWindow: a window a caller (the API, a future

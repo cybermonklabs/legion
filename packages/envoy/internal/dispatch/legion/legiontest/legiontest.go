@@ -182,8 +182,9 @@ type rows struct {
 
 // session is the actor of a Legion role's session working issue, carrying the title Dispatch
 // learns the session by. Every reader of the phase-work rule resolves a session's newest title
-// off the session's own events (delivery.ResolveSessionTitles), so the title belongs on the
-// actor of each event it writes.
+// (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
+// (migration 20261113090412's trigger, which fires for this package's bare inserts too), so the
+// title belongs on the actor of each event it writes.
 func session(role, issue string) string {
 	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,
 		role, issue, "Legion "+role+" · "+issue)

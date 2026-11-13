@@ -28,7 +28,7 @@ func plannedPools(t *testing.T, pool *store.Pool) []*store.Pool {
 }
 
 // TestARunsJobsComeBackInOneOrder: a run's jobs come back by when each started, a job that never
-// started last, then by name, from both job reads.
+// started last, then by name, from every job read, the read of some jobs by name included.
 func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -87,12 +87,19 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 					t.Errorf("%s, ListRunJobs(%d) under a %s = %q, want %q", when, id, plan, got, want)
 				}
 			}
-			byRun, err := ListRunJobsForRuns(ctx, planned, "acme/widgets", runs)
+			every, err := ListEveryRunJobForRuns(ctx, planned, "acme/widgets", runs)
+			if err != nil {
+				t.Fatalf("ListEveryRunJobForRuns: %v", err)
+			}
+			named, err := ListRunJobsForRuns(ctx, planned, "acme/widgets", runs, []string{"test / unit", "deploy", "setup"})
 			if err != nil {
 				t.Fatalf("ListRunJobsForRuns: %v", err)
 			}
 			for _, id := range runs {
-				if got := names(byRun[id]); !slices.Equal(got, want) {
+				if got := names(every[id]); !slices.Equal(got, want) {
+					t.Errorf("%s, ListEveryRunJobForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
+				}
+				if got, want := names(named[id]), []string{"setup", "deploy", "test / unit"}; !slices.Equal(got, want) {
 					t.Errorf("%s, ListRunJobsForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
 				}
 			}

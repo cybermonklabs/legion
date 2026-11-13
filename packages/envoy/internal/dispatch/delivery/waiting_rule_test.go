@@ -328,11 +328,20 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	for i, run := range deployRuns {
 		ids[i] = run.RunID
 	}
-	jobs, err := ListRunJobsForRuns(ctx, pool, waitingRepo, ids)
+	// The timeline reads every job of these runs and every other reader their production jobs
+	// alone; containment must answer the same deploys from either.
+	every, err := ListEveryRunJobForRuns(ctx, pool, waitingRepo, ids)
+	if err != nil {
+		t.Fatalf("ListEveryRunJobForRuns: %v", err)
+	}
+	judged, err := ListRunJobsForRuns(ctx, pool, waitingRepo, ids, production.JudgedJobNames())
 	if err != nil {
 		t.Fatalf("ListRunJobsForRuns: %v", err)
 	}
-	applies := ProductionApplies(deployRuns, jobs, production).Applies
+	applies := ProductionApplies(deployRuns, every, production).Applies
+	if fromJudged := ProductionApplies(deployRuns, judged, production).Applies; !slices.Equal(fromJudged, applies) {
+		t.Fatalf("the deploys judged from the production jobs alone = %+v, want those judged from every job, %+v", fromJudged, applies)
+	}
 	goSet = map[int]string{}
 	for _, pr := range stored {
 		if ComputeDeployedStatus(pr, waitingRepo, nil) == DeployedStatusNotTracked {

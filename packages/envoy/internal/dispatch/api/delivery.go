@@ -242,11 +242,13 @@ type deliveryPopulation struct {
 	withWaiting bool
 	waiting     []delivery.WaitingPullRequest
 	// applyRuns is every deploy run on main GitHub created at or after the window's start
-	// (delivery.ListRuns), oldest creation first, and jobsByRun their jobs.
+	// (delivery.ListRuns), oldest creation first, and jobsByRun their jobs: every job of each in
+	// the timeline's read (withWaiting), which lists the runs with their failed jobs, and the
+	// production jobs alone in every other (readDeliveryRows).
 	applyRuns []delivery.DeliveryRun
 	jobsByRun map[int64][]delivery.DeliveryRunJob
 	// windowRuns is every deploy run on main started in the window, oldest start first, and
-	// windowJobs their jobs: the measures' deploys.
+	// windowJobs their production jobs: the measures' deploys.
 	windowRuns []delivery.DeliveryRun
 	windowJobs map[int64][]delivery.DeliveryRunJob
 	unownedP0  []delivery.UnownedIssue
@@ -300,7 +302,9 @@ type deliveryWaitingRow struct {
 // unowned P0 list); nothing that computes from it reads again. With withWaiting it also reads the
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
-// the measures read none.
+// the measures read none. withWaiting is the timeline's read, the one that lists the deploy runs,
+// so it is also the one that reads every job of the runs GitHub created from `from` on; every
+// other read takes their production jobs alone (readDeliveryRows).
 func (s *server) readDeliveryPopulation(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
 	return s.readDeliveryRows(ctx, settings, from, to, query, withWaiting, true)
 }
@@ -323,7 +327,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	// another caller or makes another caller wait on it: the deadlock the pool's guard exists to
 	// prevent needs a caller already holding a connection, which ForConcurrentRead refuses. A read
 	// past the pool's free connections waits for one, as any request does.
-	runsWithJobs := func(list func(ctx context.Context) ([]delivery.DeliveryRun, error), runs *[]delivery.DeliveryRun, jobs *map[int64][]delivery.DeliveryRunJob) func(ctx context.Context) error {
+	runsWithJobs := func(list func(ctx context.Context) ([]delivery.DeliveryRun, error), readJobs func(ctx context.Context, runIDs []int64) (map[int64][]delivery.DeliveryRunJob, error), runs *[]delivery.DeliveryRun, jobs *map[int64][]delivery.DeliveryRunJob) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
 			listed, err := list(ctx)
 			if err != nil {
@@ -333,12 +337,27 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 			for i, run := range listed {
 				runIDs[i] = run.RunID
 			}
-			byRun, err := delivery.ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs)
+			byRun, err := readJobs(ctx, runIDs)
 			if err != nil {
 				return err
 			}
 			*runs, *jobs = listed, byRun
 			return nil
+		}
+	}
+	// Containment and the measures judge a run by its production jobs alone, so their runs are
+	// read with those jobs and no other (delivery.Production.JudgedJobNames says why that judges
+	// every run as its every job would). The timeline lists each deploy run it shows with its
+	// failed jobs and the job that failed first (delivery.FailedJobs, RootFailingJob), which can
+	// be any job the run holds, so its read of the runs containment reads takes every job.
+	judgedJobNames := settings.Production().JudgedJobNames()
+	productionJobs := func(ctx context.Context, runIDs []int64) (map[int64][]delivery.DeliveryRunJob, error) {
+		return delivery.ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, judgedJobNames)
+	}
+	applyJobs := productionJobs
+	if withWaiting {
+		applyJobs = func(ctx context.Context, runIDs []int64) (map[int64][]delivery.DeliveryRunJob, error) {
+			return delivery.ListEveryRunJobForRuns(ctx, pool, settings.DeployRepo, runIDs)
 		}
 	}
 	independent := []func(ctx context.Context) error{
@@ -353,7 +372,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		// (decision 7). The timeline's runs[] list is filtered to [from, to) separately.
 		runsWithJobs(func(ctx context.Context) ([]delivery.DeliveryRun, error) {
 			return delivery.ListRuns(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", from)
-		}, &pop.applyRuns, &pop.jobsByRun),
+		}, applyJobs, &pop.applyRuns, &pop.jobsByRun),
 		func(ctx context.Context) (err error) {
 			pop.unfetchable, err = delivery.CountUnfetchablePullRequests(ctx, pool)
 			return err
@@ -370,9 +389,10 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		independent = append(independent,
 			runsWithJobs(func(ctx context.Context) ([]delivery.DeliveryRun, error) {
 				return delivery.ListRunsStartedIn(ctx, pool, settings.DeployRepo, delivery.DeliveryRunKindDeploy, "main", "", from, to)
-			}, &pop.windowRuns, &pop.windowJobs),
+			}, productionJobs, &pop.windowRuns, &pop.windowJobs),
+			// Every project's: the delivery measures follow no project.
 			func(ctx context.Context) (err error) {
-				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool)
+				pop.unownedP0, err = delivery.ListUnownedP0(ctx, pool, "")
 				return err
 			})
 	}
@@ -731,11 +751,17 @@ func deliveryProductionView(jobs []delivery.DeliveryRunJob, production delivery.
 
 // productionApplies is delivery.ProductionApplies for a read. It warns once per run and
 // configuration across every process serving the database (firstToWarn) about each successful run
-// with no listed production job, naming every listed name, and about each run whose production
-// job lists no step named the configured apply step: the timeline and the measures judge the same
-// runs on every read, on whichever process the read reached, so a line would otherwise repeat on
-// every page load. A changed list or step is a new key, so a misconfiguration is named again under
-// its new value.
+// with no listed production job, naming every listed name and every job the run holds, and about
+// each run whose production job lists no step named the configured apply step: the timeline and
+// the measures judge the same runs on every read, on whichever process the read reached, so a line
+// would otherwise repeat on every page load. A changed list or step is a new key, so a
+// misconfiguration is named again under its new value.
+//
+// Most reads hand it a run's production jobs alone (readDeliveryRows), which judge the run as its
+// every job would but leave an unmatched run's own job names out, and those names are what an
+// operator fixes the setting from. So the run's every job is read here, once per process the
+// warning is logged on, for a run that is normally none. A read that fails still logs the
+// warning, with the names it was given and the error.
 func (s *server) productionApplies(ctx context.Context, runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, production delivery.Production) []delivery.Apply {
 	judged := delivery.ProductionApplies(runs, jobsByRun, production)
 	names := strings.Join(production.JobNames, "\x00")
@@ -743,8 +769,17 @@ func (s *server) productionApplies(ctx context.Context, runs []delivery.Delivery
 		if !s.firstToWarn(ctx, warnedProductionRun{repo: missing.Run.Repo, runID: missing.Run.RunID, jobNames: names}, production.JobNames) {
 			continue
 		}
-		slog.Warn("dispatch delivery: a successfully concluded run has no job matching the configured production_job_names -- it will never count as a deploy",
-			"repo", missing.Run.Repo, "run_id", missing.Run.RunID, "configured_job_names", production.JobNames, "job_names_seen", missing.JobNames)
+		attributes := []any{"repo", missing.Run.Repo, "run_id", missing.Run.RunID, "configured_job_names", production.JobNames}
+		if jobs, err := delivery.ListRunJobs(ctx, s.deps.Store.Pool, missing.Run.Repo, missing.Run.RunID); err != nil {
+			attributes = append(attributes, "job_names_seen", missing.JobNames, "job_names_read_error", err)
+		} else {
+			seen := make([]string, len(jobs))
+			for i, job := range jobs {
+				seen[i] = job.Name
+			}
+			attributes = append(attributes, "job_names_seen", seen)
+		}
+		slog.Warn("dispatch delivery: a successfully concluded run has no job matching the configured production_job_names -- it will never count as a deploy", attributes...)
 	}
 	for _, run := range judged.StepMissing {
 		key := warnedProductionRun{repo: run.Repo, runID: run.RunID, jobNames: names, applyStep: *production.ApplyStep}

@@ -952,7 +952,7 @@ func (p *Population) issueEnd(issue *Issue) time.Time {
 }
 
 // resolveTitles is each session's most recent known title (delivery.ResolveSessionTitles, which
-// reads the one index Dispatch keeps of them).
+// reads the one table Dispatch keeps of them, session_titles).
 func resolveTitles(ctx context.Context, pool *store.Pool, sessions map[string]bool) (map[string]string, error) {
 	ids := make([]string, 0, len(sessions))
 	for id := range sessions {
