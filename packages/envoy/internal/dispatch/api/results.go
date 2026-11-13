@@ -47,7 +47,8 @@ const (
 	checkWhenDefaultBranch = "default_branch"
 )
 
-// checkResultReadingRunes is how much of the role's reading the pull-request body line carries.
+// checkResultReadingRunes is how much of the role's reading the pull-request body line carries,
+// and how much of the check's own words the line of a derived result carries (ciVerdictLine).
 const checkResultReadingRunes = 80
 
 // checkResultColumns is the column list every check_results read scans, in scanCheckResult's
@@ -289,8 +290,14 @@ type issueCheckResults struct {
 // check's words moved since. An issue with no Verification document has no checks and no
 // error.
 //
-// ?at=<commit> replaces what every check is compared with by the one commit the reader names,
-// and makes no read of GitHub at all.
+// A check CI proves carries `ci` too, read from GitHub at the issue's newest pull request
+// head, and its one result is the one derived from the run its `ci_check` names
+// (deriveCIResults), which is judged as a recorded result is.
+//
+// ?at=<commit> replaces what every check is compared with by the one commit the reader names.
+// The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's
+// newest pull request head as on every read: the derived result is that head's, and stands at
+// the named commit only where that commit is the head.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -342,6 +349,10 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		checks[index].Results = results
+	}
+	if err := s.deriveCIResults(r.Context(), issueKey, checks, recorded); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// Every head GitHub has to be asked for is learned before the first check is answered, so
 	// two `before_merge` checks of one issue name one list of bases and not two

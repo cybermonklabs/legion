@@ -1193,7 +1193,8 @@ type CheckResultRetraction struct {
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
 // result recorded against it from any issue, newest first. CICheck is the GitHub check run its
-// `ci_check` names, "" when it names none.
+// `ci_check` names, "" when it names none. CI is what Dispatch read of that run, set only for a
+// check CI proves; such a check's one result is the one derived from that run.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1205,6 +1206,7 @@ type CheckBlock struct {
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
 	CICheck         string        `json:"ci_check,omitempty"`
+	CI              *CheckCI      `json:"ci,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
@@ -1214,6 +1216,28 @@ type CheckBlock struct {
 	ComparedWith    []CheckBasis    `json:"compared_with"`
 	ComparedNothing string          `json:"compared_nothing,omitempty" enum:"no_pull_request_or_branch,repository_unreadable,read_failed"`
 	PassStands      CheckPassStands `json:"pass_stands"`
+}
+
+// CIStatePass, CIStateFail, CIStateNoResult and CIStateUnread are what the read of a check CI
+// proves answered (CheckCI.State): the named run passed, it failed, nothing the read found proves
+// the check either way, or GitHub could not be read. Only a pass and a fail carry a result.
+const (
+	CIStatePass     = "pass"
+	CIStateFail     = "fail"
+	CIStateNoResult = "no_result"
+	CIStateUnread   = "unread"
+)
+
+// CheckCI is what Dispatch read of the GitHub check run a check CI proves names, at the newest
+// pull request head of the check's issue: the run's name, the state of the check, the case that
+// decided it (a conclusion GitHub wrote, or one of the cases of no conclusion), one sentence
+// naming that case, and the line the pull-request body carries for the check.
+type CheckCI struct {
+	Run    string `json:"run"`
+	State  string `json:"state" enum:"pass,fail,no_result,unread"`
+	Case   string `json:"case"`
+	Detail string `json:"detail"`
+	Line   string `json:"line"`
 }
 
 // IssueCoverage is what each requirement of an issue's spec lacks: the requirements the spec
