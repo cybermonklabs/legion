@@ -88,7 +88,7 @@ func TestTwoPodsAMachineSignInIsAnsweredByTheActivePodAndTheStandby(t *testing.T
 	// What the broker answers for the machine's own token: a live session naming the fleet's
 	// service and no person, which is a machine nobody has signed in on.
 	broker.Says(signedIn, serviceAnswer(machineSession, "example-fleet", caller.JKT()))
-	body := `{"session_id":"` + machineSession + `","topics":[]}`
+	body := mpOnConsumer(t, `{"session_id":"`+machineSession+`","topics":[]}`)
 
 	a, b := mpStartPair(t, binary, uri, mpBrokerEnv(t, broker)...)
 

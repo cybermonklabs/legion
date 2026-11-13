@@ -665,6 +665,32 @@ func mpNATSRegistration(t *testing.T, _ *mpNATSSession, sessionID string, topics
 		sessionID, topicsJSON, "mp-"+sessionID)
 }
 
+// mpOnConsumer is body, a registration naming session_id, asking for consumer delivery as
+// mpNATSRegistration does, with the same epoch, and otherwise unchanged. Since #2603 (2af83d53fc)
+// the listener refuses 409 not_requested every registration that asks for no session consumer
+// (sessionDelivery.consumerFor), so a row whose subject is not how a session receives, and that
+// only needs the session registered, registers it through this.
+func mpOnConsumer(t *testing.T, body string) string {
+	t.Helper()
+	var registration map[string]any
+	if err := json.Unmarshal([]byte(body), &registration); err != nil {
+		t.Fatalf("decode the registration %s: %v", body, err)
+	}
+	sessionID, _ := registration["session_id"].(string)
+	if sessionID == "" {
+		t.Fatalf("the registration %s names no session_id", body)
+	}
+	if _, ok := registration["delivery"]; ok {
+		t.Fatalf("the registration %s already carries a delivery field", body)
+	}
+	registration["delivery"] = map[string]any{"consumer": true, "epoch": "mp-" + sessionID}
+	encoded, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatalf("encode %s's registration: %v", sessionID, err)
+	}
+	return string(encoded)
+}
+
 // subscribe posts body to the pod's /v1/interests/subscribe, a registration or its heartbeat, and
 // requires a 200.
 func (p *mpPod) subscribe(t *testing.T, body string) {

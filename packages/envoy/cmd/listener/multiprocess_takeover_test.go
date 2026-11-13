@@ -657,7 +657,7 @@ func TestTwoPodsSendThroughTheStandbyDuringATakeover(t *testing.T) {
 			var refusal string
 			register := func(index int) bool {
 				sessionID := fmt.Sprintf("ses_mp_takeover_%03d", index)
-				answer := a.call(http.MethodPost, "/v1/interests/subscribe", fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, sessionID))
+				answer := a.call(http.MethodPost, "/v1/interests/subscribe", mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, sessionID)))
 				if answer.err != nil || answer.status != http.StatusOK {
 					refusal = fmt.Sprintf("%d %s %v", answer.status, strings.TrimSpace(answer.body), answer.err)
 					return false

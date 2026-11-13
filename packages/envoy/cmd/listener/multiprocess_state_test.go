@@ -306,9 +306,9 @@ func TestTwoPodsSendAndRoleSetThroughThePodWhoseCacheTrails(t *testing.T) {
 	b.relay.delay(300 * time.Millisecond)
 	const target, claimant, role = "ses_mp_unseen_target", "ses_mp_unseen_claimant", "mp-unseen"
 
-	a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, target))
+	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, target)))
 	send := b.call(http.MethodPost, "/v1/messages/send", fmt.Sprintf(`{"target_session":%q,"message":"sent through the other pod","source":"agent","source_session":"ses_mp_sender"}`, target))
-	a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, claimant))
+	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, claimant)))
 	claim := b.call(http.MethodPost, "/v1/roles/set", fmt.Sprintf(`{"session_id":%q,"role":%q}`, claimant, role))
 	if send.status != http.StatusOK {
 		t.Fatalf("send to %s through %s at once after it registered through %s: %d %s %v, want 200", target, b.instance, a.instance, send.status, strings.TrimSpace(send.body), send.err)
@@ -339,12 +339,12 @@ func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 
 	t.Run("a topic", func(t *testing.T) {
 		const sessionID, first, added = "ses_mp_cas_topic", "notifications.team.mp-first", "notifications.team.mp-added"
-		heartbeat := fmt.Sprintf(`{"session_id":%q,"topics":[%q],"self_subscribed":true}`, sessionID, first)
+		heartbeat := mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[%q],"self_subscribed":true}`, sessionID, first))
 		a.subscribe(t, heartbeat)
 		mpEventually(t, 10*time.Second, b.instance+" to hold "+sessionID+"'s interest", func() bool {
 			return slices.Contains(b.cachedTopics(sessionID), first)
 		})
-		a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[%q],"self_subscribed":true}`, sessionID, added))
+		a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[%q],"self_subscribed":true}`, sessionID, added)))
 		b.subscribe(t, heartbeat)
 		stored := publisher.stored(t, bus.InterestBucket, sessionID)
 		topics, _ := stored["topics"].([]any)
@@ -357,7 +357,7 @@ func TestTwoPodsWritesOnThePodWhoseCacheTrailsKeepTheNewerWrite(t *testing.T) {
 		const sessionID, role = "ses_mp_cas_host", "mp-cas-host"
 		register := func(host string) {
 			t.Helper()
-			a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true,"host":%q}`, sessionID, host))
+			a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true,"host":%q}`, sessionID, host)))
 		}
 		register("example-host-a")
 		mpEventually(t, 10*time.Second, b.instance+" to hold "+sessionID+" on example-host-a", func() bool {
@@ -394,7 +394,7 @@ func TestTwoPodsAnswerARoleWhoseHolderLapsedAlike(t *testing.T) {
 	time.Sleep(2 * time.Second) // the machine serves for a while before the claim
 	const holder = "ses_mp_grace_holder"
 	const holdingProcess = "inst-mp-grace-holder"
-	a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true,"client_instance_id":%q}`, holder, holdingProcess))
+	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true,"client_instance_id":%q}`, holder, holdingProcess)))
 	a.setRoleAs(t, holder, "mp-grace", holdingProcess)
 	if answer := a.call(http.MethodDelete, "/v1/sessions/"+holder, ""); answer.status != http.StatusOK {
 		t.Fatalf("end %s's session through %s: %d %s %v", holder, a.instance, answer.status, answer.body, answer.err)
@@ -434,7 +434,7 @@ func TestTwoPodsReportALapsedHoldersLastSeenAlike(t *testing.T) {
 	a := mpStartPod(t, binary, uri, "pod-a")
 	mpWaitActive(t, a, 30*time.Second)
 	const holder = "ses_mp_seen_holder"
-	a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, holder))
+	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, holder)))
 	a.setRole(t, holder, "mp-seen-a")
 	a.setRole(t, holder, "mp-seen-b")
 	mpEventually(t, ttl+10*time.Second, holder+"'s registration to expire", func() bool {
@@ -580,7 +580,7 @@ func TestTwoPodsReportOneSessionStateAndLastSeen(t *testing.T) {
 		holder = "ses_mp_state"
 		role   = "mp-state"
 	)
-	a.subscribe(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, holder))
+	a.subscribe(t, mpOnConsumer(t, fmt.Sprintf(`{"session_id":%q,"topics":[],"self_subscribed":true}`, holder)))
 	a.setRole(t, holder, role)
 
 	// readState waits for both pods to put the session in want and answers the last_seen they
