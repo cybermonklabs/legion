@@ -34,7 +34,7 @@ import {
 } from "./context";
 import { anchor, resolveArtifact } from "./document-targets";
 import { askId, normalizeUUID, refuseItemOffRef, resolveIdPrefix } from "./refs";
-import { formatOpenAsksSummary } from "./render-item";
+import { formatOpenAsksSummary, waitsOnPerson } from "./render-item";
 import { askOwnerDetails, documentTopic, followedAskDetails, followsAsk } from "./results";
 
 function askUrgency(args: ToolArguments): AskUrgency | undefined {
@@ -353,9 +353,12 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
   const adviceLines = await otherAdviceLines(() =>
     renderAdvice(input.tool, askOwner.label, ask.advice, {})
   );
+  // The person the question reaches is on the line that names the ask, so an agent learns
+  // who reads it without a second command.
+  const asked = waitsOnPerson(ask);
   return {
     text: [
-      `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency}): ${ask.question}`,
+      `Asked ${ask.id} on ${askOwner.label} (urgency ${ask.urgency})${asked === undefined ? "" : `, waiting on ${asked}`}: ${ask.question}`,
       ...checkLines,
       ...reviewLines,
       ...declinedLines,

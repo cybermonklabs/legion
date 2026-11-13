@@ -48,7 +48,7 @@ import {
 } from "./context";
 import { approvalLine, liveBlocks } from "./document-targets";
 import { dispatchAnswered } from "./failures";
-import { openAnchoredThreads } from "./render-item";
+import { openAnchoredThreads, waitsOnPerson } from "./render-item";
 import {
   documentResultDetails,
   documentTopic,
@@ -629,9 +629,12 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   const outcome = result.recorded
     ? `Approval requested for ${resolved.artifact.name} (document id ${resolved.artifact.id}) at version ${result.version} (ask ${result.ask.id}).`
     : `The approval request for ${resolved.artifact.name} (document id ${resolved.artifact.id}) at version ${result.version} (ask ${result.ask.id}) already waits on the human, so this call changed nothing: nothing since it last reached the human (a newer version, a human's reply in its thread, or your progress note) left it waiting on you.`;
+  // Every branch here carries a question, a new request and a hand-back alike, so each names the
+  // person it reaches. The settled branch above carries none and names nobody.
+  const waitsOn = waitsOnPerson(result.ask);
   return {
     text: [
-      `${outcome} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the decision blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. The human's own answer to a decision block carries the approval when that answer is the whole change since the approved version, and answers an open request Approve in their name: request nothing then.`,
+      `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the decision blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. The human's own answer to a decision block carries the approval when that answer is the whole change since the approved version, and answers an open request Approve in their name: request nothing then.`,
       ...coverageLines,
     ].join("\n"),
     details: { ...details, artifact: resolved.artifact.id, version: result.version },

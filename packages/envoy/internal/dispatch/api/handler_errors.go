@@ -186,6 +186,11 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())
 		return
 	}
+	var invalidCICheck *docs.ErrInvalidCICheck
+	if errors.As(err, &invalidCICheck) {
+		writeError(w, "INVALID_CI_CHECK", http.StatusBadRequest, invalidCICheck.Error())
+		return
+	}
 	var unrepresentableAsk *docs.ErrAskBlockUnrepresentable
 	if errors.As(err, &unrepresentableAsk) {
 		writeError(w, "ASK_BLOCK_TEXT", http.StatusBadRequest, unrepresentableAsk.Error())

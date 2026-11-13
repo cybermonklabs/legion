@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,11 +11,11 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // compactHarness is the one daemon both doors are driven against, as freshSessionHarness is: the
@@ -22,11 +23,18 @@ import (
 // `worker_backends` as the routes see it (Options.Backend); nil runs every role on Oh My Pi.
 func compactHarness(t *testing.T, backend func(claim.Role) runtime.Backend) *harness {
 	t.Helper()
+	return compactHarnessLogging(t, backend, nil)
+}
+
+// compactHarnessLogging is compactHarness with the routes logging to log, for a row that reads
+// what a route wrote there; nil is the default logger compactHarness's routes use.
+func compactHarnessLogging(t *testing.T, backend func(claim.Role) runtime.Backend, log *slog.Logger) *harness {
+	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: workflow.RoleFor, Backend: backend,
+		Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: phase.RoleFor, Backend: backend, Log: log,
 	}).Handler
 	return h
 }
@@ -208,6 +216,13 @@ func TestACompactionThatIsRefusedOrSkippedTellsTheCallerAndStillSendsTheOwedTask
 // A compaction that takes its time answers its caller what Oh My Pi really said, however long
 // that is, and the claim is busy meanwhile: a fresh session asked for during it is refused, as
 // one asked for during a turn is, and the claim keeps its session.
+//
+// Such a claim's process is not read at all, which the row counts at the runtime (processReads):
+// a session being compacted runs an agent, the compaction in flight owns what becomes of it,
+// and a read whose answer could only be "the process is running" would buy nothing while
+// risking the one thing the refusal exists to prevent — a recovery that stops a live agent
+// mid-compaction. The claims a door does read are the ones stored working with nothing in
+// flight over them (recovery_refusals_test.go's dead-process windows).
 func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)
@@ -218,11 +233,15 @@ func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused
 		answered <- h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 	}()
 	waitForCompacting(t, h, token)
+	reads := processReads(h)
 
 	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
 	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
 		inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
+	if got := processReads(h) - reads; got != 0 {
+		t.Errorf("the request read the claim's process %d times, want none: the compaction in flight owns that process", got)
+	}
 	if after := h.stored(token); after.Session != "ses_implementer" {
 		t.Errorf("the refused claim records session %q, want the session it had", after.Session)
 	}
@@ -233,18 +252,26 @@ func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused
 }
 
 // waitForCompacting waits until the machine reports the claim being compacted, which is what
-// makes it busy for every other request.
+// makes it busy for every other request, and the compaction has reached the claim's connection
+// held: the machine reports the claim compacting as it takes it, before it asks Oh My Pi, so a
+// test that loses the process at that report alone can lose it before the ask and read the
+// answer of a compaction that never began.
 func waitForCompacting(t *testing.T, h *harness, token claim.Token) {
 	t.Helper()
 	m, _ := h.supervisor.Machine(token)
+	registered, _ := h.conns.Conn(token)
+	conn, ok := registered.(*fake.Conn)
+	if !ok {
+		t.Fatalf("%s has no fake connection to hold a compaction at", token)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if c := m.View().Claim; c.Compacting && c.State == supervise.StateWorking {
+		if c := m.View().Claim; c.Compacting && c.State == supervise.StateWorking && conn.CompactsHeld() > 0 {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("%s never reported itself being compacted", token)
+	t.Fatalf("%s never reported itself being compacted with the compaction held at its connection", token)
 }
 
 // A second compaction of a claim already being compacted is refused, and the refusal says what

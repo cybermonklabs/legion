@@ -55,6 +55,8 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
     expect(screen.getByLabelText<HTMLInputElement>("Name").value).toBe("");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     await waitFor(() => expect(listProjects.mock.calls.length).toBeGreaterThan(1));
+    // The project list carries no default: the new project's is read from the defaults read.
+    await waitFor(() => expect(listDefaults.mock.calls.length).toBeGreaterThan(1));
 
     // The form submitted with no control pressed: user-event has no form for submit.
     fireEvent.submit(key.closest("form") as HTMLFormElement);

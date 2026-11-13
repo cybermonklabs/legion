@@ -63,6 +63,32 @@ function check(blockId: string, results: CheckResult[], overrides: Partial<Check
   } satisfies CheckBlock;
 }
 
+/** A check CI proves, as the server answers one: `ci_check` names the CI run, it carries no `run`
+ *  of its own, and `ci` is what the server read of that run at the issue's pull request head.
+ *  The server gives `ci` only to such a check, and its one result, where it has one, is the one
+ *  derived from that run (`ciResult`). */
+function ciCheck(blockId: string, ci: NonNullable<CheckBlock["ci"]>, results: CheckResult[]) {
+  return check(blockId, results, {
+    ci,
+    ci_check: ci.run,
+    pass_stands: results.length === 0 ? { answer: "no" } : { answer: "yes", roles: ["ci"] },
+    run: "",
+  });
+}
+
+/** The result the server derives from a CI run that concluded success: its role is `ci`, its run
+ *  the CI run's name, and what it observed the run's conclusion, output and address. */
+function ciResult(): CheckResult {
+  return result({
+    actor: { id: "github-actions", kind: "github_app" },
+    id: "ci-run:9001",
+    observed: "conclusion: success\ncontracts passed\nhttps://github.com/acme/widgets/runs/9001",
+    role: "ci",
+    run: "contracts",
+    session: "",
+  });
+}
+
 const verification: Artifact = {
   created_at: "2026-10-01T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
@@ -333,6 +359,97 @@ test("a result with no reading says it carries none", async () => {
   expect(within(row).getByTestId("verification-result-observed").textContent).toBe(
     "This result carries no reading."
   );
+});
+
+// A check CI proves names the CI run that proves it, and the result the server derives from that
+// run is drawn as a recorded one is: its role, its verdict, where its commit stands, the run, what
+// it observed and its commit.
+test("a check CI proves names its run and draws the result derived from it", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    ciCheck(
+      "c-ci",
+      {
+        case: "success",
+        detail: `CI run contracts concluded success at ${commit}, the head of acme/widgets#7.`,
+        line: `- Check c-ci (before_merge): pass at ${commit}, from CI run contracts. Check c-ci`,
+        run: "contracts",
+        state: "pass",
+      },
+      [ciResult()]
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const card = await screen.findByTestId("verification-check");
+  expect(within(card).getByTestId("verification-check-ci").textContent).toBe("contracts");
+  expect(within(card).getByTestId("verification-check-roles").textContent).toBe("from ci");
+  const row = within(card).getByTestId("verification-result");
+  const field = (name: string) =>
+    within(row).getByTestId(`verification-result-${name}`).textContent;
+  expect(field("role")).toBe("ci");
+  expect(field("verdict")).toBe("Pass");
+  expect(field("commit-stands")).toBe(`At the head of pull request 7 ${commit}`);
+  expect(field("run")).toBe("contracts");
+  expect(field("observed")).toBe(
+    "conclusion: success\ncontracts passed\nhttps://github.com/acme/widgets/runs/9001"
+  );
+  expect(field("commit")).toBe(commit);
+  expect(within(card).queryByTestId("verification-check-ci-unproved")).toBeNull();
+});
+
+// A check CI proves whose run proved nothing holds no result at all, and in place of the sentence
+// an ordinary check shows, it shows the server's own sentence saying why.
+test("a check CI proves with no derived result shows why its run proved nothing", async () => {
+  const detail = `CI run contracts concluded skipped at ${commit}, the head of acme/widgets#7, which proves nothing.`;
+  const { getIssueResults, view } = renderTab(verification, [
+    ciCheck(
+      "c-skipped",
+      {
+        case: "skipped",
+        detail,
+        line: "- Check c-skipped (before_merge): CI run contracts has no result (skipped)",
+        run: "contracts",
+        state: "no_result",
+      },
+      []
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const card = await screen.findByTestId("verification-check");
+  expect(within(card).getByTestId("verification-check-ci").textContent).toBe("contracts");
+  expect(within(card).getByTestId("verification-check-ci-unproved").textContent).toBe(detail);
+  expect(within(card).queryByTestId("verification-check-no-results")).toBeNull();
+  expect(within(card).queryByTestId("verification-result")).toBeNull();
+});
+
+// A block that carries `ci_check` and also holds a recorded result is no check CI proves, so the
+// server gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
+test("a check the server gives no ci reads as an ordinary check", async () => {
+  const { getIssueResults, view } = renderTab(verification, [
+    check("c-recorded", [result()], { ci_check: "contracts", run: "" }),
+    check("c-none", [], { ci_check: "contracts", pass_stands: { answer: "no" }, run: "" }),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const cards = await screen.findAllByTestId("verification-check");
+  expect(screen.queryByTestId("verification-check-ci")).toBeNull();
+  expect(within(cards[0] as HTMLElement).getByTestId("verification-result-role").textContent).toBe(
+    "tester"
+  );
+  expect(
+    within(cards[1] as HTMLElement).getByTestId("verification-check-no-results").textContent
+  ).toBe("No result recorded against this check.");
+  expect(screen.queryByTestId("verification-check-ci-unproved")).toBeNull();
 });
 
 test("an issue with no Verification document shows the command that makes one", () => {

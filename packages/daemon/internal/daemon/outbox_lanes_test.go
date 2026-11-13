@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -22,8 +21,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -290,7 +291,7 @@ func (h enqueuing) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.
 
 // commitRows writes rows through records in one fact's transaction (intake.ApplyFact), under
 // eventID, which must be new to the database.
-func commitRows(t *testing.T, pool *pgxpool.Pool, records record.Store, eventID string, rows ...record.OutboxRow) {
+func commitRows(t *testing.T, pool *store.Pool, records record.Store, eventID string, rows ...record.OutboxRow) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "lanes-test", eventID, intake.DaemonBooted{Boot: 1}, enqueuing{records: records, rows: rows}); err != nil {
 		t.Fatalf("commit %s: %v", eventID, err)
@@ -310,7 +311,7 @@ func microClock() *heldClock {
 }
 
 // outboxIDs is every row's id, in id order.
-func outboxIDs(t *testing.T, pool *pgxpool.Pool) []int64 {
+func outboxIDs(t *testing.T, pool *store.Pool) []int64 {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), "select id from outbox order by id")
 	if err != nil {
@@ -329,7 +330,7 @@ func outboxIDs(t *testing.T, pool *pgxpool.Pool) []int64 {
 }
 
 // outboxRowsOf is how many rows issue has left.
-func outboxRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) int {
+func outboxRowsOf(t *testing.T, pool *store.Pool, issue string) int {
 	t.Helper()
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = $1", issue).Scan(&rows); err != nil {
@@ -346,7 +347,7 @@ type rowState struct {
 	nextAt     time.Time
 }
 
-func rowStateOf(t *testing.T, pool *pgxpool.Pool, id int64) rowState {
+func rowStateOf(t *testing.T, pool *store.Pool, id int64) rowState {
 	t.Helper()
 	var state rowState
 	if err := pool.QueryRow(context.Background(), "select lease_token, lease_until, attempts, next_at from outbox where id = $1", id).
@@ -372,7 +373,7 @@ func spawnedRoles(rt *fake.Runtime) []claim.Role {
 // client its board rows write and the publisher its notices reach, and how many workspaces its
 // starts provisioned.
 type laneTree struct {
-	pool       *pgxpool.Pool
+	pool       *store.Pool
 	root       record.Issue
 	runner     *outbox
 	records    record.Store
@@ -509,6 +510,53 @@ func TestARowWrittenWithItsIDRunsOnItsLaneWithoutASweep(t *testing.T) {
 		return client.postsTo("LEGION-208") == 1 && outboxRowsOf(t, pool, "LEGION-208") == 0
 	})
 	if _, sweeps := clock.armed(outboxLease); sweeps != 1 {
+		t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
+	}
+}
+
+// startingWorker writes a phase worker's start inside the fact's transaction, as a transition
+// does (workflow.StartOrOwe, which writes it through record.Store.EnqueueStart).
+type startingWorker struct {
+	records record.Store
+	issue   record.Issue
+	role    claim.Role
+	task    string
+	at      time.Time
+}
+
+func (h startingWorker) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.Result, error) {
+	return intake.Result{}, workflow.StartOrOwe(ctx, tx, h.records, h.issue.Key, record.SuperviseRequest{
+		Op: "start", Tree: h.issue.Tree, Role: h.role, Task: h.task, Generation: h.issue.Generation,
+		Phase: h.issue.Phase, Entry: 1}, h.at)
+}
+
+// A phase worker's start runs on its lane as soon as the transition that wrote it commits, as
+// every other row does. It is the one row written through record.Store.EnqueueStart, which is
+// the statement workflow.StartOrOwe takes since the start became a row of its own, so the
+// workflow's store wakes its lane there as it does at Enqueue (projectRecords.EnqueueStart):
+// without that wake the worker whose phase has just been handed its work waits for the next
+// sweep, up to one outbox lease after the transition.
+func TestAWorkerStartRunsOnItsLaneWithoutASweep(t *testing.T) {
+	tree := startLaneTree(t, nil)
+	tree.spawn.gate.open()
+	ctx := context.Background()
+	// A phase worker's start waits while its issue holds no admission slot (StartOrOwe's
+	// NeedsSlot), so the slot is granted first, and through the bare store: projectRecords.PutSlot
+	// wakes the issue's lifecycle lane itself, and that wake would stand in for the one under test.
+	if err := pgx.BeginFunc(ctx, tree.pool, func(tx pgx.Tx) error {
+		return record.NewStore().PutSlot(ctx, tx, record.Slot{Issue: tree.root.Key, Index: 0, AdmittedAt: tree.clock.Now()})
+	}); err != nil {
+		t.Fatalf("grant the admission slot of %s: %v", tree.root.Key, err)
+	}
+	if _, err := intake.ApplyFact(ctx, tree.pool, "lanes-test", "worker-start", intake.DaemonBooted{Boot: 1},
+		startingWorker{records: tree.records, issue: tree.root, role: claim.RoleImplementer,
+			task: "Implement it.", at: tree.clock.Now()}); err != nil {
+		t.Fatalf("commit the start: %v", err)
+	}
+	testwait.Eventually(t, "the start launched its worker", func() bool {
+		return fmt.Sprint(spawnedRoles(tree.rt)) == "[implementer]" && outboxRowsOf(t, tree.pool, tree.root.Key) == 0
+	})
+	if _, sweeps := tree.clock.armed(outboxLease); sweeps != 1 {
 		t.Fatalf("sweep timers armed = %d, want the one Run armed at boot and never fired", sweeps)
 	}
 }

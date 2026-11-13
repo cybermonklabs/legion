@@ -87,7 +87,7 @@ func seedOneOfEveryKind(t *testing.T, database *store.Store) []string {
 	const artifactID = "11111111-1111-4111-8111-111111111111"
 	const author = `'{"kind":"user","id":"alice"}'`
 	seed(t, database,
-		`insert into projects (key, name) values ('TEST', 'Test')`,
+		`insert into projects (key, name, default_assignee) values ('TEST', 'Test', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank)
 			values ('TEST-1', 'TEST', 1, 'Test issue', `+author+`, 'U')`,
 		`insert into comments (issue_key, author, body) values ('TEST-1', `+author+`, '`+commentBody+`')`,

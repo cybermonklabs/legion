@@ -493,6 +493,56 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIG
   bash packages/dispatch/e2e/acceptance/write-guards.sh
 ```
 
+`e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
+the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
+proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
+Verification document, and each runs that check's `run` and asserts its `negative_control`:
+
+- `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
+  refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
+  the rule, and stores nothing of them: `ci_check` beside a `run`, `ci_check` with a `when` of
+  `after_merge`, `ci_check` with no `negative_control`, and `ci_check` added to a check that
+  holds a recorded result. A `ci_check` on a fresh block id is stored, and a new block under the
+  old id is refused again. A check carrying neither `ci_check` nor `run` is stored as before. A
+  document socket that declares schema version 3 is admitted with the scope `readonly`, and one
+  that declares version 4 with `read-write` (`e2e/acceptance/socket-scope.ts`, the Hocuspocus
+  frames the browser sends). The live editor's half of `k1` is the browser row of
+  `e2e/verification.e2e.ts`.
+- `k2`: `dispatch results` answers the check with the result of the named run at the issue's open
+  pull request head: the run's name, conclusion, output and URL, and a pull-request body line that
+  names the run and no recorder. A failed run prints `fail`, and `check_results` holds no row for
+  either block. The head of the merged pull request still answers. Three such checks at one head
+  cost one check-runs read (`GET /__fixture/requests`), an open head is read before an older
+  merged one, an issue with no such check reads no check runs, and a summary of 2,500 runes is cut
+  to 2,000.
+- `k3`: the eleven outcomes of the run, among them the fake GitHub's `500` and a read the fake
+  holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
+  of one name are decided by the higher id, in both orders of their conclusions.
+- `k4`: a tester's and an implementer's result for a check CI proves are refused `409
+  CHECK_PROVED_BY_CI`, naming the block and the run; the same call against an ordinary check is
+  recorded and `dispatch results` shows it.
+- `k5`: the whole line the reviewer's gate reads (verdict, commit, role and where the commit
+  stands), then a failed run, a head moved to a commit the run does not cover, and a head the fake
+  GitHub serves that Dispatch's own head record does not hold yet.
+
+Its inputs are all required: `DISPATCH_URL`, the bearer, `PROJECT`, `FAKE_GITHUB_PORT` (the fake
+GitHub the server reads), `DATABASE_URL` (the server's own database) and `DEV_SIGNIN_LOGIN` (a
+document socket admits a person alone, so the sockets of `k1` sign that person in). The harness
+runs with NATS disabled, so no `pull_request` event stores a pull request head: the script stages
+each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
+one repository holding the same pull requests and each head's check runs, replacing every
+repository the fake served. That repository is `PROJECT`'s default where it maps one, and
+otherwise one of the run's own, which nothing maps. It writes nine issues in `PROJECT` and closes
+every one of them, also when a check fails; on exit it deletes the rows it staged and empties the
+fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's port and the database it
+prints:
+
+```bash
+DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  FAKE_GITHUB_PORT=9022 DATABASE_URL=<the database it prints> DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/ci-check.sh
+```
+
 `e2e/acceptance/block-coverage.sh` takes the first three inputs, with `PROJECT` optional (unset,
 every project), and only reads. For every document it can list (each project's documents and each
 issue's documents), it counts the document as not indexed when `GET /api/v1/artifacts/{id}/blocks`
@@ -501,8 +551,11 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 with no blocks counts as indexed, since it owes no nodes.
 
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
-document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`
-and the bearer, makes the project and the issue it needs, and runs ten assertions:
+document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
+the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
+acts for no person, so the project it creates must name the person its unowned work lands on
+(`400 INVALID_PROJECT` otherwise). It makes the project and the issue it needs, and runs ten
+assertions:
 `dispatch artifact --issue <KEY> --name "Launch notes"`, with neither `--path` nor `--content`,
 exits zero and says the document was made, naming its `dispatch://` reference; that reference
 reads back one version whose markdown is empty; `dispatch read --issue <KEY>` lists the document
@@ -522,9 +575,13 @@ stack when the command ends, exiting with the command's own status. From `packag
 
 ```bash
 DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harness.sh \
-  bash -c 'DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
-    bash e2e/acceptance/create-document.sh'
+  bash -c 'curl -sS -o /dev/null "http://127.0.0.1:$DISPATCH_E2E_PORT/auth/_dev/signin?login=alice" &&
+    DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
+    DISPATCH_DEFAULT_ASSIGNEE=alice bash e2e/acceptance/create-document.sh'
 ```
+
+The `curl` is the harness's dev sign-in (`/auth/_dev/signin`), which records `alice` as a person
+who has signed in, so the project may name her.
 
 `e2e-token` is the agent bearer the harness pins. Until cybermonklabs/legion#3435 the same thing
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
