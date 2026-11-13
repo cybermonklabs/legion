@@ -272,16 +272,19 @@ func stampOperation(index int, err error) error {
 // isEditRefusal reports an error the caller wrote the batch wrong, whose own text is what the
 // route serves. Wrapping one in the service's internal prose would bury the operation index and
 // the anchor the reader needs. A batch whose markdown, or whose result, is too large to store is
-// one: its refusal says what to shorten.
+// one: its refusal says what to shorten. So is a check block the batch leaves breaking a rule of
+// a check CI proves, which keeps its own code rather than becoming an invalid operation.
 func isEditRefusal(err error) bool {
 	var invalid *ErrInvalidOp
 	var ambiguous *ErrAnchorAmbiguous
+	var ciCheck *ErrInvalidCICheck
 	return errors.Is(err, pmdoc.ErrTargetNotFound) ||
 		errors.Is(err, pmdoc.ErrTargetSpansBlocks) ||
 		errors.Is(err, pmdoc.ErrTableWidth) ||
 		IsTooLarge(err) ||
 		errors.As(err, &invalid) ||
-		errors.As(err, &ambiguous)
+		errors.As(err, &ambiguous) ||
+		errors.As(err, &ciCheck)
 }
 
 // ErrInvalidPrecondition identifies a malformed optimistic-concurrency guard.

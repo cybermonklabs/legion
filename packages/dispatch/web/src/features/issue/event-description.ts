@@ -1,3 +1,4 @@
+import type { BlockInvalidEventPayload } from "@legion/contracts";
 import type { DispatchEvent } from "../../api/types";
 import { capabilityLabel } from "../conversation/delivery";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
@@ -7,6 +8,14 @@ import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 export function eventDescription(event: DispatchEvent): AgentPart[] {
   const description = describe(event);
   return typeof description === "string" ? [description] : description;
+}
+
+/** A `block.invalid`'s line, in the Pinned tab and the Activity tab alike: a check block whose
+ *  `ci_check` settlement refused, or an ask block it marked malformed. */
+export function blockInvalidDescription(payload: BlockInvalidEventPayload): string {
+  return payload.block_type === "check"
+    ? `refused check ${payload.block_id}: ${payload.reason}`
+    : `marked decision ${payload.block_id} malformed: ${payload.reason}`;
 }
 
 function describe(event: DispatchEvent): string | AgentPart[] {
@@ -152,7 +161,7 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "block.repaired":
       return `Repaired block ${event.payload.block_id}`;
     case "block.invalid":
-      return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
+      return blockInvalidDescription(event.payload);
     case "result.recorded":
       return `Check ${event.payload.check_block_id} ${event.payload.verdict === "pass" ? "passed" : "failed"} at ${event.payload.commit_sha}, recorded by ${event.payload.role}${event.payload.issue === event.payload.check_issue ? "" : ` on ${event.payload.issue}`}`;
     case "result.retracted":

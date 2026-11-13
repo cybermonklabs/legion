@@ -1427,7 +1427,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 112: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
+// 114: INFRA-2543 -- the GitHub App installation, and no longer the project's Dispatch repository
 // mapping, decides which repositories a project works in, so the `repositories` block of
 // `GET /legion/v1/state` stops being that mapping. `mapped` is every repository the daemon
 // serves, the ones the mapping names and the ones the project's own records name, and each entry
@@ -1457,15 +1457,17 @@ package api
 // since the two keys contract 94 added are served to a caller at the declared number alone
 // (api's phaseEntriesContract). It took 106 at the merge after that, because
 // cybermonklabs/legion#3659 declares 105 and is the change that gives every later contract its
-// own serving-down, so a number below its own would be served without that machinery. It takes
-// 112 here: a census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 148 open pull
-// requests of this repository, taken at 19:5xZ on 2026-11-13, reads 104 seven times, 105 once,
-// 106 twice — this head and #2731 — then 107, 108, 109, 110 and 111 twice, with nothing above,
-// so 112 is the lowest number above main's 104 that no open head declares. The gate
+// own serving-down, so a number below its own would be served without that machinery, and 112
+// at the merge after that, which #2731 had taken thirteen minutes earlier and which is
+// therefore its number rather than this one's. It takes 114 here: a census of
+// `const DaemonAPIVersion` at refs/pull/<n>/head over all 148 open pull requests of this
+// repository, taken at 2026-11-13T19:38:05Z, reads 104 ten times, then 105, 107, 108, 109, 110,
+// 111 twice, 112 twice and 113 once, with nothing above, so 114 is the lowest number above
+// main's 104 that no open head declares. The gate
 // compares a head with main alone, so every head at a number another head holds passes it today
 // and all but the first to land are renumbered after their review has run; that is
 // dispatch://INFRA-1569's to cure. Read main's own number and every open pull request's again at
 // the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 112
+const DaemonAPIVersion = 114

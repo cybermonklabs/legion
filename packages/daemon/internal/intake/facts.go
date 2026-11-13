@@ -1477,9 +1477,14 @@ func settleObserved(ctx context.Context, tx pgx.Tx, fact Fact) (Fact, bool, erro
 // SerializeFacts takes, for tx's life, the lock every fact applies under (ApplyFact): until tx
 // commits or rolls back, no fact resolves a repository and commits an issue recorded on it. The
 // boot's reconcile, which records issues in its own transaction, takes it, as does a refresh of
-// the repository mapping across its live-record snapshot, its subscription update and its
-// publication, so a repository an admission is recording an issue on is never unsubscribed under
-// it.
+// the repository mapping across its live-record snapshot and its publication, so a repository an
+// admission is recording an issue on is never unsubscribed under it. The subscription update
+// itself is outside this lock and outside any transaction of that pool: a stream call made under
+// either left every connection of the pool idle in a transaction waiting on JetStream
+// (cybermonklabs/legion#3786, dispatch://INFRA-3169), so the mapping's refresh publishes its
+// superset before it takes this lock and narrows after it has let it go, and a recording's own
+// update runs in the commit hook, after the transaction returned its connection and Postgres
+// released this lock (internal/daemon's hearRecorded).
 func SerializeFacts(ctx context.Context, tx pgx.Tx) error {
 	_, err := tx.Exec(ctx, "select pg_advisory_xact_lock(hashtext('legion.apply_fact'))")
 	return err
