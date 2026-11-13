@@ -603,7 +603,7 @@ Each item below names a task and where its code is, then notes on it.
   `Run` makes one bounded run of a model and the tools it calls, on `anthropic-messages`, `openai-responses`, `openai-chat` or `azure-anthropic`, and `Decide` makes one System One call for a typed decision.
   The caller supplies the endpoint, the credential, the prices, the tools and the reply's JSON schema, and the package reads nothing from the environment.
   Its live proof is `go test -tags modellive ./agentloop/ -run TestLive`, run from `packages/envoy`, which makes a real model call and skips unless the operator names its gateway's base URL, its key file and its model (`AGENTLOOP_LIVE_*`).
-  No `cmd` of the module imports it yet, so `packages/envoy/docker/Dockerfile` copies no new directory.
+  `cmd/dispatch` imports it for the command bar's answer and decision calls, and `cmd/going-bakeoff` for the decision-model bake-off; `packages/envoy/docker/Dockerfile` already copies its directory.
   The merge raises modules the listener and Dispatch compile in all the same, so those two binaries change and so do their third-party notices.
   `packages/envoy/CHANGELOG.md` names each raise once the release fold has taken the entry.
 

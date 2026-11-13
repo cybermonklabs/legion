@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `src/going.ts` declares four more frames of the command bar's answer stream, each with its
+  shapes, and `bun run gen:go` writes their names into the Go package (`GoingEventDecision`,
+  `GoingEventProposal`, `GoingEventBlock` and `GoingEventRoster`): `decision`
+  (`GoingDecisionEvent`, `GoingDecidedAction`, `GoingDecidedContext`), what the decision model
+  chose before the answer; `proposal` (`GoingProposalEvent`, `GoingOffer`, `GoingInvocation`,
+  `GoingMissingArgument`), the arguments of each offered action; `block` (`GoingBlockEvent`,
+  `GoingBlockKind`, `GoingBlockData`, `GoingBlockSource` and the chart, table, metric and
+  progress specs), one typed block filled from a read the server serves; and `roster`
+  (`GoingRosterEvent`), how fresh the roster the answer read was.
+  `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry the shapes of the new
+  routes: the capability read's new shape, the writes and undo routes, the person's command-bar
+  setting, `GET /api/v1/me/going-runs` and `GET /api/v1/projects/{key}/activity`.

@@ -1170,7 +1170,7 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
+- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends and clears the answer runs the going routes leave behind, deletes the command bar's run records past their thirty days (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   `DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL` replaces the minute for an end-to-end test, and a deployment never sets it.
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
@@ -2560,7 +2560,7 @@ Where the server generates text is one setting, `DISPATCH_ANSWERER`, and the mod
 `session` and `label` are the two new-issue settings (`GET /api/v1/settings/new-issue`).
 The route names the models and no endpoint and no credential, so any caller Dispatch admits may read it.
 
-`POST /api/v1/going/requests` takes a question and the project to ask it of, records the run and answers `201` with it; the answer itself arrives on `GET /api/v1/going/requests/{id}/stream` as server-sent events, each frame carrying `id:` its sequence, `event:` its name (`text`, `item`, `cut`, `changed`, `none`, `end`, `error`) and `data:` that frame's own JSON (`packages/contracts/src/going.ts` declares the vocabulary once, for this server and for the page that reads it).
+`POST /api/v1/going/requests` takes a question, the project to ask it of and the item the bar's context chip names (`{path, project, issue, block}`), records the run and answers `201` with it; the answer itself arrives on `GET /api/v1/going/requests/{id}/stream` as server-sent events, each frame carrying `id:` its sequence, `event:` its name (`decision`, `text`, `item`, `cut`, `changed`, `none`, `block`, `roster`, `proposal`, `end`, `error`) and `data:` that frame's own JSON (`packages/contracts/src/going.ts` declares the vocabulary once, for this server and for the page that reads it).
 The two are separate requests because the server wraps every `POST` in its idempotency layer and that layer holds a whole answer rather than streaming it (Keyed writes, below), and because a deployment of more than one pod spreads two requests across pods:
 the run's frames are rows of `going_events`, so any pod serves any reader, and a reader that drops resumes with `Last-Event-ID` after the last sequence it saw.
 A repeat of the `POST` under one `Idempotency-Key` answers the first run's id, and its stream replays the same stored frames.
@@ -2568,6 +2568,8 @@ A run belongs to the credential that asked it, which the stream compares its rea
 
 What the model is given is what the caller may already read: the hits of the server's own search of that project, and each hit's own stored text, at most 2,000 runes a hit and 30,000 in one run, after which a hit is still named to the model with no body and stays something the answer may cite.
 The model may search twice more through one tool, the server supplying the project, the limit and the offset so it cannot widen the search, and a fourth search is refused back to the model.
+It may also call the read tools, each made as the caller through the function its route answers with: the roster (`GET /api/v1/agents`), the progress of an issue or a project, a project's architecture counts, a project's events per ISO week (`GET /api/v1/projects/{key}/activity`) and the delivery figures, at most eight reads in one run.
+A credential scoped to one project is offered no roster and no delivery read, and every other read is held to the run's project.
 The citation rule is the server's and not the model's: a text frame carries plain text alone, every ASCII punctuation byte of it escaped, which closes markdown's own constructs, and every word a renderer would link on its own — a `www.` host, a scheme's `://`, a `mailto:` or `xmpp:`, an address — dropped from the answer whole, since a renderer decodes an escape before it looks for such a link; so an answer's links are its `item` frames and nothing else — a link to something the model was given raises `item` once for that thing, every other link and every image is counted in `changed`, and either way no byte of the target reaches the reader, who is written the link's own visible text unless that text joins a word a renderer would link on its own, which is dropped whole as every such word is.
 An answer is cut at 120 words with `cut`, one the model wrote no text for at all ends `none`, and either way `end` closes the stream.
 
@@ -2576,6 +2578,29 @@ A pod that dies mid-run therefore stores no terminal frame, and the next reader 
 At that moment the running answer, a reader and the sweep may each try to end one run, so the table settles which of them does rather than whichever is first:
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
+
+With a measured decision model configured, a run first makes one decision call, bounded at one second.
+It asks three questions: which action of the catalogue (`GET /api/v1/going/catalogue`) the words ask for, among the actions the caller's credential may run, or `none`; whether the words are about the item the context chip names, items they name, or nothing; and chart or prose.
+The run compares the confidences with that model's thresholds in `packages/envoy/going/decision_models.json`.
+The stream's first frame is then `decision`: the two best actions, `act` (whether the bar runs the first at once), the context and the display.
+A decision call that fails gives no `decision` frame, and the run answers as with no decision model.
+The answer asks the model for a structured reply first: the answer, one block, and the arguments of each action the decision offered.
+A service that refuses that request with a `400`, or a reply that does not fit it, is asked again for prose, with no block and no arguments; after a `400`, this process asks for prose alone until it restarts.
+After the text frames come `block`, the one typed block the words asked for, which the server fills from its own read, and `roster`, `{age_ms, source}`, where the run read the roster.
+The last frame before the ending is `proposal`: the arguments of each offered action, each held to that action's own schema, with a target filled from the chip only where the words are about the page.
+`POST /api/v1/going/requests/{id}/cancel` stops a run its author typed past or closed: from then on the run stores no frame that does not end its stream, so the answer stops at its next delta on whichever pod is writing it.
+
+`POST /api/v1/going/runs/{id}/writes` runs one write of the caller's own run: one invocation of one action its proposal offered, with `approved` `auto`, `person` or `confirmed`.
+The server performs it in-process as the caller, through its own route table with only the caller's `Authorization`, `Cookie`, `Origin`, `Sec-Fetch-Site` and `Dispatch-Login` headers, so every check a route makes runs as on the caller's own request.
+It reads the value before just before the write and the value after just after it, and appends the write, refused or not, to the run.
+It refuses `auto` for `dispatch_send_to_agent` and `dispatch_issue`, which always ask, for any action but the one the decision chose at or above its threshold (`409 GOING_APPROVAL_REQUIRED`), and while the caller's `confirm_writes` is on (`409 GOING_CONFIRMATION_REQUIRED`).
+`GET` and `PUT /api/v1/me/going/settings` read and write `confirm_writes`, the person's own setting, which the server holds (`user_going_settings`) and which is false until the person sets it.
+`POST /api/v1/going/runs/{id}/undo` undoes every write of the run that went through and that no undo settled, newest first, in-process as the caller, by the undo its catalogue row states: `write_back`, `reverse`, `close_created` or `trace`.
+A field another writer changed since the write is left as it is and its undo is refused `409 GOING_UNDO_CHANGED`, and the rest of the turn is undone.
+
+A run asked by a credential that acts as a person keeps a record in `going_runs`, under the run's id: the words, the context chip, the hits, the decision, the proposal, each write and each undo.
+The record stays for thirty days, past the hour its request's rows are kept, so a turn can be undone after a reload and from any page.
+`GET /api/v1/me/going-runs` answers the caller's own runs of those thirty days, newest first, with `?issue=`, `?q=` and `?undoable=true`; the maintenance sweep deletes a record past thirty days, and the writes and undo routes answer `404 GOING_RUN_NOT_FOUND` for it.
 
 ## Keyed writes
 

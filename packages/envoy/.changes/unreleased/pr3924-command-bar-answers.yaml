@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+  The Dispatch command bar's server half now decides, answers with typed blocks, runs
+  operations and undoes them. With a measured decision model configured
+  (`DISPATCH_DECISION_MODEL`, `DISPATCH_DECISION_MODEL_ENDPOINT` and
+  `DISPATCH_DECISION_MODEL_TOKEN_FILE`), each question first gets one decision call: which
+  operation the words ask for, whether they are about the page's item, and chart or prose. The
+  thresholds come from the committed measurement, `packages/envoy/going/decision_models.json`,
+  and a model that record does not hold decides nothing. The answer stream carries four new
+  frames: `decision`, `block` (one typed block filled from Dispatch's own reads), `roster` and
+  `proposal` (the arguments of each offered operation). An answering model that refuses
+  structured output answers in prose, with no block.
+  `POST /api/v1/going/runs/{id}/writes` runs one offered write as the caller and records the
+  value before and after it, and `POST /api/v1/going/runs/{id}/undo` undoes a turn.
+  `GET` and `PUT /api/v1/me/going/settings` hold a person's `confirm_writes`,
+  `GET /api/v1/me/going-runs` lists the person's runs of the last 30 days,
+  `POST /api/v1/going/requests/{id}/cancel` stops a run, and
+  `GET /api/v1/projects/{key}/activity` counts a project's events per ISO week.
+  `GET /api/v1/going/capability` now answers each part apart,
+  `{answer, decision, session, label}`, and no longer answers `model_configured`.
