@@ -14,8 +14,8 @@ import "testing"
 // stale-plugin lane asks the worker nothing first, so ending a turn in flight where it stands
 // throws away whatever it had not pushed, which is the harm this issue exists to end. The wait
 // costs nothing: the claim holds no round open, nothing else of its pod is waiting on it, and the
-// turn ends on its own. The machine already waits out a turn this way for a held suspension and
-// for a plugin round's own end (TestPodUpdateEndedInAPluginRoundRelaunchesOnceTheTurnIsOver).
+// turn ends on its own. The machine already waits out a turn this way for a held suspension
+// (TestAStalePluginWithAHeldSuspensionSuspendsTheClaimAtItsTurnsEndChargingNothing).
 //
 // Observed live on 2026-10-30: after a daemon boot on a newer contract, an issue's claims came up
 // on the previous image at plugin contract 42, every `legion` tool call failed, and the daemon
@@ -192,8 +192,8 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 			h.m.deps.PluginContract = PodUpdateContract + 2
 			h.m.deps.PluginRelaunchable = true
 			h.m.deps.NoPluginInstall = func(Claim) bool { return true }
-			// The relaunch a plugin round over this claim already made, which is what turns the
-			// next stale registration into the charged path (relaunchAfterFailure).
+			// The mark a relaunch of this claim already left, which is what turns the next
+			// stale registration into the charged path (relaunchAfterFailure).
 			h.m.claim.PluginRelaunchFor = h.m.deps.PluginContract
 
 			h.must(RequestRegister{
@@ -207,7 +207,7 @@ func TestAStaleRegistrationNoInstallCanMoveIsAcceptedAtAnyContract(t *testing.T)
 				t.Errorf("the registration left budgets %+v, want none charged", c.Budgets)
 			}
 			if c.PluginRelaunchFor != h.m.deps.PluginContract {
-				t.Errorf("PluginRelaunchFor = %d, want the mark the round's relaunch left, %d",
+				t.Errorf("PluginRelaunchFor = %d, want the mark the earlier relaunch left, %d",
 					c.PluginRelaunchFor, h.m.deps.PluginContract)
 			}
 			if c.PluginContract != testCase.declared {
