@@ -184,6 +184,10 @@ const (
 type sessionRelays struct {
 	delivery *sessionDelivery
 	registry *store.Registry
+	// client is the listener's main connection, the one registry reads the bucket through: a
+	// restart waits for it to be connected before it reads the session's stored topics
+	// (storedFilter), since the session-consumer connection reconnects on its own.
+	client *bus.Client
 	// sessions is the session cache this relay reads its entries from; it is the same registry
 	// the durable path's fan-out judges a followed topic against (judgeFollowedTopic).
 	sessions  *session.SessionRegistry
@@ -386,8 +390,10 @@ type relayRun struct {
 
 // wake has a paused run, or one waiting to retry, restart at once: the session registered. A wake
 // sent while the run relays is dropped by its next pause, which names a registration heard before
-// it. It reports false, sending nothing, once the run is returning: the caller then starts a run in
-// its place.
+// it, and so is one sent before a restart that starts the run's pull (dropWake); one sent after
+// that restart is kept, and ends the retry wait of a failure after it at once (waitRetry). It
+// reports false, sending nothing, once the run is returning: the caller then starts a run in its
+// place.
 func (r *relayRun) wake() bool {
 	r.exitMu.Lock()
 	defer r.exitMu.Unlock()
@@ -402,7 +408,8 @@ func (r *relayRun) wake() bool {
 }
 
 // exit marks the run as returning, and reports whether a wake was waiting for it: a registration
-// the loop heard since the run's last pause began, for which no run would start otherwise.
+// the loop heard since the run's last pause began, or since its last restart started its pull,
+// for which no run would start otherwise.
 func (r *relayRun) exit() bool {
 	r.exitMu.Lock()
 	defer r.exitMu.Unlock()
@@ -428,6 +435,19 @@ func (r *relayRun) restartedBefore(heard uint64) bool {
 	return at != 0 && at < heard
 }
 
+// dropWake drops the wake waiting for the run, once a restart has started its pull: a
+// registration heard before then either wrote its row before that restart read the session's
+// stored topics under the session's lock, or made its own consumer calls under that lock after
+// the restart's, so the restart's pull already reflects it and a retry after a later failure has
+// nothing to start at once for. Without it, a registration from before a reconnect ended the next
+// failure's retry wait at once and the failure after that waited the doubled backoff in full.
+func (r *relayRun) dropWake() {
+	select {
+	case <-r.resume:
+	default:
+	}
+}
+
 // waitPause waits out a paused run's backoff, d, the session's next registration, or the end of the
 // run, and reports whether the run goes on.
 func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
@@ -448,7 +468,9 @@ func (r *relayRun) waitPause(ctx context.Context, d time.Duration) bool {
 
 // waitRetry waits out a run's retry backoff after a failed call or pull, d, a wake, or the end of
 // the run, and reports whether the run goes on. Unlike a pause it takes a wake sent before it began:
-// a registration heard while the failed call or pull ran restarts the run at once.
+// a registration heard since the run's last restart started its pull, while the call or pull that
+// failed ran, restarts the run at once. A wake from before that restart is gone (dropWake), so it
+// costs the run no step of its backoff.
 func (r *relayRun) waitRetry(ctx context.Context, d time.Duration) bool {
 	timer := time.NewTimer(d)
 	defer timer.Stop()
@@ -507,6 +529,7 @@ func startSessionRelays(delivery *sessionDelivery, cfg listenerDeliveryHandlerCo
 	m := &sessionRelays{
 		delivery:    delivery,
 		registry:    cfg.registry,
+		client:      cfg.client,
 		sessions:    cfg.sessions,
 		machineID:   cfg.machineID,
 		logger:      cfg.logger,
@@ -885,6 +908,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 			run.restartedAt.Store(run.listedAt)
 			var pull *bus.SessionPull
 			if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+				run.dropWake()
 				return start, pull, relayRetry
 			}
 		}
@@ -923,6 +947,7 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 		run.restartedAt.Store(at)
 		var pull *bus.SessionPull
 		if pull, err = m.delivery.consumers.Pull(callCtx, sessionID); err == nil {
+			run.dropWake()
 			return start, pull, relayRetry
 		}
 	}
@@ -938,8 +963,19 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 // yet, and a restart filtering on the cached row would drop a topic that registration was
 // answered 200 for while keeping the consumer's position, at the cost fenceFilterWrite's doc
 // states. The revision is what the write of this filter is fenced on (settleFilter).
+//
+// The read waits, within ctx, for the connection it goes through to be connected
+// (bus.Client.AwaitConnected): the session-consumer connection reconnects on its own, so the
+// restart its reconnect starts can come while the main connection is still reconnecting, and a
+// read sent then fails at once, the reconnect buffer being off, and costs the session a retry
+// backoff for a connection that was back a moment later.
 func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, bool) {
-	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
+	err := m.client.AwaitConnected(ctx)
+	var topics []string
+	var revision uint64
+	if err == nil {
+		topics, revision, err = storedTopics(ctx, m.registry, sessionID)
+	}
 	if err != nil {
 		m.logger.Warn("session relay could not read the session's interests; retrying", slog.String("session_id", sessionID), slog.String("error", err.Error()))
 		return nil, 0, false

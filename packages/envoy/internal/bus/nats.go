@@ -1439,6 +1439,16 @@ func (c *Client) ensureConn() error {
 	return c.ensureConnWithContext(context.Background())
 }
 
+// AwaitConnected returns once the client has a usable connection, waiting within ctx for one
+// nats.go is reconnecting, as every call of the client's own does first (ensureConnWithContext).
+// A caller that reads through the client's connection by a handle opened outside this package,
+// a KV read with the reconnect buffer off (connect.go's options), would otherwise fail at once
+// while the connection reconnects; it waits here first instead. Its error is ctx's, or the
+// client's stop, or the dial of a replacement for a closed connection.
+func (c *Client) AwaitConnected(ctx context.Context) error {
+	return c.ensureConnWithContext(ctx)
+}
+
 // reconnectRecheck is how long ensureConnWithContext's wait for a reconnect goes without reading
 // the connection's own status again. nats.go runs a connection's callbacks one after another on
 // one goroutine, so the reconnect's event (ConnectionChanged) can wait behind a slow callback

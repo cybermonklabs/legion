@@ -66,6 +66,15 @@ func newRelayRigUnowned(t *testing.T, first, max time.Duration) *relayRig {
 		t.Fatalf("connect the listener: %v", err)
 	}
 	t.Cleanup(client.Close)
+	return newRelayRigUnownedOn(t, client, url, first, max)
+}
+
+// newRelayRigUnownedOn is newRelayRigUnowned over client, the listener's main connection, which
+// the test opened to the server at url, or to a proxy of it, while the session-consumer
+// connection goes to url itself: a test that takes the main connection off NATS while the
+// session-consumer connection stays opens client through a testnats.Proxy.
+func newRelayRigUnownedOn(t *testing.T, client *bus.Client, url string, first, max time.Duration) *relayRig {
+	t.Helper()
 	rig := newSessionConsumerRigOn(t, client, url)
 	relays, err := startSessionRelays(rig.deps.consumers, rig.harness.config)
 	if err != nil {
@@ -499,6 +508,74 @@ func TestRelayRunRetryWaitEndsOnAWake(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("the retry wait did not end on the wake sent before it")
+	}
+}
+
+// newRestartableRun registers a session in consumer mode on a relay rig that does not serve its
+// machine's receive term, so no relay of the rig's own pulls the session's consumer, and returns
+// a run of that session's relay for the test to drive itself.
+func newRestartableRun(t *testing.T, prefix string) (*relayRig, *relayRun) {
+	t.Helper()
+	rig := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
+	sessionID := prefix + id.New()
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	return rig, &relayRun{sessionID: sessionID, resume: make(chan struct{}, 1)}
+}
+
+// restartRun restarts run's consumer at its ack floor as the relay does (sessionRelays.restart)
+// and stops the pull it starts, as a pull that fails at once leaves it; a restart that starts no
+// pull fails the test.
+func (rig *relayRig) restartRun(t *testing.T, run *relayRun) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	_, pull, outcome := rig.relays.restart(ctx, run)
+	if pull == nil {
+		t.Fatalf("the restart started no pull (outcome %d):\n%s", outcome, rig.harness.logs.String())
+	}
+	pull.Stop()
+}
+
+// A wake the loop sent while a run relayed, before a restart of the run that started its pull,
+// costs the run no step of its retry backoff: that restart read the session's stored topics after
+// the registration, so the retry wait of a failure after it runs in full (relayRun.dropWake).
+// Kept, the wake ended that wait at once, the restart after it met the same failure, and the
+// session waited the doubled backoff: after a 2 s cut of a pod's links its sessions had their
+// messages 4 s after the cut rather than at the reconnect (TestTwoPodsShortDropKeepsTheActivePod).
+func TestRelayRunWakeFromBeforeARestartCostsNoRetryStep(t *testing.T) {
+	rig, run := newRestartableRun(t, "ses_wake_before_restart_")
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	rig.restartRun(t, run)
+	const backoff = 300 * time.Millisecond
+	started := time.Now()
+	if !run.waitRetry(context.Background(), backoff) {
+		t.Fatal("the retry wait reported the run stopped")
+	}
+	if waited := time.Since(started); waited < backoff {
+		t.Fatalf("the retry wait after a restart that started its pull ended after %s, want its whole %s backoff: the wake sent before that restart cut it short", waited.Round(time.Millisecond), backoff)
+	}
+}
+
+// A wake sent after a run's restart started its pull is a registration that restart did not
+// read, and it still ends the retry wait of a failure after the restart at once: the restart
+// drops only the wake waiting when its pull starts (relayRun.dropWake), not every wake.
+func TestRelayRunWakeAfterARestartEndsTheRetryWaitAtOnce(t *testing.T) {
+	rig, run := newRestartableRun(t, "ses_wake_after_restart_")
+	rig.restartRun(t, run)
+	if !run.wake() {
+		t.Fatal("a run that is not returning refused a wake")
+	}
+	goesOn := make(chan bool, 1)
+	go func() { goesOn <- run.waitRetry(context.Background(), time.Hour) }()
+	select {
+	case ok := <-goesOn:
+		if !ok {
+			t.Fatal("the retry wait reported the run stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the retry wait did not end on the wake sent after the restart that started the run's pull")
 	}
 }
 
