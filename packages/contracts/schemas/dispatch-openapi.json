@@ -279,7 +279,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -446,7 +446,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Message"
+                  "$ref": "#/components/schemas/MessageWithTrees"
                 }
               }
             }
@@ -648,13 +648,114 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
           }
         },
         "x-auth": "any"
+      },
+      "delete": {
+        "description": "Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes.",
+        "operationId": "deleteApiV1ArtifactsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "No Content"
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
+      },
+      "patch": {
+        "description": "Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT.",
+        "operationId": "patchApiV1ArtifactsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameArtifactInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Artifact"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-oauth-scopes": [
+          "person"
+        ],
+        "x-write-scope": "project"
       }
     },
     "/api/v1/artifacts/{id}/_test/hold-persistence": {
@@ -1078,7 +1179,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Ask"
+                    "$ref": "#/components/schemas/AskWithTrees"
                   },
                   "type": "array"
                 }
@@ -1089,7 +1190,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when.",
+        "description": "Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state.",
         "operationId": "postApiV1ArtifactsByIdAsks",
         "parameters": [
           {
@@ -1137,7 +1238,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/Ask"
+                      "$ref": "#/components/schemas/AskWithTrees"
                     },
                     {
                       "properties": {
@@ -1333,7 +1434,7 @@
     },
     "/api/v1/artifacts/{id}/comments": {
       "get": {
-        "description": "List a document's comments.",
+        "description": "List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
         "operationId": "getApiV1ArtifactsByIdComments",
         "parameters": [
           {
@@ -1370,7 +1471,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Comment"
+                    "$ref": "#/components/schemas/CommentWithTrees"
                   },
                   "type": "array"
                 }
@@ -1829,7 +1930,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/ArtifactReview"
+                    "$ref": "#/components/schemas/ArtifactReviewRead"
                   },
                   "type": "array"
                 }
@@ -2007,7 +2108,7 @@
     },
     "/api/v1/artifacts/{id}/text": {
       "get": {
-        "description": "A document's canonical markdown and whole-document token.",
+        "description": "A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write.",
         "operationId": "getApiV1ArtifactsByIdText",
         "parameters": [
           {
@@ -2016,6 +2117,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -2319,7 +2427,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2377,7 +2485,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2438,7 +2546,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2499,7 +2607,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -2721,7 +2829,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Ask"
+                  "$ref": "#/components/schemas/AskWithTrees"
                 }
               }
             }
@@ -3065,7 +3173,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3290,7 +3398,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3341,7 +3449,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -3476,7 +3584,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Comment"
+                  "$ref": "#/components/schemas/CommentWithTrees"
                 }
               }
             }
@@ -4819,7 +4927,7 @@
     },
     "/api/v1/issues": {
       "get": {
-        "description": "List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. Each issue carries progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
+        "description": "List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY.",
         "operationId": "getApiV1Issues",
         "parameters": [
           {
@@ -4862,6 +4970,20 @@
           },
           {
             "name": "updated_since",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "closed_since",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "closed_before",
             "in": "query",
             "schema": {
               "type": "string"
@@ -4949,7 +5071,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
+        "description": "Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate).",
         "operationId": "postApiV1Issues",
         "parameters": [
           {
@@ -5229,7 +5351,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Artifact"
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
                   },
                   "type": "array"
                 }
@@ -5381,7 +5503,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -5548,7 +5670,7 @@
     },
     "/api/v1/issues/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "An issue document's canonical markdown and whole-document token, by slug or unambiguous filename.",
+        "description": "An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree.",
         "operationId": "getApiV1IssuesByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -5565,6 +5687,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -5798,7 +5927,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when.",
+        "description": "Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state.",
         "operationId": "postApiV1IssuesByKeyAsks",
         "parameters": [
           {
@@ -5846,7 +5975,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/Ask"
+                      "$ref": "#/components/schemas/AskWithTrees"
                     },
                     {
                       "properties": {
@@ -6049,7 +6178,7 @@
     },
     "/api/v1/issues/{key}/comments": {
       "get": {
-        "description": "List an issue's comments; ?artifact= scopes to a document.",
+        "description": "List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304.",
         "operationId": "getApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6093,7 +6222,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Comment"
+                    "$ref": "#/components/schemas/CommentWithTrees"
                   },
                   "type": "array"
                 }
@@ -6326,7 +6455,7 @@
     },
     "/api/v1/issues/{key}/events": {
       "get": {
-        "description": "Page an issue's event log (after, before, ids, order, limit).",
+        "description": "Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304.",
         "operationId": "getApiV1IssuesByKeyEvents",
         "parameters": [
           {
@@ -6678,7 +6807,7 @@
                 "schema": {
                   "allOf": [
                     {
-                      "$ref": "#/components/schemas/Message"
+                      "$ref": "#/components/schemas/MessageWithTrees"
                     },
                     {
                       "properties": {
@@ -6812,13 +6941,20 @@
     },
     "/api/v1/issues/{key}/results": {
       "get": {
-        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first; two results recorded in transactions that overlapped can come back in either order. Each result carries currency: current (its commit is the head of an open pull request attributed to the check's issue or the final head of a merged one, or, for an after_merge check, a commit on the branch that issue's pull request merged into - the base branch of the newest merged pull request attributed to it - or on the repository's default branch, which answers alone where Dispatch holds no merge of that issue, or, for a default_branch check, a commit on the repository's default branch, whatever branch the pull request merged into, and the check's words have not changed since), older, or unknown (the check's issue resolves to no repository, Dispatch's GitHub App cannot read it, or a read of a branch failed and no branch carried the commit; a read GitHub refused on an after_merge check's base branch is the one exception - a 403 or 404, which a branch it no longer holds answers with - and says the commit is not on that branch, leaving the default branch to decide). An issue with no Verification document answers no checks.",
+        "description": "The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read. A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. ?at=\u003ccommit\u003e replaces compared_with for every check of the issue by that one commit, {kind: named, commit}, and makes no read of GitHub at all. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks.",
         "operationId": "getApiV1IssuesByKeyResults",
         "parameters": [
           {
             "name": "key",
             "in": "path",
             "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "at",
+            "in": "query",
             "schema": {
               "type": "string"
             }
@@ -7278,6 +7414,56 @@
           "approve"
         ],
         "x-write-scope": "deployment"
+      }
+    },
+    "/api/v1/markdown/round-trip": {
+      "post": {
+        "description": "The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error.",
+        "operationId": "postApiV1MarkdownRoundTrip",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkdownRoundTripInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkdownRoundTripResponse"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "no-write"
       }
     },
     "/api/v1/me/agent-tokens": {
@@ -9110,7 +9296,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "$ref": "#/components/schemas/Artifact"
+                    "$ref": "#/components/schemas/ArtifactWithTrees"
                   },
                   "type": "array"
                 }
@@ -9262,7 +9448,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Artifact"
+                  "$ref": "#/components/schemas/ArtifactWithTrees"
                 }
               }
             }
@@ -9484,7 +9670,7 @@
     },
     "/api/v1/projects/{key}/artifacts/{slug}/text": {
       "get": {
-        "description": "A project document's canonical markdown and whole-document token, by slug or unambiguous filename.",
+        "description": "A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree.",
         "operationId": "getApiV1ProjectsByKeyArtifactsBySlugText",
         "parameters": [
           {
@@ -9501,6 +9687,13 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "blocks",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -9788,7 +9981,7 @@
     },
     "/api/v1/projects/{key}/related": {
       "get": {
-        "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query, related and decision, with up to 3 open issues before any item of another kind and everything a done issue owns last. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
+        "description": "Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND.",
         "operationId": "getApiV1ProjectsByKeyRelated",
         "parameters": [
           {
@@ -9871,7 +10064,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds; answers the same suggestions shape.",
+        "description": "The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds. The two forms do not answer alike. This one is the check an agent runs to ask a question, so it answers other_projects beside related: at most 2 answered question asks of other projects, each with its ask state, its answer and the project it stands in (owner.project), ranked by meaning alone and offered with no claim that they answer the question. The GET form answers none.",
         "operationId": "postApiV1ProjectsByKeyRelated",
         "parameters": [
           {
@@ -10055,7 +10248,7 @@
     },
     "/api/v1/related-checks": {
       "get": {
-        "description": "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms.",
+        "description": "Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered.",
         "operationId": "getApiV1RelatedChecks",
         "parameters": [
           {
@@ -10118,6 +10311,64 @@
           }
         },
         "x-auth": "any"
+      }
+    },
+    "/api/v1/results/{id}/retract": {
+      "post": {
+        "description": "Retract one recorded result, with the reason it is wrong: {reason, actor?}. {id} is the result's own id. The retraction is a record of its own: the result is neither updated nor deleted, and both records stay readable with the reason and the actor who wrote it. No surface counts a retracted result as evidence. Three callers are admitted and every other is 403 RETRACTION_FORBIDDEN: the session that recorded the result, a session holding the Dispatch claim of the issue the result was recorded on, and a caller whose credential carries a person, which is a personal token or a signed-in person's own session. A closed issue and a check of any when are retracted here, which is what recording refuses. A blank reason is 400 RETRACTION_INPUT, an id no result has is 404 RESULT_NOT_FOUND, and a result a retraction already stands against is 409 RESULT_RETRACTED. The answer is the retraction: {result_id, reason, session, actor, created_at, event_seq}. It is appended as result.retracted on the check's issue.",
+        "operationId": "postApiV1ResultsByIdRetract",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckResultRetractionInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckResultRetraction"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
       }
     },
     "/api/v1/schema/blocks": {
@@ -11076,6 +11327,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -11122,7 +11386,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlock"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -11698,7 +11962,7 @@
       "ApprovalRequestResponse": {
         "properties": {
           "approval": {
-            "$ref": "#/components/schemas/ArtifactApproval"
+            "$ref": "#/components/schemas/ArtifactApprovalWithTrees"
           },
           "artifact_id": {
             "type": "string"
@@ -11706,7 +11970,7 @@
           "ask": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/Ask"
+                "$ref": "#/components/schemas/AskWithTrees"
               },
               {
                 "type": "null"
@@ -11822,6 +12086,99 @@
         ],
         "type": "object"
       },
+      "ArchitectureComponentRead": {
+        "properties": {
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "done": {
+            "type": "integer"
+          },
+          "external": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/ArchitectureTreeIssue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "own_done": {
+            "type": "integer"
+          },
+          "own_total": {
+            "type": "integer"
+          },
+          "parent": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "prose": {
+            "type": "string"
+          },
+          "prose_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "source": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "source",
+          "title",
+          "parent",
+          "depends_on",
+          "paths",
+          "external",
+          "prose",
+          "done",
+          "total",
+          "own_done",
+          "own_total",
+          "issues"
+        ],
+        "type": "object"
+      },
       "ArchitectureSource": {
         "properties": {
           "branch": {
@@ -11884,7 +12241,7 @@
         "properties": {
           "components": {
             "items": {
-              "$ref": "#/components/schemas/ArchitectureTreeComponent"
+              "$ref": "#/components/schemas/ArchitectureComponentRead"
             },
             "type": [
               "array",
@@ -12350,6 +12707,73 @@
         ],
         "type": "object"
       },
+      "ArtifactApprovalWithTrees": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "at": {
+            "type": "string"
+          },
+          "by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "content_sha256": {
+            "type": "string"
+          },
+          "content_sha256_source": {
+            "type": "string"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/AskApprovalDocument"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "latest_version": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "requested_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "seq": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "waiting_on": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "latest_version"
+        ],
+        "type": "object"
+      },
       "ArtifactBlock": {
         "properties": {
           "attributes": {
@@ -12519,10 +12943,106 @@
         ],
         "type": "object"
       },
+      "ArtifactReviewRead": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "artifact_id": {
+            "type": "string"
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "content_sha256": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "content_sha256_source": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "reason": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "artifact_id",
+          "version",
+          "state",
+          "kind",
+          "actor",
+          "reason",
+          "ask_id",
+          "created_at",
+          "content_sha256",
+          "content_sha256_source"
+        ],
+        "type": "object"
+      },
       "ArtifactText": {
         "properties": {
+          "blocks": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactBlock"
+            },
+            "type": "array"
+          },
           "markdown": {
             "type": "string"
+          },
+          "markdown_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "token": {
             "type": "string"
@@ -12574,6 +13094,19 @@
           "markdown": {
             "type": "string"
           },
+          "markdown_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "mime": {
             "type": "string"
           },
@@ -12606,89 +13139,17 @@
         ],
         "type": "object"
       },
-      "Ask": {
+      "ArtifactWithTrees": {
         "properties": {
-          "anchor": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Anchor"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "anchor_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "anchor_block": {
-            "$ref": "#/components/schemas/BlockPath"
-          },
-          "anchor_block_error": {
-            "type": "string"
-          },
-          "answer": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AskAnswer"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
           "approval": {
-            "$ref": "#/components/schemas/AskApproval"
-          },
-          "approval_artifact": {
-            "$ref": "#/components/schemas/AskAnchorArtifact"
-          },
-          "artifact_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of_at": {
-            "format": "date-time",
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "asked_of_by": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "block_artifact": {
-            "$ref": "#/components/schemas/AskBlockArtifact"
-          },
-          "block_id": {
-            "type": [
-              "null",
-              "string"
-            ]
+            "$ref": "#/components/schemas/ArtifactApprovalWithTrees"
           },
           "created_at": {
             "format": "date-time",
             "type": "string"
           },
-          "edited_at": {
-            "type": [
-              "null",
-              "string"
-            ]
+          "created_by": {
+            "$ref": "#/components/schemas/Actor"
           },
           "id": {
             "type": "string"
@@ -12702,65 +13163,53 @@
           "kind": {
             "type": "string"
           },
-          "multiple": {
+          "name": {
+            "type": "string"
+          },
+          "primary": {
             "type": "boolean"
           },
-          "opened_event_id": {
-            "type": "integer"
+          "project": {
+            "type": "string"
           },
-          "options": {
+          "ref_key": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "slug": {
+            "type": "string"
+          },
+          "versions": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/Version"
             },
             "type": [
               "array",
               "null"
             ]
-          },
-          "question": {
-            "type": "string"
-          },
-          "referenced_by_count": {
-            "type": "integer"
-          },
-          "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
-          },
-          "revision": {
-            "type": "integer"
-          },
-          "state": {
-            "type": "string"
-          },
-          "urgency": {
-            "type": "string"
-          },
-          "waiting_on": {
-            "type": "string"
-          },
-          "waiting_on_person": {
-            "type": "string"
           }
         },
         "required": [
           "id",
           "issue_key",
-          "artifact_id",
-          "block_id",
-          "author",
+          "project",
+          "session_id",
+          "ref_key",
+          "slug",
+          "name",
           "kind",
-          "question",
-          "options",
-          "multiple",
-          "urgency",
-          "anchor",
-          "state",
-          "answer",
+          "primary",
+          "created_by",
           "created_at",
-          "edited_at",
-          "asked_of",
-          "asked_of_by",
-          "asked_of_at"
+          "versions"
         ],
         "type": "object"
       },
@@ -12813,6 +13262,58 @@
               "null",
               "string"
             ]
+          },
+          "user": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "user",
+          "selected",
+          "text",
+          "at"
+        ],
+        "type": "object"
+      },
+      "AskAnswerWithTrees": {
+        "properties": {
+          "act": {
+            "$ref": "#/components/schemas/ActorAct"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "selected": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "text": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "user": {
             "type": "string"
@@ -12934,25 +13435,6 @@
         ],
         "type": "object"
       },
-      "AskEdit": {
-        "properties": {
-          "at": {
-            "type": "string"
-          },
-          "edited_by": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "previous": {
-            "$ref": "#/components/schemas/AskEditPrevious"
-          }
-        },
-        "required": [
-          "previous",
-          "edited_by",
-          "at"
-        ],
-        "type": "object"
-      },
       "AskEditPrevious": {
         "properties": {
           "multiple": {
@@ -12979,6 +13461,67 @@
           "options",
           "multiple",
           "urgency"
+        ],
+        "type": "object"
+      },
+      "AskEditPreviousWithTrees": {
+        "properties": {
+          "multiple": {
+            "type": "boolean"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "urgency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "question",
+          "options",
+          "multiple",
+          "urgency"
+        ],
+        "type": "object"
+      },
+      "AskEditWithTrees": {
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "edited_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "previous": {
+            "$ref": "#/components/schemas/AskEditPreviousWithTrees"
+          }
+        },
+        "required": [
+          "previous",
+          "edited_by",
+          "at"
         ],
         "type": "object"
       },
@@ -13047,11 +13590,54 @@
         ],
         "type": "object"
       },
+      "AskOptionWithTrees": {
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "description_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "label_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "type": "object"
+      },
       "AskRead": {
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/AskAnswer"
+              "$ref": "#/components/schemas/AskAnswerWithTrees"
             },
             "type": [
               "array",
@@ -13059,7 +13645,7 @@
             ]
           },
           "ask": {
-            "$ref": "#/components/schemas/Ask"
+            "$ref": "#/components/schemas/AskWithTrees"
           },
           "claimant": {
             "type": [
@@ -13069,7 +13655,7 @@
           },
           "edits": {
             "items": {
-              "$ref": "#/components/schemas/AskEdit"
+              "$ref": "#/components/schemas/AskEditWithTrees"
             },
             "type": [
               "array",
@@ -13087,7 +13673,7 @@
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Comment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -13160,6 +13746,46 @@
         ],
         "type": "object"
       },
+      "AskResolutionWithTrees": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dispatch_words": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "reason_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "reason",
+          "actor",
+          "at"
+        ],
+        "type": "object"
+      },
       "AskSnooze": {
         "properties": {
           "snoozed_until": {
@@ -13189,7 +13815,7 @@
         "properties": {
           "answers": {
             "items": {
-              "$ref": "#/components/schemas/AskAnswer"
+              "$ref": "#/components/schemas/AskAnswerWithTrees"
             },
             "type": [
               "array",
@@ -13204,7 +13830,7 @@
           },
           "edits": {
             "items": {
-              "$ref": "#/components/schemas/AskEdit"
+              "$ref": "#/components/schemas/AskEditWithTrees"
             },
             "type": [
               "array",
@@ -13222,7 +13848,7 @@
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Comment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -13264,6 +13890,197 @@
           "route_status",
           "route_holder",
           "route_status_reason"
+        ],
+        "type": "object"
+      },
+      "AskWithTrees": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "approval": {
+            "$ref": "#/components/schemas/AskApproval"
+          },
+          "approval_artifact": {
+            "$ref": "#/components/schemas/AskAnchorArtifact"
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "asked_of_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "block_artifact": {
+            "$ref": "#/components/schemas/AskBlockArtifact"
+          },
+          "block_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "kind": {
+            "type": "string"
+          },
+          "multiple": {
+            "type": "boolean"
+          },
+          "opened_event_id": {
+            "type": "integer"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/AskOptionWithTrees"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "question": {
+            "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "referenced_by_count": {
+            "type": "integer"
+          },
+          "resolution": {
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "urgency": {
+            "type": "string"
+          },
+          "waiting_on": {
+            "type": "string"
+          },
+          "waiting_on_person": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "block_id",
+          "author",
+          "kind",
+          "question",
+          "options",
+          "multiple",
+          "urgency",
+          "anchor",
+          "state",
+          "answer",
+          "created_at",
+          "edited_at",
+          "asked_of",
+          "asked_of_by",
+          "asked_of_at"
+        ],
+        "type": "object"
+      },
+      "BasisLearnedAt": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "read_at",
+              "updated_at"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "at",
+          "kind"
         ],
         "type": "object"
       },
@@ -13412,6 +14229,45 @@
         ],
         "type": "object"
       },
+      "BlockPinRead": {
+        "properties": {
+          "ref": {
+            "type": "string"
+          },
+          "removed_version": {
+            "type": "integer"
+          },
+          "state": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "ref",
+          "text",
+          "state"
+        ],
+        "type": "object"
+      },
       "BlockReferences": {
         "properties": {
           "asks": {
@@ -13504,6 +14360,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -13571,6 +14440,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -13604,11 +14486,11 @@
       "BroadcastRecipient": {
         "properties": {
           "message": {
-            "$ref": "#/components/schemas/Message"
+            "$ref": "#/components/schemas/MessageWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Message"
+              "$ref": "#/components/schemas/MessageWithTrees"
             },
             "type": [
               "array",
@@ -13633,6 +14515,19 @@
           },
           "body": {
             "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "created_at": {
             "format": "date-time",
@@ -13691,6 +14586,34 @@
         ],
         "type": "object"
       },
+      "CheckBasis": {
+        "properties": {
+          "branch": {
+            "type": "string"
+          },
+          "commit": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "named",
+              "pull_request",
+              "branch"
+            ],
+            "type": "string"
+          },
+          "learned_at": {
+            "$ref": "#/components/schemas/BasisLearnedAt"
+          },
+          "pull_request": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
       "CheckBlock": {
         "properties": {
           "artifact_id": {
@@ -13699,11 +14622,31 @@
           "block_id": {
             "type": "string"
           },
+          "compared_nothing": {
+            "enum": [
+              "no_pull_request_or_branch",
+              "repository_unreadable",
+              "read_failed"
+            ],
+            "type": "string"
+          },
+          "compared_with": {
+            "items": {
+              "$ref": "#/components/schemas/CheckBasis"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "issue_key": {
             "type": "string"
           },
           "negative_control": {
             "type": "string"
+          },
+          "pass_stands": {
+            "$ref": "#/components/schemas/CheckPassStands"
           },
           "ref": {
             "type": "string"
@@ -13748,7 +14691,31 @@
           "negative_control",
           "version",
           "sha256",
-          "results"
+          "results",
+          "compared_with",
+          "pass_stands"
+        ],
+        "type": "object"
+      },
+      "CheckPassStands": {
+        "properties": {
+          "answer": {
+            "enum": [
+              "yes",
+              "no",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "answer"
         ],
         "type": "object"
       },
@@ -13772,14 +14739,17 @@
           "check_version": {
             "type": "integer"
           },
+          "check_words_moved": {
+            "type": "boolean"
+          },
           "commit_sha": {
             "type": "string"
           },
+          "commit_stands": {
+            "$ref": "#/components/schemas/ResultCommitStands"
+          },
           "created_at": {
             "format": "date-time",
-            "type": "string"
-          },
-          "currency": {
             "type": "string"
           },
           "event_seq": {
@@ -13802,6 +14772,9 @@
           },
           "observed": {
             "type": "string"
+          },
+          "retracted": {
+            "$ref": "#/components/schemas/CheckResultRetracted"
           },
           "role": {
             "type": "string"
@@ -13868,6 +14841,78 @@
         "required": [
           "line",
           "result"
+        ],
+        "type": "object"
+      },
+      "CheckResultRetracted": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "actor",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "CheckResultRetraction": {
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "event_seq": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "result_id": {
+            "type": "string"
+          },
+          "session": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "result_id",
+          "reason",
+          "session",
+          "actor",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "CheckResultRetractionInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
         ],
         "type": "object"
       },
@@ -14309,11 +15354,11 @@
       "CommentRead": {
         "properties": {
           "comment": {
-            "$ref": "#/components/schemas/Comment"
+            "$ref": "#/components/schemas/CommentWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Comment"
+              "$ref": "#/components/schemas/CommentWithTrees"
             },
             "type": [
               "array",
@@ -14372,6 +15417,173 @@
         ],
         "type": "object"
       },
+      "CommentWithTrees": {
+        "properties": {
+          "anchor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Anchor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "anchor_block": {
+            "$ref": "#/components/schemas/BlockPath"
+          },
+          "anchor_block_error": {
+            "type": "string"
+          },
+          "answers": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "artifact_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "ask_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/CommentDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "edited_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "mentions": {
+            "items": {
+              "$ref": "#/components/schemas/CommentMention"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved": {
+            "type": "boolean"
+          },
+          "resolved_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "resolved_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "suggestion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Suggestion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "turn": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "artifact_id",
+          "author",
+          "body",
+          "anchor",
+          "reply_to",
+          "answers",
+          "ask_id",
+          "turn",
+          "resolved",
+          "resolved_by",
+          "resolved_at",
+          "edited_at",
+          "suggestion",
+          "created_at",
+          "mentions",
+          "deliveries",
+          "reply_block"
+        ],
+        "type": "object"
+      },
       "CommentWriteResponse": {
         "properties": {
           "anchor": {
@@ -14417,6 +15629,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "created_at": {
             "format": "date-time",
             "type": "string"
@@ -14457,7 +15682,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlock"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -15326,6 +16551,19 @@
           },
           "text_sha256": {
             "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "unsure": {
             "type": "boolean"
@@ -17190,6 +18428,9 @@
           "decision_blocks_added": {
             "type": "integer"
           },
+          "moved_approval_request": {
+            "$ref": "#/components/schemas/MovedApprovalRequest"
+          },
           "superseded_approval": {
             "$ref": "#/components/schemas/SupersededApproval"
           },
@@ -17617,6 +18858,10 @@
           "seq": {
             "type": "integer"
           },
+          "trees": {
+            "additionalProperties": {},
+            "type": "object"
+          },
           "type": {
             "type": "string"
           }
@@ -17934,6 +19179,112 @@
         ],
         "type": "object"
       },
+      "GraphNodeRead": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "changed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "changed_by": {
+            "items": {
+              "$ref": "#/components/schemas/Actor"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "changed_version": {
+            "type": "integer"
+          },
+          "document": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "made_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "made_by": {
+            "items": {
+              "$ref": "#/components/schemas/Actor"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/GraphNodeParent"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parent_version": {
+            "type": [
+              "null",
+              "integer"
+            ]
+          },
+          "pin": {
+            "$ref": "#/components/schemas/BlockPinRead"
+          },
+          "project": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "made_by",
+          "made_at",
+          "changed_by",
+          "changed_at",
+          "parent",
+          "parent_version"
+        ],
+        "type": "object"
+      },
       "GraphReferences": {
         "properties": {
           "edges": {
@@ -17946,7 +19297,7 @@
             ]
           },
           "node": {
-            "$ref": "#/components/schemas/GraphNode"
+            "$ref": "#/components/schemas/GraphNodeRead"
           }
         },
         "required": [
@@ -18246,7 +19597,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswer"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -18342,7 +19693,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -18358,11 +19709,24 @@
           "question": {
             "type": "string"
           },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "referenced_by_count": {
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -18606,7 +19970,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswer"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -18696,7 +20060,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -18706,11 +20070,24 @@
           "question": {
             "type": "string"
           },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "referenced_by_count": {
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -19254,7 +20631,7 @@
         "properties": {
           "artifacts": {
             "items": {
-              "$ref": "#/components/schemas/Artifact"
+              "$ref": "#/components/schemas/ArtifactWithTrees"
             },
             "type": [
               "array",
@@ -19558,7 +20935,7 @@
           "answer": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/AskAnswer"
+                "$ref": "#/components/schemas/AskAnswerWithTrees"
               },
               {
                 "type": "null"
@@ -19648,7 +21025,7 @@
           },
           "options": {
             "items": {
-              "$ref": "#/components/schemas/AskOption"
+              "$ref": "#/components/schemas/AskOptionWithTrees"
             },
             "type": [
               "array",
@@ -19658,11 +21035,24 @@
           "question": {
             "type": "string"
           },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "referenced_by_count": {
             "type": "integer"
           },
           "resolution": {
-            "$ref": "#/components/schemas/AskResolution"
+            "$ref": "#/components/schemas/AskResolutionWithTrees"
           },
           "revision": {
             "type": "integer"
@@ -19875,6 +21265,13 @@
               }
             ]
           },
+          "closed_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
           "components": {
             "$ref": "#/components/schemas/IssueComponents"
           },
@@ -19999,6 +21396,7 @@
           "created_by",
           "created_at",
           "updated_at",
+          "closed_at",
           "last_seq",
           "primary_artifact_id",
           "open_asks",
@@ -20134,8 +21532,7 @@
           }
         },
         "required": [
-          "name",
-          "content"
+          "name"
         ],
         "type": "object"
       },
@@ -20276,76 +21673,25 @@
         ],
         "type": "object"
       },
-      "Message": {
+      "MarkdownRoundTripInput": {
         "properties": {
-          "author": {
-            "$ref": "#/components/schemas/Actor"
-          },
-          "body": {
+          "markdown": {
             "type": "string"
-          },
-          "broadcast_id": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "created_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "deliveries": {
-            "items": {
-              "$ref": "#/components/schemas/MessageDelivery"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "in_reply_to": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "issue_key": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "reply_block": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ReplyBlock"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "target": {
-            "type": [
-              "null",
-              "string"
-            ]
           }
         },
         "required": [
-          "id",
-          "issue_key",
-          "author",
-          "body",
-          "target",
-          "in_reply_to",
-          "broadcast_id",
-          "created_at",
-          "deliveries",
-          "reply_block"
+          "markdown"
+        ],
+        "type": "object"
+      },
+      "MarkdownRoundTripResponse": {
+        "properties": {
+          "markdown": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "markdown"
         ],
         "type": "object"
       },
@@ -20435,11 +21781,11 @@
       "MessageRead": {
         "properties": {
           "message": {
-            "$ref": "#/components/schemas/Message"
+            "$ref": "#/components/schemas/MessageWithTrees"
           },
           "replies": {
             "items": {
-              "$ref": "#/components/schemas/Message"
+              "$ref": "#/components/schemas/MessageWithTrees"
             },
             "type": [
               "array",
@@ -20503,6 +21849,19 @@
           "body": {
             "type": "string"
           },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
           "broadcast_id": {
             "type": [
               "null",
@@ -20543,7 +21902,7 @@
           "reply_block": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/ReplyBlock"
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
               },
               {
                 "type": "null"
@@ -20571,10 +21930,166 @@
         ],
         "type": "object"
       },
+      "MessageWithTrees": {
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "broadcast_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/MessageDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "in_reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlockWithTrees"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "author",
+          "body",
+          "target",
+          "in_reply_to",
+          "broadcast_id",
+          "created_at",
+          "deliveries",
+          "reply_block"
+        ],
+        "type": "object"
+      },
+      "MovedApprovalDocument": {
+        "properties": {
+          "artifact_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "primary": {
+            "type": "boolean"
+          },
+          "requested_version": {
+            "type": "integer"
+          },
+          "role": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "artifact_id",
+          "name",
+          "primary",
+          "requested_version",
+          "version"
+        ],
+        "type": "object"
+      },
+      "MovedApprovalRequest": {
+        "properties": {
+          "ask_id": {
+            "type": "string"
+          },
+          "documents": {
+            "items": {
+              "$ref": "#/components/schemas/MovedApprovalDocument"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ask_id",
+          "documents"
+        ],
+        "type": "object"
+      },
       "MyAnswerReply": {
         "properties": {
           "body": {
             "type": "string"
+          },
+          "body_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "id": {
             "type": "string"
@@ -20589,7 +22104,7 @@
       "MyAnswerRow": {
         "properties": {
           "answer": {
-            "$ref": "#/components/schemas/AskAnswer"
+            "$ref": "#/components/schemas/AskAnswerWithTrees"
           },
           "ask_id": {
             "type": "string"
@@ -20621,6 +22136,19 @@
           },
           "question": {
             "type": "string"
+          },
+          "question_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           },
           "ref": {
             "type": "string"
@@ -21850,6 +23378,9 @@
           "keyword_ms": {
             "$ref": "#/components/schemas/RelatedCheckTiming"
           },
+          "other_project_offers": {
+            "type": "integer"
+          },
           "project": {
             "type": [
               "null",
@@ -21891,8 +23422,20 @@
           "by_reason",
           "completed",
           "skipped_for_time",
+          "other_project_offers",
           "keyword_ms",
           "total_ms"
+        ],
+        "type": "object"
+      },
+      "RenameArtifactInput": {
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -21912,6 +23455,45 @@
           },
           "text": {
             "type": "string"
+          }
+        },
+        "required": [
+          "node",
+          "block_id",
+          "text",
+          "removed"
+        ],
+        "type": "object"
+      },
+      "ReplyBlockWithTrees": {
+        "properties": {
+          "block_id": {
+            "type": "string"
+          },
+          "node": {
+            "type": "string"
+          },
+          "ref": {
+            "type": "string"
+          },
+          "removed": {
+            "type": "boolean"
+          },
+          "text": {
+            "type": "string"
+          },
+          "text_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -22036,6 +23618,32 @@
         ],
         "type": "object"
       },
+      "ResultCommitStands": {
+        "properties": {
+          "answer": {
+            "enum": [
+              "at_basis",
+              "other_commit",
+              "unknown"
+            ],
+            "type": "string"
+          },
+          "basis": {
+            "$ref": "#/components/schemas/CheckBasis"
+          },
+          "reason": {
+            "enum": [
+              "repository_unreadable",
+              "read_failed"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "answer"
+        ],
+        "type": "object"
+      },
       "RoomCounters": {
         "properties": {
           "awareness_clients": {
@@ -22141,7 +23749,7 @@
       "SearchAsk": {
         "properties": {
           "answer": {
-            "$ref": "#/components/schemas/AskAnswer"
+            "$ref": "#/components/schemas/AskAnswerWithTrees"
           },
           "resolution": {
             "$ref": "#/components/schemas/AskResolution"
@@ -22457,6 +24065,19 @@
           },
           "snippet": {
             "type": "string"
+          },
+          "snippet_tree": {
+            "additionalProperties": true,
+            "description": "a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1`",
+            "properties": {
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
           }
         },
         "required": [
@@ -22686,9 +24307,6 @@
       },
       "Suggestions": {
         "properties": {
-          "decision": {
-            "$ref": "#/components/schemas/WriteSuggestion"
-          },
           "likely_duplicate": {
             "$ref": "#/components/schemas/DuplicateCandidate"
           },
@@ -22697,6 +24315,12 @@
           },
           "near_copy_check": {
             "type": "string"
+          },
+          "other_projects": {
+            "items": {
+              "$ref": "#/components/schemas/WriteSuggestion"
+            },
+            "type": "array"
           },
           "outcome": {
             "type": "string"
@@ -23487,6 +25111,9 @@
           "legion_managed_status": {
             "type": "boolean"
           },
+          "moved_approval_request": {
+            "$ref": "#/components/schemas/MovedApprovalRequest"
+          },
           "session_writes_since_human": {
             "type": "integer"
           },
@@ -23520,13 +25147,6 @@
       },
       "WriteSuggestion": {
         "properties": {
-          "answered_at": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "answered_by": {
-            "type": "string"
-          },
           "artifact": {
             "$ref": "#/components/schemas/SearchArtifactRef"
           },

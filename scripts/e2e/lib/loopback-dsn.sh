@@ -24,9 +24,9 @@
 # eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
 # DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
 # lib/live-daemon-proof.sh, whose prerequisites check
-# reads LEGION_TEST_PG_DSN for each of the seven proofs that make that run: child-adoption.sh,
-# ci-red-no-takeover.sh, claim-compaction.sh, handoff-records.sh, merged-root-waits.sh,
-# no-required-checks.sh and provider-error-retry.sh. Seven of the nine call this function.
+# reads LEGION_TEST_PG_DSN for each of the six proofs that make that run: child-adoption.sh,
+# claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh, provider-error-retry.sh and
+# role-prompt-rule.sh. Seven of the nine call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.

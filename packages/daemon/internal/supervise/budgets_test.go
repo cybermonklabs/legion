@@ -99,20 +99,20 @@ func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 		// before is how many deaths the claim's task already carries when the one below is
 		// reported twice.
 		before int
-		// task is whether the claim holds the task its process dies in the turn of. A claim
-		// that holds none is charged nothing for that death, and the one it is given after the
-		// refusal is a task the dead process never had.
+		// task is whether the claim holds the task its process dies in the turn of. The death is
+		// charged either way on this release, since a turn in flight is work outstanding whether
+		// or not a delivery is still owed for it (chargeDeath, dispatch://INFRA-714/spec R7); the
+		// task a claim holding none is given after the refusal is one the dead process never had.
 		task bool
 	}{
 		{"the claim's first death", 0, true},
 		{"the death its budget would run out on", limit - 2, true},
-		{"a death with nothing to charge, and a task given after it", 0, false},
+		{"a death in a turn no delivery is owed for, and a task given after it", 0, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			deaths := row.before
-			if row.task {
-				deaths++
-			}
+			// The death is charged once whatever the claim holds: the turn the harness starts
+			// below is open when the process dies, which is work outstanding on this release.
+			deaths := row.before + 1
 			h := newHarness(t)
 			h.reach(StateReady)
 			if row.task {
@@ -337,7 +337,7 @@ func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLi
 
 		h.wantBudgets(Budgets{Deaths: exit})
 		resent := h.wantPrompts(1 + exit)[exit]
-		if want := interruptedTask + "implement the plan"; resent.Message != want {
+		if want := interruptedTask(h.claim().LastDeathCause) + "implement the plan"; resent.Message != want {
 			t.Fatalf("stall exit %d: the task was re-sent as %q, want %q", exit, resent.Message, want)
 		}
 		if p := h.pending(); p.ID != resent.DeliveryID || !p.ConfirmedAt.IsZero() {
@@ -380,10 +380,12 @@ func TestADeathBeforeReadyIsALaunchFailureNotADeath(t *testing.T) {
 	h.wantBudgets(Budgets{LaunchFailures: 2, Deaths: 1})
 }
 
-// Deaths are charged against the task the claim holds, so they are cleared when that task ends and
-// not by a turn that never ran it: a notice's turn colliding with the re-send is refused busy and
-// its end leaves the interrupted task still waiting, and its deaths with it.
-func TestATurnOfTheAgentsOwnDoesNotClearTheDeathsOfATaskItNeverRan(t *testing.T) {
+// A turn that ends is the end of the work the deaths were charged against, whatever started that
+// turn: an agent that got through a turn after being killed is making progress, and only deaths
+// that keep a turn from ending should ever fail a claim. A notice's turn colliding with the
+// re-send is refused busy and leaves the interrupted task still waiting, and its end clears the
+// deaths all the same (dispatch://INFRA-714 R6).
+func TestATurnThatEndsClearsTheDeathsEvenWhenItNeverRanTheTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
@@ -391,6 +393,7 @@ func TestATurnOfTheAgentsOwnDoesNotClearTheDeathsOfATaskItNeverRan(t *testing.T)
 	h.observe(runtime.Gone)
 	h.relaunched()
 	resent := h.wantPrompts(2)[1].DeliveryID
+	h.wantBudgets(Budgets{Deaths: 1})
 
 	h.must(StreamTurnStart{Claim: testToken})
 	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: "Agent is already processing a request"})
@@ -399,7 +402,7 @@ func TestATurnOfTheAgentsOwnDoesNotClearTheDeathsOfATaskItNeverRan(t *testing.T)
 	if p := h.pending(); !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending %+v, want the task still waiting", p)
 	}
-	h.wantBudgets(Budgets{Deaths: 1})
+	h.wantBudgets(Budgets{})
 }
 
 // A task that ends some other way than its turn's end — the daemon's suspension a transition or a

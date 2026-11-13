@@ -322,11 +322,17 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 			"%s is %s. %s. %s", token, c.State, freshSessionOp.reaches, askAgainLater))
 		return 0, "", false
 	}
+	// The recorded session is dropped before the retry, never after it: the lane the restart's
+	// fact wakes starts the claim, and a start that found the session still recorded would resume
+	// the very session this call is leaving behind (operator_test's
+	// TestTheOperatorsFreshSessionRetryForgetsTheSessionBeforeTheRestartIsApplied). The ask rides
+	// the retry as well (RequestOperatorRetry.FreshSession, intake.RestartPhase.FreshSession), so
+	// the start the workflow raises spawns rather than resumes whatever the claim still records.
 	if session := m.Claim().Session; session != "" && !s.forgetRecordedSession(w, r, m, token, session) {
 		return 0, "", false
 	}
 	if m.Claim().State != supervise.StateSuspended {
-		status, ok := s.retryStart(w, r, m, token)
+		status, ok := s.retryStart(w, r, m, token, true)
 		return status, "", ok
 	}
 	if _, ok := s.claimEvent(w, r, m, token, "resume", supervise.RequestResume{Claim: token}); !ok {
@@ -340,7 +346,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// through a phase at all.
 	status = http.StatusOK
 	if m.Claim().Pending == nil {
-		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim()); restarted {
+		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {
 				status, notRestarted = http.StatusOK, fmt.Sprintf(
@@ -485,12 +491,19 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 }
 
 // relaunchWaits is whether a launch the daemon's wake pacing holds waits over this claim
-// (supervise.ClaimView.WakeWaiting, supervise.WakeLaunch). Read of a claim that is working and
-// is not being compacted, it is the window a death under a compaction leaves when the pacing
-// parks the relaunch: the claim is stored working over the process it lost, with nothing in a
-// turn and nothing that will end one, and the launch it waits for is the one the refusal names
-// (supervise's TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn). Both
+// (supervise.ClaimView.WakeWaiting, supervise.StartsProcess). Read of a claim that is working
+// and is not being compacted, it is the window a death under a compaction leaves when the
+// pacing parks the relaunch: the claim is stored working over the process it lost, with nothing
+// in a turn and nothing that will end one, and the launch it waits for is the one the refusal
+// names (supervise's TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn). Both
 // recoveries read it, because both answer such a claim "in a turn" without it.
+//
+// It asks the supervise package whether the waiting wake starts a process rather than naming a
+// kind, because what the refusal says is that a launch is in flight, and every lane that parks
+// one in a machine says so: the ordinary launch and the relaunch the stale-plugin refresh lane
+// raises, which is told apart on the wire for a reader counting that lane's work and nowhere
+// else (supervise.WakePluginRefresh, dispatch://INFRA-2712 R4). A wake of a kind that starts no
+// process would leave the claim to the two windows below, which is where such a claim belongs.
 //
 // A turn that started under a launch parked over a process that is still alive reads the same
 // here (supervise's repoint), and the refusal is as true of it, since it says only that the
@@ -498,7 +511,7 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 // of the claim, and the dead process is kept until the turn — so neither door says which of
 // the two it found.
 func relaunchWaits(view supervise.ClaimView) bool {
-	return view.WakeWaiting != nil && view.WakeWaiting.Kind == supervise.WakeLaunch
+	return view.WakeWaiting != nil && supervise.StartsProcess(view.WakeWaiting.Kind)
 }
 
 // startsAgain is whether a claim's process is already gone, so the fresh session starts it rather
