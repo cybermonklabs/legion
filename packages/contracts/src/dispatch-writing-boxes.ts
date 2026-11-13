@@ -106,7 +106,7 @@ export interface DispatchWritingBoxRow {
   readonly covered: boolean;
   /** Whether Dispatch tells an agent or a role that this write names it. Only a comment does: a
    *  message reaches the session it is addressed to and tells nobody it names, and an ask, an
-   *  answer, a spec, a reason and a setting reach nobody at all. A person is never told; a
+   *  answer, a spec, a reason and a setting tell nobody they name. A person is never told; a
    *  person's reference is a link for a reader, which is why a delivering box says so. */
   readonly delivers: boolean;
   /** Whether the picker here lists the rows that need an issue - the issue's people, and the
