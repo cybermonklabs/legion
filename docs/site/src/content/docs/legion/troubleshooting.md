@@ -406,11 +406,14 @@ its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregis
 
 ## A parked tree did not come back after a decision
 
-A root in `backlog` or `icebox` runs again when a person sets it to `todo`, or when the controller
-parked it for a hold of its own and judges that a person's decision gives its work a next step. The
-controller marks such a park with a comment on the root that begins `Parked by Legion while it
-waits on:`. First find whether the daemon relayed the decision. Its JSON log names the issue and
-the root on each of these lines:
+A root in `backlog` or `icebox` runs again when a person sets it to `todo` with its `legion` label
+on, when a person asks the controller to start it, when a person approves its spec and it keeps its
+`legion` label and has no parent (the daemon then sets it to `todo` itself; an approval Dispatch
+carries from an earlier one does not count), or, when the controller parked it for a hold of its
+own, once the controller judges that a person's decision gives its work a next step or its walk
+finds the hold's cause gone or its event happened. The controller marks such a park with a comment
+on the root that begins `Parked by Legion while it waits on:`. First find whether the daemon relayed
+the decision. Its JSON log names the issue and the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
@@ -448,15 +451,17 @@ the root on each of these lines:
   resolution on a parked tree is not relayed`, or `workflow: a session's decision on a tree waiting
   for its slot is not kept`: an agent wrote it. It stays on the ask for the person who asked.
 
-Then read the controller's comment that begins `Parked decision read:`, on the root and on the
-issue where the decision was made. For a question, it is a reply on the question's own ask, which
-answers it or says that `todo` on the root brings the architect back to answer. It says what the
-controller judged. The tree stays parked when the park is not the controller's own hold, the park
-with its `Parked by Legion while it waits on:` comment beside it: a person's park, another agent's
-session's, or an operator's `legion status` (the comment names who, and the tree runs when they set
-it to `todo`). It stays parked too when the decision is older than the park, when the root is
-`done` or `triage`, or when the decision only questions the work. When the controller was down,
-its next start walks the parked roots. That walk reads only the last 10 events of each issue.
+Then read the controller's comment that begins `Parked decision read:`, on the root and on the issue
+where the decision was made. For a question, it is a reply on the question's own ask, which answers
+it or says that `todo` on the root brings the architect back to answer. It says what the controller
+judged. The tree stays parked when the park is not the controller's own hold, the park with its
+`Parked by Legion while it waits on:` comment beside it: a person's park, another agent's session's,
+or an operator's `legion status` (the comment names who, and the tree runs when a person sets it to
+`todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
+parked too when the decision is older than the park, when the root is `done` or `triage`, or when
+the decision only questions the work. When the controller was down, its next start walks the parked
+roots. That walk reads only the last 10 events of each issue. The walk runs at each start and on
+each `tick`, and its `todo` on the controller's own hold comes with a comment that cites the mark.
 
 ## An issue is held
 
@@ -595,18 +600,19 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
 to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
 architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
-and the controller is woken to re-admit the tree. What brings the architect back depends on where
-its tree stands:
+and the controller is woken. Unless the root's `phase` is `done`, it restarts the tree when it
+finds no cause or the cause is gone, and asks a person whether to park it when the cause stays.
+What brings the architect back depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will
   wake` line names the architect under `failed, retry`. Retry it, as
   [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
   relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
   generation and phase it stands at.
-- **Its root is parked or lingers,** the controller's park for a re-admission included: leave the
-  claim as it is. The tree's re-admission retries it at a new generation; a retry by hand would run
-  it outside the admission cap, and it would be sent no catch-up. To re-admit the tree by hand, park
-  the root and admit it again:
+- **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
+  in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
+  generation; a retry by hand would run it outside the admission cap, and it would be sent no
+  catch-up. To restart the tree by hand, write the same pair:
 
   ```sh
   legion status <KEY> backlog --config legion.yaml --operator-token-file operator-token
@@ -633,7 +639,7 @@ admission line stay as they were. A person's move of the root to `todo` in the D
 and the controller's own `set_status` do the same, since all three write the one status the
 daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
 of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
-generation, which is what the park and the admission above do.
+generation, which is what the restart above does.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then

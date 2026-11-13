@@ -44,8 +44,9 @@ you release it. Read the record, then choose the release.
    linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
    phase `heldFrom` names, that phase's role starts with its task, and the generation, the review
    rounds, the pod and the place in the admission line stay as they were. Take it when the cause
-   is gone — a launch the runtime refused (`launch_refused`), a process that died (`died`), an
-   agent that never came up (`never_registered`) — and when you fixed what the `detail` names. On
+   is gone, a cause that a relaunch no longer meets: a launch the runtime refused
+   (`launch_refused`), a process that died (`died`), an agent that never came up
+   (`never_registered`); and when you fixed what the `detail` names. On
    a child, the same `todo` brings it back at `admitted` with a new generation of its own, since
    the free release reaches a root alone. Where the claim's own session is what the provider keeps
    refusing (`provider_error`, and `prompt_retires_exhausted` for an agent that takes no turn),
@@ -54,8 +55,10 @@ you release it. Read the record, then choose the release.
    runs no Oh My Pi session to compact — the refusal itself names `fresh_session` as what starts
    the claim again. The claim starts the held phase again in a new session and loses everything
    the old one held. (`compact` is for a claim that still runs, which is the stuck claim of the
-   `provider-errors` wake, not this one.) Where the cause stands, park the tree as the `held`
-   wake says, and mark the park with its comment.
+   `provider-errors` wake, not this one.) Where the cause stands, the tree stays admitted: ask the
+   person whether to park the tree, as
+   `skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree` says, and park the
+   tree only as the `held` wake says.
 
 ## A child that looks independent
 
@@ -73,8 +76,9 @@ person's yes:
    `--label legion` only when the answer asks Legion to run it. `<PROJECT>` is the issue key's
    prefix before `-<n>` (`ACME-3` → `ACME`), which `read_state` shows as `daemon.project`; it is
    not the lowercase project token in role names such as `legion-<project>-controller`.
-2. Park the child (`set_status` to `icebox`) and comment a pointer to the new root on it. You
-   cannot close it, because only its architect or the daemon sets `done`.
+2. Park the child (`set_status` to `icebox`) and comment the new root's key on it.
+   Park a child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+   You cannot close it, because only its architect or the daemon sets `done`.
 3. A root filed with the label opens in `triage`, and its triage wake brings it back to you
    (`skill://legion-controller/references/triage.md`).
 
