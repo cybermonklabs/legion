@@ -2312,11 +2312,46 @@ An excerpt is cut again from the rewritten text the way the indexer cuts it, and
 It redacts `events.payload` in place for the same reason the log is append-only: the row stays with its id, its time and its actor untouched and the marker where the bytes were.
 Each of those is counted on its own `redacted:` line of the report, beside the `rows:` lines of what was deleted.
 
+A document holds the erased bytes in four more stores, and the same transaction takes them out of each.
+
+- **The live editing state** (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`) is the ygo history a document's room loads from.
+  A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited.
+  For every document a deleted version belongs to, whose block text holds the erased text, or whose stored rows hold its bytes whole, the erase renders the live text, replaces each erased text in it with the marker, and replaces the whole history with one fresh update of that text, through the statements a rebuild writes (`docs.ReadErasedLiveText`, `PgVersioned.RebuildTx`).
+  The change is announced, so a room any server holds of the document finds its history replaced, closes and reloads.
+  It writes no version: the document reads as its live text, ahead of whatever version the erase left it.
+  A document whose live text no longer holds the text has its history replaced all the same, since the edit that took the text out left it in the items that edit deleted.
+  What that costs is what a rebuild costs: the edits before the erase, the anchor marks of its comments, suggestions and asks and the records of its margin, which a seed parsed from markdown does not carry, and the keystrokes of an editor open on it that were not yet stored, which are refused once the history is replaced while that editor's browser reloads the document.
+  A history that does not load, a tree outside the schema, and a redaction that drops an open ask block refuse the erase, naming the document, which its rebuild or a replacement from markdown repairs first.
+  The match is byte for byte on markdown, here as for a version: a text the live markdown spells otherwise than the erased text is written — an escaped `*` or `_`, for one — is not matched, so no marker replaces it.
+  The erase reads the seed it would store for the erased text's own bytes, and where they are still there it lists the document as **not redacted**, with that reason, and refuses, `--confirm` or not, naming the document (exit 1), rather than report success over bytes it would leave; an edit that takes them out of the document lets it run.
+  A version whose markdown spells the text otherwise is not matched either: it is neither listed nor deleted, and its approval stands.
+  It takes each such document's owner row and then its room's lock, in the order every writer of a document takes them, when it reads the live text, and holds both until its transaction ends, so a write to that issue or that document waits for the erase; a run with `--node` alone holds them only while it reads.
+
+- **The search vector** (`document_search`) holds each document's latest version with markdown, written by `20261101182454`'s trigger on a version's insert or on an update of its `search`.
+  A delete of the latest version is the one write that lowers it, and no trigger sees a delete, so the row standing on a version that went is deleted and the latest version left is touched where its `search` is, which has that trigger write the row; a document with no version left keeps no row.
+  An issue whose spec lost a version has its own `search` written again too, by the statement `20261105145243`'s trigger runs, since that vector holds its spec's text.
+
+- **The term statistics** (`search_term_stats`, `search_term_totals`) and the queue they are kept from (`search_term_queue`): deleting and rewriting items queues each item's old vector, which holds the erased words, and the statistics may already count them.
+  Every project whose items the erase changed is counted again in full, as the items stand in the erase's transaction (`api.RecountSearchTermStatsTx`), and the queue rows that transaction wrote are deleted, since the count already holds what they say.
+  A project's full count is one `ts_stat` over all of its items, which the erase's transaction then holds open for.
+
+- **The stored display trees** (`text_trees`) are keyed by the SHA-256 of a whole text: the row of every text the erase removes or rewrites goes — the node's own text, each deleted version's markdown, each event-payload string the redaction rewrites and each replaced document's live text — and a reader of a text with no row has its tree made from the markdown.
+  A read that began before the commit stores the trees it read on a goroutine of its own, detached from the request and bounded by `api.StoreTreesTimeout` (30 seconds), so it can store one of those trees back after the commit.
+  The command therefore waits that bound out after the commit, before it prints its report, and deletes the same keys once more in a statement of its own, counting what it found on a `text_trees swept after the commit: <n>` line, so an operator reads whether the window was ever used.
+  The keys are held in the command's memory alone, since each is the digest of an erased text: no row, record or log keeps them, so a sweep that fails or is interrupted cannot be run again, and the command says so and exits 2 after printing the report of the erase that did commit.
+  The bound starts when the read's store does, after the read itself, so a read still building its answer at the commit can store later than 30 seconds after it by as long as that read took.
+
+Each store is counted on the report as the others are: the rows each history held under `rows: doc_updates` (and `doc_checkpoints`, `doc_snapshots`), the one seed under `redacted: doc_updates`, the search rows under `rows:` or `redacted: document_search`, an issue's vector under `redacted: issues`, the queue rows under `rows: search_term_queue` and the trees under `rows: text_trees`, with a `term statistics counted again:` line naming the projects.
+Every one of those statements runs in the erase's own transaction, the two that `docs` and `api` own included (`graphcensus.Stores`, which `cmd/dispatch`'s `eraseStores` fills), so a failure in any of them rolls back the whole erase, nodes and all.
+`e2e/acceptance/graph-erase.sh` then searches every column of every table of the database for the erased bytes, with a control row planted in the same search, so a store added later is searched without anyone naming it.
+
 It refuses to remove anything until it has listed what it would.
 With `--node` alone it reads all of the above, prints it, rolls back and exits 1; run again with `--confirm` it prints the same list and removes it.
+The list names every document whose live state it would replace, one line each, saying whether its live text is redacted, how many stored updates the one seed replaces, how many anchor marks and margin records go with them, and that an editor open on it reloads and loses what it has not stored; a document whose markdown spells the erased bytes otherwise is listed as not redacted, with the reason, and the erase refuses while one is listed.
 It refuses too — before removing anything — when a row that is not part of the node points at its projection through a nullable reference: a reply whose `reply_to` names an erased comment is somebody else's words, and an ask handed back through it is that ask's own history.
+Run with `--confirm` over a node that holds text, it prints nothing until the sweep of `text_trees` after the commit has waited out its 30 seconds.
 
-What went is recorded in `graph_erasures`: the node, the counts, and the versions and reviews the erase ended, with who ran it (the database role, the account and the host) and when.
+What went is recorded in `graph_erasures`: the node, the counts, the versions and reviews the erase ended, the documents whose live state it replaced and what that cost each, and the projects whose term statistics it counted again, with who ran it (the database role, the account and the host) and when.
 That row holds no erased text, nobody addresses it, and no read of the graph answers it, so the closed supertag list stays closed.
 Both sides go in the one transaction, so `census --store` still reads zero differences afterwards.
 A node the store does not hold is exit 2, naming it.

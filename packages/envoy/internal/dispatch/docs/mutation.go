@@ -884,7 +884,13 @@ func placeList(places []string) string {
 }
 
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node) error {
-	rows, err := s.queryFrom(ctx).Query(ctx, `
+	return refuseDroppedAskBlocksIn(ctx, s.queryFrom(ctx), artifactID, target)
+}
+
+// refuseDroppedAskBlocksIn is refuseDroppedAskBlocks reading the document's open asks through q,
+// for a caller that holds a transaction and no Service: the erase's (ReadErasedLiveText).
+func refuseDroppedAskBlocksIn(ctx context.Context, q Queryer, artifactID string, target *pmdoc.Node) error {
+	rows, err := q.Query(ctx, `
 		select block_id from asks
 		where block_artifact_id = $1 and state = 'open' and block_id is not null
 	`, artifactID)

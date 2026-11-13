@@ -1,8 +1,13 @@
 package docs
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"strings"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -237,4 +242,140 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 	}
 	report.SourceVersion = written.version.Number
 	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes, Blocks: written.blocks}, nil
+}
+
+// ErasedLiveText is what `envoy-dispatch erase` (graphcensus.Erase) leaves of the live state of a
+// document whose text, or whose stored history, holds the bytes it erases: the live text with each
+// erased text replaced by the erase's marker, seeded as the document's one stored update in place
+// of every update it holds, through the statements a rebuild writes (RebuildTx). The rows are
+// replaced rather than edited because a stored update is ygo's encoding of the edits: a deleted
+// item keeps its bytes there until a fold collects them, and a text substitution inside the
+// encoding would leave an update no load can decode.
+//
+// It is read first (ReadErasedLiveText) and written second (Replace), both in the erase's own
+// transaction, so the erase lists what it would do before any of it is done, and a failure
+// anywhere rolls back the whole erase.
+type ErasedLiveText struct {
+	// Held is whether the live text holds one of the erased texts. A document that holds none -
+	// one a version of which held the text, edited since - keeps its text, and its history, which
+	// can still hold the bytes in the items that edit deleted, is replaced all the same.
+	Held bool
+	// Left is whether the seed would still hold the bytes of an erased text: the live text holds
+	// them where its markdown spells them otherwise than the erased text is written - an escaped
+	// `*` or `_`, for one - so the replacement, which reads the markdown byte for byte, found no
+	// place for the marker there. The erase refuses such a document rather than report success
+	// over the bytes it would leave (graphcensus.Erase).
+	Left bool
+	// Updates is how many stored updates the history holds, every one of which the seed replaces.
+	Updates int64
+	// AnchorMarks is how many comment, suggestion and ask anchors the live text carries, and
+	// MarginRecords how many records its margin holds. The seed is parsed from markdown, which
+	// carries neither, so both go with the history, as they go with RebuildDocument's.
+	AnchorMarks, MarginRecords int
+	// Text is the live text before the erase, whose stored display tree goes with it.
+	Text string
+
+	room string
+	head persistence.Version
+	seed []byte
+}
+
+// ReadErasedLiveText reads, inside tx, the live state of the document artifactID names as the
+// erase would leave it, with each of texts replaced by marker. It answers nil for a document with
+// no stored history, which holds no live text. It writes nothing.
+//
+// It takes the document's owner row and then its advisory lock, the order every writer of a
+// document takes them in (lockArtifactOwner, lockDocumentRoom), and holds both until tx ends, so
+// the history it reads is the one Replace replaces and no edit lands between the two.
+//
+// The text is the server's own rendering of the live tree with each erased text replaced, parsed
+// back as a write over that tree is parsed (pmdoc.ParseWritten), so every block the replacement
+// leaves unchanged keeps its id. A history that does not load, a tree outside the schema, and a
+// replacement that breaks an ask's content rule or drops an open ask block each refuse the erase,
+// naming the document: a document the erase could not leave whole is one an operator repairs
+// first, by its rebuild or a replacement from markdown.
+func ReadErasedLiveText(ctx context.Context, tx pgx.Tx, artifactID string, texts []string, marker string) (*ErasedLiveText, error) {
+	if _, _, err := lockArtifactOwner(ctx, tx, artifactID); err != nil {
+		return nil, err
+	}
+	if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
+		return nil, err
+	}
+	erased := &ErasedLiveText{room: artifactID}
+	head, err := erased.versioned().head(ctx, tx, artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if head == 0 {
+		return nil, nil
+	}
+	erased.head = head
+	if err := tx.QueryRow(ctx, `select count(*) from doc_updates where artifact_id = $1 and version <= $2`,
+		artifactID, int64(head)).Scan(&erased.Updates); err != nil {
+		return nil, fmt.Errorf("count the stored updates of document %s: %w", artifactID, err)
+	}
+	doc, err := documentThrough(artifactID, head, storedUpdates(ctx, tx, artifactID, head), maxUpdateItems)
+	if err != nil {
+		return nil, fmt.Errorf("load document %s: %w", artifactID, err)
+	}
+	if doc == nil {
+		return nil, nil
+	}
+	tree, err := treeOf(doc)
+	if err != nil {
+		return nil, fmt.Errorf("read document %s: %w", artifactID, err)
+	}
+	markdown, err := documentMarkdown(tree)
+	if err != nil {
+		return nil, fmt.Errorf("render document %s: %w", artifactID, err)
+	}
+	redacted := markdown
+	for _, text := range texts {
+		redacted = strings.ReplaceAll(redacted, text, marker)
+	}
+	target, _, err := pmdoc.ParseWritten(redacted, tree)
+	if err != nil {
+		return nil, fmt.Errorf("read back the redacted text of document %s: %w", artifactID, err)
+	}
+	if err := validateStoredAskBlocks(target); err != nil {
+		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
+	}
+	if err := refuseDroppedAskBlocksIn(ctx, tx, artifactID, target); err != nil {
+		return nil, fmt.Errorf("the redacted text of document %s: %w", artifactID, &ErrInvalidAskBlock{Reason: err})
+	}
+	if erased.seed, err = encodeDocumentTree(target); err != nil {
+		return nil, fmt.Errorf("seed the redacted document %s: %w", artifactID, err)
+	}
+	erased.Held = redacted != markdown
+	// The seed is read for each erased text's own bytes, which is what a search of doc_updates
+	// finds once it is stored. A text the marker itself holds cannot be told from the marker
+	// there, and is left to the replacement above.
+	for _, text := range texts {
+		if !strings.Contains(marker, text) && bytes.Contains(erased.seed, []byte(text)) {
+			erased.Left = true
+		}
+	}
+	erased.AnchorMarks = len(pmdoc.ListMarks(tree))
+	erased.MarginRecords = len(doc.GetMap(marksMapName).Keys())
+	erased.Text = markdown
+	return erased, nil
+}
+
+// Replace writes the seed ReadErasedLiveText made in place of the history it read, inside tx,
+// through RebuildTx: every stored update, checkpoint and snapshot of the document goes, the seed is
+// written at the version after the head, and the change is announced, so a room of the document
+// that any server process holds finds its history replaced and is closed and reloaded at the seed
+// (historyReplaced). That room's unstored updates are refused from then on, as they are after a
+// rebuild, which is what an editor open on the document loses.
+func (e *ErasedLiveText) Replace(ctx context.Context, tx pgx.Tx) (RebuildReport, error) {
+	return e.versioned().RebuildTx(ctx, tx, e.room, e.head, e.seed)
+}
+
+// versioned is the versioned store the erase reads and replaces a history through. It holds no
+// store: the erase runs in a process of its own over one transaction, and head and RebuildTx read
+// and write the transaction they are handed and nothing else. Its process id is empty, which is
+// how a store built outside a server announces a change (PgVersioned.processID): every server
+// process's room sync takes it for another process's, which is what it is.
+func (e *ErasedLiveText) versioned() *PgVersioned {
+	return NewPgVersioned(nil)
 }

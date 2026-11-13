@@ -3,17 +3,20 @@
 # It writes a document, has a person approve a version of it, and writes a comment holding a
 # secret that version's markdown holds too. It then runs `envoy-dispatch erase` against that
 # comment's node and proves, in order: the command refuses until it has listed what it would
-# remove, and that list holds the version and the review the erase would end; after the erase a
-# read of the node's address answers what a deleted node answers, byte for byte, no tuple and no
-# projection row of it remains, the `artifact_versions` row holding the erased text is gone and
-# the `artifact_reviews` row whose digest covered those bytes is gone, reported by its issue and
-# its version; no store this driver can search holds the secret, and the `events` rows that held
-# it stand with their payload redacted, the marker naming the erase in each and the row's id,
-# time and actor what they were before; the `graph_erasures` row holds what was removed, who ran
-# it and when, and holds no erased text; every node left carries a supertag of the closed list
-# the store itself holds, so the erase wrote no node of its own; `envoy-dispatch census --store`
-# reads zero differences; and the command's path over HTTP answers 404 to the deployment's agent
-# bearer and to a person's cookie alike, because no route serves it.
+# remove, and that list holds the version and the review the erase would end and the document
+# whose live state it would replace, with what that costs; after the erase a read of the node's
+# address answers what a deleted node answers, byte for byte, no tuple and no projection row of it
+# remains, the `artifact_versions` row holding the erased text is gone and the `artifact_reviews`
+# row whose digest covered those bytes is gone, reported by its issue and its version; the
+# document still loads, the marker where the secret was; no column of any table of the database
+# holds the secret, by a search that names no store and finds a control row planted beside it,
+# and the `events` rows that held it stand with their payload redacted, the marker naming the
+# erase in each and the row's id, time and actor what they were before; the `graph_erasures` row
+# holds what was removed, who ran it and when, and holds no erased text; every node left carries
+# a supertag of the closed list the store itself holds, so the erase wrote no node of its own;
+# `envoy-dispatch census --store` reads zero differences; and the command's path over HTTP
+# answers 404 to the deployment's agent bearer and to a person's cookie alike, because no route
+# serves it.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
@@ -65,7 +68,15 @@ session="graph-erase-$(date +%s)-$$"
 readonly session
 # The bytes this run erases. Nothing but this run writes them, so a row that still holds them
 # after the erase is a row the erase missed.
-secret="passphrase-$(date +%s)-$$-hunter2"
+#
+# They are one word of letters and digits, and not the `passphrase-<time>-<pid>-hunter2` this
+# driver used before, because Postgres splits a hyphenated token into several lexemes: a
+# tsvector holding that shape holds `passphras`, `-<time>`, `-<pid>` and `hunter2` and never the
+# whole, so a search for the secret could not find it in a search vector, and the run-unique
+# parts are numbers this run's session name holds as well. One word of letters and digits is one
+# lexeme, spelled as the text spells it, so the search below finds these bytes in a tsvector, in
+# a lexeme of the term statistics and in every text column alike.
+secret="passphrase$(date +%s)x$$hunter2"
 readonly secret
 
 umask 077
@@ -128,6 +139,68 @@ erase() {
     envoy-dispatch erase "$@" >"$work/erase" 2>&1 || erase_code=$?
   [[ "$erase_code" -lt 2 ]] ||
     fail "$section" "run envoy-dispatch erase $*" "exited $erase_code: $(<"$work/erase")"
+}
+
+# held_anywhere SECTION NEEDLE: searches every column of every table of the database for NEEDLE,
+# and sets $answer to `columns <n>`, the number of columns searched, then one line
+# `<schema>.<table>.<column> <rows>` for each column holding it. A bytea is searched for NEEDLE's
+# UTF-8 bytes (convert_to), since its text form is hex; every other column for NEEDLE in its text
+# form, which is how a jsonb, a tsvector and an array spell what they hold. A column of a type
+# that holds no text - a number, a time, a uuid - is not searched.
+#
+# The same session first writes NEEDLE into a table of its own, `erase_control`, temporary and
+# so dropped with the session, and searches it with the rest: a search that reached no row would
+# answer none for every column, and the caller reads the control's line to tell that apart.
+held_anywhere() {
+  answer="$(env -u PGHOSTADDR psql "$database_url" -Atq -v ON_ERROR_STOP=1 -v needle="$2" \
+    -f - 2>"$work/psql" <<'SQL'
+select set_config('erase_driver.needle', :'needle', false) \g /dev/null
+create temp table erase_control (body text);
+insert into erase_control values ('planted beside the search: ' || :'needle');
+create temp table erase_held (place text, held bigint);
+create temp table erase_searched (columns integer);
+do $$
+declare
+  needle text := current_setting('erase_driver.needle');
+  col record;
+  test text;
+  held bigint;
+  searched integer := 0;
+begin
+  for col in
+    select c.table_schema, c.table_name, c.column_name, c.data_type, c.udt_name
+      from information_schema.columns c
+      join information_schema.tables t
+        on t.table_schema = c.table_schema and t.table_name = c.table_name
+     where t.table_type in ('BASE TABLE', 'LOCAL TEMPORARY')
+       and c.table_schema not in ('pg_catalog', 'information_schema')
+       and (c.table_schema not like 'pg_temp%' or c.table_schema = pg_my_temp_schema()::regnamespace::text)
+       and c.data_type not in ('smallint', 'integer', 'bigint', 'numeric', 'real', 'double precision',
+         'boolean', 'uuid', 'date', 'interval', 'time with time zone', 'time without time zone',
+         'timestamp with time zone', 'timestamp without time zone', 'inet', 'cidr', 'macaddr',
+         'macaddr8', 'oid', 'xid', 'xid8', 'pg_lsn', 'money', 'bit', 'bit varying')
+     order by 1, 2, 3
+  loop
+    test := case
+      when col.data_type = 'bytea' then
+        format('position(convert_to($1, %L) in %I) > 0', 'UTF8', col.column_name)
+      when col.udt_name = '_bytea' then
+        format('exists (select 1 from unnest(%I) b where position(convert_to($1, %L) in b) > 0)', col.column_name, 'UTF8')
+      else format('position($1 in %I::text) > 0', col.column_name)
+    end;
+    execute format('select count(*) from %I.%I where %s', col.table_schema, col.table_name, test)
+      into held using needle;
+    searched := searched + 1;
+    if held > 0 then
+      insert into erase_held values (col.table_schema || '.' || col.table_name || '.' || col.column_name, held);
+    end if;
+  end loop;
+  insert into erase_searched values (searched);
+end $$;
+select 'columns ' || columns from erase_searched;
+select place || ' ' || held from erase_held order by place;
+SQL
+  )" || fail "$1" "search every column of every table" "psql: $(<"$work/psql")"
 }
 
 # E1: the inputs, and the database this run works on.
@@ -206,6 +279,15 @@ grep -Eq "^  reviews over those bytes: [1-9][0-9]*\$" "$work/erase" ||
 grep -Fq "    $document_ref version $version approved (review $review) of $key" "$work/erase" ||
   fail E3 "list the reviews it would end" "no review $review in: $(<"$work/erase")"
 pass E3 "the list holds the approval over those bytes (review $review)"
+# The document's live state, which the erase replaces: its live text with the marker where the
+# secret was, seeded as its one stored update in place of its history. That costs what a rebuild
+# costs, so the list says it, per document, before anything goes: the operator's last look.
+grep -Eq "^  live documents whose history is replaced: [1-9][0-9]*\$" "$work/erase" ||
+  fail E3 "list the documents whose live state it would replace" "$(<"$work/erase")"
+live_line="$(grep -F "    $document_ref of $key: " "$work/erase" || true)"
+printf '%s\n' "$live_line" | grep -Eq "^    [^ ]+ of [^ ]+: its live text is redacted, the marker standing where the erased text was; its [1-9][0-9]* stored update\(s\) are replaced by one; [0-9]+ anchor mark\(s\) and [0-9]+ margin record\(s\) go with them; an editor open on it reloads and loses what it has not stored\$" ||
+  fail E3 "list what replacing $document_ref's live state costs" "no such line for $document_ref in: $(<"$work/erase")"
+pass E3 "the list holds $document_ref's live state: its text redacted, its history replaced, and what that costs"
 want_rows E3 "the refused run wrote nothing" 1 \
   "select count(*) from comments where id = '$comment'"
 want_rows E3 "the refused run recorded no erasure" 0 \
@@ -281,6 +363,35 @@ want_rows E5 "no block excerpt still holds the erased text" 0 \
   "select count(*) from document_blocks where excerpt like '%$secret%'"
 want_rows E5 "no event payload still holds the erased text" 0 \
   "select count(*) from events where payload::text like '%$secret%'"
+# The document that held the secret still loads, from the one update the erase seeded its history
+# with: its text keeps everything the erase did not take, and reads the marker where the secret
+# was. It is read before the search below, so a read that wrote the secret back - a room still
+# holding the old history, storing what it read - is a row that search finds.
+send GET "/api/v1/artifacts/$document/text"
+want_status 200 E5 "read $document_ref's live text after the erase"
+jq -er '.markdown' "$work/body" >"$work/live.md" ||
+  fail E5 "read $document_ref's live text after the erase" "no markdown: $(body)"
+if grep -Fq "$secret" "$work/live.md"; then
+  fail E5 "$document_ref's live text no longer holds the erased text" "$(<"$work/live.md")"
+fi
+grep -Fq "# Leaked notes" "$work/live.md" ||
+  fail E5 "$document_ref keeps the text the erase did not take" "$(<"$work/live.md")"
+grep -Fq "erased by envoy-dispatch erase $node, recorded in graph_erasures" "$work/live.md" ||
+  fail E5 "$document_ref reads the marker where the erased text was" "$(<"$work/live.md")"
+pass E5 "$document_ref still loads: its heading as it was, and the marker where the erased text was"
+# Every column of every table, which the five lines above cannot say: they name the stores a run
+# of 2026-11-12 measured, and a search of the whole database after a passing run of this driver
+# found the secret in four more (doc_updates, text_trees, document_search and search_term_queue,
+# measured 2026-11-13 at d92227ce05e3). This search names no store, so a store added later is
+# searched without anyone adding a line here. The event log is searched with the rest: its rows
+# stand with the marker where the secret was, which is not the secret.
+held_anywhere E5 "$secret"
+held="$(printf '%s\n' "$answer" | grep -v "^columns " | grep -v "^pg_temp_[0-9]*\.erase_control\.body " || true)"
+[[ -z "$held" ]] ||
+  fail E5 "no column of any table still holds the erased text" "$(printf '%s' "$held" | tr '\n' ';')"
+printf '%s\n' "$answer" | grep -Eq "^pg_temp_[0-9]+\.erase_control\.body 1\$" ||
+  fail E5 "the search finds the control row planted beside it" "the search answered: $(printf '%s' "$answer" | tr '\n' ';')"
+pass E5 "no column of any table holds the erased text ($(printf '%s\n' "$answer" | sed -n 's/^columns //p') columns searched), and the same search found the control row planted in it"
 # What the event log holds instead, which the four lines above cannot say: the marker naming the
 # erase (graphcensus.eraseMarker, one constant), through which a reader of a redacted payload
 # reaches the `graph_erasures` row recording the run. The rows are the rows E3 read, each with
@@ -299,6 +410,13 @@ pass E5 "the redacted event rows are those rows, each with its id, its time and 
 grep -Eq "^  redacted: events [1-9][0-9]*\$" "$work/erase" ||
   fail E5 "the run says how many rows it redacted" "no redacted events line in: $(<"$work/erase")"
 pass E5 "envoy-dispatch erase reported the rows it redacted"
+# The erase waits out the bound of a read's detached store of its display trees after its commit
+# and deletes once more the trees it deleted (graphcensus's sweepTrees), so a read that began
+# before the commit cannot leave the tree of an erased text behind; the report says how many it
+# found then.
+grep -Eq "^  text_trees swept after the commit: [0-9]+\$" "$work/erase" ||
+  fail E5 "the run says how many display trees it swept after the commit" "no sweep line in: $(<"$work/erase")"
+pass E5 "envoy-dispatch erase reported its sweep of text_trees after the commit"
 
 # E6: the record of the erase.
 query E6 "read the graph_erasures row" \
