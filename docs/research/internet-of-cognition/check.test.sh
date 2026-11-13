@@ -413,6 +413,18 @@ dir="$(fresh exit-other-message)"
 plant_behaviour "$dir" "printf 'other\\n'; exit 1" '{"exit":1,"contains":"ran once"}'
 case_result "an exit status beside a message the output does not carry fails the row" replay-command "$(fixture_run "$dir" --replay)"
 
+# 29. A group in a stage of the final pipeline exits with its last command's status, so
+# the stage is read as that command. A group whose last command is a search that found
+# nothing read its corpus, and passes; the same group whose last command is a read that
+# failed fails the row. The first form is the shape c-terms-7 takes, { git grep ...; } |
+# wc -l, which a stage named by its opening brace took for a failed read.
+dir="$(fresh group-ends-in-miss)"
+plant_behaviour "$dir" "{ printf 'ran once\\n'; grep zzz /dev/null; } | cat" '{"contains":"ran once"}'
+honest_result "a group whose last command is a search that found nothing passes" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh group-ends-in-failure)"
+plant_behaviour "$dir" "{ printf 'ran once\\n'; ls /nonexistent-ioc; } | cat" '{"contains":"ran once"}'
+case_result "a group whose last command is a read that failed fails the row" replay-command "$(fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

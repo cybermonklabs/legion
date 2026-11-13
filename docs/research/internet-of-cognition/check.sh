@@ -1037,7 +1037,24 @@ def last_pipeline_stages(command):
     if pipeline:
         last = pipeline
     out = []
+    structural = {"{", "}", "(", ")", "do", "done", "then", "fi", "else", "esac"}
     for stage in last:
+        # A group, a subshell or a loop exits with the status of the last command it ran,
+        # so its stage is read as that command: the last segment after its separators,
+        # with the words that open and close it taken off. A separator inside a stage of
+        # a pipeline can stand only in one of those.
+        if any(t in (";", "&&", "||", "&") or (t and set(t) <= set(";&|()") and set(t) & set(";&")) for t in stage) or (stage and stage[0] in structural):
+            segment = []
+            for token in stage:
+                if token in (";", "&&", "||", "&") or (token and set(token) <= set(";&|()") and set(token) & set(";&")):
+                    if [t for t in segment if t not in structural and set(t) - set("()")]:
+                        last_segment = segment
+                    segment = []
+                    continue
+                segment.append(token)
+            if [t for t in segment if t not in structural and set(t) - set("()")]:
+                last_segment = segment
+            stage = [t for t in last_segment if t not in structural and set(t) - set("()")]
         # An assignment sets the stage's environment and is no word of its command, but a
         # declared expected status is kept, so the stage is read against it.
         words = [t for t in stage if not ASSIGNMENT.match(t) or t.startswith("IOC_EXPECT_STATUS=")]
