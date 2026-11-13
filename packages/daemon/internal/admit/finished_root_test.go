@@ -47,7 +47,7 @@ const (
 // took out of the workflow is what a closed tree keeps. The child still at admitted is handed
 // over with the rest — its tree closed and it never started, so nothing would start it where it
 // stands — and this one was the daemon's own to hold besides, since the root stands in
-// awaiting_merge, a phase the daemon has already accepted (record.AcceptedAncestor), and its
+// merging, a phase the daemon has already accepted (record.AcceptedAncestor), and its
 // architect was told it starts once this root closes. The linger keeps that promise whether the
 // close followed the merge or a person made it by hand (the workflow's unfinishedHandOvers).
 // The close itself hands nothing over, so a root that comes back inside its linger resumes its
@@ -84,8 +84,8 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 	}
 }
 
-// A merged root's close waits for the rest of its tree: the merge leaves the root awaiting it,
-// holding no slot — a root that waits for its merge has no worker with work — and no child
+// A merged root's close waits for the rest of its tree: the merge leaves the root standing in
+// merging, still holding its slot — merging is a worker's phase and keeps its row — and no child
 // disturbed, and the close comes once the last of them leaves — here the architect parking
 // each. That close lingers the tree and opens the root's production check, whose first look its
 // implementer reports, since the tree's close waits for an open check (the workflow's check
@@ -94,7 +94,7 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 // waits on standing.
 //
 // One member does not hold the close: the released child that has never started a phase. It
-// stands at admitted beneath a root in awaiting_merge, which is a root the daemon has already
+// stands at admitted beneath a root in merging, which is a root the daemon has already
 // accepted, so the daemon itself holds the child there until that root closes
 // (record.AcceptedAncestor) — and a child the daemon pins is left out of the set the close
 // waits on (record.OpenBeneath). Counting it would deadlock the pair: the child waits for the
