@@ -1291,6 +1291,16 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
 }
 
+// NotCurrentPhase is the 409 HANDOFF_NOT_CURRENT_PHASE refusal of a completion from role, which
+// does not work p, the phase issue stands in: the code every phase worker's prompt names for a
+// completion of a phase it no longer works (prompts/go/worker-common.md). The workflow's handoff
+// answers it for such a completion it does not record (its leftItsPhase), and the completion
+// route's entry fence for one whose entry differs from the role's phases row, before the fact
+// (api's handoffComplete), so a worker reads the same words from either.
+func NotCurrentPhase(role claim.Role, p phase.Phase, issue string) *Refusal {
+	return &Refusal{Status: 409, Code: "HANDOFF_NOT_CURRENT_PHASE", Message: fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", role, p, issue)}
+}
+
 // Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
 // positions in and reads what it has already applied from. In the daemon it is always the store's
 // guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool

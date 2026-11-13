@@ -707,7 +707,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 			return intake.Result{}, err
 		}
 		if !left {
-			return refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run phase %s of %s; this completion changed nothing", fact.Role, issue.Phase, issue.Key)), nil
+			return intake.Result{Refusal: intake.NotCurrentPhase(fact.Role, issue.Phase, issue.Key)}, nil
 		}
 	}
 	// reported is the phase this completion is of: the issue's own, or, for a role the issue has

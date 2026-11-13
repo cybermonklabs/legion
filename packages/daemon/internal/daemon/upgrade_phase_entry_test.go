@@ -466,9 +466,11 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// under its own name. Three more sweeps are driven by hand with the ticker stopped, because
 	// every role that pass sent work now carries that entry and the gate applies no further fact
 	// on its own period: they are what reads a later sweep as adding nothing.
-	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
-	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as it does in production
-	// rather than refusing nothing on an unmarked context (INFRA-3169).
+	// The sweep loop runs on one hold mark, as workflowRuntime.run starts it
+	// (store.ForConcurrentWorker(running)), and every sweep the loop applies reuses that mark, so the
+	// pool's guard sees each sweep as it does in production rather than refusing nothing on an
+	// unmarked context (INFRA-3169). The three driven by hand take a fresh mark each, which the guard
+	// reads the same way, since a sweep gives back every connection it took before it returns.
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()

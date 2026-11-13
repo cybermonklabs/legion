@@ -345,15 +345,21 @@ Legion uses GitHub's own review mechanisms rather than labels:
   stops writing there and leaves whatever it has uncommitted. Only the implementer's phase entry
   is raised, so a completion the tester, the reviewer or the merger sends for the phase it lost
   still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
-  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again. One completion
-  behind its entry goes on all the same: a verdict on the head the record holds, of a phase that
-  ends with the role's own handoff record. The phase was entered again at that head, so the work
-  the new entry's task asks for is the work that completion reports. A completion at another
-  commit is refused, as the tester's verdict on the head before the merge forward is; so is one
-  that names no commit, and so is any while the record holds no pull request for the issue. A
-  completion is refused whatever head it names when the entry the phase stands on was raised by a
-  move back, which asks for that phase's work to be done again. From retro the implementer keeps
-  its turn, is told the same way, and is handed the implementing task after it; a retro
+  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again, and only
+  while the issue stands in that phase. A completion of another entry than the role's phases row
+  names, from a role whose phase the issue is no longer in, is answered
+  `HANDOFF_NOT_CURRENT_PHASE` as well, before anything is recorded: the task of that entry was
+  queued for the phase the issue has left, so the daemon drops it unsent and owes the claim none.
+  One completion behind its entry goes on all the same: a verdict on the head the record holds,
+  of a phase that ends with the role's own handoff record. The phase was entered again at that
+  head, so the work the new entry's task asks for is the work that completion reports; taking it
+  moves the issue on, so the same completion sent again, or one naming a newer record, is
+  answered `HANDOFF_NOT_CURRENT_PHASE`. A completion at another commit is refused, as the
+  tester's verdict on the head before the merge forward is; so is one that names no commit, and
+  so is any while the record holds no pull request for the issue. A completion is refused
+  whatever head it names when the entry the phase stands on was raised by a move back, which asks
+  for that phase's work to be done again. From retro the implementer keeps its turn, is told the
+  same way, and is handed the implementing task after it; a retro
   completion that reaches the daemon after the move reports the entry retro handed it while its
   phases row is on the implementing one. The issue is in `implementing` by then, so that
   completion goes as the implementer's completion of implementing, naming the newest

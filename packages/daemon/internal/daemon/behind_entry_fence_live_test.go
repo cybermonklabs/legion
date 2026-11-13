@@ -8,17 +8,24 @@
 // back. Such a move sends the work back at the head that is already there, so the two heads read
 // alike and the heads alone would take a verdict over an entry that exists to have the work done
 // again. The record says which move it was (record.PhaseRow.EntryMovedBack, written by the
-// transition that raises the entry), and the fence reads it.
+// transition that raises the entry), and the fence reads it. A behind completion from a role that
+// no longer works the phase the issue stands in is neither taken nor refused that way: the fence
+// answers it HANDOFF_NOT_CURRENT_PHASE, in the engine's words (intake.NotCurrentPhase), rather
+// than tell the worker a task is owed to it that the daemon drops unsent, since the issue has left
+// the phase that task was queued for.
 //
 // So every completion the proof drives is of the tester's first entry, reported from a turn that
 // began before any later entry's task reached the tester, and each reading has its control beside
 // it. Steps 3, 4 and 5 are the same behind completion behind the same forward entry, naming the
 // head the tester tested, which the record has left, then no commit at all, then the head the
-// record holds: only the commit differs, and only the last is taken. Steps 5 and 7 are the same
+// record holds: only the commit differs, and only the last is taken. Steps 5 and 8 are the same
 // completion at the same head, which never moves between them: only what raised the entry
-// differs, a forward move for step 5 and the registered reviewer's real move back for step 7, and
-// only step 5 is taken. scripts/e2e/behind-entry-fence.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// differs, a forward move for step 5 and the registered reviewer's real move back for step 8, and
+// only step 5 is taken. Step 6 is what follows a taken one: step 5's completion moved the issue to
+// reviewing and left the tester's claim serving the entry it was behind on, so the same completion
+// sent again, and one naming a newer record of the phase, each meet the fence in a phase the
+// tester no longer works. scripts/e2e/behind-entry-fence.sh builds this driver with `-tags e2e`
+// and owns the nats-server and the PostgreSQL it runs against.
 //
 // The forward entry of step 2 is raised on the path the daemon has for it: the tester asks for the
 // work back with its own backward move to implementing and ends its turn, and the implementer
@@ -45,10 +52,12 @@
 // registration, readiness, grants, completions and backward moves; and the daemon's worker stream
 // for each role's turns, which this driver speaks as `legion worker-shim` does (shimwire frames).
 // Almost every assertion is a read of GET /legion/v1/state or of the operator's claim listing.
-// What neither shows is the tester's phases row, which the proof reads from the daemon's own store
-// for two things: the fence's own input, whether the entry the row stands on was raised by a move
-// back, and what a refusal must leave unwritten there, the verdict and the handoff commit of the
-// completion it refused.
+// What neither shows is what the proof reads from the daemon's own store: the tester's phases row,
+// for the fence's own input, whether the entry the row stands on was raised by a move back, and
+// for what a refusal must leave unwritten there, the verdict and the handoff commit of the
+// completion it refused, or, once step 5's completion stands on that row, that completion
+// unchanged; and in step 6 the tester's completions the daemon recorded as processed
+// (processed_events), which a refusal before the fact adds none to.
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. GitHub is behindFenceGitHub, a REST stand-in for
@@ -95,12 +104,16 @@ const behindFenceBase = "main"
 
 // The two heads the proof drives: the implementer's seeded head, which the tester's first turn
 // tests, and the head the implementer pushes once the tester has sent the work back, which the
-// record holds from step 2 to the end. Nothing is pushed after it, so steps 5 and 7 differ in
+// record holds from step 2 to the end. Nothing is pushed after it, so steps 5 and 8 differ in
 // nothing a reading of the heads can see.
 const (
 	behindFenceFirstHead  = "bf1"
 	behindFenceSecondHead = "bf2"
 )
+
+// behindFenceTakenSummary is the summary of the behind completion step 5 takes, which step 6
+// sends again word for word.
+const behindFenceTakenSummary = "tested it at " + behindFenceSecondHead
 
 // behindEntryFenceLive is one run of the proof: the booted daemon, the one issue it drives, the
 // GitHub stand-in its facts are read against, and the three roles the driver acts as over the
@@ -124,15 +137,18 @@ type behindEntryFenceLive struct {
 	served, entry int64
 	// delivery is the delivery of the served entry's task, the last task the tester's turn took.
 	delivery string
+	// taken is the handoff record the behind completion step 5 took named, which step 6 sends again.
+	taken string
 }
 
-// TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive drives the seven steps
+// TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive drives the eight steps
 // of the proof against one booted daemon, in the order each step's state follows from the last: the
 // tester working its first entry, the tester's own move back and the implementer's push and
 // completion that hand testing out again by a forward move, the behind completion refused at the
-// head the record has left, refused naming no commit, and taken at the head the record holds, the
-// registered reviewer's own move back into testing, and the same completion at the same head
-// refused because a move back raised the entry the phase now stands on.
+// head the record has left, refused naming no commit, and taken at the head the record holds, that
+// completion sent again and one naming a newer record, each answered as of a phase the tester no
+// longer works, the registered reviewer's own move back into testing, and the same completion at
+// the same head refused because a move back raised the entry the phase now stands on.
 func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *testing.T) {
 	r := newBehindEntryFenceLive(t)
 	r.step("the tester works its entry", r.testerWorksItsEntry)
@@ -140,6 +156,7 @@ func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *
 	r.step("stale head refused", r.staleHeadRefused)
 	r.step("behind with no head", r.behindWithNoHead)
 	r.step("behind at the head", r.behindAtTheHead)
+	r.step("after a taken behind completion", r.afterATakenBehindCompletion)
 	r.step("the reviewer moves the work back", r.reviewerMovesTheWorkBack)
 	r.step("behind after a backward move", r.behindAfterABackwardMove)
 }
@@ -450,7 +467,7 @@ func (r *behindEntryFenceLive) testerWorksItsEntry() {
 // entry has reached it. The implementer pushes a head of its own and completes there, which moves
 // the issue forward into testing and raises the tester's second entry, at the head the implementer
 // pushed and by no move back. That entry's task waits on the claim, since the tester is in a turn,
-// and the claim still serves the entry before it: every completion of steps 3 to 7 is reported
+// and the claim still serves the entry before it: every completion of steps 3 to 8 is reported
 // from a turn that began before its entry's task reached the session.
 func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 	t := r.t
@@ -509,20 +526,48 @@ func (r *behindEntryFenceLive) behindWithNoHead() {
 // same turn names the head the record holds. Nothing moved the issue back into testing, so the work
 // the standing entry's task asks for is the work this turn did: the daemon takes the completion
 // (behindAtRecordedHead) and the pass moves the issue to reviewing. Steps 3 and 4 are this same
-// completion with another commit; step 7 is this same completion at this same head with one thing
-// changed, the move that raised the entry.
+// completion with another commit; step 6 sends it again once it is taken; step 8 is this same
+// completion at this same head with one thing changed, the move that raised the entry.
 func (r *behindEntryFenceLive) behindAtTheHead() {
 	t := r.t
-	if status, failure := r.test.complete("tested it at "+behindFenceSecondHead, behindFenceSecondHead, "pass", r.test.handoff("test")); status != http.StatusOK {
+	r.taken = r.test.handoff("test")
+	if status, failure := r.test.complete(behindFenceTakenSummary, behindFenceSecondHead, "pass", r.taken); status != http.StatusOK {
 		t.Fatalf("the behind completion at the head the record holds = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	moved := r.waitFor("the issue in reviewing", func(got api.Issue) bool { return got.Phase == phase.Reviewing })
-	r.note("read back: the completion of entry %d at %s, the head the record holds, reported while the row stands on entry %d, was taken 200: %s is in %s",
-		r.served, behindFenceSecondHead, r.entry, r.key, moved.Phase)
+	r.note("read back: the completion of entry %d at %s, the head the record holds, naming record %s and reported while the row stands on entry %d, was taken 200: %s is in %s",
+		r.served, behindFenceSecondHead, r.taken, r.entry, r.key, moved.Phase)
 	r.heldOn()
 }
 
-// Step 6. The reviewer's own move back. Its claim was started by the tester's pass, and its task
+// Step 6. A completion after a taken behind completion is answered as of a phase the tester no
+// longer works. Step 5's completion moved the issue to reviewing, as a taken completion always
+// moves its phase on, and left the tester's claim serving the entry it was behind on, so every
+// completion that claim sends from here meets the entry fence in the reviewer's phase. From the
+// same turn the tester sends step 5's completion again, word for word under a grant of its own,
+// as a retry after a dropped connection sends it, and then one naming a newer record of the
+// phase. The daemon answers each 409 HANDOFF_NOT_CURRENT_PHASE, the code every worker's prompt
+// names for a completion of a phase it no longer works, in the engine's words: never
+// HANDOFF_STALE_ENTRY, and with no words telling the worker a task is owed to it, since the second
+// testing entry's task is queued for testing, which the issue has left, and is dropped rather than
+// sent (supervise's phaseHolds). Each records nothing — the tester's phases row still holds step
+// 5's completion, and the daemon has processed no completion of the tester's beyond it — and the
+// issue stays in reviewing.
+func (r *behindEntryFenceLive) afterATakenBehindCompletion() {
+	t := r.t
+	row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester)
+	if row.HandoffRecord != r.taken || row.Verdict != "pass" || row.HandoffCommit != behindFenceSecondHead || row.Summary != behindFenceTakenSummary {
+		t.Fatalf("the tester's phases row holds record %q, verdict %q at commit %q (%q), want step 5's completion: record %s, pass at %s (%q)",
+			row.HandoffRecord, row.Verdict, row.HandoffCommit, row.Summary, r.taken, behindFenceSecondHead, behindFenceTakenSummary)
+	}
+	r.note("read back: the tester's phases row holds step 5's completion, record %s, %s at %s, while it stands on entry %d and the claim serves entry %d",
+		row.HandoffRecord, row.Verdict, row.HandoffCommit, row.Entry, r.served)
+	r.notCurrentPhase(row, "step 5's completion sent again", behindFenceTakenSummary, r.taken)
+	r.notCurrentPhase(row, "a completion naming a newer test record", behindFenceTakenSummary+", record corrected", r.test.handoff("test"))
+	r.heldOn()
+}
+
+// Step 7. The reviewer's own move back. Its claim was started by the tester's pass, and its task
 // waits while the tester's turn runs, so that turn ends first; the reviewer then registers, takes
 // its review task, and the tester begins another turn of its own before the move, which no task
 // of its has reached. The reviewer requests the move to testing from the turn its task began, with
@@ -562,7 +607,7 @@ func (r *behindEntryFenceLive) reviewerMovesTheWorkBack() {
 		r.key, row.Entry, got.PullRequest.Head)
 }
 
-// Step 7. A behind completion is refused whatever head it names when a move back raised the entry.
+// Step 8. A behind completion is refused whatever head it names when a move back raised the entry.
 // The tester reports step 5's completion again from its own turn, at the same head, which is still
 // the head the record holds — and this time the entry the phase stands on was raised by a move
 // back, an entry that exists to have this phase's work done again. The daemon refuses it 409
@@ -607,10 +652,64 @@ func (r *behindEntryFenceLive) refused(commit string, says ...string) {
 		r.key, after.PhaseEntry)
 }
 
+// notCurrentPhase is the tester's completion at the head the record holds, naming handoffID and
+// reported from its own turn while the issue is in reviewing, answered as of a phase the tester no
+// longer works: 409 HANDOFF_NOT_CURRENT_PHASE in the engine's words, naming no task as owed; the
+// issue still in reviewing; the tester's phases row still holding taken, step 5's completion,
+// field for field; and as many of the tester's completions processed as before, since an answer
+// before the fact records nothing. The engine's own refusal would be processed: it commits with
+// its event (intake.ApplyFact).
+func (r *behindEntryFenceLive) notCurrentPhase(taken record.PhaseRow, what, summary, handoffID string) {
+	t := r.t
+	t.Helper()
+	processed := r.testerCompletionsProcessed()
+	status, failure := r.test.complete(summary, behindFenceSecondHead, "pass", handoffID)
+	if status != http.StatusConflict || failure.Code != "HANDOFF_NOT_CURRENT_PHASE" {
+		t.Fatalf("%s, naming record %s = %d %s %s, want 409 HANDOFF_NOT_CURRENT_PHASE: step 5's completion moved %s to reviewing, a phase the tester does not work",
+			what, handoffID, status, failure.Code, failure.Error, r.key)
+	}
+	words := fmt.Sprintf("the tester does not run phase reviewing of %s; this completion changed nothing", r.key)
+	if !strings.Contains(failure.Error, words) {
+		t.Fatalf("the answer = %q, want it to say %q, the engine's words for HANDOFF_NOT_CURRENT_PHASE", failure.Error, words)
+	}
+	if strings.Contains(failure.Error, "owed to this claim") {
+		t.Fatalf("the answer = %q, want no task named as owed: the testing entry's task was dropped when the issue left testing", failure.Error)
+	}
+	r.note("read back: %s, naming record %s at %s = 409 %s — %s", what, handoffID, behindFenceSecondHead, failure.Code, failure.Error)
+	if after := r.issue(r.key); after.Phase != phase.Reviewing {
+		t.Fatalf("%s is in %s after the answer, want reviewing: an answer before the fact moves nothing", r.key, after.Phase)
+	}
+	row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester)
+	if row.HandoffRecord != taken.HandoffRecord || row.HandoffVersion != taken.HandoffVersion || row.HandoffCommit != taken.HandoffCommit ||
+		row.Verdict != taken.Verdict || row.Summary != taken.Summary || !row.CompletedAt.Equal(taken.CompletedAt) || row.Entry != taken.Entry {
+		t.Fatalf("the tester's phases row after the answer = record %s v%d, %q at %q (%q), completed %s, entry %d; want step 5's completion unchanged: record %s v%d, %q at %q (%q), completed %s, entry %d",
+			row.HandoffRecord, row.HandoffVersion, row.Verdict, row.HandoffCommit, row.Summary, row.CompletedAt, row.Entry,
+			taken.HandoffRecord, taken.HandoffVersion, taken.Verdict, taken.HandoffCommit, taken.Summary, taken.CompletedAt, taken.Entry)
+	}
+	if got := r.testerCompletionsProcessed(); got != processed {
+		t.Fatalf("the daemon holds %d of the tester's completions processed after the answer, want the %d before it: an answer before the fact records nothing", got, processed)
+	}
+	r.note("read back: %s is still in reviewing, the tester's phases row still holds step 5's completion (record %s, %s at %s), and the daemon holds %d tester completions processed, as before it — nothing was recorded",
+		r.key, row.HandoffRecord, row.Verdict, row.HandoffCommit, processed)
+}
+
+// testerCompletionsProcessed is how many of the tester's completions of the proof's issue the
+// daemon holds as processed: processed_events rows under the id the completion route mints for a
+// completion it applies (handoff:<issue>:…:tester:…, api/handoff.go's eventID).
+func (r *behindEntryFenceLive) testerCompletionsProcessed() int {
+	r.t.Helper()
+	var processed int
+	if err := r.st.Pool().QueryRow(context.Background(),
+		"select count(*) from processed_events where source = 'api' and event_id like $1", "handoff:"+r.key+":%:tester:%").Scan(&processed); err != nil {
+		r.t.Fatalf("count the tester's completions of %s the daemon processed: %v", r.key, err)
+	}
+	return processed
+}
+
 // heldOn holds that the tester is in a turn while the phases row stands on a later entry than the
 // one whose task the tester took in step 1, and that no task of a later entry has reached it: the
 // task the claim holds, if any, is unconfirmed and undelivered, so the claim still serves the
-// first entry. That is the state every completion of steps 3 to 7 is reported from, and it says so.
+// first entry. That is the state every completion of steps 3 to 8 is reported from, and it says so.
 func (r *behindEntryFenceLive) heldOn() {
 	t := r.t
 	t.Helper()

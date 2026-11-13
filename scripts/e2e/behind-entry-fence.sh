@@ -13,10 +13,14 @@
 # completion naming the head it tested is answered 409 HANDOFF_STALE_ENTRY naming both heads
 # (`stale head refused`), the same completion naming no commit is answered 409 HANDOFF_STALE_ENTRY
 # (`behind with no head`), and the same completion naming the head the record holds is answered 200,
-# which puts the issue in reviewing (`behind at the head`). The registered reviewer then requests
-# the move back to testing, with nothing pushed between, and the same completion at that same head
-# is answered 409 HANDOFF_STALE_ENTRY, naming the move back (`behind after a backward move`). Each
-# refusal records nothing and leaves the issue in testing. The move back is the real one, over POST
+# which puts the issue in reviewing (`behind at the head`). From reviewing, a phase the tester no
+# longer works, the same completion sent again and one naming a newer record of the phase are each
+# answered 409 HANDOFF_NOT_CURRENT_PHASE in the engine's words, naming no task as owed, recording
+# nothing and leaving the issue in reviewing (`after a taken behind completion`). The registered
+# reviewer then requests the move back to testing, with nothing pushed between, and the same
+# completion at that same head is answered 409 HANDOFF_STALE_ENTRY, naming the move back (`behind
+# after a backward move`). Each HANDOFF_STALE_ENTRY refusal records nothing and leaves the issue in
+# testing. The move back is the real one, over POST
 # /legion/v1/phase/backward from a reviewer whose session is registered and holds a grant, because
 # the engine takes a backward move from no role but the one running the issue's phase
 # (BACKWARD_REFUSED). The proof publishes no CI settlement, because the daemon judges no check and
@@ -26,8 +30,9 @@
 # the ENVOY_NOTIFICATIONS stream, the daemon's own HTTP routes and its worker stream, which the
 # driver speaks as `legion worker-shim` does; every step is read back from GET /legion/v1/state and
 # from the operator's claim listing, but for the tester's phases row — whether the entry it stands
-# on was raised by a move back, and the verdict and commit a refusal leaves unwritten, which no
-# route shows and the driver reads from the daemon's own store
+# on was raised by a move back, and the verdict and commit a refusal leaves unwritten or unchanged —
+# and the tester's completions the daemon recorded as processed, which no route shows and the
+# driver reads from the daemon's own store
 # (packages/daemon/internal/daemon/behind_entry_fence_live_test.go, which this script builds with
 # `-tags e2e`). Each check prints `== <name>`, what it observed and `ok <name>`; the first that fails
 # ends the run non-zero, naming it.

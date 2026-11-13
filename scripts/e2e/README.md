@@ -263,6 +263,7 @@ Each item below names a script, then what it proves.
   the tester asks for the work back with its own backward move and ends its turn, and the implementer pushes and completes, which hands testing out again by a forward move while the tester is in a turn of its own that no task of the new entry has reached;
   from that turn, a completion naming the head the tester tested, which the record has left, is refused `409 HANDOFF_STALE_ENTRY` naming both heads, and one naming no commit is refused the same way, each with nothing recorded;
   the same completion naming the head the record holds is taken `200` and puts the issue in `reviewing`;
+  from `reviewing`, a phase the tester no longer works, that completion sent again and one naming a newer record of the phase are each answered `409 HANDOFF_NOT_CURRENT_PHASE`, naming no task as owed, with nothing recorded and the issue still in `reviewing`;
   and once the registered reviewer has moved the work back into testing over `POST /legion/v1/phase/backward`, with nothing pushed between, that same completion at that same head is refused `409 HANDOFF_STALE_ENTRY`, naming the move back, with nothing recorded and the issue still in `testing`
 
 - `phase-entry-converge.sh`
@@ -4179,14 +4180,16 @@ LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable
 The live proof of the completion route's entry fence on a completion behind its phase entry.
 Such a completion is taken when the commit it names is the head the record holds, because the phase was entered again at that head and the work the new entry's task asks for is the work that turn did.
 It is refused when it names a head the record has left or no commit at all, and whatever head it names when the entry the phase stands on was raised by a move back, which asks for that phase's work to be done again (`record.PhaseRow.EntryMovedBack`, read by `internal/api/handoff.go`).
-No reading of the heads tells that last case from the one that is taken, since a move back sends the work back at the head that is already there, so steps 5 and 7 report the same completion at the same head and differ only in what raised the entry.
+No reading of the heads tells that last case from the one that is taken, since a move back sends the work back at the head that is already there, so steps 5 and 8 report the same completion at the same head and differ only in what raised the entry.
 Steps 3, 4 and 5 report the same completion behind the same forward entry and differ only in the commit.
+Step 6 is what follows a taken one: the completion step 5 took moved the issue to `reviewing` and left the tester's claim serving the entry it was behind on, so the completions that claim sends next meet the fence in a phase the tester no longer works.
+The fence answers each `409 HANDOFF_NOT_CURRENT_PHASE` in the engine's own words (`intake.NotCurrentPhase`), never with the `HANDOFF_STALE_ENTRY` text that tells the worker a task is owed to it, since that task is queued for testing and the daemon drops it unsent once the issue has left testing.
 Runs on any Linux host with `go`, `awk` and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no agent — so a Legion pod, CI and a devbox all run it.
 `LEGION_TEST_PG_DSN` is required and names the PostgreSQL the daemon migrates and runs on;
 the script starts none.
 The DSN's host must be loopback: `prerequisites` refuses one that is not with exit 2, before the driver is built and before the broker starts.
 The broker is the run's own: the `nats-server` `LEGION_E2E_NATS_BIN` names, or the pinned `v2.10.22` the script installs with `go install` into a GOBIN of its own, started with JetStream on a port the kernel picks for it (`-p -1`, read back from its log) and stopped on any exit.
-A measured run took 61 s, 2 s of it the proof itself and the rest building the driver.
+A measured run of the eight steps took 73 s, 2 s of it the proof itself and the rest building the driver.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s, the run `conflict-no-takeover.sh` and `child-adoption.sh` make too.
 
 | check | what it holds |
@@ -4194,7 +4197,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
 | `driver` | a test binary of `TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive` (`internal/daemon/behind_entry_fence_live_test.go`, `-tags e2e`) |
-| `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, over that PostgreSQL and that broker, and seeds one root implementing on an open pull request at `bf1`, holding its tree's slot, with its implementer's claim mid-launch, serving run 1, which the boot relaunches.
 Facts enter only as production's do:
@@ -4212,6 +4215,7 @@ The move back into testing is the reviewer's own request over `POST /legion/v1/p
 | `stale head refused` | the tester's completion from its own turn, its verdict on `bf1`, the head its entry tested | refused `409 HANDOFF_STALE_ENTRY`, the refusal naming `bf1` against the head the record holds, `bf2`, with the issue still in `testing` on that entry and the tester's phases row holding no verdict and no commit |
 | `behind with no head` | the same completion naming no commit | refused `409 HANDOFF_STALE_ENTRY`, the refusal saying it names no commit while the record holds `bf2`, with nothing recorded in the same way |
 | `behind at the head` | the same completion naming `bf2`, the head the record holds | taken `200`, with the issue in `reviewing` and the tester still in its own turn with no later task delivered |
+| `after a taken behind completion` | from the same turn of the tester's, with the issue in `reviewing`: the completion of `behind at the head` again, naming the same record, then one naming a newer `test` record, both at `bf2` | each answered `409 HANDOFF_NOT_CURRENT_PHASE`, `the tester does not run phase reviewing of <KEY>; this completion changed nothing`, with no task named as owed; the issue still in `reviewing`, the tester's phases row still holding the completion `behind at the head` took, and no completion of the tester's processed beyond it (`processed_events`) |
 | `the reviewer moves the work back` | the end of the tester's turn; the reviewer's registration, readiness and turn on its review task, while the tester begins another turn of its own; then the reviewer's `POST /legion/v1/phase/backward` to `testing`, with nothing pushed | `200`, the issue in `testing` on a third entry, that entry raised by a move back (`phases.entry_moved_back` true), and the record still at `bf2` |
 | `behind after a backward move` | the completion of `behind at the head` again, from the tester's own turn, at `bf2` | refused `409 HANDOFF_STALE_ENTRY`, the refusal naming the two heads as the one commit they are and saying the move back is what refused it, with the issue still in `testing` on that entry and the tester's phases row holding no verdict and no commit |
 
@@ -4221,7 +4225,8 @@ every claim is launched by the package's fake runtime, which provisions its own 
 The issue, its pull request, its slot and the implementer's claim are seeded through the store, as every daemon test seeds its fixture;
 no `phases` row is, so every entry the fence reads is raised live, by the starts the completions and the moves back make.
 The configuration, the store and its migrations, the HTTP API, the claim supervision and its worker stream, `openWorkflow`, the JetStream consumers and the outbox lanes are the real ones.
-The store is read for the tester's own `phases` row, which no route shows whole: the fence's input, whether the entry that row stands on was raised by a move back, and, after each refusal, the verdict and the handoff commit a refused completion must leave unwritten there.
+The store is read for the tester's own `phases` row, which no route shows whole: the fence's input, whether the entry that row stands on was raised by a move back, and, after each refusal, the verdict and the handoff commit a refused completion must leave unwritten there, or, in `after a taken behind completion`, the completion that row already holds, unchanged.
+It is read in that step for the tester's completions the daemon holds as processed too (`processed_events`), which an answer before the fact adds none to.
 `BEHIND_ENTRY_FENCE_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, kept and printed) keeps the transcript, the `nats-server`'s log and the daemon's own, which the driver writes through `LEGION_E2E_DAEMON_LOG`.
 
 ## phase-entry-converge.sh

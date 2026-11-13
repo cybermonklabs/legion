@@ -127,10 +127,14 @@ func TestTheEntrySweepTickConvergesARoleBehindItsEntry(t *testing.T) {
 		return n
 	}
 
-	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
-	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as it does in production:
-	// on an unmarked context the guard refuses nothing, so a sweep that asked the pool for a second
-	// connection while it held one would pass this test and be refused in production (INFRA-3169).
+	// The sweep loop runs on one hold mark, as workflowRuntime.run starts it
+	// (store.ForConcurrentWorker(running)), and every sweep the loop applies reuses that mark, one
+	// after another on the loop's goroutine, so the pool's guard sees each sweep as it does in
+	// production: on an unmarked context the guard refuses nothing, so a sweep that asked the pool
+	// for a second connection while it held one would pass this test and be refused in production
+	// (INFRA-3169). The sweeps driven by hand below take a fresh mark each, which the guard reads
+	// the same way: a sweep gives back every connection it took before it returns, so the loop's one
+	// mark is clear whenever its next sweep begins.
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()

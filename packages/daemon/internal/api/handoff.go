@@ -74,9 +74,12 @@ type HandoffCompleteResponse struct{}
 // merger's), the Dispatch handoff record a file-backed phase ends with (handoffRecord), its
 // role's verdict rule, the wake no phase carries (CHECK_WAKE_UNEXPECTED), the run and the phase
 // entry its claim serves, the implementer's in implementing to an open pull request on its
-// branch or a merged one recorded (implementationPullRequest), and the engine refuses one of a
-// phase its role does not run (HANDOFF_NOT_CURRENT_PHASE). A completion of a done issue, which
-// runs no phase, by a session working no look is neither of the two: CHECK_LOOK_NOT_SERVED.
+// branch or a merged one recorded (implementationPullRequest), and one of a phase its role does
+// not run is refused HANDOFF_NOT_CURRENT_PHASE: by the entry fence, before the fact, when the
+// entry its claim serves differs from the role's phases row, and otherwise by the engine, which
+// records instead a completion that arrives after the daemon moved the issue on by an event
+// (workflow's leftItsPhase). A completion of a done issue, which runs no phase, by a session
+// working no look is neither of the two: CHECK_LOOK_NOT_SERVED.
 func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	var req HandoffCompleteRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
@@ -263,22 +266,35 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// by the transition that raised it, so the fence reads the move rather than guessing at it
 	// from the heads (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
 	//
-	// And one behind completion is no new report at all: one naming the very record the role's own
-	// row already holds is a second send of a completion this route took (a retry after a dropped
-	// connection, as pi-shared's retryWhileDaemonRestarts makes one), since that row records a
-	// completion's record only by taking it, and a later entry of the phase clears it. The fence
-	// lets that one through, so the engine answers it as it answers any repeat: already recorded,
-	// or no longer this role's phase once the taken completion moved the issue on. Refusing it
-	// here would tell a worker whose completion was taken that it was refused, and that a task is
-	// owed to it which the daemon dropped when the issue left the phase.
+	// Before any of that, the fence asks whether the role works the phase the issue stands in,
+	// because the entry it compares is the role's own row's, which stays where the role's last
+	// phase left it. A claim can still serve an earlier entry after the issue has left the role's
+	// phase: a taken completion always moves the phase on, so a behind completion taken here
+	// leaves its claim serving the entry it was behind on, and an issue can leave the phase again
+	// before a turn that outlived an earlier entry reports. A completion from such a claim — the
+	// taken one sent again after a dropped connection, as pi-shared's retryWhileDaemonRestarts
+	// sends it, or one naming a newer record — meets this fence in another role's phase, where
+	// staleEntry's words would tell the worker that the task of the entry the phase is on is owed
+	// to it and comes by itself. That task is queued for the phase the issue has left, and is
+	// dropped rather than sent (supervise's phaseHolds), so a worker that obeyed would wait for a
+	// task nobody sends. Such a completion is answered HANDOFF_NOT_CURRENT_PHASE instead, the code
+	// every worker's prompt names for a completion of a phase it no longer works, in the engine's
+	// own words for it (intake.NotCurrentPhase), and before the fact, so nothing is recorded. A
+	// completion level with its row's entry is not this fence's: the engine decides it, and
+	// records one that arrives after the daemon moved the issue on by an event (workflow's
+	// leftItsPhase).
 	if entry != 0 && position.entry != 0 && entry != position.entry {
+		if phase.RoleFor(issue.Phase) != grant.Role {
+			refusal := intake.NotCurrentPhase(grant.Role, issue.Phase, grant.Issue)
+			writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
+			return
+		}
 		if entry > position.entry {
 			writeFailure(w, http.StatusConflict, staleEntryCode, unraisedEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry))
 			return
 		}
-		repeat := position.ownRecord != "" && req.HandoffID == position.ownRecord && req.HandoffVersion == position.ownVersion
 		head := recordedHead(position.pullRequest)
-		if !repeat && (position.entryMovedBack || !behindAtRecordedHead(recordBacked, req.Commit, head)) {
+		if position.entryMovedBack || !behindAtRecordedHead(recordBacked, req.Commit, head) {
 			writeFailure(w, http.StatusConflict, staleEntryCode,
 				staleEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry, c.Pending,
 					entryHeadClause(recordBacked, req.Commit, head, position.entryMovedBack)))
@@ -288,8 +304,8 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// The record a phase with a handoff ends with is read back and held to the completion before
 	// anything is recorded; a phase that writes none takes no record, and a completion of such a
 	// phase that names one is refused. A completion of a phase with a handoff by a role other
-	// than its writer is the engine's to refuse (HANDOFF_NOT_CURRENT_PHASE), so no record of its
-	// is read here.
+	// than its writer, which the entry fence above has not answered, is the engine's to decide
+	// (HANDOFF_NOT_CURRENT_PHASE), so no record of its is read here.
 	switch {
 	case recordBacked:
 		if !s.handoffRecord(w, r, c.Session, issue, word, req) {
@@ -567,7 +583,11 @@ func entryHeadClause(recordBacked bool, commit, head string, movedBack bool) str
 // staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
 // itself: the claim is behind the entry its phases row names, which is what the admission pass
 // sends the row's own work for (record.PhaseRow.EntryTask, workflow's SendOwedEntry), so the
-// worker waits for that task rather than asking anyone for it.
+// worker waits for that task rather than asking anyone for it. That holds because the role works
+// the phase the issue stands in, and the entry fence writes this refusal for no other: a task is
+// queued for the phase it hands out and dropped rather than sent once the issue has left that
+// phase (supervise's phaseHolds), so a role the issue has moved on from is owed nothing, and the
+// fence answers its completion HANDOFF_NOT_CURRENT_PHASE first (handoffComplete).
 //
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
@@ -816,11 +836,9 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
 // phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start
-// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), the handoff record the
-// completing role's own row holds, the one a completion of its this route took named
-// (record.PhaseRow.HandoffRecord and HandoffVersion, "" and 0 while it holds none), its pull
-// request record where this route has a reader for it (handoffPosition), nil where it has none
-// and while none is recorded, and its production check, nil while none was ever opened.
+// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record
+// where this route has a reader for it (handoffPosition), nil where it has none and while none
+// is recorded, and its production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -828,8 +846,6 @@ type completionPosition struct {
 	pass           int
 	entry          int64
 	entryMovedBack bool
-	ownRecord      string
-	ownVersion     int
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
@@ -889,5 +905,5 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 	}
 	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
 		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
-		ownRecord: completing.HandoffRecord, ownVersion: completing.HandoffVersion, pullRequest: pr, check: check}, tx.Commit(ctx)
+		pullRequest: pr, check: check}, tx.Commit(ctx)
 }

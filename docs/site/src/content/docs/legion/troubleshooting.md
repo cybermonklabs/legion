@@ -1290,7 +1290,14 @@ These arrive as messages on the Dispatch issue:
   work that turn did. The same code on a completion of an entry above the one the phases row
   names is one the record never produces, since the daemon raises the row in the transaction
   that composes the entry's task; that refusal tells the worker to end the turn and tell the
-  architect.
+  architect. Either refusal comes only while the role works the phase the issue stands in. A
+  completion of another entry than the role's phases row names, from a role that no longer
+  works the issue's phase — a taken completion sent again once it has moved the issue on, or one
+  naming a newer record — is answered `HANDOFF_NOT_CURRENT_PHASE` instead, in the words the
+  workflow answers that code with, `the <role> does not run phase <phase> of <KEY>; this
+  completion changed nothing`, and nothing is recorded: the task of that role's entry was
+  queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
+  none.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
