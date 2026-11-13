@@ -32,6 +32,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
@@ -570,6 +571,29 @@ func (b *gcpBackend) currentTags(ctx context.Context, slug string) (heldTags, er
 		return heldTags{}, err
 	}
 	return heldTags{tags: secret.GetAnnotations(), etag: secret.GetEtag()}, nil
+}
+
+// readValue reads the secret's value with AccessSecretVersion on versions/latest, the version the
+// broker serves, and refuses one that is empty or not valid UTF-8, as the broker's own read does
+// (secrets.GCP.Read). Its error never holds the value's bytes.
+func (b *gcpBackend) readValue(ctx context.Context, slug string) (string, error) {
+	latest := b.id(slug) + "/versions/latest"
+	out, err := b.client.AccessSecretVersion(ctx, &secretmanagerpb.AccessSecretVersionRequest{Name: latest})
+	if err != nil {
+		return "", err
+	}
+	data := out.GetPayload().GetData()
+	if len(data) == 0 || !utf8.Valid(data) {
+		return "", errors.New("its value is not a non-empty UTF-8 string")
+	}
+	return string(data), nil
+}
+
+// valueReadPermission is what AccessSecretVersion needs of a person's sign-in. The roles people
+// hold on the broker's secrets commonly lack it: they add versions and change annotations, and
+// read none.
+func (b *gcpBackend) valueReadPermission() string {
+	return "secretmanager.versions.access on the secret"
 }
 
 // setTags writes tags into the annotations held holds, and removeTags deletes keys from them, each

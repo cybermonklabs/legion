@@ -316,6 +316,11 @@ RULES = {
     f"{DAEMON}/internal/testpg/file_copy_test.go": reads(
         (f"{DAEMON}/**", "internal/testpg/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     # --- envoy
+    f"{ENVOY}/cmd/agent-secrets/modules_test.go": [
+        run(ENVOY, ["./cmd/agent-secrets"], "cmd/agent-secrets/modules_test.go:179 cmdtest.BuildCommand . CGO_ENABLED=0 GOOS=darwin",
+            mode="build", env={"CGO_ENABLED": "0", "GOOS": "darwin"}),
+        run(ENVOY, ["./cmd/broker"], "cmd/agent-secrets/modules_test.go:188 cmdtest.BuildCommand . in ../broker CGO_ENABLED=0 GOOS=linux",
+            mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"})],
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
     f"{ENVOY}/cmd/broker-refgen/recorder_test.go": [

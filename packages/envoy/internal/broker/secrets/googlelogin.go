@@ -23,13 +23,6 @@ type GoogleLogin struct {
 	Now      func() time.Time
 }
 
-type googleLoginSecret struct {
-	Type         string `json:"type"`
-	ClientID     string `json:"client_id"`
-	ClientSecret string `json:"client_secret"`
-	RefreshToken string `json:"refresh_token"`
-}
-
 type googleTokenResponse struct {
 	AccessToken string `json:"access_token"`
 	// ExpiresIn is how many seconds from now Google's answer says the access token lasts. An
@@ -64,15 +57,11 @@ func googleSubtype(subtype string) string {
 // ErrMintStoredValue, ErrMintRefused or ErrMintUpstream.
 func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	const what = "refresh Google login"
-	var secret googleLoginSecret
-	// encoding/json's syntax errors quote the offending byte, so neither decode wraps its error:
-	// the stored credential and Google's answer both hold secrets.
-	if json.Unmarshal([]byte(req.Value), &secret) != nil {
-		return Minted{}, fmt.Errorf("%w: decode Google login secret: not a JSON object of its fields", ErrMintStoredValue)
+	parsed, err := ParseValue(kindGoogleLogin, req.Value)
+	if err != nil {
+		return Minted{}, err
 	}
-	if secret.Type != "authorized_user" || secret.ClientID == "" || secret.ClientSecret == "" || secret.RefreshToken == "" {
-		return Minted{}, fmt.Errorf("%w: Google login secret must be an authorized_user credential", ErrMintStoredValue)
-	}
+	secret := parsed.GoogleLogin
 	endpoint := cmp.Or(m.TokenURL, googleTokenURL)
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
@@ -106,6 +95,8 @@ func (m GoogleLogin) Mint(ctx context.Context, req MintRequest) (Minted, error) 
 		return Minted{}, err
 	}
 	var token googleTokenResponse
+	// encoding/json's syntax errors quote the offending byte, so this decode does not wrap its
+	// error: Google's answer holds a secret.
 	if json.Unmarshal(payload, &token) != nil {
 		return Minted{}, fmt.Errorf("%w: decode Google token response: not a JSON object of its fields", ErrMintUpstream)
 	}

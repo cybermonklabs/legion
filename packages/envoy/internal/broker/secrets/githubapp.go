@@ -29,11 +29,6 @@ type GitHubApp struct {
 	Now  func() time.Time
 }
 
-type githubAppSecret struct {
-	AppID      string `json:"app_id"`
-	PrivateKey string `json:"private_key"`
-}
-
 type githubInstallation struct {
 	ID int64 `json:"id"`
 	// Account is the user or organization the App is installed on, named by Login, or the
@@ -249,18 +244,16 @@ func (m GitHubApp) revokeInstallationToken(ctx context.Context, token string) er
 // req.GitHubOwners must list (it refuses, asking GitHub nothing, otherwise), sending the narrowing
 // as GitHub's access_tokens body, and releases the token only when GitHub's answer holds no more
 // than the narrowing asked (heldBy); a token it refuses so it revokes at GitHub first. The value is
-// the JSON object stored in the secret, never part of an error. Every error wraps one of
-// ErrMintStoredValue, ErrMintRefused, ErrMintNarrowingRefused or ErrMintUpstream.
+// the JSON object stored in the secret, decoded by ParseValue before anything else, so a value it
+// refuses is refused as the stored value even when the narrowing is refused too; it is never part
+// of an error. Every error wraps one of ErrMintStoredValue, ErrMintRefused,
+// ErrMintNarrowingRefused or ErrMintUpstream.
 func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
-	var secret githubAppSecret
-	// encoding/json's syntax errors quote the offending byte, so this decode and the token's do
-	// not wrap their errors: the stored key and GitHub's token are both secrets.
-	if json.Unmarshal([]byte(req.Value), &secret) != nil {
-		return Minted{}, fmt.Errorf("%w: decode GitHub App secret: not a JSON object of its fields", ErrMintStoredValue)
+	parsed, err := ParseValue(kindGitHubApp, req.Value)
+	if err != nil {
+		return Minted{}, err
 	}
-	if !validGitHubAppID(secret.AppID) || secret.PrivateKey == "" {
-		return Minted{}, fmt.Errorf("%w: GitHub App secret needs an app_id and private_key", ErrMintStoredValue)
-	}
+	secret := parsed.GitHubApp
 	owners := req.GitHubOwners
 	narrowing := req.GitHubNarrowing
 	if narrowing != nil {
@@ -273,15 +266,13 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 		owners = []string{owner}
 	}
 	body := narrowing.accessTokensBody(readOnlyPermissions)
-	key, err := githubappjwt.ParseKey(secret.PrivateKey)
-	if err != nil {
-		return Minted{}, fmt.Errorf("%w: parse GitHub App private key: %w", ErrMintStoredValue, err)
-	}
 	now := time.Now
 	if m.Now != nil {
 		now = m.Now
 	}
-	jwt, err := githubappjwt.Sign(secret.AppID, key, now())
+	// Mint signs its own JWT, at its own clock's now: ParseValue has signed one with this key
+	// already, so this signature fails only where that one would have, and as the same class.
+	jwt, err := githubappjwt.Sign(secret.AppID, secret.Key, now())
 	if err != nil {
 		return Minted{}, fmt.Errorf("%w: sign GitHub App JWT: %w", ErrMintStoredValue, err)
 	}
@@ -348,11 +339,6 @@ func (m GitHubApp) Mint(ctx context.Context, req MintRequest) (Minted, error) {
 	return Minted{Value: string(encoded), Expires: expires}, nil
 }
 
-// validGitHubAppID reports whether id is a non-empty run of ASCII digits.
-func validGitHubAppID(id string) bool {
-	return id != "" && !strings.ContainsFunc(id, func(r rune) bool { return r < '0' || r > '9' })
-}
-
 func (m GitHubApp) base() string {
 	return cmp.Or(strings.TrimSuffix(m.Base, "/"), githubAPIBase)
 }
@@ -412,6 +398,8 @@ func (m GitHubApp) installationToken(ctx context.Context, jwt string, installati
 		return githubInstallationToken{}, err
 	}
 	var token githubInstallationToken
+	// encoding/json's syntax errors quote the offending byte, so this decode does not wrap its
+	// error: GitHub's token is a secret.
 	if json.Unmarshal(payload, &token) != nil {
 		return githubInstallationToken{}, fmt.Errorf("%w: decode GitHub App installation token: not a JSON object of its fields", ErrMintUpstream)
 	}

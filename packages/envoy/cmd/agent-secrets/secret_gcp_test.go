@@ -52,10 +52,11 @@ func gcpTestSettings() Settings {
 	}
 }
 
-// fakeSecret is one secret fakeSecretManager holds.
+// fakeSecret is one secret fakeSecretManager holds: payloads[i] is versions[i]'s value.
 type fakeSecret struct {
 	secret      *secretmanagerpb.Secret
 	versions    []*secretmanagerpb.SecretVersion
+	payloads    [][]byte
 	etagCounter int
 }
 
@@ -78,6 +79,11 @@ type fakeSecretManager struct {
 	// authorizations is the authorization metadata each call carried, in order: the sign-in it
 	// ran under (recordAuthorization).
 	authorizations []string
+	// refuseAccess, when not OK, is the code every AccessSecretVersion answers: PERMISSION_DENIED
+	// as IAM answers a sign-in without secretmanager.versions.access, or any other failure;
+	// accesses counts the AccessSecretVersion calls, answered or refused.
+	refuseAccess codes.Code
+	accesses     int
 }
 
 // raceOnce runs f.race on entry once, on a call after the first GetSecret.
@@ -206,7 +212,30 @@ func (f *fakeSecretManager) AddSecretVersion(_ context.Context, req *secretmanag
 	name := req.GetParent() + "/versions/" + strconv.Itoa(number)
 	version := &secretmanagerpb.SecretVersion{Name: name, State: secretmanagerpb.SecretVersion_ENABLED}
 	entry.versions = append(entry.versions, version)
+	entry.payloads = append(entry.payloads, req.GetPayload().GetData())
 	return version, nil
+}
+
+// AccessSecretVersion answers versions/latest, the one version name the forms access, with the
+// payload AddSecretVersion stored for the newest version, or refuseAccess when that is set.
+func (f *fakeSecretManager) AccessSecretVersion(_ context.Context, req *secretmanagerpb.AccessSecretVersionRequest) (*secretmanagerpb.AccessSecretVersionResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accesses++
+	if f.refuseAccess != codes.OK {
+		return nil, status.Error(f.refuseAccess, "the fake refuses access to "+req.GetName())
+	}
+	parent, latest := strings.CutSuffix(req.GetName(), "/versions/latest")
+	entry, ok := f.secrets[parent]
+	if !latest || !ok || len(entry.versions) == 0 {
+		return nil, status.Error(codes.NotFound, "not found")
+	}
+	newest := len(entry.versions) - 1
+	var data []byte
+	if newest < len(entry.payloads) {
+		data = entry.payloads[newest]
+	}
+	return &secretmanagerpb.AccessSecretVersionResponse{Name: entry.versions[newest].GetName(), Payload: &secretmanagerpb.SecretPayload{Data: data}}, nil
 }
 
 func (f *fakeSecretManager) GetSecretVersion(_ context.Context, req *secretmanagerpb.GetSecretVersionRequest) (*secretmanagerpb.SecretVersion, error) {

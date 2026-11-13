@@ -340,6 +340,21 @@ func readSecretValue(name, pipeTo, shape string, stderr io.Writer) (string, erro
 	return stored, nil
 }
 
+// checkValueFor refuses value, which a secret of kind (a policy.Kinds entry) holds or is about to
+// hold under shape, its shape tag, when the broker's minter for kind would refuse it: it decodes
+// the value the broker's release hands that minter (policy.TrimForShape, as requests' shapedValue
+// reads it) with secrets.ParseValue, the decoder every minter calls, so the refusal names what is
+// wrong in the minter's own words and never quotes the value. Create and set call it before they
+// write, and retag on the value it read (checkRetagValue); a refusal is a usage error, as
+// readSecretValue's refusals of a value are.
+func checkValueFor(kind, shape, value string) error {
+	spend, _ := policy.TrimForShape(value, shape)
+	if _, err := secrets.ParseValue(kind, spend); err != nil {
+		return usageErr{fmt.Errorf("the broker refuses this value as a %s secret's, so nothing is written: %w", kind, err)}
+	}
+	return nil
+}
+
 // minRecoveryWindowDays is the shortest recovery window Secrets Manager allows a deletion, 7 days.
 const minRecoveryWindowDays = 7
 
@@ -406,6 +421,13 @@ type secretBackend interface {
 	// annotations with that read's etag), from which retag builds the tags the secret will hold once
 	// its write lands, and against which it makes that write.
 	currentTags(ctx context.Context, slug string) (heldTags, error)
+	// readValue answers the secret's current value, as the broker's own store reads it: a
+	// non-empty string, and on Secret Manager valid UTF-8. Only retag reads it, to decode it under
+	// the kind and shape it is about to write (checkRetagValue), and nothing prints it.
+	readValue(ctx context.Context, slug string) (string, error)
+	// valueReadPermission names the store permissions readValue needs, for the line retag prints
+	// when the store refuses that read (checkRetagValue).
+	valueReadPermission() string
 	// setTags writes tags onto the secret in one call and leaves every other tag as it is.
 	// removeTags removes keys from it in one call and leaves every other tag as it is. Each writes
 	// against held, and answers errTagsChanged when another write raced it: GCP sends held's
@@ -418,8 +440,9 @@ type secretBackend interface {
 	delete(ctx context.Context, slug string) (deletion *time.Time, err error)
 	restore(ctx context.Context, slug string) error
 
-	// isAccessDenied reports whether err is the store's own access-denied refusal, used by
-	// retag's shared-secret message.
+	// isAccessDenied reports whether err is the store's own access-denied refusal and only that
+	// (AWS's AccessDeniedException, Secret Manager's PERMISSION_DENIED), used by retag's
+	// shared-secret message and by its value read (checkRetagValue).
 	isAccessDenied(err error) bool
 
 	// close releases the backend's own connection (GCP's gRPC client; AWS's HTTP-based SDK
@@ -888,6 +911,9 @@ func cmdSecretCreate(args []string, stdout, stderr io.Writer) int {
 		command = append(command, "--default-grant", *defaultGrant)
 	}
 	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, command...), *shape, stderr)
+	if err == nil && policy.ValidKind(*kind) {
+		err = checkValueFor(*kind, *shape, value)
+	}
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
@@ -921,11 +947,21 @@ func cmdSecretSet(args []string, stdout, stderr io.Writer) int {
 	// The value is read under the shape the secret already carries: a set names no tag, and
 	// reading a one-line value the untagged way would store a document's own final line ending
 	// away from an owner who declared it a document, who could then store no such value at all.
+	// It is checked under the kind the secret carries too, as the broker's minter for that kind
+	// will read it; a kind tag naming no kind the broker mints is refused before the value is
+	// read, since the broker serves no value under it.
 	held, err := s.backend.currentTags(s.ctx, slug)
 	if err != nil {
-		return secretFailIn(stderr, form, s, fmt.Errorf("read %s's tags for its shape: %w", name, err))
+		return secretFailIn(stderr, form, s, fmt.Errorf("read %s's tags for its kind and shape: %w", name, err))
 	}
-	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), held.tags[policy.TagShape], stderr)
+	kind, shape := held.tags[policy.TagKind], held.tags[policy.TagShape]
+	if kind != "" && !policy.ValidKind(kind) {
+		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s's kind tag %q names no kind the broker mints, and it refuses the secret as %s: retag it --kind %s or %s before setting its value", name, kind, policy.ReasonKindUnknown, strings.Join(policy.Kinds, ", "), tagNone)})
+	}
+	value, err := readSecretValue(name, pipeCommand(s.backend.signInPrefix(), *profile, "secret", "set", name), shape, stderr)
+	if err == nil && kind != "" {
+		err = checkValueFor(kind, shape, value)
+	}
 	if err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}

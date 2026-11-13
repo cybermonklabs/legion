@@ -2,27 +2,41 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"maps"
+	"math/big"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
+	"cloud.google.com/go/secretmanager/apiv1/secretmanagerpb"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
+	smtypes "github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 	"github.com/aws/smithy-go"
+	"google.golang.org/grpc/codes"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
+// TestSecretKindAndMaxGrantOnAWS retags one secret through the kinds. Each retag to a kind reads
+// the value and decodes it as that kind, so the value that kind decodes is stored first, as a
+// writer other than this client stores it (a retag between two kinds cannot be preceded by a
+// set, which decodes the value under the kind the secret holds).
 func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
 	local := secrets.NewLocal()
 	startSecretBroker(t, servedBy(local))
 	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, "stored-value")
+	useStdin(t, kindValue(t, policy.KindGitHubApp))
 
 	stdout, stderr, code := runSecret("create", "APP_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "Acme-Org", "--requesters", "ada@example.com", "--max-grant", "1h")
 	if code != 0 {
@@ -63,6 +77,9 @@ func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
 	}
 
 	for _, kind := range []string{policy.KindGoogleLogin, policy.KindGitHubApp, policy.KindAzureLogin} {
+		if _, err := local.PutSecretValue(context.Background(), &secretsmanager.PutSecretValueInput{SecretId: aws.String(policytest.ID("APP_KEY")), SecretString: aws.String(kindValue(t, kind))}); err != nil {
+			t.Fatal(err)
+		}
 		_, stderr, code = runSecret("retag", "APP_KEY", "--kind", kind)
 		if code != 0 {
 			t.Fatalf("retag %s: exit %d, stderr %q", kind, code, stderr)
@@ -85,13 +102,15 @@ func TestSecretKindAndMaxGrantOnAWS(t *testing.T) {
 	}
 }
 
+// TestSecretKindAndMaxGrantOnGCP retags one secret through every kind, each value stored before
+// the retag that decodes it, as TestSecretKindAndMaxGrantOnAWS does.
 func TestSecretKindAndMaxGrantOnGCP(t *testing.T) {
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	useGCPIdentity(t, "authorized_user", "ada@example.com")
 	settings := gcpTestSettings()
 	startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-	useStdin(t, "stored-value")
+	useStdin(t, kindValue(t, policy.KindGoogleLogin))
 
 	_, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGoogleLogin, "--max-grant", "30m")
 	if code != 0 {
@@ -117,6 +136,7 @@ func TestSecretKindAndMaxGrantOnGCP(t *testing.T) {
 		t.Fatalf("list: exit %d stdout %q stderr %q; want kind and max-grant", code, stdout, stderr)
 	}
 	for _, kind := range policy.Kinds {
+		gcpKindStore{fake}.addValue(t, "LOGIN_KEY", kindValue(t, kind))
 		args := []string{"retag", "LOGIN_KEY", "--kind", kind}
 		if policy.KindNeedsGitHubOwners(kind) {
 			args = append(args, "--github-owners", "Ada  acme-org")
@@ -263,7 +283,7 @@ func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
 // so a list that names it beside a login, in any case, is refused before anything is read or
 // written, on create and on retag, rather than written as a login named none.
 func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
-	local := secrets.NewLocal(kindTaggedSecret("APP_KEY"))
+	local := secrets.NewLocal(kindTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -291,7 +311,7 @@ func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
 // github-owners-malformed, and a retag that leaves the tag as it is says so, not that owners are
 // missing, and writes nothing; naming the owners fixes it.
 func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *testing.T) {
-	commas := kindTaggedSecret("APP_KEY")
+	commas := kindTaggedSecret(t, "APP_KEY")
 	commas.Tags[policy.TagGitHubOwners] = "acme-org,ada"
 	local := secrets.NewLocal(commas)
 	startSecretBroker(t, servedBy(local))
@@ -323,7 +343,8 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 		{"retag", "PLAIN_KEY", "--github-owners", "ada"},
 	}
 	t.Run("aws", func(t *testing.T) {
-		local := secrets.NewLocal(policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "value"), kindTaggedSecret("APP_KEY"))
+		// PLAIN_KEY holds an App's value, which the retag to github-app below decodes.
+		local := secrets.NewLocal(policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, kindValue(t, policy.KindGitHubApp)), kindTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
 		useAWS(t, writes, testAccount, adaSignIn)
@@ -352,13 +373,16 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 		useGCPIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		for _, args := range [][]string{
-			{"create", "PLAIN_KEY", "--owner", "me", "--tier", "agent"},
-			{"create", "APP_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "acme-org ada"},
+		for _, create := range []struct {
+			args  []string
+			value string
+		}{
+			{[]string{"create", "PLAIN_KEY", "--owner", "me", "--tier", "agent"}, "stored-value"},
+			{[]string{"create", "APP_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "acme-org ada"}, kindValue(t, policy.KindGitHubApp)},
 		} {
-			useStdin(t, "stored-value")
-			if _, stderr, code := runSecret(args...); code != 0 {
-				t.Fatalf("%v: exit %d stderr %q", args, code, stderr)
+			useStdin(t, create.value)
+			if _, stderr, code := runSecret(create.args...); code != 0 {
+				t.Fatalf("%v: exit %d stderr %q", create.args, code, stderr)
 			}
 		}
 		annotations := func() map[string]map[string]string {
@@ -394,7 +418,8 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 // a secret that already holds that kind. The list is written as the broker reads it, and
 // --requesters none removes it.
 func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testing.T) {
-	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, "value")
+	// LISTED_KEY holds a service account, which the retag to that kind below decodes.
+	listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, kindValue(t, policy.KindGoogleServiceAccount))
 	listed.Tags[policy.TagRequesters] = "ada@example.com"
 	listed.Tags[policy.TagMaxGrant] = "1h"
 	local := secrets.NewLocal(listed)
@@ -452,7 +477,7 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 // sorted and single-spaced; a comma anywhere is refused before create or retag writes anything,
 // naming the space-separated form.
 func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T) {
-	local := secrets.NewLocal(kindTaggedSecret("APP_KEY"))
+	local := secrets.NewLocal(kindTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -478,7 +503,7 @@ func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T
 	if tags := secrets.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada widgets-org" {
 		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada widgets-org")
 	}
-	useStdin(t, "stored-value")
+	useStdin(t, kindValue(t, policy.KindGitHubApp))
 	if _, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGitHubApp, "--github-owners", "ada acme-org"); code != 0 {
 		t.Fatalf("create with two owners: exit %d stderr %q", code, stderr)
 	}
@@ -556,8 +581,10 @@ func (c *countingTagWrites) UntagResource(ctx context.Context, in *secretsmanage
 	return c.Local.UntagResource(ctx, in, o...)
 }
 
-func kindTaggedSecret(name string) secrets.LocalSecret {
-	secret := policytest.KindSecret(name, "ada@example.com", policy.TierAgent, policy.KindGitHubApp, "value")
+// kindTaggedSecret is a github-app secret name holding an App's value, with a max grant of an hour.
+func kindTaggedSecret(t *testing.T, name string) secrets.LocalSecret {
+	t.Helper()
+	secret := policytest.KindSecret(name, "ada@example.com", policy.TierAgent, policy.KindGitHubApp, kindValue(t, policy.KindGitHubApp))
 	secret.Tags[policy.TagMaxGrant] = "1h"
 	return secret
 }
@@ -568,7 +595,7 @@ func kindTaggedSecret(name string) secrets.LocalSecret {
 // Each retag reads the secret's tags once, to build the tags it will leave and check them, and a
 // write that lands reads them once more, to find a concurrent writer's (awsBackend.raceCheck).
 func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
-	local := secrets.NewLocal(kindTaggedSecret("APP_KEY"))
+	local := secrets.NewLocal(kindTaggedSecret(t, "APP_KEY"))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
 	useAWS(t, writes, testAccount, adaSignIn)
@@ -623,7 +650,7 @@ func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 // TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid: a removal sends no owner or
 // tier, so the cloud refusing one on a shared secret does not print the owner-and-tier hint.
 func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.T) {
-	shared := kindTaggedSecret("SHARED_APP_KEY")
+	shared := kindTaggedSecret(t, "SHARED_APP_KEY")
 	shared.Tags[policy.TagOwner] = policy.OwnerShared
 	local := secrets.NewLocal(shared)
 	startSecretBroker(t, servedBy(local))
@@ -638,7 +665,7 @@ func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.
 // kind, and --max-grant none removes it and keeps kind.
 func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 	t.Run("aws", func(t *testing.T) {
-		local := secrets.NewLocal(kindTaggedSecret("APP_KEY"))
+		local := secrets.NewLocal(kindTaggedSecret(t, "APP_KEY"))
 		startSecretBroker(t, servedBy(local))
 		useAWS(t, local, testAccount, adaSignIn)
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--max-grant", "2h"); code != 0 {
@@ -667,7 +694,7 @@ func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
 		useGCPIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		useStdin(t, "stored-value")
+		useStdin(t, kindValue(t, policy.KindGoogleLogin))
 		if _, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--kind", policy.KindGoogleLogin); code != 0 {
 			t.Fatalf("create: exit %d, stderr %q", code, stderr)
 		}
@@ -787,5 +814,481 @@ func TestTagRefusalRefusesAReasonNoArmNames(t *testing.T) {
 	}
 	if tagRefusal("", onDevAccount, nil) != nil {
 		t.Fatalf("tagRefusal of no reason = %v, want nil", tagRefusal("", onDevAccount, nil))
+	}
+}
+
+// googleLoginValue, googleServiceAccountValue and azureLoginValue are each a value its kind's
+// minter mints from; kindValue answers them, and a github-app value signed by kindAppKey. The
+// google-login fields say not-a-secret, which is what the push guard's credential rule reads a
+// fixture's value by.
+const (
+	googleLoginValue          = `{"type":"authorized_user","client_id":"client-id","client_secret":"client-not-a-secret","refresh_token":"refresh-not-a-secret"}`
+	googleServiceAccountValue = `{"service_account":"robot-1@acme-agent-infra.iam.gserviceaccount.com"}`
+	azureLoginValue           = `{"tenant_id":"tenant-id","client_id":"client-id"}`
+)
+
+// kindAppKey is the one GitHub App key these tests store: generating a 2048-bit key costs more
+// than a test of the secret forms does.
+var kindAppKey = sync.OnceValues(func() (*rsa.PrivateKey, error) { return rsa.GenerateKey(rand.Reader, 2048) })
+
+// appKeyPEM is kindAppKey as a github-app value's private_key holds it.
+func appKeyPEM(t *testing.T) string {
+	t.Helper()
+	key, err := kindAppKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+}
+
+// appValue is a github-app value holding fields and nothing else.
+func appValue(t *testing.T, fields map[string]string) string {
+	t.Helper()
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(encoded)
+}
+
+// kindValue is a value kind's minter mints from.
+func kindValue(t *testing.T, kind string) string {
+	t.Helper()
+	switch kind {
+	case policy.KindGitHubApp:
+		return appValue(t, map[string]string{"app_id": "123456", "private_key": appKeyPEM(t)})
+	case policy.KindGoogleLogin:
+		return googleLoginValue
+	case policy.KindGoogleServiceAccount:
+		return googleServiceAccountValue
+	case policy.KindAzureLogin:
+		return azureLoginValue
+	}
+	t.Fatalf("no value of kind %q", kind)
+	return ""
+}
+
+// unsignableAppKey is a 512-bit RSA key in PEM, made at run time from two fresh 256-bit primes:
+// x509 parses it, and crypto/rsa refuses to sign with it, as Go refuses every RSA key shorter
+// than 1024 bits. It is the stored key a github-app value can hold that parses and still cannot
+// sign. No fixture writes the key out: rsa.GenerateKey refuses that size, and a key written into
+// the source is a key the push guard refuses.
+func unsignableAppKey(t *testing.T) string {
+	t.Helper()
+	one := big.NewInt(1)
+	for {
+		p, err := rand.Prime(rand.Reader, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		q, err := rand.Prime(rand.Reader, 256)
+		if err != nil {
+			t.Fatal(err)
+		}
+		phi := new(big.Int).Mul(new(big.Int).Sub(p, one), new(big.Int).Sub(q, one))
+		d := new(big.Int).ModInverse(big.NewInt(65537), phi)
+		if p.Cmp(q) == 0 || d == nil {
+			continue
+		}
+		key := &rsa.PrivateKey{PublicKey: rsa.PublicKey{N: new(big.Int).Mul(p, q), E: 65537}, D: d, Primes: []*big.Int{p, q}}
+		key.Precompute()
+		return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	}
+}
+
+// unparsableAppKey is a PEM block of the private key's type whose bytes are no key at all.
+func unparsableAppKey() string {
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: []byte("no key")}))
+}
+
+// leak is a word each refused value below carries where it can, beside the key material: no
+// refusal may print it.
+const leak = "s3cr3t"
+
+// refusedKindValue is a value its kind's minter refuses, and name says what is wrong with it.
+type refusedKindValue struct{ kind, name, value string }
+
+// refusedKindValues are, for each of the four kinds, values its minter refuses: for github-app a
+// value that is not a JSON object, no app_id, an app_id that is not digits, no private_key, a key
+// that does not parse and one that cannot sign.
+func refusedKindValues(t *testing.T) []refusedKindValue {
+	t.Helper()
+	key := appKeyPEM(t)
+	return []refusedKindValue{
+		{policy.KindGitHubApp, "not a JSON object", leak + " is no JSON"},
+		{policy.KindGitHubApp, "no app_id", appValue(t, map[string]string{"private_key": key, "note": leak})},
+		{policy.KindGitHubApp, "an app_id that is not digits", appValue(t, map[string]string{"app_id": "12" + leak, "private_key": key})},
+		{policy.KindGitHubApp, "no private_key", appValue(t, map[string]string{"app_id": "123456", "note": leak})},
+		{policy.KindGitHubApp, "a key that does not parse", appValue(t, map[string]string{"app_id": "123456", "private_key": unparsableAppKey()})},
+		{policy.KindGitHubApp, "a key that cannot sign", appValue(t, map[string]string{"app_id": "123456", "private_key": unsignableAppKey(t)})},
+		{policy.KindGoogleLogin, "not a JSON object", leak},
+		{policy.KindGoogleLogin, "not an authorized_user credential", `{"type":"service_account","client_id":"client-id","client_secret":"` + leak + `","refresh_token":"refresh-not-a-secret"}`},
+		{policy.KindGoogleLogin, "no refresh_token", `{"type":"authorized_user","client_id":"client-id","client_secret":"` + leak + `"}`},
+		{policy.KindGoogleServiceAccount, "not a JSON object", leak},
+		{policy.KindGoogleServiceAccount, "a person's address", `{"service_account":"` + leak + `@theorem.dev"}`},
+		{policy.KindAzureLogin, "not a JSON object", leak},
+		{policy.KindAzureLogin, "no client_id", `{"tenant_id":"` + leak + `"}`},
+		{policy.KindAzureLogin, "a tenant_id of white space", `{"tenant_id":" ","client_id":"` + leak + `"}`},
+	}
+}
+
+// mintRefusal is kind's minter's answer to value, run as the broker runs it, with the stored
+// value the first thing it reads (the Azure minter on its own configured human-tier secret): the
+// words a client's refusal of the same value must carry.
+func mintRefusal(t *testing.T, kind, value string) string {
+	t.Helper()
+	req := secrets.MintRequest{Name: "KIND_KEY", HumanTier: true, Value: value, GitHubOwners: []string{"acme-org"}}
+	var err error
+	switch kind {
+	case policy.KindGitHubApp:
+		_, err = secrets.GitHubApp{}.Mint(t.Context(), req)
+	case policy.KindGoogleLogin:
+		_, err = secrets.GoogleLogin{}.Mint(t.Context(), req)
+	case policy.KindGoogleServiceAccount:
+		_, err = (&secrets.GoogleServiceAccount{}).Mint(t.Context(), req)
+	case policy.KindAzureLogin:
+		_, err = secrets.AzureLogin{SecretName: req.Name}.Mint(t.Context(), req)
+	default:
+		t.Fatalf("no minter of kind %q", kind)
+	}
+	if secrets.MintErrorClass(err) != "stored-value" {
+		t.Fatalf("the %s minter's answer to the value = %v; want a stored-value refusal", kind, err)
+	}
+	return err.Error()
+}
+
+// kindArgs are the flags beside --kind kind that a create or a retag names so the tags it leaves
+// are ones the broker serves: a github-app secret's GitHub owners, and a google-service-account
+// secret's requesters and hour-long cap.
+func kindArgs(kind string) []string {
+	switch kind {
+	case policy.KindGitHubApp:
+		return []string{"--github-owners", "acme-org"}
+	case policy.KindGoogleServiceAccount:
+		return []string{"--requesters", "ada@example.com", "--max-grant", "1h"}
+	}
+	return nil
+}
+
+// kindStore is a store the secret forms write, as these tests set it up and read it back: Secrets
+// Manager (a secrets.Local behind useAWS) or Secret Manager (a fakeSecretManager).
+type kindStore interface {
+	// put holds the secret name with tags and value, as a writer other than this client stores it.
+	put(t *testing.T, name string, tags map[string]string, value string)
+	// has, value and tags read the secret name back: whether the store holds it, its current
+	// value, and its tags.
+	has(t *testing.T, name string) bool
+	value(t *testing.T, name string) string
+	tags(t *testing.T, name string) map[string]string
+	// refuseValueReads refuses every value read from now on: as access denied when denied, and as
+	// another failure of the read otherwise. valueReads counts the value reads, refused or not.
+	refuseValueReads(denied bool)
+	valueReads() int
+	// readPermissions are the permissions the client names for this store's value read.
+	readPermissions() []string
+}
+
+// onEachStore runs test on each store the secret forms write, signed in as ada@example.com, with
+// the fake broker answering each reread from what that store holds.
+func onEachStore(t *testing.T, test func(t *testing.T, store kindStore, broker *secretBroker)) {
+	t.Run("aws", func(t *testing.T) {
+		reads := &valueReads{Local: secrets.NewLocal()}
+		broker := startSecretBroker(t, servedBy(reads.Local))
+		useAWS(t, reads, testAccount, adaSignIn)
+		test(t, awsKindStore{reads}, broker)
+	})
+	t.Run("gcp", func(t *testing.T) {
+		fake := newFakeSecretManager()
+		startFakeSecretManager(t, fake)
+		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		settings := gcpTestSettings()
+		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
+		test(t, gcpKindStore{fake}, broker)
+	})
+}
+
+// valueReads is a secrets.Local that counts GetSecretValue calls and answers each with refuse
+// when it is set, as IAM refuses the call or KMS the decryption.
+type valueReads struct {
+	*secrets.Local
+	reads  int
+	refuse error
+}
+
+func (v *valueReads) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	v.reads++
+	if v.refuse != nil {
+		return nil, v.refuse
+	}
+	return v.Local.GetSecretValue(ctx, in, o...)
+}
+
+// awsKindStore is Secrets Manager as kindStore: a secrets.Local behind valueReads.
+type awsKindStore struct{ sm *valueReads }
+
+func (s awsKindStore) put(_ *testing.T, name string, tags map[string]string, value string) {
+	s.sm.Put(secrets.LocalSecret{Name: policytest.ID(name), KmsKeyID: policytest.KeyARN, Tags: maps.Clone(tags), Value: value})
+}
+
+func (s awsKindStore) has(_ *testing.T, name string) bool {
+	_, err := s.sm.Local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
+	return err == nil
+}
+
+func (s awsKindStore) value(t *testing.T, name string) string { return valueOf(t, s.sm.Local, name) }
+
+func (s awsKindStore) tags(t *testing.T, name string) map[string]string {
+	return secrets.TagMap(describe(t, s.sm.Local, name).Tags)
+}
+
+func (s awsKindStore) refuseValueReads(denied bool) {
+	if denied {
+		s.sm.refuse = &smithy.GenericAPIError{Code: "AccessDeniedException", Message: "User: " + adaSignIn + " is not authorized to perform: secretsmanager:GetSecretValue"}
+		return
+	}
+	s.sm.refuse = &smtypes.DecryptionFailure{Message: aws.String("Secrets Manager can't decrypt the protected secret text using the provided KMS key.")}
+}
+
+func (s awsKindStore) valueReads() int { return s.sm.reads }
+
+func (s awsKindStore) readPermissions() []string {
+	return []string{"secretsmanager:GetSecretValue", "kms:Decrypt"}
+}
+
+// gcpKindStore is Secret Manager as kindStore: a fakeSecretManager.
+type gcpKindStore struct{ fake *fakeSecretManager }
+
+// id is the resource name of the secret a session asks for as name.
+func (s gcpKindStore) id(t *testing.T, name string) string {
+	t.Helper()
+	slug, err := policy.NameToSlug(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return testGCPPrefix + slug
+}
+
+func (s gcpKindStore) put(t *testing.T, name string, tags map[string]string, value string) {
+	id := s.id(t, name)
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	s.fake.secrets[id] = &fakeSecret{
+		secret:      &secretmanagerpb.Secret{Name: id, Annotations: maps.Clone(tags), Etag: "1"},
+		versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+		payloads:    [][]byte{[]byte(value)},
+		etagCounter: 1,
+	}
+}
+
+// addValue adds a version holding value to the secret name, as a writer other than this client
+// adds one.
+func (s gcpKindStore) addValue(t *testing.T, name, value string) {
+	t.Helper()
+	id := s.id(t, name)
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	entry, ok := s.fake.secrets[id]
+	if !ok {
+		t.Fatalf("Secret Manager holds no %s", id)
+	}
+	entry.versions = append(entry.versions, &secretmanagerpb.SecretVersion{Name: id + "/versions/" + strconv.Itoa(len(entry.versions)+1), State: secretmanagerpb.SecretVersion_ENABLED})
+	entry.payloads = append(entry.payloads, []byte(value))
+}
+
+func (s gcpKindStore) has(t *testing.T, name string) bool {
+	id := s.id(t, name)
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	_, ok := s.fake.secrets[id]
+	return ok
+}
+
+func (s gcpKindStore) value(t *testing.T, name string) string {
+	id := s.id(t, name)
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	entry, ok := s.fake.secrets[id]
+	if !ok || len(entry.payloads) == 0 {
+		t.Fatalf("Secret Manager holds no value of %s", id)
+	}
+	return string(entry.payloads[len(entry.payloads)-1])
+}
+
+func (s gcpKindStore) tags(t *testing.T, name string) map[string]string {
+	id := s.id(t, name)
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	entry, ok := s.fake.secrets[id]
+	if !ok {
+		t.Fatalf("Secret Manager holds no %s", id)
+	}
+	return maps.Clone(entry.secret.GetAnnotations())
+}
+
+func (s gcpKindStore) refuseValueReads(denied bool) {
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	s.fake.refuseAccess = codes.FailedPrecondition
+	if denied {
+		s.fake.refuseAccess = codes.PermissionDenied
+	}
+}
+
+func (s gcpKindStore) valueReads() int {
+	s.fake.mu.Lock()
+	defer s.fake.mu.Unlock()
+	return s.fake.accesses
+}
+
+func (s gcpKindStore) readPermissions() []string { return []string{"secretmanager.versions.access"} }
+
+// TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses: on both stores, for each of
+// the four kinds, create, set and retag refuse each value that kind's minter refuses before
+// anything is written: create writes no secret, set no version, retag no tag, and the broker is
+// asked to reread nothing. Each exits 2 naming what is wrong in the minter's own words, read back
+// from the minter driven with the same value, so the one decoder decides both, and none prints
+// the value. Set checks the value under the kind tag the secret holds, since it names none.
+func TestSecretCreateSetAndRetagRefuseEveryValueTheKindsMinterRefuses(t *testing.T) {
+	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
+		for _, row := range refusedKindValues(t) {
+			t.Run(row.kind+"/"+row.name, func(t *testing.T) {
+				says := mintRefusal(t, row.kind, row.value)
+				store.put(t, "HELD_KEY", policytest.KindSecret("HELD_KEY", "ada@example.com", policy.TierAgent, row.kind, "").Tags, kindValue(t, row.kind))
+				plain := policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags
+				store.put(t, "PLAIN_KEY", plain, row.value)
+				for _, form := range []struct {
+					args []string
+					// wrote reports whether the form wrote anything: create a secret, set a
+					// version, retag a tag.
+					wrote func() bool
+				}{
+					{append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return store.has(t, "NEW_KEY") }},
+					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != kindValue(t, row.kind) }},
+					{append([]string{"retag", "PLAIN_KEY", "--kind", row.kind}, kindArgs(row.kind)...), func() bool { return !maps.Equal(store.tags(t, "PLAIN_KEY"), plain) }},
+				} {
+					asked, _ := broker.recorded()
+					useStdin(t, row.value)
+					stdout, stderr, code := runSecret(form.args...)
+					if code != exitUsageError || !strings.Contains(stderr, says) {
+						t.Errorf("%s of a %s value with %s: exit %d stderr %q; want %d naming the minter's own refusal %q", form.args[0], row.kind, row.name, code, stderr, exitUsageError, says)
+					}
+					if strings.Contains(stdout+stderr, leak) || strings.Contains(stdout+stderr, "PRIVATE KEY") {
+						t.Errorf("%s of a %s value with %s printed the value: stdout %q stderr %q", form.args[0], row.kind, row.name, stdout, stderr)
+					}
+					if form.wrote() {
+						t.Errorf("a refused %s of a %s value with %s wrote it", form.args[0], row.kind, row.name)
+					}
+					if rereads, _ := broker.recorded(); len(rereads) != len(asked) {
+						t.Errorf("a refused %s of a %s value with %s asked the broker to reread %v", form.args[0], row.kind, row.name, rereads[len(asked):])
+					}
+				}
+			})
+		}
+	})
+}
+
+// TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape: on both stores, a retag reads the
+// secret's value only when the tags it writes change the kind, or the shape of a secret that
+// keeps a kind, since people commonly may retag a secret and not read it; any other retag reads
+// none, and writes over a value the decoder refuses. The read has three outcomes, each its own:
+// a value the decoder refuses is refused, naming why, and nothing is written; any read error but
+// access denied is refused, and nothing is written; and access denied, and only that, lets the
+// retag write its tags, with one line on stderr saying the value was not checked, naming the
+// permissions the read needs and saying the broker reports such a secret unservable.
+func TestSecretRetagReadsTheValueOnlyWhenItChangesTheKindOrShape(t *testing.T) {
+	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
+	says := mintRefusal(t, policy.KindGitHubApp, noAppID)
+	onEachStore(t, func(t *testing.T, store kindStore, broker *secretBroker) {
+		store.put(t, "APP_KEY", policytest.KindSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.KindGitHubApp, "").Tags, noAppID)
+		store.put(t, "PLAIN_KEY", policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, "").Tags, noAppID)
+		toApp := []string{"retag", "PLAIN_KEY", "--kind", policy.KindGitHubApp, "--github-owners", "acme-org"}
+		rereads := func() int {
+			asked, _ := broker.recorded()
+			return len(asked)
+		}
+
+		for _, args := range [][]string{
+			{"retag", "APP_KEY", "--tier", policy.TierHuman},
+			{"retag", "APP_KEY", "--max-grant", "2h"},
+			{"retag", "APP_KEY", "--github-owners", "acme-org"},
+			{"retag", "APP_KEY", "--kind", policy.KindGitHubApp},
+			{"retag", "PLAIN_KEY", "--shape", policy.ShapeToken},
+			{"retag", "PLAIN_KEY", "--shape", "none"},
+		} {
+			if _, stderr, code := runSecret(args...); code != 0 {
+				t.Fatalf("%v: exit %d stderr %q; want 0", args, code, stderr)
+			}
+		}
+		if n := store.valueReads(); n != 0 {
+			t.Fatalf("retags that change neither the kind nor a kind secret's shape read %d values; want none", n)
+		}
+
+		// The value reads, and the decoder refuses it.
+		for _, args := range [][]string{toApp, {"retag", "APP_KEY", "--shape", policy.ShapeDocument}} {
+			before, asked := store.tags(t, args[1]), rereads()
+			_, stderr, code := runSecret(args...)
+			if code != exitUsageError || !strings.Contains(stderr, says) {
+				t.Fatalf("%v over a value with no app_id: exit %d stderr %q; want %d naming %q", args, code, stderr, exitUsageError, says)
+			}
+			if got := store.tags(t, args[1]); !maps.Equal(got, before) || rereads() != asked {
+				t.Fatalf("%v refused, but left tags %v (were %v) and asked for %d rereads", args, got, before, rereads()-asked)
+			}
+		}
+		if n := store.valueReads(); n != 2 {
+			t.Fatalf("the two retags that change the kind or shape read %d values; want 2", n)
+		}
+
+		// Any other read error.
+		store.refuseValueReads(false)
+		before, asked := store.tags(t, "PLAIN_KEY"), rereads()
+		_, stderr, code := runSecret(toApp...)
+		if code != 1 || !strings.Contains(stderr, "read PLAIN_KEY's value to check it as a github-app secret's, so nothing is written") || strings.Contains(stderr, "not checked") {
+			t.Fatalf("a retag whose value read fails: exit %d stderr %q; want 1 refusing it", code, stderr)
+		}
+		if got := store.tags(t, "PLAIN_KEY"); !maps.Equal(got, before) || rereads() != asked {
+			t.Fatalf("a retag whose value read fails left tags %v (were %v) and asked for %d rereads", got, before, rereads()-asked)
+		}
+
+		// Access denied, and only that.
+		store.refuseValueReads(true)
+		stdout, stderr, code := runSecret(toApp...)
+		if code != 0 || !strings.Contains(stdout, "broker: serving PLAIN_KEY") {
+			t.Fatalf("a retag whose value read is denied: exit %d stdout %q stderr %q; want 0 with the tags served", code, stdout, stderr)
+		}
+		if tags := store.tags(t, "PLAIN_KEY"); tags[policy.TagKind] != policy.KindGitHubApp || tags[policy.TagGitHubOwners] != "acme-org" {
+			t.Fatalf("tags after a retag whose value read is denied = %v; want github-app for acme-org", tags)
+		}
+		if strings.Count(stderr, "\n") != 1 || !strings.Contains(stderr, "the tags are written, but PLAIN_KEY's value was not checked as a github-app secret's") ||
+			!strings.Contains(stderr, "reports PLAIN_KEY unservable with the decoder's reason") {
+			t.Fatalf("stderr %q; want one line saying the value was not checked and the broker reports it unservable", stderr)
+		}
+		for _, permission := range store.readPermissions() {
+			if !strings.Contains(stderr, permission) {
+				t.Fatalf("stderr %q does not name %s, which the value read needs", stderr, permission)
+			}
+		}
+		if n := store.valueReads(); n != 4 {
+			t.Fatalf("value reads = %d; want 4, one for each retag that changed the kind or shape", n)
+		}
+	})
+}
+
+// TestSecretSetRefusesASecretWhoseKindTagNamesNoKind: the broker refuses a secret whose kind tag
+// names no kind it mints (kind-unknown) and serves no value of it, so set refuses to store one,
+// exiting 2 and naming that reason, before it reads the value.
+func TestSecretSetRefusesASecretWhoseKindTagNamesNoKind(t *testing.T) {
+	local := secrets.NewLocal(policytest.KindSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
+	broker := startSecretBroker(t, servedBy(local))
+	useAWS(t, local, testAccount, adaSignIn)
+	refuseValueReads(t)
+	_, stderr, code := runSecret("set", "ODD_KEY")
+	if code != exitUsageError || !strings.Contains(stderr, `kind tag "other"`) || !strings.Contains(stderr, policy.ReasonKindUnknown) {
+		t.Fatalf("set of a secret whose kind tag is other: exit %d stderr %q; want %d naming %s", code, stderr, exitUsageError, policy.ReasonKindUnknown)
+	}
+	if got := valueOf(t, local, "ODD_KEY"); got != "v1" {
+		t.Fatalf("the refused set stored %q", got)
+	}
+	if rereads, _ := broker.recorded(); len(rereads) != 0 {
+		t.Fatalf("rereads = %v after a refused set; want none", rereads)
 	}
 }

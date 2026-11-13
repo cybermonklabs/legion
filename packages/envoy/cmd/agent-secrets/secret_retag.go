@@ -54,6 +54,11 @@ var errTagsRestored = errors.New("the tags are restored to what this retag read;
 // whose write then restored the tags it read (errTagsRestored), it also asks the broker to
 // reread.
 //
+// A retag that changes the kind tag, or the shape tag of a secret that keeps a kind, then reads the
+// secret's value and decodes it as the broker will once the write lands (checkRetagValue): a value
+// that kind's minter refuses is refused before anything is written, and a read the store refuses
+// as access denied leaves the retag to go ahead, saying on stderr that the value was not checked.
+//
 // A retag that sets tags always sends owner and tier, re-sending the one not named as the secret
 // holds it: on AWS, the deployment repository's IAM policy that lets a person tag their own secret
 // conditions on both request tags, so a request carrying one fails. GCP has no equivalent
@@ -185,6 +190,14 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 	if err := checkTagsFor(after); err != nil {
 		return secretFailIn(stderr, form, s, err)
 	}
+	owner, tier := after[policy.TagOwner], after[policy.TagTier]
+	if len(remove) == 0 && (owner == "" || tier == "") {
+		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s has no owner tag or no tier tag, and a retag sends both: name the missing one with --owner or --tier", name)})
+	}
+	unchecked, err := checkRetagValue(s, name, slug, held, after)
+	if err != nil {
+		return secretFailIn(stderr, form, s, err)
+	}
 	if len(remove) > 0 {
 		if err := s.backend.removeTags(s.ctx, slug, held, remove); err != nil {
 			fmt.Fprintf(stderr, "agent-secrets %s: %v; looked in %s\n", form, err, s.storeName())
@@ -192,11 +205,10 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "retagged %s in %s (removed %s)\n", name, s.storeName(), strings.Join(remove, ", "))
+		if unchecked != "" {
+			fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unchecked)
+		}
 		return rereadRetag(s, stdout, stderr, form, name, after[policy.TagKind])
-	}
-	owner, tier := after[policy.TagOwner], after[policy.TagTier]
-	if owner == "" || tier == "" {
-		return secretFailIn(stderr, form, s, usageErr{fmt.Errorf("%s has no owner tag or no tier tag, and a retag sends both: name the missing one with --owner or --tier", name)})
 	}
 	set[policy.TagOwner], set[policy.TagTier] = owner, tier
 	if err := s.backend.setTags(s.ctx, slug, held, set); err != nil {
@@ -212,7 +224,42 @@ func cmdSecretRetag(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "retagged %s in %s (owner=%s, tier=%s)\n", name, s.storeName(), owner, tier)
+	if unchecked != "" {
+		fmt.Fprintf(stderr, "agent-secrets %s: %s\n", form, unchecked)
+	}
 	return rereadRetag(s, stdout, stderr, form, name, after[policy.TagKind])
+}
+
+// checkRetagValue decodes the value of the secret name, slug under the prefix, as the broker will
+// read it once a retag leaves it with after's tags, held being the tags it holds now, when the
+// retag changes what the broker reads the value as: the kind tag, or the shape tag of a secret
+// that keeps a kind. A retag that changes neither reads no value, and one that leaves no kind, or
+// a kind the broker does not mint (which it refuses as kind-unknown), leaves nothing to decode.
+// People commonly hold the right to retag a secret and not to read its value, so the read has
+// three outcomes, each handled apart:
+//
+//   - the value reads: a value the kind's minter refuses is refused (checkValueFor), and the
+//     retag writes nothing;
+//   - the store refuses the read as access denied, and only as that (isAccessDenied): the retag
+//     goes ahead, and unchecked is the line it prints once its write lands, saying the value was
+//     not checked, naming the permissions the read needs (valueReadPermission), and saying that
+//     the broker refuses such a value itself and reports the secret unservable with the
+//     decoder's reason;
+//   - any other read error refuses the retag, and it writes nothing.
+func checkRetagValue(s *secretSession, name, slug string, held heldTags, after map[string]string) (unchecked string, err error) {
+	kind, shape := after[policy.TagKind], after[policy.TagShape]
+	if !policy.ValidKind(kind) || (kind == held.tags[policy.TagKind] && shape == held.tags[policy.TagShape]) {
+		return "", nil
+	}
+	value, err := s.backend.readValue(s.ctx, slug)
+	switch {
+	case err == nil:
+		return "", checkValueFor(kind, shape, value)
+	case s.backend.isAccessDenied(err):
+		return fmt.Sprintf("the tags are written, but %s's value was not checked as a %s secret's: the store refused this sign-in the read, which needs %s. The broker refuses a value its decoder refuses, and reports %s unservable with the decoder's reason", name, kind, s.backend.valueReadPermission(), name), nil
+	default:
+		return "", fmt.Errorf("read %s's value to check it as a %s secret's, so nothing is written: %w", name, kind, err)
+	}
 }
 
 // rereadIfRestored asks the broker to reread name after a tag write the store wrote and then put
