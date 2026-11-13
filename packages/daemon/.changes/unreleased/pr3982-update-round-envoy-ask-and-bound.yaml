@@ -17,8 +17,9 @@ body: |-
   the bound ended a round. `pod_update_retask_hours` and `pod_update_notice_hours` are gone: a
   `legion.yaml` that still sets one boots with a warning. Migration `20261113110610` drops the claim
   columns `update_answered_by_turn_end` and `update_reasked_for_push_check`; docs/kubernetes.md
-  gives the three statements a rollback to an earlier release needs: two bring the columns back,
-  and one deletes the migration's `schema_version` row, so a later roll forward runs it again. The
+  gives the four statements a rollback to an earlier release needs: two bring the columns back,
+  one deletes the migration's `schema_version` row, so a later roll forward runs it again, and one
+  deletes the queued asks, which a roll forward asks again. The
   same migration starts every pod round open at the deploy again: each claim of the round records
   the deploy as the round's opening and loses its ask mark and its notice mark. So each role of
   such a round that has not answered is asked once, and the round ends `pod_update_grace_minutes`

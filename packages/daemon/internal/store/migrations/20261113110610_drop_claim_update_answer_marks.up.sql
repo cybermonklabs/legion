@@ -23,9 +23,9 @@
 -- 20261109060737_drop_awaiting_slot_notice.up.sql is: every release from legion-v19.16.0 on names
 -- both columns in its claim read and in its PutClaim, so pinning one of them after this migration
 -- fails every claim read and every claim write until the columns are back. The statements that
--- bring them back and delete this migration's schema_version row, so that a roll forward runs
--- this file again, and why nothing else need come with them, are in docs/kubernetes.md under
--- their own heading.
+-- bring them back, delete this migration's schema_version row so that a roll forward runs this
+-- file again, and delete the queued update_ask rows that a roll forward asks again, and why
+-- nothing else need come with them, are in docs/kubernetes.md under their own heading.
 --
 -- What the reset changes: for every claim whose update_round starts with 'pod:', it sets
 -- update_opened_at to the moment of this migration, and it clears update_tasked_at and

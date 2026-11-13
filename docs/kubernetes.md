@@ -1870,6 +1870,7 @@ Run this with the daemon stopped, before you pin that image:
 alter table claims add column if not exists update_answered_by_turn_end boolean not null default false;
 alter table claims add column if not exists update_reasked_for_push_check boolean not null default false;
 delete from schema_version where version = 20261113110610;
+delete from outbox where kind = 'update_ask';
 ```
 
 Nothing else of #2792 must come back.
@@ -1877,17 +1878,20 @@ Every claim row takes the default, `false`, in both columns.
 That daemon reads `false` as an answer that the `ready_for_update` call gave, and as a claim that no round asked a second time.
 So that daemon reads each answer that an open round holds as an answer of the call.
 A turn that daemon did not prompt then takes such an answer back, and that daemon asks the role again, as it does for every answer of the call.
-The `delete` removes the row that `schema_version` records for this migration, so a later roll forward to this release applies the migration again.
+The `schema_version` delete removes the row that `schema_version` records for this migration, so a later roll forward to this release applies the migration again.
 With the row left, that roll forward would skip the migration (its `Migrate` applies only the migrations that `schema_version` does not record, `versionRecorded` in `internal/store/store.go`), and the reset of the open pod rounds would not run again.
 The earlier release opens a round on every pod that drifts, and it writes `update_tasked_at` when it queues its task, which this release reads as the mark of its own Envoy ask.
 So without the reset, this release would never ask a role of such a round, and it would replace the pod of a round older than `pod_update_grace_minutes` at the first sweep.
 The roll forward runs the whole file again: its two `drop column` statements succeed because the rollback added the two columns back, and then the reset runs.
-A rollback to a release before `legion-v19.16.0` needs the same three statements, for another reason: `legion-v19.15.0` names neither column in `packages/daemon/internal/store/claims.go`, but a later roll forward runs this migration again, and its `drop column` statements fail where the columns are not there.
+A rollback to a release before `legion-v19.16.0` needs the same four statements.
+Such a release names neither column in `packages/daemon/internal/store/claims.go`, but `legion-v19.15.0` also opens a `pod:` round on every pod that drifts and writes `update_tasked_at` when it queues its task, so it needs the `schema_version` delete for the same reason as above.
+It needs the two `alter` statements beside that delete so that the `drop column` statements that run again at the roll forward succeed.
 An earlier release reads no `pod_update_grace_minutes` and refuses it as `unknown key pod_update_grace_minutes`, so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
-A queued `update_ask` outbox row needs no step.
-The earlier release puts that kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs the row, and the row holds back no other row.
-A later roll forward applies the migration again, so it resets every pod round that the earlier release opened or kept open, as the first deploy did.
-Then it runs the row, and the row publishes nothing for a round that its claim no longer records (`updateAsk`).
+The last `delete` removes every queued `update_ask` outbox row.
+The earlier release puts that kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs such a row, and the row holds back no other row.
+But the earlier release has no bound, so a pod round that was open at the rollback can still be open at the roll forward, and its claim still records that round.
+Left in place, the row would then publish the ask it was queued with, which names the end of the round as it was before the reset, and that moment can be past.
+The roll forward does not need the row: it resets every pod round that the earlier release opened or kept open, as the first deploy did, and then asks again each role of such a round that has not answered.
 
 #### Rolling back the release that names what nothing starts
 
