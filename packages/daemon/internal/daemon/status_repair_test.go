@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -76,7 +76,7 @@ func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
 
 // openStatusRepairLifecycle opens tree's lifecycle under the workflow's authority without granting
 // it a slot: a running root can hold none, as while it waits on another issue.
-func openStatusRepairLifecycle(t *testing.T, pool *pgxpool.Pool, records record.Store, tree string) {
+func openStatusRepairLifecycle(t *testing.T, pool *store.Pool, records record.Store, tree string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		project, err := claim.ProjectToken("LEGION")
@@ -209,7 +209,7 @@ func staleStatusIssue(at phase.Phase, status, shown string) record.Issue {
 // authority, as admission's own promotion does in one transaction. The lifecycle, not the slot
 // row, is what says a tree runs (record.TreeRuns, which the repair reads), so a fixture that
 // granted a slot and nothing else would describe a tree the daemon reads as never opened.
-func putStatusRepairSlot(t *testing.T, pool *pgxpool.Pool, records record.Store, issue string) {
+func putStatusRepairSlot(t *testing.T, pool *store.Pool, records record.Store, issue string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: issue, Index: 0, AdmittedAt: time.Now().UTC()}); err != nil {

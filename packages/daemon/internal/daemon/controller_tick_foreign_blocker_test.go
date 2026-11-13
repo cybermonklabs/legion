@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -142,7 +142,7 @@ func TestTheTurnReadsABlockerOutsideTheProject(t *testing.T) {
 // a slot, gave it back for the wait, and so stands in the project's waiting line
 // (record.Issue.ReleasedForWaitAt), which is where the turn finds the key it waits on
 // (workflowRuntime.waitedOn).
-func seedStartedWaiter(t *testing.T, pool *pgxpool.Pool, key, blocker string) {
+func seedStartedWaiter(t *testing.T, pool *store.Pool, key, blocker string) {
 	t.Helper()
 	seedTickIssue(t, pool, record.Issue{
 		Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "CAPTURE",
@@ -174,7 +174,7 @@ func seedStartedWaiter(t *testing.T, pool *pgxpool.Pool, key, blocker string) {
 // seedForeignMirror writes a mirror row of the other project, as that project's own daemon
 // writes one: the table is keyed by the issue alone, so a row of either project stands in the
 // same table.
-func seedForeignMirror(t *testing.T, pool *pgxpool.Pool, key, status string, seq int64) {
+func seedForeignMirror(t *testing.T, pool *store.Pool, key, status string, seq int64) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
@@ -187,7 +187,7 @@ func seedForeignMirror(t *testing.T, pool *pgxpool.Pool, key, status string, seq
 // foreignMirrored is the mirror rows of the other project, by key: tickMirrored reads this
 // daemon's own project, and a row the turn wrote for a foreign key is in neither that listing nor
 // that project.
-func foreignMirrored(t *testing.T, pool *pgxpool.Pool) map[string]record.DispatchIssueRow {
+func foreignMirrored(t *testing.T, pool *store.Pool) map[string]record.DispatchIssueRow {
 	t.Helper()
 	var mirrored []record.DispatchIssueRow
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

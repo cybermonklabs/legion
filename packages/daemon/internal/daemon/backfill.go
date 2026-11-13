@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // backfillRepositories brings every record of project to carry its repository, its default branch
@@ -20,7 +20,7 @@ import (
 // reading GitHub and Dispatch outside every fact transaction: fillRepositories fills the records
 // written before the record carried its repository, and nameRepositories the records written
 // before it carried GitHub's spelling.
-func backfillRepositories(ctx context.Context, pool *pgxpool.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+func backfillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	if err := fillRepositories(ctx, pool, records, client, project, stateDir, named, renames, log); err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func backfillRepositories(ctx context.Context, pool *pgxpool.Pool, records recor
 // repository (record.Store.FillIssueRepository). The record keeps the name it was recorded under
 // for its whole life, and heardRepositories hears the pair's other name too, so the events GitHub
 // now publishes under the name it moved to still reach it.
-func fillRepositories(ctx context.Context, pool *pgxpool.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+func fillRepositories(ctx context.Context, pool *store.Pool, records record.Store, client dispatch.Client, project, stateDir string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unfilled []record.Issue
 	pulls := map[string]record.PullRequest{}
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -229,7 +229,7 @@ func recordedSpelling(renames ghrepo.Renames, recorded string, github ghrepo.Rep
 // and GitHub answers with the pair's other name. The record is then named with the pair's
 // spelling of its own name (recordedSpelling), which keeps it one repository and lets the boot
 // go on.
-func nameRepositories(ctx context.Context, pool *pgxpool.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
+func nameRepositories(ctx context.Context, pool *store.Pool, records record.Store, project string, named *defaultBranches, renames ghrepo.Renames, log *slog.Logger) error {
 	var unnamed []record.Issue
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		var err error

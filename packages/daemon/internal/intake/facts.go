@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -1295,6 +1294,23 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
 }
 
+// Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
+// positions in and reads what it has already applied from. In the daemon it is always the store's
+// guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
+// for a second connection while the fact's own transaction holds one — under the global fact lock
+// every other fact queues behind — is refused at that call (store.ErrNestedAcquire) instead of
+// waiting for a connection only it can give back (INFRA-3169).
+//
+// It is named as the three methods the intake uses rather than as that one type because the
+// packages that measure the handlers against a real Postgres — the workflow engine's and
+// admission's tests — open pools of their own and apply facts straight on them, and the guard has
+// nothing to say about a pool a test owns. Nothing in the daemon opens a pool but the store.
+type Pool interface {
+	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes
@@ -1315,7 +1331,7 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 // Making per-tree locking correct means promotion taking the candidate tree's lock as well, which
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
-func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Result{}, err
@@ -1393,7 +1409,7 @@ func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, 
 // replays many facts it has most likely applied before (the boot's terminal replay) applies only
 // the rest: the duplicates cost one read between them, not a transaction each queued on the lock
 // behind every live fact.
-func Applied(ctx context.Context, pool *pgxpool.Pool, source string, eventIDs []string) (map[string]bool, error) {
+func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil
