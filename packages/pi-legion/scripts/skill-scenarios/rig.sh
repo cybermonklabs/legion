@@ -1645,9 +1645,15 @@ Adds \`greet(name)\` and \`bun greet.ts <name>\`.
 # `check` set for the caller, read from world.json in one jq, `check` being `null` where the
 # world has none.
 worker_world() {
-  local index=$1 start=$2 world=${3:-}
+  local index=$1 start=$2 world=${3:-} gate=()
+  # A world whose role must reach an approval takes its check as `after_merge`, since this rig's
+  # Dispatch reaches no GitHub and so can place no commit, which leaves every `before_merge`
+  # check without a standing pass and makes a reviewer refuse every approval it is asked for
+  # (seed.ts testerProofIssue says what was measured). World `i` is the one such world: `j`'s
+  # round ends in a changes request, which the gate does not hold up.
+  [ "$world" != i ] || gate=(after-merge-check)
   own_dispatch project
-  seed_ts tester-proof "$R/fixture.json"
+  seed_ts tester-proof "$R/fixture.json" "${gate[@]}"
   worker_key=$(jq -r .issue "$R/fixture.json")
   worker_fixture "$index" "$start" >>"$R/fixture.log" 2>&1 || fail "the fixture failed; see $R/fixture.log"
   [ -z "$world" ] ||
