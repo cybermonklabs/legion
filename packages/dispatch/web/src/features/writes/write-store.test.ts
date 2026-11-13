@@ -2144,3 +2144,110 @@ test("a discarded Retry that waited its turn reads again the caches its change w
     }
   });
 });
+
+/** The viewer's state of CORE-1 as these rows draw it: its pin and its read mark, under the
+ *  sequence Dispatch last gave it. */
+interface PinAndMark {
+  readonly pinned: boolean;
+  readonly read: boolean;
+  readonly seq: number;
+}
+
+/** A read mark of CORE-1 that shows itself on `["user-state"]` beside `pinShown`'s pin. */
+const markShown: WriteChange = (shown) =>
+  shown.on<PinAndMark>(["user-state"], (current) => ({ ...current, read: true }));
+
+/**
+ * A page with two live writes on `["user-state"]`: a mark Dispatch never answers, and a pin's
+ * Retry - its press settled by its first refusal - whose attempts answer `retried`. Dispatch's
+ * answer to the state lands while both are live, so it is what the page last confirmed.
+ */
+async function retriedBesideAMark(retried: () => Promise<unknown>) {
+  const tab = keptTab();
+  const client = signedIn();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  client.setQueryData<PinAndMark>(["user-state"], { pinned: false, read: false, seq: 1 });
+  const answers: (() => Promise<unknown>)[] = [() => Promise.reject(verdict), retried];
+  void writes
+    .run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-1 pinned",
+      presentation: "indicator",
+      shows: pinShown,
+      unlined: offLine,
+      write: attemptOf(put, () => answers.shift()?.() ?? Promise.reject(verdict)),
+    })
+    .catch(() => {});
+  await settle();
+  // The surface's rollback, which the press's refusal ran.
+  client.setQueryData<PinAndMark>(["user-state"], { pinned: false, read: false, seq: 1 });
+  void writes
+    .run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-1 read",
+      presentation: "indicator",
+      shows: markShown,
+      unlined: offLine,
+      write: attemptOf(patch, () => Promise.withResolvers<never>().promise),
+    })
+    .catch(() => {});
+  const pin = writes.rows().find((write) => write.label === "CORE-1 pinned");
+  writes.retry(pin?.id ?? 0);
+  // Dispatch's state, read while both are out: it has taken neither, and its sequence moved on.
+  client.setQueryData<PinAndMark>(["user-state"], { pinned: false, read: false, seq: 2 });
+  expect(client.getQueryData<PinAndMark>(["user-state"])).toEqual({
+    pinned: true,
+    read: true,
+    seq: 2,
+  });
+  return { client, tab, writes };
+}
+
+// R10 of dispatch://INFRA-299. A Retry refused in its turn has no press to put its change back,
+// so the store puts back what Dispatch last gave the cache, with the live mark shown over it,
+// before it reads again: a read that fails - offline, a 5xx - leaves the page on that, never on
+// the pin Dispatch refused twice.
+test("a Retry refused again puts back Dispatch's last answer, live writes over it, before reading again", async () => {
+  await onFakeClock(async () => {
+    const { client, tab, writes } = await retriedBesideAMark(() => Promise.reject(verdict));
+    try {
+      await settle();
+      expect(writes.rows().map((write) => write.status)).toEqual(["refused", "sending"]);
+      expect(client.getQueryData<PinAndMark>(["user-state"])).toEqual({
+        pinned: false,
+        read: true,
+        seq: 2,
+      });
+      expect(readAgain(client, ["user-state"])).toBe(true);
+    } finally {
+      writes.clear();
+      tab.close();
+    }
+  });
+});
+
+// R10. A Retry taken by a sign-out has no press to put its change back either: the store puts
+// back what Dispatch last gave the cache - the mark, taken with it, is not shown over it - and
+// reads again, so a read that fails leaves neither change on the page.
+test("a Retry taken by a sign-out puts back Dispatch's last answer before reading again", async () => {
+  await onFakeClock(async () => {
+    const { client, tab, writes } = await retriedBesideAMark(
+      () => Promise.withResolvers<never>().promise
+    );
+    try {
+      await settle();
+      writes.clear();
+      expect(writes.rows()).toEqual([]);
+      expect(client.getQueryData<PinAndMark>(["user-state"])).toEqual({
+        pinned: false,
+        read: false,
+        seq: 2,
+      });
+      expect(readAgain(client, ["user-state"])).toBe(true);
+    } finally {
+      tab.close();
+    }
+  });
+});

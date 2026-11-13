@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { settle } from "../../__tests__/fake-clock";
 import { memoryFiles, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import type { WriteBounds } from "../../api/client";
+import { ApiError, type WriteBounds } from "../../api/client";
 import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
 import { WriteStorage } from "../writes/write-storage";
 import { Writes, writesOf } from "../writes/write-store";
@@ -273,6 +273,154 @@ test("a waiting pick discarded in Pending changes leaves the screen on the pick 
     });
     await act(settle);
     expect(sentPriorities(patchIssue)).toEqual([0]);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+/** A read of the issue that fails, as one offline or answered 5xx does, counting each try. */
+function failingRead(): { read: () => Promise<IssueDetails>; tries: () => number } {
+  let tries = 0;
+  return {
+    read: () => {
+      tries += 1;
+      return Promise.reject(new Error("Failed to fetch"));
+    },
+    tries: () => tries,
+  };
+}
+
+// R10, the reproduced defect of review round 4. The same discard, but the store's read again
+// fails - offline, a 5xx - as it does when a save stuck offline is why a pick waited long enough
+// to be discarded. The store put back the issue as Dispatch last gave it, with the save still out
+// shown over it, before it read again, so the failed read leaves every surface on the pick that
+// is out: never on the discarded pick, which nothing will send.
+test("a waiting pick discarded while the issue cannot be read leaves the screen on the pick that is out", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const patchIssue = answerSaves(first.promise);
+  const user = userEvent.setup();
+  const client = pageClient();
+  const writes = writesOf(client);
+  const { read, tries } = failingRead();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Surface name="Issue page" read={read} />
+      <Surface name="Board card" read={read} />
+    </QueryClientProvider>
+  );
+  try {
+    await user.selectOptions(select("Issue page"), "0");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await user.selectOptions(select("Board card"), "2");
+    const waiting = writes.rows().find((row) => row.status === "queued");
+    if (waiting === undefined) throw new Error("the board card's pick is not waiting its turn");
+
+    await act(async () => {
+      expect(writes.discard(waiting.id)).toBe(true);
+    });
+    await act(settle);
+    // The store read the issue again, and that read failed.
+    expect(tries()).toBe(1);
+    expect(client.getQueryState(detailKey)?.status).toBe("error");
+    expect(writes.rows().map((row) => row.status)).toEqual(["sending"]);
+    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(select("Board card").value).toBe("0");
+    expect(select("Issue page").value).toBe("0");
+
+    await act(async () => {
+      first.resolve(savedWith({ priority: 0 }));
+      await first.promise;
+    });
+    await act(settle);
+    expect(sentPriorities(patchIssue)).toEqual([0]);
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R10. Two surfaces' picks both refused while the issue cannot be read: the issue page's pick goes
+// out and is refused while the board card's waits behind it, and then the board card's is
+// refused in its turn. Neither pick is a value the server took, so with the read again failing
+// the screen is on the value it last confirmed - not on the issue page's refused pick, which was
+// on screen when the board card's pick was pressed.
+test("two surfaces' picks both refused while the issue cannot be read leave the value the server last confirmed", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const refusal = new ApiError(422, { code: "INVALID_PRIORITY", error: "not a priority" });
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementation(() => Promise.reject(refusal));
+  const user = userEvent.setup();
+  const client = pageClient();
+  const writes = writesOf(client);
+  const { read, tries } = failingRead();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Surface name="Issue page" read={read} />
+      <Surface name="Board card" read={read} />
+    </QueryClientProvider>
+  );
+  try {
+    await user.selectOptions(select("Issue page"), "0");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await user.selectOptions(select("Board card"), "2");
+
+    await act(async () => {
+      first.reject(refusal);
+      await first.promise.catch(() => {});
+    });
+    await act(settle);
+    expect(sentPriorities(patchIssue)).toEqual([0, 2]);
+    expect(writes.rows()).toEqual([]);
+    // Each refusal read the issue again, and each read failed.
+    expect(tries()).toBeGreaterThan(0);
+    expect(client.getQueryState(detailKey)?.status).toBe("error");
+    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(1);
+    expect(select("Board card").value).toBe("1");
+    expect(select("Issue page").value).toBe("1");
+  } finally {
+    view.unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// R10. A pick that landed is a value the server took even where nothing merged its answer: the
+// issue page's pick lands while the board card's waits, so the engine leaves the screen to the
+// newer pick, and that one is then refused while the issue cannot be read. The screen is on the
+// pick the server took, not on the value before it.
+test("a pick that landed, then a newer pick refused while the issue cannot be read, leaves the pick that landed", async () => {
+  const first = Promise.withResolvers<Issue>();
+  const refusal = new ApiError(422, { code: "INVALID_PRIORITY", error: "not a priority" });
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => first.promise)
+    .mockImplementation(() => Promise.reject(refusal));
+  const user = userEvent.setup();
+  const client = pageClient();
+  const writes = writesOf(client);
+  const { read } = failingRead();
+  const view = render(
+    <QueryClientProvider client={client}>
+      <Surface name="Issue page" read={read} />
+      <Surface name="Board card" read={read} />
+    </QueryClientProvider>
+  );
+  try {
+    await user.selectOptions(select("Issue page"), "0");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    await user.selectOptions(select("Board card"), "2");
+
+    await act(async () => {
+      first.resolve(savedWith({ priority: 0 }));
+      await first.promise;
+    });
+    await act(settle);
+    expect(sentPriorities(patchIssue)).toEqual([0, 2]);
+    expect(writes.rows()).toEqual([]);
+    expect(client.getQueryState(detailKey)?.status).toBe("error");
+    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(select("Board card").value).toBe("0");
+    expect(select("Issue page").value).toBe("0");
   } finally {
     view.unmount();
     patchIssue.mockRestore();

@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { settle } from "../../__tests__/fake-clock";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -25,6 +25,7 @@ const fresh: UserIssueState = { dismissed: [], last_read_seq: 0, pinned: false, 
  */
 async function nextPinAfter(end: (client: QueryClient) => void) {
   const client = signedIn("alice");
+  client.setQueryData<UserState>(["user-state"], { "CORE-1": fresh });
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({ "CORE-1": fresh });
   const alicesAnswer: UserIssueState = { ...fresh, dismissed: [pinnedItemMarker("ask:a")], seq: 1 };
   const put = spyOn(api, "putIssueState")
@@ -53,17 +54,19 @@ async function nextPinAfter(end: (client: QueryClient) => void) {
 // and so does a pin of theirs dropped unmade. The next pin - bob's - reads his own state afresh
 // rather than writing over alice's.
 test("another sign-in lets go of the last pin's answer", async () => {
-  let rolledBack = false;
+  let rolledBack:
+    | { dismissed: string[] | null | undefined; readAgain: boolean | undefined }
+    | undefined;
   const sent = await nextPinAfter((client) => {
-    const invalidate = spyOn(client, "invalidateQueries");
     writesOf(client).signedIn("bob");
-    // The dropped pin is undone as a refused one is: the page reads its state again.
-    rolledBack = invalidate.mock.calls.some(
-      ([filters]) => JSON.stringify(filters?.queryKey) === '["user-state"]'
-    );
-    invalidate.mockRestore();
+    // The dropped pin is undone as a refused one is: the store puts back the state Dispatch
+    // last confirmed - alice's first pin, which it made - and reads it again.
+    rolledBack = {
+      dismissed: client.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.dismissed,
+      readAgain: client.getQueryState(["user-state"])?.isInvalidated,
+    };
   });
-  expect(rolledBack).toBe(true);
+  expect(rolledBack).toEqual({ dismissed: [pinnedItemMarker("ask:a")], readAgain: true });
   expect(sent).toEqual({ dismissed: [pinnedItemMarker("ask:c")], seq: 1 });
 });
 
@@ -135,6 +138,44 @@ test("a pin shows its change again over an answer to the viewer's state", async 
     expect(dismissedOf("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
     expect(client.getQueryData<UserState>(["user-state"])?.["CORE-2"]?.last_read_seq).toBe(9);
   } finally {
+    writesOf(client).clear();
+    getMyState.mockRestore();
+    put.mockRestore();
+  }
+});
+
+// R10 of dispatch://INFRA-299. Nothing awaits a pin's press to roll it back, so a refused pin is
+// the store's to put back: the viewer's state as Dispatch last gave it, before the state is read
+// again. Where that read fails - offline, a 5xx - the page shows no pin Dispatch never took.
+test("a refused pin leaves the state Dispatch last gave when the read again fails", async () => {
+  const client = signedIn("alice");
+  // The page's read, then the pin's own read of the state, then the read again, which fails.
+  const getMyState = spyOn(api, "getMyState")
+    .mockResolvedValueOnce({ "CORE-1": fresh })
+    .mockResolvedValueOnce({ "CORE-1": fresh })
+    .mockRejectedValue(new NetworkError("/api/v1/me/state", new TypeError("Failed to fetch")));
+  const put = spyOn(api, "putIssueState").mockRejectedValue(
+    new ApiError(422, { code: "INVALID_STATE", error: "not a state" })
+  );
+  // A surface drawing the viewer's state, so the read again goes out.
+  const unsubscribe = new QueryObserver(client, userStateQuery()).subscribe(() => {});
+  const dismissed = () => client.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.dismissed;
+  try {
+    await client.fetchQuery(userStateQuery());
+    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    expect(dismissed()).toEqual([pinnedItemMarker("ask:a")]);
+    await settle();
+    expect(put).toHaveBeenCalledTimes(1);
+    expect(
+      writesOf(client)
+        .rows()
+        .map((write) => write.status)
+    ).toEqual(["refused"]);
+    expect(getMyState).toHaveBeenCalledTimes(3);
+    expect(client.getQueryState(["user-state"])?.status).toBe("error");
+    expect(dismissed()).toEqual([]);
+  } finally {
+    unsubscribe();
     writesOf(client).clear();
     getMyState.mockRestore();
     put.mockRestore();

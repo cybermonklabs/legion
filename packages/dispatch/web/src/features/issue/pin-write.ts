@@ -82,8 +82,11 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
  * the shell's indicator and kept across a reload. The write shows its change on `["user-state"]`
  * at the press and again over each answer that lands there while it is out (`writePin`); once
  * the issue's last pin lands, the state Dispatch answered replaces what the page showed and the
- * next pin reads the state afresh, and a refused, discarded or dropped one has the page read its
- * state again. The states pins' answers left go with the person signed in (`reset`), so another
+ * next pin reads the state afresh. Nothing awaits a pin's press to roll it back, so a refused,
+ * discarded or dropped one is the store's to put back (`WriteSpec.storePutsBack`): the state
+ * Dispatch last gave the page, with every other live pin over it, read again from Dispatch - so a
+ * read that fails leaves no pin Dispatch never took on screen - and the next pin reads the state
+ * afresh. The states pins' answers left go with the person signed in (`reset`), so another
  * person's next pin never writes over them.
  */
 const pinWrite = defineWriteKind<PinWrite>({
@@ -104,9 +107,8 @@ const pinWrite = defineWriteKind<PinWrite>({
   name: "pin",
   reset: () => authoritative.clear(),
   resume: (detail) => pinAttempt(detail),
-  undone: (client, write) => {
+  undone: (_client, write) => {
     authoritative.delete(write.detail.issueKey);
-    void client.invalidateQueries({ queryKey: ["user-state"] });
   },
 });
 
@@ -144,6 +146,7 @@ export function writePin(
           };
         });
       },
+      storePutsBack: true,
       target: `pin:${issueKey}`,
       write: pinAttempt(detail),
     })

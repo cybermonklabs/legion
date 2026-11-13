@@ -38,6 +38,10 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
    *  - and again over each answer that lands on a cache it wrote while the write is live (R7 of
    *  dispatch://INFRA-299, `WriteSpec.shows`). A write that shows nothing names none. */
   readonly shows?: (variables: TVariables) => WriteChange;
+  /** Whether the store puts that change back as the write leaves its line without landing, for
+   *  a surface whose `onError` rolls nothing back itself (`WriteSpec.storePutsBack`). Left out,
+   *  the surface rolls its own change back. */
+  readonly storePutsBack?: boolean;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made, and the line it is ordered on: by an attempt of its own (`write`, under
@@ -103,6 +107,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   label,
   request,
   shows,
+  storePutsBack,
   target,
   unlined,
   write,
@@ -133,6 +138,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
         label: label(variables),
         presentation: "indicator",
         shows: shows === undefined ? undefined : shows(variables),
+        storePutsBack,
       } as const;
       const line =
         write === undefined

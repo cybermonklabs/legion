@@ -79,8 +79,9 @@ function withPin(state: UserAgentState | undefined, pinned: boolean, at: string)
  * row. The page shows the press at once and Dispatch's answer replaces it; the write is one
  * write of the one store, ordered on its session (`pin:agent:<id>`), named in the shell's
  * pending-writes indicator and, refused, retried or discarded there, as an issue's pin is. A
- * press whose write fails has the viewer's agent state read again, so no row is left pinned in a
- * page Dispatch never took the pin for.
+ * press whose write fails is the store's to put back (`storePutsBack`): the agent state Dispatch
+ * last gave the page, with every other live pin over it, read again from Dispatch, so no row is
+ * left pinned in a page Dispatch never took the pin for, even where that read fails.
  *
  * It answers whether Dispatch made the write - a landing it kept no answer for counts, a
  * refusal and a press the reader stopped do not - and never rejects, so a control that presses
@@ -101,7 +102,6 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
   const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
     label: ({ pinned, sessionId }) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
-    onError: reread,
     shows: ({ pinned, sessionId }) => {
       const at = new Date().toISOString();
       return (shown) => {
@@ -111,6 +111,9 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Prom
         }));
       };
     },
+    // No `onError` here: a refused, discarded or taken pin is the store's to put back, and the
+    // store reads the state again.
+    storePutsBack: true,
     onSuccess: (next, { sessionId }) => {
       // A write Dispatch made and has no answer to give for is a landing: what it changed is
       // read again rather than left as the press drew it.

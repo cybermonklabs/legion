@@ -1,10 +1,10 @@
-import { type QueryKey, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { issuePatchRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { inboxQuery, issueQuery, projectListsKey } from "../../api/queries";
-import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type { UpdateIssueInput } from "../../api/types";
 import {
   pressKey,
   type StoppedPress,
@@ -40,12 +40,6 @@ export interface IssueFieldWrite<Value> {
    *  A pick that replaces one of this control's that has not gone out takes its place, so two
    *  picks nobody has sent are one request, the newest. */
   submit: (value: Value) => void;
-}
-
-interface Snapshot {
-  details: IssueDetails | undefined;
-  inbox: [QueryKey, InboxRow[] | undefined][];
-  lists: [QueryKey, IssueSummary[] | undefined][];
 }
 
 /** A refused save as the control reports it: the server's reason, the pick to make again, and
@@ -106,12 +100,17 @@ function stillInLine(row: Write, issue: string, field: string): boolean {
  * store shows the pick as the write joins and shows it again over each answer that lands on one
  * of those caches while the write is live (R7 of dispatch://INFRA-299), so an answer composed
  * before the pick arrives whole - every other row of it with it - and leaves the person's own
- * change on screen. The engine snapshots the caches before the pick is shown and restores that
- * snapshot if the server refuses it, merges the server's answer and reads the issue again once
- * the save settles - each of those only while no newer write of the field is left in the line,
- * where the screen is already the newer pick's. A pick that replaces one of this control's that
- * has not gone out takes it out of the line (`Writes.discard`), which refuses that press with
- * `WriteDiscardedError`: the engine made that write go, so the person sees no failure for it.
+ * change on screen. A pick that leaves without landing - refused, discarded in Pending changes,
+ * taken by a sign-out - is the store's to put back (`WriteSpec.storePutsBack`): it puts back
+ * what Dispatch last gave each cache with every other live write's change over it, newer picks
+ * of the field among them, and reads those caches again (R10), so a read that fails leaves the
+ * screen on the value the server last confirmed rather than on a pick nothing will send. The
+ * engine keeps no snapshot of its own. It merges the server's answer and reads the issue again
+ * once a save lands with no newer write of the field left in the line, where the screen is
+ * already the newer pick's. A pick that replaces one of this control's that has not gone out
+ * takes it out of the line (`Writes.discard`), which refuses that press with
+ * `WriteDiscardedError`: the engine made that write go, so the person sees no failure for it, as
+ * they see none for a pick discarded in Pending changes.
  */
 export function useIssueFieldWrite<Value>(
   issueKey: string,
@@ -132,21 +131,13 @@ export function useIssueFieldWrite<Value>(
   const writes = useWrites();
   const detailKey = issueQuery(issueKey).queryKey;
   const [refused, setRefused] = useState<Refused<Value> | undefined>(undefined);
-  /** The write this control pressed last, while a pick of its own may still replace it, and the
-   *  caches as they stood before that pick was shown: a pick that takes its place takes that
-   *  snapshot with it, since the pick it replaced was never sent and the server never had it.
-   *  Another surface's pick, and one this page pressed before a reload, stand in the line on
-   *  their own: nothing of theirs is this control's to take out. */
-  const mine = useRef<{ readonly id: number; readonly snapshot: Snapshot } | undefined>(undefined);
+  /** The write this control pressed last, while a pick of its own may still replace it. Another
+   *  surface's pick, and one this page pressed before a reload, stand in the line on their own:
+   *  nothing of theirs is this control's to take out. */
+  const mine = useRef<number | undefined>(undefined);
   /** The last press the reader stopped, which a press of the same value makes again under its
    *  key, so Dispatch answers it with what it did rather than taking the write twice. */
   const stopped = useRef<StoppedPress<Value> | undefined>(undefined);
-  /** What a later press of this control rolls back to once an earlier one was refused: the
-   *  caches as they stood before that refused press showed its value, since the server never
-   *  took it. Without it a second refusal would put the first refused pick on screen and call it
-   *  the value the server last confirmed. Cleared the moment a press settles with nothing newer
-   *  of the field left in the line, where the chain is over. */
-  const refusedBase = useRef<Snapshot | undefined>(undefined);
   /** How many presses of this control the store has settled but the engine has not reported yet.
    *  A write the store lets go - Dispatch refused it, and the engine shows that refusal itself
    *  (`inline`) - leaves `rows()` a commit before this engine says what became of it, and a
@@ -156,25 +147,9 @@ export function useIssueFieldWrite<Value>(
   const inLine = useWriteSelection(`issue-field:${issueKey}:${field.name}`, (rows) =>
     rows.some((row) => stillInLine(row, issueKey, field.name))
   );
-  const takeSnapshot = (): Snapshot => ({
-    details: queryClient.getQueryData<IssueDetails>(detailKey),
-    inbox: queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey }),
-    lists: queryClient.getQueriesData<IssueSummary[]>({ queryKey: projectListsKey }),
-  });
-  const restore = (snapshot: Snapshot): void => {
-    if (snapshot.details !== undefined) {
-      queryClient.setQueryData<IssueDetails>(detailKey, snapshot.details);
-    }
-    for (const [key, data] of snapshot.lists) {
-      queryClient.setQueryData(key, data);
-    }
-    for (const [key, data] of snapshot.inbox) {
-      queryClient.setQueryData(key, data);
-    }
-  };
   // Another write to the same issue (a status change from the header) may have settled in
   // between; reading the issue again makes it server-authoritative rather than trusting the
-  // arrival order of the two responses or a pre-write snapshot.
+  // arrival order of the two responses.
   const reread = (): void => {
     void queryClient.invalidateQueries({ queryKey: detailKey });
     void queryClient.invalidateQueries({ queryKey: ["issues"] });
@@ -184,17 +159,13 @@ export function useIssueFieldWrite<Value>(
     // Two picks of this control that have not gone out are one request, the newest: the one
     // waiting leaves the line and its press is refused `WriteDiscardedError`, which the engine
     // swallows. A write already out, or one another surface pressed, is nobody's to take out.
-    const replaced =
-      mine.current !== undefined && writes.discard(mine.current.id) ? mine.current : undefined;
+    if (mine.current !== undefined) writes.discard(mine.current);
     setRefused(undefined);
     setInHand((count) => count + 1);
     for (const queryKey of [detailKey, projectListsKey, inboxKey]) {
       // A read in flight would otherwise answer with the server's older value over the pick.
       void queryClient.cancelQueries({ queryKey });
     }
-    // What a refusal of this pick rolls back to: the caches before the pick it replaced was
-    // shown, where it replaced one, since that pick never went out.
-    const snapshot = replaced?.snapshot ?? takeSnapshot();
     // A value here is a priority, a login or a repository, so the same value is the same press
     // made again, under the key Dispatch may already have taken that press under.
     const key = pressKey(stopped.current, value);
@@ -208,8 +179,10 @@ export function useIssueFieldWrite<Value>(
       presentation: "indicator",
       request: issuePatchRequest(issueKey, field.patch(value)),
       // The pick is shown here, by the store, so it is shown again over each answer that lands
-      // on one of the caches it writes until this write settles (R7).
+      // on one of the caches it writes until this write settles (R7), and put back by the store
+      // if it leaves without landing (R10): this engine rolls nothing back itself.
       shows: (shown) => field.show(value, shown),
+      storePutsBack: true,
       target: `issue:${issueKey}`,
     });
     // The row `run` has just joined, read at the press while the store holds it: its id tells
@@ -220,14 +193,14 @@ export function useIssueFieldWrite<Value>(
       throw new Error(`${field.label(value)}: the store holds no write under the key it just ran`);
     }
     const { id, joined } = row;
-    mine.current = { id, snapshot };
+    mine.current = id;
     /** This press has settled here, so the control holds it no longer, and whether a newer write
      *  of the field is left: one that joined after this one and is still live. Whether the store
      *  still publishes this write as live when its press settles is the store's to say, so the
      *  answer reads only the writes that joined after it. */
     const settled = (): boolean => {
       setInHand((count) => count - 1);
-      if (mine.current?.id === id) {
+      if (mine.current === id) {
         mine.current = undefined;
       }
       return writes
@@ -239,9 +212,6 @@ export function useIssueFieldWrite<Value>(
         if (settled()) {
           return;
         }
-        // Nothing of this field is left in the line, so the chain is over and the next press
-        // starts from what is on screen now.
-        refusedBase.current = undefined;
         if (answer !== null) {
           mergeIssue(queryClient, answer);
         }
@@ -252,18 +222,10 @@ export function useIssueFieldWrite<Value>(
         if (error instanceof WriteDiscardedError) {
           return;
         }
+        // The store has put back the value the server last confirmed, with every live write's
+        // change over it - a newer pick of this field among them - and reads it again.
         const refusal = error instanceof Error ? error : new Error(String(error));
         stopped.current = stoppedPress(key, value, refusal) ?? stopped.current;
-        if (newer) {
-          // A press after this one is still in the line and will roll back for both of them:
-          // to here, before this refused value was shown, rather than to a value the server
-          // refused.
-          refusedBase.current ??= snapshot;
-        } else {
-          restore(refusedBase.current ?? snapshot);
-          refusedBase.current = undefined;
-          reread();
-        }
         setRefused({ message: refusal.message, retriable: !newer, value });
       }
     );

@@ -1,10 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 
 import { answerAgentStates } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { writesOf } from "../writes/write-store";
@@ -113,6 +113,46 @@ test("a pin stays shown over an answer to the viewer's agent state that lands wh
     expect(states()?.["tester-session"]?.unread_replies).toBe(3);
   } finally {
     hook.unmount();
+    writesOf(queryClient).clear();
+    getMyAgentState.mockRestore();
+  }
+});
+
+// R10 of dispatch://INFRA-299. A pin's press rolls nothing back itself: a refused pin is the
+// store's to put back - the agent state as Dispatch last gave it - before the state is read
+// again. Where that read fails - offline, a 5xx - no session is left pinned on the page.
+test("a refused pin leaves the agent state Dispatch last gave when the read again fails", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const getMyAgentState = spyOn(api, "getMyAgentState")
+    .mockResolvedValueOnce({ "planner-session": { unread_replies: 0 } })
+    .mockRejectedValue(new NetworkError("/api/v1/me/agents/state", new TypeError("offline")));
+  answerAgentStates().mockRejectedValue(
+    new ApiError(422, { code: "INVALID_STATE", error: "not a state" })
+  );
+  // A surface drawing the viewer's agent state, so the read again goes out.
+  const unsubscribe = new QueryObserver(queryClient, userAgentStateQuery()).subscribe(() => {});
+  const hook = renderHook(() => useAgentPinWrite(), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children),
+  });
+  try {
+    await queryClient.fetchQuery(userAgentStateQuery());
+    let made: boolean | undefined;
+    await act(async () => {
+      made = await hook.result.current("planner-session", true);
+    });
+    expect(made).toBe(false);
+    await waitFor(() => expect(getMyAgentState).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(queryClient.getQueryState(userAgentStateQuery().queryKey)?.status).toBe("error")
+    );
+    expect(
+      pinnedAgentSessions(queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey))
+    ).toEqual([]);
+  } finally {
+    hook.unmount();
+    unsubscribe();
     writesOf(queryClient).clear();
     getMyAgentState.mockRestore();
   }
