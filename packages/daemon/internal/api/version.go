@@ -1501,7 +1501,14 @@ package api
 // `packages/contracts/fixtures/daemon-api/request-shapes.json` hold the field paths of every
 // request a plugin sends, from this contract on, and a later request type that no longer reads a
 // recorded field is red unless requests.go's `AcceptedByName` declares it, with the contract it
-// left at and what ignoring it means. `ready` is that table's first row. (This
+// left at and what ignoring it means. `ready` is that table's first row.
+//
+// Two kinds of change pass both gates, because neither reads them. A change to what an answer
+// means, with no change to its shape, passes both: a later contract that does that must serve
+// the old meaning down by hand, as 104's fresh session is served above. And a refusal's `code`
+// is held by no record, so a code renamed or removed passes both. At this contract no supported
+// plugin branches on a code the daemon no longer sends: the one renamed code an older plugin
+// names, `HANDOFF_STALE_ASSIGNMENT`, it names in its tool description and not in a branch. (This
 // entry first took 60, when the base carried 59, then 81 at the forward merge of 2026-11-12
 // that brought main in at 68, 81 again at the merge of that day that brought main in at 73, 87
 // at the merge that brought main in at 85, 89 at the merge that brought main in at 86, 95 at
