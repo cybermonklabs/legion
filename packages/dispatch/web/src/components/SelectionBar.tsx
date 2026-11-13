@@ -25,7 +25,9 @@ export interface SelectionBarProps {
    *  the bar, so it never squeezes the actions off the end of theirs. */
   readonly notice?: ReactNode;
   /** What takes the keyboard focus when the bar goes while it holds it, asked once the commit
-   *  that took the bar away is in the page: the page's own row, never the body. */
+   *  that took the bar away is in the page: the element the page names — a row's checkbox, else
+   *  its search box — never the body. Null moves nothing here: a table row the window has not
+   *  drawn yet takes the focus as it lands (`DataTableModel.focusRow`). */
   readonly returnFocus?: () => HTMLElement | null;
   /** The bar's own words in place of the count, for what a count cannot say: the Inbox's
    *  `Every row selected`, which covers rows a fold or a page is holding back, and its
@@ -50,10 +52,9 @@ export interface SelectionBarProps {
  * A bar that goes while it holds the keyboard focus - **Clear selection** pressed, Escape from a
  * control inside it, a press that took every marked row away - hands the focus to what the page's
  * `returnFocus` names, rather than drop it onto the page, where a keyboard reader would start
- * again from the page's first link. The hand-off is the bar's alone, so no page writes one: the
- * page only says where. A bar that goes while the focus is elsewhere moves nothing, and neither
- * does one whose going left the focus somewhere other than the body, since the reader put it
- * there.
+ * again from the page's first link. The page only names the target; the hand-off itself is the
+ * bar's. A bar that goes while the focus is elsewhere moves nothing, and neither does one whose
+ * going left the focus somewhere other than the body, since the reader put it there.
  */
 export function SelectionBar({ returnFocus, ...bar }: SelectionBarProps): ReactNode {
   // Set by the drawn bar as it goes, while its element still holds the focus, and read after the

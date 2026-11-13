@@ -1922,10 +1922,20 @@ export function Inbox({
   // always, and given no count and no state while it is not shown, so its going is the bar's
   // own to see and the focus it held is handed on (`SelectionBar`).
   const dismissLabel = showDismissed ? "Move to Inbox" : "Dismiss";
+  const selectedCount = selectedAsks.length + selectedThreads.length;
+  // In flight the count is the press's, since the rows it moved have already left this view;
+  // settled, it is what a second press would act on - the rows still marked. Said here rather
+  // than left to the bar's own count so the bar still stands over an emptied selection, which is
+  // where a refusal of that press lands.
+  let barState: string | undefined;
+  if (!bulkBarShown) barState = undefined;
+  else if (bulkSnoozing !== 0) barState = `Snoozing ${bulkSnoozing}…`;
+  else if (allRows) barState = "Every row selected";
+  else barState = `${selectedCount} selected`;
   const selectionBar = (
     <SelectionBar
       barRef={bulkBarRef}
-      count={bulkBarShown ? selectedAsks.length + selectedThreads.length : 0}
+      count={bulkBarShown ? selectedCount : 0}
       label="Selected rows"
       notice={snoozeRefusal}
       // The bar gone with the focus: the checkbox of the row the reader marked last, else the
@@ -1935,19 +1945,7 @@ export function Inbox({
         rows()[0]?.querySelector<HTMLElement>(MARK_SELECTOR) ??
         searchRef.current
       }
-      // In flight the count is the press's, since the rows it moved have already left this
-      // view; settled, it is what a second press would act on - the rows still marked. Said
-      // here rather than left to the bar's own count so the bar still stands over an emptied
-      // selection, which is where a refusal of that press lands.
-      state={
-        bulkBarShown
-          ? bulkSnoozing !== 0
-            ? `Snoozing ${bulkSnoozing}…`
-            : allRows
-              ? "Every row selected"
-              : `${selectedAsks.length + selectedThreads.length} selected`
-          : undefined
-      }
+      state={barState}
     >
       {/* The picker stays while its own write is out: the optimistic fold takes every marked ask
           off this view, and a picker unmounted under the reader's hand drops their focus. */}
