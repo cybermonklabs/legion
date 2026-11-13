@@ -635,3 +635,58 @@ func TestGoingWriteResumedOntoOtherArgumentsCountsNoStaleLandingAsItsOwn(t *test
 		})
 	}
 }
+
+// TestGoingWritePressedBackToItsFirstArgumentsResumesAfterWhatTheyLanded (review round 7; check
+// c21): a reasoned close of A posts A's reason and its close is refused 503 before it commits; a
+// press with arguments for B is refused before anything of it lands; a press back to A's own
+// arguments resumes after A's reason, which landed in the first press, though the write between
+// landed nothing: A holds one reason in all, and ends done.
+func TestGoingWritePressedBackToItsFirstArgumentsResumesAfterWhatTheyLanded(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		t.Run(row.action, func(t *testing.T) {
+			a, b := rig.issue(t, "Closed first and last"), rig.issue(t, "Pressed between")
+			argumentsA, firstA, ownA := row.on(t, rig, a)
+			argumentsB, firstB, _ := row.on(t, rig, b)
+			run := rig.proposed(t, "alice", false, row.action, argumentsA)
+			sent := map[string]int{}
+			refusedA := false
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				request := r.Method + " " + r.URL.Path
+				sent[request]++
+				switch {
+				case request == ownA && !refusedA:
+					refusedA = true
+					writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "A's close was refused")
+					return
+				case request == firstB:
+					writeError(w, codeScopeRequired, http.StatusForbidden, "B's reason was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			if half := rig.write(t, "alice", run, press); half.Code != http.StatusServiceUnavailable {
+				t.Fatalf("the press on %s answered %d %s, want its close's 503", a, half.Code, half.Body.String())
+			}
+			press["arguments"] = argumentsB
+			if refused := rig.write(t, "alice", run, press); refused.Code != http.StatusForbidden {
+				t.Fatalf("the press on %s answered %d %s, want its reason's 403", b, refused.Code, refused.Body.String())
+			}
+			press["arguments"] = argumentsA
+			line := goingLineOf(t, rig.write(t, "alice", run, press))
+			var reasons int
+			if err := rig.database.Pool.QueryRow(context.Background(),
+				`select count(*) from messages where issue_key = $1 and body = $2`, a, argumentsA["reason"]).Scan(&reasons); err != nil {
+				t.Fatalf("count %s's reasons: %v", a, err)
+			}
+			if !line.Outcome.OK || reasons != 1 || sent[firstA] != 1 || rig.issueRead(t, a).Status != "done" {
+				t.Fatalf("the press back on %s answered %+v with %s sent %d times and %d reasons on %s, want it resumed after the reason, which is posted once, and %s done",
+					a, line.Outcome, firstA, sent[firstA], reasons, a, a)
+			}
+		})
+	}
+}

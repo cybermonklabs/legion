@@ -310,7 +310,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	// no request is still making.
 	ctx, cancel := context.WithTimeout(r.Context(), s.keyedRunLimit())
 	defer cancel()
-	write, claimed := s.claimGoingWrite(ctx, w, r, run, caller.ID, input)
+	write, run, claimed := s.claimGoingWrite(ctx, w, r, run, caller.ID, input)
 	if !claimed {
 		return
 	}
@@ -327,13 +327,24 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	performer := GoingCaller{Catalogue: s.going, Session: session, Doer: doer,
 		landings: &goingLandings{s: s, run: run.ID, login: caller.ID, write: write.ID},
-		resumes:  len(goingLanded(write.Requests)) > 0}
+		resumes:  goingAnyLanded(run, input)}
 	prepared, err := performer.prepare(ctx, input.Offer, arguments)
 	if err != nil {
 		claim.refuse(goingObservation{}, err)
 		return
 	}
 	claim.write.Undo = prepared.route.Undo.Kind
+	if specs, err := prepared.call.requests(prepared.route); err == nil {
+		// The call is known now: the claim holds what of it landed across the invocation's
+		// writes, at their own indexes, before anything of it is sent.
+		if resume := goingResumeAfter(run, input, specs); !goingSameRequests(resume, claim.write.Requests) {
+			if err := performer.landings.holding(ctx, resume); err != nil {
+				claim.refuse(goingObservation{}, fmt.Errorf("hold what %s landed before: %w", input.Offer, err))
+				return
+			}
+			claim.write.Requests = resume
+		}
+	}
 	observer := goingObserver{read: performer.reader(), s: s}
 	before, err := observer.observe(ctx, prepared, nil, goingObservation{})
 	if err != nil {
@@ -431,19 +442,20 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 const goingWriteClaimTries = 3
 
 // claimGoingWrite claims the invocation for this request's write, from the run as read, and
-// answers the write claimed, or answers the request and reports false. The write resumes after
-// the requests the run's latest write of the invocation landed - one refused, since one that went
-// through or is pending within goingClaimBound is answered before a write is claimed - whatever
-// key that write was sent under (GoingCaller.send), so a request that landed is never sent a
-// second time, by a retry under the same key or by a new press under another. The claim holds
-// only while that latest write is still the run's latest (claimGoingRunWrite), so what it landed
-// is read with the claim and never goes stale: a claim refused because another request recorded a
-// write of the invocation since the read reads the run again and claims from that, a few times
+// answers the write claimed and the run it was claimed on, or answers the request and reports
+// false. The claim starts out holding the requests the run's latest write of the invocation
+// landed - one refused, since one that went through or is pending within goingClaimBound is
+// answered before a write is claimed - and once the write's call is known it holds those it
+// resumes after, read across the invocation's writes (goingResumeAfter). The claim holds only
+// while that latest write is still the run's latest (claimGoingRunWrite), so every write of the
+// invocation the resume reads is read with the claim and never goes stale - an earlier one, once
+// recorded, never changes: a claim refused because another request recorded a write of the
+// invocation since the read reads the run again and claims from that, a few times
 // (goingWriteClaimTries), before it answers the invocation under way. A latest write still pending
 // past goingClaimBound whose record names a request of it that landed (answerGoingWriteClaimed
 // lets no other through) is taken over under its own claim, its landings standing
 // (adoptGoingRunWrite).
-func (s *server) claimGoingWrite(ctx context.Context, w http.ResponseWriter, r *http.Request, run goingRun, login string, input goingWriteInput) (goingRunWrite, bool) {
+func (s *server) claimGoingWrite(ctx context.Context, w http.ResponseWriter, r *http.Request, run goingRun, login string, input goingWriteInput) (goingRunWrite, goingRun, bool) {
 	for tries := 1; ; tries++ {
 		write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved, At: time.Now().UTC()}
 		latest := goingLatestWrite(run, input)
@@ -459,24 +471,63 @@ func (s *server) claimGoingWrite(ctx context.Context, w http.ResponseWriter, r *
 			err = s.claimGoingRunWrite(ctx, run.ID, login, write, latest.ID)
 		}
 		if err == nil {
-			return write, true
+			return write, run, true
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
 			s.writeHandlerError(w, fmt.Errorf("claim the going write: %w", err))
-			return goingRunWrite{}, false
+			return goingRunWrite{}, goingRun{}, false
 		}
 		// Another request claimed the invocation, or recorded a write of it, since the read, or
 		// the run is gone.
 		again, ok := s.readCallersGoingRun(w, r, login)
 		if !ok || s.answerGoingWriteClaimed(w, again, input) {
-			return goingRunWrite{}, false
+			return goingRunWrite{}, goingRun{}, false
 		}
 		if tries == goingWriteClaimTries {
 			writeGoingWriteInProgress(w)
-			return goingRunWrite{}, false
+			return goingRunWrite{}, goingRun{}, false
 		}
 		run = again
 	}
+}
+
+// goingResumeAfter is the requests a call of the invocation resumes after (specs, the requests
+// it sends): of the run's writes of the invocation, newest first, the one whose landed requests
+// (goingLanded) are the call's own, by method and path, for the most of the call's requests from
+// its first. A press whose arguments changed and changed back so resumes after what the call's own
+// requests landed in an earlier write, though a write between landed nothing of them, and sends
+// none of them again.
+func goingResumeAfter(run goingRun, input goingWriteInput, specs []goingSend) []goingWriteRequest {
+	var best []goingWriteRequest
+	for _, write := range slices.Backward(run.Writes) {
+		if write.Action != input.Offer || write.Invocation != input.Invocation {
+			continue
+		}
+		landed, matched := goingLanded(write.Requests), 0
+		for matched < len(landed) && matched < len(specs) &&
+			landed[matched].Method == specs[matched].method && landed[matched].Path == specs[matched].path {
+			matched++
+		}
+		if matched > len(best) {
+			best = landed[:matched]
+		}
+	}
+	return slices.Clone(best)
+}
+
+// goingAnyLanded reports whether any write of the invocation landed a request.
+func goingAnyLanded(run goingRun, input goingWriteInput) bool {
+	return slices.ContainsFunc(run.Writes, func(write goingRunWrite) bool {
+		return write.Action == input.Offer && write.Invocation == input.Invocation && len(goingLanded(write.Requests)) > 0
+	})
+}
+
+// goingSameRequests reports whether two lists of requests are the same requests, by method, path
+// and whether each landed.
+func goingSameRequests(a, b []goingWriteRequest) bool {
+	return slices.EqualFunc(a, b, func(x, y goingWriteRequest) bool {
+		return x.Method == y.Method && x.Path == y.Path && x.Outcome.OK == y.Outcome.OK
+	})
 }
 
 // goingLatestWrite is the run's latest write of the invocation, nil for none.

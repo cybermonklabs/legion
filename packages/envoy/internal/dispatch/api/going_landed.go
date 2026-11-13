@@ -130,6 +130,34 @@ func (l *goingLandings) from(ctx context.Context, index int) error {
 		l.run, l.login, l.write, l.undo, index))
 }
 
+// goingLandingsHeld sets the requests of the pending claim of the run $1 of author $2 - the write
+// of id $3, or the undo of write $3 claimed at $4 - to $5.
+const goingLandingsHeld = `
+	update going_runs r set %[1]s = (
+	  select jsonb_agg(case when %[2]s then jsonb_set(e, '{requests}', $5::jsonb) else e end order by n)
+	  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n))
+	where r.id = $1::uuid and r.author_login = $2
+	  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s)`
+
+// holding sets the claim's record of its requests to requests, those the call resumes after
+// (goingResumeAfter), so each request it goes on to send records its landing at its own index
+// beside them. It is bookkeeping outside every commit step (store.WithoutBeforeCommit); a claim
+// the run no longer holds is pgx.ErrNoRows.
+func (l *goingLandings) holding(ctx context.Context, requests []goingWriteRequest) error {
+	if requests == nil {
+		requests = []goingWriteRequest{}
+	}
+	encoded, err := json.Marshal(requests)
+	if err != nil {
+		return err
+	}
+	column, condition := l.element()
+	bookkeeping, cancel := goingBookkeeping(ctx)
+	defer cancel()
+	return l.s.appendToGoingRun(store.WithoutBeforeCommit(bookkeeping), fmt.Sprintf(goingLandingsHeld, column, condition),
+		l.run, l.login, l.write, l.undo, string(encoded))
+}
+
 // goingPaddedRequests is the requests of the claim's element e padded with nulls up to index $7,
 // so a landing at $7 is set at that index whatever the element held: jsonb_set past the end of an
 // array appends rather than leaving a gap, which would put a landing at the wrong index.
