@@ -60,7 +60,8 @@
 // over (its mtime set back on purpose, or both writes inside one millisecond) of a file jj's
 // last snapshot recorded as unchanged, one whose record in the index copy equals its entry in
 // jj's tree; the same rewrite of a file the role had already edited is carried; and a change of
-// form, where git's content conversion stores a file jj holds otherwise than jj does. The route
+// form, where git's content conversion would store otherwise a file whose record in the index copy
+// equals its entry in jj's tree, which the route keeps as HEAD holds it. The route
 // keeps one shape that read loses: an ignored file jj tracks that the index the read starts from
 // lacks (carried says each). A differential test compares the two trees in both directions over
 // every shape found so far and over a generated matrix of index and worktree states, each
