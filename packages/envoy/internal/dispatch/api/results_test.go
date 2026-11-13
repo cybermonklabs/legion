@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -628,7 +630,7 @@ func resultsGitHubAnswering(
 	answer func(base, head string) (int, string),
 ) (http.Handler, *store.Store) {
 	t.Helper()
-	handler, database, _ := resultsGitHubServed(t, repos, held, defaultBranch, answer)
+	handler, database, _ := resultsGitHubServed(t, repos, held, defaultBranch, answer, nil)
 	return handler, database
 }
 
@@ -637,11 +639,14 @@ func resultsGitHubAnswering(
 // repository was last resolved to, which delivery.Branches keeps for
 // delivery.BranchCommitStaleAfter and which a test can reach no other way, since it cannot
 // wait five minutes out. readThroughGitHub answers the same for the read-through's cache.
+// checkRuns, where it is not nil, answers `GET /repos/{owner}/{repo}/commits/{sha}/check-runs`
+// (resultsGitHubCheckRuns); a nil one leaves that read to the mux's 404.
 func resultsGitHubServed(
 	t *testing.T,
 	repos, held map[string]bool,
 	defaultBranch string,
 	answer func(base, head string) (int, string),
+	checkRuns http.HandlerFunc,
 ) (http.Handler, *store.Store, *server) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -696,6 +701,9 @@ func resultsGitHubServed(
 		}
 		fmt.Fprintf(w, `{"status":%q}`, comparison)
 	})
+	if checkRuns != nil {
+		mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", checkRuns)
+	}
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
@@ -1268,7 +1276,7 @@ func TestAfterMergeResultStandsAtAStoredBranchAnswerWhileTheAppCannotReadTheRepo
 				return http.StatusOK, "behind"
 			}
 			return http.StatusOK, "diverged"
-		})
+		}, nil)
 	issue := issueInRepository(t, handler, "RESD3", "acme/widgets", "Merged, then the App lost the repository")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
 	recordMerge(t, database, "acme/widgets", 51, issue.Key, "integration/x")
@@ -2642,5 +2650,715 @@ func TestARetractedPassDoesNotStand(t *testing.T) {
 	standsAt(t, read, "k1", pass.Result.ID, "a retracted pass", model.CommitAtBasis, false)
 	if stood := checkOf(t, read, "k1").PassStands; stood.Answer != model.PassStandsNo {
 		t.Fatalf("the check answers pass_stands %+v after the retraction, want no", stood)
+	}
+}
+
+// A check CI proves takes no result from any role: a tester's and an implementer's are both
+// refused, 409 CHECK_PROVED_BY_CI naming the block and the check run, and nothing is stored. The
+// refusal comes before the commit is asked of GitHub: the commit here is one the repository does
+// not hold, which would otherwise be refused as RESULT_COMMIT_UNKNOWN. The same call against an
+// ordinary check of the same document is recorded.
+func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
+	handler, database := resultsGitHubHolding(t, map[string]bool{"acme/widgets": true},
+		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
+	issue := issueInRepository(t, handler, "RESCI", "acme/widgets", "Proved by CI")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept)+"\n"+twoChecks)
+
+	want := `check c1 is proved by CI run "` + ciCheckRun + `": dispatch results reads its result from that run, and no role records one`
+	for _, role := range []string{"tester", "implementer"} {
+		refused := recordResult(t, handler, issue.Key, resultBody("c1", "pass", nearHeadCommit, map[string]any{"role": role}))
+		if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" || text != want {
+			t.Fatalf("the %s's result against c1: status=%d body=%s, want 409 CHECK_PROVED_BY_CI %q", role, refused.Code, refused.Body.String(), want)
+		}
+	}
+	if results := checkOf(t, readResults(t, handler, issue.Key), "c1").Results; len(results) != 0 {
+		t.Fatalf("the check CI proves holds %+v, want no result", results)
+	}
+	if events := resultEventsOn(t, database, issue.Key); events != 0 {
+		t.Fatalf("the issue holds %d result.recorded events, want none", events)
+	}
+
+	if recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, map[string]any{"role": "tester"})); recorded.Code != http.StatusCreated {
+		t.Fatalf("the same call against an ordinary check: status=%d body=%s, want 201", recorded.Code, recorded.Body.String())
+	}
+}
+
+// A result and a ci_check written against one block at once can both commit, and the block then
+// holds a recorded result, so it is no check CI proves. Crafted here as a browser's write that
+// gives a ci_check to a check already holding a result, before any settlement: the results read
+// shows it as an ordinary check carrying its ci_check and its recorded result, and it takes a
+// further result. Its sibling, given the same ci_check and holding no result, is CI's. The next
+// settlement takes the inert ci_check off the block holding results, with one block.invalid
+// naming the fourth rule, and keeps its sibling's.
+func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
+	documents, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "RESCR", "Raced", "A spec\n")
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		ciCheckBlock("c1", ciCheckOrdinary)+"\n"+ciCheckBlock("c2", ciCheckOrdinary))
+	first := recordResult(t, handler, issue.Key, resultBody("c1", "pass", headCommit, nil))
+	if first.Code != http.StatusCreated {
+		t.Fatalf("record a result against c1: status=%d body=%s", first.Code, first.Body.String())
+	}
+	writeBrowserDocument(t, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
+
+	held := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	if held.CICheck != ciCheckRun || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID {
+		t.Fatalf("c1 reads %+v, want its ci_check and the result recorded against it", held)
+	}
+	if again := recordResult(t, handler, issue.Key, resultBody("c1", "fail", newHeadCommit, map[string]any{"role": "tester", "failed": 1})); again.Code != http.StatusCreated {
+		t.Fatalf("a further result against c1: status=%d body=%s, want 201", again.Code, again.Body.String())
+	}
+	if results := checkOf(t, readResults(t, handler, issue.Key), "c1").Results; len(results) != 2 {
+		t.Fatalf("c1 holds %+v, want both results", results)
+	}
+
+	refused := recordResult(t, handler, issue.Key, resultBody("c2", "pass", headCommit, nil))
+	if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" {
+		t.Fatalf("a result against c2: status=%d body=%s, want 409 CHECK_PROVED_BY_CI", refused.Code, refused.Body.String())
+	}
+
+	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the issue's documents: %v", err)
+	}
+	settled := readResults(t, handler, issue.Key)
+	if c1 := checkOf(t, settled, "c1"); c1.CICheck != "" || len(c1.Results) != 2 {
+		t.Fatalf("c1 once settled reads %+v, want it without its ci_check and holding both results", c1)
+	}
+	if c2 := checkOf(t, settled, "c2"); c2.CICheck != ciCheckRun {
+		t.Fatalf("c2 once settled reads %+v, want its ci_check %q kept", c2, ciCheckRun)
+	}
+	want := []ciCheckRefusalEvent{{BlockID: "c1", Reason: ciCheckRecordedRule, BlockType: "check"}}
+	if got := ciCheckRefusalEvents(t, handler, issue.Key); !slices.Equal(got, want) {
+		t.Fatalf("block.invalid events = %+v, want %+v", got, want)
+	}
+}
+
+// checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
+// read of a check CI proves asks for it, and the count of the pages asked for each commit. A
+// test sets the runs of a commit, a status and body every read answers in place of the listing,
+// or a hold that keeps every read waiting until its caller gives up.
+type checkRunsFake struct {
+	mu        sync.Mutex
+	runs      map[string][]map[string]any
+	fault     int
+	faultBody string
+	hold      bool
+	asked     map[string]int
+}
+
+func newCheckRunsFake() *checkRunsFake {
+	return &checkRunsFake{runs: map[string][]map[string]any{}, asked: map[string]int{}}
+}
+
+// set is the runs GitHub lists for sha, in the order given.
+func (f *checkRunsFake) set(sha string, runs ...map[string]any) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.runs[sha] = runs
+}
+
+// failWith makes every read answer status with a message of GitHub's shape, and 0 ends it.
+func (f *checkRunsFake) failWith(status int) {
+	f.failWithBody(status, "")
+}
+
+// failWithBody makes every read answer status with body, or with a message of GitHub's shape
+// where body is "", and 0 ends it.
+func (f *checkRunsFake) failWithBody(status int, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fault, f.faultBody = status, body
+}
+
+// holdEveryRead makes every read wait until its caller gives up.
+func (f *checkRunsFake) holdEveryRead() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.hold = true
+}
+
+// reads is how many pages of sha's check runs GitHub has been asked for.
+func (f *checkRunsFake) reads(sha string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.asked[sha]
+}
+
+// allReads is how many pages of check runs GitHub has been asked for, at any commit.
+func (f *checkRunsFake) allReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	total := 0
+	for _, asked := range f.asked {
+		total += asked
+	}
+	return total
+}
+
+func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
+	sha := r.PathValue("sha")
+	page, err := strconv.Atoi(r.URL.Query().Get("page"))
+	if err != nil || page < 1 || r.URL.Query().Get("filter") != "all" {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		fmt.Fprintf(w, `{"message":"want filter=all and a page, got %s"}`, r.URL.RawQuery)
+		return
+	}
+	f.mu.Lock()
+	f.asked[sha]++
+	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
+	f.mu.Unlock()
+	if hold {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+		return
+	}
+	if fault != 0 {
+		w.WriteHeader(fault)
+		if faultBody != "" {
+			fmt.Fprint(w, faultBody)
+			return
+		}
+		fmt.Fprintf(w, `{"message":"Server Error at the check runs of %s"}`, sha)
+		return
+	}
+	from, to := min((page-1)*100, len(runs)), min(page*100, len(runs))
+	body, err := json.Marshal(map[string]any{"total_count": len(runs), "check_runs": runs[from:to]})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
+// resultsGitHubCheckRuns is resultsGitHub over acme/widgets whose check runs fake lists.
+func resultsGitHubCheckRuns(t *testing.T) (http.Handler, *store.Store, *checkRunsFake) {
+	t.Helper()
+	fake := newCheckRunsFake()
+	handler, database, _ := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
+		func(string, string) (int, string) { return http.StatusOK, "diverged" }, fake.serve)
+	return handler, database, fake
+}
+
+// ciRunCompletedAt is when every concluded run of these tests concluded.
+const ciRunCompletedAt = "2026-11-12T10:00:00Z"
+
+// completedRun is a check run GitHub Actions concluded, with no output, as its own jobs carry.
+func completedRun(id int64, name, conclusion string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name, "status": "completed", "conclusion": conclusion,
+		"completed_at": ciRunCompletedAt, "html_url": ciRunURL(id),
+		"output": map[string]any{"title": nil, "summary": nil},
+		"app":    map[string]any{"slug": "github-actions"},
+	}
+}
+
+// pendingRun is a check run that has not concluded: no conclusion and no completion time.
+func pendingRun(id int64, name, status string) map[string]any {
+	return map[string]any{
+		"id": id, "name": name, "status": status, "conclusion": nil, "completed_at": nil,
+		"html_url": ciRunURL(id), "output": map[string]any{"title": nil, "summary": nil},
+		"app": map[string]any{"slug": "github-actions"},
+	}
+}
+
+func ciRunURL(id int64) string {
+	return fmt.Sprintf("https://github.com/acme/widgets/runs/%d", id)
+}
+
+// issueOfProject is a further issue of project with verification as its Verification document.
+func issueOfProject(t *testing.T, handler http.Handler, project, title, verification string) string {
+	t.Helper()
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": project, "title": title, "spec": "A spec\n"}, "alice")
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create issue of %s: status=%d body=%s", project, response.Code, response.Body.String())
+	}
+	key := decodeBody[model.Issue](t, response).Key
+	uploadDocument(t, handler, "/api/v1/issues/"+key, "verification.md", verification)
+	return key
+}
+
+// shortenCIReadDeadline sets the bound of one head's check-runs read for the test.
+func shortenCIReadDeadline(t *testing.T, deadline time.Duration) {
+	t.Helper()
+	before := ciReadDeadline
+	ciReadDeadline = deadline
+	t.Cleanup(func() { ciReadDeadline = before })
+}
+
+// ciVerdictLineOf is the pull-request body line of a check written by ciCheckBlock whose run
+// gave verdict at sha.
+func ciVerdictLineOf(blockID, run, verdict, sha string) string {
+	return fmt.Sprintf("- Check %s (before_merge): %s at %s, from CI run %s. The server builds at the head.",
+		blockID, verdict, sha, run)
+}
+
+// ciUnconcludedLineOf is the pull-request body line of a check whose run did not decide it.
+func ciUnconcludedLineOf(blockID, run, ciCase string) string {
+	return fmt.Sprintf("- Check %s (before_merge): CI run %s has no result (%s)", blockID, run, ciCase)
+}
+
+// assertCI asserts what the read says of a check CI proves: its run, state, case and line.
+func assertCI(t *testing.T, check model.CheckBlock, run, state, ciCase, line string) {
+	t.Helper()
+	if check.CI == nil {
+		t.Fatalf("check %s carries no ci, want state %s (%s)", check.BlockID, state, ciCase)
+	}
+	if got := *check.CI; got.Run != run || got.State != state || got.Case != ciCase || got.Line != line || got.Detail == "" {
+		t.Fatalf("check %s ci = %+v, want run %q, state %q, case %q, a detail and the line %q",
+			check.BlockID, got, run, state, ciCase, line)
+	}
+}
+
+// assertDerived asserts that the check's one result is the one derived from run id, which
+// concluded conclusion at sha, and that it stands at the head it was read at.
+func assertDerived(t *testing.T, check model.CheckBlock, id int64, run, conclusion, verdict, sha string) model.CheckResult {
+	t.Helper()
+	if len(check.Results) != 1 {
+		t.Fatalf("check %s holds %+v, want the one result derived from run %d", check.BlockID, check.Results, id)
+	}
+	result := check.Results[0]
+	completedAt, _ := time.Parse(time.RFC3339, ciRunCompletedAt)
+	want := model.Actor{Kind: "github_app", ID: "github-actions"}
+	if result.ID != fmt.Sprintf("ci-run:%d", id) || result.Role != "ci" || result.Actor.Kind != want.Kind ||
+		result.Actor.ID != want.ID || result.Session != "" || result.Run != run || result.Verdict != verdict ||
+		result.CommitSHA != sha || !result.CreatedAt.Equal(completedAt) ||
+		result.NegativeControl != check.NegativeControl || result.Surface != check.Surface ||
+		result.CheckBlockID != check.BlockID || result.CheckArtifactID != check.ArtifactID ||
+		result.CheckIssueKey != check.IssueKey || result.CheckSHA256 != check.SHA256 ||
+		result.Failed != 0 || result.Skipped != 0 || result.Excluded != 0 || result.EventSeq != nil ||
+		result.Screenshots == nil || len(result.Screenshots) != 0 {
+		t.Fatalf("check %s's derived result = %+v, want run %d's %s at %s by %+v, completed %s, carrying the check's own fields",
+			check.BlockID, result, id, verdict, sha, want, ciRunCompletedAt)
+	}
+	if observed := "conclusion: " + conclusion + "\n" + ciRunURL(id); result.Observed != observed {
+		t.Fatalf("check %s's derived result observed %q, want %q", check.BlockID, result.Observed, observed)
+	}
+	if result.CommitStands == nil || result.CommitStands.Answer != model.CommitAtBasis ||
+		result.CheckWordsMoved == nil || *result.CheckWordsMoved {
+		t.Fatalf("check %s's derived result stands %+v with words moved %v, want at the head it was read at, words unmoved",
+			check.BlockID, result.CommitStands, result.CheckWordsMoved)
+	}
+	return result
+}
+
+// A check CI proves is answered by the run its ci_check names at the issue's open head, for every
+// case R3 names: success is a pass with its one derived result; neutral, skipped, cancelled, a
+// run not completed and a head carrying no run of that name are no result, each naming its case;
+// timed_out and a conclusion the list does not name are a fail. The named run on page two of a
+// head carrying 101 runs is read, because the read pages.
+func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issueInRepository(t, handler, "RESCO", "acme/widgets", "Outcomes")
+	others := make([]map[string]any, 100)
+	for index := range others {
+		others[index] = completedRun(int64(1000+index), fmt.Sprintf("other-%d", index), "success")
+	}
+	for index, test := range []struct {
+		name   string
+		runs   []map[string]any
+		state  string
+		ciCase string
+		run    int64
+		pages  int
+	}{
+		{"success", []map[string]any{completedRun(11, ciCheckRun, "success")}, model.CIStatePass, "success", 11, 1},
+		{"neutral", []map[string]any{completedRun(12, ciCheckRun, "neutral")}, model.CIStateNoResult, "neutral", 0, 1},
+		{"skipped", []map[string]any{completedRun(13, ciCheckRun, "skipped")}, model.CIStateNoResult, "skipped", 0, 1},
+		{"cancelled", []map[string]any{completedRun(14, ciCheckRun, "cancelled")}, model.CIStateNoResult, "cancelled", 0, 1},
+		{"in progress", []map[string]any{pendingRun(15, ciCheckRun, "in_progress")}, model.CIStateNoResult, "not_completed", 0, 1},
+		{"absent", []map[string]any{completedRun(16, "lint", "success")}, model.CIStateNoResult, "absent", 0, 1},
+		{"on page two of 101 runs", append(slices.Clone(others), completedRun(17, ciCheckRun, "success")), model.CIStatePass, "success", 17, 2},
+		{"timed out", []map[string]any{completedRun(18, ciCheckRun, "timed_out")}, model.CIStateFail, "timed_out", 18, 1},
+		{"an unnamed conclusion", []map[string]any{completedRun(19, ciCheckRun, "frobnicated")}, model.CIStateFail, "frobnicated", 19, 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key := issueOfProject(t, handler, "RESCO", test.name, ciCheckBlock("c1", ciCheckKept))
+			head := fmt.Sprintf("%040x", index+1)
+			writeHead(t, database, "acme/widgets", 100+index, head, "open", key)
+			fake.set(head, test.runs...)
+
+			check := checkOf(t, readResults(t, handler, key), "c1")
+			if test.run == 0 {
+				assertCI(t, check, ciCheckRun, test.state, test.ciCase, ciUnconcludedLineOf("c1", ciCheckRun, test.ciCase))
+				if len(check.Results) != 0 || check.PassStands.Answer != model.PassStandsNo {
+					t.Fatalf("c1 holds %+v and pass_stands %+v, want no result and no pass", check.Results, check.PassStands)
+				}
+			} else {
+				assertCI(t, check, ciCheckRun, test.state, test.ciCase, ciVerdictLineOf("c1", ciCheckRun, test.state, head))
+				assertDerived(t, check, test.run, ciCheckRun, test.ciCase, test.state, head)
+				wantStands := model.CheckPassStands{Answer: model.PassStandsNo}
+				if test.state == model.CIStatePass {
+					wantStands = model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"ci"}}
+				}
+				if check.PassStands.Answer != wantStands.Answer || !slices.Equal(check.PassStands.Roles, wantStands.Roles) {
+					t.Fatalf("c1 pass_stands = %+v, want %+v", check.PassStands, wantStands)
+				}
+			}
+			if pages := fake.reads(head); pages != test.pages {
+				t.Fatalf("the read asked for %d pages of %s's check runs, want %d", pages, head, test.pages)
+			}
+		})
+	}
+}
+
+// assertUnread asserts that a check CI proves reads as GitHub unread, with each of words in its
+// detail and no token, and holds no result and a pass standing that is not known: a failed read
+// is neither a pass nor a fail.
+func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
+	t.Helper()
+	assertCI(t, check, ciCheckRun, model.CIStateUnread, "github_unreadable",
+		ciUnconcludedLineOf(check.BlockID, ciCheckRun, "github_unreadable"))
+	for _, word := range words {
+		if !strings.Contains(check.CI.Detail, word) {
+			t.Fatalf("c1's detail %q does not carry %q", check.CI.Detail, word)
+		}
+	}
+	if strings.Contains(check.CI.Detail, "ghs_") {
+		t.Fatalf("c1's detail %q carries a token", check.CI.Detail)
+	}
+	if len(check.Results) != 0 || check.PassStands.Answer != model.PassStandsUnknown {
+		t.Fatalf("c1 holds %+v and pass_stands %+v, want no result and pass_stands unknown", check.Results, check.PassStands)
+	}
+}
+
+// A read Dispatch could not make is no verdict: GitHub's 500, a read held past the deadline and
+// a deployment holding no App key each leave the check with no result and a detail saying what
+// GitHub answered, never a pass and never a fail.
+func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCU", "acme/widgets", "Unread")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(21, ciCheckRun, "success"))
+
+	fake.failWith(http.StatusInternalServerError)
+	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"),
+		"status 500", "Server Error at the check runs of "+headCommit)
+
+	fake.failWith(0)
+	fake.holdEveryRead()
+	shortenCIReadDeadline(t, 300*time.Millisecond)
+	started := time.Now()
+	assertUnread(t, checkOf(t, readResults(t, handler, issue.Key), "c1"), "no answer within 300ms")
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("the held read answered after %s, want it cut at the deadline", elapsed)
+	}
+
+	keyless, keylessDatabase, deps := newTestServer(t, testServerOptions{})
+	if deps.GitHub != nil {
+		t.Fatalf("the fixture holds a GitHub client, want the deployment that holds no App key")
+	}
+	other := issueInRepository(t, keyless, "RESCK", "acme/widgets", "No App key")
+	uploadDocument(t, keyless, "/api/v1/issues/"+other.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, keylessDatabase, "acme/widgets", 7, headCommit, "open", other.Key)
+	assertUnread(t, checkOf(t, readResults(t, keyless, other.Key), "c1"), "no private key")
+}
+
+// GitHub's refusal of a read carries its whole body in the error, up to the 16 MiB a page of
+// check runs may take, and none of it reaches the detail: the detail names the status and the
+// `message` of a JSON body, names the status alone for a body that is not JSON, and is cut to
+// 2,000 runes where the message itself is longer.
+func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCB", "acme/widgets", "Large refusal")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	padding := strings.Repeat("x", 1<<20)
+	for _, test := range []struct {
+		name    string
+		status  int
+		body    string
+		words   []string
+		cut     bool
+		leftOut string
+	}{
+		{
+			name:   "a JSON body padded past a megabyte",
+			status: http.StatusBadGateway,
+			body:   `{"message":"Bad gateway at the check runs","documentation_url":"https://docs.github.com/rest","padding":"` + padding + `"}`,
+			words:  []string{"status 502: Bad gateway at the check runs."}, leftOut: "xxxxxxxx",
+		},
+		{
+			name:   "a megabyte that is not JSON",
+			status: http.StatusServiceUnavailable,
+			body:   "<html>" + padding + "</html>",
+			words:  []string{"status 503."}, leftOut: "<html>",
+		},
+		{
+			name:   "a message longer than the bound",
+			status: http.StatusInternalServerError,
+			body:   `{"message":"` + padding + `"}`,
+			words:  []string{"status 500: xxxxxxxx"}, cut: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake.failWithBody(test.status, test.body)
+			check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+			assertUnread(t, check, test.words...)
+			runes := len([]rune(check.CI.Detail))
+			if runes > 2000 || (test.cut && runes != 2000) {
+				t.Fatalf("c1's detail is %d runes, want at most 2000 (exactly 2000 when cut)", runes)
+			}
+			if test.leftOut != "" && strings.Contains(check.CI.Detail, test.leftOut) {
+				t.Fatalf("c1's detail %q carries GitHub's body", check.CI.Detail)
+			}
+		})
+	}
+}
+
+// A rate limit carries GitHub's whole body in its error too, and none of it reaches the detail:
+// GitHub's 429, which needs no header to be a limit, is named by its status and the `message`
+// of its JSON body alone.
+func TestCIResultDetailNamesTheStatusAndMessageOfARateLimit(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCR", "acme/widgets", "Rate limit")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.failWithBody(http.StatusTooManyRequests,
+		`{"message":"API rate limit exceeded for installation ID 1.","documentation_url":"https://docs.github.com/rest/rate-limit"}`)
+
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	assertUnread(t, check, "(status 429)", "(status 429), next request in 1m0s: API rate limit exceeded for installation ID 1.")
+	if strings.Contains(check.CI.Detail, "documentation_url") || strings.Contains(check.CI.Detail, "{") {
+		t.Fatalf("c1's detail %q carries GitHub's body", check.CI.Detail)
+	}
+}
+
+// A head carries every attempt of a run, and the run of the highest id decides, in whichever
+// order GitHub lists them: a failure retried to a success is a pass, and a success retried to a
+// failure is a fail. The first case lists the lower id first and the second the higher, so
+// neither the first match nor the last answers both.
+func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCH", "acme/widgets", "Retried")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+
+	fake.set(headCommit, completedRun(31, ciCheckRun, "failure"), completedRun(32, ciCheckRun, "success"))
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit))
+	assertDerived(t, check, 32, ciCheckRun, "success", "pass", headCommit)
+
+	fake.set(headCommit, completedRun(34, ciCheckRun, "failure"), completedRun(33, ciCheckRun, "success"))
+	check = checkOf(t, readResults(t, handler, issue.Key), "c1")
+	assertCI(t, check, ciCheckRun, model.CIStateFail, "failure", ciVerdictLineOf("c1", ciCheckRun, "fail", headCommit))
+	assertDerived(t, check, 34, ciCheckRun, "failure", "fail", headCommit)
+}
+
+// A ci_check name written with spaces around it is either refused at the write or answered by
+// the run it names without them, never stored as a name no run carries: the spaces cannot be
+// seen in the editor, and docs.CarriesCICheck already trims the value, so the write path and the
+// read must agree on which run the block names (dispatch://INFRA-3204, tester round 1).
+func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	keys := []string{issueInRepository(t, handler, "RESCP", "acme/widgets", "Padded 0").Key}
+	for index, padded := range []string{" " + ciCheckRun, ciCheckRun + " ", "\t" + ciCheckRun + " "} {
+		if index > 0 {
+			created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+				map[string]any{"project": "RESCP", "title": fmt.Sprintf("Padded %d", index), "spec": "A spec\n"}, "alice")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create issue %d: status=%d body=%s", index, created.Code, created.Body.String())
+			}
+			keys = append(keys, decodeBody[model.Issue](t, created).Key)
+		}
+		issue := model.Issue{Key: keys[index]}
+		attributes := `negative_control="` + ciCheckNegativeControl + `" ci_check="` + padded + `"`
+		written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+			"name": "verification.md", "content": ciCheckBlock("c1", attributes),
+		}, "alice")
+		if written.Code == http.StatusBadRequest && strings.Contains(written.Body.String(), "INVALID_CI_CHECK") {
+			continue
+		}
+		if written.Code != http.StatusCreated {
+			t.Fatalf("ci_check %q: write status=%d body=%s, want 201 or 400 INVALID_CI_CHECK", padded, written.Code, written.Body.String())
+		}
+		head := fmt.Sprintf("%040x", 0xa0d0+index)
+		writeHead(t, database, "acme/widgets", 500+index, head, "open", issue.Key)
+		fake.set(head, completedRun(int64(600+index), ciCheckRun, "success"))
+		check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+		if check.CI == nil || check.CI.State != model.CIStatePass || len(check.Results) != 1 {
+			t.Fatalf("ci_check %q was stored and reads %+v with results %+v, want the pass of run %q at %s",
+				padded, check.CI, check.Results, ciCheckRun, head)
+		}
+	}
+}
+
+// A ci_check with spaces around it names the run without them: the read asks GitHub for that run,
+// and its success is a pass with its one derived result, naming the run unpadded in ci.run, the
+// line and the result, while the block's own ci_check is served as written. A ci_check of only
+// spaces names no run: the check is an ordinary one, with no ci member and no result, and GitHub
+// is asked for nothing.
+func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issueInRepository(t, handler, "RESCT", "acme/widgets", "Trimmed")
+
+	padded := issueOfProject(t, handler, "RESCT", "Padded",
+		ciCheckBlock("c1", `negative_control="`+ciCheckNegativeControl+`" ci_check=" `+ciCheckRun+`"`))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", padded)
+	fake.set(headCommit, completedRun(61, ciCheckRun, "success"))
+	check := checkOf(t, readResults(t, handler, padded), "c1")
+	if check.CICheck != " "+ciCheckRun {
+		t.Fatalf("c1 ci_check = %q, want %q as written", check.CICheck, " "+ciCheckRun)
+	}
+	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit))
+	assertDerived(t, check, 61, ciCheckRun, "success", "pass", headCommit)
+
+	blank := issueOfProject(t, handler, "RESCT", "Blank",
+		ciCheckBlock("c1", `negative_control="`+ciCheckNegativeControl+`" ci_check="   "`))
+	writeHead(t, database, "acme/widgets", 8, newHeadCommit, "open", blank)
+	fake.set(newHeadCommit, completedRun(62, ciCheckRun, "success"))
+	before := fake.allReads()
+	check = checkOf(t, readResults(t, handler, blank), "c1")
+	if check.CICheck != "   " || check.CI != nil || len(check.Results) != 0 {
+		t.Fatalf("c1 with a blank ci_check reads ci_check %q, ci %+v and results %+v, want it as written and an ordinary check with none",
+			check.CICheck, check.CI, check.Results)
+	}
+	if asked := fake.allReads() - before; asked != 0 {
+		t.Fatalf("a check with a blank ci_check read %d pages of check runs, want none", asked)
+	}
+}
+
+// The open pull request's head is read over an older merged one's, and once the open one merges
+// the merged pull request of the highest number is read: the answer keeps speaking after the
+// merge, current at that merged head. The older merged head is never read.
+func TestCIResultIsReadAtTheOpenHeadOverAnOlderMergedOne(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCM", "acme/widgets", "Open over merged")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 3, headCommit, "merged", issue.Key)
+	writeHead(t, database, "acme/widgets", 5, newHeadCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(41, ciCheckRun, "failure"))
+	fake.set(newHeadCommit, completedRun(42, ciCheckRun, "success"))
+
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	assertDerived(t, check, 42, ciCheckRun, "success", "pass", newHeadCommit)
+
+	writeHead(t, database, "acme/widgets", 5, newHeadCommit, "merged", issue.Key)
+	check = checkOf(t, readResults(t, handler, issue.Key), "c1")
+	result := assertDerived(t, check, 42, ciCheckRun, "success", "pass", newHeadCommit)
+	if basis := result.CommitStands.Basis; basis == nil || basis.PullRequest == nil || *basis.PullRequest != 5 {
+		t.Fatalf("the derived result at the merged head stands at %+v, want #5's head", basis)
+	}
+	if check.PassStands.Answer != model.PassStandsYes {
+		t.Fatalf("c1 pass_stands = %+v at the merged head, want yes", check.PassStands)
+	}
+	if older := fake.reads(headCommit); older != 0 {
+		t.Fatalf("the older merged head's check runs were read %d times, want none", older)
+	}
+}
+
+// One answer reads one head's check runs once, however many checks CI proves at it, and an issue
+// holding no check CI proves asks GitHub for none at all.
+func TestCIResultReadsOneHeadOnceAndAnIssueWithoutOneNotAtAll(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESC3", "acme/widgets", "Three checks")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		ciCheckBlock("c1", ciCheckKept)+"\n"+
+			ciCheckBlock("c2", `negative_control="`+ciCheckNegativeControl+`" ci_check="lint"`)+"\n"+
+			ciCheckBlock("c3", `negative_control="`+ciCheckNegativeControl+`" ci_check="build"`))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(51, ciCheckRun, "success"), completedRun(52, "lint", "failure"))
+
+	read := readResults(t, handler, issue.Key)
+	assertDerived(t, checkOf(t, read, "c1"), 51, ciCheckRun, "success", "pass", headCommit)
+	assertDerived(t, checkOf(t, read, "c2"), 52, "lint", "failure", "fail", headCommit)
+	assertCI(t, checkOf(t, read, "c3"), "build", model.CIStateNoResult, "absent", ciUnconcludedLineOf("c3", "build", "absent"))
+	if reads := fake.reads(headCommit); reads != 1 {
+		t.Fatalf("one answer read the head's check runs %d times, want once for three checks", reads)
+	}
+
+	ordinary := issueOfProject(t, handler, "RESC3", "No check CI proves", twoChecks)
+	writeHead(t, database, "acme/widgets", 8, newHeadCommit, "open", ordinary)
+	before := fake.allReads()
+	if check := checkOf(t, readResults(t, handler, ordinary), "k1"); check.CI != nil {
+		t.Fatalf("an ordinary check carries ci %+v, want none", check.CI)
+	}
+	if asked := fake.allReads() - before; asked != 0 {
+		t.Fatalf("an issue holding no check CI proves read %d pages of check runs, want none", asked)
+	}
+}
+
+// The run's output title and summary are carried together cut to 2,000 runes, counted as runes
+// and not bytes, between the conclusion and the run's URL, and the answer is not refused.
+func TestCIResultCutsTheRunsOutputToTwoThousandRunes(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCL", "acme/widgets", "Long summary")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	run := completedRun(61, ciCheckRun, "success")
+	summary := strings.Repeat("é", 2500)
+	run["output"] = map[string]any{"title": "Tests", "summary": summary}
+	fake.set(headCommit, run)
+
+	result := checkOf(t, readResults(t, handler, issue.Key), "c1").Results
+	if len(result) != 1 {
+		t.Fatalf("c1 holds %+v, want its derived result", result)
+	}
+	output := string([]rune("Tests\n" + summary)[:2000])
+	if want := "conclusion: success\n" + output + "\n" + ciRunURL(61); result[0].Observed != want {
+		t.Fatalf("observed %d runes, want the conclusion, the output cut to 2,000 runes and the URL (%d runes)",
+			len([]rune(result[0].Observed)), len([]rune(want)))
+	}
+}
+
+// An issue Dispatch holds no open or merged pull request head of has no derived result: the check
+// reads no_head, and GitHub is asked nothing. So does an issue whose one pull request closed
+// without merging, whose head is no head.
+func TestCIResultIsNoHeadForAnIssueWithNoPullRequest(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCN", "acme/widgets", "No pull request")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	fake.set(headCommit, completedRun(81, ciCheckRun, "success"))
+	assertNoHead := func(what string) {
+		t.Helper()
+		check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+		assertCI(t, check, ciCheckRun, model.CIStateNoResult, "no_head", ciUnconcludedLineOf("c1", ciCheckRun, "no_head"))
+		if len(check.Results) != 0 || check.PassStands.Answer == model.PassStandsYes {
+			t.Fatalf("%s: c1 holds %+v and pass_stands %+v, want no result and no pass", what, check.Results, check.PassStands)
+		}
+		if asked := fake.allReads(); asked != 0 {
+			t.Fatalf("%s: the read asked for %d pages of check runs, want none", what, asked)
+		}
+	}
+
+	assertNoHead("an issue with no pull request row")
+	writeHead(t, database, "acme/widgets", 7, headCommit, "closed", issue.Key)
+	assertNoHead("an issue whose pull request closed unmerged")
+}
+
+// The derived result is judged as a recorded result is: current at the head it was read at, and
+// at another commit for a reader who names the head GitHub moved to while Dispatch still holds
+// the old one. Once Dispatch holds the new head, the run at that head decides, and a head no run
+// of that name has reached yet holds no result.
+func TestCIResultIsCurrentAtTheHeadAndOlderOnceTheHeadMoves(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCC", "acme/widgets", "Currency")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.set(headCommit, completedRun(71, ciCheckRun, "success"))
+
+	read := readResults(t, handler, issue.Key)
+	stands := standsAt(t, read, "c1", "ci-run:71", "the derived result at the head", model.CommitAtBasis, false)
+	if stands.Basis == nil || stands.Basis.Commit != headCommit {
+		t.Fatalf("the derived result stands at %+v, want the head %s", stands.Basis, headCommit)
+	}
+	if passed := checkOf(t, read, "c1").PassStands; passed.Answer != model.PassStandsYes || !slices.Equal(passed.Roles, []string{"ci"}) {
+		t.Fatalf("c1 pass_stands = %+v, want yes from ci", passed)
+	}
+
+	moved := readResultsAt(t, handler, issue.Key, newHeadCommit)
+	standsAt(t, moved, "c1", "ci-run:71", "the derived result read at the head GitHub moved to", model.CommitOtherCommit, false)
+	if passed := checkOf(t, moved, "c1").PassStands; passed.Answer != model.PassStandsNo {
+		t.Fatalf("c1 pass_stands = %+v at the moved head, want no", passed)
+	}
+
+	writeHead(t, database, "acme/widgets", 7, newHeadCommit, "open", issue.Key)
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	assertCI(t, check, ciCheckRun, model.CIStateNoResult, "absent", ciUnconcludedLineOf("c1", ciCheckRun, "absent"))
+	if len(check.Results) != 0 {
+		t.Fatalf("c1 holds %+v at a head no run has reached, want no result", check.Results)
 	}
 }

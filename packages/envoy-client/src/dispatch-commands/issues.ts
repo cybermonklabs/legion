@@ -3,6 +3,7 @@ import type {
   BasisLearnedAt,
   CheckBasis,
   CheckBlock,
+  CheckCI,
   CheckPassStands,
   CheckResult,
   CheckResultRecorded,
@@ -704,17 +705,20 @@ function passStandsText(pass: CheckPassStands | undefined): string {
   return "A pass stands: not known";
 }
 
-/** The reading one role recorded. `brief` cuts a reading whose result stands at none of the
- *  compared commits, and leaves every other reading whole: the reading is the record, and a
- *  reader who asked for the gate alone still reads the whole of what stands. */
-function readingLines(result: CheckResult, brief: boolean): string[] {
+/** The reading one role recorded, under the line of its result at `indent`. `brief` cuts a reading
+ *  whose result stands at none of the compared commits, and leaves every other reading whole: the
+ *  reading is the record, and a reader who asked for the gate alone still reads the whole of what
+ *  stands. */
+function readingLines(result: CheckResult, brief: boolean, indent = "    "): string[] {
   const observed = result.observed;
-  if (observed === "") return ["    The role recorded no reading."];
+  if (observed === "") return [`${indent}The role recorded no reading.`];
   const cut = brief && result.commit_stands?.answer !== "at_basis";
   if (cut && observed.length > BRIEF_READING_CHARACTERS) {
-    return [`    Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`];
+    return [
+      `${indent}Reading: ${observed.slice(0, BRIEF_READING_CHARACTERS)}… (result ${result.id})`,
+    ];
   }
-  return [`    Reading: ${observed}`];
+  return [`${indent}Reading: ${observed}`];
 }
 
 /** One result, in the order the API served it: the verdict, the role, the whole commit, R4's two
@@ -732,9 +736,38 @@ function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): st
   return [...lines, ...readingLines(result, brief)];
 }
 
+/** A check CI proves, which Dispatch marks with `ci`: no role records its result, so the check and
+ *  its one result read as one line. A derived result names its verdict, its commit, the producer
+ *  `ci`, the run and the conclusion that decided it, and where that commit stands, as a recorded
+ *  result's line says it; a check the run did not decide says why, in the sentence Dispatch wrote.
+ *  The check's words end the line. Whether a pass stands follows, from the same `pass_stands` and
+ *  in the same words as a recorded check's head line, so the gate reads both kinds alike. The
+ *  pull-request body line Dispatch wrote for the check follows, which the implementer copies, and
+ *  then the run's reading: its conclusion, output and URL. */
+function ciCheckLines(check: CheckBlock, ci: CheckCI, brief: boolean): string[] {
+  const passStandsLine = `  ${passStandsText(check.pass_stands)}.`;
+  const pullRequestLine = `  Pull request line: ${ci.line}`;
+  const derived = check.results?.[0];
+  if (derived === undefined) {
+    return [
+      `- ${check.block_id} (${check.when}): no result: ${ci.detail} ${check.text}`,
+      passStandsLine,
+      pullRequestLine,
+    ];
+  }
+  const stands = commitStandsText(derived.commit_stands);
+  return [
+    `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
+    passStandsLine,
+    pullRequestLine,
+    ...readingLines(derived, brief, "  "),
+  ];
+}
+
 /** One check: a head line naming what it compared with and whether a pass of it stands, the
  *  check's own words once, then every result recorded against it. */
 function checkLines(check: CheckBlock, brief: boolean): string[] {
+  if (check.ci !== undefined) return ciCheckLines(check, check.ci, brief);
   const bases = check.compared_with ?? [];
   const reason = check.compared_nothing;
   const compared =
@@ -755,10 +788,11 @@ function checkLines(check: CheckBlock, brief: boolean): string[] {
 
 /** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
  *  compared its results with, whether a pass of it stands, its own words once, and every result
- *  recorded against it in the order the API serves them. A check with no result says so, and an
- *  issue with no Verification document says that instead of printing an empty list: Dispatch
- *  answers `verification_artifact_id` "" for such an issue, never null, so that is what is
- *  compared. */
+ *  recorded against it in the order the API serves them. A check CI proves prints its derived
+ *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
+ *  check with no result says so, and an issue with no Verification document says that instead of
+ *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
+ *  null, so that is what is compared. */
 function formatCheckResults(results: IssueCheckResults, brief = false): string {
   if (results.verification_artifact_id === "") {
     return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;

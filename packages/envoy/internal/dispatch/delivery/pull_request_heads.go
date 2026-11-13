@@ -507,6 +507,40 @@ func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) (
 	return heads, nil
 }
 
+// NewestHead is the one pull request head the results read derives a check CI proves at: the
+// repository the row is stored under, the pull request's number and its head commit.
+type NewestHead struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+// NewestPullRequestHead is the head of the open pull request of the highest number attributed
+// to issueKey, or, where none is open, the final head of its merged pull request of the highest
+// number, and false where Dispatch holds neither. GitHub's numbers rise, so the highest is the
+// newest. Both are heads HeadsAttributedTo lists, so a result at the commit answered here stands
+// at one of the heads a `before_merge` check compares its results with. A closed-unmerged pull
+// request is no head. The repository is the row's own, which is the one to read the head's
+// check runs from (api/results_ci.go).
+//
+// The read uses pull_request_heads_issue_head's leading column, as HeadsAttributedTo's does.
+func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string) (NewestHead, bool, error) {
+	var head NewestHead
+	err := pool.QueryRow(ctx, `
+		select repo, number, head_sha from pull_request_heads
+		where issue_key = $1 and state in ('open', 'merged')
+		order by state = 'open' desc, number desc
+		limit 1
+	`, issueKey).Scan(&head.Repo, &head.Number, &head.HeadSHA)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return NewestHead{}, false, nil
+	}
+	if err != nil {
+		return NewestHead{}, false, fmt.Errorf("read the newest pull request head of %s: %w", issueKey, err)
+	}
+	return head, true, nil
+}
+
 // HeadStoredAt reports whether sha is the head of an open or merged pull request stored for
 // repoFull, whatever issue it is attributed to: whether Dispatch holds a pull request at that
 // commit that its own passes keep reading. It is a weaker question than HeadAttributedTo's and

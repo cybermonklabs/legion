@@ -7,10 +7,10 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A boot publishes the design-gate steps it is configured with onto the project's Dispatch row,
@@ -101,7 +101,7 @@ func TestGatedStepsPublishWithoutADispatchClientIsRefused(t *testing.T) {
 // addressed to, with the row's id: the kind's unique partial index allows one row per issue, so a
 // second pass that queued beside a pending row would be read here as a changed id, and a second
 // row of one issue could not be written at all.
-func designGatesPublications(t *testing.T, pool *pgxpool.Pool) map[string]int64 {
+func designGatesPublications(t *testing.T, pool *store.Pool) map[string]int64 {
 	t.Helper()
 	queued := map[string]int64{}
 	rows, err := pool.Query(context.Background(), "select issue, id from outbox where kind = $1", string(record.OutboxKindDesignGatesPublish))
