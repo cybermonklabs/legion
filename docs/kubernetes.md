@@ -1842,6 +1842,30 @@ The step costs an operator one statement with the daemon stopped, and it leaves 
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
+#### Rolling back the release that tells the merger of a merge-queue removal
+
+This release adds two outbox kinds, and its migration `20261113072437_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
+A `merge_queue_read` row is the daemon's one read of a pull request that GitHub reported out of the merge queue.
+A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
+The migration changes no column.
+
+**The rows of the two new kinds must go before the earlier image is pinned.**
+An earlier release decodes an outbox payload strictly (`DecodeOutboxPayload` and `DisallowUnknownFields` in `record/outbox.go`) and knows neither kind, so it delivers no row of either kind.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+-- The read of a pull request that left the merge queue, and the message to its merger.
+delete from outbox where kind in ('merge_queue_read', 'merge_queue_removal');
+```
+
+Each deleted row costs one thing: a merger is not told of one removal from the merge queue.
+A deleted `merge_queue_read` row makes no read of GitHub, so the daemon writes no message for that removal.
+A deleted `merge_queue_removal` row is a message that nobody delivers.
+In both cases the merger reads the merge queue itself at its next turn (step 5 of `packages/daemon/internal/prompts/roles/merger.md`).
+
+The kind check keeps both names after the rollback, and the rollback needs no statement for it: an earlier release never writes either kind, so the check refuses nothing that release writes.
+This release's one-time start of the mergers that the `awaiting_merge` cutover left stopped ([Idle release](#idle-release)) adds no outbox kind and no payload field, and its one `processed_events` row is harmless to a rollback.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
@@ -4480,7 +4504,8 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
 - the workspace's unpushed work is saved as a git bundle in the daemon's own database (below);
 
 - each live claim of the pod is suspended with a source of its own, `released` (`supervise.SuspendedByReleased`).
-  That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`): only a wake brings a released claim back;
+  That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
+  Only a wake brings a released claim back, with one exception: the first boot of this release starts, once, each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`, below);
 
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), the teardown an issue's stop already runs ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 
@@ -4491,7 +4516,7 @@ A release moves no issue and ends no phase.
 A wake brings the pod back and resumes, in its own session, each role the wake is for.
 The wakes are these:
 
-- a phase start, task, backward move, notice, phase-ended message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
+- a phase start, task, backward move, notice, phase-ended message, merge-queue removal message, production-check look or slot resume the daemon has for a role of the pod, a notice for a released sub-architect included, which stays that notice's owner;
 
 - a CI settlement the daemon records for the head of the issue's pull request, while a phase worker of the pod has its phase open (the Envoy listener's settlement fact, or the daemon's own two-minute read).
   One head can settle more than once as its checks finish, and each settlement wakes a released pod at most once;
@@ -4504,9 +4529,16 @@ The wakes are these:
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
 
+The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge.
+While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
+The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
+While it waits, the message holds the issue's pod, as any row of the role-message lane does.
+The idle release does not take that pod, and the other roles of the issue keep running in it.
+
 A wake acts only on a claim that is still `released`, of an issue still in the workflow whose tree is live.
 Every other path that suspends, resumes, stops or closes a claim takes a released claim over, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — and the operator's `legion claims` commands.
 A daemon restart resumes no released claim, and a wake or a backstop that came due while the daemon was down acts once it has started.
+The first boot of this release is the one exception: it starts, once, each merger that the cutover from `awaiting_merge`, the phase of the builds before `legion-v20.5.0`, left stopped (`cutoverMergerRepair`, `internal/workflow/resume.go`).
 A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod; after that moment the wake waits for the release to finish and then resumes the pod.
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
 Each woken role is given one task or message that names the wake, so an agent reads why its pod came back.

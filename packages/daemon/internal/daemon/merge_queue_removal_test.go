@@ -87,12 +87,15 @@ const dequeueRetry = 20 * time.Millisecond
 // close of case 2 opens no check and wakes no role.
 //
 // A released merger is a claim stored suspended by `released` before the boot, as the idle
-// release leaves one: its session kept, and nothing but a wake to bring its pod back. The boot
-// starts no released claim (workflow's booted, admission's slot repair), so the only resume of it
-// is the delivery's own (wakeForDelivery), which the record keeps as one pods.WakeDelivery row of
-// pod_resumes. The idle release of idle_rig_test.go's rig is not used: it needs the Agent Sandbox
-// runtime over a Kubernetes stand-in and a real listener, and the rows under test read only the
-// claim's state.
+// release leaves one: its session kept, and nothing but a wake to bring its pod back. The boot's
+// resume by rule and admission's slot repair start no released claim (workflow's booted,
+// admission's slot repair). The boot's cutover repair does start a released merger in merging
+// once, but only one whose phase row holds a READY head (workflow's cutoverMergerRepair), and no
+// case of this test writes a phase row for its merger, so the repair passes over every merger
+// here. The only resume of a released merger is therefore the delivery's own (wakeForDelivery),
+// which the record keeps as one pods.WakeDelivery row of pod_resumes. The idle release of
+// idle_rig_test.go's rig is not used: it needs the Agent Sandbox runtime over a Kubernetes
+// stand-in and a real listener, and the rows under test read only the claim's state.
 //
 // The reads of GitHub are counted from the moment the event is published. The daemon's per-issue
 // read asks the same path once for every issue with an open pull request as the runtime starts

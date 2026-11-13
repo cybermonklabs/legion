@@ -60,11 +60,11 @@ import (
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. Each owner is given the start admission gives a re-admitted tree's
 // mid-phase child, through the outbox's start like every other start (StartOrOwe): one row that
-// resumes the claim by rule and carries the task that takes its phase on (ResumePhaseTask, the
-// merger's with the head its round approved), which the outbox does not deliver to a claim still
-// holding its phase's task, and which waits for the issue's admission slot as every start of a
-// phase worker does. A role a start already covers (StartFor) gets no second. The sweep runs
-// first so the resume reads the trees it closed as lingering.
+// resumes the claim by rule and carries the task that takes its phase on (ResumePhaseTask, which
+// names no head, since the merger reads the head it merges on GitHub). The outbox does not
+// deliver that task to a claim still holding its phase's task, and the row waits for the issue's
+// admission slot as every start of a phase worker does. A role a start already covers (StartFor)
+// gets no second. The sweep runs first so the resume reads the trees it closed as lingering.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
