@@ -1356,7 +1356,7 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	t.Helper()
 	// The server must allow what this process and the ones this test already started may open
 	// (connection_ceiling_test.go), since a server that allows fewer fails later and elsewhere.
-	requireConnectionCeiling(t, databaseURL)
+	releaseConnections := requireConnectionCeiling(t, databaseURL)
 	// The process's own database, for the events_start wait; a URL it cannot serve against is
 	// the test's own mistake, not a stall to wait out.
 	config, err := pgx.ParseConfig(databaseURL)
@@ -1421,7 +1421,15 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	if options.OwnProcessGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
-	return &dispatchProcess{Process: cmdtest.Start(t, "Dispatch", cmd), port: held.Port, database: config.Database}
+	started := &dispatchProcess{Process: cmdtest.Start(t, "Dispatch", cmd), port: held.Port, database: config.Database}
+	// The server's connections come back when this process ends, so the count of what this test
+	// runs falls then rather than at the test's own cleanup: a row that restarts a process one
+	// after another asks the server for one process's worth, not one per start.
+	go func() {
+		<-started.Exited
+		releaseConnections()
+	}()
+	return started
 }
 
 func (p *dispatchProcess) url(path string) string {

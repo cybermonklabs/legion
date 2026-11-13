@@ -10,23 +10,26 @@
 # fail as 53300 refusals inside a room, a lease or a socket (see
 # packages/envoy/cmd/dispatch/connection_ceiling_test.go, which refuses such a server by name).
 #
-# Usage: pg-connection-ceiling.sh <container> <processes>
+# Usage: pg-connection-ceiling.sh <container>
 #   container  the service container id (${{ job.services.postgres.id }})
-#   processes  how many Dispatch processes the lane starts against it
+#
+# It takes no count of its own: how many processes one test may start is testlimits.
+# MaxProcessesPerTest, and what they may open together is testlimits.RequiredConnections, which
+# the command below prints. A per-lane number here would be the same bare number in another
+# place, and a row that grows to one more process would meet a server nobody raised.
 set -euo pipefail
 
 container=${1:?the service container id}
-processes=${2:?how many Dispatch processes the lane starts}
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-per_process=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)
+required=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)
 reserved=$(docker exec "$container" psql -U postgres -Atc "select current_setting('superuser_reserved_connections')")
 # The test's own clients: each package run holds a pool of its own beside the processes, and the
 # harness opens short-lived connections for its reads. Twenty is what those have needed.
 headroom=20
-want=$((processes * per_process + reserved + headroom))
+want=$((required + reserved + headroom))
 
-echo "pg-connection-ceiling: ${processes} process(es) x ${per_process} connections + ${reserved} reserved + ${headroom} headroom = ${want}"
+echo "pg-connection-ceiling: ${required} connections for the processes one test may start + ${reserved} reserved + ${headroom} headroom = ${want}"
 docker exec "$container" psql -U postgres -c "alter system set max_connections = ${want}"
 docker restart "$container" >/dev/null
 for _ in $(seq 1 30); do
