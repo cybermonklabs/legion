@@ -1201,8 +1201,8 @@ type supervision struct {
 	// applySweepFacts applies the facts a sweep of supervision read, through the workflow's own
 	// handlers (workflowRuntime.applySweepFacts); nil in a deployment with no workflow, which
 	// records no issue a fact could be about. It is the whole of what the silence sweep needs of
-	// the workflow (tellSilentPhaseWorkers): the sweep reads the live claims and decides
-	// nothing, and every decision about a silence is the handler's, inside the fact's own
+	// the workflow (tellSilentPhaseWorkers): the sweep filters on the live claims, and every
+	// decision about a silence is the handler's, inside the fact's own
 	// transaction (workflow.(*Engine).workerSilent). The facts of one sweep go in one call so the
 	// ids it minted can be read against what this daemon has applied in one query rather than one
 	// transaction each. The workflow sets it where it attaches, before supervision restores or

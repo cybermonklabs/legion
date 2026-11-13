@@ -563,7 +563,7 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 		// (workflow's IdleHoldBackgroundWork).
 		"the claim's session reported background work of its own": {
 			set: func(r *podUpdateRig) {
-				known, err := r.st.PutClaimActivity(r.ctx, r.tokens[claim.RoleImplementer], claim.SessionActivity{
+				known, err := r.st.PutClaimActivity(r.ctx, r.tokens[claim.RoleImplementer], r.claimOf(claim.RoleImplementer).Generation, claim.SessionActivity{
 					At:             r.clock.Now(),
 					BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
 				})
@@ -753,13 +753,13 @@ func aBackgroundStalledWorker(t *testing.T, beside ...podUpdateRole) *podUpdateR
 
 // reportsBackgroundWork is role's own session reporting, at the clock's moment, that background
 // work of its own is running, straight through the store's narrow call, which is where the
-// route's own write lands (api's claims activity route, store's PutClaimActivity). A session
-// sends such a report only when its reading changes, so one report stands until the work it
-// names ends.
+// route's own write lands (api's claims activity route, store's PutClaimActivity), onto the
+// claim's current launch as the route writes it. A session sends such a report only when its
+// reading changes, so one report stands until the work it names ends.
 func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) time.Time {
 	r.t.Helper()
 	at := r.clock.Now().UTC()
-	known, err := r.st.PutClaimActivity(r.ctx, r.tokens[role], claim.SessionActivity{
+	known, err := r.st.PutClaimActivity(r.ctx, r.tokens[role], r.claimOf(role).Generation, claim.SessionActivity{
 		At:             at,
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: kinds},
 	})
@@ -859,9 +859,9 @@ func TestWorkerBackgroundInsideTheBoundTellsNobodyAndPromptsNobody(t *testing.T)
 			podUpdateIssue, notices)
 	}
 	// The sweep minted nothing either, which is this pass's own bound term rather than the
-	// handler's: a fact the handler answers nothing for is still recorded as applied
-	// (intake.ApplyFact marks every fact it runs), so an id this read does not find is an id
-	// the sweep never wrote.
+	// handler's: a fact the background handler answers nothing for is still recorded as applied
+	// (intake.ApplyFact marks every fact no handler leaves unspent, and that handler never
+	// does), so an id this read does not find is an id the sweep never wrote.
 	id := workerBackgroundEventID(rig.tokens[worker], rig.claimOf(worker).Generation, reported)
 	applied, err := intake.Applied(rig.ctx, rig.pool, terminalSource, []string{id})
 	if err != nil {
@@ -1048,4 +1048,110 @@ func TestSilentPhaseWorkerReadAsBusyBeforeItsPodWentGetsItsTaskAgain(t *testing.
 	}
 	rig.drain()
 	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+}
+
+// The worker's session reports between the sweep's read of the claims and the fact's
+// transaction: its two-minute phase reminder re-armed, so its report says a reminder is due later
+// than now. The handler refuses the claim for that report, which explains the quiet for now; but
+// that refusal must not spend the fact's id. The reminder can come due and start no turn, and
+// then neither the last step nor the launch the id is keyed on has moved (workerSilentEventID):
+// a spent id would be skipped at every later sweep, and the worker never repaired nor its
+// architect told. The refusal leaves the fact unspent (intake.Result.Unspent), so the sweep after
+// the reminder came due applies the same id and repairs the worker.
+func TestSilentPhaseWorkerWhoseReminderReArmedAfterTheSweepReadGetsItsTaskOnceItComesDue(t *testing.T) {
+	rig := aSilentPhaseWorker(t)
+	worker := claim.RoleImplementer
+	rig.goesQuiet(worker)
+	conn := rig.workers[worker]
+	before := len(conn.Prompts())
+	// The sweep reads the claims while the worker's report explains nothing.
+	claims, err := rig.sup.Claims(rig.ctx)
+	if err != nil {
+		t.Fatalf("read the claims for the sweep: %v", err)
+	}
+	// The reminder re-arms before the sweep's facts are applied.
+	due := rig.clock.Now().UTC().Add(2 * time.Minute)
+	known, err := rig.st.PutClaimActivity(rig.ctx, rig.tokens[worker], rig.claimOf(worker).Generation,
+		claim.SessionActivity{At: rig.clock.Now().UTC(), Phase: claim.PhaseActivity{NextReminderAt: &due}})
+	if err != nil || !known {
+		t.Fatalf("report the re-armed reminder of the %s: known %v, %v", worker, known, err)
+	}
+
+	rig.s.tellSilentPhaseWorkers(rig.ctx, claims)
+
+	if got := rig.starts(); len(got) != 0 {
+		t.Fatalf("the supervise rows of %s = %+v, want none: the worker's own reminder is due later than now", podUpdateIssue, got)
+	}
+	if notices := rig.silenceNotices(); len(notices) != 0 {
+		t.Fatalf("the notices of %s = %+v, want none: the worker's own reminder is due later than now", podUpdateIssue, notices)
+	}
+
+	// The reminder comes due and starts no turn: the report now explains nothing.
+	rig.clock.advance(3 * time.Minute)
+
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
+		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the refusal for the reminder spent the silence's id",
+			podUpdateIssue, got)
+	}
+	notices := rig.silenceNotices()
+	if len(notices) != 1 || notices[0].Kind != "worker-silent" {
+		t.Fatalf("the notices of %s = %+v, want the one worker-silent notice its architect is owed", podUpdateIssue, notices)
+	}
+	rig.drain()
+	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+}
+
+// A dead process's report of background work can reach the store after the relaunch that
+// replaced it: the route authenticated it just before the launch and writes it just after the
+// launch's clear. Written, it would stand on the new launch as the replacement's own report, and
+// a Claude Code replacement, which reports only at its Stop hook and is prompted to no first
+// turn, would never be repaired, its architect told instead, at the background bound, of a job
+// the pod replacement killed. The store writes a report only onto the launch it belongs to
+// (store's PutClaimActivity), so the sweep reads the replacement as a session that has reported
+// nothing and sends it its phase's task at the silence bound.
+func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTaskAgain(t *testing.T) {
+	rig := aBackgroundStalledWorker(t)
+	worker := claim.RoleImplementer
+	token := rig.tokens[worker]
+	rig.handle(worker, supervise.StreamTurnStart{Claim: token})
+	rig.handle(worker, supervise.StreamTurnEnd{Claim: token})
+	rig.awaitClaim(worker, "its turn to end", func(c supervise.Claim) bool { return c.State != supervise.StateWorking })
+	old := rig.claimOf(worker).Generation
+	rig.displacedInto(worker, podUpdateReplacementPod)
+	// The dead process's Stop-hook report, authenticated under its own launch, lands after the
+	// launch's clear.
+	if _, err := rig.st.PutClaimActivity(rig.ctx, token, old, claim.SessionActivity{
+		At:             rig.clock.Now().UTC(),
+		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"claude-background-task"}},
+	}); err != nil {
+		t.Fatalf("write the dead process's report: %v", err)
+	}
+	conn := rig.workers[worker]
+	before := len(conn.Prompts())
+	rig.clock.advance(podUpdateSilence + time.Minute)
+
+	rig.sweepForSilence()
+
+	if got := rig.starts(); len(got) != 1 || got[0].Op != "start" || got[0].Task != workflow.ResumePhaseTask(rig.issue()) {
+		t.Fatalf("the supervise rows of %s = %+v, want one start row carrying the phase's resume task: the report is the dead launch's, not the replacement's",
+			podUpdateIssue, got)
+	}
+	notices := rig.silenceNotices()
+	if len(notices) != 1 || notices[0].Kind != "worker-silent" {
+		t.Fatalf("the notices of %s = %+v, want the one worker-silent notice its architect is owed", podUpdateIssue, notices)
+	}
+	rig.drain()
+	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+
+	rig.clock.advance(podUpdateBackground)
+
+	rig.sweepForSilence()
+
+	for _, notice := range rig.silenceNotices() {
+		if notice.Kind == "worker-background-stalled" {
+			t.Fatalf("the sweep past the background bound wrote %+v: the background work it names is the dead launch's", notice)
+		}
+	}
 }

@@ -401,12 +401,14 @@ type Claim struct {
 	// when it read what it was doing, the zero time for a session that has reported nothing;
 	// whether that reading found background work of the session's own running, and the kinds it
 	// named; and when the phase reminder armed in that session is due, the zero time for none.
-	// They are written by the store's PutClaimActivity alone and read back with the claim,
-	// exactly as Step is: no write a machine makes carries them.
+	// They are written by the store's PutClaimActivity alone and read back with the claim, as
+	// Step is: no write a machine makes carries them, and a launch's write clears them.
 	//
-	// A launch clears them: the store's putClaim sets all four to their zero values on a write
-	// that moves Generation (launchNow), because the report describes the process that made it
-	// and the launch replaces that process. So a worker displaced into a replacement pod while a
+	// The store's putClaim sets all four to their zero values on a write that moves Generation
+	// (launchNow), because the report describes the process that made it and the launch replaces
+	// that process; and a report is written only onto the launch whose secret the route
+	// authenticated it with, so one a dead process sent around its relaunch is refused rather
+	// than written over that clear. So a worker displaced into a replacement pod while a
 	// background task of its own ran is read as a session that has reported nothing, not as one
 	// still waiting on that task.
 	//

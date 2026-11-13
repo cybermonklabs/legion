@@ -2396,7 +2396,7 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	// past: a session that found background work running with its phase reminder armed.
 	reported := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	reminder := reported.Add(10 * time.Minute)
-	if known, err := st.PutClaimActivity(ctx, tester, claim.SessionActivity{At: reported,
+	if known, err := st.PutClaimActivity(ctx, tester, held.Generation, claim.SessionActivity{At: reported,
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
 	}); err != nil || !known {

@@ -69,18 +69,27 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // alone but for a launch's, which clears them (putClaim), and the idle rule reads them through
 // its own view (IdleClaim).
 //
+// It writes only onto the launch the report belongs to, generation: a report of the claim's
+// earlier launch — a dead process's, authenticated just before the relaunch and written just
+// after the launch's clear — is refused rather than written over the new process's empty report,
+// and answered as unknown, as the route answers a secret of a launch that is gone.
+//
 // A report older than the one recorded is dropped rather than written: a session fires its
 // reports without an in-flight guard, so an earlier reading can land after a later one, and the
 // pod would then be released on a reading the session has already replaced. It answers whether
-// the store holds the claim at all, which a later report of a claim the daemon has forgotten
-// does not.
+// the store holds the claim at generation at all, which a later report of a claim the daemon has
+// forgotten or relaunched does not.
 //
 // The report's own clock is bounded to the daemon's, as the listener's is (decodeListenerWake):
 // the session chooses every field of what it sends, and one reading dated ahead of the daemon's
 // clock — a session whose host stepped its clock forward, corrected back afterwards — would
 // drop every honest report after it under that same ordering guard, while the stale reading it
 // left behind went on counting as current, background work and all.
-func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, a claim.SessionActivity) (bool, error) {
+func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, a claim.SessionActivity) (bool, error) {
+	if generation > math.MaxInt64 {
+		// No row holds it (putClaim refuses one), so no launch of the claim is this.
+		return false, nil
+	}
 	var reminder *time.Time
 	if a.Phase.NextReminderAt != nil && !a.Phase.NextReminderAt.IsZero() {
 		at := a.Phase.NextReminderAt.UTC()
@@ -94,12 +103,12 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, a claim
 	err := s.pool.QueryRow(ctx, `with reported as (
 		update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
 			activity_next_reminder_at = $5, updated_at = now()
-		where token = $1 and (activity_at is null or activity_at <= $2) returning token)
-		select exists (select 1 from claims where token = $1)`,
+		where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
+		select exists (select 1 from claims where token = $1 and generation = $6)`,
 		// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
 		// architect's worker-background-stalled notice and the daemon's log.
 		string(token), at, a.BackgroundWork.Running,
-		strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder,
+		strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
 	).Scan(&known)
 	if err != nil {
 		return false, fmt.Errorf("put the activity of claim %s: %w", token, err)

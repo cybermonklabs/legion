@@ -169,10 +169,10 @@ func PastBound(at time.Time, bound time.Duration, now time.Time) bool {
 
 // ReportExplainsQuiet is whether a claim's own session's report explains why it takes no turn:
 // it found background work of its own running, or its phase reminder is due later than now. The
-// launch that replaces a process clears its report (store's putClaim), and the dead process's
-// secret is refused once the launch is written, so the report read is the running process's; the
-// one exception is a report the route authenticated just before the launch and wrote just after.
-// A reminder already due explains nothing: it is the timer a silence repair backs up.
+// launch that replaces a process clears its report (store's putClaim), and a report is written
+// only onto the launch whose secret authenticated it (store's PutClaimActivity), so the report
+// read is the running process's. A reminder already due explains nothing: it is the timer a
+// silence repair backs up.
 func ReportExplainsQuiet(background bool, nextReminder time.Time, now time.Time) bool {
 	return background || nextReminder.After(now)
 }

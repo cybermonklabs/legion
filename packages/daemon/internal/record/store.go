@@ -43,9 +43,10 @@ func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID
 }
 
 // ForgetProcessed removes the processed-events row of one fact, so the same fact id applies again
-// when it is sent anew. ApplyFact uses it for a refused production check report alone: the report
-// of a look is one fact id, and a refusal of it must not stand as the answer to the implementer's
-// next report of that same look (dispatch://INFRA-714/spec R12).
+// when it is sent anew. ApplyFact uses it for a refused production check report — the report of
+// a look is one fact id, and a refusal of it must not stand as the answer to the implementer's
+// next report of that same look (dispatch://INFRA-714/spec R12) — and for a fact a handler left
+// unspent (intake.Result.Unspent).
 func (s *Postgres) ForgetProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) error {
 	if _, err := tx.Exec(ctx, "delete from processed_events where source = $1 and event_id = $2", source, eventID); err != nil {
 		return fmt.Errorf("forget processed event %s/%s: %w", source, eventID, err)

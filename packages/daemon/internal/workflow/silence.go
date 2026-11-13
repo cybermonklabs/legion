@@ -24,12 +24,23 @@ const workerSilentNotice record.NoticeKind = "worker-silent"
 // the notice, the start row and the fact's applied mark together, so a returned error commits
 // none of them and the next sweep applies the identical fact again, which is the retry. A notice
 // written in place of the error would end this silence for good, since its id does not move.
+//
+// A claim unpromptedPhaseWorker holds but whose own session's report explains its quiet
+// (ReportExplainsQuiet: background work running, or a reminder due later than now) leaves the
+// fact unspent (intake.Result.Unspent): the report can move between the sweep's read and this
+// transaction, and can clear — the reminder comes due and starts no turn — while the last step
+// and the launch the id is keyed on stand still. Spent, that id would be skipped at every later
+// sweep and the worker never repaired. Every other refusal spends it.
 func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.WorkerSilent) (intake.Result, error) {
 	read, err := e.phaseWorkerRecord(ctx, tx, fact.Issue, fact.Generation, fact.Role)
 	if err != nil || read == nil {
 		return intake.Result{}, err
 	}
 	issue, now := read.issue, e.now()
+	if unpromptedPhaseWorker(issue, read.root, read.gate, fact.Role, read.run) &&
+		ReportExplainsQuiet(read.run.Claim.ActivityBackground, read.run.Claim.ActivityNextReminderAt, now) {
+		return intake.Result{Unspent: true}, nil
+	}
 	if !SilentPhaseWorker(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
 		return intake.Result{}, nil
 	}

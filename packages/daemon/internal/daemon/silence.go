@@ -33,15 +33,16 @@ func workerBackgroundEventID(token claim.Token, generation uint64, reported time
 
 // tellSilentPhaseWorkers applies, over the claims the orphan sweep already read, one
 // intake.WorkerSilent for each claim that is up and between turns, in no update round, with its
-// last step past this deployment's bound (config.Config.WorkerSilence), and one
+// last step past this deployment's bound (config.Config.WorkerSilence) and no report of its
+// session's own explaining that quiet (workflow.ReportExplainsQuiet), and one
 // intake.WorkerBackgroundStalled for each of those whose background report stands past the longer
 // bound (backgroundStalledFact).
 //
-// The sweep filters and decides nothing: the record can have moved since these claims were read,
-// so each handler re-reads it inside the fact's own transaction and decides there
-// (workflow.SilentPhaseWorker and the handlers in workflow's silence.go). The fact carries what
-// the sweep read, the moment and the bound, so the handler judges against the bound the sweep
-// used rather than one an operator changed since.
+// The sweep filters on the live claim and the handler decides: the record can have moved since
+// these claims were read, so each handler re-reads it inside the fact's own transaction and
+// decides there (workflow.SilentPhaseWorker and the handlers in workflow's silence.go). The fact
+// carries what the sweep read, the moment and the bound, so the handler judges against the bound
+// the sweep used rather than one an operator changed since.
 //
 // A claim of no issue (the controller's) is skipped, since its fact would name no record. The
 // fact's run is the claim's ServingRun, the issue generation its task came from, and not its
@@ -67,8 +68,7 @@ func (s *supervision) tellSilentPhaseWorkers(ctx context.Context, claims []super
 		if !workflow.PastBound(last, bound, now) {
 			continue
 		}
-		// The handler would refuse this claim for its report, and a refused fact's id is spent
-		// for good while the last step it is keyed on stands still.
+		// The handler refuses a claim whose report explains its quiet, so none is minted for it.
 		if !workflow.ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
 			facts = append(facts, sweptFact{
 				ID: workerSilentEventID(c.Token, c.Generation, last),
