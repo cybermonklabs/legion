@@ -86,13 +86,16 @@ function wideLayout(page: Page): boolean {
   return (page.viewportSize()?.width ?? 0) >= WIDE_LAYOUT_MIN_PX;
 }
 
-/** The margin's card for the open ask of the issue the review corpus opens, where the margin is
- *  a column beside the page; nothing where it is a sheet that stays shut until a button opens
- *  it. The card is the margin's last part to draw: it waits on the margin's own reads. */
-function heldMargin(page: Page): Locator[] {
-  return wideLayout(page)
-    ? [page.locator("[data-margin-item]").getByText("Which sign-in path?")]
-    : [];
+/** The margin's card for an open ask, where the margin is a column beside the page; nothing
+ *  where it is a sheet that stays shut until a button opens it. The card is the margin's last
+ *  part to draw: it waits on the margin's own reads. The margin is a chunk of its own, fetched
+ *  after the first paint on a page with no document and once the document has drawn on a page
+ *  with one (`web/src/features/shell/content-drawn.ts`), so every shot of a page that has a
+ *  margin waits for this card: a page read without it was shot with no margin at all, once on
+ *  the Plan tab (run 43367787934) and once on a project document (run 43395925903). The
+ *  question defaults to the open ask of the issue the review corpus opens. */
+function heldMargin(page: Page, question = "Which sign-in path?"): Locator[] {
+  return wideLayout(page) ? [page.locator("[data-margin-item]").getByText(question)] : [];
 }
 
 export const reviewRoutes: readonly ReviewRoute[] = [
@@ -219,7 +222,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/issues/${seed.issue}/children`,
     pattern: "/issues/:key/*",
     // The child's own row, not the panel: the panel is in the DOM while another tab is open.
-    ready: (page) => [page.locator("#issue-children-panel").getByRole("listitem").first()],
+    ready: (page) => [
+      page.locator("#issue-children-panel").getByRole("listitem").first(),
+      ...heldMargin(page),
+    ],
   },
   {
     kind: "reviewed",
@@ -229,7 +235,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     pattern: "/issues/:key/*",
     // The primary document's row. An issue's spec is `spec.md` under the slug `spec`
     // (`issue_create.go`), so the row's test id is `artifact-spec`.
-    ready: (page) => [page.getByTestId("artifact-spec")],
+    ready: (page) => [page.getByTestId("artifact-spec"), ...heldMargin(page)],
   },
   {
     kind: "reviewed",
@@ -237,7 +243,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-activity",
     path: (seed) => `/issues/${seed.issue}/activity`,
     pattern: "/issues/:key/*",
-    ready: (page) => [page.getByRole("list", { name: "Issue activity" })],
+    ready: (page) => [page.getByRole("list", { name: "Issue activity" }), ...heldMargin(page)],
   },
   {
     kind: "reviewed",
@@ -274,7 +280,10 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // `reference-decorations.ts`, `web/src/features/doc/document-references.tsx`). The tab's
     // own test id is drawn with the empty document, so the probe read the bare key in one run
     // and the title in the other; this waits for the document and that answer together.
-    ready: (page) => [page.getByTestId("verification-tab").locator("a.dispatch-reference")],
+    ready: (page) => [
+      page.getByTestId("verification-tab").locator("a.dispatch-reference"),
+      ...heldMargin(page),
+    ],
   },
   {
     kind: "reviewed",
@@ -352,7 +361,13 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // same `ArtifactHeader` over the same editor. It did not drift in the probe's two runs,
     // which says its socket was up both times, not that it must be - the race is the one the
     // other two rows lost, so the row is held to the same proof rather than to its luck.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    //
+    // And the margin's card for the project's open ask, which a project document's margin
+    // draws under Comments; see `heldMargin`.
+    ready: (page) => [
+      page.getByRole("status", { name: "connected" }),
+      ...heldMargin(page, "Keep the runbook in the repository?"),
+    ],
   },
   {
     kind: "reviewed",

@@ -34,6 +34,7 @@ import {
 } from "./editor";
 import { engineParagraphs } from "./read-back";
 import { navigateInApp } from "./sends";
+import { failAssetWhen, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
 import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -998,6 +999,45 @@ test("a document page whose read fails, a refused admission and a document left 
     await expect(left.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
     await expect.poll(leftMargin, { timeout: 2_000 }).toBeGreaterThan(0);
     await left.close();
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): two cold landings, the first only to spend the tab's reloads in its own storage.
+// The hold's last end: a live document whose editor cannot come down ends the hold by itself
+// (`reportLoadFailure`, `web/src/features/doc/ProofDocument.tsx`), so the margin comes in within
+// two seconds of the document saying so and not at `HOLD_LIMIT_MS`. A failed chunk a reader waits
+// on reloads the page from the tab's three (`web/src/features/shell/DeploymentResilience.tsx`,
+// `web/index.html`), and the reload would fetch the editor again and draw the document, so the row
+// spends the tab's three first, as a tab whose assets kept failing has: the one landing fails its
+// editor and stays on the page that says so.
+test("a live document whose editor fails to download ends the hold", async ({ browser }) => {
+  await createProject({ key: "NOEDIT", name: "No editor" });
+  const issue = await createIssue({ project: "NOEDIT", spec: "# Spec\n", title: "No editor" });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const counts = await missEntryChunk(page, () => false, baseUrl);
+    await page.goto("/");
+    await expect(page.getByText("Signed in as alice")).toBeVisible();
+    const spent = await recordTabReloads(page, [3, 2, 1]);
+    // The editor library's own chunk (`@legion/proof-editor`, `web/src/features/doc/editor.ts`,
+    // `loadEditorLibrary`), and not `lib-headless`, whose name it begins.
+    const failed = await failAssetWhen(page, /\/assets\/lib-[\w-]{8}\.js$/u, async () => undefined);
+
+    await page.goto(`/issues/${issue.key}`);
+    await expect(
+      page.getByRole("alert").filter({ hasText: "This document could not load" })
+    ).toBeVisible();
+    // Well under `HOLD_LIMIT_MS`: a failed load that never ends the hold gets its margin only at
+    // that limit, and fails here.
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({ timeout: 2_000 });
+    expect(failed(), "the editor's chunk was asked for and failed").toBeGreaterThan(0);
+    expect(counts.documents, "the failure reloaded nothing").toBe(2);
+    expect(await tabReloads(page)).toEqual(spent);
+    await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
   } finally {
     await alice.close();
   }
