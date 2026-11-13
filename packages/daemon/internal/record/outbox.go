@@ -310,13 +310,16 @@ type Notice struct {
 	// blocked carries none.
 	Blocked []BlockedIssue `json:"blocked,omitempty"`
 	// Silent is every issue of the project whose phase worker is one nothing will prompt
-	// (workflow.SilentPhaseWorker, dispatch://INFRA-3163), as admission derives the list
-	// (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
+	// (workflow.SilentPhaseWorker, dispatch://INFRA-3163), and every one whose worker's own
+	// report of background work has stood past its bound, which the daemon never prompts
+	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
+	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
 	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
-	// carries none. The issue's architect was told each of these by a `worker-silent` notice of
-	// its own, judged on the same terms; the controller is the second reader, because that
-	// architect may be failed or gone, so its notice reaches nobody, and the controller holds
-	// `fresh_session` and reads the whole project.
+	// carries none. The issue's architect was told each of these by a `worker-silent` or
+	// `worker-background-stalled` notice of its own, judged by the same rules, though a handler
+	// also refuses a fact of another generation of the issue, which the tick never reads; the
+	// controller is the second reader, because that architect may be failed or gone, so its
+	// notice reaches nobody, and the controller holds `fresh_session` and reads the whole project.
 	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
@@ -453,10 +456,15 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 
 // SilentIssue is one issue whose phase worker nothing will prompt, as the tick notice above
 // carries it: the issue, the role whose claim is silent, the moment that claim's agent last
-// stepped (supervise.StepRecord.LastStep, never the zero time, which the rule refuses to judge
-// from), and how long it has been quiet. It lives here beside BlockedIssue, below its reader,
-// for the same reason that one does: one shape of the fact, named where every reader of the
-// notice can see it.
+// stepped (supervise.StepRecord.LastStep), and how long it has been quiet. For a plain silence
+// the last step is never the zero time, which workflow.SilentPhaseWorker refuses to judge from.
+// It lives here beside BlockedIssue, below its reader, for the same reason that one does: one
+// shape of the fact, named where every reader of the notice can see it.
+//
+// BackgroundSince is set on an entry of the other kind alone: a worker whose own session's
+// report of background work has stood past `worker_background_hours`
+// (workflow.BackgroundStalledWorker), which the daemon tells of and never prompts. It is the
+// moment of that report (RoleClaim.ActivityAt), and absent from a plain silence's entry.
 //
 // Silent is text rather than a number of seconds or a time.Duration, and it is
 // time.Duration.String's own text rounded to the minute ("2h30m0s"): the controller reads this
@@ -466,10 +474,11 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 // that finds a silence runs every minute, and the bound is `worker_silence_minutes` — so no
 // reader is owed the seconds.
 type SilentIssue struct {
-	Issue    string     `json:"issue"`
-	Role     claim.Role `json:"role"`
-	LastStep time.Time  `json:"lastStep"`
-	Silent   string     `json:"silent"`
+	Issue           string     `json:"issue"`
+	Role            claim.Role `json:"role"`
+	LastStep        time.Time  `json:"lastStep"`
+	Silent          string     `json:"silent"`
+	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 
 // CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch

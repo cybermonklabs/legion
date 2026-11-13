@@ -158,7 +158,7 @@ func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact in
 		return intake.Result{}, err
 	}
 	issue, now := read.issue, e.now()
-	if !backgroundStalled(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
+	if !BackgroundStalledWorker(issue, read.root, read.gate, fact.Role, read.run, fact.Bound, now) {
 		return intake.Result{}, nil
 	}
 	// A session reports only when its reading changes, so a report at another moment is another
@@ -175,10 +175,11 @@ func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact in
 	return intake.Result{}, nil
 }
 
-// backgroundStalled is whether the record shows a claim unpromptedPhaseWorker holds whose session
-// reports background work of its own running, with that report past bound. It is the claim
-// SilentPhaseWorker refuses for that report.
-func backgroundStalled(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
+// BackgroundStalledWorker is whether the record shows a claim unpromptedPhaseWorker holds whose
+// session reports background work of its own running, with that report past bound. It is the
+// claim SilentPhaseWorker refuses for that report. The `worker-background-stalled` handler reads
+// it, and so does admission's tick list (admit's silentWorkers), which names such a worker too.
+func BackgroundStalledWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
 	bound time.Duration, now time.Time,
 ) bool {
 	if !unpromptedPhaseWorker(issue, root, gate, role, run) {

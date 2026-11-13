@@ -122,12 +122,51 @@ func TestTheControllerTickComesShortlyAfterTheRuntimeStarts(t *testing.T) {
 func TestControllerTickOfABootedWorkflowNamesTheSilentWorker(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
+	w := bootedTickWorkflow(t, pool)
+	seedSilentPhaseWorker(t, pool, "CAPTURE-700", time.Now().Add(-2*time.Hour).UTC())
+
+	w.applyControllerTick(ctx, time.Now())
+
+	if silent := queuedTickNotice(t, pool).Silent; len(silent) != 1 {
+		t.Fatalf("the tick names %#v as silent, want the one worker whose last step passed the bound the boot registered", silent)
+	}
+}
+
+// The boot registers `worker_background_hours` beside the silence bound (openWorkflow, admit's
+// UseWorkerSilence), so the tick names a worker whose own report of background work has stood
+// past it. The worker here reports background work, which the silence rule reads as explaining
+// its quiet, so a boot that registered only the silence bound would name nothing.
+func TestControllerTickOfABootedWorkflowNamesTheBackgroundStalledWorker(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	w := bootedTickWorkflow(t, pool)
+	seedSilentPhaseWorker(t, pool, "CAPTURE-700", time.Now().Add(-6*time.Hour).UTC())
+	reported := time.Now().Add(-5 * time.Hour).UTC().Truncate(time.Microsecond)
+	if _, err := pool.Exec(ctx, `update claims set activity_at = $2, activity_background = true, activity_kinds = 'async-job'
+		where issue = $1`, "CAPTURE-700", reported); err != nil {
+		t.Fatalf("record the background report of CAPTURE-700's implementer: %v", err)
+	}
+
+	w.applyControllerTick(ctx, time.Now())
+
+	if silent := queuedTickNotice(t, pool).Silent; len(silent) != 1 || !silent[0].BackgroundSince.Equal(reported) {
+		t.Fatalf("the tick names %#v as silent, want CAPTURE-700's implementer with its report of %s: it has stood past the bound the boot registered",
+			silent, reported)
+	}
+}
+
+// bootedTickWorkflow is the boot's own workflow runtime over pool, with a controller registered,
+// a board that answers the boot's calls, and the shipped bounds on a worker's silence and on its
+// background work (config.Config.WorkerSilence, config.Config.WorkerBackground).
+func bootedTickWorkflow(t *testing.T, pool *pgxpool.Pool) *workflowRuntime {
+	t.Helper()
+	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	st, err := store.Open(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
-	defer st.Close()
+	t.Cleanup(st.Close)
 	registerTickController(t, pool)
 	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if servedBootCall(t, w, r, "CAPTURE") {
@@ -141,7 +180,7 @@ func TestControllerTickOfABootedWorkflowNamesTheSilentWorker(t *testing.T) {
 	t.Cleanup(board.Close)
 	cfg := config.Config{
 		Project: "CAPTURE", DispatchURL: board.URL, AdmissionCap: 1, WorkerSilence: 30 * time.Minute,
-		Projects: map[string]config.Project{"CAPTURE": {}},
+		WorkerBackground: 4 * time.Hour, Projects: map[string]config.Project{"CAPTURE": {}},
 	}
 	tokens := loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"}
 	w, err := openWorkflow(ctx, cfg, st, "project-id", "dispatch-token", nil,
@@ -150,13 +189,7 @@ func TestControllerTickOfABootedWorkflowNamesTheSilentWorker(t *testing.T) {
 		t.Fatalf("open the workflow: %v", err)
 	}
 	w.bootID = "test-boot"
-	seedSilentPhaseWorker(t, pool, "CAPTURE-700", time.Now().Add(-2*time.Hour).UTC())
-
-	w.applyControllerTick(ctx, time.Now())
-
-	if silent := queuedTickNotice(t, pool).Silent; len(silent) != 1 {
-		t.Fatalf("the tick names %#v as silent, want the one worker whose last step passed the bound the boot registered", silent)
-	}
+	return w
 }
 
 // seedSilentPhaseWorker records key as a running root of this project in implementing, holding

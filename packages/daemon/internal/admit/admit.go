@@ -82,10 +82,14 @@ type Admission struct {
 	// workerSilence is how long a phase worker's last recorded step may be in the past before
 	// the tick notice names its issue silent (config.Config.WorkerSilence,
 	// `worker_silence_minutes`), the one bound the sweep, the silence handler and this list are
-	// all read against (workflow.SilentPhaseWorker). An admission nobody registered a bound
-	// with holds zero, which only a test builds, and the rule answers false for every run of
-	// it, so such a tick names nothing silent.
-	workerSilence time.Duration
+	// all read against (workflow.SilentPhaseWorker). workerBackground is how long a worker's own
+	// session's report of background work may stand before the tick names it all the same
+	// (config.Config.WorkerBackground, `worker_background_hours`,
+	// workflow.BackgroundStalledWorker). An admission nobody registered the bounds with holds
+	// zero for both, which only a test builds, and both rules answer false for every run of it,
+	// so such a tick names nothing silent.
+	workerSilence    time.Duration
+	workerBackground time.Duration
 }
 
 // ReportCapabilities registers open, whose answer every tick controller notice carries as its
@@ -104,12 +108,14 @@ func (a *Admission) UseMemory(memory config.Memory) {
 	a.memory = memory
 }
 
-// UseWorkerSilence registers the bound a phase worker's silence is read against, which every
-// tick controller notice derives its silent list from (silentWorkers). It is a setter rather
-// than a parameter of New for the reason UseMemory and ReportCapabilities are: every test that
-// admits anything builds an admission, and none of them configures a silence bound.
-func (a *Admission) UseWorkerSilence(bound time.Duration) {
-	a.workerSilence = bound
+// UseWorkerSilence registers the two bounds a phase worker's quiet is read against, which every
+// tick controller notice derives its silent list from (silentWorkers): silence for a worker
+// whose last step is old, background for a worker whose own report of background work is. It
+// is a setter rather than a parameter of New for the reason UseMemory and ReportCapabilities
+// are: every test that admits anything builds an admission, and none of them configures a bound.
+func (a *Admission) UseWorkerSilence(silence, background time.Duration) {
+	a.workerSilence = silence
+	a.workerBackground = background
 }
 
 var _ intake.Handler = (*Admission)(nil)
@@ -584,18 +590,27 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 }
 
 // silentWorkers is every issue of the project whose phase worker is one nothing will prompt, as
-// the tick notice carries it: its process is up and between turns, it holds no task, and its
-// agent's last recorded step is older than the bound this deployment gives a phase worker
-// (UseWorkerSilence, config.Config.WorkerSilence). The rule is workflow.SilentPhaseWorker, with
-// workflow.PhaseWorkerOwedTurn for the half only the store can answer, and the silence handlers
-// read both, so the controller's list and the `worker-silent` notices the architects were sent
-// judge which worker is silent on the same terms.
+// the tick notice carries it: its process is up and between turns, it holds no task, and either
+// its agent's last recorded step is older than the bound this deployment gives a phase worker
+// (UseWorkerSilence, config.Config.WorkerSilence; workflow.SilentPhaseWorker) or its own
+// session's report of background work has stood past the longer bound
+// (config.Config.WorkerBackground; workflow.BackgroundStalledWorker). The daemon prompts the
+// second kind never, and the list marks it with the moment of that report
+// (record.SilentIssue.BackgroundSince). workflow.PhaseWorkerOwedTurn answers the half of both
+// only the store can answer.
+//
+// The silence handlers read the same rules over the same record, so the list and the
+// `worker-silent` and `worker-background-stalled` notices the architects were sent name the
+// same workers, with one difference: a handler also refuses a fact whose generation is not the
+// issue's current one (workflow's phaseWorkerRecord), a term the tick never meets, because it
+// reads each issue at its current generation.
 //
 // Why the controller is told at all, when the issue's own architect already was: that architect
 // may be failed or gone, so its notice reaches nobody, and the controller is the role that holds
 // `fresh_session` and reads the whole project (this root's architect ruled it on 2026-11-12,
-// dispatch://INFRA-3163). The tick carries the list, and no field is added to the state route,
-// so no daemon API contract number is taken for it.
+// dispatch://INFRA-3163). The tick carries the list. The state route gains no field for it; the
+// state's settings gain the two bounds, `worker_silence_minutes` and `worker_background_hours`,
+// as two keys of a loose object, so no daemon API contract number is taken for either.
 //
 // What that costs, plainly: record.DecodeOutboxPayload refuses a field and a notice kind it
 // does not know, so a daemon of an older release that met a queued row carrying this list, or a
@@ -604,9 +619,9 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 // deployment's roll-forward is the answer to it.
 //
 // The candidates are the project's live issues, selected and read as the repair of a slot
-// selects and reads its own (phaseWorkers). The last step comes from the claim the record holds
-// (record.RoleClaim.Step), because admission holds no claim of the supervisor at all, where the
-// sweep reads the live one.
+// selects and reads its own (phaseWorkers). The last step and the report come from the claim
+// the record holds (record.RoleClaim), because admission holds no claim of the supervisor at
+// all, where the sweep reads the live one.
 //
 // The list is in issue order so that two ticks over one record name the silent issues in one
 // order, whatever order the live read answered in.
@@ -623,14 +638,19 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 	var silent []record.SilentIssue
 	for _, held := range workers {
 		run := runs[held.token]
-		if !workflow.SilentPhaseWorker(held.issue, held.root, facts.Gates[held.issue.Tree], held.role, run, a.workerSilence, now) {
+		gate := facts.Gates[held.issue.Tree]
+		// The two rules never both hold: SilentPhaseWorker refuses the claim whose report
+		// names background work, and BackgroundStalledWorker is about that claim alone.
+		stepped := workflow.SilentPhaseWorker(held.issue, held.root, gate, held.role, run, a.workerSilence, now)
+		background := !stepped && workflow.BackgroundStalledWorker(held.issue, held.root, gate, held.role, run, a.workerBackground, now)
+		if !stepped && !background {
 			continue
 		}
 		// A worker owed no turn is left out, as the silence handlers leave it (workflow's
 		// phaseWorkerRecord): a merged root's merger, or a role whose completion of this phase
-		// entry was accepted. The rule reads no store, so the pull request and the phase row that
-		// say so are read here, and only for a worker the rule has already named silent, never
-		// for every issue of the project.
+		// entry was accepted. The rules read no store, so the pull request and the phase row
+		// that say so are read here, and only for a worker a rule has already named, never for
+		// every issue of the project.
 		_, owed, err := workflow.PhaseWorkerOwedTurn(ctx, a.store, tx, held.issue, held.role)
 		if err != nil {
 			return nil, err
@@ -638,11 +658,15 @@ func (a *Admission) silentWorkers(ctx context.Context, tx pgx.Tx, issues []recor
 		if !owed {
 			continue
 		}
-		// The rule answered true, so this run has a claim and that claim's record holds the
-		// moment the rule judged it by (workflow.SilentPhaseWorker).
+		// A rule answered true, so this run has a claim, and its record holds the last step and,
+		// for a background stall, the moment of the report the rule judged it by.
 		lastStep := run.Claim.Step.LastStep()
-		silent = append(silent, record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep,
-			Silent: now.Sub(lastStep).Round(time.Minute).String()})
+		entry := record.SilentIssue{Issue: held.issue.Key, Role: held.role, LastStep: lastStep,
+			Silent: now.Sub(lastStep).Round(time.Minute).String()}
+		if background {
+			entry.BackgroundSince = run.Claim.ActivityAt
+		}
+		silent = append(silent, entry)
 	}
 	slices.SortFunc(silent, func(x, y record.SilentIssue) int { return cmp.Compare(x.Issue, y.Issue) })
 	return silent, nil

@@ -20,6 +20,23 @@ import (
 // silent worker's is hours past it and the healthy one's well inside it.
 const silenceBound = 30 * time.Minute
 
+// backgroundBound is the longer bound these ticks read a worker's own report of background work
+// against, as a deployment's `worker_background_hours` sets it (config.Config.WorkerBackground,
+// registered with UseWorkerSilence beside silenceBound). It is the shipped default.
+const backgroundBound = 4 * time.Hour
+
+// reportedBackground stamps the claim of key's worker with its own session's report of
+// background work running, made at at, in the columns the record reads (record.RoleClaim
+// ActivityAt and ActivityBackground). It is a write of its own for the reason steppedAt is: the
+// daemon writes these columns by a call of their own (store's PutClaimActivity).
+func reportedBackground(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `update claims set activity_at = $2, activity_background = true,
+		activity_kinds = 'async-job' where issue = $1`, key, at); err != nil {
+		t.Fatalf("record the background report of %s's worker: %v", key, err)
+	}
+}
+
 // steppedAt stamps token's claim with the moment its agent last stepped, in the two columns the
 // record reads (record.RoleClaim.Step): the step itself, and the start of the turn it was taken
 // in, ten minutes before it. The turn start is the earlier of the two on purpose, so the moment
@@ -89,7 +106,7 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 	t.Run("a silent worker beside a healthy one", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
-		admission.UseWorkerSilence(silenceBound)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
 		registerController(t, pool)
 		seedPhaseWorker(t, pool, "LEGION-700", "A", phase.Implementing, claim.RoleImplementer, silentStep)
 		seedPhaseWorker(t, pool, "LEGION-710", "B", phase.Testing, claim.RoleTester, healthyStep)
@@ -113,10 +130,47 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 			t.Errorf("the tick says the silence is %q, want %q: the length a reader of the day's report needs at a glance", named.Silent, want)
 		}
 	})
+	// A worker whose own session reports background work running is one the daemon never
+	// prompts, and once that report has stood past the background bound the tick names it, with
+	// the moment of the report, as the `worker-background-stalled` notice names it to its
+	// architect (workflow.BackgroundStalledWorker). Both workers here last stepped hours ago, so
+	// both are past the silence bound, and both reports explain that quiet to the silence rule;
+	// they differ in the age of the report alone, and the one inside its bound is not named.
+	t.Run("a background report past its bound beside one inside it", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 2)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
+		registerController(t, pool)
+		oldStep := fixedNow.Add(-6 * time.Hour)
+		stalledReport := fixedNow.Add(-5 * time.Hour)
+		runningReport := fixedNow.Add(-1 * time.Hour)
+		seedPhaseWorker(t, pool, "LEGION-760", "A", phase.Implementing, claim.RoleImplementer, oldStep)
+		reportedBackground(t, pool, "LEGION-760", stalledReport)
+		seedPhaseWorker(t, pool, "LEGION-770", "B", phase.Testing, claim.RoleTester, oldStep)
+		reportedBackground(t, pool, "LEGION-770", runningReport)
+
+		tick(t, pool, admission, "tick-1")
+
+		silent := tickNotice(t, pool).Silent
+		if len(silent) != 1 || silent[0].Issue != "LEGION-760" || silent[0].Role != claim.RoleImplementer {
+			t.Fatalf("the tick names %#v as silent, want LEGION-760's implementer alone: its background report has stood %s, past the %s bound, and LEGION-770's %s, inside it",
+				silent, fixedNow.Sub(stalledReport), backgroundBound, fixedNow.Sub(runningReport))
+		}
+		named := silent[0]
+		if !named.BackgroundSince.Equal(stalledReport) {
+			t.Errorf("the tick says LEGION-760's background report was made at %s, want the %s its claim records", named.BackgroundSince, stalledReport)
+		}
+		if !named.LastStep.Equal(oldStep) {
+			t.Errorf("the tick says LEGION-760's implementer last stepped at %s, want the %s its claim records", named.LastStep, oldStep)
+		}
+		if want := (6 * time.Hour).String(); named.Silent != want {
+			t.Errorf("the tick says the silence is %q, want %q: the time since the last step, as for any entry", named.Silent, want)
+		}
+	})
 	t.Run("nothing silent", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 1)
-		admission.UseWorkerSilence(silenceBound)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
 		registerController(t, pool)
 		seedPhaseWorker(t, pool, "LEGION-710", "B", phase.Testing, claim.RoleTester, healthyStep)
 
@@ -133,7 +187,7 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 	t.Run("a merged root's merger beside an unmerged one", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
-		admission.UseWorkerSilence(silenceBound)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
 		registerController(t, pool)
 		seedPhaseWorker(t, pool, "LEGION-720", "A", phase.Merging, claim.RoleMerger, silentStep)
 		seedPhaseWorker(t, pool, "LEGION-730", "B", phase.Merging, claim.RoleMerger, silentStep)
@@ -165,7 +219,7 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 	t.Run("a role whose completion was accepted beside one still working", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)
-		admission.UseWorkerSilence(silenceBound)
+		admission.UseWorkerSilence(silenceBound, backgroundBound)
 		registerController(t, pool)
 		seedPhaseWorker(t, pool, "LEGION-740", "A", phase.Implementing, claim.RoleImplementer, silentStep)
 		seedPhaseWorker(t, pool, "LEGION-750", "B", phase.Implementing, claim.RoleImplementer, silentStep)

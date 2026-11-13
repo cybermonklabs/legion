@@ -208,8 +208,8 @@ func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role clai
 // acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
 // waiting to be prompted; the role, not the state, tells a fault from health. The last three
 // terms are StartFor's, read the other way, so admission's slot repair and the silence repair
-// never act on one claim. backgroundStalled stands on it too, so the two rules agree on which
-// claim they are about.
+// never act on one claim. BackgroundStalledWorker stands on it too, so the two rules agree on
+// which claim they are about.
 func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
 	if run.Claim == nil {
 		return false
