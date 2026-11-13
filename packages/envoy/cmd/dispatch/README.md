@@ -3880,7 +3880,7 @@ On a comment, an ask or an issue message it is the logins with a Replies row on 
 on a direct (issue-less) conversation's message, which keeps no Replies row, it is the thread root's author, the one person whose Inbox holds that conversation's agent row, and `[]` when no person opened the thread.
 On an issue event it is the sorted union of two sets, naming a login in both of them once:
 for a close or a reopen the logins with a row on the issue's open asks, which the Inbox leaves out of their Replies while the issue is open and the ask waits on them, and `[]` for any other status move;
-for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on.
+for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on, a side where the issue holds nobody being the project's default assignee, whom a question on such an issue reaches (`issueWriteThreadLogins`, `api/thread_logins.go`).
 An `ask.asked_of` names two people instead of a thread's readers: the person the ask waited on and the person it waits on now, since a hand-on moves the ask between their lists and changes nothing for a reader of its thread.
 `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved, or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`PUT` or `DELETE /api/v1/me/asks/{id}/snooze`, which append it only when the row moved).
 A snooze's payload is exactly `{login, changed: ["snoozed"]}`:
