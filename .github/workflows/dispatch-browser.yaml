@@ -367,7 +367,10 @@ jobs:
     #
     # The rule is in this file's head. The browser step's 769 s is shard 1 of run 43347417247
     # (job 131631089585), and shard 2's own maximum is 750 s (job 131300609469, run
-    # 43251567200): 769 x 1.15 = 884 s -> 15 min. The job's budget is that 900 s plus the maxima
+    # 43251567200). One later run went further: shard 1 of run 43350453803 (job 131642902948,
+    # 2026-11-13, at the head before this budget) was stopped by the old 13 minutes, so its
+    # step took at least 780 s, and how much more nobody can read. Taken at that floor:
+    # 780 x 1.15 = 897 s -> 15 min. The job's budget is that 900 s plus the maxima
     # above of every step without a budget, which sum to 112 s - each of the three uploads
     # counted, since each is a step: 3 + 2 + 4, not 4. 900 + 112 = 1,012 s, 16 min 52 s, rounded
     # up to the 17 minutes below. That is a backstop above the sum of the step budgets, as this
