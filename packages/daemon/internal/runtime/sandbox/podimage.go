@@ -1,5 +1,9 @@
 package sandbox
 
+import "github.com/sjawhar/legion/daemon/internal/runtime"
+
+var _ runtime.IssuePodReader = (*Runtime)(nil)
+
 // IssuePodRunsConfiguredImage says whether the pod of issue's Sandbox is running the image the
 // daemon's configuration names (r.image), read from the pod the runtime's store holds: the pod
 // must be the Sandbox's own, not ended, and no container of it — a role's or an init container —
@@ -56,4 +60,38 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 		return "", false
 	}
 	return name, true
+}
+
+// IssuePod satisfies runtime.IssuePodReader: the uid of the pod issue's Sandbox holds now, ""
+// where the runtime holds no Sandbox of issue or that Sandbox holds no pod of its own, read from
+// the stores the runtime already watches, as IssueSandbox and PodDrift read them. The daemon's
+// sweep asks it of an issue whose update round no claim records a pod for (internal/daemon's
+// podlessRound), and the uid is what says whether the pod the round was opened over is the one
+// still there.
+//
+// A pod is the Sandbox's own only where the Sandbox controls it (ownedBy), so a same-named pod of
+// a Sandbox deleted and made again is no pod of this one. A pod that has run to its end, or is
+// being ended under a suspension, is answered all the same: its disk is still there until the
+// pod is deleted, and the round over it waits until it is gone rather than end over a disk that
+// may still hold its workers' unpushed work. Where the store itself cannot be read, or no Sandbox
+// name can be built from the issue key, nothing is answered (read false), since a round must not
+// end on a read that was never made, which is where this parts from IssueSandbox: that read
+// holds a pod by answering it absent, and this one would end a round by doing so.
+func (r *Runtime) IssuePod(issue string) (string, bool) {
+	name, err := issueSandboxName(r.project, issue)
+	if err != nil {
+		return "", false
+	}
+	u, err := r.storedObject(name)
+	if err != nil {
+		return "", false
+	}
+	if u == nil {
+		return "", true
+	}
+	pod := r.storedPod(name)
+	if !ownedBy(pod, u.GetUID()) {
+		return "", true
+	}
+	return string(pod.UID), true
 }

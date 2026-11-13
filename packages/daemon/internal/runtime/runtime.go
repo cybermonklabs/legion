@@ -193,6 +193,20 @@ var ErrSessionStore = errors.New("the session store could not be asked")
 // not come before the roles are relaunched into the pod that replaced this one.
 var ErrPodGone = errors.New("the pod the locator records is not there")
 
+// IssuePodReader reads which pod an issue's Sandbox holds now, asked by the issue alone: the uid
+// of that pod, "" where the runtime holds no Sandbox of the issue or the Sandbox holds no pod, and
+// read false where the runtime cannot say at all. It is the one question about a pod that needs no
+// locator, which is why it exists beside PodDrift: an update round whose claims record no pod —
+// every claim suspended, since a suspension lets the process go and its locator with it
+// (supervise's letGo) — has no claim left to ask PodDrift through, and only the issue to ask by
+// (internal/daemon's podlessRound). A pod other than the round's own, or none, is that round's pod
+// gone, and the round ends; the round's own pod, or no answer, leaves it waiting. A runtime whose
+// processes run in no pod implements nothing here, and the daemon then reads no answer, which a
+// round never needs from it, since such a runtime answers no drift and so opens no pod round.
+type IssuePodReader interface {
+	IssuePod(issue string) (pod string, read bool)
+}
+
 // IssueSuspender stops an issue's pod once authorize, called under the runtime's issue launch
 // lock, says the issue's durable close and its complete stored role population allow it (false
 // finishes the close without acting). Once the pod is stopped, the issue's Sandbox is deleted

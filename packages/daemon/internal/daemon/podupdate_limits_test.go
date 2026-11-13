@@ -326,6 +326,92 @@ func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
 	rig.awaitRounds("three sweeps with a free slot and nothing left that has drifted", "INFRA-1")
 }
 
+// A round over a pod its claims no longer record is a round over a pod that is gone, and it is
+// carrying nothing: the walk ends it at the very sweep that reads it (reconcileIssuePodUpdate).
+// So the count of the slots at the top of the sweep leaves it out, and an issue waiting for the
+// one slot opens in that same sweep. The waiting issue is walked before the dead round's own, so
+// nothing the walk does to the dead round can be what freed the slot: the slots are counted once,
+// before the walk, and no end in the walk gives one back.
+func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
+	// LEGION-483 sorts before the rig's own LEGION-484, so the walk reaches it first.
+	const waiting, waitingPod = "LEGION-483", "7d2b5e90-1c4a-4e36-b8f7-03a9c6d1e5b8"
+	rig := newPodUpdateRig(t,
+		// The round's own replacement took its pod, and its end never reached this member,
+		// which records the pod built in its place.
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod},
+	)
+	rig.drifts(podUpdateDrift)
+	rig.s.cfg.PodUpdateMaxOpenRounds = new(1)
+	token := rig.driftingIssue(waiting, waitingPod)
+
+	rig.tick()
+
+	testwait.Eventually(t, waiting+" to hold the round over its own pod after the one sweep", func() bool {
+		c := rig.machineClaim(token)
+		return c.UpdateRound == supervise.PodRound(waitingPod) && c.UpdateTaskedAt != nil
+	})
+	rounds := rig.s.podUpdateRoundsView()
+	if !slices.Equal(rounds.InRound, []string{waiting}) || len(rounds.WaitingOnMaxOpenRounds) != 0 {
+		t.Errorf("the sweep recorded in a round %v and waiting on the open-round limit %v, want %s alone in a round and nothing waiting",
+			rounds.InRound, rounds.WaitingOnMaxOpenRounds, waiting)
+	}
+	rig.awaitClaim(claim.RoleImplementer, "the round over the pod that went to end at the same sweep",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+}
+
+// Which group holds a slot, read over each shape a sweep can find (holdsOpenRound). A round is
+// carried where a claim holds the round over the pod the claims record, wherever that claim
+// sorts, and where the claims record two pods with a round open, which is a replacement in
+// flight. A round over a pod no claim records holds none, nor does a round no claim records any
+// pod for, nor a group in no round.
+func TestPodUpdateHoldsASlotOnlyForARoundItsClaimsCarry(t *testing.T) {
+	recording := func(role claim.Role, pod, round string) supervise.Claim {
+		token := mustClaimToken(t, podUpdateIssue, role)
+		c := supervise.Claim{Token: token, Issue: podUpdateIssue, Role: role, UpdateRound: round}
+		if pod != "" {
+			c.Locator = podUpdateLocator(token, podUpdateIssue, pod)
+		}
+		return c
+	}
+	dead, live := podUpdateRound, supervise.PodRound(podUpdateReplacementPod)
+	for name, tc := range map[string]struct {
+		group []supervise.Claim
+		holds bool
+	}{
+		"a round over the pod the claims record": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdatePod, podUpdateRound),
+			recording(claim.RoleTester, podUpdatePod, ""),
+		}, holds: true},
+		"a round over a pod no claim records": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdateReplacementPod, dead),
+			recording(claim.RoleTester, podUpdateReplacementPod, ""),
+		}},
+		"the dead round on the first claim and the live one on the next": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdateReplacementPod, dead),
+			recording(claim.RoleTester, podUpdateReplacementPod, live),
+		}, holds: true},
+		"two pods with a round open, a replacement in flight": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdateReplacementPod, dead),
+			recording(claim.RoleTester, podUpdatePod, ""),
+		}, holds: true},
+		"a round no claim records a pod for": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, "", podUpdateRound),
+		}},
+		"no round": {group: []supervise.Claim{
+			recording(claim.RoleImplementer, podUpdatePod, ""),
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := holdsOpenRound(tc.group); got != tc.holds {
+				t.Errorf("holdsOpenRound = %t, want %t", got, tc.holds)
+			}
+		})
+	}
+}
+
 // An opening is an ask that reached a worker. An issue no agent has run for has nobody to ask,
 // so the sweep posts it nothing and its claims record no round: charged a slot and an opening all
 // the same, such an issue would take the one opening of every sweep for ever — it can never

@@ -139,14 +139,19 @@ func (sweep podUpdateSweep) held() []string {
 
 // beginPodUpdateSweep is what this sweep may open, read once before its walk over the issues.
 //
-// A slot is held by an issue whose claims record an open pod round and a pod, whichever pod that
-// is: a round is what the slot is for, and a claim of the issue running in a pod again is what
-// says the issue is still being carried by it. To those are added the rounds this daemon opened
-// at an earlier sweep whose claims have not recorded one yet, which are openings all the same:
-// the post that carries a round to a machine is asynchronous and a machine in a relaunch can
-// take minutes to take it, so a sweep that counted only the claims would read one slot short
-// and open an issue above the limit. Those openings are carried in the sweep, because its walk
-// weighs them again at the issue each was made for (podUpdateSweep.reasks).
+// A slot is held by an issue whose claims carry an open pod round: a claim of it holds the round
+// over the pod its claims record, or its claims record two pods with a pod round open, which is a
+// replacement in flight and a round being carried like any other (holdsOpenRound). A round over a
+// pod the claims no longer record holds none: that pod is gone and the walk ends the round at this
+// same sweep (reconcileIssuePodUpdate), so counted it would hold back an opening with a slot it is
+// giving up, the issue's own next round over the pod in its place among them. Nor does a round
+// whose claims record no pod at all: a claim of the issue running in a pod again is what says the
+// issue is still being carried by its round. To those are added the rounds this daemon opened at
+// an earlier sweep whose claims have not recorded one yet, which are openings all the same: the
+// post that carries a round to a machine is asynchronous and a machine in a relaunch can take
+// minutes to take it, so a sweep that counted only the claims would read one slot short and open
+// an issue above the limit. Those openings are carried in the sweep, because its walk weighs them
+// again at the issue each was made for (podUpdateSweep.reasks).
 //
 // The sweep's own budget is the whole of the per-minute limit, spent at this one sweep rather
 // than paced inside it, and nothing at all within podUpdateOpeningGap of the last opening.
@@ -278,17 +283,20 @@ func (s *supervision) podUpdateRoundsView() api.PodUpdateRounds {
 	return s.podUpdateRounds
 }
 
-// holdsOpenRound is whether this issue holds one of the project's open-round slots: its claims
-// record an open pod round, and one of them records a pod to carry it in.
+// holdsOpenRound is whether this issue holds one of the project's open-round slots: a claim of it
+// holds the round over the pod its claims record, or its claims record two pods — a replacement in
+// flight — with a pod round open on one of them. A round over a pod no claim records any more is
+// a round over a pod that is gone, which the walk ends (reconcileIssuePodUpdate), and holds no
+// slot; nor does a round whose claims record no pod at all. The live round is looked for on every
+// claim rather than read off the first claim in a round (openPodRound), because a group read
+// while a dead round's end is still on its way can hold that round on one claim and the round
+// over the pod in its place on another.
 func holdsOpenRound(group []supervise.Claim) bool {
-	return openPodRound(group) != "" && recordsAPod(group)
-}
-
-// recordsAPod is whether any claim of the group records a pod, whichever pod that is: two pods
-// are a replacement in flight, which is a round being carried like any other.
-func recordsAPod(group []supervise.Claim) bool {
 	pod, split := groupPod(group)
-	return split || pod != ""
+	if split {
+		return openPodRound(group) != ""
+	}
+	return pod != "" && recordsRound(group, supervise.PodRound(pod))
 }
 
 // recordsRound is whether any claim of the group records round, answered or not and open or not.

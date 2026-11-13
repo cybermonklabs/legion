@@ -2656,16 +2656,17 @@ func (r *podUpdateRig) envoyTurn(role claim.Role) {
 // Whether this round's pod is still there is asked before the round waits on a turn, because
 // every such wait in the round's completion is a wait on that pod. A round whose pod no live
 // claim records has nothing in that pod to cut and nothing there to replace: the turn the sweep
-// would wait for runs in the
-// pod that replaced this one, waiting for it would hold every answered worker's next task behind
-// a round that can never end, and the stalled-round notice would name a pod that is gone.
+// would wait for runs in the pod that replaced this one, waiting for it would hold every answered
+// worker's next task behind a round that can never end, and the stalled-round notice would name a
+// pod that is gone.
 //
-// So the round is decided here rather than held: it ends by the one path every reading of a gone
-// pod ends a round by (endRoundOverAGonePod), the turn in the new pod is left running, and the
-// operator's side is told nothing, however long past the notice bound the sweep runs.
+// So the round is decided here rather than held: the claims record the pod that replaced the
+// round's own, which ends the round at that sweep before anything waits on a turn
+// (reconcileIssuePodUpdate), the turn in the new pod is left running, and the operator's side is
+// told nothing, however long past the notice bound the sweep runs.
 func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplacedIt(t *testing.T) {
 	const held = "supervise: every worker of this update round has answered; the replacement waits for the turns still running"
-	const overAGonePod = "supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over"
+	const overAGonePod = "supervise: the pod this issue's update round was opened over is gone; the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
 
@@ -2716,6 +2717,246 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	for _, role := range roles {
 		rig.awaitClaim(role, "its round to end over the pod that is gone",
 			func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	}
+}
+
+// Two rounds can stand on one group at once while a dead round's end is still on its way: the
+// round over the pod that went on one claim, and the round over the pod in its place on another,
+// which a sweep opened over that pod and posted to the claims it could reach. The sweep reads the
+// group's round off the first claim in one (openPodRound), so where the dead round's holder sorts
+// first, the dead round is the one the sweep ends, and the end is posted to that round's members
+// alone (endPodUpdates). The claim in the round over the pod that is still there keeps it, with
+// the ask it was given, rather than lose a round its worker has been told to push for.
+func TestPodUpdateEndsOnlyTheDeadRoundOfATwoRoundGroup(t *testing.T) {
+	const ended = "supervise: the pod this issue's update round was opened over is gone; the round is over"
+	live := supervise.PodRound(podUpdateReplacementPod)
+	rig := newPodUpdateRig(t,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod, round: live, reasons: podUpdateDrift},
+	)
+	if dead, other := rig.tokens[claim.RoleImplementer], rig.tokens[claim.RoleTester]; dead >= other {
+		t.Fatalf("the dead round's holder %s sorts after %s, want it first, where the sweep reads the group's round from", dead, other)
+	}
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+
+	rig.awaitClaim(claim.RoleImplementer, "the dead round to end on its one member",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.settleAll()
+	if c := rig.claimOf(claim.RoleTester); c.UpdateRound != live || c.UpdateTaskedAt == nil || !c.UpdateTaskedAt.Equal(podUpdateStart) {
+		t.Fatalf("the tester after the sweep is in round %q asked at %v, want it still in %s with the ask it had at %s",
+			c.UpdateRound, c.UpdateTaskedAt, live, podUpdateStart)
+	}
+	stored, err := rig.sup.Claims(rig.ctx)
+	if err != nil {
+		t.Fatalf("read the claims the store holds: %v", err)
+	}
+	for _, c := range stored {
+		want := map[claim.Role]string{claim.RoleImplementer: "", claim.RoleTester: live}[c.Role]
+		if c.UpdateRound != want {
+			t.Errorf("the store holds the %s in round %q, want %q", c.Role, c.UpdateRound, want)
+		}
+	}
+	if lines := loggedLines(t, rig.logs.String(), ended); len(lines) != 1 || lines[0]["round"] != podUpdateRound {
+		t.Errorf("the sweep logged the end of a round over a gone pod %d times, want once for %s: %+v", len(lines), podUpdateRound, lines)
+	}
+}
+
+// A stale round on a claim fresh_session starts again. The controller's recovery suspends the
+// claim as the operator, forgets the session it recorded and resumes it (internal/api's
+// freshSession: suspendForFreshSession, forgetRecordedSession, then the resume), and none of the
+// three touches the round: the new session comes up in the pod in the dead pod's place still in
+// the round over the pod that went, as INFRA-1583's implementer claim read at 01:56:43Z on
+// 2026-11-13, and the task its phase hands it is held behind that round. The next sweep ends the
+// round, whatever session the claim runs, and the task goes.
+func TestPodUpdateEndsAStaleRoundAfterAFreshSession(t *testing.T) {
+	const (
+		held  = "outbox:9"
+		fresh = "ses_implementer_fresh"
+	)
+	rig := newPodUpdateRig(t,
+		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod, round: podUpdateRound, reasons: podUpdateDrift, signalled: true, left: podUpdateRound},
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, contract: api.DaemonAPIVersion,
+			pod: podUpdateReplacementPod},
+	)
+	rig.drifts(podUpdateDrift)
+	token := rig.tokens[claim.RoleImplementer]
+	recorded := rig.claimOf(claim.RoleImplementer).Session
+
+	// The fresh session, as its route runs it: the suspension it may not hold, the forget, and
+	// the operator's resume, which spawns a new agent since the claim records no session now.
+	rig.handle(claim.RoleImplementer, supervise.RequestSuspend{Claim: token, Reason: "fresh session",
+		By: supervise.SuspendedByOperator, NeverHold: true})
+	rig.awaitClaim(claim.RoleImplementer, "the fresh session's suspension to let its process go",
+		func(c supervise.Claim) bool { return c.State == supervise.StateSuspended && c.Locator == nil })
+	rig.handle(claim.RoleImplementer, supervise.RequestForgetSession{Claim: token, Session: recorded})
+	conn := fake.NewConn()
+	rig.conns.Register(token, conn)
+	rig.workers[claim.RoleImplementer] = conn
+	rig.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, podUpdateReplacementPod)})
+	rig.handle(claim.RoleImplementer, supervise.RequestResume{Claim: token})
+	generation := rig.claimOf(claim.RoleImplementer).Generation
+	for _, ev := range []supervise.Event{
+		supervise.StreamHello{Claim: token, Generation: generation},
+		supervise.RequestRegister{Claim: token, Generation: generation, Session: fresh,
+			SessionFile: "/sessions/implementer-fresh.jsonl", CapabilityHash: []byte(claim.RoleImplementer), PluginContract: api.DaemonAPIVersion},
+		supervise.RequestReady{Claim: token, Generation: generation, Session: fresh},
+	} {
+		rig.handle(claim.RoleImplementer, ev)
+	}
+	if c := rig.claimOf(claim.RoleImplementer); c.State != supervise.StateReady || c.Session != fresh ||
+		podOf(c.Locator) != podUpdateReplacementPod || c.UpdateRound != podUpdateRound {
+		t.Fatalf("the claim after its fresh session is %s in session %q at %+v in round %q, want it ready in its new session in the pod %s and still in the round %s",
+			c.State, c.Session, c.Locator, c.UpdateRound, podUpdateReplacementPod, podUpdateRound)
+	}
+	if spawns := rig.rt.CallsOf("Spawn"); len(spawns) != 1 {
+		t.Fatalf("the fresh session spawned %d agents, want the one new agent of its new session", len(spawns))
+	}
+	// The phase's task, which the fresh session's restart of the phase hands the worker.
+	rig.handle(claim.RoleImplementer, supervise.RequestDeliver{Claim: token, ID: held,
+		Task: "Carry the implementation on.", Phase: phase.Implementing, Generation: 1})
+	rig.settle(claim.RoleImplementer)
+	if sent := promptsOf(conn, held); len(sent) != 0 {
+		t.Fatalf("the new session was sent %+v while its claim stood in the round over the pod that went, want the task held", sent)
+	}
+
+	rig.tick()
+
+	rig.awaitClaim(claim.RoleImplementer, "the stale round to end at the sweep after the fresh session",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	rig.settle(claim.RoleImplementer)
+	if sent := promptsOf(conn, held); len(sent) == 0 {
+		t.Fatalf("the new session was sent %+v once the stale round ended, want the task the round held back", conn.Prompts())
+	}
+}
+
+// A round whose claims record no pod at all — every role of the issue suspended, which lets each
+// process go with its locator (letGo) — is decided on the runtime's word about the issue's Sandbox
+// (podlessRound). While the Sandbox holds the round's own pod the round waits, as it waits for
+// a claim to run in that pod again. Once the Sandbox holds another pod, or none, the round's pod
+// is gone: the round ends on every member as every gone pod's round does, and the issue is told
+// which member had not answered, since what it had not pushed went with that pod's disk.
+func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
+	const (
+		waits = "supervise: no claim of this issue records a pod; its update round waits for one to run again"
+		ended = "supervise: no claim of this issue records a pod, and the pod its update round was opened over is gone; the round is over"
+	)
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	for name, now := range map[string]string{
+		"the issue's Sandbox holds another pod": podUpdateReplacementPod,
+		"the issue's Sandbox holds no pod":      "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newPodUpdateRig(t,
+				podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+					round: podUpdateRound, reasons: podUpdateDrift, suspendedBy: supervise.SuspendedByDaemon},
+				podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true, contract: api.DaemonAPIVersion,
+					round: podUpdateRound, reasons: podUpdateDrift, signalled: true, suspendedBy: supervise.SuspendedByDaemon},
+			)
+			rig.drifts(podUpdateDrift)
+
+			// The control: the issue's Sandbox still holds the round's own pod, and the round waits.
+			rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+			rig.tick()
+			rig.settleAll()
+			for _, role := range roles {
+				if c := rig.claimOf(role); c.UpdateRound != podUpdateRound {
+					t.Fatalf("the %s is in round %q while the issue's Sandbox holds the round's own pod, want the round waiting", role, c.UpdateRound)
+				}
+			}
+			if calls := rig.rt.CallsOf("IssuePod"); len(calls) != 1 || calls[0].Issue != podUpdateIssue {
+				t.Fatalf("the sweep asked the runtime about the issue's pod %+v, want once about %s", calls, podUpdateIssue)
+			}
+			if lines := loggedLines(t, rig.logs.String(), waits); len(lines) != 1 {
+				t.Errorf("the sweep logged the podless round's wait %d times, want once: %+v", len(lines), lines)
+			}
+			if lines := loggedLines(t, rig.logs.String(), ended); len(lines) != 0 {
+				t.Errorf("the sweep ended a round whose pod the issue's Sandbox still holds: %+v", lines)
+			}
+			if messages := rig.messages(); len(messages) != 0 {
+				t.Fatalf("the issue was written %q of a pod that is still there", messages)
+			}
+
+			// The round's own pod goes.
+			rig.rt.ScriptIssuePod(podUpdateIssue, now)
+			rig.tick()
+
+			for _, role := range roles {
+				rig.awaitClaim(role, "its round to end with its pod gone",
+					func(c supervise.Claim) bool { return c.UpdateRound == "" })
+			}
+			if lines := loggedLines(t, rig.logs.String(), ended); len(lines) != 1 || lines[0]["pod"] != now {
+				t.Errorf("the sweep logged the end of the podless round %d times, want once naming the pod %q the Sandbox holds: %+v",
+					len(lines), now, lines)
+			}
+			messages := rig.messages()
+			if len(messages) != 1 {
+				t.Fatalf("the issue was written on %d times, want once for the pod that went: %q", len(messages), messages)
+			}
+			if !strings.Contains(messages[0], string(claim.RoleImplementer)) || strings.Contains(messages[0], string(claim.RoleTester)) {
+				t.Errorf("the message does not name the implementer alone, the one member that had not answered: %s", messages[0])
+			}
+			if calls := rig.replacements(); len(calls) != 0 {
+				t.Errorf("ReplacePod called %d times for a pod that is already gone", len(calls))
+			}
+		})
+	}
+}
+
+// The control of the rounds above: a round over the pod its claims still record is carried on,
+// drift or no drift, until it replaces that pod. A worker of it has not answered, so nothing is
+// replaced, nothing ends, nothing is written on the issue, and nothing asks the runtime about the
+// issue's Sandbox, which only a round no claim records a pod for asks.
+func TestPodUpdateKeepsARoundOverTheRecordedPod(t *testing.T) {
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	for name, drift := range map[string][]string{
+		"the pod drifts":                   {podUpdateDrift},
+		"the pod has drifted from nothing": nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rig := newPodUpdateRig(t,
+				podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
+					contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift, signalled: true},
+				podUpdateRole{role: claim.RoleTester, state: supervise.StateReady, session: true, inPod: true,
+					contract: api.DaemonAPIVersion, round: podUpdateRound, reasons: podUpdateDrift},
+			)
+			rig.drifts(drift...)
+
+			for range 3 {
+				rig.tick()
+				rig.settleAll()
+			}
+
+			for _, role := range roles {
+				if c := rig.claimOf(role); c.UpdateRound != podUpdateRound {
+					t.Errorf("the %s is in round %q, want the round over the pod its claims record still open", role, c.UpdateRound)
+				}
+			}
+			if c := rig.claimOf(claim.RoleImplementer); c.UpdateSignalledAt == nil {
+				t.Errorf("the implementer's answer is gone, want it standing in the open round")
+			}
+			for _, line := range []string{
+				"supervise: the pod this issue's update round was opened over is gone; the round is over",
+				"supervise: the pod of this issue's update round is not there",
+			} {
+				if lines := loggedLines(t, rig.logs.String(), line); len(lines) != 0 {
+					t.Errorf("the sweep logged %q for a round over the pod its claims record: %+v", line, lines)
+				}
+			}
+			if messages := rig.messages(); len(messages) != 0 {
+				t.Errorf("the issue was written %q of a pod that is still there", messages)
+			}
+			if calls := rig.replacements(); len(calls) != 0 {
+				t.Errorf("ReplacePod called %d times while the tester had not answered", len(calls))
+			}
+			if calls := rig.rt.CallsOf("IssuePod"); len(calls) != 0 {
+				t.Errorf("the sweep asked the runtime about the issue's Sandbox %+v, want nothing of a round whose claims record its pod", calls)
+			}
+		})
 	}
 }
 
