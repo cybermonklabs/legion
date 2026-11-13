@@ -132,8 +132,11 @@ export interface LegionDaemonClient {
   /** The controller's `fresh_session`: the claim on `role` of `issue` leaves its recorded
    * session behind and starts again in a new one, the effect
    * `legion claims retry --fresh-session` runs for an operator. The answer is empty wherever
-   * the claim came back and its start ran, and carries `phaseNotRestarted` where the claim came
-   * back owing no task and the workflow refused the restart that would have handed it one. */
+   * the claim came back and its start ran. `phaseNotRestarted` carries the workflow's refusal
+   * of the phase restart, where the claim came back owing no task, or the machine's refusal of
+   * a step that would have started the claim again, where this request stopped it. That
+   * sentence names the state the claim stands in: read it in `read_state`, and ask for a fresh
+   * session again only where the claim is suspended. */
   readonly freshSession: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionFreshSessionResponse>>;

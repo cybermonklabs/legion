@@ -1376,4 +1376,54 @@ package api
 // request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 98
+//
+// 104: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
+// reaches a claim stored working that no process stands behind. Such a claim was refused
+// `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
+// dead architect. Both doors now read that claim's process at the moment of the request
+// (`supervise.Machine.ReadProcess`) rather than the daemon's memory of an old report, which a
+// restart forgets. `fresh_session`, the controller's and the operator's
+// `legion claims retry --fresh-session` alike, reaches such a claim: it is suspended where the
+// request arrives, it leaves the session it recorded behind, and it is started again with the
+// task its dead turn held. The machine lands that suspension where it arrives rather than
+// holding it for a turn that will never end (`supervise`'s holdSuspension). The compaction still
+// refuses the claim, since it has no agent to ask, with `CLAIM_NOT_RUNNING` naming
+// `fresh_session` as the operation that reaches it, or, for the project's own controller claim,
+// which the fresh session refuses and its keeper leaves alone while it is stored working, the
+// operator's `legion claims suspend` and then `legion claims resume`. `CLAIM_IN_A_TURN` now
+// means a process that is running: a claim whose process the read finds alive, and one whose
+// session is being compacted. A claim whose process the runtime would not answer for, and one
+// that records no process to read, is refused `CLAIM_UNSETTLED` instead, left exactly as the
+// request found it and told which read did not happen; so is a claim that moved under the
+// request: at the fresh session, one whose later view is no longer working or whose second read
+// finds the process gone once more, a moved claim being otherwise answered as that second read
+// finds it; at the compaction, one the machine refused as working whose later view is no longer
+// working, which before this change was read and could be answered `CLAIM_IN_A_TURN`. A claim
+// under a relaunch the wake pacing parks keeps `CLAIM_UNSETTLED`. The read records what it finds
+// as the sweep's report of the process would: a running verdict that clears the death charge
+// writes the claim as the machine holds it, as that report's write does, and a refusal stops,
+// suspends, forgets, takes back and starts nothing. One answer more changed: a fresh session that
+// stopped the claim and could not start it again — the forget of its session or its start refused
+// — answers 200 with that refusal, and the state it left the claim in, in `phaseNotRestarted`,
+// rather than reporting a failure about a claim it had already stopped, so that member now carries
+// either the workflow's refused phase restart or a step the machine refused after the claim was
+// stopped. No request or response shape the plugin parses changes: `api.ClaimRequest`,
+// `api.FreshSessionResponse` and `api.CompactResponse` keep their fields. What moved is which
+// claims each operation reaches and the code and the sentence each refusal gives, which
+// `packages/contracts/src/legion-claim-recovery.ts` mirrors and which a controller reads in the
+// `legion` tool's own description, so this number is what keeps a plugin stating the old
+// behaviour off a daemon that answers the new one. (This entry has taken six numbers: 70 when the
+// base carried 68, 76 at the forward merges of 2026-11-12 where main declared 73 and then 75, 86 at
+// the third, fbe970eef84d, where main declared 85, 90 at the fourth, a4c0ff994adc, which the pull
+// request's own conflict forced and where main declared 86, still 90 at the fifth, 12ba4e6afa71,
+// where main declared 87, and 103 at the sixth, 8d9d1ff2dd56, where main declared 94. It takes 104
+// at the seventh, b7a2f926d3a8, which the conflict forced again and where main declares 98, the
+// entry right above this one. The reading of `const DaemonAPIVersion` at refs/pull/<n>/head at
+// 2026-11-13T12:40Z, for every open pull request whose file list names this file or is longer than
+// the page that lists it, gives above the base's 98: 99 on #3575, 100 on #3573 and #3715, 101 on
+// #3712, 102 on #3730 and 103 on #3519, so 104 is the lowest free number above the base's and above
+// every other open head's, which is what the gate's refusal names. Read the base's own number and
+// every open pull request again at the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 104

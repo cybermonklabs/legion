@@ -52,10 +52,13 @@ type SpawnResult struct {
 
 // ProbeResult is one scripted answer to Probe: a verdict about the locator probed, or the
 // runtime failing to answer at all. The fake fills the observation's locator and time in.
+// OutOfMemory is the verdict's own (runtime.Observation.OutOfMemory), for a Gone whose pod ran
+// out of memory.
 type ProbeResult struct {
-	Kind   runtime.ObservationKind
-	Detail string
-	Err    error
+	Kind        runtime.ObservationKind
+	Detail      string
+	OutOfMemory bool
+	Err         error
 }
 
 // Runtime is the fake. The zero value is not usable; call NewRuntime.
@@ -355,16 +358,16 @@ func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observa
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})
-	kind, detail := runtime.Alive, ""
+	kind, detail, outOfMemory := runtime.Alive, "", false
 	if len(r.probes) > 0 {
 		next := r.probes[0]
 		r.probes = r.probes[1:]
 		if next.Err != nil {
 			return runtime.Observation{}, next.Err
 		}
-		kind, detail = next.Kind, next.Detail
+		kind, detail, outOfMemory = next.Kind, next.Detail, next.OutOfMemory
 	}
-	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail}, nil
+	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail, OutOfMemory: outOfMemory}, nil
 }
 
 // Observe is the sweep. Every observation emitted, before or after this call, reaches the

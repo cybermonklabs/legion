@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -38,7 +38,7 @@ func openCheck(issue record.Issue, merge string) record.ProductionCheck {
 	}
 }
 
-func putProductionCheck(t *testing.T, pool *pgxpool.Pool, records record.Store, check record.ProductionCheck) {
+func putProductionCheck(t *testing.T, pool *store.Pool, records record.Store, check record.ProductionCheck) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return records.PutProductionCheck(context.Background(), tx, check)
@@ -47,7 +47,7 @@ func putProductionCheck(t *testing.T, pool *pgxpool.Pool, records record.Store, 
 	}
 }
 
-func readProductionCheck(t *testing.T, pool *pgxpool.Pool, records record.Store, issue string) record.ProductionCheck {
+func readProductionCheck(t *testing.T, pool *store.Pool, records record.Store, issue string) record.ProductionCheck {
 	t.Helper()
 	var check *record.ProductionCheck
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
