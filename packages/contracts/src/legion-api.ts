@@ -1453,10 +1453,11 @@ export const LegionControllerGrantRequest = z.strictObject({
  * version (`HANDOFF_RECORD_MISMATCH`), or written by another session than the claim's
  * (`HANDOFF_SESSION_MISMATCH`). `commit` on such a completion is the head that record's body
  * names (`head`, the 40-character lower-case commit the work the handoff reports was done
- * against), which is what a completion of an earlier phase entry is taken at; the implementer's
- * head is one the plugin holds to be on `legion/<issue>@origin`, at that branch's tip or behind
- * it, before the completion goes, and a record naming no such head leaves the planner's, the
- * tester's and the reviewer's completion without one. Retro and every completion of a phase its
+ * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
+ * the implementer's completion before it goes when its `implement` record names no head, when the
+ * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
+ * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
+ * the reviewer's completion without one. Retro and every completion of a phase its
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.

@@ -31,8 +31,8 @@ import (
 // (handoffRecord); it reads no body, which is the next role's to read. Commit is the commit the
 // completion is of: for the planner, the implementer's implementing round, the tester and the
 // reviewer the head the handoff record names, the commit their work was done against, which the
-// `legion` tool reads out of the record's body and, for the implementer, holds to be on
-// legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
+// `legion` tool reads out of the record's body and, for the implementer, holds to be its pushed
+// @- on legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
 // merger's own completion stands on. The entry fence reads it against the head the record holds
 // (behindEntryClause). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open

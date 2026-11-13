@@ -266,10 +266,10 @@ export function legionToolDescription(host: {
     "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads the phase's newest record from Dispatch and reports it with `commit`, the head that record's body names " +
-    "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be on " +
-    "`legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, or an " +
-    "implementer's head not yet on `legion/<issue>@origin`, each naming the remedy. A production check report " +
+    "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be the commit its " +
+    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
+    "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, an " +
+    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -297,7 +297,8 @@ export interface PhaseOpRuntime {
   readonly claim: ClaimCapability;
   /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport` with
    * the pane's environment and Dispatch): throws naming the remedy when the phase has no handoff
-   * record, Dispatch does not answer, or the implementer's work is not pushed. */
+   * record, Dispatch does not answer, the implementer's record names no head, the commit its
+   * workspace stands on is not pushed, or its record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A

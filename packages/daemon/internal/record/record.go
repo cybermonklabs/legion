@@ -420,8 +420,8 @@ type PhaseRow struct {
 	// HandoffCommit is the commit the role's completion of its current phase reported: for the
 	// planner, the implementer's implementing round, the tester and the reviewer the head their
 	// handoff record names, the commit their work was done against, which they report beside that
-	// record and which the implementer's plugin holds to be on legion/<issue>@origin; and the
-	// commit retro and merging stand on.
+	// record and which the implementer's plugin holds to be its pushed @- on
+	// legion/<issue>@origin; and the commit retro and merging stand on.
 	HandoffCommit string
 	// Pass counts the moves the issue has made back into an earlier phase, each of which opens one
 	// more run of the implementing, testing and reviewing stretch. It tells one pass through a

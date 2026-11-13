@@ -617,9 +617,10 @@ refused — posting nothing — when the phase has none (write it, then complete
 does not answer (complete again once it does), with the head that record's own `head` field names
 reported as the completion's commit, and none reported for the planner, the tester and the
 reviewer when the body holds no readable head; the implementer's implementing round is refused
-when its record names no head (record the handoff again, then complete again) and when that head
-is not on `legion/<issue>@origin` (push it when it is new work, otherwise record the handoff again
-naming the head that branch carries, then complete again); retro, the merger and every
+when its record names no head (record the handoff again, then complete again), when the commit
+the workspace stands on, `@-`, is not on `legion/<issue>@origin` (push it, then complete again),
+and when the record's head is not that pushed `@-` (record the handoff again with `head` set to
+it, then complete again); retro, the merger and every
 other phase report the commit the workspace stands on, `@-`. It then posts
 `POST /legion/v1/handoff/complete` (`summary`, `verdict`, and `handoffId`,
 `handoffVersion`, `commit` and `wakeAt` where they apply). A

@@ -145,10 +145,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
   "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
   "calling. This call reads the phase's newest record from Dispatch and reports it with `commit`, the head that record's body names " +
-  "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be on " +
-  "`legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
-  "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, or an " +
-  "implementer's head not yet on `legion/<issue>@origin`, each naming the remedy. A production check report " +
+  "(`head`, the 40-character lower-case commit the work it reports was done against); the implementer's must be the commit its " +
+  "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
+  "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, an implement record naming no head, an " +
+  "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
   "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
   "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
   "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -919,16 +919,14 @@ const RECORD = {
   body: JSON.stringify({ schemaVersion: 1, issue: "LEGION-208", head: TIP }),
 };
 
-/** A jj whose `legion/LEGION-208@origin`, whose tip is `TIP`, carries the record's head and the
- * commit the workspace stands on, unless `pushed` is false. */
-function paneJj(pushed = true): JjRunner {
+/** A jj whose workspace stands on `standing` and whose `legion/LEGION-208@origin`, whose tip is
+ * `TIP`, carries that commit, unless `pushed` is false. An implementer pane that pushed its round
+ * stands on `TIP`, the head its record names. */
+function paneJj(standing = STANDING, pushed = true): JjRunner {
   return async (args) => {
     const revision = args[2] ?? "";
-    if (revision === "@-") return STANDING;
-    if (
-      revision.startsWith("remote_bookmarks(") &&
-      (revision.endsWith(` & present(${TIP})::`) || revision.endsWith(` & ${STANDING}::`))
-    ) {
+    if (revision === "@-") return standing;
+    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & ${standing}::`)) {
       return pushed ? TIP : "";
     }
     throw new Error(`unexpected jj ${args.join(" ")}`);
@@ -979,10 +977,10 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
 
   // The implementer at implementing: the issue's phase is read from the daemon's state, the newest
   // implement record from the pane's Dispatch, and the head that record names — which the pane's
-  // jj holds to the pushed branch — travels as `commit`, with the wire's zero value for the
-  // verdict.
+  // jj holds to the commit the workspace stands on, pushed — travels as `commit`, with the wire's
+  // zero value for the verdict.
   await expect(
-    run(claimSession("implementer"), { op: "handoff_complete", summary: "Done." })
+    run(claimSession("implementer"), { op: "handoff_complete", summary: "Done." }, paneJj(TIP))
   ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
   expect(calls).toEqual([
     ["state", undefined],
@@ -1089,10 +1087,18 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
       }),
       "handoff_complete could not read LEGION-208's newest implement handoff from Dispatch: 503 UNAVAILABLE: database is starting; complete again once Dispatch answers",
     ],
+    // A round that forgot its push: the record names the branch's tip at origin, and the commit
+    // the workspace stands on is not pushed.
     [
-      paneJj(false),
+      paneJj(STANDING, false),
       paneDispatch(),
-      `the head the newest implement handoff of LEGION-208 names, ${TIP}, is not on legion/LEGION-208@origin: when it is new work of yours, push it with \`jj bookmark set legion/LEGION-208 -r ${TIP} && jj git push --bookmark legion/LEGION-208\`; otherwise write the handoff again with \`head\` set to the commit legion/LEGION-208@origin carries (\`jj log -r legion/LEGION-208@origin --no-graph -T commit_id\` prints it) and \`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`; then complete again`,
+      `the commit this workspace stands on, ${STANDING}, is not on legion/LEGION-208@origin: push it with \`jj bookmark set legion/LEGION-208 -r @- && jj git push --bookmark legion/LEGION-208\`; the handoff's \`head\` must name that pushed commit, and the newest implement handoff of LEGION-208 (version 2) names ${TIP}, so when that is another commit, write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`); then complete again`,
+    ],
+    // A pushed `@-` the record does not name: it names the branch's tip at origin instead.
+    [
+      paneJj(),
+      paneDispatch(),
+      `the newest implement handoff of LEGION-208 (version 2) names ${TIP} as its head, not the commit this workspace stands on, ${STANDING}, which legion/LEGION-208@origin carries: write the handoff again with \`head\` set to ${STANDING} (\`dispatch handoff-write --issue LEGION-208 --phase implement --body-file <file>\`), then complete again`,
     ],
     [
       paneJj(),
@@ -1350,7 +1356,7 @@ test("a refused completion surfaces the daemon's code and leaves the phase open"
         phase,
         role,
         env: paneEnv,
-        jj: paneJj(),
+        jj: paneJj(TIP),
         latestHandoff: paneDispatch(),
       }),
     branchHead: noBranchHead,

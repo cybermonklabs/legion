@@ -364,12 +364,12 @@ test.skipIf(skip)(
 
     // The worker registered through the daemon's routes; the reminder's record check read the
     // issue's record before it was sent, and the handoff_complete read it again, read the newest
-    // implement record from the pane's Dispatch, held the head that record names to
-    // legion/STALL-2@origin with the pane's jj, minted a grant in-process and posted the
-    // completion at that head with the record: no grant file, no `legion` command, and no handoff
-    // file. Each of the two runs the host settled also reported the turn it ended to the daemon
-    // (`src/turn-outcome.ts`); the turn that ended on the tool call ends no run of its own, so it
-    // earns no report.
+    // implement record from the pane's Dispatch, held the head that record names to the commit
+    // the pane's workspace stands on, pushed to legion/STALL-2@origin, with the pane's jj, minted
+    // a grant in-process and posted the completion at that head with the record: no grant file,
+    // no `legion` command, and no handoff file. Each of the two runs the host settled also
+    // reported the turn it ended to the daemon (`src/turn-outcome.ts`); the turn that ended on the
+    // tool call ends no run of its own, so it earns no report.
     expect(daemonRoutes(pane)).toEqual([
       "/legion/v1/claims/register",
       "/legion/v1/claims/ready",
