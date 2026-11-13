@@ -940,8 +940,9 @@ jobs:
               - 'packages/proof-editor/src/**'
               - 'packages/contracts/src/**'
               # generators/dispatch-tools.ts:12 imports envoy-client's dispatch-command.ts;
-              # generators/legion-skills.ts:11-17 reads every skill; generators/legion-config.ts:123,148
-              # lists every tracked deploy/kubernetes example and reads each whole.
+              # generators/legion-skills.ts's `skills` reads every skill; generators/legion-config.ts's
+              # exampleFiles lists every tracked deploy/kubernetes example and its renderExamples reads
+              # each whole.
               - 'packages/envoy-client/src/**'
               - 'skills/**'
               - 'deploy/kubernetes/**'

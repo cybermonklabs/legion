@@ -76,7 +76,7 @@ import type { StallLimits } from "./stall-limits";
  *    closes through `executionEnded`, like every other call, and nothing leaks.
  * 4. **The worker's own exit cap is `STALL_EXIT_CAP`**, one below the daemon's
  *    `launch_failure_limit`, whose default is 3
- *    (`packages/daemon/internal/config/config.go:254`); a deployment may move that key, and this
+ *    (the `launch_failure_limit` row of `topLevelKeys` in `packages/daemon/internal/config/keytable.go`); a deployment may move that key, and this
  *    plugin cannot read it. Under Kubernetes the count lives in the pod's own `LEGION_STATE_DIR`,
  *    so a pod replacement resets it while the daemon's death budget is not reset.
  * 5. **A message steered into a running turn takes no judged call out of this book** (measured
@@ -151,7 +151,7 @@ export const STALL_LADDER: readonly StallStep[] = ["end-processes", "abort-turn"
 
 /** How many times one worker ends its own process before it ends nothing further and tells its
  * owner: one below the daemon's `launch_failure_limit`, whose default is 3
- * (`packages/daemon/internal/config/config.go:254`), at which the daemon fails the claim. */
+ * (the `launch_failure_limit` row of `topLevelKeys` in `packages/daemon/internal/config/keytable.go`), at which the daemon fails the claim. */
 export const STALL_EXIT_CAP = 2;
 
 /** The status the worker's last step exits with: an ordinary failure, which the daemon reads as a

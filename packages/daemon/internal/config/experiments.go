@@ -117,11 +117,12 @@ const MemoryExperimentName = "memory"
 // arm whose roles run with the project's memory overlays and its instructions, and the control
 // that names neither. They are fixed rather than the operator's to choose because a draw is
 // served to every pod in the issue's state body as `memoryGroup`, whose wire enum is
-// z.enum(["memory","none"]) (packages/contracts/src/legion-api.ts:692): a third word makes the
-// whole body fail to parse (legion-api.test.ts:626-628), so a project declaring the experiment
-// with other names would serve every pod of it a body the pod refuses. They are exported for the
-// same reason the name above is: the one reader of this one experiment asks for each arm by its
-// name and no other.
+// z.enum(["memory","none"]) (packages/contracts/src/legion-api.ts, legionIssue's memoryGroup): a
+// third word makes the whole body fail to parse (legion-api.test.ts, "the state golden carries
+// each issue's tree memory draw", which refuses memoryGroup "both"), so a project declaring the
+// experiment with other names would serve every pod of it a body the pod refuses. They are
+// exported for the same reason the name above is: the one reader of this one experiment asks for
+// each arm by its name and no other.
 const (
 	MemoryVariantMemory = "memory"
 	MemoryVariantNone   = "none"

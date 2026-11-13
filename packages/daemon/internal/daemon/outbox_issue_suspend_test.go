@@ -806,7 +806,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		run := func(what string) {
 			t.Helper()
 			// The engine here takes this clock, but admission does not: admit.New always reads
-			// time.Now (admit.go:114) and writes its rows with it, so the promotion's rows carry
+			// time.Now (admit.New's `now: time.Now`) and writes its rows with it, so the promotion's rows carry
 			// the real clock whatever the engine's is. A row is due only when the runner's clock
 			// is at or past its next_at, so this clock may not simply advance: left behind the
 			// real one on a slow runner, it leaves those rows undue and the drain acts on nothing.

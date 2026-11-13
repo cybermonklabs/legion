@@ -17,7 +17,7 @@ import type { LegionSessionKind } from "./classify";
  * again. A stall the relaunched worker walks straight back into would end the process again and
  * again, so the worker counts its own exits and stops at `STALL_EXIT_CAP`, which is 2: one below
  * the daemon's `launch_failure_limit`, whose default is 3
- * (`packages/daemon/internal/config/config.go:254`) and at which the daemon fails the claim. At
+ * (the `launch_failure_limit` row of `topLevelKeys` in `packages/daemon/internal/config/keytable.go`) and at which the daemon fails the claim. At
  * the cap the worker hands its owner a session that is stuck, which a person can read, rather
  * than a claim that is failed.
  *
