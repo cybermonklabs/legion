@@ -212,7 +212,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract twelve below this daemon's own.
+		// claimsToRefreshContract added, the contract twenty-one below this daemon's own.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -220,8 +220,8 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// The newest contract the route narrows by, which is what a pod must record to be served
 		// every key. What the caller is served is decided by its own recorded claim contract
 		// (podContract) and never by the declared constant, which is why this row names
-		// whyAndLineFieldsContract rather than the declaration.
-		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
+		// phaseEntriesContract rather than the declaration.
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true},
 	} {
@@ -277,11 +277,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
 			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
 			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
-			// the mark of that same contract gone with them, and with each issue's one rendered
+			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields). Every row that reaches here is below all of them, so
-			// those twelve keys go whatever the row is.
+			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
+			// sentence contract 87 added (withoutLeakCheckCause), and with each issue's
+			// `phaseEntry` and `givenEntry` gone, the two keys contract 94 added
+			// (withoutPhaseEntries). Every row that reaches here is below all of them, so those
+			// fifteen keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -302,6 +305,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
+				// Every row that reaches here is below phaseEntriesContract too, so the two
+				// entry numbers go whatever the row is, as the decided record's keys above do.
+				delete(issue, "phaseEntry")
+				delete(issue, "givenEntry")
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)
@@ -322,7 +329,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause"} {
+					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause", "leakCheckCause"} {
 						delete(view, key)
 					}
 				}

@@ -298,6 +298,15 @@ const legionClaimView = z.object({
    * `died` here, which is what an architect deciding a retry or an escalation acts on while
    * `failure` is still empty. It is stripped with `failure` below the same contract. */
   pendingCause: legionFailureCause.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod, beginning `the shared public leak check could
+   * not be installed: `; absent once a try starts its process or fails for another reason. It
+   * stands beside `failure` rather than in it: a claim that runs out of launches on it fails with
+   * the cause and the sentence it would have failed with anyway, and this key says which check
+   * refused it. A caller in a pod whose plugin declares a contract below 87 is served the state
+   * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
+   * optional. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -675,6 +684,18 @@ const legionIssue = z.object({
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
+  /** The entry the role of the issue's current phase stands on, and the entry that role was last
+   * given a task of (contract 94). The daemon sends the entry's own work to a role whose given
+   * number is below the entry its row names, on every admission pass and on a sweep of its own
+   * each minute, so the two are equal for a role holding its work and differ for one the daemon
+   * has still to reach. Both are absent together for an issue whose current phase names no phase
+   * worker role — a root writing its design — and each is absent where it is 0, which is a role
+   * no entry has been raised for and one the daemon holds no claim row of; a daemon before
+   * contract 94 writes neither, and a caller in a pod whose plugin declares a contract below 94
+   * is served the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader
+   * takes both as optional. */
+  phaseEntry: z.number().int().nonnegative().optional(),
+  givenEntry: z.number().int().nonnegative().optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
@@ -1298,6 +1319,11 @@ export const LegionOperatorClaimResponse = z.object({
    * record. It stands on a claim an operator retired after it failed, which is what lets the seat
    * reading the listing say why that worker is gone. */
   failure: legionClaimFailureView.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod; absent once a try starts its process or fails
+   * for another reason. These routes are the only surface the controller's claim reaches, so the
+   * controller's cause is read here alone. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;

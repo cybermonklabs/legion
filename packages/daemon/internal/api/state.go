@@ -558,6 +558,25 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
+	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
+	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase), and GivenEntry the
+	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
+	// sends the entry's own work to a role whose given number is below the entry its row names, on
+	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
+	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
+	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	//
+	// Both are absent together for an issue whose current phase names no phase worker role: a root
+	// at admitted whose design gate has never opened is at work (record.AtWork) and phase.RoleFor
+	// names no role for that phase, so the sweep passes it over and nothing would ever close a
+	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
+	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
+	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
+	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
+	// value no reader parses empty.
+	PhaseEntry int64 `json:"phaseEntry,omitempty"`
+	GivenEntry int64 `json:"givenEntry,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -672,6 +691,14 @@ type ClaimView struct {
 	// escalation reads while that relaunch is still going on and `failure` is empty.
 	Failure      *ClaimFailureView      `json:"failure,omitempty"`
 	PendingCause supervise.FailureCause `json:"pendingCause,omitempty"`
+	// LeakCheckCause is the sentence the claim's latest launch try was refused with because the
+	// shared public leak check could not be installed in the role's pod
+	// (supervise.Claim.LeakCheckCause), and is absent when that try started its process or failed
+	// for another reason. It sits beside `failure` rather than in it: a claim that runs out of
+	// launches on it fails with `failure.detail` `launch failures ran out: <the error>` and the
+	// cause word the launch chooses, and this key says which check refused it, from the first
+	// refused try on.
+	LeakCheckCause string `json:"leakCheckCause,omitempty"`
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -783,8 +810,9 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
 		// than on the claim's state for exactly that reason.
-		Failure:      FailureViewOf(c),
-		PendingCause: c.PendingCause,
+		Failure:        FailureViewOf(c),
+		PendingCause:   c.PendingCause,
+		LeakCheckCause: c.LeakCheckCause,
 	}
 }
 
