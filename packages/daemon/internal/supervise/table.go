@@ -864,7 +864,7 @@ func init() { table = build(fillTable) }
 
 func fillTable(t *builder) {
 	// What the runtime says about the process.
-	t.row(onObservation, "judge the process; alive and ready or idle, send what is waiting; working after an unanswered ask, ask again whether the turn is over", observe,
+	t.row(onObservation, "judge the process; alive and ready or idle, send what is waiting; working after an unanswered ask or a busy answer, ask whether the turn is over", observe,
 		[]ClaimState{StateLaunching, StateFailed, StateWorking, StateIdle}, live...)
 	t.ignore(onObservation, noProcess, processless...)
 
@@ -887,19 +887,19 @@ func fillTable(t *builder) {
 	t.ignore(onAcked, noSend, unready...)
 	t.ignore(onAcked, noSend, gone...)
 
-	t.row(onRefused, "the prompt was refused (charged, unless the agent is in a turn of its own) or lost (not charged): re-queue it", refused,
-		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.row(onRefused, "the prompt was refused (charged, unless the agent is in a turn of its own, which records the claim working) or lost (not charged): re-queue it", refused,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, StateReady, StateIdle, StateWorking)
 	t.ignore(onRefused, noSend, unready...)
 	t.ignore(onRefused, noSend, gone...)
 
-	t.row(onLateRefusal, "the agent refused an acknowledged prompt", lateRefused,
-		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.row(onLateRefusal, "the agent refused an acknowledged prompt (in a turn of its own, which records the claim working)", lateRefused,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, StateReady, StateIdle, StateWorking)
 	t.row(onLateRefusal, "a prompt was refused while no process can be prompted: the mark it set goes",
 		refusedUnprompted, nil, slices.Concat(unready, gone)...)
 
 	// Turns.
 	t.row(onTurnStart, "a turn started", turnStarted, []ClaimState{StateWorking}, prompted...)
-	t.row(onTurnStart, "a turn is already in flight; a turn under a compaction is recorded for its end", turnStartedWhileBusy, nil, StateWorking)
+	t.row(onTurnStart, "a turn is already in flight; the start of a turn a busy answer recorded is decided as any start is, and a turn under a compaction is recorded for its end", turnStartedWhileBusy, nil, StateWorking)
 	t.ignore(onTurnStart, "the agent is not ready, so no delivery is in flight", unready...)
 	t.ignore(onTurnStart, noProcess, gone...)
 
@@ -931,8 +931,8 @@ func fillTable(t *builder) {
 	t.row(onToolStep, "the agent stepped: record the call its stream reports", toolStepped, nil, live...)
 	t.ignore(onToolStep, noProcess, processless...)
 
-	t.row(onPromptResult, "the prompt's work ended: that names the turn it ran, and ends its delivery", promptResulted,
-		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.row(onPromptResult, "the prompt's work ended: that names the turn it ran, and ends its delivery (busy, it records the claim working)", promptResulted,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended, StateWorking}, StateReady, StateIdle, StateWorking)
 	t.ignore(onPromptResult, noSend, unready...)
 	t.ignore(onPromptResult, noSend, gone...)
 
@@ -1202,8 +1202,10 @@ func (b *builder) ignore(kind eventKind, reason string, states ...ClaimState) {
 // observe is the runtime's sweep. A live process in a ready or idle claim is also the retry of a
 // delivery that is waiting — after a refusal, a prompt that started no turn, or a missing
 // connection — when nothing else will come: the retry is bounded by the sweep's interval and by
-// the prompt budget, never made on the spot. In a working claim it asks again whether the turn an
-// earlier daemon saw start is over, when the last ask went unanswered (askTurnOver).
+// the prompt budget, never made on the spot. In a working claim it asks whether the turn is over
+// where a mark arms the question (askTurnOver): the turn an earlier daemon saw start, when the
+// last ask went unanswered, and the turn a busy answer recorded, at every sweep until the agent
+// says it is not streaming or the turn's own start is read.
 func observe(m *Machine, ctx context.Context, ev Event) error {
 	return m.judge(ctx, ev.(RuntimeObservation).Observation, func(ctx context.Context) error {
 		if err := m.ensureEnrolled(ctx); err != nil {
@@ -1250,36 +1252,66 @@ func reconnected(m *Machine, ctx context.Context, _ Event) error {
 // reconnectedMidTurn is the shim's hello while the claim is working. Within one daemon's life the
 // shim's backlog replays whatever the turn did meanwhile, agent_end included; a restored claim
 // may be waiting on an agent_end an earlier daemon received and never recorded, so its first
-// hello asks.
+// hello asks. A turn a busy answer recorded is left to the backlog that follows the hello, as
+// any turn of this daemon's life is: asked at the hello, an agent whose turn ended while the shim
+// was away would end it here and be sent the task ahead of that turn's own replayed frames. The
+// sweep asks for it (observe, askTurnOver).
 func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
+	}
+	if !m.askFirst {
+		return nil
 	}
 	return m.askTurnOver(ctx, ev)
 }
 
 // unansweredAsksWarn is the count of unanswered asks in a row from which askTurnOver logs each one
-// at Warn: a restored working claim whose agent never answers stays working with no limit while
-// its process lives, and an operator should see that.
+// at Warn: a working claim whose agent never answers stays working with no limit while its
+// process lives, and an operator should see that.
 const unansweredAsksWarn = 3
 
-// askTurnOver asks a restored working claim's agent whether the turn an earlier daemon saw start
-// is still running, and ends it when the agent says it is not. An ask the agent does not answer
-// says nothing about the turn: the claim stays working, the question stays armed, and the next
-// sweep asks again. Taken as "not streaming", it would end a turn still running and set the claim
-// idle, and the sweep would then send the task into the busy agent every interval.
+// askTurnOver asks the agent of a working claim whether its turn is still running, and ends it
+// when the agent says it is not, where one of two marks arms the question: a restored claim's
+// (askFirst), whose turn an earlier daemon saw start, and a busy answer's (busyTurn), whose turn
+// the agent said it was in when it refused a prompt of the task and whose start no frame has
+// shown (recordBusyTurn). An ask the agent does not answer says nothing about the turn: the claim
+// stays working, the question stays armed, and the next sweep asks again. Taken as "not
+// streaming", it would end a turn still running and set the claim idle, and the sweep would then
+// send the task into the busy agent every interval.
 //
-// A turn that is over is ended through turnEnded, which clears askFirst itself once it has read
-// it: the mark is how a decision at that end tells a turn this daemon saw begin from one it is
-// only hearing the end of (answerByTurnEnd).
+// An agent that says it is streaming answers askFirst's question for good: the claim is in a turn
+// this daemon never saw begin (Machine.unseenTurn), and that turn's own end ends it. It does not
+// answer busyTurn's: the record stands on the daemon's reading of a refusal, and the turn may
+// send no frame this daemon reads, so the question stays armed and the next sweep asks again,
+// until the turn's own start disarms it (turnStartedWhileBusy) or the agent says it is in no
+// prompt. At the pin a session counts as streaming from a prompt's admission through its turn,
+// pre-turn work such as a memory recall included, so the ask does not end a turn still being
+// prepared. So a claim a busy answer recorded is bounded by one sweep after its agent stops
+// streaming, by the stall backstop from the step the record wrote, and by a death.
+//
+// A turn that is over is ended through turnEnded, which clears askFirst and busyTurn itself once
+// it has read them: the marks are how a decision at that end tells a turn this daemon saw begin
+// from one it is only hearing the end of (answerByTurnEnd). The agent is in no prompt, so no
+// prompt of the task it acknowledged has a result still to come (Machine.outstanding): the wait
+// for them ends with the turn, so a prompt lost on the way cannot hold the task, which the end
+// sends again (afterTurn). The end is counted as every end is (TurnsEnded), so the daemon posts
+// it to the issue's other claims, whose phase tasks may have been held for this turn (its
+// wakeIssue).
 func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
-	if !m.askFirst {
+	if !m.askFirst && !m.busyTurn {
 		return nil
 	}
 	conn, ok := m.deps.Conns.Conn(m.claim.Token)
 	if !ok {
 		// No shim yet (a sweep before its hello): the hello asks.
 		return nil
+	}
+	unanswered := "supervise: the agent did not say whether the turn an earlier daemon saw start is over; the claim stays working and the next sweep asks again"
+	over := "supervise: the turn an earlier daemon saw start is over"
+	if m.busyTurn {
+		unanswered = "supervise: the agent did not say whether the turn its busy answer recorded is over; the claim stays working and the next sweep asks again"
+		over = "supervise: the agent is in no prompt; the turn its busy answer recorded is over"
 	}
 	streaming, answered := m.streaming(ctx, conn)
 	if !answered {
@@ -1288,18 +1320,24 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 		if m.unansweredAsks >= unansweredAsksWarn {
 			level = slog.LevelWarn
 		}
-		m.log.Log(ctx, level, "supervise: the agent did not say whether the turn an earlier daemon saw start is over; the claim stays working and the next sweep asks again",
-			"claim", m.claim.Token, "unanswered", m.unansweredAsks)
+		m.log.Log(ctx, level, unanswered, "claim", m.claim.Token, "unanswered", m.unansweredAsks)
 		return nil
 	}
 	m.unansweredAsks = 0
 	if streaming {
-		// The agent's own word is all this daemon has of the turn: it never saw it begin, so its
-		// end says nothing about what the turn did (Machine.unseenTurn).
-		m.askFirst, m.unseenTurn = false, true
+		if m.askFirst {
+			// The agent's own word is all this daemon has of the turn: it never saw it begin, so
+			// its end says nothing about what the turn did (Machine.unseenTurn).
+			m.askFirst, m.unseenTurn = false, true
+		}
 		return nil
 	}
-	m.log.Info("supervise: the turn an earlier daemon saw start is over")
+	if m.awaitsResult() {
+		m.log.Info(over, "outstanding", m.outstanding)
+	} else {
+		m.log.Info(over)
+	}
+	m.outstanding = nil
 	return turnEnded(m, ctx, ev)
 }
 
@@ -1372,7 +1410,10 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // of its own — an Envoy notice's, which a tree publishes freely while its worker boots — so it is
 // working, not refusing to work, and charging it would spend the budget of the very turn doing the
 // work, three such collisions retiring the agent mid-turn. The task waits unread, charged nothing,
-// and that turn's end sends it (the next sweep does, when the turn's start was not seen).
+// and a ready or idle claim is recorded working (recordBusyTurn): sendPending holds the task for
+// that turn, and the turn's end sends it — its agent_end, or the sweep's answer that the agent is
+// in no prompt (askTurnOver). Left ready, the claim was sent the task again at every sweep and
+// hello for the length of the turn, and answered busy each time.
 //
 // A refused adoption is charged the same way, and the busy exemption is not read for it: those are
 // the reasons Oh My Pi gives about a turn of its own, while this is the shim's own answer about a
@@ -1435,11 +1476,11 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 			if m.awaitsResult() {
 				m.log.Info("supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of this task, whose result settles the task",
 					"delivery", r.DeliveryID, "outstanding", m.outstanding, "error", r.Err)
-				return nil
+			} else {
+				m.log.Warn("supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again",
+					"delivery", r.DeliveryID, "error", r.Err)
 			}
-			m.log.Warn("supervise: the agent refused the prompt; it is in a turn of its own, whose end sends the task again",
-				"delivery", r.DeliveryID, "error", r.Err)
-			return nil
+			return m.recordBusyTurn(ctx)
 		}
 		m.log.Warn("supervise: the agent refused the prompt", "delivery", r.DeliveryID, "error", r.Err)
 		return m.chargePrompt(ctx, "refused: "+r.Err.Error())
@@ -1467,7 +1508,8 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 //   - A refusal naming a prompt of the task still outstanding other than the pending one
 //     (Machine.outstanding). The wait for its turn ran out, re-queued the task under a new id and
 //     charged the prompt (noTurn), so it is charged nothing more and the id is not rotated again;
-//     what it can still take back is a confirmation a late start took for it (waitedOutAnswer).
+//     what it can still take back is a confirmation a late start took for it, and Oh My Pi's busy
+//     answer records a ready or idle claim working for the turn it names (waitedOutAnswer).
 //   - Any other refusal naming a prompt other than the pending one. It is the prompt whose
 //     acknowledgement set the read mark (the fence lets no other through). The wait that gave up
 //     on it already re-queued the task under a new id and charged the prompt, so the mark goes and
@@ -1489,7 +1531,7 @@ func refusedElsewhere(m *Machine, ctx context.Context, r StreamLateRefusal) (boo
 		m.answered(r.DeliveryID)
 		return true, m.takeBackPending(ctx, taskUnread, m.awaitsResult())
 	case r.DeliveryID != p.ID && m.outstandingPrompt(r.DeliveryID):
-		return true, m.waitedOutAnswer(ctx, r.DeliveryID, taskUnread, "refused: "+r.Error)
+		return true, m.waitedOutAnswer(ctx, r.DeliveryID, taskUnread, agentBusy(r.Error), "refused: "+r.Error)
 	case r.Replayed || r.DeliveryID != p.ID:
 		m.log.Warn("supervise: a refused prompt had marked the task as read; the mark is cleared",
 			"delivery", r.DeliveryID, "replayed", r.Replayed, "error", r.Error)
@@ -1533,22 +1575,26 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 // lateRefused is the agent refusing a prompt it had acknowledged. OMP answers that way when it
 // finds a turn it did not start — a notice delivered to the pane, a human's steer — and by the
 // same route when the prompt fails before any turn begins, a provider answering "No API key
-// found for …" among them. The claim's state stays what the stream observed, since a foreign
-// turn may really be running.
+// found for …" among them.
 //
 // Which of the two it is, is the turn: one the stream already saw start, one Oh My Pi names in
 // its own busy answer, or one the agent says it is in when asked. The busy answer is read
 // because it is the authority — Oh My Pi refuses that way exactly when a turn is running — and
-// because the ask can time out, where charging a working agent is the worse mistake. A turn of its own really running
-// is the collision: the agent is working, not refusing to work, and the daemon delivers those
-// notices itself, so a tree publishing them while a worker boots must not spend that worker's
-// prompt budget. The task is taken back and the turn's end sends it, charged nothing.
+// because the ask can time out, where charging a working agent is the worse mistake. A turn of
+// its own really running is the collision: the agent is working, not refusing to work, and the
+// daemon delivers those notices itself, so a tree publishing them while a worker boots must not
+// spend that worker's prompt budget. The task is taken back, charged nothing, and the turn's end
+// sends it. A claim the stream saw in the turn stays working; a ready or idle one, whose turn's
+// start the daemon never read, is recorded working (recordBusyTurn), so that nothing sends the
+// task into the turn the refusal names before that turn ends — its agent_end, or the sweep's
+// answer that the agent is in no prompt (askTurnOver).
 //
 // The turn running may be the task's own: a prompt of the task acknowledged earlier is still
 // outstanding (Machine.outstanding), and the pinned Oh My Pi refuses this one because it is
 // preparing or running that prompt's turn. The refused prompt is taken back all the same, under a
 // new id, but the task keeps its confirmation and its read mark for that turn (takeBackPending),
-// and that prompt's result settles it.
+// the claim is recorded working for it as for any other, and that prompt's start confirms the
+// task and its result settles it.
 //
 // No turn running is the agent refusing the work. It is charged like any acknowledged prompt
 // that becomes no turn, and the retry waits for the sweep that follows, so a refusal that never
@@ -1572,8 +1618,9 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 		}
 		// The agent is in a turn this prompt did not start, so it never read this prompt: the
 		// delivery goes back to waiting, unread unless an earlier prompt of the task is the turn's,
-		// and nothing the worker reports from a turn of its own belongs to it.
-		return m.takeBackPending(ctx, taskUnread, m.awaitsResult())
+		// and nothing the worker reports from a turn of its own belongs to it. The turn is the
+		// agent's word whatever became of the take-back's write, so the record is made either way.
+		return errors.Join(m.takeBackPending(ctx, taskUnread, m.awaitsResult()), m.recordBusyTurn(ctx))
 	}
 	m.log.Warn("supervise: the agent refused an acknowledged prompt and is in no turn; the prompt is charged",
 		"delivery", r.DeliveryID, "error", r.Error)
@@ -1589,6 +1636,64 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 // on which it is: the wire carries a string, not a kind.
 func agentBusy(reason string) bool {
 	return strings.HasPrefix(reason, "Agent is already processing")
+}
+
+// recordBusyTurn records a ready or idle claim working on Oh My Pi's busy answer to a prompt of
+// its pending task, at every place the daemon learns it: the send refused (refused), the
+// acknowledged prompt refused (lateRefused), its result saying it ran no turn (promptResulted),
+// and either answer naming an earlier prompt of the task whose wait for its turn already ran out
+// (waitedOutAnswer, which records it wherever the task is left unconfirmed). The answer is the
+// agent's own statement that its session is in a prompt — the pinned Oh My Pi counts a session as
+// streaming from a prompt's admission through its turn, pre-turn work such as a memory recall
+// included — so the claim is in a turn this daemon has not seen begin (Machine.unseenTurn), and
+// sendPending's first guard holds the task for that turn's end rather than sending it again at
+// every trigger. Left ready, the claim was sent the task again at every sweep, hello and fenced
+// acknowledgement, and answered busy each time, about every 2.5 seconds for the length of the turn
+// (dispatch://INFRA-3276 R4). A claim already working is in the turn the stream showed it, and
+// nothing is recorded.
+//
+// An answer that comes while another prompt of the task is still outstanding (Machine.outstanding)
+// is recorded the same way. The turn the agent is preparing or running is that prompt's, so the
+// task keeps its confirmation and its read mark for it (takeBackPending), and no further send of
+// the task may go into it any more than into a turn of the agent's own; its start confirms the
+// task and its result settles it, as from a ready claim (turnStartedWhileBusy, promptResulted).
+//
+// It is not answerAskFirstAfterDrop, which records the same state for a claim whose task was
+// dropped and refuses one that holds a delivery: every claim here holds the task it was answered
+// busy for.
+//
+// The record is durable, written through durableWrite as turnStarted's is, so the daemon hears
+// the claim working (OnDurableState) — the busy answer is the agent's word that a woken pod's
+// role is back in a prompt, which is what its first turn measures — and a daemon restarted inside
+// the turn restores the claim working with its question armed (NewMachine's askFirst), rather than
+// ready and prompting a busy agent. The turn's start line is written before that write, as every
+// path into working writes one (startTurn), and it names no delivery: the daemon has seen no turn
+// begin, so it cannot say whose the turn is. The turn's own agent_start writes no second one
+// (turnStartedWhileBusy), so one start line and one end line still bracket the turn.
+//
+// The step written after it (putStep, the turn's start, as turnStarted writes one) keeps the stall
+// backstop from judging the claim by a step an earlier turn left: the backstop takes every working
+// claim whose last step is past its role's bound (the daemon's backstopStalledTurns), and a worker
+// idle past that bound would otherwise be relaunched at the sweep before its turn starts.
+//
+// The mark it sets (busyTurn) is what ends the record when no frame of the turn is ever read: the
+// runtime's sweep asks the agent whether the turn is over and ends it through turnEnded once the
+// agent says it is in no prompt (observe, askTurnOver). So such a claim is bounded by one sweep
+// after the agent stops streaming, by the stall backstop from the step written here, and by a
+// death.
+func (m *Machine) recordBusyTurn(ctx context.Context) error {
+	if state := m.claim.State; state != StateReady && state != StateIdle {
+		return nil
+	}
+	m.claim.State = StateWorking
+	m.unseenTurn, m.busyTurn = true, true
+	m.log.Info("supervise: the agent's busy answer records the claim working; its task waits for the end of the turn the agent is in",
+		"delivery", pendingID(m.claim.Pending), "outstanding", m.outstanding)
+	m.startTurn("")
+	if err := m.durableWrite(ctx, StateWorking, m.persist); err != nil {
+		return err
+	}
+	return m.putStep(ctx, StepRecord{TurnStartedAt: m.deps.Clock.Now()})
 }
 
 // turnStarted is a turn starting in a ready or idle claim. It confirms the pending delivery when
@@ -1623,9 +1728,21 @@ func agentBusy(reason string) bool {
 // A start taken this way that was in fact another input's turn is corrected by the prompt's own
 // result when it comes back not invoked: the task goes back to waiting and that turn's end sends
 // it (promptResulted).
+//
+// The decision and its bookkeeping are beginTurn's, which the agent_start of a turn a busy answer
+// recorded makes too (turnStartedWhileBusy).
 func turnStarted(m *Machine, ctx context.Context, ev Event) error {
-	start := ev.(StreamTurnStart)
 	m.claim.State = StateWorking
+	return m.beginTurn(ctx, ev.(StreamTurnStart), m.startTurn)
+}
+
+// beginTurn is what a turn's start decides and records, in a claim the start has just put in
+// working (turnStarted) or one a busy answer already recorded working (turnStartedWhileBusy):
+// when the turn began, whether it is the pending delivery's turn — which confirms that delivery —
+// whether this daemon saw it begin, what it does to an answered update round, the durable write,
+// and the turn's step. logStart writes the start's line, naming the delivery the start confirms
+// and "" for a start that confirms none.
+func (m *Machine) beginTurn(ctx context.Context, start StreamTurnStart, logStart func(delivery string)) error {
 	m.claim.LastTurnStart = m.deps.Clock.Now()
 	p := m.claim.Pending
 	_, awaiting := m.timers[TimerTurn]
@@ -1653,7 +1770,7 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 	// a turn start whose claim write failed, and a line written after the write would leave
 	// exactly that decision silent again. The delivery is named only where this start is that
 	// delivery's turn; a foreign turn is no task's and carries none.
-	m.startTurn(task)
+	logStart(task)
 	if err := m.durableWrite(ctx, StateWorking, persist); err != nil {
 		return err
 	}
@@ -1728,17 +1845,36 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 }
 
 // turnStartedWhileBusy is a turn starting in a claim that is already working. A claim working a
-// turn is in the turn it is already in and nothing moves. A claim working because its session
-// is being compacted has a turn of Oh My Pi's own starting under the compaction — a follow-up
-// an Envoy delivery queued while the session was being compacted — and that turn is recorded on
-// the compaction: its end would otherwise reach an idle claim, where it means nothing, and the
-// compaction's end would send the owed task into a running agent (compactEnded).
+// turn is in the turn it is already in and nothing moves, except in two claims.
 //
-// That turn's start line is written here (startTurn), because its end writes the end line
-// (turnEnded): an operator reads an end with no start as a turn the daemon never saw begin, and
-// the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn and its
-// line names no delivery.
-func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
+// One is a claim a busy answer recorded working (busyTurn, recordBusyTurn): the start is the start
+// of the turn the record stands for, the first frame of it this daemon reads. It is decided and
+// recorded as turnStarted decides and records a start (beginTurn): when the turn began
+// (Claim.LastTurnStart), the confirmation of the pending task where the start is its turn —
+// among them the late start of a prompt of the task still outstanding (Machine.outstanding), which
+// is the turn the busy answer refused a later send of the task for — whether this daemon saw it
+// begin, which it did (Machine.unseenTurn, as turnStarted's rule decides it), the durable write
+// and the turn's step. The record's own question is answered by this start, so the mark goes and
+// the sweep stops asking (askTurnOver): the turn's agent_end ends it from here. It writes no
+// second start line, since recordBusyTurn wrote the turn's one, and names the delivery it confirms
+// in a line of its own instead (busyTurnBegun).
+//
+// The other is a claim working because its session is being compacted: a turn of Oh My Pi's own
+// starting under the compaction — a follow-up an Envoy delivery queued while the session was being
+// compacted — is recorded on the compaction: its end would otherwise reach an idle claim, where it
+// means nothing, and the compaction's end would send the owed task into a running agent
+// (compactEnded). That turn's start line is written here (startTurn), because its end writes the
+// end line (turnEnded): an operator reads an end with no start as a turn the daemon never saw
+// begin, and the daemon saw this one. The daemon prompted nothing for it, so it is no task's turn
+// and its line names no delivery.
+//
+// The two never meet: a compaction is taken only from a ready or idle claim (compactStart), and a
+// busy answer records only a ready or idle one.
+func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
+	if m.busyTurn {
+		m.busyTurn = false
+		return m.beginTurn(ctx, ev.(StreamTurnStart), m.busyTurnBegun)
+	}
 	if m.compacting == nil {
 		return nil
 	}
@@ -1747,6 +1883,21 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 		"generation", m.claim.Generation)
 	m.compacting.inTurn, m.compacting.back = true, StateIdle
 	return nil
+}
+
+// busyTurnBegun is the line of the agent_start of a turn a busy answer recorded
+// (turnStartedWhileBusy), in place of the pinned start line recordBusyTurn already wrote for it.
+// It names the delivery the start confirms, if any, and that delivery becomes the one the turn's
+// end line names (Machine.turnsDelivery): the turn is now known to be that task's, which the
+// start line written at the record could not yet say.
+func (m *Machine) busyTurnBegun(delivery string) {
+	const line = "supervise: the turn a busy answer recorded has begun"
+	if delivery == "" {
+		m.log.Info(line, "generation", m.claim.Generation)
+		return
+	}
+	m.turnsDelivery = delivery
+	m.log.Info(line, "generation", m.claim.Generation, "delivery", delivery)
 }
 
 // takeBackSignal takes back this claim's answer to its open round when the turn starting is not
@@ -1865,7 +2016,14 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // says in its own words what became of the turn, and the pair of turn lines is the turn the
 // worker ran.
 //
-// answerByTurnEnd runs first of all, before the marks it reads are cleared (askFirst, unseenTurn).
+// answerByTurnEnd runs first of all, before the marks it reads are cleared (askFirst, unseenTurn),
+// and the record a busy answer made of the turn goes with them (busyTurn): the turn it stood for is
+// over, however its end came — its agent_end, or the agent's answer to the sweep that it is in no
+// prompt (askTurnOver).
+//
+// Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
+// can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
+// task one of them holds rather than adopt the working copy they share under this turn may go now.
 //
 // A claim working because its session is being compacted is left exactly where it is: a
 // compaction aborts whatever turn its session was running, so the agent_end of a background
@@ -1879,6 +2037,7 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // against ends finds the pair.
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
+	m.turnsEnded.Add(1)
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.claim.Budgets.Deaths = 0
 	if m.compacting != nil {
@@ -1887,7 +2046,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 		return nil
 	}
 	m.answerByTurnEnd()
-	m.askFirst, m.unseenTurn = false, false
+	m.askFirst, m.unseenTurn, m.busyTurn = false, false, false
 	if m.held != nil {
 		if err := m.suspendHeld(ctx); err != nil {
 			if m.held == nil {
@@ -1960,9 +2119,12 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 // a turn in flight on this claim or another of its issue, so R6's fence stands); a task already
 // read, or no task at all, leaves nothing to do, as this event did before.
 //
-// The busy refusal is how such a claim comes to hold an unread task: Oh My Pi acknowledges the
-// prompt and then refuses it because a turn of its own is running (takeBackPending puts the task
-// back under a new id). Every other path to this state ends with the task sent or none held.
+// A busy answer no longer leaves a claim here holding its task: it records the claim working
+// (recordBusyTurn), so the end of the turn it names reaches turnEnded. What still leaves a ready or
+// idle claim holding a task no agent has read, while its agent is in a turn whose start this daemon
+// never read, is a send that has not reached the agent — one waiting for the shim's hello, one held
+// for another claim's turn on the issue, one lost on the way — and this end is the first word that
+// the agent can take it.
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	p := m.claim.Pending
 	if p == nil || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
@@ -2066,7 +2228,8 @@ func (m *Machine) answerByTurnEnd() {
 // back to waiting with its read mark, since a prompt the agent took and answered without a turn
 // may still have been read. One whose wait already ran out was charged then, and is answered by
 // waitedOutAnswer, which charges nothing: what it can take back is a late start taken for it, a
-// turn that was then another input's, and the task goes back to waiting for that turn's end.
+// turn that was then another input's, and the task goes back to waiting for that turn's end; and
+// a busy answer of such a prompt records the claim working, as the busy answer below does.
 //
 // Oh My Pi's busy answer (agentBusy) is the exception here as it is for a send it refused
 // outright (refused) and for a refusal after its acknowledgement (lateRefused): the agent ran no
@@ -2075,9 +2238,12 @@ func (m *Machine) answerByTurnEnd() {
 // nothing, for that turn's end to send again. Charged, this was the third path's own loop: a
 // relaunch resumes the session, the resume starts a turn, the task that follows meets it, three
 // such answers retire the claim, and the retirement launches again, at a full session resume a
-// cycle (dispatch://INFRA-3103). While an earlier prompt of the task is still outstanding, the
-// turn it is in is that prompt's: the task keeps its confirmation and its read mark for it
-// (takeBackPending), and that prompt's result settles it.
+// cycle (dispatch://INFRA-3103). A ready or idle claim is recorded working for that turn
+// (recordBusyTurn), so the task waits for its end — its agent_end, or the sweep's answer that the
+// agent is in no prompt (askTurnOver) — rather than going into it again at the next sweep. While an
+// earlier prompt of the task is still outstanding, the turn it is in is that prompt's: the task
+// keeps its confirmation and its read mark for it (takeBackPending), the claim is recorded working
+// all the same, and that prompt's start confirms the task and its result settles it.
 //
 // A result for a delivery the claim no longer holds — retired, or taken back under a new id with
 // no prompt of it outstanding — is fenced out before this runs (fence).
@@ -2100,7 +2266,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 			why += ": " + r.Error
 		}
 		if r.DeliveryID != m.claim.Pending.ID {
-			return m.waitedOutAnswer(ctx, r.DeliveryID, !busy, why)
+			return m.waitedOutAnswer(ctx, r.DeliveryID, !busy, busy, why)
 		}
 		m.answered(r.DeliveryID)
 		if busy {
@@ -2111,7 +2277,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 				m.log.Warn("supervise: Oh My Pi ran no turn for the prompt; it is in a turn of its own, whose end sends the task again",
 					"delivery", r.DeliveryID, "error", r.Error)
 			}
-			return m.takeBackPending(ctx, taskUnread, m.awaitsResult())
+			return errors.Join(m.takeBackPending(ctx, taskUnread, m.awaitsResult()), m.recordBusyTurn(ctx))
 		}
 		return m.promptFailed(ctx, why, taskRead)
 	}
@@ -2161,13 +2327,28 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 // moves. Otherwise only the mark goes, where the answer says the prompt was never read, as a
 // refusal of the prompt that set it always took it (markUnread). read says whether the agent may
 // have read it, as promptFailed's does: a busy answer or a refusal was never read.
-func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read bool, why string) error {
+//
+// busy is whether the answer is Oh My Pi's busy answer (agentBusy): the agent is in a prompt now,
+// so this is one more of the places the daemon learns that its session is busy, and a ready or
+// idle claim is recorded working for that turn (recordBusyTurn) wherever the task is left
+// unconfirmed — while another prompt of the task is outstanding, and where only the mark goes —
+// so that no sweep or hello sends the task into the turn the agent named. A task a turn has
+// confirmed is never sent (sendPending), and in a ready or idle claim the turn that confirmed it
+// has already ended, so there is nothing to record. Where the answer takes a confirmation back,
+// the claim is working while that turn runs, and recorded working only if it is ready; one left
+// idle had that turn's end come already, and the answer names the turn that end closed, so the
+// task goes from here as before rather than waiting a sweep for a turn that is over.
+func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy bool, why string) error {
 	m.answered(id)
 	p := m.claim.Pending
+	record := busy && p.ConfirmedAt.IsZero()
 	switch {
 	case m.awaitsResult():
 		m.log.Info("supervise: a prompt whose wait for its turn ran out was answered with no turn; another prompt of the task is still outstanding, so the turn is still that one's",
 			"delivery", id, "outstanding", m.outstanding, "why", why)
+		if record {
+			return m.recordBusyTurn(ctx)
+		}
 		return nil
 	case !p.ConfirmedAt.IsZero() && m.send == nil:
 		m.log.Warn("supervise: a prompt whose wait for its turn ran out was answered with no turn, so the turn taken for it was another's; the task goes back to waiting",
@@ -2175,15 +2356,21 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read bool, why
 		if err := m.takeBackPending(ctx, read, false); err != nil {
 			return err
 		}
-		if m.claim.State != StateIdle {
-			return nil
+		if m.claim.State == StateIdle {
+			return m.afterTurn(ctx)
 		}
-		return m.afterTurn(ctx)
+		if busy {
+			return m.recordBusyTurn(ctx)
+		}
+		return nil
 	}
 	m.log.Info("supervise: a prompt whose wait for its turn ran out was answered with no turn; it was charged when the wait ran out, so nothing more is charged",
 		"delivery", id, "why", why)
 	if read {
 		return nil
+	}
+	if record {
+		return errors.Join(m.markUnread(ctx), m.recordBusyTurn(ctx))
 	}
 	return m.markUnread(ctx)
 }

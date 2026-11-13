@@ -1075,10 +1075,13 @@ type Machine struct {
 	outstanding []string
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
-	// machine asks the agent (get_state) before it acts on either.
+	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of
+	// the two marks that arm the sweep's question whether the turn is over (askTurnOver), busyTurn
+	// being the other, and the one an answer of "streaming" disarms for good.
 	askFirst bool
-	// unansweredAsks counts the asks in a row the agent left unanswered while askFirst stayed armed
-	// on a working claim (askTurnOver); from unansweredAsksWarn on, each one is logged at Warn.
+	// unansweredAsks counts the asks in a row the agent left unanswered while askFirst or busyTurn
+	// stayed armed on a working claim (askTurnOver); from unansweredAsksWarn on, each one is
+	// logged at Warn.
 	unansweredAsks int
 	// held is the suspension held for the agent's turn (holdSuspension), nil for none.
 	held *RequestSuspend
@@ -1093,18 +1096,34 @@ type Machine struct {
 	// unseenTurn is the claim in a turn this daemon never saw begin: one an earlier daemon's
 	// process was already in, which this one learns of from the agent's own get_state answer
 	// (sendPending's askFirst branch, askTurnOver's streaming branch, and turnStarted where only
-	// askFirst confirmed the start) rather than from an agent_start it read. The daemon cannot
-	// say what such a turn has done, so a decision that rests on knowing refuses it: the end of a
-	// turn is a worker's answer to an update round only where the daemon saw the turn start
-	// (answerByTurnEnd). turnEnded clears it with the turn, and it is memory only, as askFirst
-	// is: a restart asks the agent again.
+	// askFirst confirmed the start) rather than from an agent_start it read, or one Oh My Pi's busy
+	// answer says the agent is in (recordBusyTurn) until that turn's own agent_start is read, which
+	// decides it again as any start is decided (turnStartedWhileBusy). The daemon cannot say what
+	// such a turn has done, so a decision that rests on knowing refuses it: the end of a turn is a
+	// worker's answer to an update round only where the daemon saw the turn start
+	// (answerByTurnEnd). turnEnded clears it with the turn, letGo with the process, and it is
+	// memory only, as askFirst is: a restart asks the agent again.
 	unseenTurn bool
+	// busyTurn is the claim recorded working by Oh My Pi's busy answer to a prompt of its pending
+	// task (recordBusyTurn): the agent said its session is in a prompt, preparing or running a
+	// turn, and no agent_start of that turn has been read yet. It arms the sweep's question
+	// whether the turn is over (askTurnOver), as askFirst does for a restored claim, and an answer
+	// of "streaming" leaves it armed: the record is the daemon's own reading of a refusal, and the
+	// turn it stands for may send no frame this daemon ever reads, so only the agent's word that
+	// it is in no prompt, or the turn's own frames, end it. The turn's agent_start clears it and is
+	// decided then as any start is (turnStartedWhileBusy); turnEnded clears it with the turn, and
+	// letGo with the process. It is memory only: a daemon restarted inside such a turn restores
+	// the claim working, which arms askFirst instead (NewMachine), and that asks the same question.
+	busyTurn bool
 	// turnsDelivery is the delivery the turn now running is the turn of, as that turn's own start
 	// line named it, and "" for a turn that is no task's. It is set where the machine learns a
-	// turn started (startTurn, on each of the three paths into working), read where that turn ends
+	// turn started (startTurn, on each of the four paths into working), read where that turn ends
 	// (endTurn), and cleared with the turn, so the end line names what the start line named rather
-	// than what the claim is left holding. It is memory only, as askFirst and unseenTurn are: a
-	// daemon restarted mid-turn holds none, and the end line of that turn then names no delivery
+	// than what the claim is left holding. The one start that sets it without a start line of its
+	// own is the agent_start of a turn a busy answer recorded, whose start line was written at the
+	// record and named no delivery: that start names the task it confirms in a line of its own,
+	// and the end names it too (busyTurnBegun). It is memory only, as askFirst and unseenTurn are:
+	// a daemon restarted mid-turn holds none, and the end line of that turn then names no delivery
 	// rather than guessing one, which is the safe answer — the empty value says "this turn names
 	// no delivery" for both a turn that is no task's and a turn this daemon never saw begin, and
 	// both are lines a reader can trust.
@@ -1216,6 +1235,10 @@ type Machine struct {
 	// has a lock of its own, held only to set, clear or read it, so a reader never waits on mu.
 	decidingMu sync.Mutex
 	deciding   Event
+	// turnsEnded counts the turns whose end this machine has recorded (turnEnded), whichever event
+	// ended them, for the daemon to read across a decision (TurnsEnded). It is atomic so that read
+	// never waits on mu.
+	turnsEnded atomic.Uint64
 }
 
 type sending struct {
@@ -1633,6 +1656,16 @@ func (m *Machine) Deciding() Event {
 	return m.deciding
 }
 
+// TurnsEnded is how many turns this machine has recorded the end of (turnEnded), whichever event
+// ended them: the agent's own agent_end, or its answer to the sweep's question that it is no
+// longer streaming (askTurnOver). The daemon reads it on both sides of a decision to tell whether
+// that decision ended a turn, and posts the end to the issue's other claims (its wakeIssue,
+// IssueTurnEnded): a phase task one of them holds for this turn may go now. It never waits on the
+// decision in flight, and a count read after Handle returns is one the claim that decision
+// published already carries, since the count moves inside the decision and the publish is that
+// decision's last act (unlock).
+func (m *Machine) TurnsEnded() uint64 { return m.turnsEnded.Load() }
+
 // decide publishes ev as the event the decision now beginning handles (Deciding), and unlock
 // clears it. The caller holds mu.
 func (m *Machine) decide(ev Event) {
@@ -1734,7 +1767,7 @@ func (m *Machine) durableWrite(ctx context.Context, state ClaimState, write func
 	return nil
 }
 
-// turnStartedLine is the message a turn's start is logged under, at Info, on each of the three
+// turnStartedLine is the message a turn's start is logged under, at Info, on each of the four
 // paths that put a claim in working. It is pinned as a constant because an operator and a
 // production check read it whole: with turnEndedLine it is how what the daemon did between a
 // turn's start and its end is read out of the log at all, and a message reworded or extended at
@@ -1761,11 +1794,14 @@ func (m *Machine) logTurn(line, delivery string) {
 
 // startTurn records what this turn is the turn of and writes its start line, which is how the
 // turn's end comes to name what its start named (Machine.turnsDelivery, endTurn). Every path
-// that puts a claim in working goes through here — turnStarted, sendPending's askFirst branch
-// and answerAskFirstAfterDrop — the two that name no delivery included, so a turn that is no
-// task's overwrites the identity of the turn before it rather than leaving it standing for its
-// end to read. So does the one path that records a turn in a claim already working, a turn
-// Oh My Pi starts under a compaction (turnStartedWhileBusy), whose end writes its end line.
+// that puts a claim in working goes through here — turnStarted, sendPending's askFirst branch,
+// answerAskFirstAfterDrop and recordBusyTurn — the three that name no delivery included, so a
+// turn that is no task's overwrites the identity of the turn before it rather than leaving it
+// standing for its end to read. So does the one path that records a turn in a claim already
+// working, a turn Oh My Pi starts under a compaction (turnStartedWhileBusy), whose end writes its
+// end line. The agent_start of a turn a busy answer recorded writes none: recordBusyTurn already
+// wrote that turn's start line, and the start names the task it confirms in a line of its own
+// (busyTurnBegun), so one start line and one end line still bracket the turn.
 //
 // The identity is carried from the start because no reading of the claim can answer it at the
 // end: a pending delivery that is confirmed is the running turn's in one case and a finished
@@ -1781,9 +1817,9 @@ func (m *Machine) startTurn(delivery string) {
 
 // endTurn writes the turn's end line, naming what its own start line named, and forgets the turn
 // with it, so nothing of a turn that is over is left for the next turn's end to read. A turn this
-// daemon never saw begin — a restart mid-turn — holds no identity here, and its end line names no
-// delivery rather than the claim's pending task, which is the safe answer for a turn nobody can
-// say the task of.
+// daemon never saw begin — a restart mid-turn, or a turn a busy answer recorded whose own start
+// was never read — holds no identity here, and its end line names no delivery rather than the
+// claim's pending task, which is the safe answer for a turn nobody can say the task of.
 func (m *Machine) endTurn() {
 	m.logTurn(turnEndedLine, m.turnsDelivery)
 	m.turnsDelivery = ""
@@ -1921,10 +1957,12 @@ func timesADelivery(kind TimerKind) bool {
 
 // fenceOutcome is the fence on a prompt's outcome. The send it belongs to is over either way; an
 // outcome for a delivery or a generation the claim has moved past records nothing — and when it
-// was the machine's own send that finished late, the delivery that replaced it may go now. The
-// acknowledgement of a send whose busy answer arrived first is one of those: that answer took the
-// task back under a new id (takeBackPending), so the acknowledgement adds no prompt to the ones
-// the task waits on a result for (Machine.outstanding).
+// was the machine's own send that finished late, the delivery that replaced it may go now, if the
+// claim is one sendPending sends to. The acknowledgement of a send whose busy answer arrived first
+// is one of those: that answer took the task back under a new id (takeBackPending), so the
+// acknowledgement adds no prompt to the ones the task waits on a result for (Machine.outstanding),
+// and the same answer recorded the claim working (recordBusyTurn), so nothing goes from here into
+// the turn it named: the task waits for that turn's end.
 func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string) (bool, error) {
 	own := m.send != nil && m.send.id == deliveryID && m.send.generation == generation
 	if own {
@@ -2650,13 +2688,15 @@ func (m *Machine) retire(ctx context.Context) error {
 // next launch of the same session waits it out. The identity of the turn that process was
 // running goes with it (turnsDelivery): a turn whose process is gone ends by a line of its own
 // rather than by turnEnded, so nothing is left to read it, and a later turn must never end
-// naming the delivery of a turn that died with its process. What the runtime last reported of
-// that process goes with it too, and what was charged for its death with that (processGone,
-// Claim.DeathCharged): the claim records no process for a report to be about, and the one the
-// next launch starts has been reported nothing and charged nothing. The clear of the charge
-// reaches the store with the write every caller of this makes of the claim it leaves — the
-// launch that records the new process, the suspension, the retirement, the failure — so no
-// stored charge ever outlives the process it was made for.
+// naming the delivery of a turn that died with its process. So does the record a busy answer
+// made of that turn (busyTurn): the question it arms has no process left to answer it, and the
+// next process is sent the task anew. What the runtime last reported of that process goes with it
+// too, and what was charged for its death with that (processGone, Claim.DeathCharged): the claim
+// records no process for a report to be about, and the one the next launch starts has been
+// reported nothing and charged nothing. The clear of the charge reaches the store with the write
+// every caller of this makes of the claim it leaves — the launch that records the new process,
+// the suspension, the retirement, the failure — so no stored charge ever outlives the process it
+// was made for.
 func (m *Machine) letGo() {
 	m.disarmAll()
 	m.relaunch = nil
@@ -2665,7 +2705,7 @@ func (m *Machine) letGo() {
 	m.outstanding = nil
 	m.held = nil
 	m.staleRelaunch = nil
-	m.unseenTurn = false
+	m.unseenTurn, m.busyTurn = false, false
 	m.turnsDelivery = ""
 	m.compacting = nil
 	m.processGone, m.claim.DeathCharged = false, false

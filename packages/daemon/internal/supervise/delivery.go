@@ -537,9 +537,9 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	// resolved here rather than asked: while the root does not hear, the task stays pending and
 	// unconfirmed and nothing is sent; once the root hears, it is sent. A send can meet an agent
 	// still in a turn of its own, which answers it busy and leaves the task waiting, charged
-	// nothing (refused, table.go), and the turn's end sends it again: sending again is the lesser
-	// fault of the two. Its phase check always holds — such a task names no phase — so a dropped
-	// task is never this one.
+	// nothing, with the claim recorded working for that turn (refused, recordBusyTurn), and the
+	// turn's end sends it again: sending again is the lesser fault of the two. Its phase check
+	// always holds — such a task names no phase — so a dropped task is never this one.
 	if m.asksRoot(*p) {
 		m.askFirst = false
 		hears, err := m.rootHears(ctx, *p)
@@ -704,13 +704,13 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 // daemon never saw begin (Machine.unseenTurn), and the claim written. The ask is worth making
 // with nothing pending because the claim's state is the daemon's record of whether its agent is
 // busy, and the drop does not make that record current: discarded instead, the claim stays ready
-// while its agent works, and the task that follows the dropped one is prompted into a busy agent
-// and refused at every send until that turn ends. The turn is nobody's task's either way, and the
-// next task waits for it to end.
+// while its agent works, and the task that follows the dropped one is prompted into a busy agent,
+// whose busy answer is what then records the claim working (recordBusyTurn). The turn is nobody's
+// task's either way, and the next task waits for it to end.
 //
 // An agent that cannot say, and a claim whose shim is not connected, are taken as not streaming:
-// the mark goes all the same, since it is the dropped delivery's, and the busy refusal is what a
-// send into a turn this daemon could not read costs.
+// the mark goes all the same, since it is the dropped delivery's, and one busy answer is what a
+// send into a turn this daemon could not read costs, since that answer records the turn.
 //
 // Two claims are answered nothing. One that still holds a delivery is one no drop left empty: the
 // question is that delivery's, and sendPending asks it against that delivery. A working claim's
@@ -735,7 +735,7 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped", "claim", m.claim.Token)
 	m.claim.State, m.unseenTurn = StateWorking, true
 	// The guard above has already established that the claim holds no delivery, so this turn is
-	// no task's and the line names none. It goes before the write, as the other two do.
+	// no task's and the line names none. It goes before the write, as the others do.
 	m.startTurn("")
 	return m.persist(ctx)
 }

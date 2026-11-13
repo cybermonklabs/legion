@@ -397,38 +397,62 @@ func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t
 // (dispatch://INFRA-1691, INFRA-1545, INFRA-722, A9). The end sends it now, and nothing goes into
 // the turn itself.
 //
+// The busy refusal no longer leaves such a claim ready: it records the claim working for the turn
+// it names (recordBusyTurn), so that turn's end reaches turnEnded, which sends the task. A send
+// that never reached the agent, one lost on the way, still leaves the claim ready holding its task
+// unread while the agent's own turn runs, and that turn's end is sent from blindTurnEnded. Both
+// are driven.
+//
 // The busy-refusal test above drives the same refusal with a turn start before each end, which is
 // why this never showed: that is the agent whose turn the daemon watched begin.
 func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
 	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
-	h := newHarness(t)
-	h.reach(StateReady)
-	base := len(h.prompts())
+	for _, tc := range []struct {
+		name string
+		// miss sends the task, which does not reach a turn, and returns the state the claim is
+		// left in while the agent's own turn runs.
+		miss func(h *harness) ClaimState
+	}{
+		{name: "the send answered busy", miss: func(h *harness) ClaimState {
+			// The prompt is acknowledged and then refused: a turn of the agent's own is running,
+			// one that began before this claim was registered. The refusal takes the task back
+			// under a new id and records the claim working for that turn.
+			h.must(RequestDeliver{Claim: testToken, Task: "the phase task", Generation: 7})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: h.pending().ID, Error: busy})
+			return StateWorking
+		}},
+		{name: "the send lost on the way", miss: func(h *harness) ClaimState {
+			h.conn.FailPrompt(errors.New("the frame was lost on the way"))
+			h.must(RequestDeliver{Claim: testToken, Task: "the phase task", Generation: 7})
+			h.conn.FailPrompt(nil)
+			return StateReady
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			base := len(h.prompts())
 
-	h.must(RequestDeliver{Claim: testToken, Task: "the phase task", Generation: 7})
-	sent := h.pending().ID
-	h.wantPrompts(base + 1)
+			state := tc.miss(h)
+			if p := h.pending(); p.Task != "the phase task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
+				t.Fatalf("after the send that reached no turn the task is %+v, want it waiting unread", p)
+			}
+			h.wantPrompts(base + 1)
+			h.wantState(state)
 
-	// The prompt is acknowledged and then refused: a turn of the agent's own is running, one that
-	// began before this claim was registered. The refusal takes the task back under a new id.
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busy})
-	if p := h.pending(); p.Task != "the phase task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
-		t.Fatalf("after the busy refusal the task is %+v, want it waiting unread", p)
+			// The blind turn ends. This is the only stream event of it the daemon ever gets.
+			h.must(StreamTurnEnd{Claim: testToken})
+
+			if prompt := h.wantPrompts(base + 2)[base+1]; prompt.DeliveryID != h.pending().ID {
+				t.Fatalf("the send after the blind turn went under %s, want the task's %s", prompt.DeliveryID, h.pending().ID)
+			}
+			h.must(StreamTurnStart{Claim: testToken})
+			if run := h.claim().ServingRun(); run != 7 {
+				t.Fatalf("during the task's own turn the claim serves run %d, want the task's 7: a completion from it would be refused HANDOFF_NO_RUN", run)
+			}
+			h.wantBudgets(Budgets{})
+		})
 	}
-	h.wantPrompts(base + 1)
-	h.wantState(StateReady)
-
-	// The blind turn ends. This is the only stream event of it the daemon ever gets.
-	h.must(StreamTurnEnd{Claim: testToken})
-
-	if prompt := h.wantPrompts(base + 2)[base+1]; prompt.DeliveryID != h.pending().ID {
-		t.Fatalf("the send after the blind turn went under %s, want the task's %s", prompt.DeliveryID, h.pending().ID)
-	}
-	h.must(StreamTurnStart{Claim: testToken})
-	if run := h.claim().ServingRun(); run != 7 {
-		t.Fatalf("during the task's own turn the claim serves run %d, want the task's 7: a completion from it would be refused HANDOFF_NO_RUN", run)
-	}
-	h.wantBudgets(Budgets{})
 }
 
 // The notice's turn usually starts while the task's send is still in flight, so its agent_start
@@ -855,8 +879,10 @@ func TestALateRoundAskTurnEndIsTheAnswer(t *testing.T) {
 // nothing orders the two. The answer takes the re-send back under a new id, so its
 // acknowledgement, arriving after, names an id the task has left and is fenced out (fenceOutcome):
 // it adds no outstanding prompt, which would be one Oh My Pi never runs and whose result never
-// comes. The first prompt, outstanding all along, is the one the late turn is matched to, and its
-// result still settles the task.
+// comes. The same answer recorded the claim working for the turn Oh My Pi is preparing
+// (recordBusyTurn), so the fenced acknowledgement lets nothing go into it either. The first
+// prompt, outstanding all along, is the one the late turn is matched to, and its result still
+// settles the task.
 func TestABusyAnswerBeforeItsOwnAcknowledgementAddsNothing(t *testing.T) {
 	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
@@ -877,18 +903,24 @@ func TestABusyAnswerBeforeItsOwnAcknowledgementAddsNothing(t *testing.T) {
 	if p := h.pending(); p.ID == resend {
 		t.Fatalf("pending after the busy answer = %+v, want the re-send taken back under an id of its own", p)
 	}
+	h.wantState(StateWorking)
 
-	// The re-send's acknowledgement lands now. Fenced out, it lets the task go again
-	// (fenceOutcome), and Oh My Pi, still preparing the first prompt's turn, refuses that send busy.
-	gated.release <- struct{}{}
-	next := waitFor(t, "the send after the fenced acknowledgement", gated.entered)
-	gated.RefusePrompt(busy)
-	gated.release <- struct{}{}
+	// The re-send's acknowledgement lands now. Fenced out, it adds nothing and sends nothing: the
+	// claim the busy answer recorded working is one sendPending holds the task for (fenceOutcome).
+	// The gate lets the re-send through and would let any later send through at once, so a send
+	// the fence made would be counted rather than held.
+	for range 3 {
+		gated.release <- struct{}{}
+	}
 	h.m.Wait()
 	if got := h.outstanding(); len(got) != 1 || got[0] != first {
-		t.Fatalf("outstanding prompts after the re-send's acknowledgement = %v, want only the first prompt %s: the re-send %s and the send %s were answered busy",
-			got, first, resend, next)
+		t.Fatalf("outstanding prompts after the re-send's acknowledgement = %v, want only the first prompt %s: the re-send %s was answered busy",
+			got, first, resend)
 	}
+	if sent := gated.Prompts(); len(sent) != 1 || sent[0].DeliveryID != resend {
+		t.Fatalf("prompts on the re-sending connection after its fenced acknowledgement = %+v, want the re-send %s alone", sent, resend)
+	}
+	h.wantState(StateWorking)
 
 	h.must(StreamTurnStart{Claim: testToken}) // the first prompt's turn, late
 	if p := h.pending(); p.ConfirmedAt.IsZero() {
@@ -899,8 +931,8 @@ func TestABusyAnswerBeforeItsOwnAcknowledgementAddsNothing(t *testing.T) {
 	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
 		t.Fatalf("after the first prompt's result: pending %+v serving %d, want the task retired and run 7 served", c.Pending, c.ServingGeneration)
 	}
-	if sent := gated.Prompts(); len(sent) != 2 {
-		t.Errorf("prompts on the re-sending connection = %+v, want the re-send and the send its fenced acknowledgement let go, and none after the task settled", sent)
+	if sent := gated.Prompts(); len(sent) != 1 {
+		t.Errorf("prompts on the re-sending connection = %+v, want the re-send alone, and none after the task settled", sent)
 	}
 }
 
@@ -1022,8 +1054,10 @@ func TestALateRefusalUnderAConfirmingTurnReversesOnlyTheDelivery(t *testing.T) {
 
 // A late refusal while the acknowledged prompt is still waiting for its turn: the no-turn timer
 // for the refused id is cancelled, so the prompt it belonged to charges nothing later, and the
-// rotated delivery goes as soon as the agent says its own turn is over. The prompt that carries
-// it is an ordinary one: acknowledged and starting no turn, it charges as any other does.
+// rotated delivery goes as soon as the agent says its own turn is over. The agent's answer that it
+// is streaming is the turn's witness, and records the claim working for that turn
+// (recordBusyTurn), so nothing sends the task into it. The prompt that carries it is an ordinary
+// one: acknowledged and starting no turn, it charges as any other does.
 func TestALateRefusalCancelsTheRefusedPromptsTurnTimer(t *testing.T) {
 	for _, state := range prompted {
 		t.Run(string(state), func(t *testing.T) {
@@ -1037,7 +1071,7 @@ func TestALateRefusalCancelsTheRefusedPromptsTurnTimer(t *testing.T) {
 
 			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: refused, Error: "agent busy"})
 
-			h.wantState(state)
+			h.wantState(StateWorking)
 			h.wantBudgets(Budgets{})
 			rotated := h.pending().ID
 			if rotated == refused {
