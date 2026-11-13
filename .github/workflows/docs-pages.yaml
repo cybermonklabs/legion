@@ -148,6 +148,7 @@ on:
       - 'packages/envoy/internal/dispatch/agentstream/*'
       - 'packages/envoy/internal/dispatch/api/*'
       - 'packages/envoy/internal/dispatch/architecture/*'
+      - 'packages/envoy/internal/dispatch/architecture/notes/*'
       - 'packages/envoy/internal/dispatch/asks/*'
       - 'packages/envoy/internal/dispatch/auth/*'
       - 'packages/envoy/internal/dispatch/bytelru/*'

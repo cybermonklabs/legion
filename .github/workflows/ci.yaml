@@ -47,8 +47,10 @@ name: CI
 # passing required check, so each refuses such an attempt in a step of its own instead.
 # docs/solutions/github/join-a-job-to-the-ci-router.md walks through it.
 #
-# Caches: no job of this workflow saves an Actions cache entry. setup-go caches nothing here
-# (`cache: false` on every step). The jobs that cache Go restore one of six families with
+# Caches: no step of this workflow saves an Actions cache entry itself; two actions its jobs call
+# can, and only in a dispatched run (setup-bun and architecture-check, at this paragraph's end).
+# setup-go caches nothing here (`cache: false` on every step, the architecture-check action's
+# included). The jobs that cache Go restore, in steps of their own, one of six families with
 # actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
@@ -65,7 +67,8 @@ name: CI
 # go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
-# older Go built, and no run here saves any more. There is no browser cache beside the Go
+# older Go built, and no step of this workflow saves a family any more (the architecture-check
+# action below restores its exact key alone). There is no browser cache beside the Go
 # families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
 # repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 # ~/.cache/ms-playwright restore would carry nothing they do not already have, and
@@ -74,7 +77,16 @@ name: CI
 # (.github/actions/setup-bun), which of this workflow's events is the dispatched run alone, and
 # not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 # job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
-# stand in for the install each of their cases is a reading of.
+# stand in for the install each of their cases is a reading of. A seventh family,
+# architecture-check-<os>-<arch>-go<version>, is the composite action
+# .github/actions/architecture-check's own, which envoy-go-checks runs: the action restores it
+# and saves it itself, from $RUNNER_TEMP/architecture-check and not from the Go caches above,
+# keyed on the Go version its own setup-go installed, and ci-caches.yaml's envoy job fills it on
+# main. The action saves nothing in a pull request or a merge group, so within this workflow only
+# a dispatched run can save it (the bypass check dispatches one at main), only on a miss, and
+# into the scope of the ref it was dispatched on. check-ci-filters.sh's cache-family rule reads a
+# workflow's own actions/cache steps and not a composite action's, so this paragraph is the one
+# record of the action's restore and save.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -486,6 +498,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/agentstream/*'
               - 'packages/envoy/internal/dispatch/api/*'
               - 'packages/envoy/internal/dispatch/architecture/*'
+              - 'packages/envoy/internal/dispatch/architecture/notes/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -1430,10 +1443,14 @@ jobs:
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
-            # checks, the seven shell-script tests, and the build and pack of the envoy commands.
-            # gofmt -l . walks every .go file under packages/envoy, those tests and the scripts
-            # they drive live there, and `go build ./cmd/dispatch ./cmd/listener` compiles
-            # packages of that module alone.
+            # checks, the seven shell-script tests, and the build and pack of the envoy commands,
+            # with the tests of internal/dispatch/architecture/notes and cmd/architecture-check
+            # (envoy-go's unit step tests them again in the merge queue) and the architecture-note
+            # check over this repository's own notes through the composite action
+            # .github/actions/architecture-check. gofmt -l . walks every .go file under
+            # packages/envoy, those tests and the scripts they drive live there, and `go build
+            # ./cmd/dispatch ./cmd/listener` compiles packages of that module alone, as the
+            # action's build of cmd/architecture-check does.
             envoy_go_checks:
               - '.github/workflows/ci.yaml'
               - *bun_install
@@ -1450,6 +1467,11 @@ jobs:
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'
+              # The step "Check this repository's architecture notes with the composite action"
+              # runs the action from this checkout: its action.yml and the check.sh beside it.
+              - '.github/actions/architecture-check/**'
+              # That same step judges the notes at the action's default path.
+              - '.dispatch/architecture/**'
             # The envoy-infra module's own workspace (packages/envoy/infra/go.work binds it and
             # packages/envoy), the envoy packages its tests compile, and the Dispatch server and
             # listener infra/core/permissions_live_test.go:298-299 builds in the root workspace.
@@ -1624,6 +1646,7 @@ jobs:
               # internal/dispatch/api/write_advice_test.go:504 reads testdata/decision-block-inserts.json.
               - 'packages/envoy/internal/dispatch/api/testdata/**'
               - 'packages/envoy/internal/dispatch/architecture/*'
+              - 'packages/envoy/internal/dispatch/architecture/notes/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
               - 'packages/envoy/internal/dispatch/bytelru/*'
@@ -4683,12 +4706,16 @@ jobs:
           job-status: ${{ job.status }}
 
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
-  # shell-script tests and the build and pack of the envoy commands. The slow half below (the
-  # module's unit tests, the container-backed NATS matrix and the integration suite) is one of
-  # the eight slow suites, which run in the merge queue and on a pull request labelled `full-ci`,
-  # while these checks must come back on every push. No Postgres service: nothing here opens a
-  # database. It restores go-envoy rather than go-envoy-test, which is the slow half's family
-  # alone (the test binary of every package of the envoy module).
+  # shell-script tests and the build and pack of the envoy commands. It also runs the tests of
+  # internal/dispatch/architecture/notes and cmd/architecture-check, which envoy-go's unit step
+  # tests again in the merge queue, and the architecture-note check over this repository's own
+  # .dispatch/architecture through the composite action .github/actions/architecture-check,
+  # which other repositories call. The slow half below (the module's unit tests, the
+  # container-backed NATS matrix and the integration suite) is one of the eight slow suites,
+  # which run in the merge queue and on a pull request labelled `full-ci`, while these checks
+  # must come back on every push. No Postgres service: nothing here opens a database. It
+  # restores go-envoy rather than go-envoy-test, which is the slow half's family alone (the test
+  # binary of every package of the envoy module).
   envoy-go-checks:
     needs: changes
     if: needs.changes.outputs.envoy_go_checks == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -4726,6 +4753,34 @@ jobs:
             exit 1
           fi
         working-directory: packages/envoy
+      # These two packages need no database, so they run here on every push. envoy-go's unit
+      # step tests every package of the module but the race lane's, these two among them, so they
+      # run again in the merge queue: leaving them out there would add a second exclusion list to
+      # the grep that picks that step's packages, to save a few seconds a group. This step accepts
+      # the overlap, as the display-tree fixture check below does for pmdoc.
+      - name: Test the architecture-note rules and their command
+        run: go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
+        working-directory: packages/envoy
+      # The composite action other repositories call, run over this repository's own
+      # .dispatch/architecture (its default path), so every part of it is exercised here before
+      # another repository relies on it: its setup-go, its path resolved against the workspace,
+      # its cache restore, and its count output, which the next step reads. In a pull request and
+      # a merge group it restores its cache and saves nothing (the header's "Caches" paragraph).
+      - id: architecture-notes
+        name: Check this repository's architecture notes with the composite action
+        uses: ./.github/actions/architecture-check
+      # A caller reads the count through env, never inside run:, and so does this step. It runs
+      # only when the action succeeded, which without allow-empty means a valid set of one note or
+      # more, so a count that is missing or not a positive whole number is the action's fault.
+      - name: Read the note count the action hands to the job
+        env:
+          COUNT: ${{ steps.architecture-notes.outputs.count }}
+        run: |
+          if ! [[ $COUNT =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::the architecture-check action's count output is '$COUNT', not a positive whole number"
+            exit 1
+          fi
+          echo "The architecture-check action judged $COUNT notes."
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
         working-directory: packages/contracts

@@ -3,8 +3,9 @@ name: CI caches
 # Fills the Actions caches ci.yaml's jobs restore, so a pull request or a merge group finds
 # them warm. ci.yaml runs on a pull request, a merge group and a dispatch, and no longer on a push
 # to main: the queue tests every change on the tree it lands as, so a run on main would only test
-# that tree again (ci.yaml's header says it). No job of that workflow saves a cache entry any
-# more, so the families it restores need a filler of their own, and this workflow is it.
+# that tree again (ci.yaml's header says it). No step of that workflow saves a cache entry any
+# more, and the actions it calls save only in a dispatched run, so the families it restores need
+# a filler of their own, and this workflow is it.
 #
 # Why the filler runs on a push: a run reads the cache scope of its own branch and that of the
 # default branch, and only an event that writes the default branch's scope - a push to main among
@@ -29,6 +30,15 @@ name: CI caches
 # nothing, so a run that finds every key costs a checkout and a setup-go. Where a job fills two
 # families it fills the smaller one first, so the entry that carries the other's objects too is
 # the one that was large already.
+#
+# Beside those five, the envoy job fills architecture-check-<os>-<arch>-go<version>, the family
+# of the composite action .github/actions/architecture-check, which ci.yaml's envoy-go-checks
+# runs. It is no lookup step of this workflow: the action restores and saves that entry itself,
+# keyed on the Go version its own setup-go installs from packages/envoy/go.mod, and saves it on a
+# miss outside a pull request and a merge group, so a push to main is where it lands in the
+# scope every later run reads. check-ci-filters.sh's cache-family rule reads this workflow's own
+# actions/cache steps and not a composite action's, so it holds nothing of this family; ci.yaml's
+# "Caches" paragraph is the record of its restore and save.
 #
 # One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
 # content of the Lean toolchain the model names rather than a Go version. Two others that were
@@ -160,7 +170,9 @@ jobs:
 
   # go-envoy and go-envoy-test. Both key on packages/envoy/go.mod's Go, the module every job that
   # restores them sets Go up from, so one setup serves the two; their lookups and their builds are
-  # independent, and each build is gated on its own lookup.
+  # independent, and each build is gated on its own lookup. Then the architecture-check family,
+  # which the composite action sets its own Go up for, from that same go.mod, and restores and
+  # saves itself.
   envoy:
     runs-on: ubuntu-24.04
     # Compiling the test binary of every package of the envoy module on a cold module cache is
@@ -231,6 +243,14 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+
+      # The architecture-check action, run as ci.yaml's envoy-go-checks runs it. On a push to main
+      # it fills the action's family in main's scope, so every pull request and merge group of
+      # this repository finds it: on a hit it restores the entry and builds nothing new, on a miss
+      # it builds the command cold and saves the entry. It also checks main's notes; the action
+      # saves before it checks, so a refused set does not cost the entry.
+      - name: Fill the architecture-check action's cache and check main's notes
+        uses: ./.github/actions/architecture-check
 
   # go-envoy-infra. The infra module is not in the root go.work - its own go.work binds it and
   # packages/envoy - so it keys on packages/envoy/infra/go.mod's Go and builds in a job of its own,
