@@ -749,13 +749,13 @@ func TestALauncherWhoseDirectoryIsNoWorkspaceSweepsAtTheFirstRoleStart(t *testin
 func TestALearnWhoseDerivationFailedLearnsNothingFromALaterStart(t *testing.T) {
 	broken := newLockClone(t)
 	stale := broken.lock("index.lock", "stale", time.Hour)
-	// The one thing a derived git directory is checked for is a worktree entry naming this
-	// workspace, so removing that entry's gitdir leaves a clone where the layout says it is
-	// with nothing in it this workspace owns.
+	// The derivation refuses a workspace no entry's gitdir names while its .git names an entry
+	// whose gitdir names another path (case D of internal/workspace's gitWorktreeEntries table):
+	// the entry's gitdir rewritten to another workspace's .git leaves a clone where the layout
+	// says it is with nothing in it this workspace owns. A missing gitdir would not do: that is
+	// case C, which the derivation accepts.
 	gitdir := filepath.Join(broken.worktree, "gitdir")
-	if err := os.Remove(gitdir); err != nil {
-		t.Fatal(err)
-	}
+	broken.write(gitdir, filepath.Join(filepath.Dir(broken.dir), "infra-2", ".git")+"\n")
 	log := &lockedBuffer{}
 	s := &gitLockSweep{
 		proc: procRoot(t, os.Getpid()), guard: gitLockGuard, interval: gitLockInterval,
@@ -1344,10 +1344,11 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 // gitdir a link to /dev/zero, or a fifo, must neither end PID 1 nor stall it: a read of /dev/zero
 // to its end runs the launcher out of memory, and a read of a fifo waits for a writer for ever
 // with the sweep's lock held, so a role start that learns waits behind it. Such an entry names
-// no workspace and is skipped (internal/workspace's readGitdir): the pass returns, removes this
-// workspace's own stale locks as ever, leaves the entry's and writes nothing of it. A gitdir the
-// launcher may not open at all (a `chmod 000`) is skipped the same way rather than refusing the
-// pass: one role must not be able to switch the sweep off with a sibling's entry.
+// no workspace and is skipped (internal/workspace's gitWorktreeEntries, which reads it through
+// readGitdir): the pass returns, removes this workspace's own stale locks as ever, leaves the
+// entry's and writes nothing of it. A gitdir the launcher may not open at all (a `chmod 000`) is
+// skipped the same way rather than refusing the pass: one role must not be able to switch the
+// sweep off with a sibling's entry.
 //
 // Each of readGitdir's guards has a row here that fails with that guard alone reverted: the
 // link that names this workspace's .git (O_NOFOLLOW: followed, the sibling is taken for this
@@ -1599,9 +1600,10 @@ func endRunawayReads(t *testing.T, stop <-chan struct{}, gitdir string) <-chan i
 }
 
 // unreadableGitdirs is each way a role can leave this workspace's own worktree entry's gitdir
-// unreadable to the walk (internal/workspace's readGitdir), and the cause the sweep's line names
-// for it, given the gitdir's path. Each is planted where the row's gitdir was (breakGitdir), and
-// repairGitdir puts back the gitdir git wrote.
+// unreadable to the walk (internal/workspace's readGitdir), or gone, and the cause the sweep's
+// line names for it, given the gitdir's path: case C of internal/workspace's gitWorktreeEntries
+// table, the entry the workspace's .git names being in place. Each is planted where the row's
+// gitdir was (breakGitdir), and repairGitdir puts back the gitdir git wrote.
 var unreadableGitdirs = []struct {
 	name  string
 	plant func(t *testing.T, c *lockClone, gitdir string)
@@ -1655,6 +1657,12 @@ var unreadableGitdirs = []struct {
 		},
 		cause: func(gitdir string) string { return "open " + gitdir + ": permission denied" },
 	},
+	{
+		// Nothing planted: the gitdir breakGitdir removed stays gone.
+		name:  "missing",
+		plant: func(*testing.T, *lockClone, string) {},
+		cause: func(gitdir string) string { return "open " + gitdir + ": no such file or directory" },
+	},
 }
 
 // breakGitdir replaces the gitdir of this workspace's own worktree entry with plant's, and
@@ -1689,12 +1697,13 @@ func (c *lockClone) unreadableEntry(cause string) string {
 // runs, as it can any other entry's. Passed over in silence, as a sibling's is, the entry's locks
 // — an index.lock that wedges every role's git — would stay for the container's life with no
 // line saying why. The pass names the entry and the cause instead, once while the entry stays
-// unreadable rather than once a minute, and sweeps the rest of the clone on every pass all the
-// same: the git directory's own stale lock goes each time. An entry readable again is swept
+// unreadable rather than once a minute, and sweeps the clone's git directory on every pass all
+// the same: the git directory's own stale lock goes each time. An entry readable again is swept
 // again and forgotten, so a second break is a second line.
 //
 // The sweep is the launcher's own, built from its working directory while the entry is sound,
-// which is a running pod whose role breaks the entry after the derivation.
+// which is a running pod whose role breaks the entry after the derivation. This is case C of
+// internal/workspace's gitWorktreeEntries table, a gitdir gone ("missing") among its causes.
 func TestTheSweepNamesThisWorkspacesUnreadableWorktreeEntryOnceAndSweepsTheRest(t *testing.T) {
 	for _, bad := range unreadableGitdirs {
 		t.Run(bad.name, func(t *testing.T) {
@@ -1708,7 +1717,7 @@ func TestTheSweepNamesThisWorkspacesUnreadableWorktreeEntryOnceAndSweepsTheRest(
 			s.proc, s.recheck = procRoot(t, os.Getpid()), time.Millisecond
 			c.breakGitdir(t, bad.plant)
 			line := fmt.Sprintf("launcher: the git lock sweep: %q",
-				c.unreadableEntry(bad.cause(filepath.Join(c.worktree, "gitdir")))+"; the pass swept the rest of the clone and left that entry's locks where they are")
+				c.unreadableEntry(bad.cause(filepath.Join(c.worktree, "gitdir")))+"; the pass swept only the clone's git directory")
 			entry := c.worktreeLock("index.lock", "ours", time.Hour)
 			for range 3 {
 				stale := c.lock("index.lock", "stale", time.Hour)
@@ -1741,28 +1750,428 @@ func TestTheSweepNamesThisWorkspacesUnreadableWorktreeEntryOnceAndSweepsTheRest(
 }
 
 // The same entry unreadable before the launcher starts — a roles container restarting on a
-// volume where a role broke it — is the derivation's refusal, and the refusal names the entry and
-// the cause. "Serves no git worktree of it" would be false there: the entry is in place, and what
-// is wrong with it is what the line says. The first role start's derivation refuses with the
-// same cause.
+// volume where a role broke it — is case C of internal/workspace's gitWorktreeEntries table: the
+// derivation accepts the workspace, since the clone is the layout's and nothing under that entry
+// is walked, so the restarted container still sweeps the clone's git directory. Its first pass
+// removes a stale .git/refs/heads/main.lock and names the entry and the cause, and the passes
+// that follow write that line no more. A refusal here would leave the container with no
+// workspace for its life, and nothing would sweep .git: the init container does not run again
+// on a container restart. "Serves no git worktree of it" would be false too: the entry is in
+// place, and what is wrong with it is what the line says. The first role start's derivation
+// accepts the workspace the same way.
 func TestTheDerivationNamesThisWorkspacesUnreadableWorktreeEntry(t *testing.T) {
 	for _, bad := range unreadableGitdirs {
 		t.Run(bad.name, func(t *testing.T) {
+			line := func(c *lockClone) string {
+				return fmt.Sprintf("launcher: the git lock sweep: %q",
+					c.unreadableEntry(bad.cause(filepath.Join(c.worktree, "gitdir")))+"; the pass swept only the clone's git directory")
+			}
+			t.Run("through the launcher's own working directory", func(t *testing.T) {
+				c := newLockClone(t)
+				c.breakGitdir(t, bad.plant)
+				entry := c.worktreeLock("index.lock", "ours", time.Hour)
+				t.Chdir(c.dir)
+				log := &lockedBuffer{}
+				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+				requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep works the workspace %q, which is the launcher's own working directory, and its clone %q", c.dir, c.clone))
+				if s.ws.Dir != c.dir {
+					t.Fatalf("a launcher whose own worktree entry is unreadable gave its sweep the workspace %q, want %q; log:\n%s", s.ws.Dir, c.dir, log.String())
+				}
+				s.proc, s.recheck = procRoot(t, os.Getpid()), time.Millisecond
+				for pass := range 3 {
+					stale := c.lock("refs/heads/main.lock", "stale", time.Hour)
+					s.pass(context.Background(), pass == 0)
+					requireRemoved(t, log, stale)
+					if swept(entry) {
+						t.Fatalf("the sweep removed %s, under an entry it could not read; its log:\n%s", entry, log.String())
+					}
+				}
+				requireLine(t, log, line(c))
+				if count := strings.Count(log.String(), line(c)); count != 1 {
+					t.Fatalf("three passes wrote the entry's line %d times, want once:\n%s", count, log.String())
+				}
+				if strings.Contains(log.String(), "serves no git worktree") {
+					t.Fatalf("the sweep says the clone serves no worktree of a workspace whose entry is in place:\n%s", log.String())
+				}
+			})
+			t.Run("through the workspace the first role start names", func(t *testing.T) {
+				c := newLockClone(t)
+				c.breakGitdir(t, bad.plant)
+				stale := c.lock("refs/heads/main.lock", "stale", time.Hour)
+				t.Chdir(t.TempDir())
+				log := &lockedBuffer{}
+				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+				s.proc = procRoot(t, os.Getpid())
+				s.learn(context.Background(), c.dir)
+				requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep works the workspace %q, which the first role start named, and its clone %q", c.dir, c.clone))
+				requireRemoved(t, log, stale)
+				requireLine(t, log, line(c))
+				if strings.Contains(log.String(), "serves no git worktree") {
+					t.Fatalf("the sweep says the clone serves no worktree of a workspace whose entry is in place:\n%s", log.String())
+				}
+			})
+		})
+	}
+}
+
+// unusablePointers is each way a role can leave this workspace's .git — the pointer to its
+// worktree entry, `gitdir: <clone>/.git/worktrees/<id>` — naming no entry the walk can take: case
+// B of internal/workspace's gitWorktreeEntries table. plant writes the pointer at path and answers
+// what the line says of it after "its .git, which would name its entry, ", and what lets go a
+// read of it that waits, for a row that has already failed. The kinds a read past the guard
+// would take a path from name this workspace's own entry, so such a read writes case C's line,
+// or none, and not this one.
+var unusablePointers = []struct {
+	name  string
+	plant func(t *testing.T, c *lockClone, pointer string) (says string, unstick func())
+}{
+	{
+		name: "a fifo",
+		plant: func(t *testing.T, _ *lockClone, pointer string) (string, func()) {
+			if err := syscall.Mkfifo(pointer, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// A writer opened without blocking is refused while no reader waits and lets a
+			// waiting reader's open return, whose read then ends at once with no content.
+			return "cannot be read: " + pointer + " is a fifo", func() {
+				if file, err := os.OpenFile(pointer, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+					_ = file.Close()
+				}
+			}
+		},
+	},
+	{
+		// A read of it waits for the writer, which writes nothing.
+		name: "a fifo a writer holds open",
+		plant: func(t *testing.T, _ *lockClone, pointer string) (string, func()) {
+			if err := syscall.Mkfifo(pointer, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// Read-write, so the open needs no reader to be waiting.
+			writer, err := os.OpenFile(pointer, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = writer.Close() })
+			// With its last writer gone, a waiting read ends at once with no content.
+			return "cannot be read: " + pointer + " is a fifo", func() { _ = writer.Close() }
+		},
+	},
+	{
+		name: "a symlink to a file naming this workspace's entry",
+		plant: func(t *testing.T, c *lockClone, pointer string) (string, func()) {
+			named := filepath.Join(t.TempDir(), "pointer")
+			c.write(named, "gitdir: "+c.worktree+"\n")
+			if err := os.Symlink(named, pointer); err != nil {
+				t.Fatal(err)
+			}
+			return "cannot be read: " + pointer + " is a symlink", func() {}
+		},
+	},
+	{
+		// Read to its end, it runs the launcher out of memory; endRunawayReads ends such a read.
+		name: "a symlink to /dev/zero",
+		plant: func(t *testing.T, _ *lockClone, pointer string) (string, func()) {
+			if err := os.Symlink("/dev/zero", pointer); err != nil {
+				t.Fatal(err)
+			}
+			return "cannot be read: " + pointer + " is a symlink", func() {}
+		},
+	},
+	{
+		// This workspace's entry, then blanks past the bound, which a pointer's parse trims.
+		name: "a file larger than 4096 bytes naming this workspace's entry",
+		plant: func(_ *testing.T, c *lockClone, pointer string) (string, func()) {
+			c.write(pointer, "gitdir: "+c.worktree+"\n"+strings.Repeat(" ", gitdirBound))
+			return "cannot be read: " + pointer + " is larger than 4096 bytes", func() {}
+		},
+	},
+	{
+		name: "missing",
+		// Nothing planted: the .git breakPointer removed stays gone.
+		plant: func(_ *testing.T, _ *lockClone, pointer string) (string, func()) {
+			return "cannot be read: open " + pointer + ": no such file or directory", func() {}
+		},
+	},
+	{
+		name: "a file that names no entry",
+		plant: func(_ *testing.T, c *lockClone, pointer string) (string, func()) {
+			const garbage = "ref: refs/heads/main\n"
+			c.write(pointer, garbage)
+			return fmt.Sprintf("names none: %s/.git names no git worktree: %q", c.dir, garbage), func() {}
+		},
+	},
+	{
+		// What it names is laid out as an entry whose gitdir names this workspace, which only a
+		// walk that took the pointer's word for an entry would read.
+		name: "a file naming a directory outside the clone",
+		plant: func(t *testing.T, c *lockClone, pointer string) (string, func()) {
+			elsewhere := filepath.Join(t.TempDir(), "worktrees", lockCloneIssue)
+			c.plant(filepath.Join(elsewhere, "gitdir"), filepath.Join(c.dir, ".git")+"\n", 0)
+			c.write(pointer, "gitdir: "+elsewhere+"\n")
+			return fmt.Sprintf("names %s, which is no entry under %s", elsewhere, filepath.Join(c.gitDir, "worktrees")), func() {}
+		},
+	},
+}
+
+// noEntryNames is the reason the walk gives when no entry's gitdir names this workspace and its
+// .git names no entry it can take (case B), says being what unusablePointers' plant answered.
+func (c *lockClone) noEntryNames(says string) string {
+	return "the clone of " + c.dir + ": no git worktree entry's gitdir names the workspace " + c.dir +
+		", and its .git, which would name its entry, " + says
+}
+
+// breakPointer replaces this workspace's .git with what plant writes and answers what plant did.
+func (c *lockClone) breakPointer(t *testing.T, plant func(*testing.T, *lockClone, string) (string, func())) (says string, unstick func()) {
+	t.Helper()
+	pointer := filepath.Join(c.dir, ".git")
+	if err := os.Remove(pointer); err != nil {
+		t.Fatal(err)
+	}
+	return plant(t, c, pointer)
+}
+
+// withinBound runs fn in a goroutine of its own and fails the row unless it returns within a
+// bound, or if a read of /dev/zero, or of watched past a mebibyte, had to be ended
+// (endRunawayReads). A read unstick can let go is let go once the row has failed, as often as it
+// waits, so the goroutine returns with the row. fn calls nothing that fails the row.
+func withinBound(t *testing.T, log *lockedBuffer, watched string, unstick func(), fn func()) {
+	t.Helper()
+	stop := make(chan struct{})
+	ranAway := endRunawayReads(t, stop, watched)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn()
+	}()
+	bound := testwait.Bounded(t, 10*time.Second, time.Second)
+	select {
+	case <-done:
+	case <-time.After(bound):
+	unstuck:
+		for range 1000 {
+			unstick()
+			select {
+			case <-done:
+				break unstuck
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		close(stop)
+		t.Fatalf("the sweep did not return within %s; its log:\n%s", bound, log.String())
+	}
+	close(stop)
+	if ended := <-ranAway; ended > 0 {
+		t.Fatalf("the sweep read past where any pointer ends, and %d such read(s) had to be ended at end of file; its log:\n%s", ended, log.String())
+	}
+}
+
+// Case B of internal/workspace's gitWorktreeEntries table before the launcher starts: no entry's
+// gitdir names this workspace (its own entry's is gone), and its .git names no entry the walk can
+// take. The derivation refuses, naming the .git's own error, and not "serves no git worktree":
+// what is wrong is that file. The first role start's derivation refuses with the same reason, and
+// no lock is removed.
+//
+// The .git is read here, since no entry is the workspace's own, and only through the bounded
+// read: a fifo read with a plain open waits for a writer for ever with the sweep's lock held, a
+// link followed to /dev/zero runs away, and a link followed, or a file read past the bound,
+// names this workspace's entry and turns the refusal into case C's acceptance.
+func TestTheDerivationRefusesAPointerThatNamesNoEntryItCanRead(t *testing.T) {
+	for _, bad := range unusablePointers {
+		t.Run(bad.name, func(t *testing.T) {
 			c := newLockClone(t)
-			c.breakGitdir(t, bad.plant)
-			reason := c.unreadableEntry(bad.cause(filepath.Join(c.worktree, "gitdir")))
+			stale := c.lock("refs/heads/main.lock", "stale", time.Hour)
+			if err := os.Remove(filepath.Join(c.worktree, "gitdir")); err != nil {
+				t.Fatal(err)
+			}
+			says, unstick := c.breakPointer(t, bad.plant)
+			reason := c.noEntryNames(says)
+			t.Chdir(c.dir)
+			log := &lockedBuffer{}
+			proc := procRoot(t, os.Getpid())
+			var s *gitLockSweep
+			withinBound(t, log, filepath.Join(c.dir, ".git"), unstick, func() {
+				s = newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+				s.proc, s.recheck = proc, time.Millisecond
+				s.learn(context.Background(), c.dir)
+			})
+			requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
+				c.dir, reason))
+			requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep: %q", "the workspace "+c.dir+": "+reason))
+			if s.ws.Dir != "" {
+				t.Fatalf("a launcher whose .git names no entry gave its sweep the workspace %q; log:\n%s", s.ws.Dir, log.String())
+			}
+			if swept(stale) {
+				t.Fatalf("a sweep that derived no workspace removed %s; log:\n%s", stale, log.String())
+			}
+			if strings.Contains(log.String(), "serves no git worktree") {
+				t.Fatalf("the refusal says the clone serves no worktree, where what is wrong is the workspace's .git:\n%s", log.String())
+			}
+		})
+	}
+}
+
+// Case B of the table while the pod runs: a role breaks this workspace's .git and its own entry's
+// gitdir after the derivation. Each pass still sweeps the clone's git directory, its stale lock
+// gone each time, leaves the entry's locks, and names the .git's error once rather than once a
+// minute. Each pass is bounded, for the reasons the derivation's row above is.
+func TestTheSweepNamesAPointerThatNamesNoEntryOnceAndSweepsTheGitDirectory(t *testing.T) {
+	for _, bad := range unusablePointers {
+		t.Run(bad.name, func(t *testing.T) {
+			c := newLockClone(t)
 			t.Chdir(c.dir)
 			log := &lockedBuffer{}
 			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
-			requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
-				c.dir, reason))
-			if s.ws.Dir != "" {
-				t.Fatalf("a launcher whose own worktree entry is unreadable gave its sweep the workspace %q; log:\n%s", s.ws.Dir, log.String())
+			if s.ws.Dir == "" {
+				t.Fatalf("the launcher derived no workspace from a sound clone; its log:\n%s", log.String())
 			}
-			s.learn(context.Background(), c.dir)
-			requireLine(t, log, fmt.Sprintf("launcher: the git lock sweep: %q", "the workspace "+c.dir+": "+reason))
-			if strings.Contains(log.String(), "serves no git worktree") {
-				t.Fatalf("the refusal says the clone serves no worktree of a workspace whose entry is in place:\n%s", log.String())
+			s.proc, s.recheck = procRoot(t, os.Getpid()), time.Millisecond
+			entry := c.worktreeLock("index.lock", "ours", time.Hour)
+			if err := os.Remove(filepath.Join(c.worktree, "gitdir")); err != nil {
+				t.Fatal(err)
+			}
+			says, unstick := c.breakPointer(t, bad.plant)
+			line := fmt.Sprintf("launcher: the git lock sweep: %q",
+				c.noEntryNames(says)+"; the pass swept only the clone's git directory")
+			for range 3 {
+				stale := c.lock("index.lock", "stale", time.Hour)
+				withinBound(t, log, filepath.Join(c.dir, ".git"), unstick, func() { s.pass(context.Background(), false) })
+				requireRemoved(t, log, stale)
+				if swept(entry) {
+					t.Fatalf("the sweep removed %s, under an entry no gitdir names this workspace in; its log:\n%s", entry, log.String())
+				}
+			}
+			requireLine(t, log, line)
+			if count := strings.Count(log.String(), line); count != 1 {
+				t.Fatalf("three passes wrote the .git's line %d times, want once:\n%s", count, log.String())
+			}
+		})
+	}
+}
+
+// Case D of the table: this workspace's .git names a sibling's entry, whose gitdir is readable and
+// names that sibling, and no entry's gitdir names this workspace (its own entry's is gone). The
+// .git chooses the line and nothing else: the sibling's lock is kept, the clone's git directory is
+// swept each pass, and the line says no entry's gitdir names the workspace, once. A walk that took
+// the entry the .git names for this workspace's own would remove a lock of another workspace's
+// pod.
+func TestTheSweepKeepsTheLocksOfTheEntryItsPointerNamesWhenNoEntryIsItsOwn(t *testing.T) {
+	c := newLockClone(t)
+	t.Chdir(c.dir)
+	log := &lockedBuffer{}
+	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+	if s.ws.Dir == "" {
+		t.Fatalf("the launcher derived no workspace from a sound clone; its log:\n%s", log.String())
+	}
+	s.proc, s.recheck = procRoot(t, os.Getpid()), time.Millisecond
+	ours := c.worktreeLock("index.lock", "ours", time.Hour)
+	sibling := filepath.Join(c.gitDir, "worktrees", "infra-2")
+	c.plant(filepath.Join(sibling, "gitdir"), filepath.Join(filepath.Dir(c.dir), "infra-2", ".git")+"\n", 0)
+	theirs := c.plant(filepath.Join(sibling, "index.lock"), "another pod's", time.Hour)
+	if err := os.Remove(filepath.Join(c.worktree, "gitdir")); err != nil {
+		t.Fatal(err)
+	}
+	c.write(filepath.Join(c.dir, ".git"), "gitdir: "+sibling+"\n")
+	line := fmt.Sprintf("launcher: the git lock sweep: %q", "the clone of "+c.dir+": no git worktree entry's gitdir names the workspace "+c.dir+
+		", not even that of the entry "+sibling+", which its .git names; the pass swept only the clone's git directory")
+	for range 3 {
+		stale := c.lock("index.lock", "stale", time.Hour)
+		s.pass(context.Background(), false)
+		requireRemoved(t, log, stale)
+		for _, path := range []string{theirs, ours} {
+			if swept(path) {
+				t.Fatalf("the sweep removed %s, under an entry whose gitdir names no workspace of its own; its log:\n%s", path, log.String())
+			}
+		}
+	}
+	requireLine(t, log, line)
+	if count := strings.Count(log.String(), line); count != 1 {
+		t.Fatalf("three passes wrote the line %d times, want once:\n%s", count, log.String())
+	}
+}
+
+// Case A of the table: an entry's gitdir names this workspace, so the walk sweeps it and writes
+// no line, whatever the workspace's .git says — the .git is not read at all. A .git pointing at a
+// sibling's entry whose gitdir cannot be read is no reason to name that entry, in the launcher's
+// passes or in the init container's sweep (workspace.RemoveStaleGitLocks), which would otherwise
+// write a line about another workspace's entry and say it swept only the git directory, having
+// swept this workspace's entry too. And a .git no read could finish, a fifo among them, holds no
+// pass: nothing reads it.
+func TestTheSweepReadsNoPointerWhileThisWorkspacesEntryIsSound(t *testing.T) {
+	t.Run("a pointer at a sibling whose gitdir cannot be read", func(t *testing.T) {
+		c := newLockClone(t)
+		sibling := filepath.Join(c.gitDir, "worktrees", "infra-2")
+		if err := os.MkdirAll(sibling, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Mkfifo(filepath.Join(sibling, "gitdir"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		theirs := c.plant(filepath.Join(sibling, "index.lock"), "another pod's", time.Hour)
+		c.write(filepath.Join(c.dir, ".git"), "gitdir: "+sibling+"\n")
+		quiet := func(t *testing.T, text string) {
+			t.Helper()
+			for _, said := range []string{sibling, "the git lock sweep: ", "swept only"} {
+				if strings.Contains(text, said) {
+					t.Fatalf("the sweep wrote %q, of a workspace whose own entry it swept:\n%s", said, text)
+				}
+			}
+			if swept(theirs) {
+				t.Fatalf("the sweep removed %s, another workspace's lock:\n%s", theirs, text)
+			}
+		}
+
+		t.Run("the launcher's passes", func(t *testing.T) {
+			entry := c.worktreeLock("index.lock", "ours", time.Hour)
+			t.Chdir(c.dir)
+			log := &lockedBuffer{}
+			s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+			s.proc, s.recheck = procRoot(t, os.Getpid()), time.Millisecond
+			s.pass(context.Background(), true)
+			requireRemoved(t, log, entry)
+			entry = c.worktreeLock("index.lock", "ours", time.Hour)
+			s.pass(context.Background(), false)
+			requireRemoved(t, log, entry)
+			quiet(t, log.String())
+		})
+		t.Run("the init container's sweep", func(t *testing.T) {
+			entry := c.worktreeLock("index.lock", "ours", time.Hour)
+			ws, err := workspace.WorkspaceOf(c.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var lines []string
+			if err := workspace.RemoveStaleGitLocks(ws, time.Now(), func(line string) { lines = append(lines, line) }); err != nil {
+				t.Fatalf("the init container's sweep failed: %v", err)
+			}
+			text := strings.Join(lines, "\n")
+			if !swept(entry) {
+				t.Fatalf("the init container's sweep left %s; it wrote:\n%s", entry, text)
+			}
+			quiet(t, text)
+		})
+	})
+
+	for _, bad := range unusablePointers {
+		t.Run("a pointer that is "+bad.name, func(t *testing.T) {
+			c := newLockClone(t)
+			entry := c.worktreeLock("index.lock", "ours", time.Hour)
+			_, unstick := c.breakPointer(t, bad.plant)
+			t.Chdir(c.dir)
+			log := &lockedBuffer{}
+			proc := procRoot(t, os.Getpid())
+			var s *gitLockSweep
+			withinBound(t, log, filepath.Join(c.dir, ".git"), unstick, func() {
+				s = newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+				s.proc, s.recheck = proc, time.Millisecond
+				s.pass(context.Background(), false)
+			})
+			if s.ws.Dir != c.dir {
+				t.Fatalf("a launcher whose own entry is sound derived the workspace %q, want %q; log:\n%s", s.ws.Dir, c.dir, log.String())
+			}
+			requireRemoved(t, log, entry)
+			if strings.Contains(log.String(), "the git lock sweep: ") {
+				t.Fatalf("a pass over a workspace whose own entry is sound wrote a line of the walk:\n%s", log.String())
 			}
 		})
 	}

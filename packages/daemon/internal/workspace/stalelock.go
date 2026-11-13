@@ -20,10 +20,13 @@ import (
 // A directory that does not exist holds no locks and is no error. A .git or .git/worktrees that
 // is a symlink is refused before anything is answered, as gitWorktreeEntries refuses it.
 //
-// The one entry it cannot read and still answers for is the workspace's own, the one its .git
-// names: unswept names that entry and the cause, and the locks answered are the rest of the
-// clone's, the git directory's among them, since one unreadable file of the entry is no reason
-// to leave every other lock of the clone where it is. A caller reports unswept and goes on.
+// When no entry's gitdir names the workspace of a clone that has a git directory, unswept says
+// why, by the case of gitWorktreeEntries' table: the workspace's .git cannot be read or names no
+// entry (B), the entry it names cannot be read (C), or that entry's gitdir names another path
+// (D). The locks answered are then the git directory's alone, since no entry is the workspace's
+// own to walk, and the .git file chose only that line, never a lock. A clone with no git
+// directory, the init container's fresh disk, has no locks and nothing to say. A caller reports
+// unswept and goes on.
 //
 // The walk is answered only once the layout guard has held the workspace and its clone to the
 // directories Location names (guardWorkspace, refuseSymlinkedLayout), and this is the only way to
@@ -79,9 +82,9 @@ func GitLocksOf(workspace Workspace) (locks []string, unswept error, err error) 
 // anything is removed): the ones under the clone's git directory, apart from its worktree
 // entries, and the ones under the clone's worktree entries for workspace, another workspace's
 // entry keeping its locks. Each removal is logged with the lock's path and age, and a lock it
-// cannot remove is an error naming it, which fails the provisioning. The workspace's own entry,
-// when its gitdir cannot be read, is a line naming it and the cause after the removals, and fails
-// nothing: the clone's other locks are gone, and the entry's are left where they are.
+// cannot remove is an error naming it, which fails the provisioning. No entry whose gitdir names
+// the workspace (GitLocksOf's unswept) is a line saying why after the removals, and fails
+// nothing: the git directory's locks are gone, and every entry's are left where they are.
 //
 // A lock some process still holds must never be removed: two writers would then replace one file.
 // This caller removes each lock unasked because no process of the issue can hold one yet: it is a
@@ -104,7 +107,7 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 		}
 	}
 	if unswept != nil {
-		log(fmt.Sprintf("left the git locks of the workspace %s's own git worktree entry where they are: %v", workspace.Dir, unswept))
+		log(fmt.Sprintf("swept only the git directory of the workspace %s's clone: %v", workspace.Dir, unswept))
 	}
 	return nil
 }

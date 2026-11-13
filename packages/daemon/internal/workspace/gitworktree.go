@@ -33,23 +33,43 @@ const rootCommitID = "0000000000000000000000000000000000000000"
 const rootHeadRef = "ref: refs/jj/root"
 
 // gitWorktreeEntries is the admin directories of the shared clone's git worktrees registered at
-// dir: each <clone>/.git/worktrees/<id> whose gitdir file names dir's .git, dir as given or with its
-// symlinks resolved, as jj records it. git names an entry after the directory's base name, with a
-// number on a collision, so the id is read, never derived, and each entry's gitdir is read bounded
-// (readGitdir). A clone with no linked worktree, or a jj that colocates no workspace (0.44), has
-// none. A clone whose .git or .git/worktrees is a symlink is refused, the refusal naming the
-// clone's git directory: git never creates either as one, and each caller writes or removes files
-// in the entries, which a symlink a tree agent planted would place outside the clone.
+// dir, own: each <clone>/.git/worktrees/<id> whose gitdir file names dir's .git, dir as given or
+// with its symlinks resolved, as jj records it. git names an entry after the directory's base
+// name, with a number on a collision, so the id is read, never derived, and each entry's gitdir
+// is read bounded (readGitdir). A clone with no linked worktree, or a jj that colocates no
+// workspace (0.44), has none. A clone whose .git or .git/worktrees is a symlink is refused, the
+// refusal naming the clone's git directory: git never creates either as one, and each caller
+// writes or removes files in the entries, which a symlink a tree agent planted would place
+// outside the clone.
 //
-// An entry whose gitdir is missing names no worktree and is passed over. So is one whose gitdir
-// readGitdir refuses or fails to read, with one exception, which is answered as unread: the entry
-// dir's own .git names (`gitdir: <clone>/.git/worktrees/<id>`, read through readGitdir as well,
-// since a role can write it too, and parsed as restoreGitWorktree parses it, gitPointerTarget).
-// That entry is dir's, and its locks are ones a caller meant to reach and cannot, so unread names
-// the entry and the cause. Every other entry is another workspace's or nobody's: one role that
-// makes a sibling's gitdir unreadable — a fifo, a `chmod 000` — must not turn off a walk of every
-// other entry, so its failure is no error and no line. A .git of dir's that cannot be read, or
-// that names no entry, picks none out, and every unreadable entry is then passed over.
+// An entry whose gitdir is missing or cannot be read (readGitdir) names no workspace and is
+// passed over: one role that makes a sibling's gitdir unreadable — a fifo, a `chmod 000` — must
+// not turn off a walk of every other entry. unread is answered only when own is empty, and says
+// why no entry was dir's. Only then is dir's own .git read, the pointer (`gitdir:
+// <clone>/.git/worktrees/<id>`, read through readGitdir, since a role can write it too, and
+// parsed by gitPointerTarget), and only once (whyNoOwnEntry): a call that finds an own entry never
+// reads it. One rule places every answer, one line per case: the line unread carries, what
+// WorkspaceOf does, and what a pass removes — a clock pass of the launcher's sweep, which writes
+// the line once while it lasts, and the init container's sweep (RemoveStaleGitLocks), which
+// writes it once and fails nothing for it:
+//
+//	case own   the pointer                                           line written (unread)        WorkspaceOf             a pass removes
+//	A    some  anything, a sibling's entry too; it is not read       none                         accepts                 .git and own
+//	B    none  unreadable, or names no entry under .git/worktrees    the pointer's error          refuses with that line  .git
+//	C    none  names an entry whose gitdir is missing or unreadable  that entry and the cause     accepts                 .git
+//	D    none  names an entry whose gitdir names another path        no entry's gitdir names dir  refuses: serves none    .git
+//	-    none  not read: the clone has no .git, so nothing is yet    none                         refuses: no git dir     nothing
+//
+// The last row is the init container's fresh disk, which it sweeps before provisioning anything:
+// no clone is no entry of anyone's, and nothing to say.
+//
+// The pointer decides only which line is written, never which files are removed: what a sweep
+// removes is .git and own, after the layout guard, in every case. That is why C is accepted: the
+// clone is the layout's path and not the pointer's, the entry the pointer names is not walked,
+// and a roles container restarted over a disk where a role broke its entry's gitdir goes on
+// sweeping .git rather than having no workspace for its life. The causes C names are readGitdir's:
+// a fifo, a symlink, a socket, a device, a directory, larger than 4096 bytes, missing, or the
+// error.
 func gitWorktreeEntries(cloneDir, dir string) (own []string, unread error, err error) {
 	gitDir := filepath.Join(cloneDir, ".git")
 	admin := filepath.Join(gitDir, "worktrees")
@@ -58,29 +78,31 @@ func gitWorktreeEntries(cloneDir, dir string) (own []string, unread error, err e
 		switch {
 		case err == nil && info.Mode()&fs.ModeSymlink != 0:
 			return nil, nil, fmt.Errorf("refusing the git worktrees of %s: %s is a symlink, which git never creates", gitDir, path)
+		case errors.Is(err, fs.ErrNotExist) && path == gitDir:
+			return nil, nil, nil
 		case err != nil && !errors.Is(err, fs.ErrNotExist):
 			return nil, nil, fmt.Errorf("read git worktrees: %w", err)
 		}
 	}
 	entries, err := os.ReadDir(admin)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil, nil
-	}
-	if err != nil {
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
 		return nil, nil, fmt.Errorf("read git worktrees: %w", err)
-	}
-	// git writes a relative gitdir (jj asks for relative worktree paths; git 2.48 and later honour
-	// it) between real paths, so it is resolved from the entry's real directory.
-	if admin, err = filepath.EvalSymlinks(admin); err != nil {
-		return nil, nil, fmt.Errorf("resolve git worktrees: %w", err)
+	default:
+		// git writes a relative gitdir (jj asks for relative worktree paths; git 2.48 and later
+		// honour it) between real paths, so it is resolved from the entry's real directory.
+		if admin, err = filepath.EvalSymlinks(admin); err != nil {
+			return nil, nil, fmt.Errorf("resolve git worktrees: %w", err)
+		}
 	}
 	resolved, err := resolvedPath(dir)
 	if err != nil {
 		return nil, nil, err
 	}
 	want := []string{filepath.Join(filepath.Clean(dir), ".git"), filepath.Join(resolved, ".git")}
-	pointer := filepath.Join(dir, ".git")
-	named := pointedEntry(dir)
+	// unreadable is each passed-over entry and why, which only case C reads.
+	var unreadable map[string]error
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
@@ -88,9 +110,10 @@ func gitWorktreeEntries(cloneDir, dir string) (own []string, unread error, err e
 		entryDir := filepath.Join(admin, entry.Name())
 		gitdir, err := readGitdir(filepath.Join(entryDir, "gitdir"))
 		if err != nil {
-			if entryDir == named && !errors.Is(err, fs.ErrNotExist) {
-				unread = fmt.Errorf("the git worktree entry %s, which %s names, cannot be read: %w", entryDir, pointer, err)
+			if unreadable == nil {
+				unreadable = make(map[string]error)
 			}
+			unreadable[entryDir] = err
 			continue
 		}
 		target := strings.TrimSuffix(gitdir, "\n")
@@ -101,29 +124,72 @@ func gitWorktreeEntries(cloneDir, dir string) (own []string, unread error, err e
 			own = append(own, entryDir)
 		}
 	}
-	return own, unread, nil
+	if len(own) > 0 {
+		return own, nil, nil
+	}
+	return nil, whyNoOwnEntry(dir, admin, entries, unreadable), nil
 }
 
-// pointedEntry is the worktree entry the workspace at dir's .git file names, resolved as
-// gitWorktreeEntries resolves the entries it lists, or nothing when that file cannot be read
-// (readGitdir) or names no entry (gitPointerTarget).
-func pointedEntry(dir string) string {
-	pointer, err := readGitdir(filepath.Join(dir, ".git"))
-	if err != nil {
-		return ""
+// ownEntryCase is the case of gitWorktreeEntries' table an answer is.
+type ownEntryCase int
+
+const (
+	unreadNone        ownEntryCase = iota // A, or a clone with no .git: unread is nil
+	pointerUnusable                       // B: the pointer names no entry it can
+	pointedUnreadable                     // C: the pointer names an entry whose gitdir cannot be read
+	pointedForeign                        // D: the pointer names an entry whose gitdir names another path
+)
+
+// noOwnEntry is gitWorktreeEntries' unread: the case of its table (B, C or D) and the line.
+type noOwnEntry struct {
+	which ownEntryCase
+	err   error
+}
+
+func (e *noOwnEntry) Error() string { return e.err.Error() }
+func (e *noOwnEntry) Unwrap() error { return e.err }
+
+// caseOf is the case of gitWorktreeEntries' table that its unread places the answer in.
+func caseOf(unread error) ownEntryCase {
+	var why *noOwnEntry
+	if errors.As(unread, &why) {
+		return why.which
 	}
-	target, _, err := gitPointerTarget(dir, []byte(pointer))
+	return unreadNone
+}
+
+// whyNoOwnEntry is gitWorktreeEntries' unread when no entry of admin is dir's, by the case of its
+// table: the one read of dir's own .git, through readGitdir, parsed by gitPointerTarget and
+// resolved as the entries are, and the entry it names among those listed. unreadable is why each
+// passed-over entry could not be read.
+func whyNoOwnEntry(dir, admin string, entries []fs.DirEntry, unreadable map[string]error) error {
+	pointerPath := filepath.Join(dir, ".git")
+	none := "no git worktree entry's gitdir names the workspace " + filepath.Clean(dir)
+	pointer, err := readGitdir(pointerPath)
 	if err != nil {
-		return ""
+		return &noOwnEntry{pointerUnusable, fmt.Errorf("%s, and its .git, which would name its entry, cannot be read: %w", none, err)}
 	}
-	return target
+	named, _, err := gitPointerTarget(dir, []byte(pointer))
+	if err != nil {
+		return &noOwnEntry{pointerUnusable, fmt.Errorf("%s, and its .git, which would name its entry, names none: %w", none, err)}
+	}
+	if cause, ok := unreadable[named]; ok {
+		return &noOwnEntry{pointedUnreadable, fmt.Errorf("the git worktree entry %s, which %s names, cannot be read: %w", named, pointerPath, cause)}
+	}
+	listed := filepath.Dir(named) == admin && slices.ContainsFunc(entries, func(entry fs.DirEntry) bool {
+		return entry.IsDir() && entry.Name() == filepath.Base(named)
+	})
+	if listed {
+		return &noOwnEntry{pointedForeign, fmt.Errorf("%s, not even that of the entry %s, which its .git names", none, named)}
+	}
+	return &noOwnEntry{pointerUnusable, fmt.Errorf("%s, and its .git, which would name its entry, names %s, which is no entry under %s", none, named, admin)}
 }
 
 // gitPointerTarget is the git worktree entry a workspace's .git file names, pointer being that
 // file's content and dir the workspace: the path after `gitdir: `, a relative one taken from dir's
 // real directory, with the symlinks of its longest existing prefix resolved. It answers dir's real
-// directory too, which restoreGitWorktree writes into the entry it restores. Both readers of the
-// file parse it here, so the two cannot disagree about which entry is a workspace's own.
+// directory too, which restoreGitWorktree writes into the entry it restores. Both readers parse it
+// with this function.
 func gitPointerTarget(dir string, pointer []byte) (target, realDir string, err error) {
 	target, ok := strings.CutPrefix(strings.TrimSpace(string(pointer)), "gitdir: ")
 	if !ok {
@@ -154,14 +220,14 @@ const gitdirLimit = 4096 + 1
 // special file or taking a terminal for PID 1's own, held to a regular file by the descriptor it
 // opened, and read only up to gitdirLimit, as Created reads the workspace's creation record. A
 // workspace's own .git, the pointer to its entry, is on the same volume and is read here too
-// (pointedEntry).
+// (whyNoOwnEntry).
 //
 // Anything git does not write there is refused in words, naming the file: a symlink (which
 // O_NOFOLLOW answers with ELOOP, a link to /dev/zero among them), a socket (which open answers
 // with ENXIO), a fifo, a device, a directory, or a file larger than the bound. A missing file is
 // the open's own error, and any other failure to read it is the error it is. None of them is a
-// refusal of the walk: gitWorktreeEntries passes such an entry over and reports it only when it
-// is the workspace's own.
+// refusal of the walk: gitWorktreeEntries passes such an entry over, and names it only when no
+// entry is the workspace's own and the workspace's .git names that one (its case C).
 func readGitdir(path string) (string, error) {
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
 	switch {
@@ -216,14 +282,17 @@ func readGitdir(path string) (string, error) {
 // Five things are refused, each naming the path it derived, and none falls back to the
 // workspace's own files: a dir the layout does not account for, a layout directory below the
 // state directory that is a symlink (guardWorkspace, which every later pass runs again), a
-// derived clone with no git directory, a derived git directory whose entry for dir — the one
-// dir's .git names — cannot be read, which is refused naming that entry and the cause
-// (gitWorktreeEntries), and a derived git directory serving no git worktree of dir otherwise.
-// The last two are a check on the derivation and not what holds anything out — the path is the
-// layout's, not a file's — and the last costs the two real layouts it refuses: a colocated clone
-// whose own working copy is dir, which git keeps as the main worktree and registers under no
-// entry, and a jj that colocates no workspace at all (0.44, gitWorktreeEntries). Such a
-// workspace is one a caller is answered a reason for rather than one it sweeps.
+// derived clone with no git directory, and the two cases of gitWorktreeEntries' table it refuses
+// when no entry's gitdir names dir — dir's .git that cannot be read or names no entry (B), named
+// with that file's own error, and a git directory serving no git worktree of dir (D). The .git
+// that names an entry whose gitdir cannot be read (C) is accepted: the clone is still the
+// layout's, a pass removes nothing under that entry, and a roles container restarted over such a
+// disk goes on sweeping the clone's git directory, its first pass writing that entry and the
+// cause. The two refusals are a check on the derivation and not what holds anything out — the
+// path is the layout's, not a file's — and they cost the two real layouts they refuse: a
+// colocated clone whose own working copy is dir, which git keeps as the main worktree and
+// registers under no entry, and a jj that colocates no workspace at all (0.44). Such a workspace
+// is one a caller is answered a reason for rather than one it sweeps.
 func WorkspaceOf(dir string) (Workspace, error) {
 	dir = filepath.Clean(dir)
 	if !filepath.IsAbs(dir) {
@@ -240,17 +309,17 @@ func WorkspaceOf(dir string) (Workspace, error) {
 	if err != nil {
 		return Workspace{}, err
 	}
-	if len(own) == 0 {
-		if unread != nil {
-			return Workspace{}, fmt.Errorf("the clone of %s: %w", dir, unread)
-		}
-		gitDir := filepath.Join(workspace.Clone, ".git")
-		if _, err := os.Stat(gitDir); err != nil {
-			return Workspace{}, fmt.Errorf("the clone of %s has no git directory at %s: %w", dir, gitDir, err)
-		}
-		return Workspace{}, fmt.Errorf("the git directory %s of the clone of %s serves no git worktree of it", gitDir, dir)
+	if len(own) > 0 || caseOf(unread) == pointedUnreadable {
+		return workspace, nil
 	}
-	return workspace, nil
+	gitDir := filepath.Join(workspace.Clone, ".git")
+	if _, err := os.Stat(gitDir); err != nil {
+		return Workspace{}, fmt.Errorf("the clone of %s has no git directory at %s: %w", dir, gitDir, err)
+	}
+	if caseOf(unread) == pointerUnusable {
+		return Workspace{}, fmt.Errorf("the clone of %s: %w", dir, unread)
+	}
+	return Workspace{}, fmt.Errorf("the git directory %s of the clone of %s serves no git worktree of it", gitDir, dir)
 }
 
 // resolvedPath is path, made absolute, with the symlinks of its longest existing prefix resolved.
@@ -274,11 +343,17 @@ func resolvedPath(path string) (string, error) {
 }
 
 // removeGitWorktree deletes the shared clone's git worktree entry for dir, whose directory is gone:
-// what `git worktree prune` does to that one entry, locked or not, and nothing to any other.
+// what `git worktree prune` does to that one entry, locked or not, and nothing to any other. An
+// entry dir's .git names whose gitdir cannot be read (gitWorktreeEntries' case C) is that error:
+// the entry is dir's, and removing nothing would say nothing. No entry for dir at all (B, D) is
+// nothing to remove, and no error.
 func removeGitWorktree(cloneDir, dir string) error {
-	own, _, err := gitWorktreeEntries(cloneDir, dir)
+	own, unread, err := gitWorktreeEntries(cloneDir, dir)
 	if err != nil {
 		return err
+	}
+	if caseOf(unread) == pointedUnreadable {
+		return unread
 	}
 	for _, entry := range own {
 		if err := os.RemoveAll(entry); err != nil {
@@ -290,11 +365,16 @@ func removeGitWorktree(cloneDir, dir string) error {
 
 // lockGitWorktree locks the shared clone's git worktree entry for dir, as `git worktree lock` does,
 // so a bare `git worktree prune` from a process that cannot see dir skips it. An entry already
-// locked keeps its lock and reason.
+// locked keeps its lock and reason. An entry dir's .git names whose gitdir cannot be read
+// (gitWorktreeEntries' case C) is that error, as for removeGitWorktree: under the tmux runtime
+// nothing else would say the entry went unlocked.
 func lockGitWorktree(cloneDir, dir string) error {
-	own, _, err := gitWorktreeEntries(cloneDir, dir)
+	own, unread, err := gitWorktreeEntries(cloneDir, dir)
 	if err != nil {
 		return err
+	}
+	if caseOf(unread) == pointedUnreadable {
+		return unread
 	}
 	for _, entry := range own {
 		lock, err := os.OpenFile(filepath.Join(entry, "locked"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
