@@ -141,7 +141,7 @@ func TestThePhaseEntryNumbersAreStrippedBelowTheirContract(t *testing.T) {
 // phaseEntriesContract is the contract whose entry in version.go added the two numbers, and this
 // daemon's own contract is never below it: a caller at this contract is served them.
 func TestPhaseEntryContractIsTheContractThatAddedTheNumbers(t *testing.T) {
-	const addedPhaseEntries = 96
+	const addedPhaseEntries = 94
 	if phaseEntriesContract != addedPhaseEntries {
 		t.Fatalf("phaseEntriesContract = %d, want %d, the contract whose entry in version.go added the issues' phase entry and given entry",
 			phaseEntriesContract, addedPhaseEntries)

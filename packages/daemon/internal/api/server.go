@@ -892,13 +892,13 @@ const leakCheckCauseContract = 87
 
 // phaseEntriesContract is the daemon contract that added each issue's `phaseEntry` and
 // `givenEntry`, the entry the role of its current phase stands on and the entry that role was
-// given (version.go's 96). A plugin before it is served the state without the two keys: one
+// given (version.go's 94). A plugin before it is served the state without the two keys: one
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
 // reading at all. It is the highest of the fourteen bands, this daemon's own contract, so the
 // only caller served the two keys is one at it.
-const phaseEntriesContract = 96
+const phaseEntriesContract = 94
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

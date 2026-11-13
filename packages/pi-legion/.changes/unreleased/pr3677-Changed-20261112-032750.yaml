@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The legion tool names the code of a completion refused for its phase entry HANDOFF_STALE_ENTRY, the code that replaces the one named for the minted assignment, and says what it means: the completion is of an entry behind the one the role''s phases row names, nothing was recorded, and the daemon sends the current entry''s task by itself. The instruction the tool gives for that code is word for word the one the daemon''s refusal ends with. The plugin declares daemon API contract 96.'
+body: 'The legion tool names the code of a completion refused for its phase entry HANDOFF_STALE_ENTRY, the code that replaces the one named for the minted assignment, and says what it means: the completion is of an entry behind the one the role''s phases row names, nothing was recorded, and the daemon sends the current entry''s task by itself. The instruction the tool gives for that code is word for word the one the daemon''s refusal ends with. The plugin declares daemon API contract 94.'
 time: 2026-11-12T03:27:50.438427098Z
 custom:
     Issue: pr3677

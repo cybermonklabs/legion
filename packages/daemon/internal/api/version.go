@@ -1269,7 +1269,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 96: INFRA-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
+// 94: INFRA-2800 (cybermonklabs/legion) -- a phase entry is a numbered fact of the record, and
 // each issue of `GET /legion/v1/state` carries the two numbers that say whether its role holds
 // the work that entry names: `phaseEntry`, the entry the role of the issue's current phase
 // stands on (`record.PhaseRow.Entry`), and `givenEntry`, the entry of the last task that role's
@@ -1284,7 +1284,7 @@ package api
 // issue and not of `api.PhaseView` because a `phases` row exists for a role whose claim row does
 // not, where `PhaseView.Claim` is a required value no reader parses empty.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 96 is served the issues without both keys (api's stateFor,
+// contract below 94 is served the issues without both keys (api's stateFor,
 // withoutPhaseEntries), as a caller below 87 is served every claim view without
 // `leakCheckCause` (withoutLeakCheckCause), one below 85 every issue without the one rendered
 // answer `why` and every member of the admission line with its `place` and its `length` alone
@@ -1296,7 +1296,7 @@ package api
 // the gated steps, one below 53 a body with no wakes waiting, one below 51 the issues without
 // the admission's trees and each issue's tree, one below 49 without the memory draw and one
 // below 46 without the claim views' update rounds; the fourteen compose, and every reader
-// from 96 on takes both keys as optional. A plugin from 58 through 95 does not refuse them, as
+// from 94 on takes both keys as optional. A plugin from 58 through 93 does not refuse them, as
 // a plugin before one of the earlier contracts above refuses its own: every answer-side schema
 // of `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
 // that package's own test holds it to. The strip is still what serves such a caller: one that
@@ -1314,23 +1314,24 @@ package api
 // which `packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two sides to.
 // (This entry took 77 against a base that declared 68 and held 77 through three forward merges;
 // it took 86 at the fourth such merge, 87 at the fifth and 93 at the push of that fifth merge,
-// and it takes 96 at the sixth, of 2026-11-13. That merge brought main in at 0b297211 —
+// and 96 at the sixth, of 2026-11-13, which brought main in at 0b297211 —
 // dispatch://INFRA-3219's own #3939, whose `const DaemonAPIVersion` is the 87 right above, so 87
-// is the base's now. 93 is not this change's to keep either: #3937 declares it too. The reading
-// behind 96, of `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 139 open
-// pull requests of cybermonklabs/legion at 2026-11-13T04:20Z, gives above the base's 87: 88
-// (#3730), 89 (#3659), 90 (#3830), 91 (3 heads), 92 (#3715), 93 (#3937, and this branch's own
-// pushed head), 94 (#3708) and 95 (#3575); at the base's number and below it, 87 (#2731 and
-// #2945), 86 (28 heads), 75 (2 heads), 74 (1 head), 73 (4 heads), 71 (1 head), 68 (8 heads) and
-// 82 heads below 68. So 88 through 95 are each claimed by an open head other than this one
-// and 96 is the lowest free number above the base, which is the number this entry takes: a
-// release declaring any of 88 to 95 without these shapes would land first and force the
-// renumber then, which is what
+// is the base's now. It takes 94 at the push of that sixth merge. The reading behind 96, of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every one of the 139 open pull requests of
+// cybermonklabs/legion at 2026-11-13T04:20Z, found 96 free; #2731 took it between that reading
+// and the next. That next reading, of the same constant at refs/pull/<n>/head for every one of
+// the 140 open pull requests at 2026-11-13T05:54Z, gives above the base's 87: 88 (#3730), 89
+// (#3659), 90 (#3830), 91 (#3519, #3573 and #3712), 92 (#3715), 93 (#3937), 96 (#2731, and
+// this branch's own pushed head), 97 (#3575) and 98 (#3708), and 87 itself at 7 heads; no head
+// declares 94 or 95. So 94 is the lowest free number above the base, which is the number this
+// entry takes: a release declaring any of 88 to 93 without these shapes would land first and
+// force the renumber then, which is what
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// records. The reading of 2026-11-12T22:45Z found 93 free and #3937 took it in between, which
-// is why the census is taken at the head being pushed and never before the merge. That reading
-// is of this file at refs/pull/<n>/head for every open pull request, not of a file list: GitHub
-// cuts a pull request's file list short, so one that changes more files than the page holds is
-// read as well rather than passed over. Read the base's own number and every open pull request
-// again at the next merge rather than from this line.)
-const DaemonAPIVersion = 96
+// records. The reading of 2026-11-12T22:45Z found 93 free and #3937 took it in between, and the
+// reading of 04:20Z found 96 free and #2731 took it in between, which is why the census is
+// taken at the head being pushed and never before the merge. That reading is of this file at
+// refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
+// request's file list short, so one that changes more files than the page holds is read as
+// well rather than passed over. Read the base's own number and every open pull request again
+// at the next merge rather than from this line.)
+const DaemonAPIVersion = 94

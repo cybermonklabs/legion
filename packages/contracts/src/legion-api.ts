@@ -685,13 +685,13 @@ const legionIssue = z.object({
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
   /** The entry the role of the issue's current phase stands on, and the entry that role was last
-   * given a task of (contract 96). The daemon sends the entry's own work to a role whose given
+   * given a task of (contract 94). The daemon sends the entry's own work to a role whose given
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. Both are absent together for an issue whose current phase names no phase
    * worker role — a root writing its design — and each is absent where it is 0, which is a role
    * no entry has been raised for and one the daemon holds no claim row of; a daemon before
-   * contract 96 writes neither, and a caller in a pod whose plugin declares a contract below 96
+   * contract 94 writes neither, and a caller in a pod whose plugin declares a contract below 94
    * is served the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader
    * takes both as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
