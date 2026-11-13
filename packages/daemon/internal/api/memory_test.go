@@ -122,9 +122,9 @@ var (
 // neither the cause, nor either entry number, nor the held list, nor a repository correction; a
 // pod from 87 to 93 the claim views' `leakCheckCause` too, and still neither entry number nor
 // the held list nor a repository correction; a pod from 94 to 97 the two entry numbers too, and
-// still no held list and no repository correction; a pod from 98 to 105 the held list too, and
+// still no held list and no repository correction; a pod from 98 to 106 the held list too, and
 // still nothing of a repository correction; a pod below 46 none of the sixteen; and a pod at
-// 106, this daemon's declared contract, a pod whose claims record no contract and a caller in no
+// 107, this daemon's declared contract, a pod whose claims record no contract and a caller in no
 // pod — the operator's `legion state`, whose memory line reads the draws, whose queue line reads
 // the wakes and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
@@ -196,7 +196,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// at 98 or above is served the list and every older pod is not.
 		held bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record (repositoryCorrectionContract, 106), this daemon's own contract.
+		// left on its record (repositoryCorrectionContract, 107), this daemon's own contract.
 		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -267,7 +267,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 94 to 97, from phaseEntriesContract to below heldContract: the two entry
 		// numbers are served too, and the held list and the four repository keys are held back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
-		// The band from 98 to 105, from heldContract to below repositoryCorrectionContract, the
+		// The band from 98 to 106, from heldContract to below repositoryCorrectionContract, the
 		// last band under the declared contract: the held list is served too, and the four
 		// repository keys are the ones held back. Its two rows are its two edges.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},

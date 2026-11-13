@@ -222,7 +222,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// plugin is not.
 		held bool
 		// correction is whether the caller is served what a correction of an issue's repository
-		// left on its record, the four keys repositoryCorrectionContract added at 106, this
+		// left on its record, the four keys repositoryCorrectionContract added at 107, this
 		// daemon's own contract, so a pod at it is served them and a pod still running an older
 		// plugin is not.
 		correction bool

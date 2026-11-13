@@ -1377,7 +1377,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 106: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 107: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -1398,7 +1398,7 @@ package api
 // and its production check — and what that work is called, "the testing phase of LEGION-208" or
 // "the production check of LEGION-208", empty when nothing is owed. The end-of-turn reminder
 // renders that answer in both harnesses and keeps no model of the phase of its own
-// (dispatch://INFRA-2746). A plugin below 106 calls no such route,
+// (dispatch://INFRA-2746). A plugin below 107 calls no such route,
 // and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -1415,19 +1415,22 @@ package api
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
 // Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
 // writes: a row it keeps carries no sequence and its own clock, as before this release.
-// (This entry takes 106. It took 95 at the fifth forward merge of 2026-11-13, when main declared
+// (This entry takes 107. It took 95 at the fifth forward merge of 2026-11-13, when main declared
 // 87, held 95 through the sixth, which brought main in at 045ee0762538, #3677, declaring 94, and
 // took 101 at that sixth merge. The seventh brings main in at 0fde2dcff6e4, #3707, which declares
 // 98, the entry right above this one, landed by #3708. The reading of 2026-11-13T13:43:48Z, with
 // main declaring 98, still found 101 free. The reading of 2026-11-13T13:47:56Z found #3659
-// declaring 105, and likely to land before this change, beside the other open heads declaring
-// 37, 61, 71, 86 and 96 below the base and 99, 100 (two heads), 102, 103 and 104 (two heads)
-// above it. 101 is still free, but a release at 105 landing first would put this entry below
-// its base and force the renumber then, so this entry takes 106, the lowest number above 105
-// that no other open head declares. A reading is of this file at refs/pull/<n>/head for every
-// open pull request, not of a file list: GitHub cuts a pull request's file list short, so one
-// that changes more files than the page holds answers without this path. Read the base's own
-// number and every open pull request again at the next merge rather than from this line, as
+// declaring 105, and likely to land before this change, so this entry took 106, the lowest
+// number above 105 that no other open head declared then: a release at 105 landing first would
+// put an entry at 101 below its base and force the renumber then. The reading of
+// 2026-11-13T14:18:53Z found #3730 and #3793 declaring 106, beside the other open heads
+// declaring 37 (#2213), 61 (#2230), 86 (#3534) and 96 (#2731) below the base and, above it, 99
+// (#3575), 100 (#3573, #3715), 103 (#3519), 104 (#3830, #3937) and 105 (#3659). So 107 is the
+// lowest number above every number another open head declares, and this entry takes it. A
+// reading is of this file at refs/pull/<n>/head for every open pull request, not of a file list:
+// GitHub cuts a pull request's file list short, so one that changes more files than the page
+// holds answers without this path. Read the base's own number and every open pull request again
+// at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 106
+const DaemonAPIVersion = 107

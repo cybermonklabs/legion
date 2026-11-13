@@ -893,7 +893,7 @@ const recordFieldsContract = 75
 // number is the one DaemonAPIVersion takes for these four keys, and version.go's entry for it
 // records how that number was chosen. It is the highest of the sixteen bands, this daemon's own
 // contract, so the only caller served the four keys is one at it.
-const repositoryCorrectionContract = 106
+const repositoryCorrectionContract = 107
 
 // carriesRepositoryCorrection is whether any issue of state carries one of the four keys
 // repositoryCorrectionContract added. Like the gated steps they are written only where there is
