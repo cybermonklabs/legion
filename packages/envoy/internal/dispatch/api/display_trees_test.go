@@ -161,9 +161,12 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	}
 	// A thread of alice's that somebody else wrote in, so the replies read below has a row of its
 	// own. Its subject is the first line of the comment above, which the Inbox draws through the
-	// one renderer every body is drawn with (web/src/features/inbox/ThreadTitle.tsx).
+	// one renderer every body is drawn with (web/src/features/inbox/ThreadTitle.tsx). The reply
+	// says what the comment above says, because the event-log row below holds every
+	// comment.created event to one expected reading: a second body there would be a second
+	// expectation, and this row needs a reply rather than a different text.
 	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
-		"body": "Friday **works** for me.", "reply_to": commentID,
+		"body": commentBody, "reply_to": commentID,
 	})
 
 	// Each row is read twice: the live answer carries the tree, and the OpenAPI document's own
