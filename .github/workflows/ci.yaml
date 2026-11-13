@@ -1544,6 +1544,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/**'
               # docs/block_pointer_links_test.go imports pmdoc/pmdoctest.
               - 'packages/envoy/internal/dispatch/pmdoc/pmdoctest/*'
+              # docs/schema_switch_socket_test.go installs a store schema through pmdoc/schemanodes.
+              - 'packages/envoy/internal/dispatch/pmdoc/schemanodes/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/store/*'
               # internal/dispatch/store embeds every migration.
