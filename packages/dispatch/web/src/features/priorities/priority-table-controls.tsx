@@ -1,7 +1,7 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import type { Table } from "@tanstack/react-table";
 import type { ReactNode } from "react";
-import type { DisplayRow, LineProps } from "../../components/DataTable";
+import type { DisplayRow, LineProps, RowNoun } from "../../components/DataTable";
 import {
   borderDefault,
   surfaceBg,
@@ -76,8 +76,8 @@ export function GroupHeadingRow<Row>({
 }: LineProps & {
   columns: number;
   entry: DisplayRow<Row>;
-  /** What a row of this table is called, in the singular. */
-  noun: string;
+  /** What a row of this table is called, singular and plural. */
+  noun: RowNoun;
   /** The heading as the reader sees it, where the column spells it differently. */
   show?: (value: string) => string;
 }): ReactNode {
@@ -86,10 +86,8 @@ export function GroupHeadingRow<Row>({
   const heading = show?.(value) ?? value;
   const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped()).length;
   const here = shown ?? leaves;
-  const count =
-    here === leaves
-      ? `${leaves} ${leaves === 1 ? noun : `${noun}s`}`
-      : `${here} of ${leaves} ${noun}s`;
+  const counted = `${leaves} ${leaves === 1 ? noun.one : noun.many}`;
+  const count = here === leaves ? counted : `${here} of ${counted}`;
   return (
     <tr className={surfaceMutedBg} data-index={index} ref={measure}>
       <td className="px-2 py-2" colSpan={columns}>

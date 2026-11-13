@@ -260,7 +260,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
             entry={entry}
             index={index}
             measure={measure}
-            noun="priority"
+            noun={{ many: "priorities", one: "priority" }}
           />
         )}
         renderRow={({ row, index, measure }) => (

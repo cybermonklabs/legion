@@ -4,6 +4,7 @@ import { type ReactNode, type RefObject, useCallback, useRef, useState } from "r
 import { useSearchParams } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
 import { AnchoredPanel } from "../../components/AnchoredPanel";
+import type { RowNoun } from "../../components/DataTable";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
@@ -55,7 +56,7 @@ export function ColumnFilter<TData>({
   counts: ReadonlyMap<string, number>;
   /** What one row of this table is, as `IssueTablePager` takes it: this menu says how many
    *  rows each value holds, and a table of priorities holds priorities. */
-  noun: { readonly one: string; readonly many: string };
+  noun: RowNoun;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** The values whose rows are not loaded yet: each says `load` rather than count them as
@@ -398,7 +399,7 @@ export function IssueTablePager<TData>({
   /** What one row of this table is, singular and plural, for the count this pager prints: a
    *  table of priorities counts priorities, and a reader told "22 of 22 issues" under a list
    *  of priorities is told the wrong thing about what they are reading. */
-  noun: { readonly one: string; readonly many: string };
+  noun: RowNoun;
   table: Table<TData>;
   pagerRef: RefObject<HTMLDivElement | null>;
 }): ReactNode {

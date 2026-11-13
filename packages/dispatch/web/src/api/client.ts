@@ -1167,12 +1167,6 @@ export class DispatchApiClient {
     return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
   }
 
-  /** `DELETE /api/v1/priorities/{id}`: the priority's state becomes `gone`, so the listing
-   *  answers without it while its history still names who ended it. */
-  async deletePriority(id: string, bounds: WriteBounds): Promise<void> {
-    await this.remove("/api/v1/priorities/{id}", { id }, bounds);
-  }
-
   /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
    *  write of its title, description, owner, order, state and visibility, and each `advances`
    *  relation an issue asserted or retracted on it, with the actor who stated it and when. A

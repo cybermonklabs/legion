@@ -265,6 +265,13 @@ export interface LineProps {
   readonly measure: (element: Element | null) => void;
 }
 
+/** What one row of a table is called, singular and plural. Both are spelled out because no
+ *  rule turns one into the other: "priority" is "priorities", never "prioritys". */
+export interface RowNoun {
+  readonly one: string;
+  readonly many: string;
+}
+
 export interface DataTableProps<Row> {
   readonly model: DataTableModel<Row>;
   /** The table's accessible name. */
@@ -292,7 +299,7 @@ export interface DataTableProps<Row> {
    *  `{ one: "issue", many: "issues" }` for the issues table, `{ one: "priority", many:
    *  "priorities" }` for the priorities table. Every caller says its own, because only the
    *  caller knows what its rows are. */
-  readonly noun: { readonly one: string; readonly many: string };
+  readonly noun: RowNoun;
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
 }

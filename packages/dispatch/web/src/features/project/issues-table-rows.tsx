@@ -2,6 +2,7 @@ import { flexRender, type Header, type Row } from "@tanstack/react-table";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueSummary } from "../../api/types";
+import type { RowNoun } from "../../components/DataTable";
 import {
   borderDefault,
   focusVisibleRing,
@@ -45,7 +46,7 @@ export function TableHeaderCell<TData>({
   dragColumn: string | undefined;
   header: Header<TData, unknown>;
   /** What one row of this table is, which this cell's filter menu counts in. */
-  noun: { readonly one: string; readonly many: string };
+  noun: RowNoun;
   openFilter: string | undefined;
   /** The columns in the order they are shown, which a drop rewrites. */
   order: readonly string[];

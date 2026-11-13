@@ -414,3 +414,33 @@ test("a fault row tells no reader that an issue nobody claims is claimed", async
     expect(cellUnder("CORE-2")).toContain("bob");
   }
 });
+
+test("a grouped table counts each group in the plural its rows are called by", async () => {
+  const user = userEvent.setup();
+  page(
+    body({
+      priorities: [
+        priority("legion-first", { title: "Legion works reliably first" }),
+        priority("oss-verify", { title: "OSS Verify" }),
+      ],
+      work_under_no_priority: {
+        by_project: { CORE: 2 },
+        count: 2,
+        issues: [faultIssue("CORE-1"), faultIssue("CORE-2")],
+      },
+    })
+  );
+  await screen.findByRole("row", { name: "P1 Legion works reliably first" });
+  const groupBy = (region: string) =>
+    within(screen.getByRole("region", { name: region })).getByRole("combobox", {
+      name: /^Group by/,
+    });
+  // No rule makes a plural from a singular: adding "s" to "priority" wrote "2 prioritys", so each
+  // table names both words, as its pager does.
+  await user.selectOptions(groupBy("Priorities"), "owner");
+  expect(
+    await screen.findByRole("button", { name: "Collapse INFRA controller, 2 priorities" })
+  ).toBeDefined();
+  await user.selectOptions(groupBy("In flight under no priority"), "project");
+  expect(await screen.findByRole("button", { name: "Collapse CORE, 2 issues" })).toBeDefined();
+});

@@ -218,7 +218,7 @@ export function FaultList({
             entry={entry}
             index={index}
             measure={measure}
-            noun="issue"
+            noun={{ many: "issues", one: "issue" }}
             show={(value) => (entry.row.groupingColumnId === "status" ? statusText(value) : value)}
           />
         )}
