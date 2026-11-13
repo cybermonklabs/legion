@@ -18,7 +18,10 @@ import { TruncatedText } from "./TruncatedText";
  *  (the margin composer's Urgency row). At rest every tone is the same quiet outlined pill. */
 export type ChipTone = "neutral" | keyof typeof askBlockPill;
 
-const restingChip = `${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
+/** A chip at rest: the quiet outlined pill every tone shares. The control row's scroll buttons
+ *  wear it too (`ControlRow.tsx`), so a button over the chips reads as one of their kind. */
+export const restingChip = `${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
+
 const selectedChip: Record<ChipTone, string> = {
   neutral: `${borderStrong} ${surfaceMutedStrongBg} ${textSecondaryOnSurface}`,
   blocking: `${borderTransparent} ${askBlockPill.blocking.bg} ${askBlockPill.blocking.text}`,

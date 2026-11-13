@@ -24,7 +24,7 @@ import type { Artifact, IssueDetails, UserIssueState, UserState } from "../../ap
 import { PinButton } from "../../components/PinButton";
 import { QueryError } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
-import { useTrailingScroll } from "../../components/useTrailingScroll";
+import { useScrollEnds } from "../../components/useScrollEnds";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   badgePrimary,
@@ -139,8 +139,8 @@ export function IssueHeader({
     }
   }, [parentEditing]);
   // Whether the details rail has anywhere left to scroll, which is what its trailing fade says
-  // (`components/useTrailingScroll.ts`, which a control row's chips use too).
-  const [setRail, railScrollable] = useTrailingScroll();
+  // (`components/useScrollEnds.ts`, which a control row's chips use too).
+  const { ref: setRail, trailing: railScrollable } = useScrollEnds();
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();

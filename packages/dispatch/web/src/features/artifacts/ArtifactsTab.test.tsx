@@ -250,10 +250,10 @@ test("New document puts the focus in Title, and Cancel gives it back to New docu
   }
 });
 
-// INFRA-3135. The same by the keyboard alone, as the reader the tester measured went: Tab reaches
-// the filter box and then New document, and Enter opens the form with the focus in Title; Tab
-// twice reaches Cancel, and Enter closes the form with the focus back on New document, so the
-// next Tab goes on to Upload rather than starting again from the top of the page.
+// INFRA-3135. The same by the keyboard alone: Tab reaches the filter box and then New document,
+// and Enter opens the form with the focus in Title; Tab twice reaches Cancel, and Enter closes
+// the form with the focus back on New document, so the next Tab goes on to Upload rather than
+// starting again from the top of the page.
 test("New document by the keyboard: Enter puts the focus in Title, and Cancel gives it back", async () => {
   const user = userEvent.setup();
   const { getIssueReferences, listArtifacts, view } = renderTab([]);

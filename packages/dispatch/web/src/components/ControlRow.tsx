@@ -1,28 +1,44 @@
-import { type ReactNode, useCallback, useRef } from "react";
+import type { ReactNode } from "react";
 
 import {
-  borderDefault,
   chipStripFade,
   controlHoverBorder,
   focusVisibleRing,
-  surfaceMutedBg,
-  textMutedOnSurfaceMuted,
   textSecondaryOnCanvas,
 } from "../theme/classes";
+import { restingChip } from "./Chip";
 import { CONTROL, type ControlSize } from "./control-names";
-import { useTrailingScroll } from "./useTrailingScroll";
+import { useScrollEnds } from "./useScrollEnds";
 
 /** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
- *  the chips rather than narrowing anything. It keeps the row's touch target; at the compact size
- *  the row adds `md:min-h-8`, giving the target up only from `md`, where a mouse is. */
+ *  the chips rather than narrowing anything. It keeps the row's touch target. */
 const CLEAR_FILTERS_CLASS = `min-h-11 shrink-0 rounded-lg px-2 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas}`;
 
 /** A scroll button of the chips line, laid over one end of the strip: a round 44 px control in
- *  a resting chip's own fill, border and text, so it reads the same on whatever surface the row
- *  is drawn on, centred in the line and above the strip, whose fade makes it a layer of its
- *  own. The strip fades under it, so it sits over faded chips. At the compact size the row adds
- *  `md:h-8 md:w-8`, so from `md` it is as tall as that line's 32 px chips, as Clear filters is. */
-const SCROLL_BUTTON_CLASS = `absolute inset-y-0 z-10 my-auto flex h-11 w-11 items-center justify-center rounded-full border text-lg ${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted} ${controlHoverBorder}`;
+ *  a resting chip's own fill, border and text (`restingChip`), so it reads the same on whatever
+ *  surface the row is drawn on, centred in the line and above the strip, whose fade makes it a
+ *  layer of its own. The strip fades under it, so it sits over faded chips. */
+const SCROLL_BUTTON_CLASS = `absolute inset-y-0 z-10 my-auto flex h-11 w-11 items-center justify-center rounded-full border text-lg ${restingChip} ${controlHoverBorder}`;
+
+/** The row's own controls at each size. The compact size gives the touch target up only from
+ *  `md`, where a mouse is: Clear filters and the scroll buttons are then as tall as that line's
+ *  32 px chips. */
+const ROW_CONTROL: Record<ControlSize, { clear: string; scroll: string }> = {
+  comfortable: { clear: CLEAR_FILTERS_CLASS, scroll: SCROLL_BUTTON_CLASS },
+  compact: {
+    clear: `${CLEAR_FILTERS_CLASS} md:min-h-8`,
+    scroll: `${SCROLL_BUTTON_CLASS} md:h-8 md:w-8`,
+  },
+};
+
+/** Each end of the strip a scroll button is laid over: its place, its name and its glyph, the
+ *  Pager's `‹` and `›`. */
+const SCROLL_SIDE = {
+  left: { glyph: "‹", label: "Scroll filters left", place: "left-0" },
+  right: { glyph: "›", label: "Scroll filters right", place: "right-0" },
+} as const;
+
+type ScrollSide = keyof typeof SCROLL_SIDE;
 
 /** One slot of the row's first line: its own single line from `sm` up, which cannot wrap, so
  *  whatever a page puts in it grows sideways and never downward. Every slot but the search box
@@ -57,7 +73,7 @@ function Slot({
  * chip whole and no chip is stepped over. A chip wider than that whole part is brought in by its
  * far end instead, so the next press moves on to the chip after it.
  */
-function scrollPage(strip: HTMLElement, side: "left" | "right"): void {
+function scrollPage(strip: HTMLElement, side: ScrollSide): void {
   const style = getComputedStyle(strip);
   const box = strip.getBoundingClientRect();
   const from = box.left + (Number.parseFloat(style.scrollPaddingLeft) || 0);
@@ -76,6 +92,33 @@ function scrollPage(strip: HTMLElement, side: "left" | "right"): void {
     else by = previous.left - from;
   }
   strip.scrollBy({ behavior: "smooth", left: by });
+}
+
+/** One scroll button of the chips line, at its `side` of the strip. It takes no Tab stop: the
+ *  Tab key reaches every chip already and scrolls it into view, and this is the pointer's way. */
+function ScrollButton({
+  className,
+  side,
+  strip,
+}: {
+  className: string;
+  side: ScrollSide;
+  strip: HTMLElement | null;
+}): ReactNode {
+  const { glyph, label, place } = SCROLL_SIDE[side];
+  return (
+    <button
+      aria-label={label}
+      className={`${place} ${className}`}
+      onClick={() => {
+        if (strip !== null) scrollPage(strip, side);
+      }}
+      tabIndex={-1}
+      type="button"
+    >
+      <span aria-hidden="true">{glyph}</span>
+    </button>
+  );
 }
 
 export interface ControlRowProps {
@@ -165,36 +208,19 @@ export function ControlRow({
   size = "comfortable",
   trigger,
 }: ControlRowProps): ReactNode {
-  const [measureStrip, more, scrolled] = useTrailingScroll();
-  const strip = useRef<HTMLDivElement | null>(null);
-  const setStrip = useCallback(
-    (node: HTMLDivElement | null) => {
-      strip.current = node;
-      measureStrip(node);
-    },
-    [measureStrip]
-  );
+  const { leading, node, ref, trailing } = useScrollEnds();
+  const controls = ROW_CONTROL[size];
   const chipsOn = chips !== undefined && chips !== null;
   const clear =
     onClear === undefined ? null : (
-      <button
-        className={size === "compact" ? `${CLEAR_FILTERS_CLASS} md:min-h-8` : CLEAR_FILTERS_CLASS}
-        onClick={onClear}
-        type="button"
-      >
+      <button className={controls.clear} onClick={onClear} type="button">
         Clear filters
       </button>
     );
-  const fade =
-    scrolled && more
-      ? chipStripFade.both
-      : scrolled
-        ? chipStripFade.leading
-        : more
-          ? chipStripFade.trailing
-          : "";
-  const scrollButton =
-    size === "compact" ? `${SCROLL_BUTTON_CLASS} md:h-8 md:w-8` : SCROLL_BUTTON_CLASS;
+  let fade = "";
+  if (leading && trailing) fade = chipStripFade.both;
+  else if (leading) fade = chipStripFade.leading;
+  else if (trailing) fade = chipStripFade.trailing;
   const own = "flex min-w-0 flex-col gap-2";
   return (
     <div
@@ -221,19 +247,7 @@ export function ControlRow({
       {chipsOn ? (
         <div className="flex min-w-0 flex-nowrap items-center gap-2">
           <div className="relative flex min-w-0 flex-1">
-            {scrolled ? (
-              <button
-                aria-label="Scroll filters left"
-                className={`left-0 ${scrollButton}`}
-                onClick={() => {
-                  if (strip.current !== null) scrollPage(strip.current, "left");
-                }}
-                tabIndex={-1}
-                type="button"
-              >
-                <span aria-hidden="true">‹</span>
-              </button>
-            ) : null}
+            {leading ? <ScrollButton className={controls.scroll} side="left" strip={node} /> : null}
             {/* `[&>*]:shrink-0`: a strip that scrolls never squeezes a chip. A page's own chip
                 that could shrink (the Inbox's agent chip is a link, not a `Chip`) would
                 otherwise be drawn narrower than its text, and the next chip would sit over its
@@ -246,22 +260,12 @@ export function ControlRow({
               onFocus={(event) =>
                 event.target.scrollIntoView({ block: "nearest", inline: "nearest" })
               }
-              ref={setStrip}
+              ref={ref}
             >
               {chips}
             </div>
-            {more ? (
-              <button
-                aria-label="Scroll filters right"
-                className={`right-0 ${scrollButton}`}
-                onClick={() => {
-                  if (strip.current !== null) scrollPage(strip.current, "right");
-                }}
-                tabIndex={-1}
-                type="button"
-              >
-                <span aria-hidden="true">›</span>
-              </button>
+            {trailing ? (
+              <ScrollButton className={controls.scroll} side="right" strip={node} />
             ) : null}
           </div>
           {clear}
