@@ -11,6 +11,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -146,7 +147,8 @@ func TestAnInterestWriteThatLosesEveryRaceIsAConflict(t *testing.T) {
 }
 
 // An interest and a role claim carry the fields their build knows; a newer build's field, stored by
-// a pod of that build, is kept across a heartbeat, an unsubscribe and a role claim through this one.
+// a pod of that build, is kept across a heartbeat, an unsubscribe, a role claim, the claim's renewal
+// and its hand-back through this one.
 func TestInterestAndClaimWritesKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 	a, _ := podRegistries(t)
 	const sessionID = "ses_newer_build"
@@ -183,6 +185,32 @@ func TestInterestAndClaimWritesKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 	}
 	if got := string(claim["holder_session_id"]); got != `"`+sessionID+`"` {
 		t.Fatalf("claim holder after a role claim = %s, want %s", got, sessionID)
+	}
+
+	// The registration's renewal adopts the claim, which names no process, for the registering
+	// one: a write of the claim, which must carry the newer build's field over.
+	if err := a.RenewRoleClaims(context.Background(), sessionID, roleClaimInstance); err != nil {
+		t.Fatalf("renew keeper: %v", err)
+	}
+	claim = storedJSON(t, roles, "keeper")
+	if got := string(claim["client_instance_id"]); got != `"`+roleClaimInstance+`"` {
+		t.Fatalf("claim client_instance_id after a renewal = %s, want %q: the renewal wrote nothing; stored %v", got, roleClaimInstance, claim)
+	}
+	if got := string(claim["future_claim_field"]); got != `"kept"` {
+		t.Fatalf("claim future_claim_field after a renewal = %q, want \"kept\"; stored %v", got, claim)
+	}
+
+	// A hand-back of the role's own topic that states no process may not free a claim naming one,
+	// and marks it handed back instead: another write of the claim.
+	if _, err := a.Remove(context.Background(), sessionID, []string{contracts.RoleTopicPrefix + "keeper"}, RoleReleaseAuthority{}); err != nil {
+		t.Fatalf("hand keeper back: %v", err)
+	}
+	claim = storedJSON(t, roles, "keeper")
+	if got := string(claim["handed_back"]); got != "true" {
+		t.Fatalf("claim handed_back after a hand-back = %s, want true: the hand-back wrote no mark; stored %v", got, claim)
+	}
+	if got := string(claim["future_claim_field"]); got != `"kept"` {
+		t.Fatalf("claim future_claim_field after a hand-back = %q, want \"kept\"; stored %v", got, claim)
 	}
 }
 
