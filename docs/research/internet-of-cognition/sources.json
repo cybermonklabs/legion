@@ -131,7 +131,7 @@
     },
     {
       "title": "The rule that combines the reviewer's two graders",
-      "commit": "9936020a1256972e5e07a10329735c2d3688061e",
+      "commit": "94d7556421ca12e2e366de5c44897cfb7ec569b8",
       "command": "grep -qF 'is answered in the review body' skills/legion-worker/references/merge-gate.md && grep -qF 'needs both halves run at the reviewed head' skills/legion-worker/references/merge-gate.md",
       "published": [
         {
@@ -143,7 +143,7 @@
           "sentence": "needs both halves run at the reviewed head"
         }
       ],
-      "comment": "The proof check.sh --landed runs for this page. 9d5c8220 wrote the rule and 9936020a is the forward merge that holds it against main's rewrite of merge-gate.md, so the page names the merge. The proof exits 1 against merge-gate.md of main at c95e698a9a5fe38e1673f7abcc96c6bf80cda88a, of bcc01d05cac9d7f82bc3b1df799489fed9ee64fe and of bfe1471e3b662125ed2ea103278d41bf3e5f6dd5, which are the three spellings before it. published lists the sentences this step added that check.sh --published reads in merge-gate.md on the default branch."
+      "comment": "The proof check.sh --landed runs for this page. 9d5c8220 wrote the rule, 9936020a held it against main's rewrite of merge-gate.md, and 94d75564 wrote it as it stands, that an APPROVE needs both halves run, so the page names 94d75564. The proof exits 1 against merge-gate.md of main at c95e698a9a5fe38e1673f7abcc96c6bf80cda88a, of bcc01d05cac9d7f82bc3b1df799489fed9ee64fe and of bfe1471e3b662125ed2ea103278d41bf3e5f6dd5, which are the three spellings before it. published lists the sentences this step added that check.sh --published reads in merge-gate.md on the default branch."
     }
   ]
 }
