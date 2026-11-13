@@ -1198,17 +1198,16 @@ package api
 // (The entry at 89 below serves this contract's own shape down, so none of the keys above
 // reaches a caller under 86. Three claim-view keys ride with the four this entry names and are
 // served down with them: `lastDeathCause`, `lastStartFailure` and `lastReady`. Two more keys go
-// at 86 beside `checksVerdict`, and the three are answered in three ways. `checksVerdict` is
-// written back to every caller under 86 as the stand-in `unknown` (shaping.go's
-// withChecksVerdict), which is the shape the record of every contract from 46 to 85 describes.
-// `HandoffCompleteResponse.note` is written back to nobody and leaves the records of those
-// contracts instead: `packages/contracts/src/legion-api.ts` reads it `nonEmptyString.optional()`
-// at 85 and at every contract below, and the body of a completion that carried no note is the
-// ordinary body at each of them, so no reader refuses for want of it. The settings this contract
-// stops writing — `settings.projects.*.merge`, its `by_hand` list and `merge_queue_role` — leave
-// those records for the same reason read a second way: `legionSettings` types two keys and
-// passes the rest loosely, and `projects` is typed by nothing, so no reader names those keys at
-// all.)
+// at 86 beside `checksVerdict`. `checksVerdict` and `HandoffCompleteResponse.note` are written
+// back to nobody and leave the records of the contracts from 46 to 85:
+// `packages/contracts/src/legion-api.ts` reads each `nonEmptyString.optional()` at 85 and at
+// every contract below, so no reader there refuses a body for want of either. The settings this
+// contract stops writing — `settings.projects.*.merge`, its `by_hand` list and
+// `merge_queue_role` — leave those records for the same reason read a second way:
+// `legionSettings` types two keys and passes the rest loosely, and `projects` is typed by
+// nothing, so no reader names those keys at all. The `ready` this contract takes out of the
+// request is read by name again for the plugins below 86 that still send it, which entry 89
+// says.)
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
 // INFRA-484's sjawhar/legion#2538 takes 46, this branch then took 47, and main's #2642 landed
@@ -1262,8 +1261,9 @@ package api
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
 // 89: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
-// own plugin speaks, so a roll that replaces one pod at a time leaves the `legion` tool working
-// in every pod it has not replaced yet. A request carries the caller's contract in the
+// own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
+// one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
+// request carries the caller's contract in the
 // `Legion-Plugin-Contract` header, and every answer carries this daemon's in
 // `Legion-Daemon-Contract`, so a caller is placed by what it declares and not by its address
 // alone. `GET /legion/v1/issues/{key}/record` is the per-issue record route, and it answers 404
@@ -1279,17 +1279,34 @@ package api
 // is served the state without the nine keys the decided record added and without the `contract`
 // mark (`withoutRecordFields`, `withoutContractMark`), a caller below 85 without each
 // issue's `why` and without every field of the waiting line beside `place` and `length`
-// (`withoutWhyAndLineFields`), and a caller below 86 without each pull request's `mergeState`,
-// each phase's `pass` and every claim view's `lastTurnStart` and `lastTurnEnd`
-// (`withoutStateMachineFields`). Such a caller is served `pullRequest.checksVerdict` of
-// `unknown` as a stand-in (`withChecksVerdict`), the key 86 removed and that caller's own reader
-// requires. A value is served down as a key is: an issue's
+// (`withoutWhyAndLineFields`), and a caller below 86 without the seven keys 86 added: each pull
+// request's `mergeState`, each worker's `pass`, and every claim view's `lastTurnStart`,
+// `lastTurnEnd`, `lastDeathCause`, `lastStartFailure` and `lastReady`
+// (`withoutStateMachineFields`). Such a caller is served no `pullRequest.checksVerdict`, the key
+// 86 removed: every reader from 46 to 85 reads it `nonEmptyString.optional()`, so none requires
+// it, and the records of those contracts leave it out, as they leave out the `note` 86 took off
+// the handoff completion's answer. A value is served down as a key is: an issue's
 // `waitingOn.answeredBy` carries a value only to a caller whose own contract admits it, and the
 // records under `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this
 // daemon serves every contract it supports, key path by key path and value domain by value
 // domain, so a later shape change that carries no serving-down is red before it ships. A value
 // a contract removes needs no serving-down of its own, which is why 86's dropped
-// `awaiting_merge` has none (answers.go's `phases`). (This
+// `awaiting_merge` has none (answers.go's `phases`).
+//
+// On the request side, `readBody` still refuses a member a request type does not name, and every
+// plugin from 46 to 85 sends `ready` on every `handoff_complete`, which 86 took out of
+// `HandoffCompleteRequest`. The type reads it by name again (`HandoffCompleteRequest.Ready`):
+// `ready: false` and an absent `ready` are ignored, since false meant at 85 what a completion
+// means now, and `ready: true` is refused 400 `READY_RETIRED`, since at 85 it armed the daemon's
+// merge and no daemon at 86 or later merges. No other field an older plugin sends is missing
+// from today's request types. Two request-side refusals of an older plugin stand with no code,
+// because accepting would change what the call means: `gates/register` requires `step` only where
+// a deployment gates two or more design steps, which a plugin from 46 to 54 cannot name, and
+// `phase/backward` refuses `to: awaiting_merge`, which names no phase since 86. The records under
+// `packages/contracts/fixtures/daemon-api/request-shapes.json` hold the field paths of every
+// request a plugin sends, from this contract on, and a later request type that no longer reads a
+// recorded field is red unless requests.go's `AcceptedByName` declares it, with the contract it
+// left at and what ignoring it means. `ready` is that table's first row. (This
 // entry first took 60, when the base carried 59, then 81 at the forward merge of 2026-11-12
 // that brought main in at 68, 81 again at the merge of that day that brought main in at 73, 87
 // at the merge that brought main in at 85, and 89 at the merge that brought main in at 86, the

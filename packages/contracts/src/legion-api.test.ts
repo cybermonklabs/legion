@@ -176,6 +176,16 @@ const schemas: Record<string, z.ZodType> = {
       domains: z.record(z.string().min(1), z.array(z.string().min(1))),
     })
   ),
+  // Nor this one: the field paths of every request body a plugin sends
+  // (`internal/api/request_shapes_test.go`), one record per route per contract from the daemon's
+  // own contract on, each path written as a key path above is.
+  "request-shapes.json": z.array(
+    z.strictObject({
+      contract: z.number().int().positive(),
+      route: z.string().min(1),
+      fieldPaths: z.array(z.string().min(1)),
+    })
+  ),
   // Nor this one: the closed set of words a claim can fail under
   // (`supervise.FailureCauses`), written by `internal/api`'s TestFailureCausesGolden so that
   // the Go roster and `LEGION_FAILURE_CAUSES` are held to each other here, by the case "the

@@ -986,42 +986,22 @@ type PullRequestView struct {
 	// CheckView.roleHidden is a flag and no value: one body in a hundred carries the key, and
 	// the value it carries is the same on every one of them.
 	fixAttemptsShown bool
-	// checksVerdictShown is set on the copy the state route serves a caller below the contract
-	// that removed `checksVerdict` from this view (api's withChecksVerdict, below shaping.go's
-	// stateMachineContract): the record of every contract from the floor to 85 describes a pull
-	// request carrying the key, so MarshalJSON writes the stand-in on those bodies and no other.
-	// It is a flag of the view's own and the stand-in is a constant, as fixAttemptsShown is: one
-	// body in a hundred carries the key, and the value it carries is the same on every one of
-	// them.
-	checksVerdictShown bool
 }
 
-// MarshalJSON writes `fixAttempts` and `checksVerdict` on the bodies that carry a stand-in for
-// them, and leaves each key off every other, which is how Admission.MarshalJSON leaves off
-// `trees`: a key is written by a field of the outer value rather than by one of the view, so no
-// body this contract writes can carry it. The two stand-ins are of two contracts and are written
-// each on its own band's bodies, so a caller below 59 reads both and a caller between 59 and 85
-// reads `checksVerdict` alone.
+// MarshalJSON writes `fixAttempts` on the bodies that carry its stand-in, and leaves the key off
+// every other, which is how Admission.MarshalJSON leaves off `trees`: the key is written by a
+// field of the outer value rather than by one of the view, so no body this contract writes can
+// carry it. The outer value holds one pointer per stand-in, filled where the view's flag is set
+// and nil elsewhere, so a later stand-in is one more pointer and one more flag.
 func (p PullRequestView) MarshalJSON() ([]byte, error) {
 	type wire PullRequestView
-	out := wire(p)
-	switch {
-	case p.fixAttemptsShown && p.checksVerdictShown:
-		return json.Marshal(struct {
-			wire
-			FixAttempts   int    `json:"fixAttempts"`
-			ChecksVerdict string `json:"checksVerdict"`
-		}{wire: out, FixAttempts: fixAttemptsStandIn, ChecksVerdict: checksVerdictStandIn})
-	case p.fixAttemptsShown:
-		return json.Marshal(struct {
-			wire
-			FixAttempts int `json:"fixAttempts"`
-		}{wire: out, FixAttempts: fixAttemptsStandIn})
-	case p.checksVerdictShown:
-		return json.Marshal(struct {
-			wire
-			ChecksVerdict string `json:"checksVerdict"`
-		}{wire: out, ChecksVerdict: checksVerdictStandIn})
+	out := struct {
+		wire
+		FixAttempts *int `json:"fixAttempts,omitempty"`
+	}{wire: wire(p)}
+	if p.fixAttemptsShown {
+		standIn := fixAttemptsStandIn
+		out.FixAttempts = &standIn
 	}
 	return json.Marshal(out)
 }

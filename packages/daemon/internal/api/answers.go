@@ -3,6 +3,11 @@ package api
 import (
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/legion/daemon/internal/capabilities"
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // ServingFloor is the lowest plugin contract this daemon shapes an answer for. A caller that
@@ -314,11 +319,12 @@ var stateEnumeratedFields = []EnumeratedField{
 // valuesFrom is every value of a field whose list has not moved since the field arrived: each
 // value recorded at that one contract, sorted by value as the type requires. A field whose list
 // did grow is written out value by value instead, with each value's own arrival (waitAnswers,
-// strandedStates).
-func valuesFrom(since int, values ...string) []EnumeratedValue {
+// strandedStates). The values are the daemon's own constants wherever the tree declares them, so
+// a word renamed there is renamed here.
+func valuesFrom[V ~string](since int, values ...V) []EnumeratedValue {
 	recorded := make([]EnumeratedValue, 0, len(values))
 	for _, value := range values {
-		recorded = append(recorded, EnumeratedValue{Value: value, Since: since})
+		recorded = append(recorded, EnumeratedValue{Value: string(value), Since: since})
 	}
 	slices.SortFunc(recorded, func(a, b EnumeratedValue) int { return strings.Compare(a.Value, b.Value) })
 	return recorded
@@ -330,15 +336,15 @@ func valuesFrom(since int, values ...string) []EnumeratedValue {
 // floor up, as an answer older than the floor is; `declined`, a person who closed an ask of the
 // root rather than answer it, arrived at 68 (version.go's 68, record.AnsweredByDecline).
 var waitAnswers = []EnumeratedValue{
-	{Value: "approved", Since: ServingFloor},
-	{Value: "ask", Since: ServingFloor},
-	{Value: "changes_requested", Since: ServingFloor},
-	{Value: "closed", Since: ServingFloor},
-	{Value: "declined", Since: 68},
-	{Value: "reply", Since: ServingFloor},
-	{Value: "retracted", Since: ServingFloor},
-	{Value: "turn", Since: ServingFloor},
-	{Value: "version", Since: ServingFloor},
+	{Value: string(record.AnsweredByApproval), Since: ServingFloor},
+	{Value: string(record.AnsweredByAsk), Since: ServingFloor},
+	{Value: string(record.AnsweredByChanges), Since: ServingFloor},
+	{Value: string(record.AnsweredByClosed), Since: ServingFloor},
+	{Value: string(record.AnsweredByDecline), Since: 68},
+	{Value: string(record.AnsweredByReply), Since: ServingFloor},
+	{Value: string(record.AnsweredByRetraction), Since: ServingFloor},
+	{Value: string(record.AnsweredByTurn), Since: ServingFloor},
+	{Value: string(record.AnsweredByVersion), Since: ServingFloor},
 }
 
 // strandedStates is every state a claim nothing will wake can be in. `suspended` and `failed`
@@ -346,23 +352,28 @@ var waitAnswers = []EnumeratedValue{
 // it is left out of a body below that contract rather than rewritten, since nothing of such an
 // entry is true once its state is gone (shaping.go's withoutRetiredStranded).
 var strandedStates = []EnumeratedValue{
-	{Value: "failed", Since: ServingFloor},
-	{Value: "retired", Since: retiredStrandedContract},
-	{Value: "suspended", Since: ServingFloor},
+	{Value: string(supervise.StateFailed), Since: ServingFloor},
+	{Value: string(supervise.StateRetired), Since: retiredStrandedContract},
+	{Value: string(supervise.StateSuspended), Since: ServingFloor},
 }
 
-// phases is every value of an issue's `phase`: the workflow's own phases and `unrecorded`, what
-// an issue the workflow does not record reads as. The field is older than the floor, and the
-// list has lost one value since: `awaiting_merge`, which contract 86 took out of the workflow
-// (version.go's 86).
+// phases is every value the plugin's enumeration of an issue's `phase` names
+// (`LEGION_WORKFLOW_PHASES` in `packages/contracts/src/legion-api.ts`, with `unrecorded`, what an
+// issue the workflow does not record reads as), and `legion-api.test.ts` holds this list equal to
+// that enumeration. A record's domain is what a reader admits, not what this daemon writes, so
+// the list is the reader's: `integrating` is a member of that enumeration and no phase this
+// daemon writes, since phase.All has never held it. The field is older than the floor, and the
+// list has lost one value since: `awaiting_merge`, which contract 86 took out of the workflow and
+// out of that enumeration (version.go's 86).
 //
 // A removed value needs no serving-down, which is why no row below records `awaiting_merge` at
 // any contract. This table records each value's arrival (`Since`) and nothing else, and the one
 // question it answers is whether this daemon emits a value an older reader's enumeration does
 // not carry. A value's absence from a body is not observable: a reader below 86 whose own enum
 // still names `awaiting_merge` refuses nothing for never meeting it, as it refuses nothing for
-// an `omitempty` key no issue carries. So a value leaves this list the day the daemon stops
-// emitting it, and every other value's row stays where it is.
+// an `omitempty` key no issue carries. So a value leaves this list the day the enumeration of
+// this daemon's own contract drops it, and every other value's row stays where it is. The list
+// stays literal for that reason: `integrating` and `unrecorded` are no phase.Phase constant.
 var phases = valuesFrom(ServingFloor,
 	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
 	"retro", "merging", "integrating", "done", "held", "unrecorded")
@@ -372,65 +383,80 @@ var phases = valuesFrom(ServingFloor,
 // `phases` without `unrecorded`, since `unrecorded` is what an issue the workflow holds no row
 // for reads its own `phase` as and is no phase a hold or a task names. Both fields arrived at
 // recordFieldsContract, so the list is recorded there, and it lost `awaiting_merge` with
-// `phases` for the reason that roster gives.
+// `phases` for the reason that roster gives. It stays literal for the reason `phases` does:
+// `integrating` is no phase.Phase constant.
 var workflowPhases = valuesFrom(recordFieldsContract,
 	"admitted", "awaiting_person", "planning", "implementing", "testing", "reviewing", "accepting",
 	"retro", "merging", "integrating", "done", "held")
 
 // failureCauses is every word the site that failed a claim can choose
 // (supervise.FailureCause), which the failure record's `cause` and the `pendingCause` beside it
-// share. Both arrived at recordFieldsContract, so the list is recorded there.
+// share. Both arrived at recordFieldsContract, so the list is recorded there. It names each
+// constant rather than reading supervise.FailureCauses, because a cause added there later
+// arrives at its own contract and not at this one.
 var failureCauses = valuesFrom(recordFieldsContract,
-	"launch_refused", "died", "never_registered", "stale_plugin", "prompt_retires_exhausted",
-	"provider_error", "unrecorded")
+	supervise.CauseLaunchRefused, supervise.CauseDied, supervise.CauseNeverRegistered,
+	supervise.CauseStalePlugin, supervise.CausePromptRetiresExhausted, supervise.CauseProviderError,
+	supervise.CauseUnrecorded)
 
 // lineParts is every part of the admission's waiting line a member can stand in, lineKinds every
 // reason it stands there, and whyStates every fact that holds an issue that is not working now.
-// All three arrived at whyAndLineFieldsContract, so each list is recorded there.
+// All three arrived at whyAndLineFieldsContract, so each list is recorded there. lineParts and
+// lineKinds stay literal: record.LinePart and record.LineKind are numbered constants (`int`)
+// whose words come from their String methods, so no string constant of the tree spells them.
 var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
 var lineKinds = valuesFrom(whyAndLineFieldsContract, "returning", "answered", "queued_root", "first_phase")
-var whyStates = valuesFrom(whyAndLineFieldsContract, "claim_stopped", "waiting", "blocked", "unlisted")
+var whyStates = valuesFrom(whyAndLineFieldsContract, WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted)
 
 // claimViewStates is every value of a claim view's `state`, in the order a launch reaches them.
 // The field is older than the floor and the list has not moved since.
 var claimViewStates = valuesFrom(ServingFloor,
-	"queued", "launch_uncertain", "launching", "shim_connected", "registered", "ready", "working",
-	"idle", "suspended", "failed", "retired")
+	supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
+	supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady,
+	supervise.StateWorking, supervise.StateIdle, supervise.StateSuspended, supervise.StateFailed,
+	supervise.StateRetired)
 
 // claimRoles is every role a claim can hold, which three rows share: the stranded report's, the
 // registration's and the wake's, that last one at its own arrival (wakeRoles). The list has not
 // moved since the floor.
 var claimRoles = valuesFrom(ServingFloor,
-	"architect", "planner", "implementer", "tester", "reviewer", "merger")
+	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+	claim.RoleReviewer, claim.RoleMerger)
 
 // wakeRoles is the same list of roles at the contract `wakesWaiting` arrived at: no wake of that
 // array is served below it at all (shaping.go's withoutWakesWaiting).
 var wakeRoles = valuesFrom(wakesWaitingContract,
-	"architect", "planner", "implementer", "tester", "reviewer", "merger")
+	claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester,
+	claim.RoleReviewer, claim.RoleMerger)
 
 // updateStates is every value of a claim view's `updateState`, recorded at the contract this
 // change adds the key under. The words are the five the package declares (updatestate.go), so a
 // state renamed there is renamed here and the domain cannot spell one the daemon never writes.
 var updateStates = valuesFrom(shapedAnswersContract,
-	string(UpdateStateNone), string(UpdateStateOpen), string(UpdateStateAsked),
-	string(UpdateStatePushCheckReask), string(UpdateStateAnswered))
+	UpdateStateNone, UpdateStateOpen, UpdateStateAsked, UpdateStatePushCheckReask, UpdateStateAnswered)
 
 // pullRequestStates is every state a recorded pull request is in. The field is older than the
 // floor (version.go's 36) and the list has not moved since.
-var pullRequestStates = valuesFrom(ServingFloor, "open", "merged", "closed")
+var pullRequestStates = valuesFrom(ServingFloor,
+	record.PullRequestOpen, record.PullRequestMerged, record.PullRequestClosed)
 
 // mergeStates is every value of a pull request's `mergeState`, GitHub's own merge state for the
 // head in GitHub's own lowercase spelling. The field arrived at stateMachineContract and the
 // list is recorded there, so no caller below 86 is served a value of it: that caller is served
 // the pull request without the key at all (shaping.go's withoutStateMachineFields).
+// record.MergeStateUnread is no value of the field: it is the empty state the view leaves off.
 var mergeStates = valuesFrom(stateMachineContract,
-	"clean", "unstable", "has_hooks", "blocked", "dirty", "behind", "draft", "unknown")
+	record.MergeStateClean, record.MergeStateUnstable, record.MergeStateHasHooks,
+	record.MergeStateBlocked, record.MergeStateDirty, record.MergeStateBehind, record.MergeStateDraft,
+	record.MergeStateUnknown)
 
 // designSteps is every step of a deployment's design gate, and gatedStepStatuses every place an
 // issue can stand in one. Both are recorded at gatedStepsContract, the contract `gatedSteps`
 // arrived at.
-var designSteps = valuesFrom(gatedStepsContract, "decisions", "criteria", "spec")
-var gatedStepStatuses = valuesFrom(gatedStepsContract, "unregistered", "waiting", "approved", "changes_requested")
+var designSteps = valuesFrom(gatedStepsContract,
+	record.DesignStepDecisions, record.DesignStepCriteria, record.DesignStepSpec)
+var gatedStepStatuses = valuesFrom(gatedStepsContract,
+	GatedStepUnregistered, GatedStepWaiting, GatedStepApproved, GatedStepChangesRequested)
 
 // memoryGroups is every group a tree's memory draw can give it, and memoryDrawModes every mode
 // it can be drawn under. Both are recorded at memoryContract, the contract the draw arrived at.
@@ -445,9 +471,12 @@ var controllerRuntimes = valuesFrom(ServingFloor, "tmux", "kubernetes")
 // and capabilitySources every source a deployment row's decision can come from. The report is
 // older than the floor (version.go's 16) and so is the source (version.go's 25), and neither
 // list has moved since. The probe's own table prints three words more — `missing`, `reported`
-// and `installed` — which reach no body this daemon writes and are no values of this field.
-var capabilityStatuses = valuesFrom(ServingFloor, "present", "unchecked", "withheld", "decided", "open")
-var capabilitySources = valuesFrom(ServingFloor, "configuration", "boot")
+// and `installed` — which reach no body this daemon writes and are no values of this field, so
+// capabilities.StatusMissing and capabilities.StatusReported are left out here.
+var capabilityStatuses = valuesFrom(ServingFloor,
+	capabilities.StatusPresent, capabilities.StatusUnchecked, capabilities.StatusWithheld,
+	capabilities.StatusDecided, capabilities.StatusOpen)
+var capabilitySources = valuesFrom(ServingFloor, capabilities.SourceConfiguration, capabilities.SourceBoot)
 
 // cacheStates is every state a repository cache under the Kubernetes runtime can be in. The
 // field is older than the floor (version.go's 32) and the list has not moved since.

@@ -596,17 +596,19 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 			}()
 			switch answer.ID {
 			case AnswerState:
-				shaped, isState := shapeAnswer(AnswerState, state, ServingFloor, ServingFloor).(State)
+				body, _ := shapeAnswer(AnswerState, state, ServingFloor, ServingFloor)
+				shaped, isState := body.(State)
 				if !isState {
-					t.Fatalf("the state answer was shaped to %T, want a State", shaped)
+					t.Fatalf("the state answer was shaped to %T, want a State", body)
 				}
 				if !shaped.Settings.maxFixAttemptsShown {
 					t.Error("the state served at the floor carries no `max_fix_attempts` stand-in")
 				}
 			case AnswerIssueRecord:
-				shaped, isIssue := shapeAnswer(AnswerIssueRecord, state.Issues[recordGoldenIssue], ServingFloor, ServingFloor).(Issue)
+				body, _ := shapeAnswer(AnswerIssueRecord, state.Issues[recordGoldenIssue], ServingFloor, ServingFloor)
+				shaped, isIssue := body.(Issue)
 				if !isIssue {
-					t.Fatalf("the record answer was shaped to %T, want an Issue", shaped)
+					t.Fatalf("the record answer was shaped to %T, want an Issue", body)
 				}
 				if shaped.PullRequest == nil || !shaped.PullRequest.fixAttemptsShown {
 					t.Error("the record served at the floor carries no `fixAttempts` stand-in: the record's row shapes the issue as the state's row shapes it (shapeIssue)")
@@ -616,7 +618,7 @@ func TestShapeAnswerShapesEveryAnswer(t *testing.T) {
 				}
 			default:
 				body := map[string]string{"shape": "unmoved"}
-				if shaped := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
+				if shaped, _ := shapeAnswer(answer.ID, body, ServingFloor, ServingFloor); !reflectEqualBody(shaped, body) {
 					t.Errorf("the %s answer was shaped to %v, want the body it was given", answer.ID, shaped)
 				}
 			}

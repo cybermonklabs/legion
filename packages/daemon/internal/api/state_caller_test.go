@@ -406,10 +406,9 @@ func withoutLowestContract(t *testing.T, body []byte) string {
 // issue's check without `role` (api's withoutCheckRole); a caller below fixAttemptsContract is
 // served `fixAttempts` of 0 on each pull request and `max_fix_attempts` of 3 in the settings
 // block (withFixAttempts, withMaxFixAttempts); and a caller below stateMachineContract is served
-// `checksVerdict` of `unknown` on each pull request (withChecksVerdict) and the issue without
-// the seven keys that contract added (withoutStateMachineFields). One contract decides the two
-// stand-ins, because the two sides of a caller's shaping part only below ServingFloor, which is
-// below fixAttemptsContract as every number this is called with is.
+// the issue without the seven keys that contract added (withoutStateMachineFields). One contract
+// decides the stand-ins, because the two sides of a caller's shaping part only below
+// ServingFloor, which is below fixAttemptsContract as every number this is called with is.
 func servedShape(want map[string]any, contract int) {
 	if contract < fixAttemptsContract {
 		want["settings"].(map[string]any)["max_fix_attempts"] = float64(3)
@@ -421,7 +420,6 @@ func servedShape(want map[string]any, contract int) {
 				pull["fixAttempts"] = float64(0)
 			}
 			if contract < stateMachineContract {
-				pull["checksVerdict"] = checksVerdictStandIn
 				delete(pull, "mergeState")
 			}
 		}

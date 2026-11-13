@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
@@ -588,6 +589,9 @@ func capabilityHash(secret string) []byte {
 // bytes either way. The raw bytes are returned too, so a strict failure can be retried leniently
 // for a route family's identity.
 func decodeJSON(w http.ResponseWriter, r *http.Request, into any, strict bool) ([]byte, error) {
+	if requestDecoded != nil {
+		requestDecoded(r.Pattern, reflect.TypeOf(into).Elem())
+	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	if err != nil {
 		return nil, err

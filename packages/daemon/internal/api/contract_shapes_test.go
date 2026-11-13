@@ -426,11 +426,13 @@ func typesOf(values ...any) []reflect.Type {
 // belongs to, which a map's value and a list's element keep.
 //
 // It reads declared json tags and nothing else. The shadow struct of a hand-written marshaller is
-// the same type with the same tags (`type wire State`), so it declares the same set; the
-// unexported stand-in flags — PullRequestView.fixAttemptsShown, Settings.maxFixAttemptsShown and
-// CheckView.roleHidden — are no json fields of any type and are not walked. A map's value, a
-// list's element and the inner type of a pointer are each walked as the node below `*` or below
-// the field's own name.
+// the same type with the same tags (`type wire State`), so it declares the same set. The
+// unexported flags the shaping sets are no json fields of any type and are not walked: the
+// stand-in flags PullRequestView.fixAttemptsShown and Settings.maxFixAttemptsShown, and the
+// flags that leave a key off, CheckView.roleHidden, PhaseView.passHidden, Admission.treesHidden,
+// State.wakesWaitingHidden and State.claimsToRefreshHidden. A map's value, a list's element and
+// the inner type of a pointer are each walked as the node below `*` or below the field's own
+// name.
 func walkDeclaredType(t *testing.T, typ reflect.Type, path string, owner declaredField, shape declaredShape, stack []reflect.Type) {
 	t.Helper()
 	for typ.Kind() == reflect.Pointer {
@@ -670,9 +672,8 @@ func (k callerKind) contracts(t *testing.T, contract int) (restore, strip int) {
 	if stated := k.stated(contract); stated > 0 {
 		request.Header.Set(pluginContractHeader, strconv.Itoa(stated))
 	}
-	// The body decides no contract: it is what the record of the shaping is read against, and
-	// this reading throws that record away (recordShaping).
-	return s.contractsFor(request, AnswerState, State{}, k.claims(contract))
+	at := s.contractsFor(request, k.claims(contract))
+	return at.restore, at.strip
 }
 
 // fixturePodOf places the fixture's pod at statePodAddr, as stateServer's own CallerPod does.
@@ -803,7 +804,8 @@ func servedBodies(t *testing.T, caller callerKind, handlers []http.Handler, stat
 	default:
 		bodies := make([][]byte, 0, len(fixture.bodies))
 		for _, body := range fixture.bodies {
-			encoded, err := json.Marshal(shapeAnswer(id, body, restore, strip))
+			shaped, _ := shapeAnswer(id, body, restore, strip)
+			encoded, err := json.Marshal(shaped)
 			if err != nil {
 				t.Fatalf("marshal the %s answer: %v", id, err)
 			}
@@ -1456,9 +1458,12 @@ const deploysNeverFilled = "the daemon holds no deploy since contract 54, so `se
 // `architect.capabilities` and `workers.*.claim.capabilities` — are one field, and the fixture
 // realises it wherever it carries one. The walk reads declared json tags (walkDeclaredType), so
 // a hand-written marshaller's shadow struct declares the same set as the type it shadows, and
-// the unexported stand-in flags (PullRequestView.fixAttemptsShown, Settings.maxFixAttemptsShown,
-// CheckView.roleHidden) are no json fields of any type and are walked by nothing. They are
-// served all the same, which the records of the contracts below 59 and below 54 show.
+// the unexported flags the shaping sets are no json fields of any type and are walked by
+// nothing (walkDeclaredType names them). What they do to a body is held all the same, by the
+// records: the stand-ins PullRequestView.fixAttemptsShown and Settings.maxFixAttemptsShown put
+// `fixAttempts` and `max_fix_attempts` into the records below 59, CheckView.roleHidden takes
+// `check.role` out of the records below 54, and PhaseView.passHidden takes each worker's `pass`
+// out of the records below 86.
 func TestEveryDeclaredFieldOfAnAnswerIsRealisedByItsFixture(t *testing.T) {
 	fixtures := answerFixtures(t)
 	// paths is one key path of each field, for the message a gap reads as.

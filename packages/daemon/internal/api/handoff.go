@@ -51,7 +51,24 @@ type HandoffCompleteRequest struct {
 	HandoffID      string     `json:"handoffId,omitempty"`
 	HandoffVersion int        `json:"handoffVersion,omitempty"`
 	WakeAt         *time.Time `json:"wakeAt,omitempty"`
+	// Ready exists only so that the body of a plugin below contract 86 is read: such a plugin
+	// sends `ready` on every call, and readBody refuses a member no field names. Absent or false
+	// is ignored, and true is refused (READY_RETIRED). requests.go's AcceptedByName row says
+	// why.
+	Ready *bool `json:"ready,omitempty"`
 }
+
+// readyIgnored is what ignoring `ready` means on this route, the sentence of its row in
+// requests.go's AcceptedByName.
+const readyIgnored = "a plugin from 46 to 85 sends ready on every handoff_complete: false, its default, " +
+	"meant what a completion means now, so it is read and ignored; true armed the daemon's merge of the pull request, " +
+	"which no daemon at contract 86 or later makes, so true is refused (READY_RETIRED)"
+
+// readyRetired is the refusal of a completion that sends `ready: true`. Accepting it would change
+// what the call means: at 85 it armed the daemon's merge, and on this daemon nothing would merge.
+const readyRetired = "this completion sends ready: true, which at contract 85 and below armed the daemon's merge of the pull request. " +
+	"No daemon at contract 86 or later acts on READY: the merger merges the pull request itself, and the daemon closes " +
+	"the issue when it reads that merge. Nothing was recorded. Merge the pull request, then complete again without ready"
 
 // HandoffCompleteResponse confirms that the completion fact committed. It carries nothing: the
 // daemon merges nothing and reads no head, so no completion has anything to answer with.
@@ -74,6 +91,8 @@ type HandoffCompleteResponse struct{}
 // branch or a merged one recorded (implementationPullRequest), and the engine refuses one of a
 // phase its role does not run (HANDOFF_NOT_CURRENT_PHASE). A completion of a done issue, which
 // runs no phase, by a session working no look is neither of the two: CHECK_LOOK_NOT_SERVED.
+// A call that sends `ready: true`, a merger's READY from a plugin below contract 86, is refused
+// before the two kinds are told apart (READY_RETIRED), and `ready: false` is read and ignored.
 func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	var req HandoffCompleteRequest
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
@@ -85,6 +104,13 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	if grant.Controller {
 		s.writeFailure(w, r, http.StatusForbidden, "GRANT_INVALID", "grant is unavailable")
+		return
+	}
+	// A plugin below contract 86 sends `ready` on every completion (HandoffCompleteRequest.Ready).
+	// False is the completion it always was, and true asks for a merge this daemon never makes,
+	// so true is refused before anything is read or recorded.
+	if req.Ready != nil && *req.Ready {
+		s.writeFailure(w, r, http.StatusBadRequest, "READY_RETIRED", readyRetired)
 		return
 	}
 	if s.pool == nil || s.records == nil {

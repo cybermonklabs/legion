@@ -389,6 +389,53 @@ func TestHandoffCompleteRetriedNamingTheSameRecordIsTheSameFact(t *testing.T) {
 	}
 }
 
+// A plugin from contract 46 to 85 sends `ready` on every handoff_complete, `false` on a phase
+// completion and on a check report. The daemon reads `false` by name and ignores it, so such a
+// completion is applied as any completion is, rather than refused for a member the request type
+// does not name.
+func TestHandoffCompleteAsAPluginAt85SendsItWithReadyFalseIsApplied(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
+	written := implementer.writeHandoff("implement", 2)
+
+	// The body the plugin at 85 builds (pi-shared's legion-phase-ops.ts, completeHandoff): every
+	// member its strict request schema names, `verdict` empty for an implementer and `ready`
+	// false.
+	completion(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", map[string]any{
+		"grantId": implementer.grant(t), "summary": "implemented", "verdict": "", "ready": false,
+		"commit": headSHA, "handoffId": written, "handoffVersion": 2,
+	}, nil))
+	if fact := lastCompletion(t, facts); fact.Commit != headSHA || fact.HandoffRecord != written || fact.HandoffVersion != 2 || fact.Role != claim.RoleImplementer || fact.Summary != "implemented" {
+		t.Fatalf("completion = %+v, want the implementer's naming %s version 2 at the commit it reported, %s", fact, written, headSHA)
+	}
+}
+
+// A merger's READY from a plugin below contract 86 sends `ready: true`, which at 85 armed the
+// daemon's merge. No daemon at 86 or later merges, so accepting it would record a completion that
+// merges nothing: the call is refused with a code of its own, and nothing is recorded.
+func TestHandoffCompleteWithReadyTrueIsRefused(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Merging)
+	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", map[string]any{
+		"grantId": merger.grant(t), "summary": "READY", "verdict": "", "ready": true, "commit": headSHA,
+	}, nil), http.StatusBadRequest, "READY_RETIRED")
+	if message != readyRetired {
+		t.Fatalf("the refusal is %q, want %q", message, readyRetired)
+	}
+	for _, want := range []string{"No daemon at contract 86 or later acts on READY", "the merger merges the pull request itself",
+		"the daemon closes the issue when it reads that merge", "Nothing was recorded"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("the refusal is %q, want it to say %q", message, want)
+		}
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refused READY = %#v, want none", got)
+	}
+}
+
 // An implementer's completion with no open pull request on its branch is refused before anything
 // is applied: the implementer's phase row and the pull request record stay as they were, so the
 // same completion, once the pull request is open, is applied and moves the issue to testing.

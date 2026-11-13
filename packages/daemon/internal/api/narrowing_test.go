@@ -77,11 +77,10 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // bands are read from the table rather than written out here, so a narrowing added above the
 // contract a row below reads is counted by that row rather than failing it.
 //
-// The two strips hold no row of that table, so they are asked of state itself, each by the
-// question recordShaping asks: the state's report of claims nothing will wake carries a retired
-// entry, or an issue of it carries a wait answered by a value that caller does not admit. The
-// fixture carries the first and not the second, its one answered wait being older than the
-// floor, so a caller below 56 is expected one value line and no caller is expected two.
+// The two strips hold no row of that table, so they are read from what the shaping itself
+// reports it took off state (tookOff), the one place their conditions are written. The fixture
+// carries a retired stranded entry and no wait answered by a value younger than the floor, so a
+// caller below 56 is expected one value line and no caller is expected two.
 func narrowingsExpected(state State, contract int) []string {
 	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
@@ -90,10 +89,12 @@ func narrowingsExpected(state State, contract int) []string {
 			dropped = append(dropped, narrowing.dropped)
 		}
 	}
-	if restore < retiredStrandedContract && carriesRetiredStranded(state) {
+	var took tookOff
+	shapeState(state, restore, strip, &took)
+	if took.retiredStranded {
 		dropped = append(dropped, droppedRetiredStranded)
 	}
-	if carriesUnadmittedWaitAnswer(state, restore) {
+	if took.waitAnswer {
 		dropped = append(dropped, droppedWaitAnswer)
 	}
 	return dropped

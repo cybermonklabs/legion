@@ -1265,10 +1265,11 @@ func TestAnswersGolden(t *testing.T) {
 
 // The table of enumerated fields a plugin parses strictly (answers.go): one row per field, with
 // each value and the contract it arrived at. No route answers this fixture either. It is
-// written out beside answers.json so that the plugin's own side holds its enumeration to the
-// daemon's — `packages/contracts/src/legion-api.test.ts` reads this file and compares its
-// values with `LEGION_WAIT_ANSWERS`, so a value added on one side and not the other is red
-// rather than silent.
+// written out beside answers.json so that the plugin's own side holds its enumerations to the
+// daemon's: `packages/contracts/src/legion-api.test.ts` reads this file, holds each row's values
+// equal to the members of the `z.enum` it reads at that row's key path, and fails a `z.enum` it
+// reads at a path no row declares. A value added on one side and not the other is red rather
+// than silent.
 func TestEnumeratedFieldsGolden(t *testing.T) {
 	golden(t, "enumerated-fields.json", EnumeratedFields)
 }
