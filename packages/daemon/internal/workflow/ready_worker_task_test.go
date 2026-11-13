@@ -100,7 +100,7 @@ func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {
 // R2: a phase worker whose claim becomes ready while its issue stands at admitted is given
 // nothing. Admitted is the architect's own phase (phase.RoleFor), and the architect's ready never
 // reaches this path (claimReady sends it the catch-up instead), so a worker's ready there finds a
-// phase no phase worker holds, as it did when no role was named for admitted.
+// phase no phase worker holds.
 func TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted(t *testing.T) {
 	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer} {
 		t.Run(string(role), func(t *testing.T) {

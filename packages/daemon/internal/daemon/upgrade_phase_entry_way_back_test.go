@@ -29,33 +29,42 @@ import (
 // docs/kubernetes.md, which is where an operator reads it at a rollback. The header is the
 // source — upgradeRecoveryReadsAnswer runs the block that file carries, as the one transaction
 // an operator runs — and the guide's copy is held to it by
-// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide.
+// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide. The way back of contract 111, which
+// an operator runs before it, stands in the headers of its two migrations and in a fenced block of
+// the guide of its own, and TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide
+// holds those copies to one text.
 const (
-	// wayBackMigrationFile and wayBackGuideFile are the two paths the failures below print, so a
-	// failing run names the file to open rather than the text alone.
-	wayBackMigrationFile = "internal/store/migrations/20261111225552_phase_entry.up.sql"
-	wayBackGuideFile     = "docs/kubernetes.md"
-	// wayBackHeredoc opens the block in both files and wayBackTerminator closes it. What stands
+	// phaseEntryMigrationFile, architectStalledNoticesMigrationFile,
+	// architectUpgradeMigrationFile and wayBackGuideFile are the paths the failures below print,
+	// so a failing run names the file to open rather than the text alone.
+	phaseEntryMigrationFile              = "internal/store/migrations/20261111225552_phase_entry.up.sql"
+	architectStalledNoticesMigrationFile = "internal/store/migrations/20261113181500_architect_stalled_notices.up.sql"
+	architectUpgradeMigrationFile        = "internal/store/migrations/20261113182000_architect_entry_upgrade.up.sql"
+	wayBackGuideFile                     = "docs/kubernetes.md"
+	// architectUpgradeMigration is the version of the second of contract 111's migrations, whose
+	// version row the first statement of that way back deletes.
+	architectUpgradeMigration = 20261113182000
+	// wayBackHeredoc opens the block in every file and wayBackTerminator closes it. What stands
 	// between them is what psql reads on its standard input, which is the transaction
 	// upgradeRecoveryReadsAnswer sends in one exec.
 	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
-	// wayBackRecoveryStatements is how many statements stand between the block's begin and its
-	// commit. The header, the guide and this test all call them the eleven, so a block holding
-	// another number is one that at least one of the three no longer describes.
+	// wayBackRecoveryStatements is how many statements stand between the phase entry's block's
+	// begin and its commit. The header, the guide and this test all call them the eleven, so a
+	// block holding another number is one that at least one of the three no longer describes.
 	wayBackRecoveryStatements = 11
 )
 
-// wayBackBlockOfTheHeader is the recovery block of the migration's header as an operator copies
-// it out of the file: the psql line, the lines of the heredoc and its terminator, with the
-// comment marker and the header's own indent taken off each. It is read from the embedded
-// migration, which is that file's bytes as the binary ships them (migrations.All, over the embed
-// internal/store/migrations/embed.go declares).
+// wayBackBlockOfTheHeader is the recovery block of the header of file, a migration under
+// internal/store/migrations, as an operator copies it out of the file: the psql line, the lines
+// of the heredoc and its terminator, with the comment marker and the header's own indent taken
+// off each. It is read from the embedded migration, which is that file's bytes as the binary
+// ships them (migrations.All, over the embed internal/store/migrations/embed.go declares).
 //
 // Every failure here stops the test by name, because a check that cannot find what it means to
 // read is a check that passes while reading nothing: a header carrying no such block, a block
 // opened and never closed, and a line indented outside the opener's indent each name the file.
-func wayBackBlockOfTheHeader(t *testing.T) string {
+func wayBackBlockOfTheHeader(t *testing.T, file string) string {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -63,14 +72,14 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 	}
 	header := ""
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration {
+		if migration.Name == filepath.Base(file) {
 			header = migration.SQL
 			break
 		}
 	}
 	if header == "" {
-		t.Fatalf("the embedded migrations hold no migration %d: %s is the source of the way back, and this test runs the block that file carries",
-			phaseEntryMigration, wayBackMigrationFile)
+		t.Fatalf("the embedded migrations hold no %s: that file is the source of its way back, and this test reads the block it carries",
+			file)
 	}
 	var block []string
 	indent := ""
@@ -93,8 +102,8 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 		if strings.TrimSpace(comment) != "" {
 			held, indented := strings.CutPrefix(comment, indent)
 			if !indented {
-				t.Fatalf("%s indents %q inside the way back's block below the indent its %q line carries: the block is read by that indent, so such a line would be dropped from the transaction this test runs",
-					wayBackMigrationFile, line, wayBackHeredoc)
+				t.Fatalf("%s indents %q inside the way back's block below the indent its %q line carries: the block is read by that indent, so such a line would be dropped from the transaction an operator runs",
+					file, line, wayBackHeredoc)
 			}
 			text = held
 		}
@@ -104,18 +113,18 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 		}
 	}
 	if len(block) == 0 {
-		t.Fatalf("%s carries no %q line in its header: that line opens the way back's block, which this test runs as the one transaction an operator runs",
-			wayBackMigrationFile, wayBackHeredoc)
+		t.Fatalf("%s carries no %q line in its header: that line opens the way back's block, which an operator runs as one transaction",
+			file, wayBackHeredoc)
 	}
 	t.Fatalf("%s opens the way back's block and closes it with no %q line; what it carries is:\n%s",
-		wayBackMigrationFile, wayBackTerminator, strings.Join(block, "\n"))
+		file, wayBackTerminator, strings.Join(block, "\n"))
 	return ""
 }
 
-// wayBackRecovery is the transaction of that block: the lines between the heredoc's opener and
-// its terminator, which psql reads on its standard input. The psql line itself runs nothing here
-// — ON_ERROR_STOP is psql's own and a pool runs no shell — and what it bounds is exactly what
-// one exec sends.
+// wayBackRecovery is the transaction of the phase entry's block: the lines between the heredoc's
+// opener and its terminator, which psql reads on its standard input. The psql line itself runs
+// nothing here — ON_ERROR_STOP is psql's own and a pool runs no shell — and what it bounds is
+// exactly what one exec sends.
 //
 // The statements are counted rather than read, so a block that lost one, or that grew one while
 // the header and the guide still call them the eleven, stops the test rather than running a
@@ -126,7 +135,7 @@ func wayBackRecovery(t *testing.T, block string) string {
 	lines := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
 	if len(lines) < 2 || lines[0] != wayBackHeredoc || lines[len(lines)-1] != wayBackTerminator {
 		t.Fatalf("the way back's block of %s is no heredoc between %q and %q; what it holds is:\n%s",
-			wayBackMigrationFile, wayBackHeredoc, wayBackTerminator, block)
+			phaseEntryMigrationFile, wayBackHeredoc, wayBackTerminator, block)
 	}
 	recovery := strings.Join(lines[1:len(lines)-1], "\n") + "\n"
 	var statements []string
@@ -137,24 +146,25 @@ func wayBackRecovery(t *testing.T, block string) string {
 	}
 	if len(statements) == 0 {
 		t.Fatalf("the way back's block of %s holds no statement between %q and %q: an empty block runs nothing and would prove nothing",
-			wayBackMigrationFile, wayBackHeredoc, wayBackTerminator)
+			phaseEntryMigrationFile, wayBackHeredoc, wayBackTerminator)
 	}
 	if first, last := statements[0], statements[len(statements)-1]; first != "begin" || last != "commit" {
 		t.Fatalf("the way back's block of %s opens with %q and ends with %q, want begin and commit: the eleven are one act, and either half of them left standing is a broken store",
-			wayBackMigrationFile, first, last)
+			phaseEntryMigrationFile, first, last)
 	}
 	if held := len(statements) - 2; held != wayBackRecoveryStatements {
 		t.Fatalf("the way back's block of %s holds %d statements between its begin and its commit, want the %d that file, %s and this test each call the eleven; the block is:\n%s",
-			wayBackMigrationFile, held, wayBackRecoveryStatements, wayBackGuideFile, recovery)
+			phaseEntryMigrationFile, held, wayBackRecoveryStatements, wayBackGuideFile, recovery)
 	}
 	return recovery
 }
 
-// wayBackBlockOfTheGuide is the same block as docs/kubernetes.md carries it: the content of the
-// fenced block that deletes this migration's version row. The guide carries a psql heredoc for
-// several contracts' rollbacks, so the fence is found by the one line only this rollback's block
-// holds rather than by its place in the document, which every edit above it moves.
-func wayBackBlockOfTheGuide(t *testing.T) string {
+// wayBackBlockOfTheGuide is a way back's block as docs/kubernetes.md carries it: the content of
+// the fenced block that holds mark, a line only that block holds. The guide carries a psql
+// heredoc for several contracts' rollbacks, so the fence is found by that line rather than by its
+// place in the document, which every edit above it moves. file is the migration whose header
+// carries the block the guide's is held to, which a failure names.
+func wayBackBlockOfTheGuide(t *testing.T, file, mark string) string {
 	t.Helper()
 	// The guide is at the repository root, four directories above this package. A read that
 	// fails stops the test rather than skipping it: an absence here would read exactly like a
@@ -163,7 +173,6 @@ func wayBackBlockOfTheGuide(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", wayBackGuideFile, err)
 	}
-	mark := fmt.Sprintf("delete from schema_version where version = %d;", phaseEntryMigration)
 	var block []string
 	inside := false
 	for _, line := range strings.Split(string(doc), "\n") {
@@ -182,8 +191,23 @@ func wayBackBlockOfTheGuide(t *testing.T) string {
 		}
 	}
 	t.Fatalf("%s carries no fenced block holding %q: that block is the way back an operator runs, and it is held to the block %s carries in its header",
-		wayBackGuideFile, mark, wayBackMigrationFile)
+		wayBackGuideFile, mark, file)
 	return ""
+}
+
+// wayBackGuideMark is the line that finds a way back's block in the guide: the delete of the
+// version row of the migration the block reverses first, which no other block of the guide holds.
+func wayBackGuideMark(version int) string {
+	return fmt.Sprintf("delete from schema_version where version = %d;", version)
+}
+
+// assertOneWayBackText holds header, the way back's block the header of file carries, to the
+// block the guide carries under mark, and names each line the two copies disagree on.
+func assertOneWayBackText(t *testing.T, file, header, mark string) {
+	t.Helper()
+	if guide := wayBackBlockOfTheGuide(t, file, mark); header != guide {
+		t.Fatalf("the way back's block differs between %s and %s:\n%s", file, wayBackGuideFile, wayBackBlockDifference(header, guide))
+	}
 }
 
 // TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide holds the way back's two copies to
@@ -194,16 +218,25 @@ func wayBackBlockOfTheGuide(t *testing.T) string {
 // the one transaction an operator runs; what this adds is that the guide says the same thing as
 // the block that run proves.
 func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
-	header := wayBackBlockOfTheHeader(t)
+	header := wayBackBlockOfTheHeader(t, phaseEntryMigrationFile)
 	// The shape of the block is read here as well as where it runs, so a header broken in a tree
 	// with no database still fails this check by name rather than passing it unread.
 	wayBackRecovery(t, header)
-	guide := wayBackBlockOfTheGuide(t)
-	if header == guide {
-		return
+	assertOneWayBackText(t, phaseEntryMigrationFile, header, wayBackGuideMark(phaseEntryMigration))
+}
+
+// The way back of contract 111 is one text standing in three files: the headers of its two
+// migrations, 20261113181500_architect_stalled_notices and 20261113182000_architect_entry_upgrade,
+// and the fenced block of docs/kubernetes.md that an operator runs before the phase entry's. A
+// copy that drifted is the same wrong procedure at a rollback as the phase entry's would be.
+// internal/admit's TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward runs the
+// header's block as the one transaction an operator runs; what this adds is that each header and
+// the guide carry the same text, so an edit of one statement in any of the three fails here.
+func TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide(t *testing.T) {
+	mark := wayBackGuideMark(architectUpgradeMigration)
+	for _, file := range []string{architectStalledNoticesMigrationFile, architectUpgradeMigrationFile} {
+		assertOneWayBackText(t, file, wayBackBlockOfTheHeader(t, file), mark)
 	}
-	t.Fatalf("the way back's block differs between %s and %s:\n%s",
-		wayBackMigrationFile, wayBackGuideFile, wayBackBlockDifference(header, guide))
 }
 
 // wayBackBlockDifference renders the lines the two copies disagree on, each with its number
@@ -301,10 +334,10 @@ func wayBackBlockDifference(header, guide string) string {
 func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Token, issue string) {
 	t.Helper()
 	ctx := context.Background()
-	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t))
+	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t, phaseEntryMigrationFile))
 	if _, err := pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v\nthe block is:\n%s",
-			wayBackMigrationFile, err, recovery)
+			phaseEntryMigrationFile, err, recovery)
 	}
 
 	const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,

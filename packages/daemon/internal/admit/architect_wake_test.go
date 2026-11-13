@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -60,10 +61,9 @@ type architectWakeFixture struct {
 	claimed bool
 	state   supervise.ClaimState
 	given   int64
-	// task gives that claim the delivery of taskEntry, queued at queuedAt and confirmed where
+	// task gives that claim the delivery of entry, queued at queuedAt and confirmed where
 	// confirmed is set: the handshake the first arm reads.
 	task      bool
-	taskEntry int64
 	queuedAt  time.Time
 	confirmed bool
 }
@@ -72,7 +72,7 @@ type architectWakeFixture struct {
 func architectWakeRoot(key string) architectWakeFixture {
 	return architectWakeFixture{key: key, generation: architectWakeGeneration, stands: phase.Admitted, status: "in_progress",
 		admittedAt: fixedNow, entry: seededEntry, raisedAt: fixedNow, claimed: true, state: supervise.StateIdle,
-		given: seededEntry, task: true, taskEntry: seededEntry, queuedAt: fixedNow, confirmed: true}
+		given: seededEntry, task: true, queuedAt: fixedNow, confirmed: true}
 }
 
 // seedArchitectWakeRoot records one fixture: the issue, its tree lifecycle, its slot, its
@@ -98,14 +98,10 @@ func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixt
 				t.Fatalf("record the design gate %s registered: %v", f.key, err)
 			}
 		}
-		if f.entry != 0 {
-			if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: f.key, Role: claim.RoleArchitect,
-				Claim: architectToken(t, f.key), Entry: f.entry, EntryTask: seededEntryTask(f.key),
-				EntryRaisedAt: f.raisedAt}); err != nil {
-				t.Fatalf("record the architect's phases row of %s: %v", f.key, err)
-			}
-		}
 	})
+	if f.entry != 0 {
+		putArchitectRow(t, pool, f.key, f.entry, f.raisedAt)
+	}
 	if !f.claimed {
 		return
 	}
@@ -114,12 +110,12 @@ func seedArchitectWakeRoot(t *testing.T, pool *pgxpool.Pool, f architectWakeFixt
 		markGivenEntry(t, pool, token, f.given)
 	}
 	if f.task {
-		putArchitectTask(t, pool, token, f.generation, f.taskEntry, f.queuedAt, f.confirmed)
+		putArchitectTask(t, pool, token, f.generation, f.entry, f.queuedAt, f.confirmed)
 	}
 }
 
-// takeSlotAt gives key one of the cap's slots, admitted at at: takeSlot with the moment the gate
-// arm weighs its bound from.
+// takeSlotAt gives key one of the cap's slots, admitted at at, which is the moment the gate arm
+// weighs its bound from. takeSlot is the same slot admitted at fixedNow.
 func takeSlotAt(t *testing.T, pool *pgxpool.Pool, key string, at time.Time) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -155,29 +151,17 @@ func putArchitectTask(t *testing.T, pool *pgxpool.Pool, token claim.Token, gener
 // first, as the reason each carries.
 func architectWakes(t *testing.T, pool *pgxpool.Pool, root string) []string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select coalesce(payload->>'reason', '') from outbox
-		where issue = $1 and kind = $2 and payload->>'kind' = $3 order by id`,
-		root, string(record.OutboxKindControllerNotice), string(record.ArchitectStalledNotice))
-	if err != nil {
-		t.Fatalf("list the architect wakes of %s: %v", root, err)
-	}
-	defer rows.Close()
 	var reasons []string
-	for rows.Next() {
-		var reason string
-		if err := rows.Scan(&reason); err != nil {
-			t.Fatalf("read an architect wake of %s: %v", root, err)
+	for _, row := range controllerNotices(t, pool) {
+		if notice := row.payload.(record.ControllerNotice); row.issue == root && notice.Kind == record.ArchitectStalledNotice {
+			reasons = append(reasons, notice.Reason)
 		}
-		reasons = append(reasons, reason)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("list the architect wakes of %s: %v", root, err)
 	}
 	return reasons
 }
 
 // architectWakeMarks is every arm root is marked told for, at generation, in arm order.
-func architectWakeMarks(t *testing.T, pool *pgxpool.Pool, root string, generation uint64) []string {
+func architectWakeMarks(t *testing.T, pool *pgxpool.Pool, root string, generation uint64) []record.ArchitectStallArm {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select arm from architect_stalled_notices
 		where issue = $1 and tree = $1 and generation = $2 order by arm`, root, int64(generation))
@@ -185,13 +169,13 @@ func architectWakeMarks(t *testing.T, pool *pgxpool.Pool, root string, generatio
 		t.Fatalf("list the arms %s is marked told for: %v", root, err)
 	}
 	defer rows.Close()
-	var arms []string
+	var arms []record.ArchitectStallArm
 	for rows.Next() {
 		var arm string
 		if err := rows.Scan(&arm); err != nil {
 			t.Fatalf("read an arm %s is marked told for: %v", root, err)
 		}
-		arms = append(arms, arm)
+		arms = append(arms, record.ArchitectStallArm(arm))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("list the arms %s is marked told for: %v", root, err)
@@ -253,7 +237,7 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 			change: func(f *architectWakeFixture) {
 				f.state, f.task = supervise.StateFailed, false
 			},
-			why: "a failed architect claim of a running tree is the claim workflow.Stranded has always named and nothing has ever woken anybody for",
+			why: "a failed architect claim of a running tree is a claim workflow.Stranded names, and this arm is the wake for it",
 		},
 		{
 			name: "the root holds no architect claim at all", arm: record.ArchitectClaimUnreachable,
@@ -287,7 +271,7 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 			}
 
 			assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{tc.arm}, tc.why)
-			if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); len(marks) != 1 || marks[0] != string(tc.arm) {
+			if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); !slices.Equal(marks, []record.ArchitectStallArm{tc.arm}) {
 				t.Fatalf("the arms %s is marked told for = %v, want the one %s: %s", root, marks, tc.arm, tc.why)
 			}
 			reason := architectWakes(t, pool, root)[0]
@@ -325,7 +309,7 @@ func TestARootTwoArchitectWakeArmsReadRaisesBothOfThem(t *testing.T) {
 	assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{record.ArchitectTookNothing, record.ArchitectClaimUnreachable},
 		"the claim is failed and it holds the unconfirmed task of its entry, which are two facts and two wakes")
 	marks := architectWakeMarks(t, pool, root, architectWakeGeneration)
-	if len(marks) != 2 || marks[0] != string(record.ArchitectClaimUnreachable) || marks[1] != string(record.ArchitectTookNothing) {
+	if !slices.Equal(marks, []record.ArchitectStallArm{record.ArchitectClaimUnreachable, record.ArchitectTookNothing}) {
 		t.Fatalf("the arms %s is marked told for = %v, want both of them once", root, marks)
 	}
 }
@@ -402,9 +386,10 @@ func TestNoArchitectWakeIsRaisedForARootThatIsMovingAlong(t *testing.T) {
 }
 
 // The claim workflow.Stranded names is the claim the second arm wakes the controller for, once.
-// The report has named a failed architect claim of a running tree since it was written and woke
-// nobody, and the two readings must agree: Stranded is asked here of the very fixture the pass
-// then reads, so a change that moved one of them apart from the other fails this test.
+// That report names a failed architect claim of a running tree and wakes nobody itself, and the
+// two readings must agree: Stranded is asked here of the claims the store holds for the very
+// fixture the pass then reads, so a change that moved one of them apart from the other fails this
+// test.
 func TestTheArchitectWakeOfAClaimStrandedNamesIsRaisedOnce(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
@@ -414,12 +399,11 @@ func TestTheArchitectWakeOfAClaimStrandedNamesIsRaisedOnce(t *testing.T) {
 	seedArchitectWakeRoot(t, pool, fixture)
 	token := architectToken(t, root)
 
+	claims := storedClaims(t, pool)
 	var named []supervise.Claim
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		named, err = workflow.Stranded(context.Background(), tx, record.NewStore(), testProject, nil,
-			[]supervise.Claim{{Token: token, Project: "legion", Tree: root, Issue: root, Role: claim.RoleArchitect,
-				Generation: architectWakeGeneration, State: supervise.StateFailed}}, nil, fixedNow)
+		named, err = workflow.Stranded(context.Background(), tx, record.NewStore(), testProject, nil, claims, nil, fixedNow)
 		if err != nil {
 			t.Fatalf("read the stranded claims: %v", err)
 		}
@@ -458,12 +442,7 @@ func TestTheArchitectWakeBoundStartsAgainWhenARootIsReadmitted(t *testing.T) {
 	readmitted.Generation = architectWakeGeneration + 1
 	putIssue(t, pool, readmitted)
 	takeSlotAt(t, pool, root, fixedNow)
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
-			Claim: architectToken(t, root), Entry: seededEntry + 1, EntryTask: seededEntryTask(root), EntryRaisedAt: fixedNow}); err != nil {
-			t.Fatalf("raise the entry of the re-admitted %s: %v", root, err)
-		}
-	})
+	putArchitectRow(t, pool, root, seededEntry+1, fixedNow)
 	markGivenEntry(t, pool, architectToken(t, root), seededEntry+1)
 
 	applySweep(t, pool, admission, "readmit-2")
@@ -473,13 +452,7 @@ func TestTheArchitectWakeBoundStartsAgainWhenARootIsReadmitted(t *testing.T) {
 	// The new run stands its own 90 minutes: the slot and the entry it was re-admitted with move
 	// back past the bound, which is what the record reads after that time has passed.
 	takeSlotAt(t, pool, root, fixedNow.Add(-pastTheGate))
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
-			Claim: architectToken(t, root), Entry: seededEntry + 1, EntryTask: seededEntryTask(root),
-			EntryRaisedAt: fixedNow.Add(-pastTheGate)}); err != nil {
-			t.Fatalf("age the entry of the re-admitted %s: %v", root, err)
-		}
-	})
+	putArchitectRow(t, pool, root, seededEntry+1, fixedNow.Add(-pastTheGate))
 
 	applySweep(t, pool, admission, "readmit-3")
 	assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{record.ArchitectSlowBeforeGate, record.ArchitectSlowBeforeGate},
@@ -537,13 +510,7 @@ func TestTheGateArchitectWakeReadsTheLaterOfTheAdmissionAndTheEntryRaised(t *tes
 
 	// The resume's own 90 minutes pass: the entry the answer raised moves past the bound, and
 	// the admission is where it was.
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
-			Claim: architectToken(t, root), Entry: seededEntry, EntryTask: seededEntryTask(root),
-			EntryRaisedAt: fixedNow.Add(-pastTheGate)}); err != nil {
-			t.Fatalf("age the entry of the answered %s: %v", root, err)
-		}
-	})
+	putArchitectRow(t, pool, root, seededEntry, fixedNow.Add(-pastTheGate))
 
 	applySweep(t, pool, admission, "answered-2")
 	applySweep(t, pool, admission, "answered-3")

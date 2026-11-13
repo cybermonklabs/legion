@@ -5,17 +5,17 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// A root whose admission has just given it a slot is the one case where nothing the daemon had
+// A root whose admission has just given it a slot is the one case where nothing the daemon has
 // already written tells its architect what to do: no phase of its tree has ended, no person has
-// answered anything, and nobody has decided anything on it while it waited. Before this test the
-// architect start admission queued for such a root carried no task at all — a task only where a
-// person's decision had been kept for it (workflow.ParkedDecisionTask) — so the daemon launched
-// the architect of a fresh tree with nothing to do, and the first thing it would ever be given was
-// the catch-up its ready writes, which states the tree and leaves the first act to the agent. A
-// root measured that way sat in its slot with an idle architect that had neither claimed it nor
-// registered its design gate until a person messaged the session.
+// answered anything, and nobody has decided anything on it while it waited. The start admission
+// queues for such a root carries the root's own first task, of the shape of a tree nobody has
+// architected (workflow.ArchitectStartTask): it asks the architect to claim the tree, have its
+// spec written, file every child of its decomposition and register its design gate. Without that
+// task the first thing the architect would be given is the catch-up its ready writes, which
+// states the tree and leaves the first act to the agent.
 //
 // The start carries the phase entry admission raised for that architect
 // (record.SuperviseRequest.Entry), and the architect's phases row carries the same number with
@@ -23,8 +23,7 @@ import (
 // the delivery records what it was given on the claim (supervise.Claim.GivenEntry) and the work
 // survives the row that carried it.
 //
-// So the start carries the root's own first task, as a phase worker's start carries its phase's,
-// and this holds the whole path main runs: admission queues the start, the outbox runner launches
+// The whole path main runs is held here: admission queues the start, the outbox runner launches
 // the architect on it, and the agent that comes up is prompted that task in its first turn, with
 // no message from anyone.
 //
@@ -42,10 +41,13 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 	if pending == nil || pending.Task == "" {
 		t.Fatalf("the architect's pending task after its admission's start = %#v, want the start carrying the root's first task", pending)
 	}
-	for _, want := range []string{mainPathRoot, "claim", "design gate"} {
+	for _, want := range []string{mainPathRoot, workflow.ArchitectFreshTreeLabel, workflow.ArchitectDecompositionLabel} {
 		if !strings.Contains(pending.Task, want) {
-			t.Fatalf("the architect's start task = %q, want it naming %q", pending.Task, want)
+			t.Fatalf("the architect's start task = %q, want it naming %q: a fresh tree's architect is given the whole first act", pending.Task, want)
 		}
+	}
+	if !workflow.CarriesArchitectStart(pending.Task) {
+		t.Fatalf("the architect's start task = %q, want the first-task instruction the derivation writes", pending.Task)
 	}
 	row := rolePhaseRow(t, r.pool, mainPathRoot, claim.RoleArchitect)
 	if row.Entry != 1 || row.EntryTask != pending.Task || row.EntryRaisedAt.IsZero() {

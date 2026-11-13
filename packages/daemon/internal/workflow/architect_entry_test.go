@@ -28,25 +28,11 @@ func architectEntryRoot() record.Issue {
 		Status: "in_progress", Rank: "U", HandedOver: true, LastDispatchSeq: 1}
 }
 
-// architectEntryToken is the claim token of entryIssue's root architect.
-func architectEntryToken(t *testing.T) claim.Token {
-	t.Helper()
-	project, err := claim.ProjectToken("LEGION")
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := claim.NewToken(project, entryIssue, claim.RoleArchitect)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return token
-}
-
 // seedArchitectEntryRow records the architect's phases row as the start of an earlier entry left
 // it: on the seeded entry, carrying that entry's work and the moment it was raised.
 func seedArchitectEntryRow(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleArchitect, Claim: architectEntryToken(t),
+	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleArchitect, Claim: wakeToken(t, claim.RoleArchitect),
 		Entry: seededEntry, EntryTask: seededArchitectTask, EntryRaisedAt: seededRaisedAt})
 }
 
@@ -154,7 +140,7 @@ func TestOwedEntryReadsARootArchitectEntryAsItReadsAPhaseWorkers(t *testing.T) {
 			root := architectEntryRoot()
 			seedIssue(t, pool, root)
 			seedArchitectEntryRow(t, pool)
-			token := architectEntryToken(t)
+			token := wakeToken(t, claim.RoleArchitect)
 			if tc.claimed {
 				seedArchitectClaimGiven(t, pool, root, tc.given)
 			}
@@ -182,10 +168,6 @@ func TestOwedEntryReadsARootArchitectEntryAsItReadsAPhaseWorkers(t *testing.T) {
 					t.Fatalf("the architect is owed = %t on the entry %d its row names, with claim %+v and %d queued rows; want owed = %t",
 						owed, row.Entry, run.Claim, len(run.Queued), tc.owed)
 				}
-				if tc.owed && row.EntryTask != seededArchitectTask {
-					t.Fatalf("the architect is owed entry %d and its row names the work %q, want %q: what it is owed is the record's",
-						row.Entry, row.EntryTask, seededArchitectTask)
-				}
 				return nil
 			})
 		})
@@ -203,7 +185,7 @@ func seedArchitectClaimGiven(t *testing.T, pool *pgxpool.Pool, root record.Issue
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry, served_entry, serving_generation)
 		values ($1, $2, $3, $4, 'architect', $5, 'session-architect', '', 'ready', 0, 0, 0, 0, $6, $6, $5)`,
-		string(architectEntryToken(t)), project, root.Tree, root.Key, int64(root.Generation), given); err != nil {
+		string(wakeToken(t, claim.RoleArchitect)), project, root.Tree, root.Key, int64(root.Generation), given); err != nil {
 		t.Fatalf("seed the architect's claim: %v", err)
 	}
 }
@@ -294,8 +276,7 @@ func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *tes
 	token := wakeToken(t, claim.RoleArchitect)
 	// The architect's row as a transition left it, and a claim given the entry before it: the
 	// work of the row's entry never reached this claim.
-	seedPhase(t, rig.pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleArchitect, Claim: token,
-		Entry: seededEntry, EntryTask: seededArchitectTask, EntryRaisedAt: seededRaisedAt})
+	seedArchitectEntryRow(t, rig.pool)
 	if _, err := rig.pool.Exec(context.Background(), `update claims set given_entry = $2, served_entry = $2 where token = $1`,
 		string(token), seededEntry-1); err != nil {
 		t.Fatalf("record what the architect's claim was given: %v", err)

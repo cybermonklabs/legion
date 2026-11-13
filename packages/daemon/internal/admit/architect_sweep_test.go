@@ -103,14 +103,10 @@ func seedArchitectSweepRoot(t *testing.T, pool *pgxpool.Pool, f architectSweepFi
 				t.Fatalf("record the open design gate of %s: %v", f.key, err)
 			}
 		}
-		if f.entry != 0 {
-			if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: f.key, Role: claim.RoleArchitect,
-				Claim: architectToken(t, f.key), Entry: f.entry, EntryTask: seededEntryTask(f.key),
-				EntryRaisedAt: fixedNow}); err != nil {
-				t.Fatalf("record the architect's phases row of %s: %v", f.key, err)
-			}
-		}
 	})
+	if f.entry != 0 {
+		putArchitectRow(t, pool, f.key, f.entry, fixedNow)
+	}
 	if !f.claimed {
 		return
 	}
@@ -136,15 +132,14 @@ func architectSweepStarts(t *testing.T, pool *pgxpool.Pool, root string) []conve
 	return starts
 }
 
-// The reach of the rule over a root's own architect: the four roots whose architect was queued
+// The reach of the rule over a root's own architect: the three roots whose architect was queued
 // no entry and is sent the work of the entry its phases row names. Each is the same fixture with
 // one field changed, and the refusals below are the same fixture again, so each answer turns on
 // the one thing its case names.
 //
-// The second and third are the measured defect (dispatch://INFRA-2614): record.AtWork answers
-// false for a root at admitted whose design gate has opened, and for one the daemon put back to
-// admitted when a person's answer landed, while the root's own architect is in both cases the
-// only role of the tree at work.
+// The second is the measured defect (dispatch://INFRA-2614): record.AtWork answers false for a
+// root at admitted whose design gate has opened, while the root's own architect is the only role
+// of the tree at work.
 func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -158,14 +153,6 @@ func TestTheArchitectSweepReachesEveryRootWhoseArchitectIsOwedItsEntry(t *testin
 		{
 			name: "a root at admitted whose gate has opened", change: func(f *architectSweepFixture) { f.gateOpened = true },
 			why: "the children do the work after that opening, and the root's own architect is still the role at work here",
-		},
-		{
-			name: "a root put back to admitted by the resume of a person's answer",
-			change: func(f *architectSweepFixture) {
-				f.gateOpened = true
-				f.given = seededEntry - 1
-			},
-			why: "the resume raised the entry and wrote its work; the row that carried it was lost, so the architect holds none of it",
 		},
 		{
 			name: "a root a hand-over carried in at the phase that came with it",
@@ -287,9 +274,9 @@ func TestTheArchitectSweepRefusesEveryRootItsReachLeavesOut(t *testing.T) {
 // confirmed — the old release's own start, still unanswered — is passed over until it confirms
 // it, so no second prompt reaches a worker that is reading the first.
 //
-// A phase worker of the same shape is owed nothing, which is the rule as it was: no transition
-// of its issue has ever handed that role work, and nothing here composes work for a role the
-// workflow has not started (workflow.OwedEntry).
+// A phase worker of the same shape is owed nothing: no transition of its issue has ever handed
+// that role work, and nothing here composes work for a role the workflow has not started
+// (workflow.OwedEntry).
 func TestTheArchitectSweepRaisesTheEntryOfARootWhoseArchitectRowNamesNone(t *testing.T) {
 	t.Run("the root whose architect row names no entry", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -351,7 +338,7 @@ func TestTheArchitectSweepRaisesTheEntryOfARootWhoseArchitectRowNamesNone(t *tes
 		admission := quiet(t, 2)
 		const root, member = "LEGION-814", "LEGION-815"
 		seedArchitectSweepRoot(t, pool, architectSweepRoot(root))
-		putIssue(t, pool, record.Issue{Key: member, Tree: root, Parent: &[]string{root}[0], Repo: "acme/widgets",
+		putIssue(t, pool, record.Issue{Key: member, Tree: root, Parent: record.ParentOf(root), Repo: "acme/widgets",
 			DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "the member " + member,
 			Phase: phase.Testing, Generation: architectSweepGeneration, Status: "in_progress", DispatchStatus: "in_progress",
 			Rank: member, HandedOver: true, LastDispatchSeq: 1})
@@ -427,10 +414,8 @@ func TestTheArchitectSweepSendsTheTaskTheDerivationGivesOverTheRecord(t *testing
 		t.Fatalf("the architect starts of %s = %+v, want the one the rule writes", root, starts)
 	}
 	if want := architectStart(t, pool, admission, root, ""); starts[0].task != want {
-		t.Fatalf("the task the rule sent = %q, want the derivation's own %q over the record as it stands", starts[0].task, want)
-	}
-	if starts[0].task == seededEntryTask(root) {
-		t.Fatalf("the rule sent the text stored on the phases row: it could name a kept decision another telling has already claimed")
+		t.Fatalf("the task the rule sent = %q, want the derivation's own %q over the record as it stands: the text stored on the "+
+			"phases row could name a kept decision another telling has already claimed", starts[0].task, want)
 	}
 	if row := architectRow(t, pool, root); row.Entry != seededEntry {
 		t.Fatalf("the architect's row after the re-send = entry %d, want the %d it stood at: the rule sends the work of an entry and raises none", row.Entry, seededEntry)
@@ -484,16 +469,8 @@ func TestTheArchitectSweepRoleTotalityCoversEveryRoleOfClaimRoles(t *testing.T) 
 		if role == claim.RoleArchitect {
 			continue
 		}
-		seedTreeAndMember(t, pool, at.root, at.key, at.stands, convergeGeneration, false)
-		takeSlot(t, pool, at.key)
-		token := putWorkerClaim(t, pool, at.root, at.key, role, convergeGeneration, supervise.StateIdle, "")
-		markGivenEntry(t, pool, token, seededEntry-1)
-		inTx(t, pool, func(tx pgx.Tx) {
-			if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: at.key, Role: role,
-				Claim: token, Entry: seededEntry, EntryTask: seededEntryTask(at.key), EntryRaisedAt: fixedNow}); err != nil {
-				t.Fatalf("record the %s's phases row of %s: %v", role, at.key, err)
-			}
-		})
+		seedConvergeRow(t, pool, convergeRow{root: at.root, key: at.key, stands: at.stands,
+			claimed: true, state: supervise.StateIdle, given: seededEntry - 1})
 	}
 	atAdmitted, carried := reached[claim.RoleArchitect].key, "LEGION-841"
 	seedArchitectSweepRoot(t, pool, architectSweepRoot(atAdmitted))

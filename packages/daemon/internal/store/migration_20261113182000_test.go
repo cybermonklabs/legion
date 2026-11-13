@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // architectUpgradeVersion is the version of the migration this file tests, so the test can
@@ -93,8 +96,8 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 			"tells a root of the older release from one this release served", queued)
 	}
 
-	if arms := architectUpgradeMarks(t, store, "LEGION-208", 3); len(arms) != 2 ||
-		arms[0] != "slow-before-gate" || arms[1] != "took-nothing" {
+	if arms := architectUpgradeMarks(t, store, "LEGION-208", 3); !slices.Equal(arms,
+		[]record.ArchitectStallArm{record.ArchitectSlowBeforeGate, record.ArchitectTookNothing}) {
 		t.Fatalf("the arms LEGION-208 is marked told for = %v, want the first and the third: the second reports a claim that is failed "+
 			"or retired, which no send can cure", arms)
 	}
@@ -140,22 +143,24 @@ func TestTheArchitectUpgradeSettlesEveryRootArchitectWith20261113182000(t *testi
 	}
 }
 
-// architectUpgradeMarks is every stall arm issue is marked told for at generation, in arm order.
-func architectUpgradeMarks(t *testing.T, store *Store, issue string, generation uint64) []string {
+// architectUpgradeMarks is every stall arm issue is marked told for at generation, in arm order,
+// whatever tree the mark names. A mark of a child names the tree the child stands in, so a read
+// of the marks whose tree is the issue's own key would pass over it.
+func architectUpgradeMarks(t *testing.T, store *Store, issue string, generation uint64) []record.ArchitectStallArm {
 	t.Helper()
 	rows, err := store.Pool().Query(context.Background(), `select arm from architect_stalled_notices
-		where issue = $1 and tree = $1 and generation = $2 order by arm`, issue, int64(generation))
+		where issue = $1 and generation = $2 order by arm`, issue, int64(generation))
 	if err != nil {
 		t.Fatalf("list the arms %s is marked told for: %v", issue, err)
 	}
 	defer rows.Close()
-	var arms []string
+	var arms []record.ArchitectStallArm
 	for rows.Next() {
 		var arm string
 		if err := rows.Scan(&arm); err != nil {
 			t.Fatalf("read an arm %s is marked told for: %v", issue, err)
 		}
-		arms = append(arms, arm)
+		arms = append(arms, record.ArchitectStallArm(arm))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("list the arms %s is marked told for: %v", issue, err)

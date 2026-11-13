@@ -20,9 +20,32 @@ const readmittedLead = "LEGION-208 is yours and its tree ran at an earlier gener
 
 const startTail = " Nothing else starts this tree, and no message is coming."
 
-// admittedRoot is a root at the phase every tree the workflow opens stands in.
-func admittedRoot() record.Issue {
-	return record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: phase.Admitted}
+// specGated is a deployment that gates the spec step alone.
+var specGated = []record.DesignStep{record.DesignStepSpec}
+
+// rootAt is the root every case of this file stands on, standing in p.
+func rootAt(p phase.Phase) record.Issue {
+	return record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: p}
+}
+
+// admittedRoot is that root at the phase every tree the workflow opens stands in.
+func admittedRoot() record.Issue { return rootAt(phase.Admitted) }
+
+// registeredSpec is the gate rows of a root that registered its spec at version 1, which no
+// person has answered.
+func registeredSpec() map[record.DesignStep]record.DesignGate {
+	return map[record.DesignStep]record.DesignGate{
+		record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1}}
+}
+
+// decidedOnTheTree is what a person decided on the tree while nobody in it could hear them.
+const decidedOnTheTree = "While nobody in LEGION-208's tree could hear it, a person decided on the tree: " +
+	"dispatch://LEGION-208/spec (design-approved by user:alice). Read each before you continue."
+
+// childDecision is a decision kept on LEGION-209, a child of the tree, which a narrowing keeps.
+func childDecision() record.KeptDecisions {
+	return record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-209/ask/ask-1",
+		At: time.Unix(0, 0).UTC(), Issue: "LEGION-209", Decision: record.DecisionAskAnswered, Actor: "user:alice"}}}
 }
 
 // The whole text of each of the four shapes, pinned: this task is the one thing a fresh
@@ -30,7 +53,6 @@ func admittedRoot() record.Issue {
 // shape names the gate the deployment arms, where its text speaks of the gate at all, so one
 // gated step, two and none are all pinned.
 func TestTheArchitectTaskOfEachShape(t *testing.T) {
-	spec := []record.DesignStep{record.DesignStepSpec}
 	two := []record.DesignStep{record.DesignStepDecisions, record.DesignStepCriteria}
 	for _, tc := range []struct {
 		name  string
@@ -39,7 +61,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 	}{
 		{
 			name:  "a tree nobody has architected, under a deployment that gates the spec",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}},
 			want:  freshLead + " request approval of its primary document and register that step of its design gate." + startTail,
 		},
 		{
@@ -55,15 +77,15 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		},
 		{
 			name: "a root a hand-over carried in",
-			start: ArchitectStart{Root: record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: phase.Implementing},
-				Carried: true, Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: rootAt(phase.Implementing),
+				Carried: true, Gate: record.TreeGate{Steps: specGated}},
 			want: "LEGION-208 is yours and stands in implementing, the phase a hand-over carried it in at, with the design gate it brought. " +
 				"Take it up in this turn, as your role says: claim it in Dispatch and resume the tree from that phase. " +
 				"Decompose nothing and release no child." + startTail,
 		},
 		{
 			name: "a root whose one gated step a person has approved",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec, Rows: map[record.DesignStep]record.DesignGate{
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: map[record.DesignStep]record.DesignGate{
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 2, ApprovedVersion: new(2)}}}},
 			want: "LEGION-208 is yours and its design gate already stands part way: " +
 				"its primary document is registered at version 2 and a person has approved that version. " +
@@ -83,7 +105,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		},
 		{
 			name: "a root whose registered step no person has answered",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec, Rows: map[record.DesignStep]record.DesignGate{
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: map[record.DesignStep]record.DesignGate{
 				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 4, ApprovedVersion: new(2)}}}},
 			want: "LEGION-208 is yours and its design gate already stands part way: " +
 				"its primary document is registered at version 4 and no person has answered it. " +
@@ -101,7 +123,7 @@ func TestTheArchitectTaskOfEachShape(t *testing.T) {
 		},
 		{
 			name:  "a tree that ran at an earlier generation, under a deployment that gates the spec",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
 			want:  readmittedLead + " request approval of its primary document and register that step of its design gate again. Decompose nothing anew." + startTail,
 		},
 		{
@@ -139,7 +161,6 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 			t.Fatalf("the label %q and the decomposition label %q hold one another", label, ArchitectDecompositionLabel)
 		}
 	}
-	spec := []record.DesignStep{record.DesignStepSpec}
 	for _, tc := range []struct {
 		name       string
 		start      ArchitectStart
@@ -148,25 +169,24 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 	}{
 		{
 			name:       "a tree nobody has architected",
-			start:      ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}},
+			start:      ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}},
 			label:      ArchitectFreshTreeLabel,
 			decomposes: true,
 		},
 		{
 			name: "a root a hand-over carried in",
-			start: ArchitectStart{Root: record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: phase.Accepting},
-				Carried: true, Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: rootAt(phase.Accepting),
+				Carried: true, Gate: record.TreeGate{Steps: specGated}},
 			label: ArchitectCarriedPhaseLabel,
 		},
 		{
-			name: "a root that holds design gate rows",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec, Rows: map[record.DesignStep]record.DesignGate{
-				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1}}}},
+			name:  "a root that holds design gate rows",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}},
 			label: ArchitectGateRowsLabel,
 		},
 		{
 			name:  "a tree that ran at an earlier generation",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
 			label: ArchitectReadmittedLabel,
 		},
 	} {
@@ -197,12 +217,11 @@ func TestTheArchitectTaskLabelsOfEachShape(t *testing.T) {
 // rows say; and a carried root that never left admitted has no phase of its own to take up, so it
 // reads as any other root standing there.
 func TestTheArchitectTaskShapeRule(t *testing.T) {
-	spec := []record.DesignStep{record.DesignStepSpec}
-	registered := map[record.DesignStep]record.DesignGate{
-		record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1}}
+	registered := registeredSpec()
 	carried := func(gate record.TreeGate, taken bool) ArchitectStart {
-		return ArchitectStart{Root: record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2,
-			Phase: phase.Reviewing, TakenBack: taken}, Carried: true, Gate: gate}
+		root := rootAt(phase.Reviewing)
+		root.TakenBack = taken
+		return ArchitectStart{Root: root, Carried: true, Gate: gate}
 	}
 	takenBack := func() record.Issue {
 		root := admittedRoot()
@@ -216,57 +235,57 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 	}{
 		{
 			name:  "a tree with no architect claim and no gate row",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}},
 			label: ArchitectFreshTreeLabel,
 		},
 		{
 			name:  "an architect claim already at the root's own generation, for a tree that never ran",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}, Launch: 2},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 2},
 			label: ArchitectFreshTreeLabel,
 		},
 		{
 			name:  "an architect claim one generation behind",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
 			label: ArchitectReadmittedLabel,
 		},
 		{
 			name:  "a run that stood in a phase of its own, with no architect claim at all",
-			start: ArchitectStart{Root: takenBack(), Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: takenBack(), Gate: record.TreeGate{Steps: specGated}},
 			label: ArchitectReadmittedLabel,
 		},
 		{
 			name:  "a run that stood in a phase of its own, whose claim stands at this generation",
-			start: ArchitectStart{Root: takenBack(), Gate: record.TreeGate{Steps: spec}, Launch: 2},
+			start: ArchitectStart{Root: takenBack(), Gate: record.TreeGate{Steps: specGated}, Launch: 2},
 			label: ArchitectReadmittedLabel,
 		},
 		{
 			name:  "a gate row beats a tree that ran at an earlier generation",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec, Rows: registered}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registered}, Launch: 1},
 			label: ArchitectGateRowsLabel,
 		},
 		{
 			name:  "a carried root with no gate row",
-			start: carried(record.TreeGate{Steps: spec}, false),
+			start: carried(record.TreeGate{Steps: specGated}, false),
 			label: ArchitectCarriedPhaseLabel,
 		},
 		{
 			name:  "a carried root whose gate rows the carry brought",
-			start: carried(record.TreeGate{Steps: spec, Rows: registered}, false),
+			start: carried(record.TreeGate{Steps: specGated, Rows: registered}, false),
 			label: ArchitectCarriedPhaseLabel,
 		},
 		{
 			name:  "a carried root whose run stood in a phase of its own",
-			start: carried(record.TreeGate{Steps: spec, Rows: registered}, true),
+			start: carried(record.TreeGate{Steps: specGated, Rows: registered}, true),
 			label: ArchitectCarriedPhaseLabel,
 		},
 		{
 			name:  "a carried root standing at admitted, with no gate row",
-			start: ArchitectStart{Root: admittedRoot(), Carried: true, Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: admittedRoot(), Carried: true, Gate: record.TreeGate{Steps: specGated}},
 			label: ArchitectFreshTreeLabel,
 		},
 		{
 			name:  "a carried root standing at admitted, holding the gate rows the carry brought",
-			start: ArchitectStart{Root: admittedRoot(), Carried: true, Gate: record.TreeGate{Steps: spec, Rows: registered}},
+			start: ArchitectStart{Root: admittedRoot(), Carried: true, Gate: record.TreeGate{Steps: specGated, Rows: registered}},
 			label: ArchitectGateRowsLabel,
 		},
 	} {
@@ -284,11 +303,7 @@ func TestTheArchitectTaskShapeRule(t *testing.T) {
 // a first act stated here would be false. The answer is what a person decided on the tree and
 // nothing else, the empty string where nobody decided anything, and it carries no first-task tail.
 func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
-	const decided = "While nobody in LEGION-208's tree could hear it, a person decided on the tree: " +
-		"dispatch://LEGION-208/spec (design-approved by user:alice). Read each before you continue."
-	spec := []record.DesignStep{record.DesignStepSpec}
-	registered := map[record.DesignStep]record.DesignGate{
-		record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1}}
+	registered := registeredSpec()
 	for _, tc := range []struct {
 		name  string
 		stand phase.Phase
@@ -298,15 +313,15 @@ func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 		{"a root in accepting", phase.Accepting},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			start := ArchitectStart{Root: record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: tc.stand},
-				Gate: record.TreeGate{Steps: spec, Rows: registered}, Launch: 1}
+			start := ArchitectStart{Root: rootAt(tc.stand),
+				Gate: record.TreeGate{Steps: specGated, Rows: registered}, Launch: 1}
 			if got := ArchitectStartTask(start); got != "" {
 				t.Fatalf("the architect's start task = %q, want none: this root is no root the derivation serves", got)
 			}
-			start.Decided = decided
+			start.Decided = decidedOnTheTree
 			got := ArchitectStartTask(start)
-			if got != decided {
-				t.Fatalf("the architect's start task = %q, want the decided text alone %q", got, decided)
+			if got != decidedOnTheTree {
+				t.Fatalf("the architect's start task = %q, want the decided text alone %q", got, decidedOnTheTree)
 			}
 			if CarriesArchitectStart(got) {
 				t.Fatalf("the task %q carries the first-task tail, want none", got)
@@ -318,25 +333,19 @@ func TestTheArchitectTaskIsNoneForARootPastAdmitted(t *testing.T) {
 // A person's decision on the tree is read before the work, so it leads whichever shape the root
 // gets: the decided text, a blank line, then the shape's own text.
 func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
-	const decided = "While nobody in LEGION-208's tree could hear it, a person decided on the tree: " +
-		"dispatch://LEGION-208/spec (design-approved by user:alice). Read each before you continue."
-	spec := []record.DesignStep{record.DesignStepSpec}
 	for _, tc := range []struct {
 		name  string
 		start ArchitectStart
 	}{
-		{"a tree nobody has architected", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}}},
-		{"a root a hand-over carried in", ArchitectStart{Root: record.Issue{Key: "LEGION-208", Tree: "LEGION-208",
-			Generation: 2, Phase: phase.Planning}, Carried: true, Gate: record.TreeGate{Steps: spec}}},
-		{"a root that holds design gate rows", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec,
-			Rows: map[record.DesignStep]record.DesignGate{record.DesignStepSpec: {Issue: "LEGION-208",
-				Step: record.DesignStepSpec, LatestVersion: 1}}}}},
-		{"a tree that ran at an earlier generation", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}, Launch: 1}},
+		{"a tree nobody has architected", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}},
+		{"a root a hand-over carried in", ArchitectStart{Root: rootAt(phase.Planning), Carried: true, Gate: record.TreeGate{Steps: specGated}}},
+		{"a root that holds design gate rows", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}}},
+		{"a tree that ran at an earlier generation", ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			bare := ArchitectStartTask(tc.start)
-			tc.start.Decided = decided
-			if got, want := ArchitectStartTask(tc.start), decided+"\n\n"+bare; got != want {
+			tc.start.Decided = decidedOnTheTree
+			if got, want := ArchitectStartTask(tc.start), decidedOnTheTree+"\n\n"+bare; got != want {
 				t.Fatalf("the architect's start task =\n%q\nwant\n%q", got, want)
 			}
 		})
@@ -348,11 +357,9 @@ func TestTheArchitectTaskNamesAKeptDecisionFirstInEveryShape(t *testing.T) {
 // now: a decision leaving the tree says nothing about whether the tree has been taken up, and a
 // rewrite that dropped the instruction would hand a fresh architect the empty task the
 // instruction exists to replace. A task that carried no instruction is the decisions' own text
-// alone, as it always was.
+// alone.
 func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
-	spec := []record.DesignStep{record.DesignStepSpec}
-	stays := record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-209/ask/ask-1",
-		At: time.Unix(0, 0).UTC(), Issue: "LEGION-209", Decision: record.DecisionAskAnswered, Actor: "user:alice"}}}
+	stays := childDecision()
 	decided := KeptDecisionsTask("LEGION-208", stays)
 	if decided == "" {
 		t.Fatal("the kept decisions name nothing, so the narrowing has nothing to pin")
@@ -364,24 +371,23 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 	}{
 		{
 			name:  "a tree nobody has architected",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}},
 			label: ArchitectFreshTreeLabel,
 		},
 		{
 			name: "a root a hand-over carried in",
-			start: ArchitectStart{Root: record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: phase.Testing},
-				Carried: true, Gate: record.TreeGate{Steps: spec}},
+			start: ArchitectStart{Root: rootAt(phase.Testing),
+				Carried: true, Gate: record.TreeGate{Steps: specGated}},
 			label: ArchitectCarriedPhaseLabel,
 		},
 		{
-			name: "a root that holds design gate rows",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec, Rows: map[record.DesignStep]record.DesignGate{
-				record.DesignStepSpec: {Issue: "LEGION-208", Step: record.DesignStepSpec, LatestVersion: 1}}}},
+			name:  "a root that holds design gate rows",
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated, Rows: registeredSpec()}},
 			label: ArchitectGateRowsLabel,
 		},
 		{
 			name:  "a tree that ran at an earlier generation",
-			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}, Launch: 1},
+			start: ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}, Launch: 1},
 			label: ArchitectReadmittedLabel,
 		},
 	} {
@@ -389,10 +395,11 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 			held := ArchitectStartTask(tc.start)
 			whole := tc.start
 			whole.Decided = decided
-			if got, want := NarrowRootTask(tc.start, held, stays), ArchitectStartTask(whole); got != want {
-				t.Fatalf("the narrowed task =\n%q\nwant\n%q", got, want)
+			narrowed := NarrowRootTask(tc.start, held, stays)
+			if want := ArchitectStartTask(whole); narrowed != want {
+				t.Fatalf("the narrowed task =\n%q\nwant\n%q", narrowed, want)
 			}
-			if !strings.Contains(NarrowRootTask(tc.start, held, stays), tc.label) {
+			if !strings.Contains(narrowed, tc.label) {
 				t.Fatalf("the narrowed task lost the shape labelled %q", tc.label)
 			}
 			if got := NarrowRootTask(tc.start, "a catch-up's own task, which carries no instruction", stays); got != decided {
@@ -406,16 +413,13 @@ func TestNarrowingARootsArchitectTaskKeepsItsShape(t *testing.T) {
 // task that carries the instruction writes the kept decisions' own text alone: the tree has been
 // taken up, and its phase's own role says what the work is.
 func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T) {
-	stays := record.KeptDecisions{Decisions: []record.DecisionMark{{Ref: "dispatch://LEGION-209/ask/ask-1",
-		At: time.Unix(0, 0).UTC(), Issue: "LEGION-209", Decision: record.DecisionAskAnswered, Actor: "user:alice"}}}
+	stays := childDecision()
 	decided := KeptDecisionsTask("LEGION-208", stays)
-	spec := []record.DesignStep{record.DesignStepSpec}
-	held := ArchitectStartTask(ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: spec}})
+	held := ArchitectStartTask(ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}})
 	if !CarriesArchitectStart(held) {
 		t.Fatalf("the held task %q carries no first-task instruction, so this pins nothing", held)
 	}
-	moved := ArchitectStart{Root: record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: phase.Planning},
-		Gate: record.TreeGate{Steps: spec}}
+	moved := ArchitectStart{Root: rootAt(phase.Planning), Gate: record.TreeGate{Steps: specGated}}
 	if got := NarrowRootTask(moved, held, stays); got != decided {
 		t.Fatalf("the narrowed task of a root now in planning = %q, want the kept decisions' own text %q", got, decided)
 	}
@@ -424,7 +428,7 @@ func TestNarrowingARootsArchitectTaskThatMovedOnDropsTheInstruction(t *testing.T
 // A narrowing that leaves no decision at all writes the empty task its caller retires rather than
 // sends, where the held task carried no first-task instruction.
 func TestNarrowingARootsKeptDecisionsToNothingWritesNoTask(t *testing.T) {
-	start := ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: []record.DesignStep{record.DesignStepSpec}}}
+	start := ArchitectStart{Root: admittedRoot(), Gate: record.TreeGate{Steps: specGated}}
 	if got := NarrowRootTask(start, "a catch-up's own task, which carries no instruction", record.KeptDecisions{}); got != "" {
 		t.Fatalf("the narrowed task = %q, want the empty task its caller retires", got)
 	}

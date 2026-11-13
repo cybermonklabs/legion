@@ -19,13 +19,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// The runtime's entry sweep reaches a root's own architect, which is the role no rule of the
-// daemon used to reach: on its own period it applies an intake.EntrySweep, and admission sends
-// the architect of a root standing at admitted the work the entry its phases row names. Nothing
-// else happens here — no Dispatch event, no completion, no boot — which is the fixture the
-// measured defect leaves behind (dispatch://INFRA-2614): a root admitted with its architect's
-// entry raised, holding its slot, and an architect claim that was never created because the
-// start that would have created it reached nobody.
+// The runtime's entry sweep reaches a root's own architect: on its own period it applies an
+// intake.EntrySweep, and admission sends the architect of a root standing at admitted the work
+// the entry its phases row names. Nothing else happens here — no Dispatch event, no completion,
+// no boot — which is the fixture the measured defect leaves behind (dispatch://INFRA-2614): a
+// root admitted with its architect's entry raised, holding its slot, and an architect claim that
+// was never created because the start that would have created it reached nobody.
 //
 // The task the sweep sends is derived again from the record as it stands
 // (workflow.ArchitectStartTask) rather than read off the phases row, because a kept decision is
@@ -87,24 +86,19 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 		return n
 	}
 
+	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
+	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as it does in production
+	// rather than refusing nothing on an unmarked context (INFRA-3169).
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
-	go func() { w.tickEntrySweep(sweeping); close(done) }()
+	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()
 	testwait.Eventually(t, "the sweep to send the architect its entry's work", func() bool { return len(sweptStarts(t, pool, root.Key)) == 1 })
 	first := sweptStarts(t, pool, root.Key)[0]
 	// With the start queued the gate answers that nothing is owed, which is what holds every
 	// later tick back.
-	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		owed, err := admission.OwesEntryWork(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if owed {
-			t.Fatalf("admission says %s is still owed its entry's work with its start queued, want nothing owed: a start already on its way is not owed twice", root.Key)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("ask whether anything is owed: %v", err)
+	if owed, err := w.owesEntryWork(store.ForConcurrentWorker(ctx)); err != nil || owed {
+		t.Fatalf("the sweep's gate over %s with its start queued answers owed = %t, %v; want nothing owed: a start already on its way is not owed twice",
+			root.Key, owed, err)
 	}
 	// Twenty more periods of the sweep.
 	time.Sleep(20 * w.entrySweep)

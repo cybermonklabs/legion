@@ -32,8 +32,8 @@ func seedAccepting(t *testing.T, pool *pgxpool.Pool) {
 // R2: the reviewer's approval moves the issue into accepting and starts nobody, though accepting
 // is a phase phase.RoleFor answers the architect for. The board already reads needs_review, so no
 // status is written; the tree's architect is already live, so no worker is started, no architect
-// phase row is written and no assignment is minted (a start row is what mints one); the
-// reviewer's phase-finished is the architect's cue to accept.
+// phases row is written and no entry is raised (a start is what raises one); the reviewer's
+// phase-finished is the architect's cue to accept.
 func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U"})
@@ -62,7 +62,7 @@ func TestAnApprovalMovesTheIssueIntoAcceptingStartingNobody(t *testing.T) {
 		t.Fatalf("read the architect's phase rows: %v", err)
 	}
 	if architectRows != 0 {
-		t.Fatalf("the move into accepting wrote %d architect phase rows, want none: nothing starts the architect, so nothing mints it an assignment", architectRows)
+		t.Fatalf("the move into accepting wrote %d architect phase rows, want none: nothing starts the architect, so nothing raises its entry", architectRows)
 	}
 }
 
@@ -199,8 +199,8 @@ func TestAPlannersBackwardMoveFromAcceptingIsRefused(t *testing.T) {
 // the architect included, and moves, starts and counts nothing. Admitted is the architect's own
 // phase (phase.RoleFor), so the guard's reading of which role runs the phase (backwardRefusal)
 // would let the architect's move through, but that reading is never reached there: admitted is
-// no phase of the working line (phase.Order), so no backward row serves a move out of it, and the
-// refusal names the missing row for both roles, as it did when no role was named for admitted.
+// no phase of the working line (phase.Order), so no backward row serves a move out of it, and
+// the refusal names that missing row for both roles.
 func TestArchitectUnchangedByABackwardMoveFromAdmitted(t *testing.T) {
 	for _, requester := range []claim.Role{claim.RoleArchitect, claim.RolePlanner} {
 		t.Run(string(requester), func(t *testing.T) {

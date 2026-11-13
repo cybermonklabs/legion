@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,10 @@ const (
 	architectUpgradeGeneration = 1
 )
 
+// upgradeMarks is the two arms the fill marks told for each root it settles, the third and the
+// first, in the arm order architectWakeMarks reads them.
+var upgradeMarks = []record.ArchitectStallArm{record.ArchitectSlowBeforeGate, record.ArchitectTookNothing}
+
 // applyArchitectUpgrade runs that migration's own SQL over the records the pool holds. The pool
 // carries every migration already, so the fill ran once over an empty record: each case seeds the
 // shape the release before this one leaves and runs the fill over it, which is what the upgrade
@@ -37,20 +42,9 @@ const (
 // of it.
 func applyArchitectUpgrade(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	all, err := migrations.All()
-	if err != nil {
-		t.Fatalf("read the embedded migrations: %v", err)
+	if _, err := pool.Exec(context.Background(), embeddedMigration(t, architectUpgradeVersion)); err != nil {
+		t.Fatalf("run the fill of migration %d: %v", architectUpgradeVersion, err)
 	}
-	for _, migration := range all {
-		if migration.Version != architectUpgradeVersion {
-			continue
-		}
-		if _, err := pool.Exec(context.Background(), migration.SQL); err != nil {
-			t.Fatalf("run the fill of %s: %v", migration.Name, err)
-		}
-		return
-	}
-	t.Fatalf("no embedded migration of version %d: these tests run its own fill", architectUpgradeVersion)
 }
 
 // upgradedRoot is a root as the release before this one left it: at admitted, in the workflow,
@@ -73,9 +67,9 @@ func sweepAt(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID str
 	applySweep(t, pool, admission, eventID)
 }
 
-// upgradeClaims is every claim the record holds, as the daemon reads them for the state
-// (store.Store.Claims, projection.Project's claims).
-func upgradeClaims(t *testing.T, pool *pgxpool.Pool) []supervise.Claim {
+// storedClaims is every claim the record holds, as the daemon reads them for the state and for
+// its report of stranded claims (store.Store.Claims, projection.Project's claims).
+func storedClaims(t *testing.T, pool *pgxpool.Pool) []supervise.Claim {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -88,18 +82,6 @@ func upgradeClaims(t *testing.T, pool *pgxpool.Pool) []supervise.Claim {
 		t.Fatalf("read the claims: %v", err)
 	}
 	return claims
-}
-
-// setClaimState records state on the claim of root's architect: failed, as a launch that failed
-// leaves it, or retired, as a close of its tree or of its issue leaves it (supervise's table). No
-// operator command leaves a root claim retired: `legion claims stop` refuses a tree's root claim
-// (supervise.ErrRootStop).
-func setClaimState(t *testing.T, pool *pgxpool.Pool, root string, state supervise.ClaimState) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(), `update claims set state = $2 where token = $1`,
-		string(architectToken(t, root)), string(state)); err != nil {
-		t.Fatalf("record the architect claim of %s as %s: %v", root, state, err)
-	}
 }
 
 // The first passes after the upgrade send no architect its first task and wake the project's
@@ -165,7 +147,7 @@ func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testin
 			t.Fatalf("the architect wakes of %s = %q, want none: the release wakes the controller for no root it does not repair", root, reasons)
 		}
 		marks := architectWakeMarks(t, pool, root, architectUpgradeGeneration)
-		if len(marks) != 2 || marks[0] != string(record.ArchitectSlowBeforeGate) || marks[1] != string(record.ArchitectTookNothing) {
+		if !slices.Equal(marks, upgradeMarks) {
 			t.Fatalf("the arms %s is marked told for = %v, want the first and the third the fill wrote", root, marks)
 		}
 		row := architectRow(t, pool, root)
@@ -198,7 +180,7 @@ func TestTheArchitectUpgradeStillWakesForAClaimThatFailsOrIsRetired(t *testing.T
 		why   string
 	}{
 		{name: "a claim that failed", state: supervise.StateFailed,
-			why: "a failed architect claim of a running tree is the claim workflow.Stranded has always named"},
+			why: "a failed architect claim of a running tree is a claim workflow.Stranded names"},
 		{name: "a claim that is retired", state: supervise.StateRetired,
 			why: "the sweep sends a retired claim nothing, and only a start that relaunches it, such as the controller's fresh_session, starts it again"},
 	} {
@@ -208,7 +190,7 @@ func TestTheArchitectUpgradeStillWakesForAClaimThatFailsOrIsRetired(t *testing.T
 			const root = "LEGION-833"
 			seedArchitectWakeRoot(t, pool, upgradedRoot(root, supervise.StateIdle))
 			applyArchitectUpgrade(t, pool)
-			setClaimState(t, pool, root, tc.state)
+			setArchitectState(t, pool, root, tc.state)
 
 			for _, pass := range []string{"failed-1", "failed-2", "failed-3"} {
 				applySweep(t, pool, admission, pass)
@@ -234,7 +216,7 @@ func TestTheArchitectUpgradeLeavesTheStateCarryingTwoEntriesAndNoTimes(t *testin
 	applyArchitectUpgrade(t, pool)
 
 	var state api.State
-	claims := upgradeClaims(t, pool)
+	claims := storedClaims(t, pool)
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
 		state, err = projection.Project(context.Background(), tx, record.NewStore(), testProject, nil, claims, nil, nil, fixedNow)
@@ -302,10 +284,13 @@ func TestARootAdmittedAfterTheArchitectUpgradeIsOwedItsTask(t *testing.T) {
 		t.Fatalf("%s is marked told for %v, want no arm: the fill ran before that root was admitted", window, marks)
 	}
 
+	first := architectSweepStarts(t, pool, window)
 	applySweep(t, pool, admission, "window-again")
 
-	if again := assertArchitectEntry(t, pool, window, 1); again != opened {
-		t.Fatalf("the architect start of %s after a second pass = %+v, want the %+v the first wrote", window, again, opened)
+	assertArchitectEntry(t, pool, window, 1)
+	if again := architectSweepStarts(t, pool, window); len(again) != 1 || !slices.Equal(again, first) {
+		t.Fatalf("the architect start rows of %s after a second pass = %+v, want the one row %+v the first wrote: a row written again "+
+			"is a row of its own", window, again, first)
 	}
 }
 
@@ -352,7 +337,7 @@ func TestTheArchitectUpgradeReadmissionRaisesTheEntryAgainAndStartsItsOwnBounds(
 
 	assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{record.ArchitectSlowBeforeGate},
 		"the run after the re-admission has stood its own ninety minutes at admitted with no design gate registered")
-	if marks := architectWakeMarks(t, pool, root, 2); len(marks) != 1 || marks[0] != string(record.ArchitectSlowBeforeGate) {
+	if marks := architectWakeMarks(t, pool, root, 2); !slices.Equal(marks, []record.ArchitectStallArm{record.ArchitectSlowBeforeGate}) {
 		t.Fatalf("the arms the re-admitted %s is marked told for = %v, want the gate arm once for its own run", root, marks)
 	}
 	if marks := architectWakeMarks(t, pool, root, 1); len(marks) != 2 {
@@ -577,7 +562,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 					t.Fatalf("the architect wakes of %s after the roll-forward = %q, want none of any arm", root.key, reasons)
 				}
 				marks := architectWakeMarks(t, pool, root.key, root.generation)
-				if len(marks) != 2 || marks[0] != string(record.ArchitectSlowBeforeGate) || marks[1] != string(record.ArchitectTookNothing) {
+				if !slices.Equal(marks, upgradeMarks) {
 					t.Fatalf("the arms %s is marked told for at generation %d = %v, want the first and the third the second run wrote",
 						root.key, root.generation, marks)
 				}

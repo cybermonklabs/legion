@@ -70,10 +70,11 @@ func architectStartCount(t *testing.T, pool *store.Pool, issue string) int {
 }
 
 // leftAloneClaim is one claim the rule must not send anything to, recorded beside the rig's root:
-// its issue, the tree that issue stands in, the phase it stands in, the state of its claim and
-// who suspended it. Each holds one of the cap's slots and an architect phases row at entry 1 with
-// its claim queued no entry, which is the very difference the pass closes for the root beside
-// them, so a claim left alone here is left alone for the reason its row names.
+// its issue, the tree that issue stands in, the phase it stands in, the role of the claim, the
+// state of its claim and who suspended it. Each holds one of the cap's slots and a phases row of
+// its role at entry 1 with its claim queued no entry, which is the very difference the pass
+// closes for the root beside them, so a claim left alone here is left alone for the reason its row
+// names.
 type leftAloneClaim struct {
 	issue       string
 	tree        string
@@ -127,8 +128,8 @@ func seedLeftAlone(t *testing.T, r *mainPathRig, index int, row leftAloneClaim) 
 //
 // Three claims stand beside it, each holding a slot and each one the rule must leave alone: a
 // child's own sub-architect, which is no tree root; an architect claim an operator suspended; and
-// a phase worker of the root's own tree whose role no entry of its own is owed. None of them is
-// sent anything, and each is read from the same pass that served the root.
+// a phase worker of the root's own tree whose claim is retired. None of them is sent anything,
+// and each is read from the same pass that served the root.
 func TestAQueuedRootWhoseArchitectWasQueuedNoEntryIsSentThatEntrysTask(t *testing.T) {
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())

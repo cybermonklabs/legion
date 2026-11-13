@@ -104,10 +104,10 @@ func TestTheStateRouteServesARootsArchitectHandshake(t *testing.T) {
 		t.Errorf("the root whose architect took its task is served queued %v confirmed %v, want %s and %s: %s",
 			held.queued, held.confirmed, queued, confirmed, body)
 	}
-	took := times["LEGION-30"]
-	if took.queued == nil || !took.queued.Equal(queued) || took.confirmed != nil {
+	unconfirmed := times["LEGION-30"]
+	if unconfirmed.queued == nil || !unconfirmed.queued.Equal(queued) || unconfirmed.confirmed != nil {
 		t.Errorf("the root whose architect confirmed nothing is served queued %v confirmed %v, want %s and no key: %s",
-			took.queued, took.confirmed, queued, body)
+			unconfirmed.queued, unconfirmed.confirmed, queued, body)
 	}
 	before := times["LEGION-40"]
 	if before.queued != nil || before.confirmed != nil {

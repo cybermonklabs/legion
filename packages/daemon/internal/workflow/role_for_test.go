@@ -73,13 +73,13 @@ type roleForReader struct {
 // roleForReaders is every non-test reader of phase.RoleFor and of workflow.RoleFor in the daemon,
 // and the test that holds each one's behaviour. A reader is a call, or the function passed as a
 // value to a caller that calls it (internal/daemon's wiring of api.Options.RoleFor). Two of them
-// would answer differently now that RoleFor answers the architect for admitted, and each has a
-// guard of its own that keeps what it answered: noticeFor keeps the notice of the move out of
-// admitted roleless (R2), and Engine.leftItsPhase keeps a worker's completion refused while the
-// issue stands at admitted. Every other site reaches its answer through a guard that treats the
-// architect as it treated the empty role, or names the role an admitted root's entry numbers are
-// of, or never reads admitted at all because a check before it refuses that phase, which is what
-// each named test holds it to.
+// have a guard of their own for admitted, the phase RoleFor answers the architect for:
+// noticeFor writes the notice of the move out of admitted with no role (R2), and
+// Engine.leftItsPhase records no worker's completion while the issue stands at admitted. Every
+// other site reaches its answer through a guard that starts, resumes or reports no architect as a
+// phase worker, or names the role an admitted root's entry numbers are of, or never reads
+// admitted at all because a check before it refuses that phase, which is what each named test
+// holds it to.
 //
 // A reader this list does not hold fails the test, so a new one is decided rather than taking
 // whatever RoleFor answers at admitted.

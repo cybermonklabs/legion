@@ -4,8 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -40,8 +38,9 @@ func TestTheArchitectEntryNumbersStandThroughAWakeStartTheArchitectConfirms(t *t
 	}
 
 	wake := workflow.WakeTask(pods.WakeBackstop, "nothing else asked for it")
-	r.queueArchitectStart(record.SuperviseRequest{Op: "start", Tree: mainPathRoot, Role: claim.RoleArchitect,
-		Generation: r.issue().Generation, Task: wake})
+	// The wake's start row, which runStarts runs as the supervise lane does.
+	enqueueOutbox(t, r.pool, r.records, mustOutboxRow(t, r.key, record.SuperviseRequest{Op: "start", Tree: mainPathRoot,
+		Role: claim.RoleArchitect, Generation: r.issue().Generation, Task: wake}, time.Now().UTC()))
 	r.runStarts()
 
 	if pending := r.machine().Claim().Pending; pending == nil || pending.Task != wake || pending.Entry != 0 {
@@ -57,20 +56,5 @@ func TestTheArchitectEntryNumbersStandThroughAWakeStartTheArchitectConfirms(t *t
 	if after.Entry != entry.Entry || after.EntryTask != entry.EntryTask || !after.EntryRaisedAt.Equal(entry.EntryRaisedAt) {
 		t.Fatalf("the architect's row after the wake = entry %d, task %q, raised at %s; want the entry %d, task %q and moment %s it stood at",
 			after.Entry, after.EntryTask, after.EntryRaisedAt, entry.Entry, entry.EntryTask, entry.EntryRaisedAt)
-	}
-}
-
-// queueArchitectStart writes one architect start row of the rig's root, which runStarts then runs
-// as the supervise lane does.
-func (r *mainPathRig) queueArchitectStart(request record.SuperviseRequest) {
-	r.t.Helper()
-	row, err := record.NewOutboxRow(r.key, request, time.Now().UTC())
-	if err != nil {
-		r.t.Fatalf("compose the architect start: %v", err)
-	}
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.Enqueue(r.ctx, tx, row)
-	}); err != nil {
-		r.t.Fatalf("queue the architect start: %v", err)
 	}
 }

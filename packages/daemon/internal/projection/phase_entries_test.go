@@ -172,12 +172,12 @@ func sameInstant(got, want *time.Time) bool {
 	return got.Equal(*want)
 }
 
-// A phase no role works carries neither entry number and neither time, however far behind the
-// claim of its last phase stands: no row of it is read, the sweep passes it over and a difference
-// written for it would stand for ever. Three phases are in that case — awaiting_person, done and
-// held — and admitted is in it no longer, since the architect is the role that works a root's own
-// phase (phase.RoleFor).
-func TestTheArchitectHandshakeIsAbsentForAPhaseNoRoleWorks(t *testing.T) {
+// An issue in a phase no role works carries neither entry number and neither handshake time,
+// whichever role's row and claim it holds and however far behind that claim stands: no row of it
+// is read, the sweep passes it over and a difference written for it would stand for ever. Three
+// phases are in that case: awaiting_person, done and held. Admitted is not, because the architect
+// works a root's own phase (phase.RoleFor), which TestProjectShowsARootsArchitectHandshake holds.
+func TestAPhaseNoRoleWorksCarriesNoRolesEntriesAndNoArchitectHandshake(t *testing.T) {
 	const project = "LEGION"
 	issue := func(key string, p phase.Phase, status string) record.Issue {
 		return record.Issue{Key: key, Project: project, Tree: key, Phase: p, Status: status,

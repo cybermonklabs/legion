@@ -322,8 +322,7 @@ func TestADecisionOnARootThatWaitsForNoSlotKeepsNothing(t *testing.T) {
 
 // A root first admitted keeps nothing, so its architect's start names no decision: it carries the
 // root's own first task alone, which every admission of a queued root carries
-// (workflow.ArchitectStartTask). Before, such a start carried no task at all and the architect it
-// launched was given nothing until its ready's catch-up.
+// (workflow.ArchitectStartTask).
 func TestAFirstAdmissionStartsItsArchitectWithItsOwnTaskAlone(t *testing.T) {
 	pool := migratedPool(t)
 	admission := newAdmission(t, 1, nil)
@@ -360,16 +359,7 @@ func TestAKeptDecisionLeadsTheArchitectTaskOfARootAdmissionStarts(t *testing.T) 
 			admission := newAdmission(t, 1, nil)
 			parkedRoot(t, pool)
 			if tc.ran {
-				// The architect claim the tree's close left at the generation before, which
-				// record.Store.ArchitectLaunches reads. The claim token is written here rather
-				// than minted (putWorkerClaim), because LEGION-ROOT is no issue key.
-				if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-					state, serving_generation, last_start_row, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-					values ('claim-root-architect', $1, 'LEGION-ROOT', 'LEGION-ROOT', $2, 1, 'ses_architect', '/sessions/ses_architect.jsonl',
-					$3, 1, 0, 0, 0, 0, 0, $4)`,
-					testProject, string(claim.RoleArchitect), string(supervise.StateSuspended), string(supervise.SuspendedByDaemon)); err != nil {
-					t.Fatalf("record the architect claim of the generation before: %v", err)
-				}
+				putEarlierRootArchitect(t, pool)
 			}
 			inTx(t, pool, func(tx pgx.Tx) {
 				if err := record.NewStore().AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-ROOT",
@@ -451,50 +441,42 @@ func TestARetriedRowTellsTheArchitectEachKeptDecisionOnce(t *testing.T) {
 	})
 }
 
+// putEarlierRootArchitect records the architect claim LEGION-ROOT's close left at the generation
+// before, which record.Store.ArchitectLaunches reads. The claim token is written here rather than
+// minted (putWorkerClaim), because LEGION-ROOT is no issue key.
+func putEarlierRootArchitect(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, serving_generation, last_start_row, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+		values ('claim-root-architect', $1, 'LEGION-ROOT', 'LEGION-ROOT', $2, 1, 'ses_architect', '/sessions/ses_architect.jsonl',
+		$3, 1, 0, 0, 0, 0, 0, $4)`,
+		testProject, string(claim.RoleArchitect), string(supervise.StateSuspended), string(supervise.SuspendedByDaemon)); err != nil {
+		t.Fatalf("record the architect claim of the generation before: %v", err)
+	}
+}
+
 // One function writes every root architect's first task. The task admission put on the start row
 // and the task the derivation gives for the record admission wrote are the same string, for a
-// first admission and for a re-admission whose architect ran at the generation before, so no site
-// composes a wording of its own (workflow.ArchitectStartTask).
+// re-admission whose architect never ran and for one whose architect ran at the generation
+// before, so no site composes a wording of its own (workflow.ArchitectStartTask).
 func TestEveryStartsArchitectTaskIsTheDerivationOverItsRecord(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		ran  bool
 	}{
-		{"a first admission", false},
+		{"a re-admission whose architect never ran", false},
 		{"a re-admission whose architect ran at the generation before", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx := context.Background()
 			pool := migratedPool(t)
 			admission := newAdmission(t, 1, nil)
 			parkedRoot(t, pool)
 			if tc.ran {
-				if _, err := pool.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-					state, serving_generation, last_start_row, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
-					values ('claim-root-architect', $1, 'LEGION-ROOT', 'LEGION-ROOT', $2, 1, 'ses_architect', '/sessions/ses_architect.jsonl',
-					$3, 1, 0, 0, 0, 0, 0, $4)`,
-					testProject, string(claim.RoleArchitect), string(supervise.StateSuspended), string(supervise.SuspendedByDaemon)); err != nil {
-					t.Fatalf("record the architect claim of the generation before: %v", err)
-				}
+				putEarlierRootArchitect(t, pool)
 			}
 			readmitRoot(t, pool, admission)
 
-			start := workflow.ArchitectStart{Root: issue(t, pool, "LEGION-ROOT"),
-				Gate: record.TreeGate{Steps: admission.engine.GatedSteps()}}
-			inTx(t, pool, func(tx pgx.Tx) {
-				records := record.NewStore()
-				rows, err := records.GatesOf(ctx, tx, "LEGION-ROOT")
-				if err != nil {
-					t.Fatalf("read the design gate of LEGION-ROOT: %v", err)
-				}
-				start.Gate.Rows = rows
-				launches, err := records.ArchitectLaunches(ctx, tx, []string{"LEGION-ROOT"})
-				if err != nil {
-					t.Fatalf("read what generation the architect claim of LEGION-ROOT stands at: %v", err)
-				}
-				start.Launch = launches["LEGION-ROOT"]
-			})
-			want := workflow.ArchitectStartTask(start)
+			want := architectStart(t, pool, admission, "LEGION-ROOT", "")
 			if want == "" {
 				t.Fatal("the derivation gives this record no task, so the start has nothing to equal")
 			}

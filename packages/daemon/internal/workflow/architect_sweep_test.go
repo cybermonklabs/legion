@@ -173,10 +173,8 @@ func TestArchitectSweepSendRederivesTheTaskAtTheEntryTheRowNames(t *testing.T) {
 	start := architectStartOf(t, pool)
 	want := ArchitectStartTask(ArchitectStart{Root: root, Gate: gate})
 	if start.Task != want {
-		t.Fatalf("the task the sweep sends = %q, want the derivation's own %q over the record as it stands", start.Task, want)
-	}
-	if start.Task == seededArchitectTask {
-		t.Fatalf("the sweep sent the text stored on the row: a task composed once and sent again can name a kept decision another telling has already claimed")
+		t.Fatalf("the task the sweep sends = %q, want the derivation's own %q over the record as it stands: a task composed once and "+
+			"sent again can name a kept decision another telling has already claimed", start.Task, want)
 	}
 	if start.Entry != seededEntry || start.Phase != "" || start.NeedsSlot {
 		t.Fatalf("the start = entry %d, phase %q, needs slot %t; want entry %d, no phase and no wait for a slot: a root architect's start is none of the cap's",

@@ -3,6 +3,7 @@ package admit
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -17,19 +18,26 @@ import (
 // architectRow is root's architect phases row, and the zero row where the record holds none.
 func architectRow(t *testing.T, pool *pgxpool.Pool, root string) record.PhaseRow {
 	t.Helper()
-	var held record.PhaseRow
+	var rows []record.PhaseRow
 	inTx(t, pool, func(tx pgx.Tx) {
-		rows, err := record.NewStore().Phases(context.Background(), tx, root)
-		if err != nil {
+		var err error
+		if rows, err = record.NewStore().Phases(context.Background(), tx, root); err != nil {
 			t.Fatalf("read the phase rows of %s: %v", root, err)
 		}
-		for _, row := range rows {
-			if row.Role == claim.RoleArchitect {
-				held = row
-			}
+	})
+	return record.PhaseRowOf(rows, claim.RoleArchitect)
+}
+
+// putArchitectRow records root's architect phases row as the transition that raised entry left
+// it: on that entry, carrying its work (seededEntryTask) and the moment raisedAt it was raised.
+func putArchitectRow(t *testing.T, pool *pgxpool.Pool, root string, entry int64, raisedAt time.Time) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: root, Role: claim.RoleArchitect,
+			Claim: architectToken(t, root), Entry: entry, EntryTask: seededEntryTask(root), EntryRaisedAt: raisedAt}); err != nil {
+			t.Fatalf("record the architect's phases row of %s at entry %d: %v", root, entry, err)
 		}
 	})
-	return held
 }
 
 // architectStartsOf is every architect start the outbox holds for root, oldest first.
@@ -165,11 +173,8 @@ func TestAnAnsweredRootsResumeAwaitedRootRaisesItsArchitectEntry(t *testing.T) {
 		}
 	})
 
-	if _, err := intake.ApplyFact(context.Background(), pool, "dispatch", "approved-gate",
-		intake.DispatchArtifact{Key: root.Key, ArtifactID: "artifact-root", Kind: intake.DispatchArtifactApproved, Version: 3},
-		admission.engine, admission); err != nil {
-		t.Fatalf("approve the gate: %v", err)
-	}
+	applyFact(t, pool, admission, "approved-gate",
+		intake.DispatchArtifact{Key: root.Key, ArtifactID: "artifact-root", Kind: intake.DispatchArtifactApproved, Version: 3})
 
 	if resumed := issue(t, pool, root.Key); resumed.Awaiting != nil {
 		t.Fatalf("the answered root = %#v, want its wait ended by the promotion that resumed it", resumed)

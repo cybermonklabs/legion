@@ -134,10 +134,9 @@ func TestIgnoredCompletionsAreRefused(t *testing.T) {
 // records nothing, though the daemon started that worker on the issue and its row holds no
 // handoff, which is what records the completion of a worker the issue moved on without
 // (engine's leftItsPhase). Admitted is the architect's own phase (phase.RoleFor) and comes
-// before every phase a worker works, so no worker's phase there is one the issue left; the
-// guard of its own keeps the refusal it had when no role was named for admitted. The control is
-// the same completion with the issue in implementing, a phase the planner has left, where it is
-// recorded.
+// before every phase a worker works, so no worker's phase there is one the issue left, and
+// leftItsPhase records no completion while the issue stands there. The control is the same
+// completion with the issue in implementing, a phase the planner has left, where it is recorded.
 func TestArchitectUnchangedByAWorkersCompletionAtAdmitted(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

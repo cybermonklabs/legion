@@ -38,10 +38,9 @@ import (
 const phaseEntryMigration = 20261111225552
 
 // olderReleasesNewestMigration is the newest migration the release before the phase entry
-// records, the contract 87 release's 20261112180548_claim_leak_check_cause. Every version above
-// it is one written after that release (dispatch://INFRA-2614's), which a database that release
-// migrated has never recorded, so the fixture withholds it beside the phase entry and the
-// upgrade under test applies it.
+// records, the contract 87 release's 20261112180548_claim_leak_check_cause. A database that
+// release migrated records no version above it, so the fixture withholds every such version
+// beside the phase entry and the upgrade under test applies them.
 const olderReleasesNewestMigration = 20261112180548
 
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its

@@ -474,7 +474,7 @@ func TestForgetSessionRefusesAStillLiveClaimEvenWithAnExplicitSession(t *testing
 // The operator's retry is for a claim that runs nothing. A live claim has not failed and a
 // suspended one is resumed: each is refused, naming its state, and left as it was. A retired
 // claim is no longer one of them (dispatch://INFRA-956 R3): it runs again, which
-// TestTheOperatorsRetryOfAStoppedArchitectRelaunchesIt and
+// TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine and
 // TestTheOperatorsRetryOfAStoppedPhaseWorkerRestartsItsPhase hold to.
 func TestTheOperatorsRetryOfAClaimThatHasNotFailedIsRefused(t *testing.T) {
 	h := newHarness(t)
