@@ -87,7 +87,11 @@ type WorkspaceRescue struct {
 	Dir string
 	// Status is RescueClean, RescueRescued or RescueFailed.
 	Status string
-	// Branches is each rescue branch pushed for it, with the commit it holds.
+	// Branches is each rescue branch the check reports for it, with the commit it holds: the
+	// branch this check pushed to, or one it did not push (Pushed false) whose tip already holds
+	// the workspace's own work. A shim that predates the issue's one rescue branch reports
+	// instead each branch of the request's per-pod prefix that the remote holds
+	// (RescueRequest's Branch).
 	Branches []RescuedBranch
 	// Error is why a failed check failed.
 	Error string
