@@ -1,0 +1,22 @@
+# A copy of the claim list docs/kubernetes.md gives under "#### The Dispatch identity the broker
+# can issue", one claim name per line, in the guide's own order and nothing else of the bullets.
+#
+# The guide still answers for the code, in two halves. This package's claims_doc_test.go holds
+# the claims an exchanged token carries to this file; packages/envoy/internal/textcheck's
+# TestTheClaimExtractIsTheGuidesClaimList holds this file to the guide's own list. Splitting it
+# that way is what lets an edit to the guide alone start the text-check run rather than every Go
+# lane: the product test no longer reads the guide at all.
+#
+# So this file is changed only when that list changes, in the same commit as the guide. A claim
+# added here and not there, or there and not here, fails the text-check half; a claim added here
+# that the exchange does not write fails the product half.
+#
+# A line that is blank or opens with # is a comment; every other line is one claim name.
+
+session
+person
+service
+machine
+project_scope
+project
+credential_id

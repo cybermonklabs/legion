@@ -91,7 +91,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves, with the three `bun-*` rows of `.github/ci-tools.yaml` moving in that second commit beside `.bun-version`.
   `.github/scripts/check-bun-version.sh` fails the build until they agree
 
-- **bun.lock** — `ci.yaml`'s `lint` job holds the step `Check bun.lock agrees with the workspace manifests`, which runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
+- **bun.lock** — the step `Check bun.lock agrees with the workspace manifests` of `ci.yaml`'s `lint` job (`.github/workflows/ci-job-lint.yaml`, which holds that job's steps) runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
   a red `lint` fails `ci-ok`, which main's ruleset requires.
   Correct a refused lockfile by running `bun install` and committing what it writes.
   After a forward merge of main that touched `bun.lock`, take one side's file whole first (`git checkout origin/main -- bun.lock`) and install only then,
@@ -168,7 +168,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - **The tool gate** `.github/scripts/check-ci-tools.sh` is a step of `lint`.
   It holds each row to its shape — every field present, and not empty but for the six a row may leave empty (`primary`, `mirror_member`, `second_member` and the three `primary_*` fields), one name per row, a `primary_source` and a `second_source` each written in one of the five words the helper names a source by (`github-release`, `ghcr-mirror`, `npm`, `pypi` and `pulumi-releases`), of which a primary may take the three that are an origin of the bytes alone (`github-release`, `pypi` and `pulumi-releases`), the two further fields the second word decides (`mirror_from` and `mirror_member` for `ghcr-mirror`, `npm_package` and `npm_member` for `npm`, `second_url` and `second_member` for the other three), a bare 64-hex lower-case `digest`, and a `primary`, a `mirror_from` and a `second_url` that each hold the row's own `version` where they are not empty.
   A member field holds that same `version` where it holds a version at all — `primary_member`, `mirror_member`, `npm_member` and `second_member` alike, a version being a dotted run of digits such as `0.13.5` — so a member that holds no such token is left alone, which is what keeps `./jj`, `package/bin/bun` and `uv-x86_64-unknown-linux-gnu/uv` right, and a member left behind at the old version while its row and its URLs move names a path the new archive does not hold, which is an install that fetches the right bytes and then finds no tool inside them.
-  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `test` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about five minutes (job 129885098900 ran 284 s); the gate says either in `lint` in a second.
+  Where that surfaces is the side the member is written on: a stale `primary_member` breaks the install that reads the primary, which for the one row that names one, `uv`, is `install-uv` in the `daemon-go` job on every pull request that selects it, and a stale member on the second side is read only where that source is, which is `tool-fallback`, a job of about five minutes (job 129885098900 ran 284 s); the gate says either in `lint` in a second.
   `primary_digest` is bare 64-hex too where it is set, a row that sets `primary_member` sets `primary_digest`, and a row that sets `primary_digest` sets `primary_digest_of`, because a digest that does not say what it is of is how an archive comes to be checked against a binary and called equal.
   It holds each row to the pin that installs it as well: `.bun-version`; `ARG MISE_VERSION`, `ARG MISE_SHA256` and `ARG JJ_TOOL` of the worker image's Dockerfile, and that same file's `ARG UV_VERSION` and `ARG UV_SHA256`, which the `uv` row's `version` and its `primary_digest` answer to; `const DockerPluginVersion` of `packages/envoy/infra/internal/pulumitest/pulumitest.go`, which the `pulumi-docker` row's `version` answers to; and the `crane`, `changie`, `elan` and `pulumi-cli` rows, which are their own pins, since their installs hold no version of their own.
 
@@ -705,6 +705,27 @@ Each item below names a task and where its code is, then notes on it.
   The `envoy-infra` Pulumi plugin and the `envoy-infra` command (`seed`, `render`), a Go module outside the root `go.work`.
   Operators: `packages/envoy/infra/README.md`; changing it: `packages/envoy/infra/AGENTS.md`
 
+- Add or change a CI job — `.github/workflows/ci.yaml`, `.github/workflows/ci-job-<job id>.yaml`
+
+  A job of `ci.yaml` holds its steps in a reusable workflow of its own, `.github/workflows/ci-job-<job id>.yaml`, which the job calls with `uses:` and hands `ci-ok-changes: ${{ toJSON(needs.changes) }}` in its `with:`, under a `permissions:` block of its own.
+  What decides whether those steps run stays in the router: the job's filter in `changes`, its `needs: changes` and its `if:`.
+  Eight jobs are not in that shape: `changes`, `pr-title`, `cancel-started` and `ci-ok` hold their own steps, and `docs`, `dispatch-browser`, `worker-image` and `browser-image` call `docs-site.yaml`, `dispatch-browser.yaml`, `worker-image.yaml` and `browser-image.yaml` instead.
+  The `changes` job runs two `dorny/paths-filter` steps, `filter` and `filter2`, because one `filters` input over 131,072 bytes is a string the kernel refuses to pass the action, which a run measured; a new filter goes in either step and its `changes` output names that step, which `check-ci-filters.sh` holds.
+  Most of each filter's `!` patterns are generated: `.github/scripts/check-ci-filters.sh write` writes, into a marked block of each filter, the patterns that keep it off the Go test files its job does not run, and the check refuses a block that is not what it computes.
+  Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
+  a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
+  A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
+  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
+
+- Prove each Go test runs once per CI run — `.github/scripts/go-test-step-expansion.py`
+
+  The by-hand tool of dispatch://INFRA-1408's check k1.
+  It expands every `go test` step of `ci.yaml` and of the workflows its jobs call whose working directory is `packages/envoy`, `packages/envoy/infra` or `packages/daemon` into the test functions that step really runs — through the step's own packages, `-tags`, `-race`, `-run` and `-skip`, with `go test -list` — and gives two verdicts, exiting 1 on either:
+  every (package, function) pair more than one step runs, which no `EXCEPTIONS` entry declares with the requirement that makes it run twice, and every pair some expanded step compiles while no step runs it.
+  The second verdict is fixed to the packages the expansion already touches, never to every test of the three modules, because a tag-gated live proof no step runs is true and useless; an unrun pair is closed in the workflow rather than declared, by giving the function to a step's `-run` or taking its package off the step that only builds it.
+  The daemon joined the scope with the `-run`/`-skip` pair that keeps `internal/daemon`'s three real-Oh-My-Pi tests to one run each (dispatch://INFRA-1413): a check that sees one of the two steps and not the other proves nothing about them.
+  No CI job runs it and none should — it compiles every test binary of all three modules, the `-race` ones included, which the script's own header times.
+
 - Documentation site — `docs/site/`
 
   Astro Starlight.
@@ -732,7 +753,7 @@ Each item below names a task and where its code is, then notes on it.
 - **The slow test suites run in the merge queue, not on a pull-request push**
   — eight jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
   The browser suite (`dispatch-browser`, whose called workflow builds the Go commands its stacks run in a `binaries` job of its own) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
-  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
+  A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, when a person asks, or when the change touches `packages/envoy/internal/dispatch/store/migrations/**` or `packages/envoy/internal/pgmigrate/**`, where the label goes on before the approval: a migration is proven by the suites that run against a migrated database, and #2983's merge-group run 42464051293 is what a pull request without it leaves to the queue.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
   The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the eight again, and the browser suite's full lane with them.
 

@@ -17,10 +17,10 @@
 # These refusals of the verb are driven by nothing: an argument handed to the verb, an absent
 # or empty log, a line that is not the five-field line the stand-in writes, a second name that
 # kept the pinned ladder, a kept measurement over the ceiling, and a fetch the stand-in
-# shortened that then served the bytes. No case below reaches them, and neither does the
-# `tool-fallback` job of .github/workflows/ci.yaml: that job runs this verb once, over the log
-# of its own run, and that run passes, so it reads the measurement and drives no refusal at all
-# (job 130429248756, head 7c3b4de2, printed the closing sentence).
+# shortened that then served the bytes. No case below reaches them, and neither does ci.yaml's
+# `tool-fallback` job (.github/workflows/ci-job-tool-fallback.yaml): that job runs this verb
+# once, over the log of its own run, and that run passes, so it reads the measurement and
+# drives no refusal at all (job 130429248756, head 7c3b4de2, printed the closing sentence).
 # Two refusals beside the count are reached below only as by-products of what a case pins, and
 # this file claims neither as coverage of its own: the under-floor arm of the window chain, by
 # the case "a log under the floor is refused for its records as well", and the fetch that

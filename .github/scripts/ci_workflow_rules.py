@@ -7,7 +7,11 @@ None of them
 reads a filter, a gate or the closure of a go command, so none belongs in the filter-coverage
 engine beside them; check-ci-filters.sh's header numbers them 10, 12, 11, 13, 14 and 16, and
 ci_filter_coverage.main()
-is what runs them, over the ci.yaml document it already loaded - the workspace rule over the
+is what runs them, over the documents it already loaded - the rerun-guard rule over ci.yaml
+alone, since the `if:` it reads is the caller job's; the cache rule over ci.yaml and every
+workflow its jobs call, since a job's restore moves with its steps; the push-condition rule over
+ci.yaml and the called files that are ci.yaml's alone (ci_only_documents says why not the
+others) - the workspace rule over the
 root manifest and the WORKSPACES table main() hands it, and the race-fill rule over ci-caches.yaml
 and the DAEMON_RACE_PACKAGES list main() hands it the same way, since what this module imports is
 the engine's names, never the data's, and the merge-group rule over the workflow directory, which
@@ -15,9 +19,8 @@ it reads itself.
 
 It sits beside that engine (and workflow_paths.py, the path model) in the repository it checks,
 and imports the engine's names for the two workflow files, the repository root, the checks
-main's ruleset requires, the three
-helpers that read an `if:` and the walk that says where each ci.yaml job's steps are (its own,
-and those of a local workflow it calls), and the path model's reader of a workflow's `on:`. main()
+main's ruleset requires, the reader of a job's `uses:` and the three
+helpers that read an `if:`, and the path model's reader of a workflow's `on:`. main()
 imports this module rather than the other way round, so the one import of the engine here is of
 a module Python has finished loading by then.
 """
@@ -25,11 +28,12 @@ a module Python has finished loading by then.
 import json
 import re
 from collections import defaultdict
+from functools import cache
 
 import yaml
 
-from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, conditions, script_lines,
-                                squash, step_holders, where_if)
+from ci_filter_coverage import (CACHE_WORKFLOW, REPO, REQUIRED_CHECKS, WORKFLOW, called_workflows, conditions,
+                                script_lines, squash, where_if)
 from workflow_paths import events
 
 
@@ -51,27 +55,73 @@ PUSH_CONDITION = re.compile("|".join((comparison(r"github\.event_name", "'push'"
 PUSH_INSTEAD = (f"a cache that must be filled on a push to main belongs in {CACHE_WORKFLOW}, and a job that must "
                 f"run at main's tip is started by the workflow_dispatch "
                 f".github/workflows/main-bypass-check.yaml sends")
+# The one `on:` a workflow this rule reads beyond ci.yaml may declare, and the directory and the
+# two suffixes GitHub reads it in, which this rule and the merge-group rule at the foot of this
+# module both walk.
+WORKFLOW_CALL = "workflow_call"
+WORKFLOW_DIR = ".github/workflows"
+WORKFLOW_SUFFIXES = (".yaml", ".yml")
 
 
-def check_push_conditions(document: dict, problems: list) -> None:
-    """A job or a step of ci.yaml gated on a push event, or on github.ref being a branch ref, is
+@cache
+def directory_workflows() -> dict:
+    """Every workflow of this repository, as {its repository-relative path: the parsed document},
+    in path order. The two rules that walk the directory read this one answer: parsing each file
+    for each of them is a second read of every workflow in the repository."""
+    return {f"{WORKFLOW_DIR}/{path.name}": yaml.safe_load(path.read_text()) or {}
+            for path in sorted((REPO / WORKFLOW_DIR).iterdir()) if path.suffix in WORKFLOW_SUFFIXES}
+
+
+def ci_only_documents(documents: dict) -> dict:
+    """Of the document set, the files whose every run is a run of ci.yaml: ci.yaml itself, and
+    each workflow it calls that no other workflow of this repository calls and whose `on:`
+    declares workflow_call and nothing else.
+
+    The rule below is about conditions that are dead because the workflow they are in has no
+    push trigger, and that reason carries to a called file only when ci.yaml is the only way
+    into it. A reusable workflow runs inside its caller's run and under its caller's event, so a
+    file two workflows call is live under each caller's events, and a file with a trigger of its
+    own has runs no caller starts at all. Both cases are in this repository today:
+    .github/workflows/docs-site.yaml is called by docs-pages.yaml as well, which runs on a push
+    to main, and docs-site.yaml:159 carries `github.event_name == 'push'` for exactly that
+    caller; .github/workflows/worker-image.yaml is called by release.yaml twice. The
+    .github/workflows/ci-job-*.yaml files, which hold the steps of one ci.yaml job each, are the
+    other case: nothing else calls them and they run on workflow_call alone, so a push condition
+    in one of them is as dead as it would be in ci.yaml."""
+    called_elsewhere: set = set()
+    for path, document in directory_workflows().items():
+        if path != WORKFLOW:
+            called_elsewhere |= set(called_workflows(document))
+    return {path: document for path, document in documents.items()
+            if path == WORKFLOW
+            or (path not in called_elsewhere and set(events(document)) == {WORKFLOW_CALL})}
+
+
+def check_push_conditions(documents: dict, problems: list) -> None:
+    """A job or a step of ci.yaml, or of a workflow only ci.yaml calls, gated on a push event,
+    or on github.ref being a branch ref, is
     dead: the workflow has no push trigger, and on its three events github.ref is a pull request's
     merge ref or the merge queue's own branch, never the ref such a condition names. Dead code
     that reads as live is worse than none - a step held back by `if: github.event_name ==
     'push'`, or a job by `if: github.ref == 'refs/heads/main'`, runs in no run of this workflow
     while its text says it runs on main - so a later pull
     request may not bring one back. Read off the if: text, one comparison at a time: a committer
-    who writes the same test as a function call is the review's to catch."""
-    for job_id, job in (document.get("jobs") or {}).items():
-        job = job or {}
-        refs = conditions(job)
-        for step, condition in refs:
-            for found in dict.fromkeys(m.group(0) for m in PUSH_CONDITION.finditer(condition)):
-                where = where_if(job_id, step)
-                problems.append(f"::error file={WORKFLOW}::{where} has `if: {squash(condition)}`, which tests "
-                                f"`{found}`: {WORKFLOW} runs on a pull request, a merge group and a "
-                                f"workflow_dispatch, never on a push to main, so nothing that condition gates ever "
-                                f"runs; {PUSH_INSTEAD}")
+    who writes the same test as a function call is the review's to catch. Which files it reads,
+    and why it is not every file ci.yaml calls, is ci_only_documents above; each refusal names
+    the file the condition is in."""
+    for path, document in ci_only_documents(documents).items():
+        for job_id, job in (document.get("jobs") or {}).items():
+            job = job or {}
+            refs = conditions(job)
+            for step, condition in refs:
+                for found in dict.fromkeys(m.group(0) for m in PUSH_CONDITION.finditer(condition)):
+                    where = where_if(job_id, step)
+                    runs = (f"{WORKFLOW} runs" if path == WORKFLOW
+                            else f"{path} runs only as part of {WORKFLOW}, which runs")
+                    problems.append(f"::error file={path}::{where} has `if: {squash(condition)}`, which tests "
+                                    f"`{found}`: {runs} on a pull request, a merge group and a "
+                                    f"workflow_dispatch, never on a push to main, so nothing that condition gates ever "
+                                    f"runs; {PUSH_INSTEAD}")
 
 
 # ------------------------------------------------------- the re-run of a merge-group run
@@ -102,7 +152,11 @@ def check_rerun_guard(document: dict, problems: list) -> None:
     or, for a job whose `if:` admits merge_group alone, `github.run_attempt == '1'` by itself. A
     job named for a required check must hold neither, for the reason above: its skip is a passing
     required check. Read off the if: text, as check_push_conditions is: the same test written
-    another way is the review's to catch."""
+    another way is the review's to catch.
+
+    It reads ci.yaml alone, and no workflow ci.yaml calls: the `if:` this rule is about is the
+    caller job's, which stays in ci.yaml whatever file holds that job's steps, and a called
+    file's own jobs run or skip with the caller that started them."""
     wanted, found = RERUN_GUARD
     for job_id, job in (document.get("jobs") or {}).items():
         condition = str((job or {}).get("if", ""))
@@ -154,25 +208,21 @@ def cache_steps(document: dict, action: str) -> list:
             for family, given in job_cache_steps(job or {}, action)]
 
 
-def restores_of(document: dict) -> dict:
+def restores_of(documents: dict) -> dict:
     """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
-    can be is where its job's steps are, which is the engine's step_holders walk: ci.yaml's own
-    jobs, and the jobs of each local workflow one of them calls - dispatch-browser.yaml's shard
-    and alone jobs restore the browser and apt archive families for ci.yaml's dispatch-browser
-    job - so a save paired against ci.yaml alone would read as a fill nobody wants. That walk
-    lists the jobs of a workflow once per caller, and those are the same jobs, so each is taken
-    once."""
-    restores, seen = defaultdict(list), set()
-    for _, path, job_id, _, job in step_holders(document, document.get("jobs") or {}, {}):
-        if (path, job_id) in seen:
-            continue
-        seen.add((path, job_id))
-        for family, given in job_cache_steps(job, "restore"):
+    can be is where its job's steps are, which is the document set the engine loads: ci.yaml,
+    and each local workflow one of its jobs calls - dispatch-browser.yaml's shard and alone jobs
+    restore the browser and apt archive families for ci.yaml's dispatch-browser job - so a save
+    paired against ci.yaml alone would read as a fill nobody wants. The set holds each called
+    file once however many of ci.yaml's jobs name it, so each restore is taken once."""
+    restores = defaultdict(list)
+    for path, document in documents.items():
+        for job_id, family, given in cache_steps(document, "restore"):
             restores[family].append((f"job {job_id} of {path}", given))
     return restores
 
 
-def check_cache_round_trip(document: dict, problems: list) -> None:
+def check_cache_round_trip(documents: dict, problems: list) -> None:
     """ci-caches.yaml fills on a push to main the entries ci.yaml's run restores - its own jobs'
     restores, and those of the local workflows they call - so each family's save must carry
     exactly the key and the paths its restores name: a key or a path that drifts apart makes
@@ -185,18 +235,22 @@ def check_cache_round_trip(document: dict, problems: list) -> None:
     `lookup-only: true` with no restore-keys: the question it asks is whether that exact key is
     already there, the entry it would download is read by nothing in this workflow, and a prefix
     hit would answer for an older key and skip the build that fills this one. A ci-caches.yaml
-    that is not in the repository saves nothing, and so has nothing to hold."""
+    that is not in the repository saves nothing, and so has nothing to hold.
+
+    The restores are collected from every document of the set, ci.yaml and each workflow its
+    jobs call, since a job that gives its steps to a called file takes its restore there with
+    them and the entry it reads is the same one; each refusal names the file the restore is in."""
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
     caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
-    restores = restores_of(document)
+    restores = restores_of(documents)
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:
             problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves cache family {family}, which no "
-                            f"actions/cache/restore of {WORKFLOW} reads, nor one of a local workflow its jobs "
-                            f"call; this workflow exists to fill what {WORKFLOW} restores, so a family nothing "
-                            f"restores is a fill nobody reads: restore it there, or drop the save")
+                            f"actions/cache/restore of {WORKFLOW} or of a workflow it calls reads; this workflow "
+                            f"exists to fill what {WORKFLOW} restores, so a family nothing restores is a fill "
+                            f"nobody reads: restore it there, or drop the save")
             continue
         for restore_where, restored in restores[family]:
             restored_key = str(restored.get("key", "")).rstrip()
@@ -361,9 +415,6 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
 
 
 # ------------------------------------------------- the one workflow a merge group runs
-# The directory every workflow of this repository is in, and the two suffixes GitHub reads there.
-WORKFLOW_DIR = ".github/workflows"
-WORKFLOW_SUFFIXES = (".yaml", ".yml")
 MERGE_GROUP = "merge_group"
 
 
@@ -382,9 +433,8 @@ def check_one_merge_group_workflow(problems: list) -> None:
     merge_group workflow puts the early POST back in another suite, and nothing in ci.yaml would
     say so: the workflow that broke it is the new file. So the rule is about every other
     workflow, and names the file it found."""
-    for path in sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES):
-        name = f"{WORKFLOW_DIR}/{path.name}"
-        if name == WORKFLOW or MERGE_GROUP not in events(yaml.safe_load(path.read_text()) or {}):
+    for name, document in directory_workflows().items():
+        if name == WORKFLOW or MERGE_GROUP not in events(document):
             continue
         problems.append(f"::error file={name}::{name} runs on {MERGE_GROUP}, which only {WORKFLOW} may: "
                         f"ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's own "

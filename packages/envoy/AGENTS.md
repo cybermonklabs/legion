@@ -811,7 +811,9 @@ The replica is listed for its document's reads (`Service.replicas`), the documen
 the update observer, which the document holds, is the replica's one strong holder, so the replica is collected with an evicted document, in the same collection, and the listing goes once the document is collected (`keepReplica`, `TestAnEvictedRoomsReplicaGoesWithIt`).
 A reader holding an evicted instance of a room reaches that instance's replica or none, never its successor's.
 `TestReadsOfALiveDocumentRunBesideItsPeers` runs each of these reads while a websocket peer types, until 50 of its runs have overlapped one of the peer's updates, and CI runs the `docs` and `api` packages under `-race`, each in a race job of its own, which reports a walk of the live tree beside a write;
-the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else: `envoy-go`'s unit step leaves both out, and the only plain run it keeps of them is its step "Test what the race build cannot run at all or at full size", which runs the few tests the detector makes impossible or shrinks.
+the `docs` package's is `envoy-go-race-docs` and the `api` package's is `envoy-go-race-api`, and each of those two packages runs under the detector there and nowhere else, since `envoy-go`'s unit step leaves both out.
+The tests of those two packages that the race build cannot run, or runs smaller, have one plain run each:
+the `docs` package's few in `envoy-go`'s step "Test what the race build cannot run at all or at full size", and the API's source guards, which carry `//go:build !race`, in the `text-checks` job's step "Test the Dispatch API's source guards (no database)".
 Each race job runs only when a file its own filter in `.github/workflows/ci.yaml` names changes
 — `envoy_go_race_docs`, the closure of the `docs` package alone, whose job gives it a 60-minute deadline, and `envoy_go_race_api` for the API;
 see Critical conventions for what keeps those filters current.
@@ -2444,9 +2446,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   alone it pages `contracts.DefaultIssuePageLimit`, 50):
   `{issues, total, limit, offset}` (`model.IssueSummaryPage`), the count beside the rows as `GET /api/v1/asks/open` carries it.
   Every row carries `closed_at`, the time the issue was closed as its own read carries it, or null while it is open.
+
+- The listing's three time bounds.
   `closed_since` (inclusive) and `closed_before` (exclusive) are RFC3339 bounds on `closed_at`, so an open issue matches neither, and a reader of the issues closed in a window reads those alone rather than the whole listing;
   `listIssues` (`api/issue_queries.go`) refuses a malformed one as `400 INVALID_CLOSED_SINCE` or `400 INVALID_CLOSED_BEFORE`, as it refuses a malformed `updated_since` (`400 INVALID_UPDATED_SINCE`), and a `closed_before` at or before `closed_since` as `400 INVALID_CLOSED_WINDOW`.
-  The three time bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it; the window refusal judges the bounds as the caller wrote them.
+  The three bounds reach the statement rounded up to the next microsecond (`microsecondCeiling`), since Postgres stores a time to the microsecond and pgx would otherwise truncate a finer bound and move `>=` and `<` onto a time stored before it;
+  the window refusal judges the bounds as the caller wrote them.
+
+- The listing's paging, which is `GET /api/v1/issues`' own.
   `parseIssuePage` (`api/issue_page.go`) reads `limit` and `offset`, and a repeated, blank, non-integer or out-of-range value is `400 INVALID_QUERY` naming the parameter;
   so is `cursor`, which the listing does not page with, since answering it with the first page would hand back rows the caller cannot tell from the ones it asked for (LEGION-406:
   the route ignored all three and answered every row).
@@ -2500,11 +2507,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   The chain therefore ends on a person: an issue the shared token creates with no assignee named and no parent assignee lands on the project's default.
   Nothing back-fills issues already filed, and a daemon status PATCH (no `assignee` key) never touches it.
   A new issue therefore always has an assignee, whatever the create sends; the one way to an issue nobody holds is `PATCH /api/v1/issues/{key}` with `{"assignee": null}`, so a test that needs one creates the issue and then clears it.
-  A project's default is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
-  `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
   `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
   `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports.
   Issue reads (`GET /issues/{key}`, summaries, pinned) carry `assignee`, and so does the `issue` on every inbox row.
+
+- A project's default is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
+  `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
 
 - Every issue has a nullable claim: the session that intends to implement it (`issues.claimed_by` — the actor JSON
   — and `issues.claimed_at`, migration `0045`, both set or both null by `issues_claim_complete`).
@@ -6630,7 +6638,7 @@ That person carries both claim shapes Dispatch reads:
 a Google Workspace account of the email's domain, and a Cognito pool user federated from `DevIdP`, a member of `--sign-in-group <group>`'s group when that flag is given.
 Dispatch accepts `DISPATCH_SIGNIN_DOMAIN` only under Google's issuer, so a local Dispatch signs in through this issuer with `DISPATCH_SIGNIN_GROUP` set to that group.
 Each `dev-broker.sh` run creates and drops its own isolated database, on the shared `dispatch-pg` container, which it boots through `dev-postgres.sh` (so a `dispatch-pg` off that script's pinned image is refused before anything is created), or, with `DEV_BROKER_POSTGRES_URL` set, through `psql` on the server that URL names (no Docker), so concurrent instances never see each other's enrollments, requests or grants, and listens on the port its own `cmd/broker` binds and logs (`BROKER_LISTEN_ADDR=127.0.0.1:0`), so concurrent instances can never collide on a shared port either.
-`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, exports the caller token that issuer wrote, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go` job.
+`dev-broker.test.sh` proves both kinds of isolation, and that each instance's broker trusts the issuer that instance started, lists its dev caller, exports the caller token that issuer wrote, shares one sign-in client with that issuer through a 0600 secret file it never prints, names its own approval page in its banner, and stops the issuer on exit, with fakes (no real Postgres or network) and runs in CI's `envoy-go-checks` job.
 `scripts/github-narrowing-check.sh` drives that stack end to end, as `airlock-check.sh` and `judge-check.sh` drive theirs: it starts `dev-broker.sh`, enrols one pod session of the registered service, runs checks k1, k2 and k4 of `dispatch://INFRA-2687` against it, and prints one PASS or FAIL line for each property with `all <n> assertions passed` as its last line.
 It takes `DEV_BROKER_POSTGRES_URL` as `dev-broker.sh` does, so a box with no container runtime names its own server there.
 

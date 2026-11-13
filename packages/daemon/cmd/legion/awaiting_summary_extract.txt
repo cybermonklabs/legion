@@ -1,0 +1,31 @@
+# The `legion state` sample of docs/site/src/content/docs/legion/running-legion.md, the lines an
+# operator reads the waiting-line count in, copied here verbatim. `roots waiting on a person` is
+# the line cmd/legion's awaitingSummary renders, printed here for a state with one unanswered
+# root, and the lines around it are what makes the quotation one passage of that guide rather
+# than a sentence a later page could repeat.
+#
+# The check is in two halves, because a test that reads the guide puts the guide in its job's
+# filter - a declared read applies to every compiled source file of a run - and a documentation
+# edit would then start the whole daemon Go lane. The product half is cmd/legion's
+# TestTheShippedWordsNameTheWaitingLineCount, which builds that line from the state the sample
+# describes and finds it here; packages/daemon/internal/textcheck's
+# TestTheAwaitingSummaryExtractIsTheGuidesWaitingLineSample holds these lines to the guide
+# itself. Neither half alone is the guarantee: a sample corrected in the guide alone fails the
+# text-check half, and a renderer that stopped printing this line fails the product half.
+#
+# waiting_line_block_extract.txt beside this file quotes the `waiting line` block of this same
+# sample, which its own test is held to, so an edit of the sample is repasted into both copies
+# in the commit that makes it; that file's header says why the two are not one.
+#
+# The format: the lines that open with `#` are this header, and everything under the blank line
+# below is the guide's own bytes, indentation included.
+
+  legion WIDGETS on http://192.0.2.10:13370 — schema 12, boot 7 started 2026-10-03T09:12:40Z (first boot 2026-09-20T15:02:11Z)
+  admission: 3 issues hold a slot, cap 4, 2 waiting; 2 live trees; 9 issues
+  waiting line: 2
+    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
+    WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
+  blocked on Dispatch links: none
+  memory: none
+  roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
+  open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z

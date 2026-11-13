@@ -1,0 +1,1053 @@
+name: CI job tool-fallback
+
+# The steps of ci.yaml's `tool-fallback` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
+# and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
+# own. The comment above that job says what the proof is and why it is permanent.
+#
+# The split is for the filters. The tool_fallback filter names this file beside ci.yaml, so a
+# change to these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The job id here is the one ci.yaml calls this file under, and it has to stay: a composite
+# action reads `github.job` as the id of the job that called it, and .github/actions/setup-bun
+# passes no-cache for every job whose id starts with `tool-fallback`, which is what keeps every
+# case of this job a reading of an install rather than of the Actions cache.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  tool-fallback:
+    runs-on: ubuntu-24.04
+    # The budget, added up from the slowest run this job can have, the way the
+    # tool-fallback-arm job of .github/workflows/ci-job-tool-fallback-arm.yaml adds up its own:
+    # the job's set-up, the two checkouts and the runner's download of the actions (1), the two
+    # steps that read the package and the manifest, and `stage`, which fetches about 303 MB over
+    # the real sources while the network is whole and so keeps the pinned ladder (2), the
+    # jj-primary case, which runs before the fault (1), the fault and its probe, whose two
+    # requests are bounded at 15 s each (1), the one case that keeps the ladder, the head's own
+    # `install-crane`, which measured 64 s and which `--retry-max-time 60` bounds at a minute in
+    # which a new attempt may start plus one last attempt of the row's `max_time` of 60 s (2),
+    # the other steps whose primary the fault or a dead port holds, each now about a second
+    # because the stand-in shortens them: job 129874475871 made 65 fetches through the stand-in,
+    # and 29 of them were shortened — 19 of github.com, 9 of the dead address and 1 of
+    # get.pulumi.com behind the base-pulumi control's dead proxy. The other 36 kept the pinned
+    # ladder: the kept case's own fetch at 63 s, the probe's reserved control name, and the
+    # honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
+    # which took more than a second (1), the bytes the installs and the sixteen cases move, over
+    # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
+    # readings, the `ladder-report` step, the stop-fault step and the report (1).
+    # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+    # limit carries ten minutes over the sum.
+    # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
+    # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
+    # control costs, because it drives two ladders; the other fourteen of those steps drive one
+    # and cost about 64 s, so the old allowance was about twice what two thirds of them could
+    # cost. What one ladder costs, and how it is derived, is in the comment above ci_tools_curl
+    # of .github/scripts/ci-tools.sh.
+    # What the change did: job 129743677408 ran 1,994 s and job 129885098900 ran 284 s, and the
+    # one case that still drives the real ladder measured 63 s inside it.
+    #
+    # THIS CHANGE ADDS TEN STEPS TO THAT SUM, AND NINE OF THEM COST NOTHING A READER WOULD
+    # NOTICE: eight marks, one before each install with nowhere to go, each a single `echo`
+    # which measured 0 s in jobs 130015112773, 129940828354 and 129966328215 and at most 1 s
+    # in job 130289341628 at the merge of main, and the watch's report, 0 s in all four. The
+    # tenth is the watch's start, which spawns the sampler and reads the file system it will
+    # watch: 3 s, 5 s and 4 s in those three jobs and 9 s in job 130306447638, so it is the
+    # one added step whose cost a reader can see, and the item above allows for it. The watch
+    # itself is a sampler beside the job rather than a step of it, so those two steps are its
+    # whole cost to this budget (dispatch://INFRA-2605).
+    #
+    # EVERY INSTALL STEP OF THIS JOB AND OF tool-fallback-arm DECLARES `timeout-minutes: 11`,
+    # and the twenty-four installs whose control accepts a failure are timed as well, against
+    # the seconds .github/scripts/ci-tools-proof.sh holds every timed install to: a step the
+    # runner ends at its own bound leaves `outcome=failure` behind it, which those controls
+    # accept, so the wall time is the only reading that tells a hang from the refusal the case
+    # expects.
+    # The eleven minutes is derived from the installs as they ran before the ladders stopped
+    # sleeping: over the green runs of these two jobs between 2026-11-09T19:38Z and
+    # 2026-11-10T10:51Z, 2422 install steps — the sixteen-install shape this job carried for
+    # part of that window counted as well as the thirty-two it carries now — gave a median of
+    # 64 s, a 99th percentile of 128 s and a maximum of 326 s, which is `install-jj` on five
+    # slow runs. Eleven minutes is twice that maximum, rounded up to the minute the key takes,
+    # so no step that would have finished is ended by it. Since the ladders stopped sleeping
+    # every install sits under that 99th percentile: the slowest in job 130289341628 is the
+    # head's own `install-crane`, the one kept ladder, at 65 s.
+    # THE BOUND WOULD HAVE CHANGED NOTHING IN THE INCIDENT THAT ASKED FOR IT, because a bound
+    # the runner enforces needs a runner that is alive. It is here for the other failure: a
+    # command that hangs while the runner answers, where without it the job's own ceiling is
+    # the only thing that ends it, and the ceiling costs the merge queue the pull request it
+    # holds.
+    # That the runner does enforce it on a `uses:` step of a composite action is measured and
+    # not assumed: on this change's own first run, an action sleeping 180 s under
+    # `timeout-minutes: 1` was ended after 72.5 s and the steps after it ran. The job record of
+    # that step (job 129786363688, step 3) gives the wall time, 10:57:03Z to 10:58:16Z, and
+    # `conclusion: success`, and holds no `outcome` at all; its log gives `The action has timed
+    # out.`; and the `outcome=failure` the caller's later steps read was measured in job
+    # 129872208213, where a later step printed `steps.<id>.outcome`. The runner is about
+    # twelve seconds late, so a bound is a ceiling and not a stopwatch.
+    timeout-minutes: 22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The merge base, for the negative control below: a second tree of this same repository,
+      # whose seven installs that control drives with nowhere left to go. The comment on those
+      # steps says what keeps this checkout here.
+      - name: Check out the merge base the negative control installs from
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.sha }}
+          path: base
+          persist-credentials: false
+
+      # The package holds the blob of every mirrored row, asked for with no credential at all
+      # and at the address .github/scripts/ci-tools.sh builds, which is how an install asks for
+      # it: this step reads the blob an install reads, through the same CI_TOOLS_GHCR_BASE
+      # seam, and writes no address of its own.
+      # This rule is the opposite of the filler's, on purpose. .github/scripts/mirror-ci-tools.sh
+      # leaves a cold row green, because an asset that does not answer is the outage the copy
+      # exists to survive and a red ci-ok during that outage helps nobody. Here a cold row is a
+      # refusal, because this job records a pass for a fallback it drove, and a pass recorded for
+      # a row whose second source does not exist yet is a pass for nothing.
+      - name: Check the package holds the blob of every mirrored row
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          registry=$(ci_tools_registry)
+          token=$(ci_tools_ghcr_token)
+          rows=$(ci_tools_rows ghcr-mirror)
+          cold=""
+          for row in $rows; do
+            url=$(ci_tools_blob_url "$row")
+            status=$(curl -sS -o /dev/null -I -L -w '%{http_code}' \
+              -H "Authorization: Bearer $token" "$url")
+            echo "$row: $registry answers $status for $url"
+            [ "$status" = 200 ] || cold="$cold $row"
+          done
+          if [ -n "$cold" ]; then
+            echo "::error::the package holds no blob for$cold, so this job would record a pass for a second source that is not there; the ci-images job this one needs fills it with .github/scripts/mirror-ci-tools.sh, where a cold row stays green on purpose" >&2
+            exit 1
+          fi
+
+      # Each row beside the two call sites that read its digest: the line of the manifest that
+      # holds the literal, and what reads that row in an action or in the rig.
+      # One literal is what both paths are held to, and this is the evidence of it — there is no
+      # second digest in an action to read it out of, which is the point.
+      - name: Print every row beside the two call sites that read its digest
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          rows=$(ci_tools_rows)
+          unread=""
+          for row in $rows; do
+            digest=$(ci_tools_digest "$row")
+            echo "$row: sha256 $digest, of $(ci_tools_field "$row" digest_of)"
+            pinned=$(grep -n "digest: $digest" .github/ci-tools.yaml || true)
+            # The lines that read the row rather than every line that says its name: a
+            # ci_tools_* call that names it, and the `row=` an action assigns it to where the
+            # call site names the row through a variable (.github/actions/setup-bun does).
+            readers=$(grep -rn -- "$row" .github/actions .github/scripts/ci-tools-proof.sh \
+              | grep -E 'ci_tools_|row=' || true)
+            echo "  the manifest's own line:"
+            printf '%s\n' "$pinned" | sed 's|^|    .github/ci-tools.yaml:|'
+            echo "  what reads that row, in the action or the rig:"
+            printf '%s\n' "$readers" | sed 's|^|    |'
+            { [ -n "$pinned" ] && [ -n "$readers" ]; } || unread="$unread $row"
+          done
+          if [ -n "$unread" ]; then
+            echo "::error::nothing reads$unread, so that row's digest is pinned and read by no install" >&2
+            exit 1
+          fi
+
+      - name: Stage the correct bytes of every row a case serves, before the fault
+        run: .github/scripts/ci-tools-proof.sh stage
+
+      - id: origin
+        name: Start the origin that stands in for all four sources
+        run: .github/scripts/ci-tools-proof.sh origin-start
+
+      # What the machine had, every second from here to the report below: free disk, the memory
+      # the kernel reports available, and the one-minute load, one line per second, then the
+      # worst each of them reached (.github/scripts/disk_watch.py, which envoy-smoke drives
+      # around its live-tests step and which prints the series there too).
+      # The job record times every step boundary, so a reader lines any step of this job up
+      # against the second it ran in. That is what this job could not answer on 2026-11-10,
+      # when one of its runs lost its hosted runner and GitHub's annotation named starvation of
+      # CPU or memory as one of three causes (dispatch://INFRA-2605).
+      # WHAT IT DOES NOT SHOW is the loss itself: a runner that stops answering stores no log at
+      # all, so the series ends where the log ends and says nothing about the second after it.
+      # It is the headroom of every run that does store a log, and the reading for a command
+      # that hangs while the runner is alive.
+      # It starts before the fault, so the two tools `start` asks to name a directory are not
+      # routed through a proxy that refuses them. The report prints and never fails the job:
+      # this is the measurement, not a new gate.
+      - name: Start the machine watch over every faulted install
+        run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
+
+      # Case 5 of 16 of the corrupted payloads, and the one that runs here rather than with the
+      # other seven: the jj binary in mise's install directory is one byte changed.
+      # That directory is where .github/actions/install-jj reads an installed jj from, so a
+      # changed binary there is the primary path's own mismatch: `mise install` finds the tool
+      # installed, the action holds the binary mise points at to the jj row, and refuses it.
+      # It runs before the fault because `mise install` resolves the tool's version list over
+      # api.github.com even when the install directory already holds it, and the fault below
+      # holds every host under github.com. Under the fault that resolve fails, the action takes
+      # its second source instead, and this case would read the fallback rather than the
+      # primary — which is what happened at 1725f7ce before this step moved.
+      # Here it needs no release asset either: the rig seeds mise's directory from the payload
+      # it staged, so a release-asset outage, which is what this whole job is about, leaves this
+      # case exactly as it is. api.github.com is not a release-asset host and does not go down
+      # with one.
+      - name: Corrupt nothing at the origin for the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt
+
+      - name: Seed mise's install of jj with the staged binary, one byte changed
+        run: |
+          set -euo pipefail
+          proof=.github/scripts/ci-tools-proof.sh
+          corrupted="$RUNNER_TEMP/jj-one-byte-changed"
+          cp -- "$("$proof" payload-path jj)" "$corrupted"
+          "$proof" flip-last-byte "$corrupted"
+          "$proof" seed-mise-jj "$corrupted"
+          rm -f "$corrupted"
+
+      - id: jj-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
+
+      # What that case seeded goes, so nothing of it reaches the installs below: the head's own
+      # install-jj meets an empty mise directory, as a fresh runner would.
+      # It is not what decides that install. Measured in CI at run 42507815176, `mise install`
+      # resolves the tool's version list over api.github.com even when its install directory
+      # already holds the tool, so under the fault below that install fails whether this
+      # directory is here or not, and the action reads the copy either way. What a directory
+      # left here would leave behind is the one-byte-changed jj this case seeded, on a runner
+      # whose later steps run what this job installed.
+      - name: Take mise's install away again, so the faulted install must read the copy
+        run: rm -rf "$HOME/.local/share/mise"
+
+      # The stand-in curl every step after this one runs, which shortens only a fetch this job
+      # arranged to fail. Every case of this job is a refusal this rig arranged, and each of
+      # those refusals rode a retry ladder nobody reads: job 129743677408 ran 1994 s and spent
+      # 1952 s in the steps that pay for them.
+      # Every other fetch keeps the pinned ladder, so that ladder still rides out a flap of
+      # npm, PyPI, get.pulumi.com or the local origin, each of which this job reaches through
+      # the fault proxy and none of which it faults. No case reading of this job counts
+      # requests or durations, so a shortened ladder takes no statement away: what a case
+      # proves is which source served its bytes and that the digest held, and the stand-in
+      # changes neither. The ladder-report step is the one reading of durations.
+      # One case keeps the pinned ladder, the head's own install-crane below, and the
+      # ladder-report step at the end of this job reads what that one measured. That install
+      # carries no seam, so its primary is the real faulted host and its second source the real
+      # package copy, and it drives the whole claim the shortened cases give up: a real ladder,
+      # then a second source, then the digest check. The negative controls cannot be that case,
+      # because a control ends in failure and proves no fall-through. The head's installs
+      # cannot move above the controls either, because .github/actions/setup-bun takes its
+      # existing-install branch when a Bun of the pinned version is already on the runner,
+      # which is exactly what the base-bun control must not find.
+      # It runs here, immediately before the fault comes up, and the window it may run in is
+      # the one between `stage` and that step. It cannot run above `stage`, because `stage`
+      # fetches about 303 MB from the real sources while the network is whole and must keep
+      # the pinned ladder for them, and because $GITHUB_PATH reaches the steps after the step
+      # that writes it and not that step itself.
+      # It cannot stay straight after `stage` either, which is where it ran before: the
+      # jj-primary case runs in that window, and its install-jj makes a real fetch of
+      # github.com through mise which succeeds. github.com is one of the hosts this rig
+      # faults, so a stand-in installed above that case shortened a fetch this job means to
+      # succeed and took the pinned ladder off it, while the fault that makes the shortening
+      # true was not up yet. In job 129841257239 that fetch is the first one the ladder-report
+      # step printed, `github.com: shortened, curl exit 0, 0s`: 2 attempts over 1 s where the
+      # pinned ladder gives 7 over 63 s, so one short failure of github.com would redden this
+      # required job where the pinned ladder rode it out.
+      # The step after this one starts the fault, so every fetch made from here goes through
+      # it and no fetch this job did not arrange to fail is ever shortened. The ladder-report
+      # step refuses the job for exactly that reading — a fetch that was shortened and then
+      # served the bytes — which is what holds this step at this position.
+      # The remedy is the position and not a guard in the stand-in on a state file the fault
+      # writes: a position cannot drift out of the truth it states, while such a guard can.
+      - name: Shorten the ladder of every fetch this job arranges to fail
+        run: .github/scripts/ci-tools-proof.sh shorten-ladder
+
+      # The fault, and the routing of every later step through it, in one step: the rig starts
+      # .github/scripts/ci-fault-proxy.py over the release hosts its own FAULT_HOSTS names, and
+      # writes the four spellings of the two proxy variables and the two emptied bypass lists
+      # to $GITHUB_ENV itself. Those hosts and those variables are written there and in no step
+      # of this file, so a release host that moves again is one edit in one place.
+      # The runner resolves and downloads an action with its own environment rather than a
+      # step's, so every action this job uses is already on disk when the fault starts, and the
+      # fault is met only by what an action fetches.
+      - name: Start the fault in front of GitHub's release assets
+        run: .github/scripts/ci-tools-proof.sh start-fault
+
+      - name: Read the fault before any install meets it
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      # The negative control, under the same fault: eight installs with nowhere to go — the
+      # merge base's seven, each given a dead port where its second source would be read, a ghcr
+      # base, an npm base, a URL base or a proxy, and the docker provider plugin, which the
+      # merge base has no action for, as the head's own action with its second source on a dead
+      # port — so every one of them must fail here.
+      # What it asserts is a property of this change and not a fact about history: an install
+      # whose primary meets the fault and whose second source cannot be reached fails. That is
+      # what makes the passes below a reading of the second source rather than of a cache, of a
+      # tool the runner image already carries, or of a proxy that let the asset through.
+      # The merge base's seven fail for two reasons, and which one is each install's depends on
+      # whether that install already read the helper there. Its crane, changie, jj and Bun do,
+      # so their primary meets the fault and the ghcr and npm seams send them to a dead port.
+      # Its elan, uv and Pulumi CLI read no seam at all, each being a `curl` of its own: elan's
+      # and uv's one source is the release asset this fault holds, and the CLI's is
+      # get.pulumi.com, which this fault does not hold, so that step carries a dead proxy of its
+      # own instead.
+      # Once this change is on main the base is this tree, and every one of the eight fails for
+      # the dead ports alone, which leave its second source nothing to reach.
+      # A control that leaned on the merge base having one source each would expire the day this
+      # change lands on main: the base would then be this tree, each primary would meet the
+      # fault, each second source would reach the real ghcr — whose blobs redirect to
+      # pkg-containers.githubusercontent.com, which this fault leaves alone on purpose — or the
+      # real npm, PyPI or get.pulumi.com, every one of them would succeed, and this step would
+      # fail every pull request and merge group that selects this job. On a workflow_dispatch
+      # the ref below falls through to github.sha, the head itself, so that control is wrong
+      # already.
+      # A dead port rather than a manifest with its `second_source` rows deleted: a row with no
+      # second source makes ci_tools__second_source refuse the empty field, so the install would
+      # fail for the wrong reason — it would prove the helper rejects an empty field, not that
+      # the install had nowhere to go, and a negative control must fail for the reason the check
+      # names. A base that does not have the helper ignores both variables and fails as it
+      # always did.
+      # The merge-base checkout stays. It is this repository's only caller of the rule
+      # .github/scripts/check-image-trigger-paths.sh keeps about a local `uses:` under a second
+      # checkout of this same repository, and that check's own comment names this job for it.
+      # After this change is on main the checkout is redundant to the dead ports below, which
+      # drive the control by themselves, so a later reader who deletes the merge base's seven
+      # steps is deleting that caller too and should move the rule's exercise rather than lose
+      # it.
+
+      # When the install below started. Each of the eight with nowhere to go carries a mark step
+      # of its own, and the control step after them reads every one, because a bound that fires
+      # on one of them is otherwise silent: each carries `continue-on-error` and the control
+      # accepts a step whose `outcome` is `failure`, which is exactly what the runner leaves
+      # behind when it ends a step at its bound. The clock is the one signal that tells the two
+      # apart, since GitHub gives a later step nothing that says an earlier one was cut.
+      # $GITHUB_OUTPUT rather than $GITHUB_ENV: a step of a job that writes $GITHUB_ENV or
+      # $GITHUB_PATH makes ci_filter_coverage.py's job_reason non-empty for the whole job.
+      - id: mark-base-crane
+        name: Mark when the install with nowhere to go for crane began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-crane
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-crane
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-changie
+        name: Mark when the install with nowhere to go for changie began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-changie
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-changie
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-jj
+        name: Mark when the install with nowhere to go for jj began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-jj
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-bun
+        name: Mark when the install with nowhere to go for bun began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-bun
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/setup-bun
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      # elan's one source at the merge base is the release asset this fault holds. The removal
+      # before it is what every elan step of this job carries: .github/actions/install-elan
+      # exits 0 when $RUNNER_TEMP/elan/bin/elan is executable, and $RUNNER_TEMP is one path for
+      # the whole job, so an elan step without it reads the elan the step before it installed
+      # and installs nothing at all.
+      - name: Take elan away, so the control installs rather than finds one
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - id: mark-base-elan
+        name: Mark when the install with nowhere to go for elan began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - id: base-elan
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-elan
+        env:
+          CI_TOOLS_GHCR_BASE: http://127.0.0.1:1
+          CI_TOOLS_NPM_BASE: http://127.0.0.1:1
+
+      - id: mark-base-uv
+        name: Mark when the install with nowhere to go for uv began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # uv's second source is PyPI, which .github/scripts/ci-tools.sh reads through
+      # CI_TOOLS_URL_BASE and not through either seam above, so that is the one this control
+      # sends to a dead port.
+      - id: base-uv
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-uv
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+
+      - id: mark-nowhere-pulumi-docker
+        name: Mark when the install with nowhere to go for the docker provider plugin began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # The docker provider plugin has no action at the merge base at all, so its control is the
+      # head's own action with its second source on a dead port: its primary meets this fault
+      # and get.pulumi.com is nowhere to go.
+      # This control does not expire the day this change lands on main, which is the fault the
+      # comment above names in the controls that lean on the merge base: it reads nothing of the
+      # base tree, and the property it states — an install whose primary is faulted and whose
+      # second source cannot be reached fails — is a property of the head itself.
+      - id: nowhere-pulumi-docker
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+
+      - id: mark-base-pulumi
+        name: Mark when the install with nowhere to go for the Pulumi CLI began
+        run: echo "at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      # The Pulumi CLI is the row whose primary this job does not fault: get.pulumi.com is where
+      # the docker plugin row's second source is, and faulting it would take that source down
+      # inside the job that proves it.
+      # So this control carries a proxy of its own on a dead port instead. The merge base's
+      # action is a bare `curl` to get.pulumi.com and that is the one source it has, and a base
+      # that reads the seams has its second source, the release asset, behind the same dead
+      # proxy, so either way the install has nowhere to go.
+      # The two lower-case spellings and no more: curl reads `http_proxy` in lower case only and
+      # prefers the lower-case `https_proxy` to the upper-case one, and a step `env:` map that
+      # held two spellings of one name is a workflow GitHub refuses to start at all, which is
+      # why the rig writes the four spellings of the fault through $GITHUB_ENV.
+      - id: base-pulumi
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./base/.github/actions/install-pulumi
+        env:
+          http_proxy: http://127.0.0.1:1
+          https_proxy: http://127.0.0.1:1
+
+      # A bound belongs only where firing it is loud, and on these eight it is not: each carries
+      # `continue-on-error`, and the test below accepts a step whose `outcome` is `failure`,
+      # which is what the runner leaves when it ends a step at its bound. So this step reads the
+      # clock as well. Without it an install that hung would satisfy its own control and leave
+      # the job green, where before those bounds the same hang held the job to its own ceiling,
+      # which cancels it and fails ci-ok, so somebody looked.
+      - name: Check all eight installs with nowhere to go failed, and failed in their own time
+        env:
+          CRANE: ${{ steps.base-crane.outcome }}
+          CHANGIE: ${{ steps.base-changie.outcome }}
+          JJ: ${{ steps.base-jj.outcome }}
+          BUN: ${{ steps.base-bun.outcome }}
+          ELAN: ${{ steps.base-elan.outcome }}
+          UV: ${{ steps.base-uv.outcome }}
+          PULUMI_DOCKER: ${{ steps.nowhere-pulumi-docker.outcome }}
+          PULUMI_CLI: ${{ steps.base-pulumi.outcome }}
+          CRANE_AT: ${{ steps.mark-base-crane.outputs.at }}
+          CHANGIE_AT: ${{ steps.mark-base-changie.outputs.at }}
+          JJ_AT: ${{ steps.mark-base-jj.outputs.at }}
+          BUN_AT: ${{ steps.mark-base-bun.outputs.at }}
+          ELAN_AT: ${{ steps.mark-base-elan.outputs.at }}
+          UV_AT: ${{ steps.mark-base-uv.outputs.at }}
+          PULUMI_DOCKER_AT: ${{ steps.mark-nowhere-pulumi-docker.outputs.at }}
+          PULUMI_CLI_AT: ${{ steps.mark-base-pulumi.outputs.at }}
+        run: |
+          set -euo pipefail
+          echo "a merge base from before this change reads none of the CI_TOOLS_* seams, so each of these installs has the one source it always had: the release asset this fault holds for crane, changie, jj, bun, elan and uv, and get.pulumi.com, which this job does not fault, behind the dead proxy the pulumi step carries for that reason"
+          echo "a base that reads the seams — this tree on a workflow_dispatch, and every base once this change is on main — is sent by the dead ports above to something nothing listens on, and that is what fails them instead; the docker provider plugin, which the merge base has no action for, is the head's own action with its second source on a dead port, and that control states the same property without reading the base tree at all"
+          wrong=""
+          for pair in "crane:$CRANE" "changie:$CHANGIE" "jj:$JJ" "bun:$BUN" "elan:$ELAN" "uv:$UV" "pulumi-docker:$PULUMI_DOCKER" "pulumi-cli:$PULUMI_CLI"; do
+            echo "  the install with nowhere to go for ${pair%%:*} ended in ${pair#*:}"
+            [ "${pair#*:}" = failure ] || wrong="$wrong ${pair%%:*}"
+          done
+          if [ -n "$wrong" ]; then
+            echo "::error::the install with nowhere to go for$wrong served bytes with its primary behind the fault or behind a dead proxy and its second source pointed at a dead port, so it read something this job did not serve — a cache, a tool the runner image carries, or a request that went around the proxy — and the passes below would then say nothing about the second source" >&2
+            exit 1
+          fi
+          # Each install's own window: from its own mark to the mark of the install after it,
+          # and for the last of them to this step's own time. No install here may reach the
+          # seconds .github/scripts/ci-tools-proof.sh holds every timed install to, which
+          # this step reads from that script rather than writing the number again: the rig holds
+          # the sixteen corrupted cases below to that same bound, and a bound written in two
+          # places is a bound that drifts, with the job then refusing two different things.
+          # INSTALL_BOUND in that script is where the number lives, and the comment on it says
+          # why it is the number it is. A window also names the install that hung.
+          # A mark this step cannot read as a number is refused before any arithmetic, the way
+          # `report` refuses a case whose mark holds no `started=`: a window read with no clock
+          # is exactly the window the clock exists to catch, so it may not pass quietly. Left to
+          # the arithmetic below, an empty mark reads as a large negative number, which is under
+          # the bound, and then stops the loop on the empty operand with the step exiting 0 and
+          # seven of the eight windows never read.
+          # A bound this step cannot read is refused too, for a different reason, since the step
+          # would fail either way: driven with the guard taken out, an empty bound leaves
+          # `[ "$seconds" -lt "" ]` failing on every window, so all eight land in `slow` and the
+          # step exits 1 saying they `took  seconds or more`. That reading sends a reader to the
+          # eight installs, which did nothing wrong, instead of to the rig that answered
+          # nothing. The guard buys the right name, not the failure.
+          bound=$(.github/scripts/ci-tools-proof.sh install-bound)
+          case "$bound" in
+            '' | *[!0-9]*)
+              echo "::error::.github/scripts/ci-tools-proof.sh install-bound answered '${bound:-nothing}', which is no whole number of seconds, so this step has no bound to hold these eight installs to; the bound is INSTALL_BOUND in that script, written there once and read here, and this step holds no number of its own to fall back on" >&2
+              exit 1
+              ;;
+          esac
+          echo "no install with nowhere to go may reach the ${bound}s .github/scripts/ci-tools-proof.sh holds every timed install to"
+          previous=""
+          slow=""
+          unreadable=""
+          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT"; do
+            case "${pair#*:}" in
+              '' | *[!0-9]*) unreadable="$unreadable ${pair%%:*}" ;;
+            esac
+          done
+          if [ -n "$unreadable" ]; then
+            echo "::error::the mark of the install with nowhere to go for$unreadable holds no whole number of seconds, so this step cannot tell how long that install took, and that reading is the one thing that tells an install the runner ended at its own timeout-minutes from an install that failed for the reason this control names; the mark is one echo into \$GITHUB_OUTPUT by the step before that install, so read this job's step record for it" >&2
+            exit 1
+          fi
+          for pair in "crane:$CRANE_AT" "changie:$CHANGIE_AT" "jj:$JJ_AT" "bun:$BUN_AT" "elan:$ELAN_AT" "uv:$UV_AT" "pulumi-docker:$PULUMI_DOCKER_AT" "pulumi-cli:$PULUMI_CLI_AT" "this check:$(date +%s)"; do
+            if [ -n "$previous" ]; then
+              seconds=$(( ${pair#*:} - ${previous#*:} ))
+              echo "  the install with nowhere to go for ${previous%%:*} took ${seconds}s"
+              [ "$seconds" -lt "$bound" ] || slow="$slow ${previous%%:*}"
+            fi
+            previous=$pair
+          done
+          if [ -n "$slow" ]; then
+            echo "::error::the install with nowhere to go for$slow took ${bound} seconds or more, which no timed install does, so the runner ended that step at its own timeout-minutes rather than the step failing for the reason this control names: a step the runner ends leaves outcome=failure behind it, which the test above accepts, so the wall time is the only reading that tells the two apart; read the step record of this job (gh api repos/<owner>/<repo>/actions/jobs/<id> --jq .steps[]) for the step that ran to its bound, and its log for 'The action has timed out.'" >&2
+            exit 1
+          fi
+
+      # The head's own installs, under the same fault and with no continue-on-error: each must
+      # succeed, and the seven whose primary the fault holds do it through the second source
+      # their row names, with no seam of any kind. The Pulumi CLI, whose primary this fault does
+      # not hold, is read by the case at the end of this list instead.
+      # install-jj meets an empty mise data directory here, since nothing warmed one before the
+      # fault: its `mise install` must reach the release asset mise fetches jj from, which the
+      # fault holds, so that install fails and the action reads the copy. This step is therefore
+      # the proof of jj's second source itself, rather than a warm directory answering for it.
+
+      # This install is the one case that keeps the pinned ladder, and the ladder-report step
+      # at the end of this job reads the measurement it leaves.
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_PROOF_FULL_LADDER: crane-head
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-changie
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-jj
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+
+      # elan's release asset is behind the fault, so this install must read the copy its row
+      # names. The removal before it is the one every elan step carries, for the reason the
+      # control above says.
+      - name: Take elan away, so the faulted install must read the copy
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-elan
+
+      # uv's release tarball is behind the fault, so this install must read the wheel PyPI
+      # serves, which packages the same binary. Another provider and not another GitHub host is
+      # the whole reason that row's second source is PyPI.
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-uv
+
+      # The docker provider plugin's release asset is behind the fault, so this install must
+      # read get.pulumi.com, which serves that tarball byte for byte. The step carries an id
+      # because the reading below is of the tarball it hands back.
+      - id: docker-plugin
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+
+      # The Pulumi CLI's own fallback, which is a case rather than a plain install: its primary
+      # is get.pulumi.com, and this job does not fault that host, so the seam puts the primary
+      # on a dead port and the install must read its second source — the pulumi/pulumi release
+      # asset, served here by the origin from the bytes `stage` fetched from that very release
+      # before the fault and held to the row's digest.
+      # It is the origin and not the real github.com because this job faults github.com for
+      # every step after the fault started: inside this job the origin is what can serve a
+      # `github-release` second source at all, and what it serves is that release's own bytes,
+      # staged and verified.
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-pulumi
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+
+      - name: Check every tool is the version its row pins
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          proof=.github/scripts/ci-tools-proof.sh
+          wrong=""
+          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
+          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
+          "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
+          "$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"
+          "$proof" version-answers uv "$("$LEGION_TEST_UV" --version)" || wrong="$wrong uv"
+          "$proof" version-answers pulumi-cli "$(pulumi version)" || wrong="$wrong pulumi-cli"
+          # The docker provider plugin prints no version of its own: nothing is installed, and
+          # what the action hands back is the tarball the live tests are given. Its reading is
+          # therefore the row's own digest, read by the one digest reader of this repository.
+          # The name of that tarball is no reading at all: install-docker-plugin builds it
+          # from `ci_tools_field pulumi-docker version`, the field this step would compare it
+          # with, so the two cannot disagree. What holds the name to the constant the live
+          # tests read is .github/scripts/check-ci-tools.sh, in lint.
+          # A digest is no version, so this keeps its own word as the bunx reading does rather
+          # than joining the list below, whose sentence is about versions.
+          plugin=read
+          tarball="${{ steps.docker-plugin.outputs.tarball }}"
+          echo "pulumi-docker is the tarball $tarball, and its row pins $(ci_tools_field pulumi-docker version)"
+          ci_tools_verify pulumi-docker "$tarball" "the docker provider plugin tarball this job installed" ||
+            plugin=refused
+          # The name that Bun install must have left beside the bun one of those lines read. It
+          # is a reading of its own and not one more version-answers line because what can be
+          # missing here is the name rather than the version: npm serves the binary alone, so a
+          # faulted install that left no bunx behind answers every reading above and fails at
+          # the first bunx a later job runs. The verb prints which of the three things it reads
+          # — the name, the version, the bytes — was wrong, so this keeps its own word and does
+          # not join the list below, whose sentence is about versions.
+          bunx=read
+          "$proof" installed-bunx || bunx=refused
+          # The other half of every reading above: how many requests to github.com the fault
+          # proxy refused since the probe, and which. A version says which tool is here and a
+          # digest says it is the pinned one; neither can say that the first source did not
+          # serve it, because a row's two sources are one binary by design. The 504s say it.
+          refusals=read
+          "$proof" refusals github.com || refusals=refused
+          if [ -n "$wrong" ]; then
+            echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
+          fi
+          if [ -n "$wrong" ] || [ "$plugin" = refused ] || [ "$bunx" = refused ] || [ "$refusals" = refused ]; then
+            exit 1
+          fi
+
+      # The sixteen corrupted payloads, one case at a time: the rig says which rows the origin
+      # serves with one byte changed, the install meets them through the seams the case's
+      # own env: names, and the report after it is what passes or fails this job.
+      #
+      # Case 1 of 16: crane's primary serves one byte changed, and the second source must stay
+      # untried — a digest mismatch is a supply-chain signal, never a reason to read elsewhere.
+      - name: Corrupt crane for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt crane
+
+      - id: crane-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the crane-primary case
+        run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --row crane --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 2 of 16: crane's second source serves one byte changed, after the primary — the real
+      # host, which the fault holds — did not serve them at all.
+      - name: Corrupt crane for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt crane
+
+      - id: crane-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-crane
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the crane-second-source case
+        run: .github/scripts/ci-tools-proof.sh report crane-second-source --outcome ${{ steps.crane-second-source.outcome }} --row crane --expect-source ghcr-mirror
+
+      # Case 3 of 16: changie's primary serves one byte changed.
+      - name: Corrupt changie for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt changie
+
+      - id: changie-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-changie
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the changie-primary case
+        run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --row changie --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 4 of 16: changie's second source serves one byte changed.
+      - name: Corrupt changie for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt changie
+
+      - id: changie-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-changie
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the changie-second-source case
+        run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
+
+      # Case 6 of 16: the copy of the jj binary serves one byte changed, with mise unable to
+      # install the tool at all.
+      # Its data directory goes, so `mise install` must reach the faulted host and fails, which
+      # is what sends the action to the second source. Only jj is corrupted, so the action's own
+      # mise fetch still serves from the origin.
+      # Case 5, which ran before the fault, left ~/.local/bin/jj as it found it: install-jj
+      # verifies the binary where mise put it and copies only after that passes, so a refused
+      # jj never reaches that path.
+      - name: Corrupt the jj copy for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt jj
+
+      - name: Remove mise's data directory, so its install must reach the faulted host
+        run: |
+          set -euo pipefail
+          rm -rf "$HOME/.local/share/mise"
+          echo "$HOME/.local/share/mise is gone, so mise must install jj rather than find it installed"
+
+      - id: jj-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the jj-second-source case
+        run: .github/scripts/ci-tools-proof.sh report jj-second-source --outcome ${{ steps.jj-second-source.outcome }} --row jj --expect-source ghcr-mirror
+
+      # Case 7 of 16: the installed Bun is one byte changed and still answers the pinned revision,
+      # so setup-bun's third step takes the branch that installs nothing — a Bun of the pinned
+      # version is already at ~/.bun/bin/bun, and the first step found it there, so the word this
+      # one writes for it is `existing-install` — and the fourth step refuses those bytes.
+      # Measured on 2026-11-08: the 107308936-byte binary of the bun-linux-x64 row answers
+      # `--revision 1.4.4+38afee6c8` with its final byte changed, as it does whole, so the
+      # branch this case needs is the branch it takes. The step below reads that answer again
+      # and refuses the case rather than proving another one, should a later Bun read its own
+      # last byte.
+      - name: Corrupt nothing at the origin for the bun-primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt
+
+      - name: Change the last byte of the installed Bun
+        run: |
+          set -euo pipefail
+          .github/scripts/ci-tools-proof.sh flip-last-byte "$HOME/.bun/bin/bun"
+          revision=$("$HOME/.bun/bin/bun" --revision)
+          pinned=$(tr -d '[:space:]' < .bun-version)
+          echo "the changed binary answers --revision $revision, and .bun-version pins $pinned"
+          if [ "${revision%%+*}" != "$pinned" ]; then
+            echo "::error::the changed Bun no longer answers the pinned version, so setup-bun would take its npm branch and this case would read something else" >&2
+            exit 1
+          fi
+
+      - id: bun-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+
+      - name: Read the bun-primary case
+        run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
+
+      # Case 8 of 16: with no Bun of the pinned version on this runner, setup-bun's third step
+      # must read the second source, and the npm package serves one byte changed.
+      # This case takes the pair away itself rather than leaning on the case before it. That
+      # case's refusal does remove the bun and the bunx it refused from ~/.bun/bin — setup-bun's
+      # fourth step says so — but a case that must read the second source is held to its own
+      # state and not to the one the case before it happened to leave.
+      - name: Take any Bun away, so the second source must serve this case
+        run: rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+
+      - name: Corrupt the Bun package for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt bun-linux-x64
+
+      - id: bun-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/setup-bun
+        env:
+          CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
+
+      - name: Read the bun-second-source case
+        run: .github/scripts/ci-tools-proof.sh report bun-second-source --outcome ${{ steps.bun-second-source.outcome }} --row bun-linux-x64 --expect-source npm
+
+      # Case 9 of 16: elan's primary serves one byte changed, and the copy must stay untried.
+      - name: Take elan away for its primary case
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - name: Corrupt elan for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt elan
+
+      - id: elan-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-elan
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the elan-primary case
+        run: .github/scripts/ci-tools-proof.sh report elan-primary --outcome ${{ steps.elan-primary.outcome }} --row elan --expect-source github-release --expect-untried ghcr-mirror
+
+      # Case 10 of 16: elan's copy serves one byte changed, after the primary — the real host,
+      # which the fault holds — did not serve them at all.
+      - name: Take elan away for its second-source case
+        run: rm -rf "$RUNNER_TEMP/elan" "$RUNNER_TEMP/elan-init"
+
+      - name: Corrupt elan for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt elan
+
+      - id: elan-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-elan
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the elan-second-source case
+        run: .github/scripts/ci-tools-proof.sh report elan-second-source --outcome ${{ steps.elan-second-source.outcome }} --row elan --expect-source ghcr-mirror
+
+      # Case 11 of 16: uv's primary serves one byte changed, and PyPI must stay untried.
+      # What the changed byte trips here is the row's `primary_digest`, the sha256 of the
+      # tarball GitHub serves, which is read before the binary is taken out of it: the row's own
+      # `digest` is of that binary, so the archive carries a digest of its own and this is the
+      # refusal this case is about.
+      - name: Corrupt uv for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt uv
+
+      - id: uv-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-uv
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the uv-primary case
+        run: .github/scripts/ci-tools-proof.sh report uv-primary --outcome ${{ steps.uv-primary.outcome }} --row uv --expect-source github-release --expect-untried pypi
+
+      # Case 12 of 16: PyPI's wheel serves one byte changed, after the primary — the real host,
+      # which the fault holds — did not serve the tarball at all.
+      # The byte the origin changes here is inside the wheel's own member, and the rig says
+      # why: a zip's last byte is in its end-of-directory record, which a reader taking a
+      # member out never looks at, so a wheel changed there would hand the pinned binary back
+      # whole and this case would install it. The member is what this row's digest answers for.
+      # A corrupted wheel is then refused when its member is read and not by the digest:
+      # python3's zipfile hands over no member whose CRC-32 the archive's own header no longer
+      # matches. .github/scripts/ci-tools.sh says that in the words of what it is — the bytes
+      # that address served are not a readable archive of what this row pins, quoting what
+      # python3 reported — and not as a member the archive does not hold, which is the other
+      # way a member can fail to come out and a different thing to tell a reader.
+      # The bun npm case meets the same byte differently: there the change breaks the gzip
+      # framing, and `tar -xzO` answers a damaged stream, an absent member and a destination
+      # that filled up with one exit, so that refusal names no cause at all — it names the
+      # member and the archive and leaves tar's own words on stderr to say why.
+      # Either way nothing unverified is installed, which is what the case is for.
+      - name: Corrupt uv for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt uv
+
+      - id: uv-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-uv
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the uv-second-source case
+        run: .github/scripts/ci-tools-proof.sh report uv-second-source --outcome ${{ steps.uv-second-source.outcome }} --row uv --expect-source pypi
+
+      # Case 13 of 16: the docker provider plugin's release asset serves one byte changed, and
+      # get.pulumi.com must stay untried.
+      - name: Corrupt the docker provider plugin for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
+
+      - id: pulumi-docker-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+        env:
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the pulumi-docker-primary case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-docker-primary --outcome ${{ steps.pulumi-docker-primary.outcome }} --row pulumi-docker --expect-source github-release --expect-untried pulumi-releases
+
+      # Case 14 of 16: get.pulumi.com serves the plugin's tarball with one byte changed, after
+      # the release asset — the real host, which the fault holds — did not serve it at all.
+      # Pulumi serves one file at both addresses, so the origin serves one payload under one
+      # name on its two routes, and which route a case read is what its report prints.
+      - name: Corrupt the docker provider plugin for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-docker
+
+      - id: pulumi-docker-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-docker-plugin
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+
+      - name: Read the pulumi-docker-second-source case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-docker-second-source --outcome ${{ steps.pulumi-docker-second-source.outcome }} --row pulumi-docker --expect-source pulumi-releases
+
+      # Case 15 of 16: the Pulumi CLI's primary serves one byte changed, and the release asset
+      # must stay untried. This row's two sides are the four cases above reversed: its primary
+      # is get.pulumi.com, so the seam that puts a corrupted primary in front of it is the URL
+      # one, and the GitHub seam is here so that the untried reading is a reading: with it the
+      # origin can serve this row's second source, and what the case says is that it was never
+      # asked to. Without it that source would be the faulted real host, which answers nothing
+      # whether the rule holds or not.
+      - name: Corrupt the Pulumi CLI for its primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
+
+      - id: pulumi-cli-primary
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-pulumi
+        env:
+          CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+
+      - name: Read the pulumi-cli-primary case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-cli-primary --outcome ${{ steps.pulumi-cli-primary.outcome }} --row pulumi-cli --expect-source pulumi-releases --expect-untried github-release
+
+      # Case 16 of 16: the Pulumi CLI's second source, the pulumi/pulumi release asset, serves
+      # one byte changed, after its primary found a dead port where get.pulumi.com is.
+      # The dead port and not the fault, because this job leaves get.pulumi.com alone; the
+      # origin stands in for the release asset, as it does in the install that must succeed
+      # above, and here it serves those bytes with one changed.
+      - name: Corrupt the Pulumi CLI for its second-source case
+        run: .github/scripts/ci-tools-proof.sh corrupt pulumi-cli
+
+      - id: pulumi-cli-second-source
+        continue-on-error: true
+        timeout-minutes: 11
+        uses: ./.github/actions/install-pulumi
+        env:
+          CI_TOOLS_URL_BASE: http://127.0.0.1:1
+          CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
+
+      - name: Read the pulumi-cli-second-source case
+        run: .github/scripts/ci-tools-proof.sh report pulumi-cli-second-source --outcome ${{ steps.pulumi-cli-second-source.outcome }} --row pulumi-cli --expect-source github-release
+
+      # What this runner holds after the sixteen refusals, said plainly: no corrupted byte was
+      # installed, and what the installs themselves left is what this step reads.
+      # .github/scripts/ci-tools.sh verifies the bytes before it puts them at their destination,
+      # so every refused fetch above left nothing behind, and the two installs that meet a
+      # binary a third party put there refuse it without leaving it either. install-jj verifies
+      # the binary where mise left it and copies to ~/.local/bin/jj only after that passes, so
+      # the jj here is the pinned one the head's own install under the fault wrote and neither
+      # jj case moved it. setup-bun removes the bun and the bunx it refused from ~/.bun/bin,
+      # which is on this job's PATH, so the bun-primary case took away the Bun it refused; the
+      # case after it took that pair away again before its own install and then refused the npm
+      # bytes before anything was written in their place: this runner ends with no bun at all.
+      # crane and changie are held to the version they answer, because their rows pin the release
+      # tarball rather than the binary inside it; jj is held to its row's own digest, which is of
+      # the installed binary.
+      - name: Print what every tool answers now
+        run: |
+          set -euo pipefail
+          # shellcheck source=.github/scripts/ci-tools.sh
+          . .github/scripts/ci-tools.sh
+          proof=.github/scripts/ci-tools-proof.sh
+          wrong=""
+          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
+          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
+          ci_tools_verify jj "$HOME/.local/bin/jj" "the tool this job leaves on the runner" || wrong="$wrong jj"
+          for taken in "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"; do
+            if [ -e "$taken" ]; then
+              echo "::error::$taken is still here, and no case of this job may leave one: the bun-primary case's refusal takes the binary it refused away, and the bun-second-source case's refusal writes none in its place, so a bun here is a refused binary on the PATH of every later step" >&2
+              wrong="$wrong $taken"
+            else
+              echo "$taken is gone: the bun-primary case's refusal took it away, the case after it took the pair away again before its own install, and that case refused the corrupted package before it wrote anything there"
+            fi
+          done
+          if [ -n "$wrong" ]; then
+            echo "::error::$wrong is not what this job must leave on this runner, so one of the sixteen refusals did not hold; the lines above say which reading was wrong" >&2
+            exit 1
+          fi
+          echo "every tool on this runner is its row's pinned bytes and the refused bun is gone: not one of the sixteen corrupted payloads was installed"
+
+      # The reading of what the stand-in curl measured, before the fault stops, so that its own
+      # refusal is this job's. It refuses the job for a stand-in that never reached PATH, which
+      # leaves an empty log; for a job where no case kept the pinned ladder, or where more than
+      # one did; for a kept measurement outside the window the rig holds it to; for more
+      # fetches carrying CI_TOOLS_PROOF_FULL_LADDER than the bound the rig holds that count to,
+      # which is a second step's `env:` carrying that variable, or a kept case that makes more
+      # requests than it did; for a fetch that stayed on the ladder, spent one and then
+      # failed, which is a fault shape the stand-in's rule did not recognise; and for a fetch
+      # the stand-in shortened that then served the bytes, which is the reading that holds the
+      # shorten-ladder step at its position. Every run of it that reads the log through prints
+      # that count beside the bound, whether the reading passes or refuses.
+      - name: Read what the stand-in curl measured of every fetch
+        run: .github/scripts/ci-tools-proof.sh ladder-report
+
+      # `always()`, because the reading a reader wants most is the one from a job that failed.
+      - name: Report what this job ran on
+        if: always()
+        run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
+
+      # The proxy stops with this job, and the steps after this one must not be routed through
+      # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
+      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # wrote the proxy ones.
+      - name: Stop routing this job through the fault
+        if: always()
+        run: .github/scripts/ci-tools-proof.sh stop-fault
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tool-fallback
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -1,0 +1,36 @@
+# The two passages of docs/site/src/content/docs/legion/running-legion.md that say what the
+# waiting-line block of `legion state` prints, copied here verbatim: the block of the guide's own
+# sample, and the sentence naming the two lines that block takes instead - the one it prints while
+# nothing waits, and the one for a daemon that served this caller no sentence at all. cmd/legion's
+# TestTheShippedWordsNameTheWaitingLineBlock renders all four lines and finds them here. The
+# header carries none of the four itself, on purpose, so that no line can be found in the words
+# about the copy rather than in the guide's own.
+#
+# The check is in two halves, because a test that reads the guide puts the guide in its job's
+# filter - a declared read applies to every compiled source file of a run - and a documentation
+# edit would then start the whole daemon Go lane. The product half is that test, which builds
+# each line from the state the guide describes; packages/daemon/internal/textcheck's
+# TestTheWaitingLineBlockExtractIsTheGuidesWaitingLineBlock holds each passage below to the guide
+# itself, in the job whose subject is a file's words (INFRA-1413). Neither half alone is the
+# guarantee: a sample corrected in the guide alone fails the text-check half, and a renderer that
+# stopped printing one of the four lines fails the product half.
+#
+# This is a copy of its own rather than more lines of awaiting_summary_extract.txt, which quotes
+# the same sample, because the guide keeps these two passages thirty lines apart: one copy of one
+# contiguous passage cannot hold both, and a quotation spanning them would hold two paragraphs
+# neither test says anything about byte for byte, failing on every reword of them. So the sample's
+# three lines are quoted in two copies of one guide, and the text-check half holds both to it: an
+# edit of the sample fails both, and both are repasted in the commit that makes it.
+#
+# The format: a line `# <path>` opens one passage of that file, and every line under it, to the
+# next such line, is that passage's own bytes, indentation included.
+
+# docs/site/src/content/docs/legion/running-legion.md
+  waiting line: 2
+    WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
+    WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
+
+# docs/site/src/content/docs/legion/running-legion.md
+  `waiting line: none` while nothing waits, and
+  `waiting line: the daemon sent no reasons at this caller's contract` where the daemon served
+  this caller no sentence at all, which is what a daemon older than the sentence serves.

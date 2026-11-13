@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,13 +26,30 @@ import (
 // migration, which ships the block with the migration itself, and a fenced block of
 // docs/kubernetes.md, which is where an operator reads it at a rollback. The header is the
 // source — upgradeRecoveryReadsAnswer runs the block that file carries, as the one transaction
-// an operator runs — and the guide's copy is held to it by
-// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide.
+// an operator runs — and the guide's copy is held to it in two halves.
+//
+// This half does not read the guide. It reads upgrade_way_back_extract.txt, this package's own
+// copy of the guide's block, which TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide
+// holds to the header and internal/textcheck's TestTheWayBackExtractIsTheGuidesWayBackBlock
+// holds equal to the block the guide carries. The split is what takes docs/kubernetes.md out of
+// this job's filter: a declared read applies to every compiled source file of a run, so a test
+// that reads the guide starts the whole daemon Go lane on a documentation-only edit however the
+// run selects it, and only a test that does not read it at all stops doing that.
+//
+// Finding the block in the guide — the fenced block holding the one line only this rollback's
+// block holds, wherever the edits above it move it — is that other test's job, on the guide
+// itself. None of it is parsed here: this file reads a `#` header and the bytes under it, which
+// is all the extract is.
 const (
-	// wayBackMigrationFile and wayBackGuideFile are the two paths the failures below print, so a
-	// failing run names the file to open rather than the text alone.
+	// wayBackMigrationFile is the path the failures below print for the header, so a failing run
+	// names the file to open rather than the text alone.
 	wayBackMigrationFile = "internal/store/migrations/20261111225552_phase_entry.up.sql"
-	wayBackGuideFile     = "docs/kubernetes.md"
+	// wayBackExtract is read from this package's own directory, where the file sits beside the
+	// code it is about and needs no declared read of its own.
+	wayBackExtract = "upgrade_way_back_extract.txt"
+	// wayBackGuideFile is the guide the extract copies. The failures below name it, so a failing
+	// run says whose words the copy is; nothing here reads it.
+	wayBackGuideFile = "docs/kubernetes.md"
 	// wayBackHeredoc opens the block in both files and wayBackTerminator closes it. What stands
 	// between them is what psql reads on its standard input, which is the transaction
 	// upgradeRecoveryReadsAnswer sends in one exec.
@@ -150,40 +165,35 @@ func wayBackRecovery(t *testing.T, block string) string {
 	return recovery
 }
 
-// wayBackBlockOfTheGuide is the same block as docs/kubernetes.md carries it: the content of the
-// fenced block that deletes this migration's version row. The guide carries a psql heredoc for
-// several contracts' rollbacks, so the fence is found by the one line only this rollback's block
-// holds rather than by its place in the document, which every edit above it moves.
-func wayBackBlockOfTheGuide(t *testing.T) string {
+// wayBackBlockOfTheExtract is the same block as upgrade_way_back_extract.txt copies it out of
+// docs/kubernetes.md: every byte under the blank line that ends the file's `#` header. The parse
+// is a cut and shares no code with the fence reading that holds the file to the guide: two
+// readers that agree with each other while both drift are what a copy of a document is most at
+// risk of.
+//
+// Every failure here stops the test by name, because a check that cannot find what it means to
+// read is a check that passes while reading nothing: a file that cannot be read, a header with
+// no blank line under it and a copy with nothing under its header each name the file.
+func wayBackBlockOfTheExtract(t *testing.T) string {
 	t.Helper()
-	// The guide is at the repository root, four directories above this package. A read that
-	// fails stops the test rather than skipping it: an absence here would read exactly like a
-	// pass, and what this check guards is the copy an operator runs at a rollback.
-	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", wayBackGuideFile))
+	text, err := os.ReadFile(wayBackExtract)
 	if err != nil {
-		t.Fatalf("read %s: %v", wayBackGuideFile, err)
+		t.Fatalf("read %s: %v", wayBackExtract, err)
 	}
-	mark := fmt.Sprintf("delete from schema_version where version = %d;", phaseEntryMigration)
-	var block []string
-	inside := false
-	for _, line := range strings.Split(string(doc), "\n") {
-		switch {
-		case !strings.HasPrefix(line, "```"):
-			if inside {
-				block = append(block, line)
-			}
-		case !inside:
-			inside, block = true, nil
-		default:
-			if slices.Contains(block, mark) {
-				return strings.Join(block, "\n") + "\n"
-			}
-			inside = false
-		}
+	body := string(text)
+	for strings.HasPrefix(body, "#") {
+		_, body, _ = strings.Cut(body, "\n")
 	}
-	t.Fatalf("%s carries no fenced block holding %q: that block is the way back an operator runs, and it is held to the block %s carries in its header",
-		wayBackGuideFile, mark, wayBackMigrationFile)
-	return ""
+	body, ended := strings.CutPrefix(body, "\n")
+	if !ended {
+		t.Fatalf("%s carries no blank line under its `#` header: that line is what ends the header, and every byte under it is the copy of %s's block",
+			wayBackExtract, wayBackGuideFile)
+	}
+	if strings.TrimSpace(body) == "" {
+		t.Fatalf("%s carries nothing under its header: its copy of %s's way back is gone, and the block %s carries in its header is being held to nothing",
+			wayBackExtract, wayBackGuideFile, wayBackMigrationFile)
+	}
+	return body
 }
 
 // TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide holds the way back's two copies to
@@ -192,39 +202,42 @@ func wayBackBlockOfTheGuide(t *testing.T) string {
 // and a copy that drifted is a wrong procedure found at a rollback, with the daemon stopped and
 // the store half-migrated. The header is the source, and upgradeRecoveryReadsAnswer runs it as
 // the one transaction an operator runs; what this adds is that the guide says the same thing as
-// the block that run proves.
+// the block that run proves. It says so through the guide's copy, upgrade_way_back_extract.txt:
+// this test holds the copy to the header byte for byte, and internal/textcheck's
+// TestTheWayBackExtractIsTheGuidesWayBackBlock holds it to the guide. Neither half alone is the
+// guarantee: together they are the one this test gave while it read the guide itself.
 func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 	header := wayBackBlockOfTheHeader(t)
 	// The shape of the block is read here as well as where it runs, so a header broken in a tree
 	// with no database still fails this check by name rather than passing it unread.
 	wayBackRecovery(t, header)
-	guide := wayBackBlockOfTheGuide(t)
-	if header == guide {
+	copied := wayBackBlockOfTheExtract(t)
+	if header == copied {
 		return
 	}
-	t.Fatalf("the way back's block differs between %s and %s:\n%s",
-		wayBackMigrationFile, wayBackGuideFile, wayBackBlockDifference(header, guide))
+	t.Fatalf("the way back's block differs between %s and %s, the copy of %s's block committed beside this package:\n%s",
+		wayBackMigrationFile, wayBackExtract, wayBackGuideFile, wayBackBlockDifference(header, copied))
 }
 
 // wayBackBlockDifference renders the lines the two copies disagree on, each with its number
 // inside the block, so a failing run names the edit to make rather than two blocks to compare by
 // eye.
-func wayBackBlockDifference(header, guide string) string {
+func wayBackBlockDifference(header, extract string) string {
 	headerLines := strings.Split(strings.TrimSuffix(header, "\n"), "\n")
-	guideLines := strings.Split(strings.TrimSuffix(guide, "\n"), "\n")
+	extractLines := strings.Split(strings.TrimSuffix(extract, "\n"), "\n")
 	var difference strings.Builder
-	for i := range max(len(headerLines), len(guideLines)) {
+	for i := range max(len(headerLines), len(extractLines)) {
 		held, copied := "", ""
 		if i < len(headerLines) {
 			held = headerLines[i]
 		}
-		if i < len(guideLines) {
-			copied = guideLines[i]
+		if i < len(extractLines) {
+			copied = extractLines[i]
 		}
 		if held == copied {
 			continue
 		}
-		fmt.Fprintf(&difference, "line %d:\n\theader: %q\n\tguide:  %q\n", i+1, held, copied)
+		fmt.Fprintf(&difference, "line %d:\n\theader:  %q\n\textract: %q\n", i+1, held, copied)
 	}
 	return difference.String()
 }
@@ -240,11 +253,12 @@ func wayBackBlockDifference(header, guide string) string {
 // protocol refuses, so the exec names the simple protocol a psql run uses
 // (pgx.QueryExecModeSimpleProtocol). Running the operator's own artifact is the point of reading
 // it rather than copying it: the eleven have one source, so a header edited without this test,
-// or a guide edited away from the header
-// (TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide), is a failing check rather than a
-// wrong procedure found at a rollback, with the daemon stopped and the store half-migrated. What
-// stands outside the transaction is the psql line alone: ON_ERROR_STOP is psql's own, and a pool
-// runs no shell.
+// or a guide edited away from the header (TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide
+// over the guide's committed copy, and internal/textcheck's
+// TestTheWayBackExtractIsTheGuidesWayBackBlock over the guide itself), is a failing check rather
+// than a wrong procedure found at a rollback, with the daemon stopped and the store half-migrated.
+// What stands outside the transaction is the psql line alone: ON_ERROR_STOP is psql's own, and a
+// pool runs no shell.
 //
 // The three reads copied below are commit fbe970ee's, the release that declared contract 85:
 // its claim read (internal/store/claims.go, claimSelect), which joins the pending delivery and
