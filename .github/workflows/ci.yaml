@@ -4880,7 +4880,7 @@ jobs:
     #
     #   call              slowest package       limit  fills    read in
     #   the package list  pmdoc 511.6 s          18m   47.4 %   run 43120324547, job 130874347417
-    #   race-impossible   docs 261.2 s            9m   48.4 %   run 43507133544
+    #   race-impossible   docs 292.1 s           10m   48.7 %   run 43519308059
     #   pgmigrate         pgmigrate 299.3 s      10m   49.9 %   run 43129905604
     #   shutdown          cmd/dispatch 67.3 s     3m   37.4 %   run 43021338811
     #   routes            routes 45.3 s           2m   37.8 %   run 43129905604
@@ -4894,7 +4894,7 @@ jobs:
     #
     # The package list and the race-impossible call are the two whose tests read a margin, and
     # both clear it: 18m leaves 568.4 s over pmdoc's own time, against the 60 s of its
-    # perCallReportMargin, and 9m leaves 278.8 s over the documents package's, against its 30 s
+    # perCallReportMargin, and 10m leaves 307.9 s over the documents package's, against its 30 s
     # of roomWaitMargin. At 4 minutes the race-impossible call failed that floor and said so
     # itself, in both arms of run 42577832967: "the test binary's deadline leaves 20.769s, not
     # more than roomWaitMargin (30s): this looks like a misconfigured run; raise -timeout".
@@ -5305,9 +5305,9 @@ jobs:
           # envoy-go-race-api now. The one -run list is derived in
           # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
           # //go:build !race and raceEnabled, so a test added to either and missing here fails
-          # the ci-filters job naming this step. -timeout 9m: this call's slowest package is
+          # the ci-filters job naming this step. -timeout 10m: this call's slowest package is
           # internal/dispatch/docs, whose largest reading and the run it came from are in the
-          # table on this job, and the limit leaves 278.8 s above that reading, over the 30 s of
+          # table on this job, and the limit leaves 307.9 s above that reading, over the 30 s of
           # the documents package's roomWaitMargin.
           #
           # One go test over the three packages rather than one per package: go builds the three
@@ -5317,7 +5317,7 @@ jobs:
           # API package's build, with nothing running beside it (run 42307926510,
           # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
           # so running them at the same time changes no number any of them asserts on.
-          go test -json -count=1 -timeout 9m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
           impossible=$!
           # internal/pgmigrate, on a Postgres service of its own: its redaction oracle holds
           # scanl.go's transcription of PostgreSQL's scan.l to a real PostgreSQL, which is
