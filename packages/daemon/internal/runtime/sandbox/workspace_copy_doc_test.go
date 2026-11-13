@@ -76,9 +76,10 @@ func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testin
 	})
 }
 
-// The copy's cadence: both triggers, one copy of an issue in flight, no turn waiting for one, the
-// role it is asked of, where it is stored, and what a copy that fails costs. Its 5-minute bound and
-// the line a copy that was not stored writes are internal/daemon's constants, checked there.
+// The copy's cadence: its first trigger and where its period runs from, one copy of an issue in
+// flight, no turn waiting for one, the role it is asked of, where it is stored, and what a copy that
+// fails costs. Its 5-minute bound and the line a copy that was not stored writes are
+// internal/daemon's constants, checked there.
 func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 	const what = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
 	_, region := testdoc.Region(t, "docs/kubernetes.md", what, copyCadenceStart, copyCadenceEnd)

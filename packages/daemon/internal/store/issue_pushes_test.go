@@ -110,6 +110,42 @@ func TestABranchCreatedFromTheZeroShaIsRecordedAndALaterPushMovesTheRecord(t *te
 	}
 }
 
+// The record answers whether a push moved it, and the push handler asks for a copy of the
+// issue's workspace for that push alone (workflow's recordPush): a copy taken for a push that
+// moved nothing would discard the copy in flight as overtaken and buy a bundle the restore never
+// needed. The branch's creation and a push to a head the record has not seen move it and say so;
+// the same push again, a late push behind the newest, a push to an unseen head applied at an
+// earlier time, the branch's deletion and a push naming no after move nothing and say that.
+func TestAPushSaysItMovedTheRecordOnlyWhenItDid(t *testing.T) {
+	s := migratedStore(t)
+	created := time.Date(2026, 11, 13, 9, 30, 0, 0, time.UTC)
+	for i, step := range []struct {
+		name          string
+		before, after string
+		at            time.Time
+		moved         bool
+	}{
+		{name: "the branch's creation", before: noPushHead, after: "c1", at: created, moved: true},
+		{name: "a push to a head the record has not seen", before: "c1", after: "c2", at: created.Add(time.Minute), moved: true},
+		{name: "the same push applied again", before: "c1", after: "c2", at: created.Add(2 * time.Minute)},
+		{name: "a late push behind the newest", before: noPushHead, after: "c1", at: created.Add(3 * time.Minute)},
+		{name: "a push to an unseen head applied at an earlier time", before: "c2", after: "c3", at: created},
+		{name: "the branch's deletion", before: "c2", after: noPushHead, at: created.Add(4 * time.Minute)},
+		{name: "a push naming no after", before: "c2", after: "", at: created.Add(5 * time.Minute)},
+		{name: "a push past every head the record holds", before: "c3", after: "c4", at: created.Add(6 * time.Minute), moved: true},
+	} {
+		before := newestPush(t, s, "INFRA-1117")
+		moved := recordPush(t, s, "INFRA-1117", step.before, step.after, step.at)
+		after := newestPush(t, s, "INFRA-1117")
+		if moved != step.moved {
+			t.Fatalf("push %d, %s, answered moved=%t, want %t; the record went from %+v to %+v", i, step.name, moved, step.moved, before, after)
+		}
+		if changed := after.Head != before.Head || !after.At.Equal(before.At); changed != moved {
+			t.Fatalf("push %d, %s, answered moved=%t, but the record went from %+v to %+v", i, step.name, moved, before, after)
+		}
+	}
+}
+
 // The heads the record keeps are bounded per issue to the newest maxIssuePushHeads, so an issue
 // pushed for months keeps a bounded set and not one row per push it ever made. The bound drops the
 // oldest heads and keeps the newest, so a push the per-issue read can still rebuild moves nothing
@@ -123,7 +159,7 @@ func TestTheRecordKeepsTheNewestHeadsOfEachIssueUpToItsBound(t *testing.T) {
 	const pushes = maxIssuePushHeads + 44
 	if err := s.Tx(ctx, func(tx pgx.Tx) error {
 		for i := 1; i <= pushes; i++ {
-			if err := s.RecordIssuePush(ctx, tx, "INFRA-1117", head(i-1), head(i), start.Add(time.Duration(i)*time.Minute)); err != nil {
+			if _, err := s.RecordIssuePush(ctx, tx, "INFRA-1117", head(i-1), head(i), start.Add(time.Duration(i)*time.Minute)); err != nil {
 				return err
 			}
 		}

@@ -121,9 +121,9 @@ type Config struct {
 	// records none, as in every engine built without the daemon's store.
 	Pushes Pushes
 	// PushRecorded is told, once the push fact's transaction has committed, of each issue whose
-	// push it recorded: the daemon takes a copy of that issue's workspace then
-	// (workflowRuntime.copyWorkspaceAtPush), so the copy a new pod is sent is normally one taken
-	// after the push and holding it. Nil tells nobody.
+	// push moved the record Pushes keeps, and of none whose push it already held: the daemon takes
+	// a copy of that issue's workspace then (workflowRuntime.copyWorkspaceAtPush), so the copy a
+	// new pod is sent is normally one taken after the push and holding it. Nil tells nobody.
 	PushRecorded func(issue string)
 }
 

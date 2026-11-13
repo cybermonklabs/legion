@@ -637,12 +637,12 @@ func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T)
 	var copies runningCopies
 	now := time.Now()
 	for _, issue := range []string{"INFRA-1", "INFRA-2"} {
-		if !copies.begin(issue, slog.LevelWarn) {
+		if !copies.begin(issue) {
 			t.Fatalf("the cadence refused the first copy of %s", issue)
 		}
 		copies.done(issue, now.Add(-2*runningCopyPeriod))
 	}
-	if !copies.begin("INFRA-3", slog.LevelWarn) {
+	if !copies.begin("INFRA-3") {
 		t.Fatal("the cadence refused the first copy of INFRA-3")
 	}
 

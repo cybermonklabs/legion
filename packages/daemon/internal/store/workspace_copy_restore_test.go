@@ -154,14 +154,18 @@ func TestEitherSavedCopyOfAWorkspaceBundleHasOneRestoreAttemptReadToItsSecond(t 
 }
 
 // recordPush records the push of issue's branch from before to after as the workflow's push
-// handler does, in a transaction of its own.
-func recordPush(t *testing.T, s *Store, issue, before, after string, at time.Time) {
+// handler does, in a transaction of its own, and answers whether it moved the record.
+func recordPush(t *testing.T, s *Store, issue, before, after string, at time.Time) bool {
 	t.Helper()
+	var moved bool
 	if err := s.Tx(context.Background(), func(tx pgx.Tx) error {
-		return s.RecordIssuePush(context.Background(), tx, issue, before, after, at)
+		recorded, err := s.RecordIssuePush(context.Background(), tx, issue, before, after, at)
+		moved = recorded
+		return err
 	}); err != nil {
 		t.Fatalf("record the push of %s from %s to %s: %v", issue, before, after, err)
 	}
+	return moved
 }
 
 // A running copy older than the newest push of the issue's branch the daemon recorded is sent to

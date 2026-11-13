@@ -274,13 +274,17 @@ func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T
 	}
 }
 
-// Every push of an issue's branch asks for a copy of the issue's workspace, whatever the issue is
-// doing, so a push of an issue whose roles were released, or whose branch was deleted after its
-// merge, finds no live role to ask. That copy is logged at Debug: the Warn of a copy that found no
-// role is what a deployment counts of the cadence and the turn's end, and a Warn per push of every
-// released issue would bury it. The same holds for the copy such a push is owed behind a copy in
-// flight, as the per-issue read's burst of rebuilt pushes meets: it is the push's copy all the
-// same. A turn's end that finds no role is still a Warn, since that copy holds the end of a turn.
+// Every push of an issue's branch that moves its record asks for a copy of the issue's workspace,
+// whatever the issue is doing, so a push of an issue whose roles were released, or that has
+// finished, finds no live role to ask. That copy is logged at Debug: the Warn of a copy that found
+// no role is what a deployment counts of the cadence and the turn's end, and a Warn per push of
+// every released issue would bury it. The copy looks for its role before it takes the issue's one
+// place in flight, so beside a copy in flight it logs at once, and is never owed behind it.
+//
+// A copy owed behind a copy in flight that then finds no role is logged at Debug too: whatever
+// owed it found a live role before it asked, and so did the copy in flight, so the role went in
+// the moment since. A turn's end that finds no role is still a Warn, since that copy holds the end
+// of a turn.
 func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
@@ -292,8 +296,8 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 			t.Fatalf("apply the push %s..%s: %v", before, after, err)
 		}
 	}
-	// noRole waits for count lines of a copy that found no live role, and fails on any at Warn.
-	noRole := func(count int) {
+	// awaitNoRole waits for count lines of a copy that found no live role.
+	awaitNoRole := func(count int) {
 		t.Helper()
 		var lines []map[string]any
 		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
@@ -302,48 +306,84 @@ func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing
 		}) {
 			t.Fatalf("the daemon logged %d copies that found no role, want %d; it logged:\n%s", len(lines), count, rig.logs.String())
 		}
-		rig.awaitQuiet(t)
+	}
+	// allDebug fails on any line of a copy that was not stored but the no-role line at Debug.
+	allDebug := func() {
+		t.Helper()
 		for _, line := range rig.lines(t, runningCopyUnsavedLine) {
 			if line["reason"] != runningCopyNoRole || line["level"] != "DEBUG" {
-				t.Fatalf("a push's copy of an issue with no live role was logged as %v, want reason %s at DEBUG", line, runningCopyNoRole)
+				t.Fatalf("a copy of an issue with no live role was logged as %v, want reason %s at DEBUG", line, runningCopyNoRole)
 			}
 		}
+	}
+	// holdBundler makes the bundler hold each copy until the call it answers is made.
+	holdBundler := func() func() {
+		release := make(chan struct{})
+		rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return runtime.WorkspaceBundle{}, ctx.Err()
+			}
+			taken := copyRigBundle
+			taken.At = time.Now().UTC()
+			return taken, nil
+		})
+		return func() { close(release) }
+	}
+	// entry is the issue's place in the cadence as it stands.
+	entry := func() runningCopy {
+		rig.w.copies.mu.Lock()
+		defer rig.w.copies.mu.Unlock()
+		return rig.w.copies.issues[rig.issue.Key]
 	}
 
 	rig.setClaimState(t, "suspended")
 	apply("push-of-a-released-issue", "c1", "c2")
-	noRole(1)
+	awaitNoRole(1)
+	rig.awaitQuiet(t)
+	allDebug()
 	if asked := rig.bundler.reads(); len(asked) != 0 {
 		t.Fatalf("the bundler was asked %v for an issue with no live role", asked)
 	}
 
-	// A copy is in flight when the role goes and the push arrives, so the push's copy is owed
-	// behind it and runs once it ends.
+	// A copy is in flight when the role goes and the push arrives: the push's copy finds no role
+	// while that copy still holds the issue's place, and is not owed behind it.
 	rig.setClaimState(t, "idle")
-	release := make(chan struct{})
-	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
-		select {
-		case <-release:
-		case <-ctx.Done():
-			return runtime.WorkspaceBundle{}, ctx.Err()
-		}
-		taken := copyRigBundle
-		taken.At = time.Now().UTC()
-		return taken, nil
-	})
+	release := holdBundler()
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
 	rig.awaitAsks(t, 1)
 	rig.setClaimState(t, "suspended")
-	apply("push-behind-a-copy-in-flight", "c2", "c3")
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		rig.w.copies.mu.Lock()
-		defer rig.w.copies.mu.Unlock()
-		return rig.w.copies.issues[rig.issue.Key].owed
-	}) {
-		t.Fatalf("the push's copy was never owed behind the copy in flight; the daemon logged:\n%s", rig.logs.String())
+	apply("push-beside-a-copy-in-flight", "c2", "c3")
+	awaitNoRole(2)
+	if held := entry(); !held.inFlight() || held.owed {
+		t.Fatalf("the push's copy that found no role left the issue's place at %+v, want the copy in flight holding it and nothing owed", held)
 	}
-	close(release)
-	noRole(2)
+	release()
+	rig.awaitQuiet(t)
+	allDebug()
+	if asked := rig.bundler.reads(); len(asked) != 1 {
+		t.Fatalf("the bundler was asked %v, want the copy in flight alone", asked)
+	}
+
+	// A turn's end owes a copy behind a copy in flight while the role is live, and the role has
+	// gone by the time the owed copy runs.
+	rig.setClaimState(t, "idle")
+	release = holdBundler()
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.awaitAsks(t, 2)
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool { return entry().owed }) {
+		t.Fatalf("the turn's end was never owed behind the copy in flight; the daemon logged:\n%s", rig.logs.String())
+	}
+	rig.setClaimState(t, "suspended")
+	release()
+	awaitNoRole(3)
+	rig.awaitQuiet(t)
+	allDebug()
+	if asked := rig.bundler.reads(); len(asked) != 2 {
+		t.Fatalf("the bundler was asked %v, want the two copies in flight and nothing for the owed copy that found no role", asked)
+	}
 
 	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {

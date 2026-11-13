@@ -747,7 +747,10 @@ func TestARestoreSendsNoRunningCopyOlderThanTheIssuesNewestPushAndLogsThePushItW
 	}
 	pushed := rigNow.Add(-time.Minute)
 	const beforeHead, pushedHead = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
-	if err := st.Tx(ctx, func(tx pgx.Tx) error { return st.RecordIssuePush(ctx, tx, testTree, beforeHead, pushedHead, pushed) }); err != nil {
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		_, err := st.RecordIssuePush(ctx, tx, testTree, beforeHead, pushedHead, pushed)
+		return err
+	}); err != nil {
 		t.Fatalf("record the push of the issue's branch: %v", err)
 	}
 	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
@@ -796,7 +799,8 @@ func TestARestoreSendsAReleaseBundleOlderThanTheIssuesNewestPushAndItsReportDrop
 	}
 	pushed := saved.At.Add(30 * time.Second)
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		return st.RecordIssuePush(ctx, tx, testTree, "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", pushed)
+		_, err := st.RecordIssuePush(ctx, tx, testTree, "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2", pushed)
+		return err
 	}); err != nil {
 		t.Fatalf("record the push of the issue's branch: %v", err)
 	}

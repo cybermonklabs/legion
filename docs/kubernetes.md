@@ -4780,14 +4780,17 @@ An issue whose pod this rule has already released stands with no Sandbox and no 
 ### The copy of a running pod's workspace
 
 The daemon keeps a copy of each issue workspace's unpushed work outside the pod while the pod runs, so a pod the cluster ends costs its roles the work of the minutes since the last copy rather than the work of a whole turn.
-Two triggers take that copy:
-the end of each turn of the issue, and a cadence that takes one every 5 minutes while a turn of that issue runs (`runningCopyPeriod`, `packages/daemon/internal/daemon/workspace_copies.go`).
+Three triggers take that copy:
+the end of each turn of the issue, a cadence that takes one every 5 minutes while a turn of that issue runs (`runningCopyPeriod`, `packages/daemon/internal/daemon/workspace_copies.go`), and each push of the issue's branch that the daemon records (`copyWorkspaceAtPush`, the same file).
 The 5 minutes run from the end of the copy before it and not from its start, and no `legion.yaml` key changes them.
-Neither trigger copies an issue between turns:
+Neither the turn's end nor the cadence copies an issue between turns:
 the turn that ended took the copy that holds that work, and a workspace nobody writes would store the same bundle every period for as long as the pod stands.
+A push's copy can land between turns:
+a push from outside the pod, such as GitHub's "Update branch" or a person's push, and a webhook the daemon applies late arrive whatever the roles are doing, and the copy is taken then all the same, because the restore refuses a running copy taken before the newest push the daemon recorded.
 One copy of an issue is in flight at a time, since the six roles of an issue share one workspace and two bundlers in one workspace would collide.
 A turn that ends while a copy of its issue is in flight is owed one, and that copy is taken as soon as the one in flight ends:
-the copy in flight read the workspace before the turn's last work was written, and no trigger copies an issue between turns, so dropping it would leave the idle pod's newest copy short of the work its last turn ended with.
+the copy in flight read the workspace before the turn's last work was written, and neither the turn's end nor the cadence copies an issue between turns, so dropping it would leave the idle pod's newest copy short of the work its last turn ended with.
+A push's copy would hold that work too, but a pod whose roles are idle may see no push at all.
 No turn waits for a copy:
 the daemon hands each copy to a goroutine of its own, and the turn's end, the next task and the claim's own state write all go on while the copy is built.
 
@@ -4841,7 +4844,8 @@ The comparison is the copy's own time, by the clock of the node its pod ran on, 
 The time rule alone misses two copies whose `legion/<KEY>` is behind GitHub's branch or beside it, and in both it is the withheld bookmark that keeps the pushed commits on GitHub:
 a copy taken after a push from outside the pod that the workspace never fetched, which is newer than that push by the clock, and a copy taken before a push the daemon has not recorded, whose webhook is late or was lost.
 A refused running copy has its one attempt spent and keeps its bytes for an operator, and the daemon logs, at Warn, a line that begins `launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded` with the issue, the copy, the copy's time, the push's time and the head the push left.
-Each time the daemon records a push it also takes a copy of that issue's workspace, through the same one copy in flight, so the issue's newest copy is normally one taken after its newest push and holds whatever came after it.
+Each time a push moves the issue's `issue_pushes` row the daemon also takes a copy of that issue's workspace, through the same one copy in flight, so the issue's newest copy is normally one taken after its newest push and holds whatever came after it.
+A push that leaves the row where it was asks for no copy, so a webhook delivered twice neither bundles the workspace again nor discards a copy being built.
 A copy already being built when the push is recorded is not stored, because it read the workspace before the push; the copy the push asked for follows it.
 The release's own save takes the same one place in flight and waits out a copy being built, so no two bundlers ever run in one workspace.
 The two kinds differ in what an unrestored copy holds back:
