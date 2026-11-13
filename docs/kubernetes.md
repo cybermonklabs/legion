@@ -1857,6 +1857,7 @@ Run this with the daemon stopped, before you pin that image:
 ```sql
 alter table claims add column if not exists update_answered_by_turn_end boolean not null default false;
 alter table claims add column if not exists update_reasked_for_push_check boolean not null default false;
+delete from schema_version where version = 20261113110610;
 ```
 
 Nothing else of #2792 must come back.
@@ -1864,13 +1865,17 @@ Every claim row takes the default, `false`, in both columns.
 That daemon reads `false` as an answer that the `ready_for_update` call gave, and as a claim that no round asked a second time.
 So that daemon reads each answer that an open round holds as an answer of the call.
 A turn that daemon did not prompt then takes such an answer back, and that daemon asks the role again, as it does for every answer of the call.
-A rollback to a release before `legion-v19.16.0` needs no statement: `legion-v19.15.0` names neither column in `packages/daemon/internal/store/claims.go`.
+The `delete` removes the row that `schema_version` records for this migration, so a later roll forward to this release applies the migration again.
+With the row left, that roll forward would skip the migration (its `Migrate` applies only the migrations that `schema_version` does not record, `versionRecorded` in `internal/store/store.go`), and the reset of the open pod rounds would not run again.
+The earlier release opens a round on every pod that drifts, and it writes `update_tasked_at` when it queues its task, which this release reads as the mark of its own Envoy ask.
+So without the reset, this release would never ask a role of such a round, and it would replace the pod of a round older than `pod_update_grace_minutes` at the first sweep.
+The roll forward runs the whole file again: its two `drop column` statements succeed because the rollback added the two columns back, and then the reset runs.
+A rollback to a release before `legion-v19.16.0` needs the same three statements, for another reason: `legion-v19.15.0` names neither column in `packages/daemon/internal/store/claims.go`, but a later roll forward runs this migration again, and its `drop column` statements fail where the columns are not there.
 An earlier release reads no `pod_update_grace_minutes` and refuses it as `unknown key pod_update_grace_minutes`, so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
-The reset of the open pod rounds that this migration made needs no step.
-The earlier release queues its task at once for a claim with no ask mark, and it reads the mark that this release wrote as its own task, so it asks that role again at its own re-ask bound after the mark.
-A queued `update_ask` outbox row needs no step either.
+A queued `update_ask` outbox row needs no step.
 The earlier release puts that kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs the row, and the row holds back no other row.
-A later roll forward runs the row, and the row publishes nothing for a round that its claim no longer records (`updateAsk`).
+A later roll forward applies the migration again, so it resets every pod round that the earlier release opened or kept open, as the first deploy did.
+Then it runs the row, and the row publishes nothing for a round that its claim no longer records (`updateAsk`).
 
 #### Rolling back the release that names what nothing starts
 
@@ -4502,7 +4507,12 @@ A round open when the release that brought the bound is deployed starts its boun
 That release's migration `20261113110610_drop_claim_update_answer_marks` sets the opening of every claim in a pod round to the moment of the migration, and clears the claim's ask mark (`update_tasked_at`) and its notice mark (`update_told_at`).
 The earlier release wrote the ask mark when it queued its task, and this release reads it as the mark of its own Envoy message, so without the reset a tasked role would never get the message.
 A round open longer than `pod_update_grace_minutes` would also be past its bound at the first sweep, which would replace the pod before any role was asked.
-So each role of such a round is asked once by this release, at the first sweep that finds it ready, and the round ends `pod_update_grace_minutes` after the deploy at the latest, an operator's suspension excepted.
+So each role of such a round that has not answered is asked once by this release, at the first sweep that finds it ready, and the round ends `pod_update_grace_minutes` after the deploy at the latest, an operator's suspension excepted.
+The reset keeps each answer (`update_signalled_at`), the answers that the earlier release took from the end of a turn included, and this release asks no role whose claim holds an answer (`unaskedClaims`).
+A role can read two asks for one round.
+The earlier release's `update:` task can still wait on the claim, and the daemon sends it when the role's turn ends (`sendPending` in `supervise/delivery.go`), because the task names the same round as the claim.
+This release's Envoy ask names that round too, so either answer counts.
+The cost is one more turn of that role.
 The notice mark goes too, because the earlier release set it for another notice under the old clock.
 If the mark stayed, it would stop the one `update-stalled` notice that this release gives past the new bound.
 

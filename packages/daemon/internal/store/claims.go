@@ -28,7 +28,8 @@ var _ supervise.Store = (*Store)(nil)
 // rolling the image back need a database restore.
 // The two marks of how a claim answered its update round are an exception, dropped by
 // migration 20261113110610 once no rule read them: an operator who rolls the image back adds them
-// again first, with the two statements docs/kubernetes.md gives, and needs no restore.
+// again first, with the three statements docs/kubernetes.md gives (the third deletes the
+// migration's schema_version row, so a roll forward runs it again), and needs no restore.
 //
 // The four activity columns are read here beside the eight step columns and under the same rule
 // (putClaim's own comment): PutClaimActivity and PutClaimStep own them, and a machine's write

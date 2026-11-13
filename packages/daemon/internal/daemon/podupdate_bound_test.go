@@ -734,9 +734,12 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 	}
 }
 
-// podUpdateDeployReset is the data step of migration 20261113110610, with the migration's
-// moment given as $1 so the rig's held clock can name it: every claim in a pod round opens that
-// round at the deploy, and loses its ask mark and its notice mark.
+// podUpdateDeployReset puts the rig's store in the state that migration 20261113110610 leaves
+// after its reset: every claim in a pod round opens that round at the deploy, and loses its ask
+// mark and its notice mark. It is a copy of the migration's data step, with the migration's
+// moment given as $1 so the rig's held clock can name it, and so it tests nothing of the
+// migration itself. The test of the real SQL is the store's
+// TestAnOpenPodRoundStartsItsClockAndItsAskAgainAt20261113110610, which runs the migration file.
 const podUpdateDeployReset = `update claims
 	set update_opened_at = $1, update_tasked_at = null, update_told_at = null
 	where update_round like 'pod:%'`

@@ -387,9 +387,9 @@ type roundEnd struct {
 // holding is what holds the round's pod replacement at this reading of the round's end: before
 // the round's bound, the claims the round asks that have not answered it and the roles whose
 // turns run, and past the bound nothing. It is the one statement of that rule
-// (dispatch://INFRA-2981 R2). The walk's reading (readReplacement), the last word under the
-// pod's launch turn (replacementDue) and the line of a replacement the bound made (bounded) all
-// read it here.
+// (dispatch://INFRA-2981 R2). The walk's reading (readReplacement) and the last word under the
+// pod's launch turn (replacementDue) read it here. The line of a replacement the bound made
+// (bounded) reads the same two fields, unanswered and working, past the bound.
 func (e roundEnd) holding() (unanswered []supervise.Claim, working []string) {
 	if e.past {
 		return nil, nil
@@ -400,10 +400,7 @@ func (e roundEnd) holding() (unanswered []supervise.Claim, working []string) {
 // bounded is whether the bound is what let the replacement through: the bound has come, and the
 // same reading taken before the bound would have held the replacement (holding).
 func (e roundEnd) bounded() bool {
-	before := e
-	before.past = false
-	unanswered, working := before.holding()
-	return e.past && (len(unanswered) > 0 || len(working) > 0)
+	return e.past && (len(e.unanswered) > 0 || len(e.working) > 0)
 }
 
 // readRoundEnd is the round's end as group reads at now, under the round's bound (roundBound).
@@ -645,10 +642,11 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	// A failed claim was not waited for (askedClaims): the push check is what carried whatever it
 	// left unpushed on the disk off the pod, and the line names it beside what the check pushed.
 	failed := slices.DeleteFunc(blockingClaims(live), func(c supervise.Claim) bool { return c.State != supervise.StateFailed })
+	bounded := ended.bounded()
 	s.log.Info("supervise: the pod of this update round is replaced and the round is over",
-		"issue", issue, "round", round, "pod", pod, "atTheBound", ended.bounded(), "failedNotWaitedFor", namesOf(failed),
+		"issue", issue, "round", round, "pod", pod, "atTheBound", bounded, "failedNotWaitedFor", namesOf(failed),
 		"rescued", checked.rescued(), "unchecked", checked.unchecked)
-	if ended.bounded() {
+	if bounded {
 		s.log.Info("supervise pod update replaced at the bound",
 			"issue", issue, "round", round, "pod", pod,
 			"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working)

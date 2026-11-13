@@ -22,8 +22,9 @@
 -- reads its own claims table. This drop is the exception that rule allows, as
 -- 20261109060737_drop_awaiting_slot_notice.up.sql is: every release from legion-v19.16.0 on names
 -- both columns in its claim read and in its PutClaim, so pinning one of them after this migration
--- fails every claim read and every claim write until the columns are back. The two statements
--- that bring them back, and why nothing else need come with them, are in docs/kubernetes.md under
+-- fails every claim read and every claim write until the columns are back. The statements that
+-- bring them back and delete this migration's schema_version row, so that a roll forward runs
+-- this file again, and why nothing else need come with them, are in docs/kubernetes.md under
 -- their own heading.
 --
 -- What the reset changes: for every claim whose update_round starts with 'pod:', it sets
@@ -38,7 +39,8 @@
 -- round open longer than the bound would also be replaced at the first sweep, before any ask.
 -- So a round open at the deploy starts its bound at the deploy, and every member of the round is
 -- reset, because the bound runs from the earliest opening of the round's claims. Each claim of
--- the round is then asked once, at the first sweep that finds its session ready.
+-- the round that has not answered is then asked once, at the first sweep that finds its session
+-- ready.
 --
 -- update_told_at goes too. This release tells the controller of a round once, when something
 -- holds the round past its bound, and it reads a mark on any claim of the round as that notice
