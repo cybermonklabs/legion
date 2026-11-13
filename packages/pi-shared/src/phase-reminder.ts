@@ -79,7 +79,7 @@ export interface PhaseReminderDeps {
    * whether a due reminder goes out, and the name of the work the reminder and the architect
    * notice give. `signal` is aborted once `OWED_READ_BOUND_MS` passes without an answer, and the
    * request is to abort with it, so a daemon that hangs is left no open request. An answer that
-   * does not arrive is `NUDGE_WHEN_OWED_UNREAD`'s to decide, and no host decides it again. */
+   * does not arrive is `UNREAD_CHECK`'s to decide, and no host decides it again. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>;
   /** The Envoy listener the architect notice goes to, or undefined when Envoy is off for this
    * session. Built lazily and once by the caller. */
@@ -128,7 +128,7 @@ export interface PhaseReminder {
 
 /**
  * How long a due reminder waits for the daemon's answer of what this claim owes
- * (`POST /legion/v1/claims/owed`) before it reads that answer as unread (`NUDGE_WHEN_OWED_UNREAD`).
+ * (`POST /legion/v1/claims/owed`) before it reads that answer as unread (`UNREAD_CHECK`).
  * `createLegionDaemonClient` puts no deadline on its fetch, and `session_stop` is a hook the host
  * awaits, so the check bounds the read itself and aborts it at the bound. It is a constant, with
  * no setting and no switch: a value nobody measures is worse than a line somebody edits, so the
@@ -150,23 +150,6 @@ export interface PhaseReminder {
  * gives the `Stop` hook that awaits it (`packages/claude-envoy/scripts/build.ts`).
  */
 export const OWED_READ_BOUND_MS = 3_000;
-
-/**
- * Whether a due reminder still goes out when the daemon's answer of what this claim owes could
- * not be read: the session holds no claim yet, or the read failed — the daemon unreachable, a
- * refusal, an answer the contract does not describe, or no answer inside `OWED_READ_BOUND_MS`.
- * This is the one place that choice is made. Both hosts build their reminder here
- * (`createPhaseReminder`: Oh My Pi in `packages/pi-legion/extensions/legion.ts`, Claude Code in
- * `packages/claude-envoy/src/legion-phase-hook.ts`), and neither decides it again.
- *
- * It is true — the worker is nudged on a failed read — because on a daemon that does not itself
- * send a silent phase worker its task after `worker_silence_minutes` (dispatch://INFRA-3163),
- * nothing else nudges a stalled worker. Once every deployment runs a daemon that does, this can
- * be false, and a read that fails reminds of nothing. The nudge says that it could not read the
- * record (`UNREAD_REMINDER`), and names no phase, no operation and no owed work, because it read
- * none of them.
- */
-export const NUDGE_WHEN_OWED_UNREAD: boolean = true;
 
 /**
  * The listener's "no live session holds that role": a 404 whose body names `unclaimed` or
@@ -217,15 +200,26 @@ async function withBound<T>(work: (signal: AbortSignal) => Promise<T>, ms: numbe
 
 /** What the owed check decided, for the reminder and the architect notice that may follow it: the
  * same reminder never asks the daemon twice. `work` is the daemon's name for what is owed, and
- * undefined when its answer did not arrive (`NUDGE_WHEN_OWED_UNREAD`), which names no work. */
+ * undefined when its answer did not arrive (`UNREAD_CHECK`), which names no work. */
 type OwedCheck =
   | { readonly reminds: false }
   | { readonly reminds: true; readonly work: string | undefined };
 
-/** The owed check's decision when the daemon's answer could not be read. */
-const UNREAD_CHECK: OwedCheck = NUDGE_WHEN_OWED_UNREAD
-  ? { reminds: true, work: undefined }
-  : { reminds: false };
+/**
+ * The owed check's decision when the daemon's answer of what this claim owes could not be read:
+ * the session holds no claim yet, or the read failed — the daemon unreachable, a refusal, an
+ * answer the contract does not describe, or no answer inside `OWED_READ_BOUND_MS`. This is the
+ * one place that choice is made. Both hosts build their reminder here (`createPhaseReminder`: Oh
+ * My Pi in `packages/pi-legion/extensions/legion.ts`, Claude Code in
+ * `packages/claude-envoy/src/legion-phase-hook.ts`), and neither decides it again.
+ *
+ * It reminds — the worker is nudged on a failed read — because on a daemon that does not itself
+ * send a silent phase worker its task after `worker_silence_minutes` (dispatch://INFRA-3163),
+ * nothing else nudges a stalled worker. The nudge says that it could not read the record
+ * (`UNREAD_REMINDER`), and names no phase, no operation and no owed work, because it read none
+ * of them.
+ */
+const UNREAD_CHECK: OwedCheck = { reminds: true, work: undefined };
 
 export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   const boundMs = deps.owedBoundMs ?? OWED_READ_BOUND_MS;
@@ -291,8 +285,8 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * daemon has failed, which is the daemon's own word that this session is finished: a retry
    * runs in a session of its own, and a reminder written into this one reaches nobody who can act
    * on it. That is what ends the reminding of a session whose provider refuses every turn, on
-   * either host. An answer that could not be read is `UNREAD_CHECK`, logged at debug: whether it
-   * reminds is `NUDGE_WHEN_OWED_UNREAD`'s choice, and a reminder it sends names no work.
+   * either host. An answer that could not be read is `UNREAD_CHECK`, logged at debug: it reminds,
+   * and the reminder it sends names no work.
    */
   const owedCheck = async (): Promise<OwedCheck> => {
     const claim = deps.claim();

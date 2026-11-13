@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -273,4 +275,44 @@ func TestRepositoryCorrectionNamesTheRepositoryTheRescueBranchesAreIn(t *testing
 	if strings.Contains(messages[0], podUpdateCorrectedRepo) {
 		t.Errorf("the issue was told %q, which names %s: the branches are not in the repository the issue moved to", messages[0], podUpdateCorrectedRepo)
 	}
+}
+
+// The pod of an issue is asked its repository through one claim, the one that records a process
+// and has the lowest token (podRepository), whatever order the claims come in. The idle rule
+// reads them in the order the daemon supervises them (issuePodRepository) and the update-round
+// sweep in the order the store answered them (supervision.groupDrift), and the two must ask the
+// same claim: a release that held a pod read through one claim, and a sweep that replaced it
+// read through another, would disagree whenever the two answers differ. The two claims here
+// answer two repositories so that a read through the wrong one shows.
+func TestThePodsRepositoryIsReadThroughTheSameClaimInAnyOrder(t *testing.T) {
+	rt := fake.NewRuntime()
+	architect := claim.Token(podUpdateIssue + "-architect")
+	implementer := claim.Token(podUpdateIssue + "-implementer")
+	reviewer := claim.Token(podUpdateIssue + "-reviewer")
+	rt.ScriptPodRepository(implementer, podUpdateRepo)
+	rt.ScriptPodRepository(reviewer, podUpdateCorrectedRepo)
+	claims := []supervise.Claim{
+		{Token: reviewer, Issue: podUpdateIssue, Locator: podUpdateLocator(reviewer, podUpdateIssue, "pod-1")},
+		// The lowest token of the three, and no process: a suspended claim answers for no pod.
+		{Token: architect, Issue: podUpdateIssue},
+		{Token: implementer, Issue: podUpdateIssue, Locator: podUpdateLocator(implementer, podUpdateIssue, "pod-1")},
+	}
+	reversed := slices.Clone(claims)
+	slices.Reverse(reversed)
+	for _, order := range [][]supervise.Claim{claims, reversed} {
+		got, err := podRepository(context.Background(), rt, slices.Values(order))
+		if err != nil || got != podUpdateRepo {
+			t.Fatalf("the pod read through claims in the order %v answered %q (%v), want %s through %s, the lowest token that records a process",
+				tokensOf(order), got, err, podUpdateRepo, implementer)
+		}
+	}
+}
+
+// tokensOf is each claim's token, in the claims' order.
+func tokensOf(claims []supervise.Claim) []claim.Token {
+	tokens := make([]claim.Token, 0, len(claims))
+	for _, c := range claims {
+		tokens = append(tokens, c.Token)
+	}
+	return tokens
 }

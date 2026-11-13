@@ -134,19 +134,16 @@ type Issue struct {
 	// pair (heardRepositories), and every GitHub call the daemon makes for the record addresses the
 	// repository GitHub serves it under now (ghrepo.Renames.Serving) rather than this field.
 	GitHubRepo string
-	// RepoBefore is the repository the record held before the newest correction and RepoCorrectedAt
-	// the moment the daemon applied it; "" and nil together for a record no correction has reached,
-	// which is every record written before the correction existed. Only Store.CorrectIssueRepository
-	// writes the pair, and it keeps the two in step: what a worker's next task names beside the new
+	// RepoCorrection is the newest correction of the issue's repository, nil for a record no
+	// correction has reached, which is every record written before the correction existed. Only
+	// Store.CorrectIssueRepository writes it: what a worker's next task names beside the new
 	// repository, and what says that work saved before that moment is of another repository.
-	RepoBefore      string
-	RepoCorrectedAt *time.Time
-	// RepoChangePending is a repository Dispatch has named that the daemon has not applied to the
-	// record yet and RepoChangeReason why it has not, both "" when nothing waits.
-	// Store.NoteIssueRepositoryChange writes the pair, and the correction that applies the change
-	// clears it (Store.CorrectIssueRepository), so what is here is always a change still to be made.
-	RepoChangePending string
-	RepoChangeReason  string
+	RepoCorrection *RepositoryCorrection
+	// RepoChange is a repository Dispatch has named that the daemon has not applied to the record
+	// yet, and why it has not, nil when nothing waits. Store.NoteIssueRepositoryChange writes it,
+	// and the correction that applies the change clears it (Store.CorrectIssueRepository), so what
+	// is here is always a change still to be made.
+	RepoChange *RepositoryChange
 	// Ancestry is the keys of a root's Dispatch parent chain, from its parent upward to the top,
 	// stopping only at a repeated key or back at the root, as the newest Dispatch observation
 	// applied to the record was prepared with (intake's DispatchIssue.Ancestry), or as the
@@ -210,6 +207,25 @@ type Issue struct {
 // every repository-dependent action of the issue works and mints for its owner.
 func (i Issue) Repository() (ghrepo.Repository, error) {
 	return ghrepo.Parse("the repository of "+i.Key, i.Repo)
+}
+
+// RepositoryCorrection is what a correction of an issue's repository left on its record: the
+// repository the record held before it (Before) and the moment the daemon applied it (At). The
+// two are one value because neither says anything alone, so a record holds a correction or nil.
+// A correction of a record that held no repository yet — one the repository backfill had not
+// filled — moved the issue off no repository, and it reads as none: nothing was ever worked or
+// saved under a repository the issue left.
+type RepositoryCorrection struct {
+	Before string
+	At     time.Time
+}
+
+// RepositoryChange is a repository Dispatch has named for an issue that the daemon has not
+// applied to the record (Pending), and why it has not (Reason). The two are one value because a
+// change waits with its reason or not at all.
+type RepositoryChange struct {
+	Pending string
+	Reason  string
 }
 
 // HandedOff is an issue whose implementer recorded its handoff, with the commit the handoff
@@ -1329,8 +1345,8 @@ type Store interface {
 	UnnamedIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
 	NameIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, githubRepo string) error
 	// CorrectIssueRepository moves a recorded issue onto repo, defaultBranch and githubRepo,
-	// keeping the repository the record held as Issue.RepoBefore and at as Issue.RepoCorrectedAt,
-	// and clearing whatever change NoteIssueRepositoryChange noted. It answers whether it wrote the
+	// keeping the repository the record held and at as Issue.RepoCorrection, and clearing
+	// whatever change NoteIssueRepositoryChange noted. It answers whether it wrote the
 	// record: false, and nothing written, for a record already on repo, so a pass that reads one
 	// correction twice corrects once and the repository the issue left is kept as it was. It
 	// refuses an empty repository, default branch or GitHub spelling, and a GitHub spelling that
@@ -1339,13 +1355,13 @@ type Store interface {
 	// each refuses a record that carries it, while this one corrects a record that has a
 	// repository, because the repository is Dispatch's fact and the daemon's record follows it.
 	CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, repo, defaultBranch, githubRepo string, at time.Time) (bool, error)
-	// NoteIssueRepositoryChange records the repository Dispatch names for the issue that the daemon
-	// has not applied (pending) and why it has not (reason), the pair Issue.RepoChangePending and
-	// Issue.RepoChangeReason; it writes those two and nothing else, and two empty strings clear
-	// them. So what the record holds here is always a change still to be made: applying it clears
-	// the pair through CorrectIssueRepository, which is the act this note belongs to rather than
-	// FillIssueRepository or NameIssueRepository, whose records carry no repository to change.
-	NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key, pending, reason string) error
+	// NoteIssueRepositoryChange records change, the repository Dispatch names for the issue that
+	// the daemon has not applied and why it has not, as Issue.RepoChange; it writes that and
+	// nothing else, and nil clears it. So what the record holds here is always a change still to
+	// be made: applying it clears the change through CorrectIssueRepository, which is the act this
+	// note belongs to rather than FillIssueRepository or NameIssueRepository, whose records carry
+	// no repository to change.
+	NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key string, change *RepositoryChange) error
 	// HandedOffWithoutOpenOrMergedPullRequest is every record of the Dispatch project key project in
 	// implementing, named on its repository as GitHub spells it, whose implementer has recorded its
 	// handoff and which has no open or merged pull request recorded, by key, each with its

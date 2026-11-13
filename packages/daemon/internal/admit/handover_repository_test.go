@@ -101,12 +101,11 @@ func TestRepositoryCorrectionFollowsAHandOver(t *testing.T) {
 		t.Fatalf("the re-admitted child is on %s at %s, spelled %s; want acme/tools at release/v7.1, spelled acme/tools",
 			got.Repo, got.DefaultBranch, got.GitHubRepo)
 	}
-	if got.RepoBefore != "acme/widgets" || got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(fixedNow) {
-		t.Fatalf("the correction's marks = %q at %v, want acme/widgets at %v", got.RepoBefore, got.RepoCorrectedAt, fixedNow)
+	if c := got.RepoCorrection; c == nil || c.Before != "acme/widgets" || !c.At.Equal(fixedNow) {
+		t.Fatalf("the correction = %+v, want acme/widgets at %v", c, fixedNow)
 	}
-	if got.RepoChangePending != "" || got.RepoChangeReason != "" {
-		t.Fatalf("the waiting change after the correction = %q because %q, want none: the correction applied it",
-			got.RepoChangePending, got.RepoChangeReason)
+	if got.RepoChange != nil {
+		t.Fatalf("the waiting change after the correction = %+v, want none: the correction applied it", got.RepoChange)
 	}
 	if messages := handOverMessages(t, pool); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
@@ -129,13 +128,11 @@ func TestRepositoryCorrectionIsNotMadeByAHandOverWhoseDispatchReadAnsweredNoRepo
 		t.Fatalf("the re-admitted child is on %s at %s, spelled %s; want the record's own acme/widgets at main",
 			got.Repo, got.DefaultBranch, got.GitHubRepo)
 	}
-	if got.RepoBefore != "" || got.RepoCorrectedAt != nil {
-		t.Fatalf("the correction's marks = %q at %v, want none written: nothing read a repository to follow",
-			got.RepoBefore, got.RepoCorrectedAt)
+	if got.RepoCorrection != nil {
+		t.Fatalf("the correction = %+v, want none written: nothing read a repository to follow", got.RepoCorrection)
 	}
-	if got.RepoChangePending != "" || got.RepoChangeReason != "" {
-		t.Fatalf("the waiting change = %q because %q, want none: an absent resolution says nothing about the repository",
-			got.RepoChangePending, got.RepoChangeReason)
+	if got.RepoChange != nil {
+		t.Fatalf("the waiting change = %+v, want none: an absent resolution says nothing about the repository", got.RepoChange)
 	}
 	if messages := handOverMessages(t, pool); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing", messages)
@@ -155,12 +152,12 @@ func TestRepositoryCorrectionOfAHandOverOntoAnUnservedRepositoryWaitsOnTheRecord
 
 	got := issue(t, pool, fencedChild)
 	assertReadmitted(t, got)
-	if got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.RepoBefore != "" || got.RepoCorrectedAt != nil {
-		t.Fatalf("the re-admitted child is on %s at %s, having left %q at %v; want it still on acme/widgets at main, corrected in nothing",
-			got.Repo, got.DefaultBranch, got.RepoBefore, got.RepoCorrectedAt)
+	if got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.RepoCorrection != nil {
+		t.Fatalf("the re-admitted child is on %s at %s, corrected %+v; want it still on acme/widgets at main, corrected in nothing",
+			got.Repo, got.DefaultBranch, got.RepoCorrection)
 	}
-	if got.RepoChangePending != "acme/gadgets" || got.RepoChangeReason != "the review App is not installed on acme/gadgets" {
-		t.Fatalf("the waiting change = %q because %q, want acme/gadgets and why it waits", got.RepoChangePending, got.RepoChangeReason)
+	if c := got.RepoChange; c == nil || c.Pending != "acme/gadgets" || c.Reason != "the review App is not installed on acme/gadgets" {
+		t.Fatalf("the waiting change = %+v, want acme/gadgets and why it waits", c)
 	}
 	want := "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	if messages := handOverMessages(t, pool); len(messages) != 1 || messages[0] != want {

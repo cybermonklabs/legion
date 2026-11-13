@@ -163,9 +163,8 @@ func TestRepositoryCorrectionFollowsAHandOverTheOutboxCompletes(t *testing.T) {
 				t.Fatalf("the re-admitted child is on %s at %s, spelled %s; want acme/tools at release/v7.1, spelled acme/tools",
 					got.Repo, got.DefaultBranch, got.GitHubRepo)
 			}
-			if got.RepoBefore != "acme/widgets" || got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(handOverCorrectionMoment) {
-				t.Fatalf("the correction's marks = %q at %v, want acme/widgets at %v",
-					got.RepoBefore, got.RepoCorrectedAt, handOverCorrectionMoment)
+			if c := got.RepoCorrection; c == nil || c.Before != "acme/widgets" || !c.At.Equal(handOverCorrectionMoment) {
+				t.Fatalf("the correction = %+v, want acme/widgets at %v", c, handOverCorrectionMoment)
 			}
 			if messages := r.messages(); len(messages) != 0 {
 				t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
@@ -188,12 +187,11 @@ func TestRepositoryCorrectionIsNotWrittenWhenAHandOversDispatchReadAnswersNoRepo
 		t.Fatalf("the re-admitted child is on %s at %s, spelled %s; want the record's own acme/widgets at main",
 			got.Repo, got.DefaultBranch, got.GitHubRepo)
 	}
-	if got.RepoBefore != "" || got.RepoCorrectedAt != nil {
-		t.Fatalf("the correction's marks = %q at %v, want none written: the read answered no repository to follow",
-			got.RepoBefore, got.RepoCorrectedAt)
+	if got.RepoCorrection != nil {
+		t.Fatalf("the correction = %+v, want none written: the read answered no repository to follow", got.RepoCorrection)
 	}
-	if got.RepoChangePending != "" || got.RepoChangeReason != "" {
-		t.Fatalf("the waiting change = %q because %q, want none", got.RepoChangePending, got.RepoChangeReason)
+	if got.RepoChange != nil {
+		t.Fatalf("the waiting change = %+v, want none", got.RepoChange)
 	}
 	if messages := r.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing", messages)

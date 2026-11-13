@@ -689,7 +689,7 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 
 	// The pod an eviction or an update round makes hours later, with the resumed roles' work
 	// pushed in between: it is sent nothing at all.
-	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
+	later, take, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour), unrenamed)
 	if err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
 	}

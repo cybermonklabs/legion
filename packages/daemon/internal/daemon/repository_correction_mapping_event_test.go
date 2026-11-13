@@ -227,17 +227,14 @@ func TestRepositoryCorrectionFollowsOneMappingChangeForEveryIssueThatInheritsThe
 		if got.DefaultBranch != "release/v7.1" || got.GitHubRepo != "zeta/tools" {
 			t.Fatalf("%s is on %s at %s, spelled %s; want zeta/tools at release/v7.1", key, got.Repo, got.DefaultBranch, got.GitHubRepo)
 		}
-		if got.RepoBefore != "acme/widgets" {
-			t.Fatalf("the repository %s left = %q, want acme/widgets", key, got.RepoBefore)
-		}
-		if got.RepoCorrectedAt == nil {
-			t.Fatalf("%s carries no moment of its correction", key)
+		if got.RepoCorrection == nil || got.RepoCorrection.Before != "acme/widgets" {
+			t.Fatalf("the correction of %s = %+v, want acme/widgets left", key, got.RepoCorrection)
 		}
 		if got.Generation != correctionGeneration || got.Phase != phase.Implementing {
 			t.Fatalf("%s is at generation %d in %s, want generation %d in %s: a correction takes no new generation and moves no phase",
 				key, got.Generation, got.Phase, correctionGeneration, phase.Implementing)
 		}
-		at := *got.RepoCorrectedAt
+		at := got.RepoCorrection.At
 		if other, shared := moments[at]; shared {
 			t.Fatalf("%s and %s were both corrected at %v, want a moment each: each correction reads the clock", key, other, at)
 		}
@@ -263,11 +260,11 @@ func TestRepositoryCorrectionLeavesAnIssueNamingItsOwnRepositoryWhereItIsOnAMapp
 	r.awaitOn("zeta/tools", inherits)
 
 	got := r.issue(own)
-	if got.Repo != "acme/widgets" || got.RepoBefore != "" || got.RepoCorrectedAt != nil {
-		t.Fatalf("%s is on %s, having left %q at %v; want it on acme/widgets with no correction", own, got.Repo, got.RepoBefore, got.RepoCorrectedAt)
+	if got.Repo != "acme/widgets" || got.RepoCorrection != nil {
+		t.Fatalf("%s is on %s, corrected %+v; want it on acme/widgets with no correction", own, got.Repo, got.RepoCorrection)
 	}
-	if got.RepoChangePending != "" || got.RepoChangeReason != "" {
-		t.Fatalf("%s waits on %q because %q, want nothing waiting", own, got.RepoChangePending, got.RepoChangeReason)
+	if got.RepoChange != nil {
+		t.Fatalf("%s waits on %+v, want nothing waiting", own, got.RepoChange)
 	}
 	if notes := repositoryNotes(t, r.w, own); len(notes) != 0 {
 		t.Fatalf("%s was told %q, want nothing", own, notes)
@@ -290,7 +287,7 @@ func TestRepositoryCorrectionWaitsOnTheRecordWhenAMappingChangeMovesTheDefaultTo
 
 	testwait.Eventually(t, "each issue waiting on orbit/gadgets", func() bool {
 		for _, key := range keys {
-			if got := recordedIssue(t, r.w, key); got == nil || got.RepoChangePending != "orbit/gadgets" {
+			if got := recordedIssue(t, r.w, key); got == nil || got.RepoChange == nil || got.RepoChange.Pending != "orbit/gadgets" {
 				return false
 			}
 		}
@@ -298,12 +295,12 @@ func TestRepositoryCorrectionWaitsOnTheRecordWhenAMappingChangeMovesTheDefaultTo
 	})
 	for _, key := range keys {
 		got := r.issue(key)
-		if got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.RepoBefore != "" || got.RepoCorrectedAt != nil {
-			t.Fatalf("%s is on %s at %s, having left %q at %v; want it kept on acme/widgets at main, uncorrected",
-				key, got.Repo, got.DefaultBranch, got.RepoBefore, got.RepoCorrectedAt)
+		if got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.RepoCorrection != nil {
+			t.Fatalf("%s is on %s at %s, corrected %+v; want it kept on acme/widgets at main, uncorrected",
+				key, got.Repo, got.DefaultBranch, got.RepoCorrection)
 		}
-		if !strings.Contains(got.RepoChangeReason, "review App") {
-			t.Fatalf("%s waits because %q, want the missing review App named", key, got.RepoChangeReason)
+		if !strings.Contains(got.RepoChange.Reason, "review App") {
+			t.Fatalf("%s waits because %q, want the missing review App named", key, got.RepoChange.Reason)
 		}
 		notes := repositoryNotes(t, r.w, key)
 		if len(notes) != 1 || !strings.HasPrefix(notes[0], "Legion did not move this issue off acme/widgets: ") || !strings.Contains(notes[0], "Install it on orbit/gadgets") {
@@ -339,9 +336,9 @@ func TestRepositoryCorrectionReadsGitHubOncePerRepositoryOnAMappingChange(t *tes
 func (r *mappingEventRig) uncorrected(key string) record.Issue {
 	r.t.Helper()
 	got := r.issue(key)
-	if got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.RepoBefore != "" || got.RepoCorrectedAt != nil {
-		r.t.Fatalf("%s is on %s at %s, having left %q at %v; want it on acme/widgets at main, uncorrected",
-			key, got.Repo, got.DefaultBranch, got.RepoBefore, got.RepoCorrectedAt)
+	if got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.RepoCorrection != nil {
+		r.t.Fatalf("%s is on %s at %s, corrected %+v; want it on acme/widgets at main, uncorrected",
+			key, got.Repo, got.DefaultBranch, got.RepoCorrection)
 	}
 	return got
 }
@@ -351,12 +348,12 @@ func (r *mappingEventRig) uncorrected(key string) record.Issue {
 func (r *mappingEventRig) correctedOnto(key, repo, branch string) {
 	r.t.Helper()
 	got := r.issue(key)
-	if got.Repo != repo || got.DefaultBranch != branch || got.GitHubRepo != repo || got.RepoBefore != "acme/widgets" || got.RepoCorrectedAt == nil {
-		r.t.Fatalf("%s is on %s at %s, spelled %s, having left %q at %v; want %s at %s, having left acme/widgets",
-			key, got.Repo, got.DefaultBranch, got.GitHubRepo, got.RepoBefore, got.RepoCorrectedAt, repo, branch)
+	if got.Repo != repo || got.DefaultBranch != branch || got.GitHubRepo != repo || got.RepoCorrection == nil || got.RepoCorrection.Before != "acme/widgets" {
+		r.t.Fatalf("%s is on %s at %s, spelled %s, corrected %+v; want %s at %s, having left acme/widgets",
+			key, got.Repo, got.DefaultBranch, got.GitHubRepo, got.RepoCorrection, repo, branch)
 	}
-	if got.RepoChangePending != "" || got.RepoChangeReason != "" {
-		r.t.Fatalf("%s still waits on %q because %q, want nothing waiting", key, got.RepoChangePending, got.RepoChangeReason)
+	if got.RepoChange != nil {
+		r.t.Fatalf("%s still waits on %+v, want nothing waiting", key, got.RepoChange)
 	}
 	// The issue's own event, delivered before the correction, may move its phase (the rig opens no
 	// tree for it); the correction takes no new generation.
@@ -408,8 +405,8 @@ func TestRepositoryCorrectionFollowsARepositoryANewlyInstalledAppServes(t *testi
 	const waiting, admitted = "LEGION-670", "LEGION-671"
 	r.record(waiting, "acme/widgets")
 	deliver(t, r.w, r.client, issue(waiting, "orbit/gadgets", "in_progress", true, "", 2))
-	if got := r.uncorrected(waiting); got.RepoChangePending != "orbit/gadgets" {
-		t.Fatalf("%s waits on %q, want orbit/gadgets before its review App is installed", waiting, got.RepoChangePending)
+	if got := r.uncorrected(waiting); got.RepoChange == nil || got.RepoChange.Pending != "orbit/gadgets" {
+		t.Fatalf("%s waits on %+v, want orbit/gadgets before its review App is installed", waiting, got.RepoChange)
 	}
 
 	installs.mu.Lock()

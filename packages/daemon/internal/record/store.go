@@ -415,7 +415,11 @@ func (s *Postgres) CorrectIssueRepository(ctx context.Context, tx pgx.Tx, key, r
 	return tag.RowsAffected() == 1, nil
 }
 
-func (s *Postgres) NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key, pending, reason string) error {
+func (s *Postgres) NoteIssueRepositoryChange(ctx context.Context, tx pgx.Tx, key string, change *RepositoryChange) error {
+	var pending, reason string
+	if change != nil {
+		pending, reason = change.Pending, change.Reason
+	}
 	if _, err := tx.Exec(ctx, "update issues set repo_change_pending = $2, repo_change_reason = $3 where key = $1",
 		key, pending, reason); err != nil {
 		return fmt.Errorf("note the repository change of %s: %w", key, err)
@@ -475,11 +479,12 @@ func scanIssue(row scanner) (*Issue, error) {
 	var answeredAt *time.Time
 	var answeredBy, answeredDetail string
 	var answeredVersion int
+	var repoBefore, repoChangePending, repoChangeReason string
 	var sinceSeq *int64
 	var since, declaredAt, memoryDrawnAt, repoCorrectedAt *time.Time
 	if err := row.Scan(&issue.Key, &issue.Tree, &issue.Project, &issue.Title, &issue.Parent, &phaseValue, &generation, &issue.Status,
 		&issue.Rank, &issue.HandedOver, &issue.TakenBack, &issue.LingerUntil, &heldFrom, &issue.LastDispatchSeq, &holdReason, &issue.DispatchStatus,
-		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &issue.RepoBefore, &repoCorrectedAt, &issue.RepoChangePending, &issue.RepoChangeReason,
+		&issue.Repo, &issue.DefaultBranch, &issue.GitHubRepo, &repoBefore, &repoCorrectedAt, &repoChangePending, &repoChangeReason,
 		&awaitingAsk, &awaitingGate, &awaitingArtifact, &answeredAt, &answeredBy, &answeredDetail, &answeredVersion,
 		&sinceSeq, &since, &issue.HandoutSeq, &issue.DeclaredSeq, &declaredAt, &issue.Ancestry, &issue.HandedOverFrom,
 		&issue.ToldParent, &issue.MemoryGroup, &issue.MemoryDrawMode, &memoryDrawnAt); err != nil {
@@ -492,9 +497,14 @@ func scanIssue(row scanner) (*Issue, error) {
 		utc := memoryDrawnAt.UTC()
 		issue.MemoryDrawnAt = &utc
 	}
-	if repoCorrectedAt != nil {
-		utc := repoCorrectedAt.UTC()
-		issue.RepoCorrectedAt = &utc
+	// A correction is the repository it moved the record off and its moment, and a correction
+	// off no repository moved the issue off nothing (RepositoryCorrection). A change is the
+	// repository still to be changed to, with its reason, and no repository is nothing waiting.
+	if repoCorrectedAt != nil && repoBefore != "" {
+		issue.RepoCorrection = &RepositoryCorrection{Before: repoBefore, At: repoCorrectedAt.UTC()}
+	}
+	if repoChangePending != "" {
+		issue.RepoChange = &RepositoryChange{Pending: repoChangePending, Reason: repoChangeReason}
 	}
 	if generation < 0 {
 		return nil, fmt.Errorf("issue %s has negative generation %d", issue.Key, generation)

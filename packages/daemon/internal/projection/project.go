@@ -127,13 +127,6 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			Tree:          issue.Tree,
 			Repo:          issue.Repo,
 			DefaultBranch: issue.DefaultBranch,
-			// The correction of the issue's repository and a change still to be made: what tells
-			// a reader of a record that names one repository that the issue worked another
-			// before, or that Dispatch has named a third the daemon has not applied, and why.
-			RepoBefore:        issue.RepoBefore,
-			RepoCorrectedAt:   issue.RepoCorrectedAt,
-			RepoChangePending: issue.RepoChangePending,
-			RepoChangeReason:  issue.RepoChangeReason,
 			// When this root's linger runs out, nil for every issue that is not a lingering
 			// root: it is what a reader of a held issue served no reason reads the suppression
 			// of that reason by (api.Issue.LingerUntil).
@@ -142,6 +135,17 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			// hold on it is the ancestry hold, and nothing else on this wire names the chain.
 			Ancestry: issue.Ancestry,
 			Workers:  map[claim.Role]api.PhaseView{},
+		}
+		// The correction of the issue's repository and a change still to be made: what tells a
+		// reader of a record that names one repository that the issue worked another before, or
+		// that Dispatch has named a third the daemon has not applied, and why. Each is one value
+		// of the record, served as the wire's two flat keys of it.
+		if corrected := issue.RepoCorrection; corrected != nil {
+			at := corrected.At
+			view.RepoBefore, view.RepoCorrectedAt = corrected.Before, &at
+		}
+		if change := issue.RepoChange; change != nil {
+			view.RepoChangePending, view.RepoChangeReason = change.Pending, change.Reason
 		}
 		// The tree's memory draw, which every issue of the tree is shown, a done one included: it
 		// is what the issue's roles ran with, and nothing redraws it.

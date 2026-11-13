@@ -45,7 +45,7 @@ type OwedResponse struct {
 // on it. A failed claim holds no secret any more (supervise.NormalizeClaim drops the capability
 // of every state that holds none), so its session cannot prove it holds the claim, and refusing
 // it would read to the reminder as an answer that did not arrive, which nudges
-// (NUDGE_WHEN_OWED_UNREAD in packages/pi-shared/src/phase-reminder.ts). So a claim this daemon
+// (UNREAD_CHECK in packages/pi-shared/src/phase-reminder.ts). So a claim this daemon
 // holds failed, asked from the session it records, is answered that nothing is owed without the
 // secret: the answer names no work, and that the claim is failed is what the unauthenticated
 // GET /legion/v1/state already serves. That is what ends the reminding of a session whose

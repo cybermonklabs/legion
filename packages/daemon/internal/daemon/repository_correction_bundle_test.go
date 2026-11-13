@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -48,7 +49,7 @@ func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 	correctRecord(t, pool, records, issue.Key, "zeta/tools", "main", time.Now().UTC())
 
 	var told []string
-	take := tellBundleRepositoryRefused(st.TakeWorkspaceBundleForRestore,
+	take := tellBundleRepositoryRefused(st, unrenamed,
 		func(_ context.Context, key, body string) error {
 			if key != issue.Key {
 				t.Errorf("the daemon wrote on %s, want %s: the work is that issue's", key, issue.Key)
@@ -100,6 +101,46 @@ func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 	}
 }
 
+// A rename is no move. A deployment that configures acme/widgets as renamed to acme/gadgets reads
+// the two names as one repository wherever it compares them (repositories.left), so a record
+// re-pointed at the new name has not left the repository its saved work is of, as no pod built
+// from the old name is replaced for it either (repositoryDrift). The clone the pod holds has the
+// saved commits, and the bundle is sent to it, with nothing written on the issue.
+func TestARenamedRepositorysBundleIsRestored(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1,
+		Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
+	putOutboxIssue(t, pool, records, issue)
+	st := outboxTreeStore(t, pool, issue.Key)
+
+	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+	if err := st.PutWorkspaceBundle(ctx, issue.Key, 11, issue.Repo, saved); err != nil {
+		t.Fatalf("save the released workspace's bundle: %v", err)
+	}
+	correctRecord(t, pool, records, issue.Key, "acme/gadgets", "main", time.Now().UTC())
+
+	mapping := newRepositories("LEGION", ghrepo.MustRenames(ghrepo.MustRename("acme/widgets", "acme/gadgets")))
+	var told []string
+	take := tellBundleRepositoryRefused(st, mapping.left,
+		func(_ context.Context, _, body string) error {
+			told = append(told, body)
+			return nil
+		}, quietLogger())
+
+	got, outcome, err := take(ctx, issue.Key, "pod-of-the-new-name", at.Add(time.Minute))
+	if err != nil || outcome != runtime.WorkspaceBundleSend || string(got.Bundle) != string(saved.Bundle) {
+		t.Fatalf("the pod of the rename's new name was answered %v with %q (%v), want the saved work sent", outcome, got.Bundle, err)
+	}
+	if len(told) != 0 {
+		t.Fatalf("the daemon wrote on the issue for a bundle it restored:\n%s", strings.Join(told, "\n---\n"))
+	}
+}
+
 // Every other outcome of the take passes through untouched and writes nothing on the issue: a
 // bundle sent to the pod that replaces the released one, a pod the store refuses as no newer
 // than the save, and an issue with no bundle at all. Only the repository refusal is a thing no
@@ -119,7 +160,7 @@ func TestRepositoryCorrectionWritesNothingOnTheOtherBundleOutcomes(t *testing.T)
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
 
 	var told []string
-	take := tellBundleRepositoryRefused(st.TakeWorkspaceBundleForRestore,
+	take := tellBundleRepositoryRefused(st, unrenamed,
 		func(_ context.Context, _, body string) error {
 			told = append(told, body)
 			return nil

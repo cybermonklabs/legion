@@ -127,10 +127,10 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 	// the repository a transfer moved to corrects none of them. It writes only when a change the
 	// record was waiting to make is gone, which is the record saying that nothing waits any longer.
 	if e.sameRepository(resolved, issue.Repo) {
-		if issue.RepoChangePending == "" {
+		if issue.RepoChange == nil {
 			return nil
 		}
-		return e.store.NoteIssueRepositoryChange(ctx, tx, issue.Key, "", "")
+		return e.store.NoteIssueRepositoryChange(ctx, tx, issue.Key, nil)
 	}
 	resolution, err := e.ResolveRepository(resolved)
 	if err != nil {
@@ -144,20 +144,19 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 			return err
 		}
 		// A change waits only where Dispatch has named a repository to change to. A resolution
-		// that names none is no such repository, so the record's pair is cleared rather than
-		// written: it is empty together, as record.Issue says (RepoChangePending). The issue is
-		// told either way.
-		pending, reason := resolved, resolution.Refusal
-		if resolved == "" {
-			pending, reason = "", ""
+		// that names none is no such repository, so the record's change is cleared rather than
+		// written (record.Issue.RepoChange). The issue is told either way.
+		var change *record.RepositoryChange
+		if resolved != "" {
+			change = &record.RepositoryChange{Pending: resolved, Reason: resolution.Refusal}
 		}
 		// The record already holds what this pass would write, as the arm above reads a change
 		// that is gone: every later event of an issue waiting on the same unserved repository,
 		// and every boot and recovery listing of it, would otherwise write the row it holds.
-		if issue.RepoChangePending == pending && issue.RepoChangeReason == reason {
+		if held := issue.RepoChange; (held == nil && change == nil) || (held != nil && change != nil && *held == *change) {
 			return nil
 		}
-		return e.store.NoteIssueRepositoryChange(ctx, tx, issue.Key, pending, reason)
+		return e.store.NoteIssueRepositoryChange(ctx, tx, issue.Key, change)
 	}
 	at := e.now()
 	corrected, err := e.store.CorrectIssueRepository(ctx, tx, issue.Key, resolution.Repo, resolution.DefaultBranch, resolution.GitHubRepo, at)

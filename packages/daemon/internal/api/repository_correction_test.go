@@ -46,12 +46,11 @@ func TestRepositoryCorrectionFollowsRerunChild(t *testing.T) {
 		t.Fatalf("the child's next run is on %s at %s, spelled %s; want sjawhar/legion at main: the record follows the repository Dispatch resolves it to",
 			rerun.Repo, rerun.DefaultBranch, rerun.GitHubRepo)
 	}
-	if rerun.RepoBefore != "acme/widgets" || rerun.RepoCorrectedAt == nil {
-		t.Fatalf("the repository the child left = %q at %v, want acme/widgets at the moment the correction was applied", rerun.RepoBefore, rerun.RepoCorrectedAt)
+	if c := rerun.RepoCorrection; c == nil || c.Before != "acme/widgets" {
+		t.Fatalf("the correction = %+v, want acme/widgets left at the moment the correction was applied", c)
 	}
-	if rerun.RepoChangePending != "" || rerun.RepoChangeReason != "" {
-		t.Fatalf("the waiting change after the rerun = %q because %q, want none: Legion serves the repository, so the correction applied it",
-			rerun.RepoChangePending, rerun.RepoChangeReason)
+	if rerun.RepoChange != nil {
+		t.Fatalf("the waiting change after the rerun = %+v, want none: Legion serves the repository, so the correction applied it", rerun.RepoChange)
 	}
 	if rerun.Generation != 2 || rerun.Phase != phase.Planning {
 		t.Fatalf("the child's record once rerun_child answered = %#v, want its next run (generation 2) planning on the corrected repository", rerun)

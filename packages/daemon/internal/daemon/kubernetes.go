@@ -185,7 +185,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, p.repositories.left, cfg.RepositoryRenames, o.githubAPI)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -494,7 +494,9 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // runs the review App alone, nothing — with
 // serving as the rule every provisioning token's repository is read through
 // (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
-// whose installation holds the repository now), with the workflow's mapping as the repositories
+// whose installation holds the repository now), with left as the rule a saved bundle's restore
+// reads whether the issue has left the bundle's repository by (repositories.left, the rule the
+// update round reads a pod by), with the workflow's mapping as the repositories
 // its repository caches follow (mapped), with the store's own workspace bundles as what a
 // replacement pod's launcher is sent and what its restore drops, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
@@ -504,7 +506,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // root ("" is https://api.github.com), which the shared public leak check is read under
 // (leakCheckSource).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, left func(from, now string) bool, renames ghrepo.Renames, githubAPI string) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
 		writeOnIssue func(ctx context.Context, issue, body string) error) (runtime.Runtime, error) {
@@ -519,7 +521,7 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// answered for that bundle again. A bundle of a repository the issue has left is refused
 		// too, and that refusal is the one a person must read, so the take is wrapped with the
 		// message it writes on the issue (tellBundleRepositoryRefused).
-		opts.SavedWorkspaceBundle = tellBundleRepositoryRefused(st.TakeWorkspaceBundleForRestore, writeOnIssue, opts.Log)
+		opts.SavedWorkspaceBundle = tellBundleRepositoryRefused(st, left, writeOnIssue, opts.Log)
 		opts.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceBundle
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
 		// starts, read with the implement App's read-only token for its repository alone; a daemon

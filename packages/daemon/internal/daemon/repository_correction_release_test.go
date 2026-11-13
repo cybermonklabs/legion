@@ -150,7 +150,7 @@ func TestRepositoryCorrectionLabelsTheSavedBundleWithThePodsOwnRepository(t *tes
 		t.Fatalf("the saved bundle is labelled %q, want %q: the work is of the repository the released pod was a clone of", got, rig.issue.Repo)
 	}
 	// The pod of the new repository, created after the save: the store refuses it the work.
-	bundle, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, "pod-of-the-new-repository", time.Now().UTC().Add(time.Hour))
+	bundle, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, "pod-of-the-new-repository", time.Now().UTC().Add(time.Hour), unrenamed)
 	if err != nil {
 		t.Fatalf("take the saved bundle for the pod of the new repository: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestRepositoryCorrectionKeepsTheRefusedBundleThroughTheNextRelease(t *testi
 			refused := idleRigEarlierBundle(rig.issue.Key, time.Now())
 			rig.corrects(t, correctedRepo, correctedBranch)
 			rig.podBuiltFrom(correctedRepo)
-			if _, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, releasedPodUID, time.Now().UTC()); err != nil ||
+			if _, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, releasedPodUID, time.Now().UTC(), unrenamed); err != nil ||
 				outcome != runtime.WorkspaceBundleRefusedRepository {
 				t.Fatalf("the new pod of %s was answered %v (%v), want the earlier bundle refused for its repository", correctedRepo, outcome, err)
 			}

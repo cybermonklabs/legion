@@ -202,14 +202,11 @@ func (r *correctionRig) correctedOn(issue record.Issue, repo, branch, github, be
 	if issue.Repo != repo || issue.DefaultBranch != branch || issue.GitHubRepo != github {
 		r.t.Fatalf("the record is on %s at %s, spelled %s; want %s at %s, spelled %s", issue.Repo, issue.DefaultBranch, issue.GitHubRepo, repo, branch, github)
 	}
-	if issue.RepoBefore != before {
-		r.t.Fatalf("the repository the issue left = %q, want %q", issue.RepoBefore, before)
+	if c := issue.RepoCorrection; c == nil || c.Before != before || !c.At.Equal(correctionMoment) {
+		r.t.Fatalf("the correction = %+v, want %q left at %v", c, before, correctionMoment)
 	}
-	if issue.RepoCorrectedAt == nil || !issue.RepoCorrectedAt.Equal(correctionMoment) {
-		r.t.Fatalf("the correction's moment = %v, want %v", issue.RepoCorrectedAt, correctionMoment)
-	}
-	if issue.RepoChangePending != "" || issue.RepoChangeReason != "" {
-		r.t.Fatalf("the waiting change after the correction = %q because %q, want none: the correction applied it", issue.RepoChangePending, issue.RepoChangeReason)
+	if issue.RepoChange != nil {
+		r.t.Fatalf("the waiting change after the correction = %+v, want none: the correction applied it", issue.RepoChange)
 	}
 }
 
@@ -337,12 +334,12 @@ func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionDoesNotServe(t 
 	r.event(3, "acme/gadgets")
 	r.listing(4, "acme/gadgets")
 	issue := r.issue()
-	if issue.Repo != "acme/widgets" || issue.DefaultBranch != "main" || issue.RepoBefore != "" || issue.RepoCorrectedAt != nil {
-		t.Fatalf("the record is on %s at %s, having left %q at %v; want it still on acme/widgets at main, corrected in nothing",
-			issue.Repo, issue.DefaultBranch, issue.RepoBefore, issue.RepoCorrectedAt)
+	if issue.Repo != "acme/widgets" || issue.DefaultBranch != "main" || issue.RepoCorrection != nil {
+		t.Fatalf("the record is on %s at %s, corrected %+v; want it still on acme/widgets at main, corrected in nothing",
+			issue.Repo, issue.DefaultBranch, issue.RepoCorrection)
 	}
-	if issue.RepoChangePending != "acme/gadgets" || issue.RepoChangeReason != "acme/gadgets is not mapped to project LEGION in Dispatch" {
-		t.Fatalf("the waiting change = %q because %q, want acme/gadgets and why it waits", issue.RepoChangePending, issue.RepoChangeReason)
+	if c := issue.RepoChange; c == nil || *c != (record.RepositoryChange{Pending: "acme/gadgets", Reason: "acme/gadgets is not mapped to project LEGION in Dispatch"}) {
+		t.Fatalf("the waiting change = %+v, want acme/gadgets and why it waits", c)
 	}
 	want := "Legion did not move this issue off acme/widgets: acme/gadgets is not mapped to project LEGION in Dispatch. Map acme/gadgets to the project in Dispatch, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	if messages := r.messages(); len(messages) != 1 || messages[0] != want {
@@ -357,8 +354,8 @@ func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionDoesNotServe(t 
 func TestRepositoryCorrectionAppliesTheWaitingChangeOnceTheRepositoryIsServed(t *testing.T) {
 	r := newCorrectionRig(t)
 	r.event(2, "acme/gadgets")
-	if pending := r.issue().RepoChangePending; pending != "acme/gadgets" {
-		t.Fatalf("the waiting change = %q, want acme/gadgets before the repository is served", pending)
+	if change := r.issue().RepoChange; change == nil || change.Pending != "acme/gadgets" {
+		t.Fatalf("the waiting change = %+v, want acme/gadgets before the repository is served", change)
 	}
 	r.repos["acme/gadgets"] = workflow.Resolution{Repo: "acme/gadgets", DefaultBranch: "trunk", GitHubRepo: "acme/gadgets"}
 	r.listing(2, "acme/gadgets")
@@ -379,12 +376,12 @@ func TestRepositoryCorrectionWritesNothingWhenDispatchNamesTheRecordedRepository
 	r.event(2, "acme/widgets")
 	r.listing(3, "acme/widgets")
 	issue := r.issue()
-	if issue.Repo != "acme/widgets" || issue.RepoBefore != "" || issue.RepoCorrectedAt != nil {
-		t.Fatalf("the record is on %s, having left %q at %v; want it on acme/widgets with no correction written",
-			issue.Repo, issue.RepoBefore, issue.RepoCorrectedAt)
+	if issue.Repo != "acme/widgets" || issue.RepoCorrection != nil {
+		t.Fatalf("the record is on %s, corrected %+v; want it on acme/widgets with no correction written",
+			issue.Repo, issue.RepoCorrection)
 	}
-	if issue.RepoChangePending != "" || issue.RepoChangeReason != "" {
-		t.Fatalf("the waiting change = %q because %q, want none: nothing changed", issue.RepoChangePending, issue.RepoChangeReason)
+	if issue.RepoChange != nil {
+		t.Fatalf("the waiting change = %+v, want none: nothing changed", issue.RepoChange)
 	}
 	if messages := r.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing", messages)

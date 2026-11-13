@@ -130,8 +130,8 @@ func TestARecordedIssuesRepositoryFollowsDispatchToARepositoryLegionServes(t *te
 	if child == nil || child.Repo != "acme/widgets" || child.DefaultBranch != "main" || child.GitHubRepo != "acme/widgets" || child.Generation != 2 {
 		t.Fatalf("child = %#v, want it re-entered at generation 2 on acme/widgets at main", child)
 	}
-	if child.RepoBefore != "acme/tools" || child.RepoCorrectedAt == nil {
-		t.Fatalf("the correction's marks = %q at %v, want acme/tools at the moment the correction was applied", child.RepoBefore, child.RepoCorrectedAt)
+	if child.RepoCorrection == nil || child.RepoCorrection.Before != "acme/tools" {
+		t.Fatalf("the correction = %+v, want acme/tools left at the moment the correction was applied", child.RepoCorrection)
 	}
 	if messages := outboxOf(t, pool, "dispatch_message"); len(messages) != 0 {
 		t.Fatalf("Dispatch messages = %#v, want none: the record followed Dispatch, so there is nothing to tell anyone", messages)
@@ -180,25 +180,25 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 				if len(kept) != 0 {
 					t.Fatalf("repository notes = %#v, want none: the resolution is the issue's repository under the configured pair", kept)
 				}
-				if child.RepoChangePending != "" || child.RepoChangeReason != "" {
-					t.Fatalf("the waiting change = %q because %q, want none: nothing changed", child.RepoChangePending, child.RepoChangeReason)
+				if child.RepoChange != nil {
+					t.Fatalf("the waiting change = %+v, want none: nothing changed", child.RepoChange)
 				}
 				return
 			}
 			if len(kept) != 1 || kept[0].issue != "LEGION-209" || kept[0].payload["body"] != tc.want {
 				t.Fatalf("repository notes = %#v, want one saying %q", kept, tc.want)
 			}
-			if child.RepoChangePending != "cybermonklabs/legion" || child.RepoChangeReason == "" {
-				t.Fatalf("the waiting change = %q because %q, want cybermonklabs/legion and why it waits", child.RepoChangePending, child.RepoChangeReason)
+			if c := child.RepoChange; c == nil || c.Pending != "cybermonklabs/legion" || c.Reason == "" {
+				t.Fatalf("the waiting change = %+v, want cybermonklabs/legion and why it waits", c)
 			}
 		})
 	}
 }
 
 // A recorded issue Dispatch resolves to no repository at all is told so, and leaves no change
-// waiting on the record: there is no repository to change to, so the pair a refused resolution
-// wrote is cleared rather than written again with an empty repository beside a reason — the pair
-// is empty together (record.Issue.RepoChangePending). The record keeps the repository it has.
+// waiting on the record: there is no repository to change to, so the change a refused resolution
+// wrote is cleared rather than written again with an empty repository beside a reason
+// (record.Issue.RepoChange). The record keeps the repository it has.
 func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *testing.T) {
 	pool := migratedPool(t)
 	openTree(t, pool)
@@ -209,18 +209,18 @@ func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *t
 	leftOut := childTodo(3, "acme/gadgets")
 	leftOut.Status = "in_progress"
 	apply("left-out", leftOut)
-	if child := issueRecord(t, pool, "LEGION-209"); child == nil || child.RepoChangePending != "acme/gadgets" {
+	if child := issueRecord(t, pool, "LEGION-209"); child == nil || child.RepoChange == nil || child.RepoChange.Pending != "acme/gadgets" {
 		t.Fatalf("child = %#v, want acme/gadgets waiting on the record before Dispatch resolves it to none", child)
 	}
 	none := childTodo(4, "")
 	none.Status = "in_progress"
 	apply("resolved-to-none", none)
 	child := issueRecord(t, pool, "LEGION-209")
-	if child == nil || child.Repo != "sjawhar/legion" || child.RepoBefore != "" || child.RepoCorrectedAt != nil {
+	if child == nil || child.Repo != "sjawhar/legion" || child.RepoCorrection != nil {
 		t.Fatalf("child = %#v, want it still recorded on sjawhar/legion, corrected in nothing", child)
 	}
-	if child.RepoChangePending != "" || child.RepoChangeReason != "" {
-		t.Fatalf("the waiting change = %q because %q, want both empty: Dispatch has named no repository to change to", child.RepoChangePending, child.RepoChangeReason)
+	if child.RepoChange != nil {
+		t.Fatalf("the waiting change = %+v, want none: Dispatch has named no repository to change to", child.RepoChange)
 	}
 	want := "Legion did not move this issue off sjawhar/legion: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	messages := outboxOf(t, pool, "dispatch_message")

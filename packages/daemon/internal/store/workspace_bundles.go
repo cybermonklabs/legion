@@ -98,31 +98,20 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // Before either of those the row's own repository is read, since a pod's age decides nothing
 // about work of a repository the issue is no longer on. The row names the repository its work
 // is of (PutWorkspaceBundle) and the issues table names the one the issue is on now, which a
-// correction of Dispatch's fact moves (record.Store.CorrectIssueRepository). The statement
-// compares the two without regard to case, as GitHub compares names: a row that names a
-// repository, of an issue whose issues row names another, refuses the bundle
-// (runtime.WorkspaceBundleRefusedRepository), and nothing is sent. The pod's workspace is a
-// clone of the issue's repository now and holds none of the saved commits' bases, so the bundle
-// could not be applied there at all, and the daemon writes on the issue where the work is
-// instead (internal/daemon's bundleRepositoryMessage). A row whose repo is empty — one saved
-// before the column — is refused nothing: nothing recorded what that work was of, so it is read
-// by the rule below as it always was. An issue the record does not hold refuses nothing either,
-// for the reason an unread pod drifts from nothing (the daemon's repositoryDrift): an unknown is
-// never a statement that the issue has left anything.
-//
-// The statement decides two cases otherwise than the daemon's repositoryDrift does. An issues
-// row with an empty repository counts here as another name and refuses the bundle, where
-// repositoryDrift reads it as unknown; only a record the repository backfill has not filled
-// holds one, since the record store writes none. And the statement does not read a configured
-// rename's two names as one repository (ghrepo.Renames): the pairs are the daemon's
-// configuration, and the database holds none of them. A rename corrects no record
-// (workflow.Engine.ApplyRepositoryChange), and a pod clones the repository under the name its
-// issue's record held when the pod was made, so a row and its issue hold the same name unless a
-// correction moved the record between them. A record corrected off a repository and then back
-// onto it after a rename holds the new name, and a row saved before the first correction holds
-// the old name: the bundle is refused, although the clone holds its commits. Either refusal
-// loses no work: the row moves to workspace_bundles_refused and the issue is told where the work
-// is.
+// correction of Dispatch's fact moves (record.Store.CorrectIssueRepository). Whether the issue
+// has left the row's repository is left's to say, and the statement records the answer it is
+// given: left is the one rule the daemon reads every such pair by (ghrepo.Renames.Left, through
+// the daemon's repositories.left), which compares names without regard to case, as GitHub
+// does, reads a configured rename's two names as one repository, and reads an empty name as
+// unknown. The pairs are the daemon's configuration and the database holds none of them, so the
+// decision is made here in Go and not in the statement. Where left answers that the issue has
+// left the repository, the bundle is refused (runtime.WorkspaceBundleRefusedRepository) and
+// nothing is sent. The pod's workspace is a clone of the issue's repository now and holds none
+// of the saved commits' bases, so the bundle could not be applied there at all, and the daemon
+// writes on the issue where the work is instead (internal/daemon's bundleRepositoryMessage). A
+// row whose repo is empty — one saved before the column — and an issue the record does not hold
+// are each read as an empty name, so neither refuses anything: nothing recorded the one, and an
+// unread record is never a statement that the issue has left anything.
 //
 // A refusal for the repository moves the row out of workspace_bundles and into
 // workspace_bundles_refused, in the transaction that records it. workspace_bundles holds one
@@ -149,7 +138,7 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // The row stays for every other refusal. A bundle nothing restored holds the issue's pod
 // (workflow.IdleHoldBundleUnrestored) and keeps the work in the database until the issue's own
 // work is over (outbox's dropReleasedWork), which is what the launcher's notice tells the roles.
-func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time, left func(saved, recorded string) bool) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
 	}
@@ -160,24 +149,36 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 	var outcome string
 	var tips, bookmarks []byte
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
+		// The lock is taken here, before left is asked, so the row the update below records the
+		// answer on is the row whose repository was read, and a second pod asking at once waits
+		// and then finds the attempt taken.
+		var saved, recorded string
+		if err := tx.QueryRow(ctx, `select b.repo, coalesce(i.repo, '')
+			from workspace_bundles b left join issues i on i.key = b.issue
+			where b.issue = $1 and b.attempt_pod_uid is null and b.source_pod_uid <> $2
+			for update of b`,
+			issue, podUID).Scan(&saved, &recorded); err != nil {
+			return err
+		}
+		refuseRepository := left(saved, recorded)
 		// The body is read back only when it is being sent: a refusal records the attempt and
 		// answers the row's facts alone, and a bundle runs to tens of megabytes.
 		if err := tx.QueryRow(ctx, `update workspace_bundles
 			set attempt_pod_uid = $2, attempt_at = now(),
 				attempt_outcome = case
-					when repo <> '' and lower(repo) <> lower(coalesce((select i.repo from issues i where i.key = workspace_bundles.issue), repo)) then 'refused_repository'
+					when $4 then 'refused_repository'
 					when date_trunc('second', at) <= $3 then 'sent'
 					else 'refused_older' end
-			where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
+			where issue = $1
 			returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
 				at, head, tips, bookmarks, release_id, source_pod_uid, repo`,
-			issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID, &b.Repo); err != nil {
+			issue, podUID, podCreated, refuseRepository).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID, &b.Repo); err != nil {
 			return err
 		}
-		if outcome != "refused_repository" {
+		if !refuseRepository {
 			return nil
 		}
-		// The update above holds the row's lock, so the row this deletes is the one it refused.
+		// The select above holds the row's lock, so the row this deletes is the one it refused.
 		_, err := tx.Exec(ctx, `with refused as (delete from workspace_bundles where issue = $1
 				returning issue, release_id, source_pod_uid, repo, bundle, size_bytes, at, head, tips, bookmarks, attempt_pod_uid, attempt_at)
 			insert into workspace_bundles_refused (issue, release_id, source_pod_uid, repo, bundle, size_bytes, at, head, tips, bookmarks, refused_pod_uid, refused_at)

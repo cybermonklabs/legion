@@ -167,7 +167,7 @@ export interface PhaseHookDeps {
   /** What this session's claim owes now (`LegionDaemonClient.owed`), the one answer that decides
    * whether a reminder goes out, aborted with `signal` once the check's bound passes
    * (`PhaseReminderDeps.readOwed`). An answer that does not arrive is the shared reminder's to
-   * decide (`NUDGE_WHEN_OWED_UNREAD`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
+   * decide (`UNREAD_CHECK`, `@legion/pi-shared/phase-reminder`), as it is on Oh My Pi. */
   readonly readOwed: (input: OwedInput, signal: AbortSignal) => Promise<LegionOwed>
   /** Sends this session's activity report to the daemon (`LegionDaemonClient.activity`), so the
    * idle rule can decide whether the pane's pod may be released (INFRA-945). */

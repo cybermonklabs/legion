@@ -1028,13 +1028,15 @@ const recordFieldsContract = 75
 // contract, so the only caller served the four keys is one at it.
 const repositoryCorrectionContract = 107
 
-// carriesRepositoryCorrection is whether any issue of state carries one of the four keys
+// carriesRepositoryCorrection is whether any issue of state carries the keys
 // repositoryCorrectionContract added. Like the gated steps they are written only where there is
 // one — an issue whose repository nothing changed carries none — so this is asked of the state
-// rather than answered true.
+// rather than answered true. Each pair of keys is written from one value of the record, a
+// correction (record.Issue.RepoCorrection) or a change still to be made
+// (record.Issue.RepoChange), so one key of each says whether its pair is there.
 func carriesRepositoryCorrection(state State) bool {
 	for _, issue := range state.Issues {
-		if issue.RepoBefore != "" || issue.RepoCorrectedAt != nil || issue.RepoChangePending != "" || issue.RepoChangeReason != "" {
+		if issue.RepoCorrectedAt != nil || issue.RepoChangePending != "" {
 			return true
 		}
 	}

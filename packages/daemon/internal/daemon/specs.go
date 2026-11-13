@@ -457,7 +457,7 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 	fragment += " " + fmt.Sprintf("The daemon changed your issue's repository from %s at %s. "+
 		"Your issue's branch, your issue's pull request and any rescue branch of the old pod are on %s. "+
 		"Your work on this issue is on %s now.",
-		corrected.RepoBefore, corrected.At.UTC().Format(time.RFC3339), corrected.RepoBefore, repo.String())
+		corrected.Before, corrected.At.UTC().Format(time.RFC3339), corrected.Before, repo.String())
 	if corrected.PullRequest == nil {
 		return fragment, nil
 	}
@@ -466,16 +466,13 @@ func AddressingFragment(project string, c supervise.Claim, repo ghrepo.Repositor
 		corrected.PullRequest.Repo, corrected.PullRequest.Number, corrected.PullRequest.Repo), nil
 }
 
-// RepositoryCorrection is what a correction of an issue's repository left on its record: the
-// repository the issue left (record.Issue.RepoBefore), the moment the daemon applied that
-// correction (record.Issue.RepoCorrectedAt) and the pull request that correction left open on a
-// repository the issue has left (PullRequest), where the record holds one. RepoBefore and At are
-// one value because neither of them says anything alone — the record writes them together and a
-// launch names both or neither — so a caller holds a correction or nil, and nil is an issue no
-// correction has reached.
+// RepositoryCorrection is what a correction of an issue's repository left on its record
+// (record.Issue.RepoCorrection: the repository the issue left and the moment the daemon applied
+// that correction) and the pull request that correction left open on a repository the issue has
+// left (PullRequest), where the record holds one. A caller holds a correction or nil, and nil is
+// an issue no correction has reached.
 type RepositoryCorrection struct {
-	RepoBefore string
-	At         time.Time
+	record.RepositoryCorrection
 	// PullRequest is the issue's recorded pull request while it is open on a repository the
 	// issue no longer works, and nil otherwise: no pull request recorded, one that is merged or
 	// closed, or one on the repository the issue works now.

@@ -152,17 +152,14 @@ func TestRepositoryCorrectionFollowsAChangeOfTheProjectsDefaultRepositoryForEver
 		if issue.Repo != "acme/tools" || issue.DefaultBranch != "release/v7.1" || issue.GitHubRepo != "acme/tools" {
 			t.Fatalf("%s is on %s at %s, spelled %s; want acme/tools at release/v7.1", key, issue.Repo, issue.DefaultBranch, issue.GitHubRepo)
 		}
-		if issue.RepoBefore != "acme/widgets" {
-			t.Fatalf("the repository %s left = %q, want acme/widgets", key, issue.RepoBefore)
-		}
-		if issue.RepoCorrectedAt == nil {
-			t.Fatalf("%s carries no moment of its correction", key)
+		if issue.RepoCorrection == nil || issue.RepoCorrection.Before != "acme/widgets" {
+			t.Fatalf("the correction of %s = %+v, want acme/widgets left", key, issue.RepoCorrection)
 		}
 		if issue.Generation != correctionGeneration || issue.Phase != phase.Implementing {
 			t.Fatalf("%s is at generation %d in %s, want generation %d in %s: a correction takes no new generation and moves no phase",
 				key, issue.Generation, issue.Phase, correctionGeneration, phase.Implementing)
 		}
-		moments[key] = *issue.RepoCorrectedAt
+		moments[key] = issue.RepoCorrection.At
 	}
 	first, second := moments[defaultChangeKeys[0]], moments[defaultChangeKeys[1]]
 	if first.Equal(second) {
@@ -183,12 +180,9 @@ func TestRepositoryCorrectionFollowsAChangeOfTheProjectsDefaultRepositoryForEver
 	r.listing("acme/tools")
 	for _, key := range defaultChangeKeys {
 		issue := r.issue(key)
-		if issue.RepoCorrectedAt == nil || !issue.RepoCorrectedAt.Equal(moments[key]) {
-			t.Fatalf("%s was corrected at %v after a second reading of the same default, want its first moment %v",
-				key, issue.RepoCorrectedAt, moments[key])
-		}
-		if issue.RepoBefore != "acme/widgets" {
-			t.Fatalf("the repository %s left = %q after a second reading, want acme/widgets", key, issue.RepoBefore)
+		if c := issue.RepoCorrection; c == nil || !c.At.Equal(moments[key]) || c.Before != "acme/widgets" {
+			t.Fatalf("the correction of %s = %+v after a second reading of the same default, want acme/widgets left at its first moment %v",
+				key, c, moments[key])
 		}
 	}
 }

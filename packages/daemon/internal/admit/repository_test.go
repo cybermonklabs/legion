@@ -124,8 +124,8 @@ func TestARecordedRootsRepositoryFollowsDispatchAcrossAnEditAListingAndAReadmiss
 	if got.Generation != 4 || got.Repo != "acme/widgets" || got.DefaultBranch != "main" || got.GitHubRepo != "acme/widgets" {
 		t.Fatalf("re-admitted root = %#v, want generation 4 on acme/widgets at main", got)
 	}
-	if got.RepoBefore != "acme/tools" || got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(fixedNow) {
-		t.Fatalf("the correction's marks = %q at %v, want acme/tools at %v, written once by the first pass", got.RepoBefore, got.RepoCorrectedAt, fixedNow)
+	if c := got.RepoCorrection; c == nil || c.Before != "acme/tools" || !c.At.Equal(fixedNow) {
+		t.Fatalf("the correction = %+v, want acme/tools at %v, written once by the first pass", c, fixedNow)
 	}
 	for _, effect := range effects(t, pool) {
 		if post, ok := effect.payload.(record.MessagePost); ok {

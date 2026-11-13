@@ -272,7 +272,7 @@ func TestAWorkersAddressingNamesARepositoryCorrection(t *testing.T) {
 
 	s.repository = func(context.Context, string) (launchRepository, error) {
 		read := worked
-		read.Corrected = &RepositoryCorrection{RepoBefore: "acme/widgets", At: correctedAt}
+		read.Corrected = &RepositoryCorrection{RepositoryCorrection: record.RepositoryCorrection{Before: "acme/widgets", At: correctedAt}}
 		return read, nil
 	}
 	corrected := launch()

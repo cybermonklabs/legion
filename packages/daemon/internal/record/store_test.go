@@ -167,11 +167,8 @@ func TestCorrectIssueRepositoryWritesTheCorrectionAndKeepsTheRepositoryTheIssueL
 		if got.Repo != "zeta/tools" || got.DefaultBranch != "main" || got.GitHubRepo != "Zeta/Tools" {
 			t.Fatalf("corrected issue = %s@%s (GitHub's %s), want zeta/tools@main (GitHub's Zeta/Tools)", got.Repo, got.DefaultBranch, got.GitHubRepo)
 		}
-		if got.RepoBefore != "acme/widgets" {
-			t.Fatalf("the corrected record was on %q before, want acme/widgets: the repository the issue left", got.RepoBefore)
-		}
-		if got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(at) {
-			t.Fatalf("the correction's moment = %v, want %v", got.RepoCorrectedAt, at)
+		if c := got.RepoCorrection; c == nil || c.Before != "acme/widgets" || !c.At.Equal(at) {
+			t.Fatalf("the correction = %+v, want acme/widgets left at %v: the repository the issue left, at the moment of the correction", c, at)
 		}
 
 		again, err := records.CorrectIssueRepository(ctx, tx, "LEGION-601", "zeta/tools", "release/v9", "Zeta/Tools", at.Add(time.Hour))
@@ -211,6 +208,32 @@ func TestCorrectIssueRepositoryWritesTheCorrectionAndKeepsTheRepositoryTheIssueL
 	}
 }
 
+// A correction of a record that held no repository yet — one the repository backfill had not
+// filled — moved the issue off no repository, so the record reads as holding no correction: there
+// is no repository the issue left for a launch to name, and none whose work it saved.
+func TestACorrectionOffNoRepositoryReadsAsNone(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	at := time.Date(2026, 11, 12, 1, 21, 23, 0, time.UTC)
+	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-605"))) })
+	inTx(t, st, func(tx pgx.Tx) {
+		if _, err := tx.Exec(ctx, "update issues set repo = '', github_repo = '' where key = $1", "LEGION-605"); err != nil {
+			t.Fatal(err)
+		}
+		corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-605", "zeta/tools", "main", "Zeta/Tools", at)
+		must(t, err)
+		if !corrected {
+			t.Fatal("CorrectIssueRepository = false, want true: the record was on no repository")
+		}
+		got, err := records.Issue(ctx, tx, "LEGION-605")
+		must(t, err)
+		if got.Repo != "zeta/tools" || got.RepoCorrection != nil {
+			t.Fatalf("the record is on %s, corrected %+v; want zeta/tools with no correction: it left no repository", got.Repo, got.RepoCorrection)
+		}
+	})
+}
+
 // A copy of the issue read before a correction is acted on after it — every observation the
 // daemon prepares is one — and the pass that records it must neither be refused nor undo the
 // correction. So the write goes through, everything it carries but the repository is recorded,
@@ -238,8 +261,8 @@ func TestPutIssueCarryingTheOldRepositoryLeavesTheCorrectedRepositoryStanding(t 
 		if got.Repo != "zeta/tools" || got.DefaultBranch != "main" || got.GitHubRepo != "Zeta/Tools" {
 			t.Fatalf("issue after a stale write = %s@%s (GitHub's %s), want the corrected zeta/tools@main (GitHub's Zeta/Tools)", got.Repo, got.DefaultBranch, got.GitHubRepo)
 		}
-		if got.RepoBefore != "acme/widgets" || got.RepoCorrectedAt == nil || !got.RepoCorrectedAt.Equal(at) {
-			t.Fatalf("the correction's marks after a stale write = %q at %v, want acme/widgets at %v", got.RepoBefore, got.RepoCorrectedAt, at)
+		if c := got.RepoCorrection; c == nil || c.Before != "acme/widgets" || !c.At.Equal(at) {
+			t.Fatalf("the correction after a stale write = %+v, want acme/widgets left at %v", c, at)
 		}
 		if got.Title != stale.Title || got.LastDispatchSeq != stale.LastDispatchSeq {
 			t.Fatalf("issue after a stale write = %q at seq %d, want the write's own %q at seq %d: only the repository is kept from it", got.Title, got.LastDispatchSeq, stale.Title, stale.LastDispatchSeq)
@@ -249,29 +272,30 @@ func TestPutIssueCarryingTheOldRepositoryLeavesTheCorrectedRepositoryStanding(t 
 
 // A repository Dispatch names that the daemon has not applied is written on the record with the
 // reason it waits, so the next pass and a person reading the record see what is pending rather
-// than silence. The note writes that pair and nothing else — the recorded repository is the one
-// the issue still runs on until a correction moves it — and two empty strings clear it, which is
-// how a pass that finds the change gone says so.
+// than silence. The note writes that change and nothing else — the recorded repository is the
+// one the issue still runs on until a correction moves it — and nil clears it, which is how a
+// pass that finds the change gone says so.
 func TestNoteIssueRepositoryChangeWritesTheWaitingChangeAndClearsIt(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
 	records := NewStore()
+	waiting := RepositoryChange{Pending: "zeta/tools", Reason: "GitHub has not answered for zeta/tools yet"}
 	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-603"))) })
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-603", "zeta/tools", "GitHub has not answered for zeta/tools yet"))
+		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-603", &waiting))
 		got, err := records.Issue(ctx, tx, "LEGION-603")
 		must(t, err)
-		if got.RepoChangePending != "zeta/tools" || got.RepoChangeReason != "GitHub has not answered for zeta/tools yet" {
-			t.Fatalf("the waiting change = %q because %q, want zeta/tools and the reason it waits", got.RepoChangePending, got.RepoChangeReason)
+		if got.RepoChange == nil || *got.RepoChange != waiting {
+			t.Fatalf("the waiting change = %+v, want %+v", got.RepoChange, waiting)
 		}
-		if got.Repo != "acme/widgets" || got.RepoBefore != "" || got.RepoCorrectedAt != nil {
-			t.Fatalf("the record after a note = %s, before %q at %v, want the recorded repository and no correction: a note applies nothing", got.Repo, got.RepoBefore, got.RepoCorrectedAt)
+		if got.Repo != "acme/widgets" || got.RepoCorrection != nil {
+			t.Fatalf("the record after a note = %s, corrected %+v, want the recorded repository and no correction: a note applies nothing", got.Repo, got.RepoCorrection)
 		}
-		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-603", "", ""))
+		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-603", nil))
 		cleared, err := records.Issue(ctx, tx, "LEGION-603")
 		must(t, err)
-		if cleared.RepoChangePending != "" || cleared.RepoChangeReason != "" {
-			t.Fatalf("the change after two empty strings = %q because %q, want both empty", cleared.RepoChangePending, cleared.RepoChangeReason)
+		if cleared.RepoChange != nil {
+			t.Fatalf("the change after a clear = %+v, want none", cleared.RepoChange)
 		}
 	})
 }
@@ -286,7 +310,7 @@ func TestCorrectIssueRepositoryClearsTheWaitingRepositoryChange(t *testing.T) {
 	at := time.Date(2026, 11, 12, 1, 21, 23, 0, time.UTC)
 	inTx(t, st, func(tx pgx.Tx) { must(t, records.PutIssue(ctx, tx, issueFixture("LEGION-604"))) })
 	inTx(t, st, func(tx pgx.Tx) {
-		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-604", "zeta/tools", "GitHub has not answered for zeta/tools yet"))
+		must(t, records.NoteIssueRepositoryChange(ctx, tx, "LEGION-604", &RepositoryChange{Pending: "zeta/tools", Reason: "GitHub has not answered for zeta/tools yet"}))
 		corrected, err := records.CorrectIssueRepository(ctx, tx, "LEGION-604", "zeta/tools", "main", "Zeta/Tools", at)
 		must(t, err)
 		if !corrected {
@@ -294,11 +318,11 @@ func TestCorrectIssueRepositoryClearsTheWaitingRepositoryChange(t *testing.T) {
 		}
 		got, err := records.Issue(ctx, tx, "LEGION-604")
 		must(t, err)
-		if got.RepoChangePending != "" || got.RepoChangeReason != "" {
-			t.Fatalf("the change after the correction = %q because %q, want both empty: the correction applied it", got.RepoChangePending, got.RepoChangeReason)
+		if got.RepoChange != nil {
+			t.Fatalf("the change after the correction = %+v, want none: the correction applied it", got.RepoChange)
 		}
-		if got.Repo != "zeta/tools" || got.RepoBefore != "acme/widgets" {
-			t.Fatalf("the corrected record = %s, before %q, want zeta/tools after acme/widgets", got.Repo, got.RepoBefore)
+		if got.Repo != "zeta/tools" || got.RepoCorrection == nil || got.RepoCorrection.Before != "acme/widgets" {
+			t.Fatalf("the corrected record = %s, corrected %+v, want zeta/tools after acme/widgets", got.Repo, got.RepoCorrection)
 		}
 	})
 }

@@ -1235,20 +1235,18 @@ type podDrift struct {
 // unpushed work with it. Read as nothing at all, it would leave that round open over a pod that is
 // not there. The caller is what logs it, because the caller is what decides it.
 //
-// The repository is asked once for the group, through the first claim that records a process,
-// because it is the pod's and not the claim's: every role of the issue runs in that one pod and
-// works the one workspace its fetch cloned, so one correction opens one round rather than one
-// per claim. A runtime that answers nothing — one whose processes share no such place, a pod
-// that clones no repository — ends the question there, and the record is not read at all.
+// The repository is asked once for the group, through the one helper every reader of the pod's
+// repository asks it by (podRepository), because it is the pod's and not the claim's: every role
+// of the issue runs in that one pod and works the one workspace its fetch cloned, so one
+// correction opens one round rather than one per claim, and the idle rule's repository hold
+// reads the pod through the same claim (podRepositoryDrifted). A runtime that answers nothing —
+// one whose processes share no such place, a pod that clones no repository — and a group no
+// claim of which records a process end the question there.
 func (s *supervision) groupDrift(ctx context.Context, issue string, group []supervise.Claim) podDrift {
 	var reasons []string
-	var pod *supervise.Claim
-	for i, c := range group {
+	for _, c := range group {
 		if c.Locator == nil {
 			continue
-		}
-		if pod == nil {
-			pod = &group[i]
 		}
 		drift, err := s.runtime.PodDrift(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator})
 		if errors.Is(err, runtime.ErrPodGone) {
@@ -1266,13 +1264,10 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 			}
 		}
 	}
-	if pod == nil {
-		return podDrift{reasons: reasons, reading: podRead}
-	}
-	repository, err := s.runtime.PodRepository(ctx, runtime.Known{Claim: pod.Token, Locator: pod.Locator})
+	repository, err := podRepository(ctx, s.runtime, slices.Values(group))
 	if err != nil {
 		if ctx.Err() == nil {
-			s.log.Error("supervise: read the repository this issue's pod was built from", "issue", issue, "claim", pod.Token, "error", err)
+			s.log.Error("supervise: read the repository this issue's pod was built from", "issue", issue, "error", err)
 		}
 		return podDrift{reasons: reasons, reading: podRead}
 	}
@@ -1289,10 +1284,11 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 // the token of that repository's owner for its whole life, so the issue works the repository it
 // has left until the pod is replaced.
 //
-// The two names are read as the daemon reads any pair of repository names (repositories.same):
-// without regard to case, as GitHub compares names, and a configured rename's two names as one
-// repository, so re-pointing an issue at the name a transfer moved its repository to replaces no
-// pod.
+// The two names are read by the one rule the daemon decides whether an issue has left a
+// repository by (repositories.left), which a saved bundle's restore reads as well
+// (store.Store.TakeWorkspaceBundleForRestore): without regard to case, as GitHub compares names,
+// and a configured rename's two names as one repository, so re-pointing an issue at the name a
+// transfer moved its repository to replaces no pod.
 //
 // Nothing is a reason but two names that are both there and differ. A pod that answers nothing,
 // a deployment with no workflow (plan.recordedRepository nil), an issue the record does not hold
@@ -1309,7 +1305,7 @@ func (s *supervision) repositoryDrift(ctx context.Context, issue, pod string) st
 		}
 		return ""
 	}
-	if recorded == "" || s.plan.repositories.same(pod, recorded) {
+	if !s.plan.repositories.left(pod, recorded) {
 		return ""
 	}
 	return "repository " + pod + ", now " + recorded

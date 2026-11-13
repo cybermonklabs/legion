@@ -712,7 +712,7 @@ daemon's words; it reminds again at the end of every turn for as long as the dae
 reminder says the daemon's record holds that work open for the role: run `handoff_complete`, or
 reply with a line starting WAITING that names what the worker waits on. An answer that does not
 arrive — an error, the bound passing, a refusal, or a body the contract does not describe — still
-nudges the worker (`NUDGE_WHEN_OWED_UNREAD`), with words that say the record could not be read and
+nudges the worker (`UNREAD_CHECK`), with words that say the record could not be read and
 name no phase and no operation. A final message holding a tool call written as text is told so
 first. The first reminder of a run is the host's own continuation
 (`{continue: true, additionalContext}`), one more turn of the same session; every one after it

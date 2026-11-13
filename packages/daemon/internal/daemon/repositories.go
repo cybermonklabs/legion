@@ -185,6 +185,16 @@ func (r *repositories) same(a, b string) bool {
 	return r.renames.Same(a, b)
 }
 
+// left is whether an issue whose record names now has left the repository from, read through the
+// mapping's renames (ghrepo.Renames.Left): both names there, and not one repository by same. A nil
+// mapping compares without case alone, as same does.
+func (r *repositories) left(from, now string) bool {
+	if r == nil {
+		return ghrepo.Renames{}.Left(from, now)
+	}
+	return r.renames.Left(from, now)
+}
+
 // servesRepository is whether the mapping serves repo, the predicate the rename rule reads
 // (serving). The served repositories are held by their lowercased <owner>/<name>, which is how
 // GitHub compares both halves, so the answer is one map lookup rather than a walk of the
@@ -1717,8 +1727,7 @@ func (w *workflowRuntime) heardRepositories(ctx context.Context, tx pgx.Tx, serv
 // workspace from one, so a launch on none would be refused. A project that serves no default
 // repository refuses that launch, naming the fix. Neither it nor an issue no correction has
 // reached carries a correction, which is the same answer: neither has a repository the issue
-// left (record.Issue.RepoBefore and record.Issue.RepoCorrectedAt, which the record writes
-// together).
+// left (record.Issue.RepoCorrection).
 //
 // A record that holds a correction has its pull request read too, in the same transaction: the
 // correction moved the issue's record alone, so a pull request opened before it keeps the
@@ -1750,8 +1759,8 @@ func (w *workflowRuntime) issueLaunchRepository(ctx context.Context, key string)
 		return launchRepository{}, err
 	}
 	read := launchRepository{Repo: repo, DefaultBranch: issue.DefaultBranch}
-	if issue.RepoBefore != "" && issue.RepoCorrectedAt != nil {
-		read.Corrected = &RepositoryCorrection{RepoBefore: issue.RepoBefore, At: *issue.RepoCorrectedAt}
+	if issue.RepoCorrection != nil {
+		read.Corrected = &RepositoryCorrection{RepositoryCorrection: *issue.RepoCorrection}
 		if pull != nil && pull.State == record.PullRequestOpen && !w.repositories.same(pull.Repo, issue.Repo) {
 			read.Corrected.PullRequest = &LeftPullRequest{Repo: pull.Repo, Number: pull.Number}
 		}
@@ -1800,7 +1809,7 @@ func (w *workflowRuntime) recordWithPullRequest(ctx context.Context, key string)
 		if issue, err = w.records.Issue(ctx, tx, key); err != nil || issue == nil {
 			return err
 		}
-		if issue.RepoBefore == "" || issue.RepoCorrectedAt == nil {
+		if issue.RepoCorrection == nil {
 			return nil
 		}
 		pull, err = w.records.PullRequest(ctx, tx, key)

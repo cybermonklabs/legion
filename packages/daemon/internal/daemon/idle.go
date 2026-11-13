@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"iter"
 	"log/slog"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -34,10 +36,9 @@ type issuePods interface {
 	IssueSandbox(issue string) (name string, present bool)
 }
 
-// issuePodRepository is the repository the pod of issue was built from, as that pod itself
-// names it (runtime.Runtime.PodRepository), read through the first claim of the issue the
-// daemon supervises that records a process. Two readers want it: the idle rule's repository
-// hold (podRepositoryDrifted) and the label of the bundle a release saves
+// issuePodRepository is the repository the pod of issue was built from, read through the claims
+// of the issue the daemon supervises (podRepository). Two readers want it: the idle rule's
+// repository hold (podRepositoryDrifted) and the label of the bundle a release saves
 // (outbox.bundleIssueWorkspace), and the two read the one pod the one way.
 //
 // It is the pod's own fact and not the record's: a pod clones one repository into the issue's
@@ -45,11 +46,9 @@ type issuePods interface {
 // owner for its whole life, so this is the repository every role in it works, and the
 // repository every byte of unpushed work on its disk is of, until the pod is replaced.
 //
-// One claim answers for the whole issue, as the update-round sweep's own read has it
-// (supervision.groupDrift): every role of an issue runs in that one pod and works the one
-// workspace its fetch cloned. The claims are read as their machines last published them
-// (supervise.Machine.View), never waiting on a decision in flight, exactly as the capability
-// report reads them (supervision.deployment).
+// The claims are read as their machines last published them (supervise.Machine.View), never
+// waiting on a decision in flight, exactly as the capability report reads them
+// (supervision.deployment).
 //
 // It answers "" with no error where nothing can say: a daemon with no supervisor or no runtime,
 // an issue no claim of which records a process, and the tmux runtime, whose panes share no pod
@@ -59,22 +58,50 @@ func issuePodRepository(ctx context.Context, sup *supervisor, issue string) (str
 	if sup == nil || sup.deps.Runtime == nil {
 		return "", nil
 	}
-	for _, m := range sup.supervised() {
-		c := m.View().Claim
-		if c.Issue != issue || c.Locator == nil {
-			continue
+	return podRepository(ctx, sup.deps.Runtime, func(yield func(supervise.Claim) bool) {
+		for _, m := range sup.supervised() {
+			if c := m.View().Claim; c.Issue == issue && !yield(c) {
+				return
+			}
 		}
-		return sup.deps.Runtime.PodRepository(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator})
+	})
+}
+
+// podRepository is the repository the pod claims run in was built from, as that pod itself
+// names it (runtime.Runtime.PodRepository), asked through the claim of claims that records a
+// process and has the lowest token. One claim answers for the whole issue: every role of an
+// issue runs in that one pod and works the one workspace its fetch cloned. The claim is chosen
+// by its token and not by the order claims arrive in, so every reader asks the pod through the
+// same claim whichever list it holds: the idle rule and a release's save read the claims the
+// daemon supervises (issuePodRepository), and the update-round sweep reads the claims the store
+// answered (supervision.groupDrift). That is what lets the release and the replacement agree on
+// which pods are on a repository the issue has left (podRepositoryDrifted). It answers "" with
+// no error where no claim records a process.
+func podRepository(ctx context.Context, rt runtime.Runtime, claims iter.Seq[supervise.Claim]) (string, error) {
+	var pod supervise.Claim
+	found := false
+	for c := range claims {
+		if c.Locator != nil && (!found || c.Token < pod.Token) {
+			pod, found = c, true
+		}
 	}
-	return "", nil
+	if !found {
+		return "", nil
+	}
+	repository, err := rt.PodRepository(ctx, runtime.Known{Claim: pod.Token, Locator: pod.Locator})
+	if err != nil {
+		return "", fmt.Errorf("ask the pod through the claim %s: %w", pod.Token, err)
+	}
+	return repository, nil
 }
 
 // podRepositoryDrifted is whether the issue's pod was built from a repository the issue's
 // record no longer holds, which is the idle rule's repository hold (workflow.IdleHoldRepository)
 // and the one input of it the daemon's Postgres does not hold on its own. It is the update-round
-// sweep's reading of the same pair, through the sweep's own comparison (repositoryDrift), so the
-// release and the replacement never disagree about which pods are on a repository the issue has
-// left: the sweep opens a round over exactly the pods this holds.
+// sweep's reading of the same pair, through the same claim (podRepository) and the sweep's own
+// comparison (repositoryDrift), so the release and the replacement never disagree about which
+// pods are on a repository the issue has left: the sweep opens a round over exactly the pods
+// this holds.
 //
 // Anything that leaves either name unread answers false — a runtime that cannot be asked, a pod
 // that names no repository, a deployment with no workflow, a record that cannot be read — since

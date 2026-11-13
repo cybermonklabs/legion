@@ -205,9 +205,9 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		LastDispatchSeq: 91,
 		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
-		RepoBefore: "acme/gadgets", RepoCorrectedAt: &correctedAt,
-		RepoChangePending: "zeta/tools", RepoChangeReason: "zeta/tools is not mapped to project OTHER in Dispatch",
-		Ancestry: []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
+		RepoCorrection: &record.RepositoryCorrection{Before: "acme/gadgets", At: correctedAt},
+		RepoChange:     &record.RepositoryChange{Pending: "zeta/tools", Reason: "zeta/tools is not mapped to project OTHER in Dispatch"},
+		Ancestry:       []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
 		Awaiting: &record.Awaiting{
 			Ask: "9a8fd348-55d5-4d72-a793-3cd037f75f13", Since: record.EventMark{Seq: 12, At: projectedAt.Add(-time.Hour)},
 			AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByAsk,
@@ -365,8 +365,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"lingerUntil": issue.LingerUntil,
 			"holdReason":  issue.Hold.Reason, "heldFrom": issue.Hold.From,
 			"repo": issue.Repo, "defaultBranch": issue.DefaultBranch,
-			"repoBefore": issue.RepoBefore, "repoCorrectedAt": issue.RepoCorrectedAt,
-			"repoChangePending": issue.RepoChangePending, "repoChangeReason": issue.RepoChangeReason,
+			"repoBefore": issue.RepoCorrection.Before, "repoCorrectedAt": issue.RepoCorrection.At,
+			"repoChangePending": issue.RepoChange.Pending, "repoChangeReason": issue.RepoChange.Reason,
 			"ancestry": issue.Ancestry,
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,

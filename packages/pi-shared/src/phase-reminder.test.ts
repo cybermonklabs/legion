@@ -8,7 +8,7 @@ import {
 } from "@legion/envoy-client/transport";
 import { createLegionDaemonClient, type OwedInput } from "./daemon-client";
 import { type ClaimCapability, PHASE_OPS } from "./legion-phase-ops";
-import { createPhaseReminder, NUDGE_WHEN_OWED_UNREAD, type PhaseReminder } from "./phase-reminder";
+import { createPhaseReminder, type PhaseReminder } from "./phase-reminder";
 import {
   owedReminder,
   type PhaseStallEntry,
@@ -250,11 +250,10 @@ test("a daemon that answers 200 that the claim owes nothing is reminded of nothi
 });
 
 // A daemon that answers the owed read later than the bound still has the worker nudged
-// (`NUDGE_WHEN_OWED_UNREAD`), and the nudge, and the architect notice that follows it, name no
-// phase, no operation and no owed work: the answer that comes after the bound, naming the work,
-// is never rendered.
+// (`UNREAD_CHECK`), and the nudge, and the architect notice that follows it, name no phase, no
+// operation and no owed work: the answer that comes after the bound, naming the work, is never
+// rendered.
 test("a read that times out produces a nudge that names no phase and produces no claim about what is owed", async () => {
-  expect(NUDGE_WHEN_OWED_UNREAD).toBe(true);
   // A real daemon over HTTP that answers, saying the claim owes WORK, but only once the test
   // releases it, which it does after both reminders were decided: every answer arrives later
   // than the bound.
