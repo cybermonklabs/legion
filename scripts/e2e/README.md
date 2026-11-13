@@ -56,7 +56,8 @@ Each item below names a script, then what it proves.
 
 - `stage1-skeleton.sh`
 
-  `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
+  `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `GET /readyz` 200 once it serves, read after `/healthz` at the first boot and again after the restart, since the readiness latch is one-way and the booting process's own, so a daemon that answers `/healthz` while it never latches is what each of the two reads catches;
+  answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
   `pool-capacity` present, since tmux runs no probe pod), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, and refuses an unreachable Postgres by the host it could not reach and never by the password
 
 - `stage2-tmux-supervision.sh`
@@ -495,6 +496,12 @@ After each healthy start the run checks that the socket the daemon serves on is 
 the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/proc/*/fd`):
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
+After each healthy start the run also reads `GET /readyz` and requires 200, the daemon's own account of having reached serving (the `servingLatch` the boot sets once its runtime is built, its launcher acceptor installed and the goroutine that serves this API begun), over a route that carries no token and reads no database.
+It polls that read for 5 seconds, because the daemon sets the latch on a goroutine of its own that starts when the serving goroutine does, so `/healthz` can be answered in the instant before it runs;
+a daemon that answers `/healthz` and never latches fails the run all the same.
+It is read at the first boot and again after the restart, never at one of them alone:
+the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered whether or not the latch was set — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
+
 After any exit — pass, failure, or an interrupt
 — the `EXIT` trap removes the container and signals the daemon and the keeper;
 `docker ps -a --filter name=legion-e2e-pg` comes back empty and nothing is left holding the run's port.
@@ -504,7 +511,7 @@ A failed run prints the daemon's log (`<work>/logs/daemon.log`).
 
 Every step is fatal and names its reason:
 a keeper that never held a port, the refusal that does not name its host, a first tmux that is a script or mise itself while `mise which tmux` names no tmux (`real_bin_path` refuses), a daemon that exits before it answers `/healthz` (the run stops at once and names the daemon's exit status), a `/healthz` that never answers (each poll times out after 2 s:
-the kept port queues a request no daemon accepts), a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
+the kept port queues a request no daemon accepts), a `/readyz` that answers anything but 200 at either boot (the failure names the status it got and the body with it, which says whether the daemon called itself starting or stopping), a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
 `stop_daemon` reads and judges the exit status, because `daemon.Run` returns 0 on a cancelled context — a non-zero status there is a defect, not a stop.
 
 Two notes on what the script had to learn about its own surface:
