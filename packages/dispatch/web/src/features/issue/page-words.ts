@@ -273,17 +273,13 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, a document whose text has not arrived or could not be read, a spec
- * with no summary, and a spec that marks no requirements. Each is one sentence, in the simple
- * present, saying what is absent rather than what the reader should do about it.
+ * query matches nothing, a spec with no summary, and a spec that marks no requirements. Each is
+ * one sentence, in the simple present, saying what is absent rather than what the reader should
+ * do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
   checks: "This issue has no checks yet.",
   decisions: "This issue has no decisions yet.",
-  /** A document node whose own text has not arrived yet (R16). */
-  document_reading: "This document has not arrived yet.",
-  /** A document node whose own text could not be read. */
-  document_unread: "This document could not be read.",
   plan: "This issue has no plan tasks yet.",
   spec: "This issue has no requirements yet.",
   /** What the requirements panel says of a spec that marks none, which is not the same as an
@@ -302,36 +298,31 @@ export const EMPTY_STATE_LINES = freeze({
 /**
  * What the page says of a gap in the reasoning, one line per kind of gap (R4, R10). A gap is
  * drawn on the node it is about and never as an error, and only where it tells that node apart
- * from its siblings and names work somebody owes: a requirement no check serves, a check or a
- * plan task whose `serves` names no requirement, and a check whose latest result records no
- * negative control. A gap every node of its kind has under today's model tells the reader
- * nothing about the node, so the page has no line for it - none for a node that names no
- * origin, since no requirement carries a `from` yet and no decision a question it settles, and
- * none for a summary nobody is recorded as writing or confirming, which no issue records - and
- * a requirement no plan task serves is no gap the page draws either.
+ * from its siblings and names work somebody owes: a requirement no check serves, and a check or
+ * a plan task whose `serves` names no requirement. A gap every node of its kind has under
+ * today's model tells the reader nothing about the node, so the page has no line for it - none
+ * for a node that names no origin, since no requirement carries a `from` yet and no decision a
+ * question it settles, and none for a summary nobody is recorded as writing or confirming,
+ * which no issue records - and a requirement no plan task serves is no gap the page draws
+ * either. Nor is a result that records no negative control: dispatch://INFRA-1253 R3 refuses
+ * the results that gap would name, so it is no gap the page draws.
  *
  * `no_check` is the gap the coverage read already carries (`RequirementCoverage.gaps`), said in
  * the page's own words rather than in the server's `<block id> has no check`, which names a
  * block by its id. `shaped_disagreement` is a decision claiming a node whose own origin names
  * another, which the page draws rather than picking one of the two.
  *
- * Three of them are the chain's (R10), each read from what the page already holds
- * (`tree-drafts.ts`, `check-facts.ts`): `serves_not_requirement` is a citation that must name a
- * requirement and names a node of another kind, `nobody_asked` a plan task naming neither a
- * requirement it serves nor a declaration it attempts, and `no_negative_control` a check whose
- * latest result records no negative control, drawn on the check. The last one says what the
- * result left out and no more: whether a control could have changed the verdict is not in the
- * data, and the page states no verdict of its own on it.
+ * Two of them are the chain's (R10), each read from what the page already holds
+ * (`tree-drafts.ts`): `serves_not_requirement` is a citation that must name a requirement and
+ * names a node of another kind, and `nobody_asked` a plan task naming neither a requirement it
+ * serves nor a declaration it attempts.
  *
  * The lines say each of these in the reader's words rather than the model's: a node is "this",
- * because the line is drawn in the node's own body; a declaration is what a person asked for;
- * and a result with no negative control is said as what that leaves out, which is a showing
- * that the check can fail. The control keeps its own name where the check's attribute is drawn
- * (`BLOCK_ATTRIBUTE_LABELS.negative_control`).
+ * because the line is drawn in the node's own body, and a declaration is what a person asked
+ * for.
  */
 export const GAP_LINES = freeze({
   no_check: "No check serves this requirement.",
-  no_negative_control: "The latest result of this check does not show that it can fail.",
   nobody_asked: "This task names no requirement it serves and nothing a person asked for.",
   serves_not_requirement: "What this says it serves is not a requirement.",
   shaped_disagreement: "A decision says it shaped this, but this says it came from somewhere else.",
@@ -347,9 +338,6 @@ export type GapKind = keyof typeof GAP_LINES;
  */
 export const GAP_WORDS = freeze({
   no_check: "No check",
-  /** What the result the check was last run for recorded under its negative control: nothing,
-   *  so nothing in it shows that the check can fail. */
-  no_negative_control: "No proof it can fail",
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",
@@ -524,8 +512,11 @@ export function approvalStateWord(token: string): string {
 export const CONTROL_LABELS = freeze({
   /** The one control that reaches a property with no value yet (R11, which bans "more"). */
   add: "Add",
-  /** The other requirements a transcluded node is also drawn under (R23). */
+  /** The other parents a transcluded node is also drawn under (R1, R4). */
   also_under: "Also under",
+  /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
+   *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). */
+  answer: "Answer",
   /** What the blocked-by line says while the issue waits on no other issue
    *  (`BlockedByControl.tsx`). */
   blocked_by_none: "nothing",
@@ -567,8 +558,6 @@ export const CONTROL_LABELS = freeze({
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
-  /** Takes a version of an artifact down (R16). */
-  download: "Download",
   /** Opens the editor of a property beside the value it already holds, where that value is
    *  drawn: the issues this one waits on (`BlockedByControl.tsx`). */
   edit: "Edit",
@@ -621,11 +610,10 @@ export const CONTROL_LABELS = freeze({
   no_route: "No route",
   /** What one side of a plan task's pointers says while it names nothing (R4). */
   none: "none",
-  /** Marks a document or an artifact in the node menu that no block cites (R16). */
-  nothing_cites_it: "Cited by nothing",
   /** What the claim says of a holder the agent registry no longer lists (R11, row four). */
   not_running: "not running",
-  /** The node menu beside the presets, holding what no block cites and the upload (R16). */
+  /** The node menu beside the presets, holding every document and artifact of the issue and
+   *  the upload (R3). */
   other_nodes: "Files and documents",
   /** The row of five queries over the one tree, as a reader of it hears it named (R3). */
   presets: "Issue presets",
@@ -687,9 +675,13 @@ export const CONTROL_LABELS = freeze({
   unsure: "Unsure",
   /** Who made a node, where the author is an agent nothing names: a session with no title in
    *  the registry and none stamped on its write. An author is drawn by a name and never by an
-   *  identifier (R7, R21), so the page says what it is rather than which one
+   *  identifier (R9, R22), so the page says what it is rather than which one
    *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
   unnamed_author: "An agent",
+  /** Who made a node the model holds no author for (R9): a requirement, a check, a plan task,
+   *  a note and a decision, whose reads carry none. It is the page's own word, drawn with a
+   *  shape of its own (`AuthorKind`), so no reader takes it for somebody's name. */
+  unknown_author: "Author unknown",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not
    *  gone, it still holds the issue, and it may yet answer (R11, row four). */
   unresponsive: "unresponsive",
@@ -702,8 +694,6 @@ export const CONTROL_LABELS = freeze({
   upload_file: "Upload a file",
   /** Which version of the open document the preset draws (R16). */
   version: "Version",
-  /** Every version an artifact has (R16). */
-  versions: "Versions",
   /** The head's second row: where the checks say what the reader will be shown (R5). */
   what_you_will_be_shown: "What you will be shown",
   /** Names the author of a node whose author the model holds (R7); the name itself is the
@@ -784,23 +774,26 @@ export function nodeFactLabel(name: string): string {
 }
 
 /**
- * The two kinds of author a node of the page can have, each drawn with a shape of its own so
- * two authors of different kinds never share one (R9): a person, writing as themselves, and an
- * agent, writing through a session. Dispatch's own writes, which no person and no session made,
- * are an agent's: something other than a person wrote them.
+ * The three kinds of author a node of the page can have, each drawn with a shape of its own so
+ * two authors of different kinds never share one (R9): a person, writing as themselves; an
+ * agent, writing through a session; and an author the model holds none of, which the row says
+ * in the page's own words (`CONTROL_LABELS.unknown_author`). Dispatch's own writes, which no
+ * person and no session made, are an agent's: something other than a person wrote them.
  */
-export type AuthorKind = "agent" | "person";
+export type AuthorKind = "agent" | "person" | "unknown";
 
-/** The kind of author `actor` is. */
-export function authorKind(actor: Actor): AuthorKind {
+/** The kind of author `actor` is, and `unknown` where the model holds none. */
+export function authorKind(actor: Actor | undefined): AuthorKind {
+  if (actor === undefined) return "unknown";
   return actor.kind === "user" ? "person" : "agent";
 }
 
 /** What each kind of author is called, in the accessible name of its shape: "Written by a
- *  person", "Written by an agent". */
+ *  person", "Written by an agent", "Written by an author nobody recorded". */
 export const AUTHOR_KIND_WORDS = freeze({
   agent: "an agent",
   person: "a person",
+  unknown: "an author nobody recorded",
 } as const satisfies Record<AuthorKind, string>);
 
 /**
@@ -823,6 +816,7 @@ export const GLYPH_TOKENS = freeze({
   authors: {
     agent: "author-agent",
     person: "author-person",
+    unknown: "author-unknown",
   },
   states: {
     ask: {

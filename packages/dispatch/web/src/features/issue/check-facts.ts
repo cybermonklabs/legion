@@ -2,7 +2,6 @@ import type { CheckBlock, CheckResult } from "../../api/types";
 import type { NodeFact } from "./issue-tree";
 import {
   CHECK_WHEN_WORDS,
-  type GapKind,
   NODE_STATE_WORDS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
@@ -82,18 +81,4 @@ export function resultFacts(result: CheckResult): NodeFact[] {
     facts.push({ draw: "picture", name: "screenshot", value: screenshot });
   }
   return facts;
-}
-
-/**
- * What a check's latest result leaves out that the chain is read for: a result recording no
- * negative control at all (R10). The gap is drawn on the check, which is the node a reader
- * weighs and the one that owes the work; the page computes nothing about whether a control
- * could have changed the verdict, because the data does not say and refusing such a pass at the
- * write is dispatch://INFRA-1278's invariant.
- *
- * Which result is the latest is the tree's to read (`tree-drafts.ts`: the results arrive newest
- * first), because one result alone does not know where it stands among the rest.
- */
-export function latestResultGaps(latest: CheckResult | undefined): GapKind[] {
-  return latest !== undefined && latest.negative_control === "" ? ["no_negative_control"] : [];
 }

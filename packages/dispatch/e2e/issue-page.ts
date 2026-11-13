@@ -53,8 +53,8 @@ import { navigateInApp } from "./sends";
  *   this module imports). c-presets, c-three-things, c-children, c-urls, c-plain-words,
  *   c-keyboard.
  * - **The node menu** beside the presets: a `button` named by `CONTROL_LABELS.other_nodes`,
- *   opening a `role="menu"` whose items are its rows: each document no block cites is a
- *   `role="menuitem"` holding the button that opens it and the `button` that copies its
+ *   opening a `role="menu"` whose items are its rows: each document and artifact of the issue
+ *   is a `role="menuitem"` holding the button that opens it and the `button` that copies its
  *   reference, since a `menu` may own menu items alone. c-nodes, c-urls (`/artifacts`),
  *   c-keyboard (`t a`).
  * - **The tree**: `role="tree"` named "Issue tree", rows `role="treeitem"` carrying `aria-level`
@@ -62,10 +62,13 @@ import { navigateInApp } from "./sends";
  *   `data-node-type` (the model's own token, a key of `NODE_TYPE_NAMES`), `data-node-id`,
  *   `data-node-state` (absent for a type the model gives no state) and, when folded,
  *   `data-folded-count`. Inside a row: the type's word (as page chrome, read as the row's text),
- *   its glyph as `svg[data-glyph]` with an accessible name, the author where the model holds one
- *   as `[data-node-author]`, the first line as `[data-node-first-line][data-author-text]`, each
- *   chip as `[data-node-chip]` naming its target, and the state word as `[data-node-state]`'s own
- *   text. A branch deeper than the three drawn levels is one row `[data-branch-more]` whose text
+ *   its glyph as `svg[data-glyph]` with an accessible name, the author as `[data-node-author]`
+ *   (the page's words "Author unknown" where the model holds none), the first line as
+ *   `[data-node-first-line][data-author-text]`, each chip as `[data-node-chip]` naming its
+ *   target, the state word as `[data-node-state]`'s own text, and an answered ask's answer as
+ *   `[data-node-answer]` on the row - its answerer as `[data-answer-author]` - and, in its body,
+ *   the whole of what the person wrote as `[data-answer-text]`. A branch deeper than the three
+ *   drawn levels is one row `[data-branch-more]` whose text
  *   says how many nodes it holds. c-tree, c-spine, c-focus-opens, c-presets, c-checks-readable,
  *   c-reflow, c-plain-words, c-keyboard.
  * - **A node's body** `[data-node-body]`, drawn for the focused row and for a row pinned open
@@ -132,6 +135,9 @@ import { navigateInApp } from "./sends";
 /** The selectors the readers below pass into the browser. Nothing outside this module spells one:
  *  a test reads the page through the locators and readers this module exports. */
 const SELECTORS = {
+  answerAuthor: "[data-answer-author]",
+  answerLine: "[data-node-answer]",
+  answerText: "[data-answer-text]",
   authorText: "[data-author-text]",
   branchMore: "[data-branch-more]",
   childRow: "[data-child-row]",
@@ -458,7 +464,14 @@ export interface LineBox {
 
 /** One row of the tree, as the page draws it. */
 export interface DrawnRow {
-  /** The author the row names, or null where the model holds none. */
+  /** The answerer an answered ask's own row names, or null where the row draws no answer. */
+  readonly answerAuthor: string | null;
+  /** The text of the answer line an answered ask draws on its own row, or null where none. */
+  readonly answerLine: string | null;
+  /** The whole of what the person wrote, as the open body draws it, every character kept; null
+   *  where no body of this row draws an answer's text. */
+  readonly answerText: string | null;
+  /** The author the row names: a name, or the page's words for an author nobody recorded. */
   readonly author: string | null;
   /** The `data-glyph` token of the shape drawn beside the author, or null where none is. */
   readonly authorShape: string | null;
@@ -530,7 +543,11 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
     const rows = [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)];
     return rows.map((row) => {
       const firstLine = row.querySelector(selectors.nodeFirstLine);
+      const answerLine = row.querySelector(selectors.answerLine);
       return {
+        answerAuthor: text(answerLine?.querySelector(selectors.answerAuthor) ?? null),
+        answerLine: text(answerLine),
+        answerText: row.querySelector(selectors.answerText)?.textContent ?? null,
         author: text(row.querySelector(selectors.nodeAuthor)),
         authorShape:
           row

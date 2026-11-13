@@ -1,11 +1,18 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import type { Actor, ArtifactBlock, Ask, CheckBlock, Decision, DisplayTree } from "../../api/types";
+import type { Actor, Ask, CheckBlock, Decision, DisplayTree } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { checkFacts, latestResultGaps, resultFacts } from "./check-facts";
-import type { IssueTreeReads, NodeChip, NodeCounts, NodeFact, TreeAsk } from "./issue-tree";
+import { checkFacts, resultFacts } from "./check-facts";
+import type {
+  IssueTreeReads,
+  NodeAnswer,
+  NodeChip,
+  NodeCounts,
+  NodeFact,
+  TreeAsk,
+} from "./issue-tree";
 import {
   type AskState,
   type CheckState,
@@ -34,6 +41,13 @@ import {
  * read, and no request is made per node. Where the read sends the server's reading of those
  * words beside them - the decisions read and the conversation do - the draft keeps it with the
  * record the words are, which is what the row draws (`TreeNode.tree`).
+ *
+ * The tree is the issue's conversation and what it revealed (dispatch://INFRA-1196 R1, R3): a
+ * document, an artifact and a handoff are nodes of the issue and not of its conversation, so no
+ * builder here drafts one. A document's typed blocks are drafted without it, under the issue
+ * unless the model gives a block a parent of its own (R4). A child issue is a node of the tree
+ * where the model places it, which today is under the issue, as well as a line of the children
+ * section above it (`IssueChildren.tsx`, R12).
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -45,6 +59,8 @@ export function blockNodeId(slug: string, blockId: string): string {
 /** One node as it is being built: a `TreeNode`'s own fields, plus where the model placed it. */
 export interface Draft {
   author?: Actor;
+  /** A person's answer to this ask, which the ask's own row and body draw (`TreeNode.answer`). */
+  answer?: NodeAnswer;
   chips: NodeChip[];
   counts?: NodeCounts;
   /** What the node's body draws under its text (`check-facts.ts`). */
@@ -75,17 +91,20 @@ export interface Draft {
 }
 
 /**
- * Where a child of the issue sits among the issue's own children: its documents first, so the
- * spec and the path to the questions inside it open at the top of the tree, then the decisions,
- * then the requirements, then the questions asked of the issue itself, then its children, and
- * the conversation last. A node's order inside a document is the block's own place in it.
+ * Where a child of the issue sits among the issue's own children: the typed blocks of its
+ * documents first, the spec's before the rest, each in its own document's order, so the
+ * questions inside the spec open at the top of the tree; then the decisions no question holds,
+ * then the requirements, then the questions asked of the issue itself, then its child issues,
+ * and the conversation last. A node's order under any other parent is its own place in what it
+ * came from.
  */
 export const ROOT_ORDER = {
   ask: 3000,
+  /** The first block of the issue's spec; every other document's blocks follow, one whole
+   *  number per document (`documentRanks`), which keeps them under the decisions' `1000`. */
+  block: 0,
   child: 4000,
   decision: 1000,
-  document: 0,
-  other: 6000,
   requirement: 2000,
   turn: 5000,
 } as const;
@@ -146,151 +165,26 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
 /** Every draft the reads hold, by its node id. */
 export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<string, Draft> {
   const drafts = new Map<string, Draft>();
-  // Where each document of the issue stands among its own, read once: it decides both which
-  // citation of a ring is cut (`openRings`) and the order the documents are drawn in, and a
-  // second reading of it could open a ring at a document other than the one drawn first.
-  const ranks = documentRanks(reads);
-  const cited = citations(reads, context, ranks);
-  addDocuments(drafts, reads, context, cited, ranks);
   addDocumentBlocks(drafts, reads, context);
   addChildren(drafts, reads);
-  addAsks(drafts, reads, context);
+  const asks = addAsks(drafts, reads, context);
   addTurns(drafts, reads, context);
-  addDecisions(drafts, reads, context);
+  addDecisions(drafts, reads, context, asks);
   addRequirements(drafts, reads, context);
   addChecks(drafts, reads, context);
-  settleCitations(drafts, cited);
   servePlacements(drafts, context);
   return drafts;
 }
 
-/** Where one artifact of the issue is cited: the block whose own words hold its address, and
- *  the document that block belongs to. */
-interface Citation {
-  /** The slug of the document the citing block belongs to, which is where the cited document
-   *  sits when the citation stands in prose that is no node of its own. */
-  readonly document: string;
-  /** The node id of the citing block, `<slug>#b-<block id>`. */
-  readonly id: string;
-}
-
-/**
- * Which block of which document cites each artifact of the issue, by the cited artifact's slug:
- * the first of the citing blocks in document order, because a document cited twice is drawn
- * once, under the first block that names it.
- *
- * The citation is the server's: `GET /issues/{key}/references?own=1` answers each document the
- * issue reaches, its own included, with the blocks of its citer (`via_blocks`,
- * `packages/envoy/internal/dispatch/refs/closure.go`). Reading it here rather than scanning
- * each document's markdown is what keeps the first load from reading the stored text of a
- * document the reader has not opened (dispatch://INFRA-1196 R20).
- *
- * A member whose via is not a document of this issue, or whose citer the page holds no blocks
- * for, places nothing: the citation is drawn as a node under a block, and there is no block to
- * draw it under. Neither does a citation that would place a document inside itself, which
- * `openRings` takes out.
- */
-function citations(
-  reads: IssueTreeReads,
-  context: TreeContext,
-  ranks: ReadonlyMap<string, number>
-): Map<string, Citation> {
-  const found = new Map<string, Citation>();
-  const listings = new Map<string, readonly ArtifactBlock[]>(
-    (reads.documents ?? []).map((document) => [document.artifactId, document.blocks])
-  );
-  for (const member of reads.references?.members ?? []) {
-    // The cited artifact is this issue's by its id and never by its slug: a slug is unique
-    // inside one issue only (`unique (issue_key, slug)`), so another issue's `plan-md` read as
-    // this issue's would draw this issue's `plan-md` under the block citing that one.
-    const slug = context.slugOf(member.artifact.id);
-    if (slug === undefined || found.has(slug)) continue;
-    if (member.via.kind !== "artifact") continue;
-    const document = context.slugOf(member.via.id);
-    const cites = member.via_blocks ?? [];
-    if (document === undefined || cites.length === 0 || document === slug) continue;
-    const id = citingRow(listings.get(member.via.id), cites);
-    if (id === undefined) continue;
-    found.set(slug, { document, id: blockNodeId(document, id) });
-  }
-  openRings(found, ranks);
-  return found;
-}
-
-/** Where each document of the issue stands among its own: the spec first and the rest in the
- *  order the issue carries them, which is the order their rows are drawn in (`ROOT_ORDER`). A
- *  slug the issue does not carry ranks last. */
+/** Where each document of the issue stands among its own, by its artifact id: the spec first
+ *  and the rest in the order the issue carries them, which is the order their blocks are drawn
+ *  in under the issue (`ROOT_ORDER.block`). */
 function documentRanks(reads: IssueTreeReads): ReadonlyMap<string, number> {
   const ranks = new Map<string, number>();
   (reads.issue.artifacts ?? []).forEach((artifact, index) => {
-    ranks.set(artifact.slug, artifact.primary ? 0 : index + 1);
+    ranks.set(artifact.id, artifact.primary ? 0 : index + 1);
   });
   return ranks;
-}
-
-/**
- * Takes out every citation that would place a document inside a document it already holds. A
- * spec that cites the plan while the plan cites the spec is ordinary data, and the server
- * answers each one via the other (`?own=1`), so each would be placed under the other and
- * neither would be drawn at all: the tree is walked downwards from the issue, and a ring
- * hangs off nothing.
- *
- * The ring is opened at the citation whose citing document comes last among the issue's own,
- * so the spec keeps the documents it cites under it and the document citing the spec back
- * leaves the spec where it was, under the issue. The decision is made in that same order and
- * never in the order the references read answered in, so the same documents always draw the
- * same tree.
- */
-function openRings(found: Map<string, Citation>, ranks: ReadonlyMap<string, number>): void {
-  const rank = (slug: string): number => ranks.get(slug) ?? Number.MAX_SAFE_INTEGER;
-  const holder = new Map<string, string>();
-  const decided = [...found].sort(
-    ([slug, one], [otherSlug, other]) =>
-      rank(one.document) - rank(other.document) ||
-      rank(slug) - rank(otherSlug) ||
-      slug.localeCompare(otherSlug)
-  );
-  for (const [slug, citation] of decided) {
-    let above: string | undefined = citation.document;
-    while (above !== undefined && above !== slug) above = holder.get(above);
-    if (above === slug) found.delete(slug);
-    else holder.set(slug, citation.document);
-  }
-}
-
-/**
- * Which block of `blocks` the citation is drawn on. The server names the block its index holds
- * the link in, which is the innermost one - the paragraph inside a `requirement`, not the
- * requirement - and the tree draws a row for the listed block that holds that paragraph. So the
- * row is the first listed block, in document order, whose byte span covers a citing block's,
- * which is the outermost of them; a listing the page has not read yet, or one holding none of
- * the citing blocks, falls back to the first id the server named.
- */
-function citingRow(
-  blocks: readonly ArtifactBlock[] | undefined,
-  cites: readonly string[]
-): string | undefined {
-  if (blocks === undefined) return cites[0];
-  const cited = blocks.filter((block) => cites.includes(block.id));
-  if (cited.length === 0) return cites[0];
-  const holder = blocks.find((block) =>
-    cited.some((inner) => block.from <= inner.from && inner.to <= block.to)
-  );
-  return holder?.id ?? cites[0];
-}
-
-/**
- * Where each cited document finally sits. A document a block cites is a node under that block
- * (R16), which is what `addDocuments` wrote; where the citation stands in prose that is no node
- * of its own - a paragraph is a document's own text and no node (`addDocumentBlocks`) - the
- * document is a node under the document that cites it instead, never under an invented parent.
- */
-function settleCitations(drafts: Map<string, Draft>, cited: ReadonlyMap<string, Citation>): void {
-  for (const [slug, citation] of cited) {
-    const draft = drafts.get(slug);
-    if (draft === undefined || drafts.has(citation.id)) continue;
-    draft.parents = [citation.document];
-  }
 }
 
 /** Puts `draft` in, over whatever draft held its id. */
@@ -318,47 +212,15 @@ function blank(id: string, type: NodeType, order: number): Draft {
 }
 
 /**
- * The documents and images the issue carries. A document a block cites sits under that block
- * (R16) - the block `citations` found, reading the references read by the cited artifact's id;
- * one nothing cites sits under the issue, which is where a node whose spine parent is absent
- * goes.
- */
-function addDocuments(
-  drafts: Map<string, Draft>,
-  reads: IssueTreeReads,
-  context: TreeContext,
-  cited: ReadonlyMap<string, Citation>,
-  ranks: ReadonlyMap<string, number>
-): void {
-  (reads.issue.artifacts ?? []).forEach((artifact, index) => {
-    if (artifact.kind !== "doc" && artifact.kind !== "image") return;
-    const cites = cited.get(artifact.slug);
-    const draft = add(
-      drafts,
-      blank(
-        artifact.slug,
-        artifact.kind === "doc" ? "document" : "image",
-        // `documentRanks` is the one reading of where a document stands; every document of the
-        // issue is in it, since it is built from this same list.
-        ROOT_ORDER.document + (ranks.get(artifact.slug) ?? index + 1)
-      )
-    );
-    draft.author = artifact.created_by;
-    draft.parents = cites === undefined ? [] : [cites.id];
-    draft.reference = buildDispatchReference({
-      key: context.key,
-      kind: "artifact",
-      slug: artifact.slug,
-    });
-    draft.text = artifact.name;
-  });
-}
-
-/**
  * Each document's typed blocks, in document order. A block of no declared node type - a
  * paragraph, a heading, a table - is the document's own text and no node of the tree. A block's
  * `block[]` attributes are kept as its pointers, which is where `serves` and `needs` are read
  * from; its words come from the batched reference read, since nothing reads the document's text.
+ *
+ * Every block sits under the issue, and never under its document, which is no node of the tree
+ * (R3, R4): a builder after this one places a block the model gives a parent of its own - a
+ * requirement by its `from`, a check and a plan task by their `serves`. Among the issue's own
+ * children a document's blocks keep the order they have in it, one document after another.
  */
 function addDocumentBlocks(
   drafts: Map<string, Draft>,
@@ -366,9 +228,11 @@ function addDocumentBlocks(
   context: TreeContext
 ): void {
   const types: readonly string[] = NODE_TYPES;
+  const ranks = documentRanks(reads);
   for (const document of reads.documents ?? []) {
     const slug = context.slugOf(document.artifactId);
     if (slug === undefined) continue;
+    const rank = ranks.get(document.artifactId) ?? 0;
     document.blocks.forEach((block, index) => {
       if (!types.includes(block.type)) return;
       const reference = buildDispatchReference({
@@ -383,8 +247,10 @@ function addDocumentBlocks(
           pointers[attribute.name] = parseBlockPointerValue(attribute.value) ?? [];
         }
       }
-      const draft = add(drafts, blank(blockNodeId(slug, block.id), block.type as NodeType, index));
-      draft.parents = [slug];
+      // The document's rank, and the block's place inside it as a fraction of one, so no two
+      // documents' blocks interleave.
+      const order = ROOT_ORDER.block + rank + index / document.blocks.length;
+      const draft = add(drafts, blank(blockNodeId(slug, block.id), block.type as NodeType, order));
       draft.pointers = pointers;
       draft.reference = reference;
       draft.text = context.chipOf(reference).name;
@@ -397,7 +263,8 @@ function addDocumentBlocks(
   }
 }
 
-/** The issue's children, each one node under the issue: a child's own tree is its own page. */
+/** The issue's children, each one node under the issue, where the model places every child
+ *  today (R4, R12): a child's own tree is its own page. */
 function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
   (reads.issue.children ?? []).forEach((child, index) => {
     const draft = add(drafts, blank(child.key, "child_issue", ROOT_ORDER.child + index));
@@ -418,12 +285,23 @@ function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
  * Every question asked of the issue: the block the server indexed it from, where it has one,
  * else a node of its own under the issue. An approval request belongs to the document it reviews
  * rather than to the reasoning, so the tree draws none.
+ *
+ * A person's answer is part of the ask and no node of its own (dispatch://INFRA-1150 R3): it is
+ * kept on the ask's draft as the store holds it, which the ask's own row and body draw.
+ *
+ * Answers the node id each ask is drawn under, by the ask's own id, which is how a decision
+ * names the question it answers (`Decision.asks`).
  */
-function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
+function addAsks(
+  drafts: Map<string, Draft>,
+  reads: IssueTreeReads,
+  context: TreeContext
+): ReadonlyMap<string, string> {
   const asks = new Map<string, TreeAsk>();
   for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
     if (ask.kind === "question") asks.set(ask.id, ask);
   }
+  const placed = new Map<string, string>();
   for (const ask of asks.values()) {
     // The document holding the typed `ask` block is `block_artifact`; `artifact_id` is the
     // document an anchored ask is anchored in, which a block ask does not carry.
@@ -431,7 +309,9 @@ function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tre
     const block = ask.block_id ?? undefined;
     const id = slug !== undefined && block !== undefined ? blockNodeId(slug, block) : ask.id;
     const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.ask));
+    placed.set(ask.id, id);
     draft.author = ask.author;
+    if (ask.answer !== null) draft.answer = answerOf(ask.answer);
     draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
     draft.source = textSourceOf("ask", ask.id);
     draft.state = askState(ask);
@@ -440,6 +320,17 @@ function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tre
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
   }
+  return placed;
+}
+
+/** An ask's answer as the tree holds it: the person it is theirs, with the agent they answered
+ *  through where they did, and their choices and words as stored. */
+function answerOf(answer: NonNullable<Ask["answer"]>): NodeAnswer {
+  return {
+    by: { id: answer.user, kind: "user", ...(answer.act === undefined ? {} : { act: answer.act }) },
+    selected: answer.selected ?? [],
+    text: answer.text ?? "",
+  };
 }
 
 /**
@@ -533,37 +424,44 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
 }
 
 /**
- * Each decision of the issue's `decisions.md`. A decision sits under the question it settles;
- * the model holds no such edge today (`packages/contracts/src/dispatch-api.ts:2519-2534`: the
- * read answers `kind` and a boolean `unsure`, and no `shaped`), so every decision's spine parent
- * is absent and it sits under the issue, as any other node whose spine parent is absent does
- * (R4) - never parked inside `decisions.md`, where the fold would close the reasoning away
- * behind a document. It carries no gap for that: a lack every decision shares tells none of them
- * apart (R8). It names every spec block it links and every ask its blocks mention as its chips,
- * and the day the edge lands the question it settles is read from the decision itself.
+ * Each decision of the issue's `decisions.md`, under the question it answers (R4): the asks its
+ * blocks mention (`Decision.asks`), the first of them where it is edited and every other one a
+ * transclusion, as a check sits under each requirement it serves. An ask the tree draws no node
+ * for - another issue's, or an approval request - places nothing and stays the decision's chip,
+ * so a decision that names no question of this issue sits under the issue, as any node whose
+ * spine parent is absent does, and never inside `decisions.md`, which is no node at all. It
+ * carries no gap for that: a lack every such decision shares tells none of them apart (R10). It
+ * names every spec block it links as a chip, since a link places nothing (`shaped` is
+ * dispatch://INFRA-1150's, `packages/contracts/src/dispatch-api.ts:2519-2534`).
  */
 function addDecisions(
   drafts: Map<string, Draft>,
   reads: IssueTreeReads,
-  context: TreeContext
+  context: TreeContext,
+  asks: ReadonlyMap<string, string>
 ): void {
   (reads.decisions?.decisions ?? []).forEach((decision, index) => {
     const id = context.nodeIdOf(decision.ref);
     if (id === undefined) return;
     const held = drafts.get(id);
-    const draft = add(drafts, blank(id, "decision", held?.order ?? index));
+    const draft = add(drafts, blank(id, "decision", ROOT_ORDER.decision + index));
+    const answers = decision.asks ?? [];
     // A target with no address of its own is named by nothing, so there is no chip to draw for
     // it (`GraphNode.ref` is optional).
     draft.chips = [
       ...(decision.links ?? []).flatMap((link) =>
         link.to.ref === undefined ? [] : [{ ...context.chipOf(link.to.ref), stale: link.stale }]
       ),
-      ...(decision.asks ?? []).map((ask) =>
-        context.chipOf(buildDispatchReference({ id: ask, key: context.key, kind: "ask" }))
-      ),
+      ...answers
+        .filter((ask) => !asks.has(ask))
+        .map((ask) =>
+          context.chipOf(buildDispatchReference({ id: ask, key: context.key, kind: "ask" }))
+        ),
     ];
-    draft.order = ROOT_ORDER.decision + index;
-    draft.parents = [];
+    draft.parents = answers.flatMap((ask) => {
+      const parent = asks.get(ask);
+      return parent === undefined ? [] : [parent];
+    });
     draft.pointers = held?.pointers ?? {};
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
@@ -606,9 +504,10 @@ function decisionState(decision: Decision): DecisionState | undefined {
  * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05) - so each
  * sits under the issue, beside the two counts the coverage read holds for it and the gaps that
  * read already carries. An absent `from` is no gap of its own: every requirement lacks one, so it
- * tells none of them apart (R8). Where a decision claims to have shaped a requirement whose own
+ * tells none of them apart (R10). Where a decision claims to have shaped a requirement whose own
  * origin names another node, the requirement is placed by its `from` and the disagreement is
- * drawn as a gap (R4), never placed under the decision.
+ * drawn as a gap, and a decision is never a requirement's parent (R4): a `from` that names one
+ * places nothing, and the requirement sits under the issue.
  */
 function addRequirements(
   drafts: Map<string, Draft>,
@@ -633,7 +532,7 @@ function addRequirements(
     draft.chips = held?.chips ?? [];
     draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
     draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapedBy.get(id) ?? 0);
-    draft.parents = origin === undefined ? [] : [origin];
+    draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
     draft.pointers = held?.pointers ?? {};
     draft.reference = requirement.ref;
     draft.text = requirement.text;
@@ -668,13 +567,9 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     if (slug === undefined) continue;
     const id = blockNodeId(slug, check.block_id);
     const held = drafts.get(id);
-    const draft = add(drafts, blank(id, "check", held?.order ?? 0));
+    const draft = add(drafts, blank(id, "check", held?.order ?? ROOT_ORDER.block));
     draft.facts = checkFacts(check);
-    // R10 names the check's latest result alone: an older result's empty control says nothing
-    // about the work as it stands, and the results arrive newest first (`checkState` reads the
-    // same order). The gap is the check's, since the check is what owes the work.
-    draft.gaps = latestResultGaps(check.results?.[0]);
-    draft.parents = held?.parents ?? [slug];
+    draft.parents = held?.parents ?? [];
     draft.pointers = held?.pointers ?? {};
     draft.reference = check.ref;
     draft.state = checkState(check);
@@ -749,9 +644,9 @@ export type CheckStateReads = Pick<CheckBlock, "results"> & {
  * A check and a plan task sit under each requirement their `serves` names, edited under the
  * first and transcluded under the rest (R4); what their `needs` names is a chip, as every edge
  * that is not the spine is. A `serves` naming no requirement of this issue places nothing, so
- * the block keeps its place under its own document.
+ * the block keeps its place under the issue.
  *
- * Two of the chain's gaps are read here, from the pointers this pass already resolves (R8):
+ * Two of the chain's gaps are read here, from the pointers this pass already resolves (R10):
  *
  * - **A citation whose target is no longer a requirement.** `serves` points only at a
  *   requirement (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:81-84`), and the

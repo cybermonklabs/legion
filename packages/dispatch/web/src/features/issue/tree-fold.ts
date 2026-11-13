@@ -137,13 +137,14 @@ function unanswered(node: TreeNode): boolean {
     // and the page knows nothing about what proves it, so it says nothing either.
     case "requirement":
       return node.counts !== undefined && node.counts.checks === 0;
-    // Nothing else holds an answer of its own for the reader to wait on. A note, a document
-    // and an image are what somebody wrote; a child issue is read and answered on its own
-    // page, and the children section is where a reader waits on one (R10); a comment, a
-    // message and a handoff are what somebody said, and what is unanswered in a conversation
-    // is the ask inside it, which puts its turn on the frontier as that ask's ancestor; a
-    // result is a record of what a run saw, and its check carries the verdict; and the issue
-    // itself is the root, which is drawn whatever this says.
+    // Nothing else holds an answer of its own for the reader to wait on. A note is what
+    // somebody wrote; a child issue is read and answered on its own page, and the children
+    // section is where a reader waits on one (R12); a comment and a message are what somebody
+    // said, and what is unanswered in a conversation is the ask inside it, which puts its turn
+    // on the frontier as that ask's ancestor; a result is a record of what a run saw, and its
+    // check carries the verdict; and the issue itself is the root, which is drawn whatever this
+    // says. A document, an image and a handoff are nodes of the issue and not of its
+    // conversation, so the tree holds none of them (R1, R3).
     case "callout":
     case "child_issue":
     case "comment":
@@ -251,10 +252,10 @@ interface ZoomedRow {
  * them. The path down to it is the breadcrumb above the rows (`zoomBreadcrumb`) rather than a
  * row apiece, because the identity block leaves a phone one screenful of rows, not five.
  *
- * The tree opens on the issue itself (`zoom` undefined), so every document, decision and child
- * of the issue is one row away and the breadcrumb always walks back to the whole issue: a
- * reader on a phone reaches every node a reader at 1440 px reaches, one zoom at a time (R6,
- * R7).
+ * The tree opens on the issue itself (`zoom` undefined), so every node the issue holds directly
+ * - a requirement, a question, a decision no question holds, a child, a turn - is one row away
+ * and the breadcrumb always walks back to the whole issue: a reader on a phone reaches every
+ * node a reader at 1440 px reaches, one zoom at a time (R6, R7).
  *
  * A row the preset draws only as the ancestor of a match (`context`) is no stop of its own
  * here: the one screen a phone has goes to what the preset matched, so a node's children are

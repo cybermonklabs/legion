@@ -16,14 +16,20 @@ import { buildReferencePath, parseNodeReference, shortForm } from "../refs/route
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { bringOnScreen } from "./identity-block";
-import { firstLineOf, type NodeChip, nodeWords, type TreeNode } from "./issue-tree";
-import { NodeArtifact } from "./NodeArtifact";
+import {
+  firstLineOf,
+  type NodeAnswer,
+  type NodeChip,
+  nodeWords,
+  type TreeNode,
+} from "./issue-tree";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
 import { type OneLineBox, oneLineCut } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import {
   type AuthorKind,
+  authorKind,
   CONTROL_LABELS,
   GAP_LINES,
   GAP_WORDS,
@@ -37,12 +43,14 @@ import { RowText } from "./RowText";
  * One row of the issue's tree, and the body it opens on focus (dispatch://INFRA-1196 R1, R2,
  * `dispatch://INFRA-1196/artifact/plan-md#b-t14`).
  *
- * A row is the twisty, the type with its shape, the author where the model holds one, the node's
- * first line, its chips, the gaps on it, and its state with its shape where the model holds one;
- * a folded row says how many rows it holds. The first line is cut at a word (`firstLineOf`,
- * and again at `oneLineCut` where the row is one line) and the whole text is in the body, so
- * nothing is lost and no row truncates a word. The words beside it - the type, the author, the
- * state - hold no word boundary to cut at, so a one-line row draws each of them whole.
+ * A row is the twisty, the type with its shape, the author with its shape - or the page's words
+ * for an author nobody recorded - the node's first line, its chips, the gaps on it, and its
+ * state with its shape where the model holds one; a folded row says how many rows it holds. An
+ * answered ask carries its answer in its own row and body, never as a row of its own (R1). The
+ * first line is cut at a word (`firstLineOf`, and again at `oneLineCut` where the row is one
+ * line) and the whole text is in the body, so nothing is lost and no row truncates a word. The
+ * words beside it - the type, the author, the state - hold no word boundary to cut at, so a
+ * one-line row draws each of them whole.
  *
  * The body is drawn for the focused row and for a row pinned open, and for no other row: it is
  * the focus that opens it, never the pointer, and no element of the row carries a `title`, since
@@ -57,7 +65,7 @@ import { RowText } from "./RowText";
  * marks). The key bindings are `dispatch://INFRA-1196/artifact/plan-md#b-t15`'s.
  */
 export function NodeRow({
-  artifact,
+  answerer,
   author,
   body,
   context,
@@ -79,13 +87,13 @@ export function NodeRow({
   rowKey,
   tabStop,
 }: {
-  /** The artifact this row's node is, for a document or an image: its body opens that
-   *  artifact itself (R16). Undefined for every other kind of node. */
-  artifact?: Artifact;
+  /** The name of the person whose answer this ask carries (`AgentText.author`), where it
+   *  carries one. */
+  answerer?: string;
   /** Who made the node: the name the page draws an author with (`AgentText.author`), never an
-   *  id (R9, R22), and the kind of author, which picks its shape. Undefined where the model
-   *  holds no author. */
-  author?: { readonly kind: AuthorKind; readonly name: string };
+   *  id (R9, R22), and the kind of author, which picks its shape. An author the model holds
+   *  none of is the page's own words, of the kind `unknown`. */
+  author: { readonly kind: AuthorKind; readonly name: string };
   /** Whether this row draws its body: it has the focus, or the reader pinned it open. */
   body: boolean;
   /** Whether the preset draws this row only as the ancestor of a match: the row is faint and
@@ -186,20 +194,21 @@ export function NodeRow({
         gap +
         shaped(typeWord, ROW_PARTS.text) +
         gap +
-        (author === undefined ? 0 : shaped(author.name, ROW_PARTS.text) + gap),
+        shaped(author.name, ROW_PARTS.text) +
+        gap,
       room: box.width - indent - ROW_PARTS.border - ROW_PARTS.paddingRight * rem,
       text: words,
       widthOf: (line) => widthOf(line, ROW_PARTS.text),
     });
-  }, [author, box, indent, leaf, state, stateGlyph, typeWord, unsure, words]);
+  }, [author.name, box, indent, leaf, state, stateGlyph, typeWord, unsure, words]);
   const whole = oneLine ? "shrink-0" : "";
 
   // The focused row is brought inside the viewport and clear of the sticky identity block
   // after every move, by the one rule the whole page places a target with (R9,
-  // `identity-block.ts`), and again whenever the row grows under it: a document's node reads
-  // its own text when the body opens, because the page reads no document's text before a
-  // reader opens it (R20), so the row the focus lands on is short for as long as that read
-  // takes and the text would otherwise push its foot off the screen.
+  // `identity-block.ts`), and again whenever the row grows under it: a body draws more once it
+  // is open - the editor a reader puts the caret in arrives on the row's stage after the row
+  // has the focus (`document-stage.tsx`) - and the text would otherwise push its foot off the
+  // screen.
   //
   // Except while a press inside the row is held. A press on an unfocused row focuses it on
   // mousedown, before the press ends, and a scroll then moves what the pointer went down on:
@@ -267,27 +276,26 @@ export function NodeRow({
           <span className={textMutedOnCanvas}>{typeWord}</span>
         </span>
         {/* Who made it, by a word and a shape, in the form the type beside it and the state
-            after it are drawn in: one shape per kind of author, so a person and an agent never
-            share one (R9). The name is the page's one name for an author (`AgentText.author`),
-            never an id (R22), and it is the author's own text while the shape is the page's, so
-            the two carry their own marks and the shape adds no word to what the reader sees.
-            On a row whose line went under its words, a name longer than the whole row wraps
-            inside itself rather than be hidden past it. */}
-        {author === undefined ? null : (
+            after it are drawn in: one shape per kind of author, so a person, an agent and an
+            author nobody recorded never share one (R9). The name is the page's one name for an
+            author (`AgentText.author`), never an id (R22), and it is the author's own text while
+            the shape is the page's, so the two carry their own marks and the shape adds no word
+            to what the reader sees; where nobody was recorded the words are the page's own. On
+            a row whose line went under its words, a name longer than the whole row wraps inside
+            itself rather than be hidden past it. */}
+        <span
+          className={`flex items-center gap-1 ${whole} ${first.under ? "max-w-full" : ""}`}
+          data-author-kind={author.kind}
+          data-node-author=""
+        >
+          <NodeGlyph token={GLYPH_TOKENS.authors[author.kind]} />
           <span
-            className={`flex items-center gap-1 ${whole} ${first.under ? "max-w-full" : ""}`}
-            data-author-kind={author.kind}
-            data-node-author=""
+            className={`${textMutedOnCanvas} ${first.under ? "[overflow-wrap:anywhere]" : ""}`}
+            {...(author.kind === "unknown" ? pageChrome : authorText)}
           >
-            <NodeGlyph token={GLYPH_TOKENS.authors[author.kind]} />
-            <span
-              className={`${textMutedOnCanvas} ${first.under ? "[overflow-wrap:anywhere]" : ""}`}
-              {...authorText}
-            >
-              {author.name}
-            </span>
+            {author.name}
           </span>
-        )}
+        </span>
         {/* Where the row's other words leave the first line less than its first word, the line
             starts a line of its own under them (`oneLineCut`): this takes the whole of the line
             it is on, so what follows it - the first line and the state - starts the next. */}
@@ -355,9 +363,15 @@ export function NodeRow({
           </span>
         )}
       </div>
+      {/* The answer an answered ask carries, on a line of the row's own under its first line:
+          where the row is one line it has no width for one, and its body draws it instead, as
+          it does the chips and the gaps (R17). */}
+      {node.answer === undefined || oneLine ? null : (
+        <AskAnswer answer={node.answer} answerer={answerer ?? ""} whole={false} />
+      )}
       {body ? (
         <NodeBody
-          artifact={artifact}
+          answerer={answerer ?? ""}
           {...(oneLine && counted !== undefined ? { counted } : {})}
           document={document}
           edges={oneLine}
@@ -522,20 +536,21 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
 const BODY_MEASURE = 660;
 
 /**
- * The node's whole text, with what the model holds about it that a row has no line for: the
- * facts of a check and of a result (`NodeFacts.tsx`), the gaps said in full, the two counts
- * the coverage read carries for a requirement, what a reader does with a decision
- * (`DecisionActions.tsx`), and the control that keeps the body open once the focus leaves it.
+ * The node's whole text, with what the model holds about it that a row has no line for: an
+ * ask's answer, the facts of a check and of a result (`NodeFacts.tsx`), the gaps said in full,
+ * the two counts the coverage read carries for a requirement, what a reader does with a
+ * decision (`DecisionActions.tsx`), and the control that keeps the body open once the focus
+ * leaves it.
  *
  * What stands for "the node's whole text" depends on what the node is. A block of a document
  * the reader is editing draws that document's own editor, moved here from wherever the page
  * was drawing it (`document-stage.tsx`), so the caret goes into the node's text where it
- * lives, with the collaborative cursors and the comment chord it has there. An artifact's node
- * draws the artifact itself (`NodeArtifact.tsx`). Every other node draws the text the model
- * holds for it, from the server's reading of it where its read sent one (`RowText.tsx`).
+ * lives, with the collaborative cursors and the comment chord it has there. Every other node
+ * draws the text the model holds for it, from the server's reading of it where its read sent
+ * one (`RowText.tsx`).
  */
 function NodeBody({
-  artifact,
+  answerer,
   counted,
   document,
   edges,
@@ -545,7 +560,8 @@ function NodeBody({
   onPin,
   pinned,
 }: {
-  artifact?: Artifact;
+  /** The name of the person whose answer this ask carries, `""` for a node that carries none. */
+  answerer: string;
   /** How many nodes a folded row holds, in the page's words, where the row itself has no width
    *  for them: a one-line row's count belongs here, as its chips and its gaps do (R17).
    *  Undefined for a row that draws its own count, and for a row that is not folded. */
@@ -569,13 +585,12 @@ function NodeBody({
       style={{ maxWidth: BODY_MEASURE }}
     >
       {editing === undefined ? (
-        artifact === undefined ? (
-          <RowText markdown={node.text} source={node.source} tree={node.tree} />
-        ) : (
-          <NodeArtifact artifact={artifact} />
-        )
+        <RowText markdown={node.text} source={node.source} tree={node.tree} />
       ) : (
         <div className="flex min-w-0 flex-col" ref={stage} {...authorText} />
+      )}
+      {node.answer === undefined ? null : (
+        <AskAnswer answer={node.answer} answerer={answerer} whole={true} />
       )}
       <NodeFacts facts={node.facts} />
       {edges && (node.alsoUnder.length > 0 || node.chips.length > 0 || node.gaps.length > 0) ? (
@@ -615,6 +630,76 @@ function NodeBody({
           {pinned ? CONTROL_LABELS.let_close : CONTROL_LABELS.keep_open}
         </button>
       </p>
+    </div>
+  );
+}
+
+/**
+ * A person's answer to an ask, which is part of the ask and no node of its own
+ * (dispatch://INFRA-1150 R3, dispatch://INFRA-1196 R1): the page's word for it, who answered by
+ * a name and a shape as every author is drawn (R9), and what they chose and wrote. The words
+ * are theirs, as the store holds them and never restated (R9): the row draws the first line of
+ * what they wrote - or of what they chose, where they wrote nothing - cut at a word as every
+ * first line is (`firstLineOf`), and the body draws every choice and the whole text, character
+ * for character, keeping the line breaks they typed.
+ */
+function AskAnswer({
+  answer,
+  answerer,
+  whole,
+}: {
+  answer: NodeAnswer;
+  answerer: string;
+  /** Whether this is the body's whole answer rather than the row's first line of it. */
+  whole: boolean;
+}): ReactNode {
+  const kind = authorKind(answer.by);
+  const said = answer.text === "" ? answer.selected.join(", ") : answer.text;
+  const first = firstLineOf(said);
+  const by = (
+    <span className="flex items-center gap-1" data-answer-author="">
+      <NodeGlyph token={GLYPH_TOKENS.authors[kind]} />
+      <span className={textMutedOnCanvas} {...authorText}>
+        {answerer}
+      </span>
+    </span>
+  );
+  const label = (
+    <span className={textMutedOnCanvas} {...pageChrome}>
+      {CONTROL_LABELS.answer}
+    </span>
+  );
+  if (!whole) {
+    return (
+      <p className="ml-6 flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm" data-node-answer="">
+        {label}
+        {by}
+        <span className={`min-w-0 break-words ${textSecondaryOnCanvas}`} {...authorText}>
+          {first.cut ? `${first.line}…` : first.line}
+        </span>
+      </p>
+    );
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-1" data-node-answer-body="">
+      <p className="flex min-w-0 flex-wrap items-baseline gap-x-2">
+        {label}
+        {by}
+      </p>
+      {answer.selected.length === 0 ? null : (
+        <ul className="flex min-w-0 flex-col gap-1">
+          {answer.selected.map((option) => (
+            <li className="break-words" data-answer-choice="" key={option} {...authorText}>
+              {option}
+            </li>
+          ))}
+        </ul>
+      )}
+      {answer.text === "" ? null : (
+        <p className="whitespace-pre-wrap break-words" data-answer-text="" {...authorText}>
+          {answer.text}
+        </p>
+      )}
     </div>
   );
 }

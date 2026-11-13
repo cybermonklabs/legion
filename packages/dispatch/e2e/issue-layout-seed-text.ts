@@ -32,8 +32,10 @@ export const SUMMARY_BLOCK_ID = "summary";
 export const OPEN_QUESTION_BLOCK_ID = "q-open";
 
 /** How a seeded check's newest result stands, in the words `NODE_STATE_WORDS.check` draws
- *  (`web/src/features/issue/page-words.ts`), plus `no-control`: a pass on a before-merge run that records no negative control,
- *  which is one of the five gaps `c-chain` names and reads `passed` on the page. */
+ *  (`web/src/features/issue/page-words.ts`), plus `no-control`: a pass on a before-merge run
+ *  that records no negative control, which reads `passed` on the page and draws no gap -
+ *  dispatch://INFRA-1253 R3 refuses such a result, so the page names nothing it lacks - and is
+ *  what `c-chain` reads that for. */
 export const CHECK_STATE_ORDER = [
   "passed",
   "failed",

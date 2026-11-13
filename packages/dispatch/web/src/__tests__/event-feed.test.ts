@@ -1252,38 +1252,30 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
   expect(refreshesCollaborators(reprioritised)).toBe(false);
 });
 
-/** The two reads the issue page's tree holds that no tab does: the issue's own reference
- *  closure, read with `?own=1` so a document is drawn under the block citing it, and the one
- *  batched read every name on the page comes from, keyed by the set of addresses it asked for
- *  (`features/issue/useIssueTree.ts`). Both are marked stale here through the real scheduler,
- *  since neither key is the one the References tab reads and an `exact` rule on that tab's key
- *  reaches neither. */
+/** Whether `incoming` marks stale the References tab's read and the read the issue page's tree
+ *  holds that no tab does: the one batched read every name on the page comes from, keyed by the
+ *  set of addresses it asked for (`features/issue/useIssueTree.ts`), which an `exact` rule on
+ *  the tab's key does not reach. Both are read through the real scheduler. */
 function treeReadsRefreshed(incoming: DispatchEvent): {
-  closure: boolean;
   names: boolean;
   tab: boolean;
 } {
   const client = new QueryClient();
-  const closure: QueryKey = ["issue", "CORE-1", "references", "own"];
   const names: QueryKey = ["reference-targets", ["dispatch://CORE-1/spec#b-r1"]];
   client.setQueryData(READS.referencesTab.key, { members: [], truncated: false });
-  client.setQueryData(closure, { members: [], truncated: false });
   client.setQueryData(names, { targets: [] });
   refreshQueries(client, eventRefreshTargets(incoming, "alice"));
   return {
-    closure: client.getQueryState(closure)?.isInvalidated === true,
     names: client.getQueryState(names)?.isInvalidated === true,
     tab: client.getQueryState(READS.referencesTab.key)?.isInvalidated === true,
   };
 }
 
-// A new version of the spec can cite a document the tree did not draw under that block before,
-// and it rewrites the words of every block it changed. Both the closure and the names are the
-// tree's alone, so until they are named here the page kept the old shape and the old words for
-// the whole of the read's stale time.
-test("a document version refreshes the tree's own reference closure and its batched names", () => {
+// A new version of the spec rewrites the words of every block it changed, and the names are the
+// tree's alone, so until they are named here the page kept the old words for the whole of the
+// read's stale time.
+test("a document version refreshes the references and the tree's batched names", () => {
   expect(treeReadsRefreshed(event("artifact.version", { artifact_id: "artifact-3" }))).toEqual({
-    closure: true,
     names: true,
     tab: true,
   });

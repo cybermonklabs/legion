@@ -20,15 +20,14 @@ import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 
 /**
- * The node menu beside the presets (dispatch://INFRA-1196 R16,
+ * The node menu beside the presets (dispatch://INFRA-1196 R3,
  * `dispatch://INFRA-1196/artifact/plan-md#b-t18`).
  *
- * There is no Artifacts preset. A document a block cites is a node of the tree under that
- * block, and opens from there; what is left over is here - a document nothing cites, and an
- * artifact that is no document and so is no node at all - each marked as cited by nothing, so
- * a reader sees why it is in a menu rather than in the issue's body. The upload is here too,
- * because adding a file is the one thing about an issue's files that no node answers for, and
- * so is making a document from a title (`CreateDocument.tsx`), which adds one the same way.
+ * There is no Artifacts preset. A document is a node of the issue and not of its conversation,
+ * so the tree draws none (R1, R3), and every document and artifact of the issue is here
+ * instead: each opens at its own address. The upload is here too, because adding a file is the
+ * one thing about an issue's files that no node answers for, and so is making a document from
+ * a title (`CreateDocument.tsx`), which adds one the same way.
  *
  * The file input lives beside the menu rather than inside it, so a picker opened from a menu
  * item outlives the menu closing. The menu takes no dropped file: a file dropped on the issue's
@@ -39,18 +38,15 @@ import { CONTROL_LABELS } from "./page-words";
  */
 export function NodeMenu({
   artifacts,
-  documents,
   isClosed,
   issueKey,
   onClose,
   onToggle,
   open,
 }: {
-  /** Every artifact of the issue no block of the tree cites (`issue-artifacts.ts`). */
+  /** Every artifact of the issue: each is an item of the menu, and a title one of them already
+   *  holds is refused before New document writes it. */
   artifacts: readonly Artifact[];
-  /** Every artifact of the issue, cited or not: a title one of them already holds is refused
-   *  before New document writes it. */
-  documents: readonly Artifact[];
   isClosed: boolean;
   issueKey: string;
   /** Closes the menu once an item has acted. */
@@ -72,7 +68,7 @@ export function NodeMenu({
   // offers no write a closed issue refuses (`IssueAddMenu.tsx`, `DecisionActions.tsx`), so the
   // item is not drawn there. The refusal still guards a form left open while the issue closed.
   const creation = useCreateDocument({
-    documents,
+    documents: artifacts,
     owner: { issue: issueKey },
     refusal: isClosed ? CLOSED_ISSUE_DOCUMENT_REFUSAL : null,
   });
@@ -100,9 +96,9 @@ export function NodeMenu({
         {open ? (
           <div className={MENU_CLASS} role="menu" tabIndex={-1}>
             {artifacts.map((artifact) => (
-              // The item and the artifact's own copy control, side by side: a document the menu
-              // lists is reachable here and nowhere else, so this is where it keeps the copy
-              // control every other node of the page has (R18, c-nothing-lost).
+              // The item and the artifact's own copy control, side by side: an artifact is
+              // reachable here and from no node of the tree, so this is where it keeps the copy
+              // control every node of the page has (R19, c-nothing-lost).
               //
               // The row itself is the `menuitem`, not the button inside it. A `menu` may own
               // nothing but `menuitem`, `menuitemcheckbox`, `menuitemradio` and `group`, and axe
@@ -130,8 +126,7 @@ export function NodeMenu({
                   }}
                   type="button"
                 >
-                  <span {...authorText}>{artifact.name}</span>{" "}
-                  <span {...pageChrome}>{CONTROL_LABELS.nothing_cites_it}</span>
+                  <span {...authorText}>{artifact.name}</span>
                 </button>
                 <CopyRefButton route={documentRoute(artifact)} />
               </div>

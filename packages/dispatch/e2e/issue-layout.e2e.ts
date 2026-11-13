@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
 import type { Actor } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue/issue-address";
+import { firstLineOf } from "../web/src/features/issue/issue-tree";
 import {
   ANSWER_PHRASES,
   CHECK_WHEN_WORDS,
@@ -49,7 +50,6 @@ import {
 } from "./api";
 import {
   type BaselineSeed,
-  seedFrontierDeep,
   seedFrontierShallow,
   seedNoChildren,
   seedNoSummary,
@@ -88,7 +88,6 @@ import {
   ancestorsOfRow,
   badgeValue,
   boxesPastTheirCard,
-  branchMoreRows,
   checksRow,
   childRow,
   childRows,
@@ -147,7 +146,6 @@ import {
   rowAuthor,
   rowBody,
   rowGaps,
-  rowPictures,
   rowsOfType,
   rowsWithoutAuthorScrollers,
   scrollersOutsideAuthorText,
@@ -173,17 +171,17 @@ import { asUser } from "./users";
  * Every test reads the page through `e2e/issue-page.ts`, which is the one statement of what the
  * page's DOM is, and spells no selector of its own.
  *
- * Four checks are partial on today's data, and each test says where it stops:
+ * Several checks are partial on today's data, and each test says where it stops: every node
+ * kind that waits on another issue - a criterion, a reading, a lens and its findings, a query
+ * node, a proposed or overtaken state - is named beside the row that would read it.
  *
- * - **c-tree** proves the fold at the depth today's data reaches (issue, document, block); the
- *   four-levels-down seed waits on dispatch://INFRA-1290.
  * - **c-three-things** proves the three sentences and the two rows; who wrote the bullets and
  *   when they were last read back wait on dispatch://INFRA-1278, so the test asserts the head
  *   draws neither an author nor a gap for them.
  * - **c-home** proves the Spec preset over today's documents, where every requirement sits at the
  *   issue root because `from` waits on dispatch://INFRA-1098 item 21.
- * - **c-spine** proves what a document's own `serves` gives, because the model holds no `from`
- *   edge to seed.
+ * - **c-spine** proves the edges the model stores today: an answered ask over the decision that
+ *   answers it, `serves`, a result's check and a reply's entry.
  *
  * A seed makes the project `LAY`, and a second `POST /api/v1/projects` for it answers
  * `409 PROJECT_EXISTS`, so a test that reads two seeded issues runs each in a `phase` of its own:
@@ -418,43 +416,247 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-/** How many rows the fold must leave undrawn on `seedFrontierShallow`, which is what says it
- *  reaches past the one branch the row below reads a count on: a page that folds nothing and a
- *  page that folds everything both satisfy a count of the rows drawn, and only this says how
- *  many rows the fold moved. Measured on 2026-11-12 on that seed at 1440 px: the page draws 7
- *  rows folded and 13 with every branch opened by hand, so the fold moves 6. The floor keeps a
- *  margin under that, so a seed that gains or loses a block or two does not re-open this
- *  number, while a page that folds nothing - the tree as it was before dispatch://INFRA-1196 R1
- *  - draws its whole seed at once and fails it. */
-const FOLD_REACH_AT_LEAST = 4;
+/** The kinds of node the issue holds that are no node of its conversation, so no row of the
+ *  outline is one (dispatch://INFRA-1196 R1, R3). */
+const NOT_CONVERSATION: readonly string[] = ["document", "handoff", "image"];
 
-// c-tree. Partial on today's data: `document_blocks` holds no parent, so the tree reaches two
-// levels (issue, document, block) and the four-levels-down seed is dispatch://INFRA-1290's. What
-// is proved here is the fold itself, at the depth the data reaches, on both frontier seeds.
-// This row reads the tree the whole of a width draws, so it carries no `@phone`: at 1024 px and
-// below the tree draws two levels under a breadcrumb (`zoomedRows`) and every level, ancestor
-// and fold below would be a different claim. The word clause it shares with that width is read
-// there by the row under this one.
-test("the body is one folded tree whose rows never truncate a word", async ({ browser }) => {
-  await phase(browser, seedFrontierShallow, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
+/** Fails on every row of `rows` that is a document, a file or a handoff of the issue: by its
+ *  kind, and by its id, which for a document is its slug. */
+function expectNoIssueNodeRows(
+  rows: readonly DrawnRow[],
+  slugs: ReadonlySet<string>,
+  where: string
+): void {
+  expect(
+    rows
+      .filter((row) => NOT_CONVERSATION.includes(row.type ?? "") || slugs.has(row.id ?? ""))
+      .map((row) => `${row.type} ${row.id}`),
+    `${where} draws a row for a document, a file or a handoff of the issue, which are nodes of the issue and not of its conversation`
+  ).toEqual([]);
+}
+
+/** What of one ask says where the tree draws it: the document block it was indexed from, where
+ *  it has one, and its own id. */
+interface PlacedAsk {
+  readonly artifact_id?: string | null;
+  readonly block_artifact?: { readonly slug: string };
+  readonly block_id?: string | null;
+  readonly id: string;
+}
+
+/** The id the tree draws `ask` under: the block the server indexed it from, where it has one,
+ *  and the ask's own id otherwise. */
+function askNodeId(ask: PlacedAsk, slugOf: ReadonlyMap<string, string>): string {
+  const slug = ask.block_artifact?.slug ?? slugOf.get(ask.artifact_id ?? "");
+  return slug !== undefined && ask.block_id != null ? blockNodeId(slug, ask.block_id) : ask.id;
+}
+
+/** What the outline of `seedWholeIssue` holds, read from the server's own reads rather than from
+ *  the page: every node of its conversation by the id the tree draws it under, the slugs of its
+ *  documents and files, which no row may be, the summary callout, which the head draws
+ *  (dispatch://INFRA-1196 R8, c-three-things), and the frontier - every node open and unanswered,
+ *  which the fold opens the path to (R1). */
+interface SeededOutline {
+  readonly frontier: ReadonlySet<string>;
+  readonly nodes: ReadonlySet<string>;
+  readonly slugs: ReadonlySet<string>;
+  readonly summary: string;
+}
+
+async function seededOutline(seeded: WholeIssueSeed): Promise<SeededOutline> {
+  const artifacts = (await getIssue(seeded.key)).artifacts ?? [];
+  const slugOf = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
+  const slug = (id: string) => slugOf.get(id) ?? "";
+  const nodes = new Set<string>([seeded.key, ...seeded.children.keys]);
+  const frontier = new Set<string>();
+  for (const ask of await listIssueAsks(seeded.key)) {
+    if (ask.kind !== "question") continue;
+    nodes.add(askNodeId(ask, slugOf));
+    if (ask.state === "open") frontier.add(askNodeId(ask, slugOf));
+  }
+  for (const comment of await listComments(seeded.key)) nodes.add(comment.id);
+  for (const thread of await listIssueMessages(seeded.key)) {
+    for (const message of [thread.message, ...(thread.replies ?? [])]) nodes.add(message.id);
+  }
+  for (const requirement of (await getIssueCoverage(seeded.key)).requirements ?? []) {
+    const id = blockNodeId(slug(seeded.specArtifactId), requirement.block_id);
+    nodes.add(id);
+    if (requirement.checks === 0) frontier.add(id);
+  }
+  for (const decision of (await getIssueDecisions(seeded.key)).decisions ?? []) {
+    const id = blockNodeId(slug(seeded.decisionsArtifactId), decision.block_id);
+    nodes.add(id);
+    if (decision.waiting_review) frontier.add(id);
+  }
+  for (const check of (await getIssueResults(seeded.key)).checks ?? []) {
+    const id = blockNodeId(slug(check.artifact_id), check.block_id);
+    nodes.add(id);
+    if (checkState(check) !== "passed") frontier.add(id);
+    for (const result of check.results ?? []) nodes.add(result.id);
+  }
+  for (const task of seeded.planTasks) nodes.add(blockNodeId(slug(seeded.planArtifactId), task));
+  return {
+    frontier,
+    nodes,
+    slugs: new Set(artifacts.map((artifact) => artifact.slug)),
+    summary: blockNodeId(slug(seeded.specArtifactId), seeded.summaryBlockId),
+  };
+}
+
+/** The ids above a row of `id` in `rows` - its first, or the one at index `at` - outermost
+ *  first, as the drawn levels give them: one read of the page for the whole chain rather than
+ *  one per level. */
+function ancestorsIn(
+  rows: readonly DrawnRow[],
+  id: string,
+  at: number = rows.findIndex((row) => row.id === id)
+): string[] {
+  const chain: string[] = [];
+  let level = at === -1 ? 0 : Number(rows[at]?.level ?? 0);
+  for (let index = at - 1; index >= 0 && level > 1; index -= 1) {
+    const row = rows[index];
+    if (Number(row?.level ?? 0) !== level - 1) continue;
+    chain.unshift(row?.id ?? "");
+    level -= 1;
+  }
+  return chain;
+}
+
+/** How many rows `rows` draws under the first row of `id`, which with every branch open is how
+ *  many nodes that node holds. */
+function heldIn(rows: readonly DrawnRow[], id: string): number {
+  const at = rows.findIndex((row) => row.id === id);
+  const level = Number(rows[at]?.level ?? 0);
+  let held = 0;
+  for (let index = at + 1; index < rows.length; index += 1) {
+    if (Number(rows[index]?.level ?? 0) <= level) break;
+    held += 1;
+  }
+  return held;
+}
+
+// c-tree. On the issue today's model holds, the one the conversion has not reached
+// (dispatch://INFRA-1253), with no filter on, at 1440 px. This row carries no `@phone`: at
+// 1024 px and below the tree draws two levels under a breadcrumb (`zoomedRows`), and every level,
+// ancestor and fold below would be a different claim; the row under this one reads the one
+// clause the width changes.
+//
+// What waits on another issue, and is not read here: a criterion, a reading, a lens and a
+// finding, which the model cannot hold yet (dispatch://INFRA-1253, INFRA-1150, INFRA-1950); the
+// summary callout, which the head draws (R8) and c-three-things reads, and which this row
+// leaves out of its reading either way; and which row of a node the edit key opens, which is
+// c-editing's and touches nothing this row reads.
+test("with no filter the page is the conversation, each node edited once, folded to the frontier", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const outline = await seededOutline(seeded);
     const specSlug = await primarySlug(seeded.key);
-
-    const rows = await drawnRows(page);
-    expect(
-      rows.length,
-      `the body is not one folded tree: ${seeded.key} draws no node row at all`
-    ).toBeGreaterThan(0);
+    const settling = watchApiRequests(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectLoadSettled(settling);
     await expectIssuePageDrawn(page);
+
+    // No document, file or handoff is a row, folded or not (R1, R3): the spec is drawn nowhere
+    // in the outline.
+    const folded = await drawnRows(page);
+    expectNoIssueNodeRows(folded, outline.slugs, "the page as it opens");
     expect(
-      rows.filter((row) => row.role !== "treeitem").map((row) => row.id),
+      folded.filter((row) => row.role !== "treeitem").map((row) => row.id),
       "these rows of the tree are no treeitem"
     ).toEqual([]);
-    expectRowVocabulary(rows);
+    expectRowVocabulary(folded);
 
-    // No row truncates a word: each first line is the start of the node's own text and the text
-    // carries on at a word break, or the line ends a sentence.
-    for (const row of rows) {
+    // The page opens folded to the frontier: the open ask, every check that has not passed,
+    // every decision waiting for review and every requirement no check serves is drawn with
+    // its whole path open, and no branch is open that holds none of them - so no plan task
+    // holds one open, and the first requirement, which holds a check that passed and a plan
+    // task, arrives folded.
+    expect(outline.frontier.size, "the seed holds nothing open and unanswered").toBeGreaterThan(0);
+    for (const id of outline.frontier) {
+      expect(
+        rowOf(folded, id),
+        `${id}, open and unanswered, draws no row as the page opens`
+      ).toBeDefined();
+      for (const above of ancestorsIn(folded, id)) {
+        expect(
+          rowOf(folded, above)?.expanded,
+          `${above} is folded over ${id}, which is open and unanswered`
+        ).toBe("true");
+      }
+    }
+    const paths = new Set([...outline.frontier].flatMap((id) => ancestorsIn(folded, id)));
+    expect(
+      folded
+        .filter((row) => row.expanded === "true" && !paths.has(row.id ?? ""))
+        .map((row) => row.id),
+      "a branch opens on load that holds nothing open and unanswered"
+    ).toEqual([]);
+    expect(
+      rowOf(folded, blockNodeId(specSlug, requirementBlockId(1)))?.expanded,
+      "the requirement whose check passed opens because a plan task serves it"
+    ).toBe("false");
+
+    // With every branch open, the outline draws a row for each node of the conversation the seed
+    // wrote - each ask, comment, message, reply, requirement, decision, check, result and plan
+    // task, and each child under the issue - read by node id against the server's own reads,
+    // and a row for nothing else.
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    const whole = await drawnRows(page);
+    expectNoIssueNodeRows(whole, outline.slugs, "the page with every branch open");
+    expect(
+      [...new Set(idsOf(whole))].filter((id) => id !== outline.summary).sort(),
+      "the rows of the outline are not the nodes of the issue's conversation"
+    ).toEqual([...outline.nodes].sort());
+    for (const child of seeded.children.keys) {
+      expect(ancestorsIn(whole, child), `the child ${child} does not sit under the issue`).toEqual([
+        seeded.key,
+      ]);
+    }
+
+    // Every branch the page opened folded shows its first line and counts the nodes under it.
+    for (const row of folded) {
+      if (row.expanded !== "false") continue;
+      expect(row.foldedCount, `the folded ${row.id} does not count the nodes under it`).toBe(
+        String(heldIn(whole, row.id ?? ""))
+      );
+    }
+
+    // A node shown under a second parent names its other parents on that row.
+    for (const id of new Set(idsOf(whole))) {
+      const placed = whole.filter((row) => row.id === id);
+      if (placed.length < 2) continue;
+      for (const row of placed) {
+        expect(row.text, `${id} is drawn twice and this row names no other parent`).toContain(
+          CONTROL_LABELS.also_under
+        );
+      }
+    }
+
+    // An ask's answer is drawn in the ask's own row, by who answered and in their words, and is
+    // no row of its own.
+    const stored = (await getAsk(seeded.answeredAskId)).ask.answer;
+    const words = stored?.text ?? "";
+    expect(words, "the seed's answered ask holds no answer").not.toBe("");
+    const asked = rowOf(whole, seeded.answeredAskId);
+    expect(asked?.answerLine ?? "", "the answered ask's row draws no answer").toContain(
+      firstLineOf(words).line
+    );
+    expect(asked?.answerAuthor, "the answered ask's row does not name who answered").toBe(
+      stored?.user
+    );
+    expect(
+      whole
+        .filter((row) => row.id !== seeded.answeredAskId && row.firstLine === words)
+        .map((row) => row.id),
+      "the answer is drawn as a row of its own"
+    ).toEqual([]);
+
+    // A row's first line ends at a sentence end or at 100 characters, always at a word, and is
+    // the node's own text; the focused node's body holds the whole text.
+    for (const row of whole) {
       if (row.firstLine === null) continue;
       const line = row.firstLine.replace(/\s*(?:…|\.\.\.)$/u, "").trimEnd();
       expect(
@@ -463,37 +665,12 @@ test("the body is one folded tree whose rows never truncate a word", async ({ br
       ).toBeLessThanOrEqual(100);
       expect(row.text, `row ${row.id}'s first line is not its own text`).toContain(line);
     }
-    const long = rowOf(rows, blockNodeId(specSlug, requirementBlockId(1)));
+    const long = rowOf(whole, blockNodeId(specSlug, requirementBlockId(1)));
     expect(long, "the two-sentence requirement draws no row").toBeDefined();
     expect(
       cutsAWord(requirementText(1), long?.firstLine ?? ""),
       `the first line "${long?.firstLine}" cuts the stored text inside a word`
     ).toBe(false);
-
-    // The folded branch: one document row, folded, counting what it holds, none of it drawn.
-    const branch = rowOf(rows, seeded.foldedBranch.slug);
-    expect(branch, `${seeded.key} draws no row for the folded document`).toBeDefined();
-    expect(branch?.expanded, "the folded branch is not marked folded").toBe("false");
-    expect(branch?.foldedCount, "the folded branch does not count what it holds").toBe(
-      String(seeded.foldedBranch.blockIds.length)
-    );
-    expect(
-      seeded.foldedBranch.blockIds.filter(
-        (block) => rowOf(rows, blockNodeId(seeded.foldedBranch.slug, block)) !== undefined
-      ),
-      "the folded branch draws its blocks while it is folded"
-    ).toEqual([]);
-
-    // The frontier: the open question one level below the issue is drawn, unfolded to, with
-    // nothing unfolded by hand.
-    const question = rowOf(rows, seeded.askId);
-    expect(question, `${seeded.key} draws no row for its open question`).toBeDefined();
-    expect(question?.visible, "the open question's row is not drawn").toBe(true);
-    expect(question?.level, "the open question does not sit one level below the issue").toBe(
-      String(seeded.depth + 1)
-    );
-
-    // The focused node's body holds the whole text, which the first line is only the start of.
     const first = nodeRow(page, blockNodeId(specSlug, requirementBlockId(1))).first();
     await first.focus();
     expect(await rowBody(first).count(), "the focused row draws no body").toBe(1);
@@ -501,56 +678,10 @@ test("the body is one folded tree whose rows never truncate a word", async ({ br
       (await rowBody(first).innerText()).replace(/\s+/g, " "),
       "the focused node's body does not hold the node's whole stored text"
     ).toContain(requirementText(1));
-
-    // How far the fold reaches, which the folded branch above does not say: that branch is one
-    // branch, and a page that folds nothing and a page that folds everything both satisfy a
-    // count of the rows drawn. So the first drawing is compared with the same seed drawn with
-    // every branch opened by hand (`unfoldEveryBranch`, which is what a reader pressing each
-    // twisty reaches), and the difference is how many rows the fold moved.
-    const folded = rows.length;
-    await unfoldEveryBranch(page);
-    const whole = (await drawnRows(page)).length;
-    expect(
-      whole - folded,
-      `the fold leaves ${whole - folded} rows undrawn: ${folded} of the seed's ${whole} rows are drawn folded`
-    ).toBeGreaterThanOrEqual(FOLD_REACH_AT_LEAST);
-  });
-
-  await phase(browser, seedFrontierDeep, async (page, seeded) => {
-    await gotoIssue(page, `/issues/${seeded.key}`);
-    await expectIssuePageDrawn(page);
-    const specSlug = await primarySlug(seeded.key);
-    const question = blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID);
-
-    const rows = await drawnRows(page);
-    expectRowVocabulary(rows);
-    const row = rowOf(rows, question);
-    expect(row, "the open question as deep as the model reaches draws no row").toBeDefined();
-    expect(row?.visible, "the open question's row is not drawn").toBe(true);
-    expect(row?.level, "the open question does not sit two levels below the issue").toBe(
-      String(seeded.depth + 1)
-    );
-    for (const ancestor of await ancestorsOfRow(page, question)) {
-      expect(
-        rowOf(rows, ancestor)?.expanded,
-        `the question's ancestor ${ancestor} is folded, so its path was not unfolded`
-      ).toBe("true");
-    }
-
-    // Every other branch is folded to its first level with a count of what it holds, and no
-    // branch is deeper than the drawn levels on today's data.
-    expect(
-      rowOf(rows, seeded.foldedBranch.slug)?.foldedCount,
-      "the other branch does not count what it holds"
-    ).toBe(String(seeded.foldedBranch.blockIds.length));
-    expect(
-      await branchMoreRows(page).count(),
-      "a branch is drawn as deeper than the three levels, which today's model cannot hold"
-    ).toBe(0);
   });
 });
 
-/** The widths a one-line row is read at: the floor R17 names, the phone the `iphone` project
+/** The widths a one-line row is read at: the floor R18 names, the phone the `iphone` project
  *  runs, and the narrowest width above a phone's (`PHONE_VIEWPORT_QUERY` is under 768 px).
  *  The character measure this cut replaced was one number per band, taken at 390 px and at
  *  1024 px, so the widths below those were where its rows fit their boxes least. */
@@ -567,19 +698,15 @@ const ONE_LINE_WIDTHS = [320, 390, 768] as const;
 // against the same stored text wherever the tree draws the whole of itself, so no desktop
 // project owns a second run of this one.
 //
-// Two rows, because the words beside the first line are what decide how much of it is left:
-// the two-sentence requirement, which carries a type and nothing else, and the open question,
-// which carries its author as well - the planner's session id and the pen beside it, 163 px of
-// a 258 px row at 320 px. Measured on the page the character measure drew: that row's first
-// line was given 0 px at 320 px and its state was hidden past the row's edge, and at 390 px
-// its "Does…" was drawn 21 px wide. Each row is read at each of the three widths.
+// Two rows, both under the issue and so both on the issue's own screen: the two-sentence
+// requirement, whose author is the page's own words for one nobody recorded (R9) - the words
+// that grew on this row, measured here - and the open question, which carries its author's
+// name, the planner's session title and its shape. Each row is read at each of the three
+// widths.
 //
 // It sets the width itself, as every row of this file does: `phase` starts every page at the
 // desktop size in every project, the `iphone` project included, so the tag chooses which
-// project owns the row and the viewport below is what puts the row on one line. A run of this
-// row without that line reads the wrapped page and proves nothing: measured against the page
-// before this change, built from 17507b5b1661, where it passed at 1440 px with the line's own
-// box 658 px wide and `white-space: normal`.
+// project owns the row and the viewport below is what puts the row on one line.
 test("a one-line row cuts the node's first line at a word @phone @phone-only", async ({
   browser,
 }) => {
@@ -591,33 +718,13 @@ test("a one-line row cuts the node's first line at a word @phone @phone-only", a
       await page.setViewportSize({ height: PHONE.height, width });
       await gotoIssue(page, `/issues/${seeded.key}`);
       await expectIssuePageDrawn(page);
-
-      // The authored row: the open question sits under the issue itself, so the zoomed tree
-      // draws it on the issue's own screen.
       await expect(
         nodeRow(page, seeded.askId).first(),
         `the open question draws no row at ${width} px`
       ).toBeVisible();
-      // The author is drawn by the title its session stamped and the registry lists, never by
-      // the session's id (R9).
-      const asked = rowOf(await drawnRows(page), seeded.askId);
-      expect(asked?.author, `the open question's row names no author at ${width} px`).toBe(
-        PLANNER_TITLE
-      );
-      expectCutAtAWord(asked, question, `the open question's row at ${width} px`);
-
-      // The zoomed tree draws the issue's children and the trail down to its open question, so
-      // the two-sentence requirement is one zoom away: its document's own twisty opens it,
-      // which is how a reader on a phone reaches a document's blocks (R17).
-      await nodeRow(page, specSlug)
-        .first()
-        .getByRole("button", {
-          name: new RegExp(`^(?:${CONTROL_LABELS.fold}|${CONTROL_LABELS.unfold})$`),
-        })
-        .click();
       await expect(
         nodeRow(page, nodeId).first(),
-        `the zoom into the spec drew no row for its first requirement at ${width} px`
+        `the issue's own screen draws no row for its first requirement at ${width} px`
       ).toBeVisible();
       const rows = await drawnRows(page);
       for (const row of rows) {
@@ -625,14 +732,30 @@ test("a one-line row cuts the node's first line at a word @phone @phone-only", a
         const line = row.firstLine.replace(/\s*(?:…|\.\.\.)$/u, "").trimEnd();
         expect(row.text, `row ${row.id}'s first line is not its own text`).toContain(line);
       }
+
+      // The authored row: drawn by the title its session stamped and the registry lists, never
+      // by the session's id (R9).
+      const asked = rowOf(rows, seeded.askId);
+      expect(asked?.author, `the open question's row names no author at ${width} px`).toBe(
+        PLANNER_TITLE
+      );
+      expectCutAtAWord(asked, question, `the open question's row at ${width} px`);
+
+      // The requirement: the model holds no author for it, so its row says so in the page's
+      // own words beside its own first line, and still cuts that line at a word.
+      const required = rowOf(rows, nodeId);
+      expect(
+        required?.author,
+        `the first requirement's row does not say its author is unknown at ${width} px`
+      ).toBe(CONTROL_LABELS.unknown_author);
       expectCutAtAWord(
-        rowOf(rows, nodeId),
+        required,
         requirementText(1),
         `the two-sentence requirement's row at ${width} px`
       );
     }
 
-    // What the cut left out is in the body the row opens on focus, whole (R2), so the reader
+    // What the cut left out is in the body the row opens on focus, whole (R6), so the reader
     // loses no word to it.
     const opened = nodeRow(page, nodeId).first();
     await opened.focus();
@@ -904,29 +1027,52 @@ test("the presets are queries over one tree and fit every width @phone", async (
   });
 });
 
-// c-spine. Partial on today's data: `requirement` carries no attributes, so no `from` edge exists
-// to seed (dispatch://INFRA-1098 item 21). What is proved is what a document's own `serves`
-// gives, plus the requirement whose origin is absent.
-test("the spine is the reasoning and an unexplained node sits under the issue", async ({
-  browser,
-}) => {
+// c-spine. Each node under the parent the model stores (R4), read against the server's own
+// edges on the two seeds that hold today's: an ask over the decision that answers it, `serves`
+// over checks and plan tasks, a check over its results, and the entry a reply answers. On the
+// issue the conversion has not reached every other typed block sits under the issue.
+//
+// What waits on another issue, and is not read here: a criterion under the words that raised
+// it, a requirement under its criterion, and the left arrow walking up from a requirement to
+// them (dispatch://INFRA-1253); a lens under its node and a finding under its lens
+// (INFRA-1950); a reading under its decision (INFRA-1150); and a comment anchored to a node
+// under that node, an edge the model does not store (INFRA-1149, INFRA-1253), so the anchored
+// comment sits under the issue as any node with no stored parent does.
+test("each node sits under the parent the model stores", async ({ browser }) => {
+  test.setTimeout(120_000);
   await phase(browser, seedSpineCases, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
-
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
     const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
     const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
-    const unexplained = blockNodeId(specSlug, SPINE_REQUIREMENTS.unexplained);
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const decision = blockNodeId(decisionsSlug, seeded.decisionBlockId);
     const check = blockNodeId(verificationSlug, SPINE_CHECK_BLOCK_ID);
 
-    // A requirement whose origin is absent sits under the issue, drawn as a node like any other
-    // rather than as an error. Under today's model every requirement's origin is absent, so the
-    // absence tells it apart from none of its siblings and no gap says it: the gaps it draws are
-    // the ones that do, which on this seed is that no check serves it, and each names its kind.
+    // The decision sits under the ask it answers: the question its block names.
+    const stored = ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
+      (one) => one.block_id === seeded.decisionBlockId
+    );
+    expect(stored?.asks, "the server holds no ask the decision answers").toEqual([
+      seeded.answeredAskId,
+    ]);
     expect(
-      await parentOfRow(page, unexplained),
-      "the requirement whose origin is absent sits under no node: the page draws no row for it"
+      await parentOfRow(page, decision),
+      "the decision is not drawn under the ask it answers"
+    ).toBe(seeded.answeredAskId);
+    expect(
+      await parentOfRow(page, seeded.answeredAskId),
+      "the answered ask is not drawn under the issue"
     ).toBe(seeded.key);
-    await expectIssuePageDrawn(page);
+
+    // A requirement whose origin is absent sits under the issue, drawn as a node like any other
+    // rather than as an error: the gap it draws is the one that tells it apart, that no check
+    // serves it.
+    const unexplained = blockNodeId(specSlug, SPINE_REQUIREMENTS.unexplained);
+    expect(await parentOfRow(page, unexplained), "the unexplained requirement has no row").toBe(
+      seeded.key
+    );
     expect(
       await rowGaps(nodeRow(page, unexplained).first()).evaluateAll((drawn) =>
         drawn.map((gap) => gap.getAttribute("data-gap-kind"))
@@ -935,10 +1081,9 @@ test("the spine is the reasoning and an unexplained node sits under the issue", 
     ).toEqual(["no_check"]);
     expect(await gapKinds(page), "a gap the page draws names no kind").not.toContain("");
 
-    // No requirement is drawn under a decision: a decision's link to a requirement is the
-    // decision's chip and places nothing, and every requirement sits under the issue.
-    const spineRows = await drawnRows(page);
-    const typeOf = new Map(spineRows.map((row) => [row.id ?? "", row.type]));
+    // No requirement is drawn under a decision, and each sits under the issue.
+    const rows = await drawnRows(page);
+    const typeOf = new Map(rows.map((row) => [row.id ?? "", row.type]));
     for (const requirement of Object.values(SPINE_REQUIREMENTS)) {
       const parent = await parentOfRow(page, blockNodeId(specSlug, requirement));
       expect(typeOf.get(parent ?? ""), `${requirement} is drawn under a decision`).not.toBe(
@@ -947,32 +1092,21 @@ test("the spine is the reasoning and an unexplained node sits under the issue", 
       expect(parent, `${requirement} is not drawn under the issue`).toBe(seeded.key);
     }
 
-    // The check that serves two requirements is drawn under both, each row naming its other
-    // parent, and both rows open the same block.
-    const rows = await drawnRows(page);
-    const drawnUnder = rows
-      .map((row, index) => ({ index, row }))
-      .filter((entry) => entry.row.id === check);
-    expect(
-      drawnUnder.map((entry) => entry.index).length,
-      "the check that serves two requirements is not drawn under both of them"
-    ).toBe(2);
-    const parents = new Set<string | null | undefined>();
-    for (const entry of drawnUnder) {
-      expect(
-        entry.row.text,
-        "a transcluded check does not name the other requirement it sits under"
-      ).toContain(CONTROL_LABELS.also_under);
-      parents.add(await parentOfRow(page, check));
+    // The check that serves two requirements sits under the first its `serves` names and is
+    // shown under the other, each row naming its other parent, and both open the same block.
+    const placed = rows.filter((row) => row.id === check);
+    for (const row of placed) {
+      expect(row.text, "a placement of the check does not name its other parent").toContain(
+        CONTROL_LABELS.also_under
+      );
     }
     expect(
-      [
-        blockNodeId(specSlug, SPINE_REQUIREMENTS.servedTwiceA),
-        blockNodeId(specSlug, SPINE_REQUIREMENTS.servedTwiceB),
-      ].filter((requirement) => rowOf(rows, requirement) === undefined),
-      "the two requirements the check serves are not both drawn"
-    ).toEqual([]);
-
+      placed.map((row) => ancestorsIn(rows, check, rows.indexOf(row)).at(-1)),
+      "the check is not under each of the two requirements it serves"
+    ).toEqual([
+      blockNodeId(specSlug, SPINE_REQUIREMENTS.servedTwiceA),
+      blockNodeId(specSlug, SPINE_REQUIREMENTS.servedTwiceB),
+    ]);
     const firstRow = nodeRow(page, check).nth(0);
     const secondRow = nodeRow(page, check).nth(1);
     await firstRow.focus();
@@ -984,20 +1118,99 @@ test("the spine is the reasoning and an unexplained node sits under the issue", 
       "the two parents open two copies of the block rather than the same block"
     ).toBe(fromFirstParent);
 
-    // Every edge that is not the spine is a chip naming its target, found exactly once: the
-    // decision's link to a requirement, and the answered question it names. Each is looked for
-    // by the words the page draws for it, because that is what a chip draws: the target's own
-    // words from the reference read, and its address in the short form `shortForm` writes -
-    // never the target's id, which is a uuid for an ask and which R21 keeps off the page
-    // (`web/src/features/issue/NodeRow.tsx`'s `Chip`).
-    const chips = rows.flatMap((row) => row.chips);
-    for (const target of [SPINE_REQUIREMENTS.shapedElsewhere, SPINE_ANSWERED_QUESTION]) {
-      const naming = chips.filter((chip) => chip.includes(target));
-      expect(
-        naming.length,
-        `the edge to ${target} is drawn ${naming.length} times as a chip, not once: ${JSON.stringify(chips)}`
-      ).toBe(1);
+    // Every edge that is not the spine is a chip naming its target, and the spine is none: the
+    // decision's link to a requirement is its chip, once, and the ask it sits under is not one.
+    const chips = (await drawnRows(page)).flatMap((row) => row.chips);
+    expect(
+      chips.filter((chip) => chip.includes(SPINE_REQUIREMENTS.shapedElsewhere)).length,
+      `the decision's link is not drawn once as a chip: ${JSON.stringify(chips)}`
+    ).toBe(1);
+    expect(
+      chips.filter((chip) => chip.includes(SPINE_ANSWERED_QUESTION)),
+      "the ask the decision sits under is drawn as its chip as well"
+    ).toEqual([]);
+  });
+
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const slugs = new Set(((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.slug));
+    const settling = watchApiRequests(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectLoadSettled(settling);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    const rows = await drawnRows(page);
+    const parentOf = (id: string) => ancestorsIn(rows, id).at(-1);
+
+    // The decision that answers the issue's answered ask sits under that ask.
+    expect(
+      parentOf(blockNodeId(decisionsSlug, seeded.decisions[1] ?? "")),
+      "the decision that answers the ask is not drawn under it"
+    ).toBe(seeded.answeredAskId);
+
+    // Each check under the requirement its `serves` names, and each result under its check.
+    for (const check of (await getIssueResults(seeded.key)).checks ?? []) {
+      const id = blockNodeId(verificationSlug, check.block_id);
+      const index = Number(check.block_id.slice(1));
+      expect(parentOf(id), `${check.block_id} is not under the requirement it serves`).toBe(
+        blockNodeId(specSlug, requirementBlockId(index))
+      );
+      for (const result of check.results ?? []) {
+        expect(parentOf(result.id), `a result of ${check.block_id} is not under it`).toBe(id);
+      }
     }
+    // Each plan task under the requirement it serves, and the one that serves none under the
+    // issue.
+    seeded.planTasks.forEach((task, index) => {
+      expect(
+        parentOf(blockNodeId(planSlug, task)),
+        `${task} is not under the requirement it serves`
+      ).toBe(
+        index === seeded.planTasks.length - 1
+          ? seeded.key
+          : blockNodeId(specSlug, requirementBlockId(index + 1))
+      );
+    });
+    // Each reply under the entry it answers.
+    expect(parentOf(seeded.messages.reply), "the reply is not under its message").toBe(
+      seeded.messages.root
+    );
+    expect(
+      parentOf(seeded.messages.replyToReply),
+      "the reply to a reply is not under the reply it answers"
+    ).toBe(seeded.messages.reply);
+    seeded.comments.replies.forEach((reply, index) => {
+      expect(parentOf(reply), "a comment's reply is not under the comment it answers").toBe(
+        seeded.comments.threads[index % seeded.comments.threads.length]
+      );
+    });
+
+    // Every typed block the model gives no parent sits under the issue - the summary callout,
+    // the open question's block and every requirement - and no row sits under a document.
+    for (const id of [
+      blockNodeId(specSlug, seeded.summaryBlockId),
+      blockNodeId(specSlug, seeded.openQuestion.blockId),
+      ...seeded.requirements.map((requirement) => blockNodeId(specSlug, requirement)),
+    ]) {
+      expect(parentOf(id), `${id}, which the model gives no parent, is not under the issue`).toBe(
+        seeded.key
+      );
+    }
+    expect(
+      rows.filter((row) => slugs.has(parentOf(row.id ?? "") ?? "")).map((row) => row.id),
+      "a node is drawn under a document"
+    ).toEqual([]);
+    const typeOfRow = new Map(rows.map((row) => [row.id ?? "", row.type]));
+    expect(
+      rows
+        .filter((row) => row.type === "requirement")
+        .filter((row) => typeOfRow.get(parentOf(row.id ?? "") ?? "") === "decision")
+        .map((row) => row.id),
+      "a requirement is drawn under a decision"
+    ).toEqual([]);
   });
 });
 
@@ -1258,8 +1471,10 @@ test("an open question is unfolded and on the first screen @phone", async ({ bro
   });
 });
 
-// c-children.
-test("the children section opens each preset and collapses to its counts @phone", async ({
+// c-children. The children are one section above the outline on every preset, and each child
+// is also a row of the outline where the model places it, which for every child today is under
+// the issue (spec v71's R12).
+test("the children are a section above the outline with the bar and both counts @phone", async ({
   browser,
 }) => {
   // Two whole seeds and fifteen page loads, each one a cold load of the issue page: the work
@@ -1301,6 +1516,16 @@ test("the children section opens each preset and collapses to its counts @phone"
           section?.y ?? 0,
           `the children section is not the first thing in the ${PRESET_NAMES[preset]} preset's content at ${size.width} px`
         ).toBeLessThanOrEqual((body?.y ?? 0) + 1);
+        // With no filter on, each child is a row of the outline under the issue, as well as a
+        // line of the section.
+        if (preset !== "tree") continue;
+        const rows = await drawnRows(page);
+        for (const key of seeded.children.keys) {
+          expect(
+            ancestorsIn(rows, key),
+            `the child ${key} is no row under the issue at ${size.width} px`
+          ).toEqual([seeded.key]);
+        }
       }
     }
 
@@ -1872,12 +2097,12 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
 /** How many rows of each kind `seedWholeIssue` draws with every branch open, from the seed's own
  *  record of what it wrote where it keeps one: the 12 requirements and the one citing a
  *  document, a result for each check but the one recorded with none, the two comment threads
- *  with their replies and the comment anchored to a block, and the three messages of the one
- *  conversation. The rest it writes once each, or a fixed number of: the issue, the summary's
- *  callout, the open question and the answered one, the one picture, and six documents - the
- *  spec, the verification, the plan, the decisions and the cited and uncited notes. */
+ *  with their replies and the comment anchored to a block, the three messages of the one
+ *  conversation, and the children. The rest it writes once each: the issue, the summary's
+ *  callout, and the open question and the answered one. No document and no file is a row
+ *  (dispatch://INFRA-1196 R1, R3). */
 function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
-  const checks = Object.keys(seeded.checks).length;
+  const checks = seeded.checks.all.length;
   return {
     ask: 2,
     callout: 1,
@@ -1885,8 +2110,6 @@ function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
     child_issue: seeded.children.keys.length,
     comment: seeded.comments.threads.length + seeded.comments.replies.length + 1,
     decision: seeded.decisions.length,
-    document: 6,
-    image: 1,
     issue: 1,
     message: Object.keys(seeded.messages).length,
     plan_task: seeded.planTasks.length,
@@ -1905,22 +2128,17 @@ function rowsByKind(rows: readonly DrawnRow[]): Record<string, number> {
   return kinds;
 }
 
-/** Who the model holds as each node's author, by the id the tree draws the node under: every
- *  document and image, every question asked, every comment and message, and every recorded
- *  result. A node of any other kind has no author the model holds. */
+/** Who the model holds as each node's author, by the id the tree draws the node under: the
+ *  issue, every question asked, every comment and message, and every recorded result. A node of
+ *  any other kind has no author the model holds, and its row says so (R9). */
 async function storedAuthors(key: string): Promise<Map<string, Actor>> {
-  const artifacts = (await getIssue(key)).artifacts ?? [];
-  const slugOf = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
+  const issue = await getIssue(key);
+  const slugOf = new Map((issue.artifacts ?? []).map((artifact) => [artifact.id, artifact.slug]));
   const authors = new Map<string, Actor>();
-  for (const artifact of artifacts) {
-    if (artifact.created_by != null) authors.set(artifact.slug, artifact.created_by);
-  }
+  if (issue.created_by !== null) authors.set(key, issue.created_by);
   for (const ask of await listIssueAsks(key)) {
     if (ask.kind !== "question") continue;
-    const slug = ask.block_artifact?.slug ?? slugOf.get(ask.artifact_id ?? "");
-    const id =
-      slug !== undefined && ask.block_id != null ? blockNodeId(slug, ask.block_id) : ask.id;
-    authors.set(id, ask.author);
+    authors.set(askNodeId(ask, slugOf), ask.author);
   }
   for (const comment of await listComments(key)) authors.set(comment.id, comment.author);
   for (const thread of await listIssueMessages(key)) {
@@ -1945,25 +2163,23 @@ function expectedAuthorName(actor: Actor): string {
 const SESSION_ID_SHAPE = /[0-9a-f]{8}-[0-9a-f]{4}-|\bsession:/iu;
 
 /** Every way the drawn authors of `rows` differ from what the model holds: a row whose node
- *  has an author and draws another name or an id, and a row whose node has none and draws one;
- *  once every name is right, a row drawing the other kind's shape. The names are read first,
- *  because a name drawn as an id is the defect this reading exists for. */
+ *  has an author and draws another name or an id, and a row whose node has none and draws
+ *  anything but the page's own "Author unknown"; once every name is right, a row drawing a shape
+ *  of another kind than its author's. The names are read first, because a name drawn as an id
+ *  is the defect this reading exists for. */
 function authorOffences(rows: readonly DrawnRow[], stored: ReadonlyMap<string, Actor>): string[] {
   const offences: string[] = [];
   const ids = new Set([...stored.values()].map((actor) => actor.id));
   for (const row of rows) {
     const actor = stored.get(row.id ?? "");
-    if (actor === undefined) {
-      if (row.author !== null || row.authorShape !== null) {
-        offences.push(`${row.id} draws "${row.author}" though the model holds no author for it`);
-      }
-      continue;
-    }
-    const name = expectedAuthorName(actor);
+    const name = actor === undefined ? CONTROL_LABELS.unknown_author : expectedAuthorName(actor);
     if (row.author !== name) {
-      offences.push(`${row.id} draws its ${actor.kind} author as "${row.author}", not "${name}"`);
+      offences.push(
+        `${row.id} draws its ${actor?.kind ?? "unrecorded"} author as "${row.author}", not "${name}"`
+      );
     }
     if (
+      actor !== undefined &&
       actor.kind !== "user" &&
       (SESSION_ID_SHAPE.test(row.author ?? "") || ids.has(row.author ?? ""))
     ) {
@@ -1973,17 +2189,29 @@ function authorOffences(rows: readonly DrawnRow[], stored: ReadonlyMap<string, A
   if (offences.length > 0) return offences;
   for (const row of rows) {
     const actor = stored.get(row.id ?? "");
-    if (actor === undefined) continue;
-    const shape = actor.kind === "user" ? GLYPH_TOKENS.authors.person : GLYPH_TOKENS.authors.agent;
+    const shape =
+      actor === undefined
+        ? GLYPH_TOKENS.authors.unknown
+        : actor.kind === "user"
+          ? GLYPH_TOKENS.authors.person
+          : GLYPH_TOKENS.authors.agent;
     if (row.authorShape !== shape) {
-      offences.push(`${row.id} draws its ${actor.kind} author with the shape ${row.authorShape}`);
+      offences.push(
+        `${row.id} draws its ${actor?.kind ?? "unrecorded"} author with the shape ${row.authorShape}`
+      );
     }
   }
   return offences;
 }
 
-// c-author.
-test("an author is drawn by name and shape @phone", async ({ browser }) => {
+// c-author. What waits on dispatch://INFRA-1150, and is not read here: a reading whose author
+// the server never recorded (no reading exists yet; every node the model holds no author for -
+// a requirement, a check, a plan task, a note, a decision - is read for "Author unknown"
+// instead), and an agent's decision's level of uncertainty and its reason, which today's model
+// holds as one yes or no (`Decision.unsure`), read below as the word it draws.
+test("an author is drawn by name and shape, and an agent's decision by its uncertainty @phone", async ({
+  browser,
+}) => {
   // The whole issue's every row, read with every branch open, beside the stored actor of each:
   // the same unfolding c-plain-words waits out, so the same deadline.
   test.setTimeout(180_000);
@@ -2007,33 +2235,50 @@ test("an author is drawn by name and shape @phone", async ({ browser }) => {
     expect(PLANNER).toBe(plannerActor.id);
 
     // At 1440 px with every branch open, every node of the issue is a row: each node the model
-    // holds an author for draws that author's name and its kind's shape, and no other draws one.
+    // holds an author for draws that author's name and its kind's shape, and every other draws
+    // the page's own "Author unknown" with a shape of its own.
     const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
     await expect
-      .poll(async () => rowsByKind(await drawnRows(page)), {
-        message: "the unfolded tree does not draw a row for every node the seed wrote",
-      })
-      .toEqual(rowsOfTheWholeIssue(seeded));
-    await expect
       .poll(async () => authorOffences(await drawnRows(page), stored), {
         message: "a row draws its author other than by the stored actor's name and kind",
       })
       .toEqual([]);
+    await expect
+      .poll(async () => rowsByKind(await drawnRows(page)), {
+        message: "the unfolded tree does not draw a row for every node the seed wrote",
+      })
+      .toEqual(rowsOfTheWholeIssue(seeded));
     const rows = await drawnRows(page);
-    const shapes = (kind: string) =>
+    const shapes = (kind: string | undefined) =>
       new Set(
         rows.filter((row) => stored.get(row.id ?? "")?.kind === kind).map((row) => row.authorShape)
       );
     expect([...shapes("user")], "the people's rows do not share one shape").toHaveLength(1);
     expect([...shapes("session")], "the agents' rows do not share one shape").toHaveLength(1);
+    expect([...shapes(undefined)], "the unrecorded authors do not share one shape").toHaveLength(1);
+    const drawnShapes = [...shapes("user"), ...shapes("session"), ...shapes(undefined)];
     expect(
-      [...shapes("user")].filter((shape) => shapes("session").has(shape)),
-      "a person and an agent are drawn with the same shape"
-    ).toEqual([]);
+      new Set(drawnShapes).size,
+      "a person, an agent and an author nobody recorded do not each have a shape of their own"
+    ).toBe(3);
+
+    // The person's answer is drawn word for word, as the store holds it, and carries neither an
+    // uncertainty nor a reason.
+    const answer = (await getAsk(seeded.answeredAskId)).ask.answer;
+    await nodeRow(page, seeded.answeredAskId).first().focus();
+    await expect
+      .poll(async () => rowOf(await drawnRows(page), seeded.answeredAskId)?.answerText ?? null, {
+        message: "the answered ask's body does not draw the person's answer word for word",
+      })
+      .toBe(answer?.text ?? "");
+    expect(
+      rowOf(await drawnRows(page), seeded.answeredAskId)?.unsure ?? null,
+      "the person's answer is drawn with an uncertainty"
+    ).toBeNull();
 
     // The decision the seed marks unsure - its section holds a paragraph opening `Unsure:` -
     // says so in one word, and no other decision says it.
@@ -2084,6 +2329,38 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
     await expectLoadSettled(settling);
     await unfoldEveryBranch(page);
     await openEveryDeeperBranch(page);
+
+    // The gaps the page draws are those that tell a node apart and name work somebody owes: each
+    // requirement no check serves, and the plan task that serves no requirement - and no other
+    // node draws any. The check whose latest result records no negative control is one of those
+    // others: dispatch://INFRA-1253 R3 refuses such a result, so the page names nothing it lacks.
+    const coverage = await getIssueCoverage(seeded.key);
+    const wanted = new Map<string, string[]>();
+    for (const requirement of coverage.requirements ?? []) {
+      if (requirement.checks === 0) {
+        wanted.set(blockNodeId(specSlug, requirement.block_id), ["no_check"]);
+      }
+    }
+    wanted.set(blockNodeId(planSlug, planTaskBlockId(seeded.planTasks.length)), ["nobody_asked"]);
+    const uncontrolled = (await getIssueResults(seeded.key)).checks?.find(
+      (one) => one.block_id === seeded.checks.uncontrolled
+    );
+    expect(
+      uncontrolled?.results?.[0]?.negative_control,
+      "the seed's uncontrolled check's latest result records a negative control"
+    ).toBe("");
+    const drawnGaps = async () => {
+      const drawn = new Map<string, string[]>();
+      for (const row of await drawnRows(page)) {
+        if (row.gapKinds.length > 0) drawn.set(row.id ?? "", [...row.gapKinds]);
+      }
+      return Object.fromEntries([...drawn].sort());
+    };
+    await expect
+      .poll(drawnGaps, {
+        message: "the page draws a gap on a node it does not tell apart, or none on one it does",
+      })
+      .toEqual(Object.fromEntries([...wanted].sort()));
     await expect
       .poll(async () => rowsByKind(await drawnRows(page)), {
         message: "the unfolded tree does not draw a row for every node the seed wrote",
@@ -2137,29 +2414,6 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
       })
       .toBe(decision);
 
-    // The gaps the page draws are those that tell a node apart and name work somebody owes:
-    // each requirement no check serves, the plan task that serves no requirement and the check
-    // whose latest result records no negative control - and no other node draws any.
-    const coverage = await getIssueCoverage(seeded.key);
-    const wanted = new Map<string, string[]>();
-    for (const requirement of coverage.requirements ?? []) {
-      if (requirement.checks === 0) {
-        wanted.set(blockNodeId(specSlug, requirement.block_id), ["no_check"]);
-      }
-    }
-    wanted.set(blockNodeId(planSlug, planTaskBlockId(seeded.planTasks.length)), ["nobody_asked"]);
-    wanted.set(blockNodeId(verificationSlug, seeded.checks.noNegativeControl), [
-      "no_negative_control",
-    ]);
-    const drawnGaps = new Map<string, string[]>();
-    for (const row of await drawnRows(page)) {
-      if (row.gapKinds.length > 0) drawnGaps.set(row.id ?? "", [...row.gapKinds]);
-    }
-    expect(
-      Object.fromEntries([...drawnGaps].sort()),
-      "the page draws a gap on a node it does not tell apart, or none on one it does"
-    ).toEqual(Object.fromEntries([...wanted].sort()));
-
     // No gap that every node of a kind carries is drawn: no requirement, no decision and not
     // the issue's head says anything about a source, a read-back or an author.
     expect(
@@ -2185,6 +2439,74 @@ test("the chain is reachable and only gaps that tell a node apart are drawn", as
       [...new Set(await listed.allInnerTexts())],
       "the Spec preset's list draws a gap other than no check"
     ).toEqual([GAP_WORDS.no_check]);
+  });
+});
+
+// c-decisions, on the Decisions preset, which is the filter today's page draws for it. What
+// waits on another issue, and is not read here: an agent decision's author, its level of
+// uncertainty and its reason, the reading under it, and the decision whose `shaped` tuple names
+// three requirements (dispatch://INFRA-1150); and the answered ask's options, which the seed's
+// answered ask has none of. The order after the first entry - each answered ask and each agent
+// decision, newest first - is the filters' own item of this round.
+test("the Decisions filter lists open asks first and quotes the person's answer", async ({
+  browser,
+}) => {
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = await primarySlug(seeded.key);
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const stored = (await getAsk(seeded.answeredAskId)).ask.answer;
+    expect(stored?.text ?? "", "the seed's answered ask holds no answer").not.toBe("");
+    await openPreset(page, seeded.key, "decisions");
+    await expectIssuePageDrawn(page);
+
+    // The open ask is the first entry.
+    const entries = (await drawnRows(page)).filter((row) => !row.context && row.id !== seeded.key);
+    expect(entries[0]?.id, "the Decisions filter's first entry is not the open question").toBe(
+      blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID)
+    );
+
+    // The answered ask quotes the person's answer character for character as the store holds
+    // it, in its own row and its body, by who answered.
+    const asked = nodeRow(page, seeded.answeredAskId).first();
+    await asked.focus();
+    await expect
+      .poll(async () => rowOf(await drawnRows(page), seeded.answeredAskId)?.answerText ?? null, {
+        message: "the answered ask does not draw the person's answer as the store holds it",
+      })
+      .toBe(stored?.text ?? "");
+    const drawn = rowOf(await drawnRows(page), seeded.answeredAskId);
+    expect(drawn?.answerAuthor, "the answered ask does not name who answered").toBe(stored?.user);
+    expect(drawn?.answerLine ?? "", "the answered ask's own row draws no answer").toContain(
+      firstLineOf(stored?.text ?? "").line
+    );
+    // No sentence beside it restates the answer: what the page writes of its own on the ask's
+    // row and body is its type, its state, the word naming the answer and the body's one control,
+    // and the rest is the asker's and the person's own words.
+    const own = await asked.evaluate((row) =>
+      [...row.querySelectorAll("[data-page-chrome]")]
+        .map((element) => {
+          const copy = element.cloneNode(true) as Element;
+          for (const authored of copy.querySelectorAll("[data-author-text]")) authored.remove();
+          return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+        })
+        .filter((text) => text !== "")
+    );
+    const expected: readonly string[] = [
+      NODE_TYPE_NAMES.ask,
+      NODE_STATE_WORDS.ask.answered,
+      CONTROL_LABELS.answer,
+      CONTROL_LABELS.keep_open,
+    ];
+    expect(
+      own.filter((text) => !expected.includes(text)),
+      "the answered ask draws words of the page's own beside the person's answer"
+    ).toEqual([]);
+
+    // The decision that answers the ask sits under it, in the filter as in the outline.
+    expect(
+      await parentOfRow(page, blockNodeId(decisionsSlug, seeded.decisions[1] ?? "")),
+      "the decision that answers the ask is not drawn under it"
+    ).toBe(seeded.answeredAskId);
   });
 });
 
@@ -2317,18 +2639,10 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
     for (let index = 0; index < count; index += 1) {
       const row = rows.nth(index);
       await row.focus();
-      // The focus opens the body, and a document's body reads its own text as it opens: until
-      // that read lands the body draws the line for a document that has not arrived (R16), so
-      // a reading taken at once reads that line instead of the words this check is about. The
-      // body is waited for in both directions - the loading line gone and words of its own
-      // drawn - because a body still empty carries no loading line either, and `readChrome`
-      // over an empty body reads the rest of the page and passes. What the wait cannot say is
-      // which words those are; that is what `readChrome` is for.
+      // The focus opens the body, and the body is waited for to draw words of its own, because
+      // `readChrome` over an empty body reads the rest of the page and passes. What the wait
+      // cannot say is which words those are; that is what `readChrome` is for.
       await expect(rowBody(row), `row ${index} opens no body on focus`).toBeAttached();
-      await expect(
-        rowBody(row),
-        `the body of row ${index} still draws the line for a document that has not arrived`
-      ).not.toContainText(EMPTY_STATE_LINES.document_reading);
       await expect(
         rowBody(row),
         `the body of row ${index} drew no text of its own, so there is nothing in it to read`
@@ -2338,52 +2652,84 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
   });
 });
 
-// c-nodes.
-test("documents are nodes and nothing is a file list", async ({ browser }) => {
+// c-nodes. What waits on the next item of this round, the node menu as the documents' home,
+// and is not read here: no document's text under a filter (the Spec, Checks and Plan presets
+// still draw their document under the tree), a document opened from the menu in place of the
+// outline with Escape back to it, and a chip on the block that cites a document, which today
+// links it from its own text. The issue's spec, plan and verification documents are listed in
+// the menu as every other document is, which is read.
+test("documents open from the node menu and are never rows of the outline @phone", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const artifacts = (await getIssue(seeded.key)).artifacts ?? [];
+    const slugs = new Set(artifacts.map((artifact) => artifact.slug));
+
+    // No document and no file is a row of the outline, with no filter and with each on, at
+    // 1440 px with every branch open and at 390 px.
+    for (const size of [DESKTOP, PHONE]) {
+      await page.setViewportSize({ height: size.height, width: size.width });
+      for (const preset of PRESET_ORDER) {
+        await gotoIssue(page, presetPath(seeded.key, preset));
+        await expectIssuePageDrawn(page);
+        if (size.width > 1024) await unfoldEveryBranch(page);
+        expectNoIssueNodeRows(
+          await drawnRows(page),
+          slugs,
+          `the ${PRESET_NAMES[preset]} preset at ${size.width} px`
+        );
+      }
+    }
+
+    // The node menu lists every document and artifact of the issue - its spec, plan,
+    // verification and decisions documents among them - with the upload and New document.
+    await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     await gotoIssue(page, `/issues/${seeded.key}`);
     await expectIssuePageDrawn(page);
-    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
-    // Nothing under the citing requirement is open, so its branch - the document it cites -
-    // arrives folded with the rest (R1): the reader opens what the fold shut, which is the
-    // twisty the folded row draws, and the document is a node under that block there.
-    await unfoldEveryBranch(page);
-
-    // The cited document is a node under the block that cites it, and opens from there.
-    expect(
-      await parentOfRow(page, seeded.documents.cited),
-      "the cited document does not sit under the block that cites it"
-    ).toBe(blockNodeId(specSlug, seeded.documents.citingBlock));
-    const cited = nodeRow(page, seeded.documents.cited).first();
-    await cited.focus();
-    // The read is the node's own, made when the body opens: the page reads no document's text
-    // before a reader opens it (R20, c-requests), so the body says so until the read lands.
-    await expect
-      .poll(async () => (await rowBody(cited).innerText()).replace(/\s+/g, " "), {
-        message: "the cited document's node does not open its own text",
-      })
-      .toContain("The measurements behind the first requirement.");
-
-    // What nothing cites is in the node menu, marked as cited by nothing, and so is the upload.
     expect(
       await nodeMenuButton(page).count(),
       "the page draws no node menu beside the presets"
     ).toBe(1);
     await nodeMenuButton(page).click();
     expect(await openMenu(page).count(), "the node menu opens nothing").toBe(1);
+    await expect(
+      openMenu(page)
+        .getByRole("button", { name: /^Copy reference/ })
+        .first()
+    ).toBeVisible();
     const items = (await nodeMenuItems(page).allInnerTexts()).map((text) =>
       text.replace(/\s+/g, " ").trim()
     );
-    for (const name of ["background.md", "shot.png"]) {
-      const item = items.find((text) => text.includes(name));
-      expect(item, `the node menu does not hold ${name}: ${JSON.stringify(items)}`).toBeDefined();
-      expect(item, `${name} is not marked as cited by nothing`).toContain(
-        CONTROL_LABELS.nothing_cites_it
-      );
+    for (const artifact of artifacts) {
+      expect(
+        items.some((text) => text.includes(artifact.name)),
+        `the node menu does not list ${artifact.name}: ${JSON.stringify(items)}`
+      ).toBe(true);
     }
-    const upload = openMenu(page).getByRole("menuitem", { name: CONTROL_LABELS.upload });
-    expect(await upload.count(), "the upload is not in the node menu").toBe(1);
-    await upload.click();
+    for (const name of [CONTROL_LABELS.upload, CONTROL_LABELS.new_document]) {
+      expect(
+        await openMenu(page).getByRole("menuitem", { name }).count(),
+        `the node menu holds no ${name}`
+      ).toBe(1);
+    }
+
+    // A document opens from the menu, at its own address, with its own text.
+    const cited = artifacts.find((artifact) => artifact.slug === seeded.documents.cited);
+    await openMenu(page)
+      .getByRole("button", { exact: true, name: cited?.name ?? "" })
+      .click();
+    await expect(page, "the node menu's item does not open the document's address").toHaveURL(
+      new RegExp(`/issues/${seeded.key}/artifacts/${seeded.documents.cited}$`)
+    );
+    await expect(
+      page.getByText("The measurements behind the first requirement."),
+      "the document opened from the node menu draws none of its own text"
+    ).toBeVisible();
+
+    // The upload uploads a file.
+    await nodeMenuButton(page).click();
+    await openMenu(page).getByRole("menuitem", { name: CONTROL_LABELS.upload }).click();
     await uploadInput(page)
       .first()
       .setInputFiles({
@@ -2395,22 +2741,30 @@ test("documents are nodes and nothing is a file list", async ({ browser }) => {
       .poll(async () => ((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.name))
       .toContain("uploaded.md");
 
-    // An artifact's versions and the download of a version are reachable from the artifact.
-    await page.keyboard.press("Escape");
-    await cited.focus();
-    expect(
-      await offered(page, "button", CONTROL_LABELS.versions).count(),
-      "the artifact's own versions are not reachable from it"
-    ).toBeGreaterThan(0);
-    expect(
-      await page.getByRole("link", { name: CONTROL_LABELS.download }).count(),
-      "a version's download is not reachable from the artifact"
-    ).toBeGreaterThan(0);
+    // An artifact's version history and a version's download are reachable from the artifact:
+    // its own address draws its version picker, and the issue's list of artifacts at
+    // `/issues/<key>/artifacts` a download of each one's latest version. The image draws its
+    // picture at its own address.
+    await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      page.getByRole("combobox", { exact: true, name: "Version" }),
+      "the document's versions are not reachable"
+    ).toHaveCount(1);
+    await gotoIssue(page, `/issues/${seeded.key}/artifacts`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      page.getByRole("link", { name: /^Download version \d+$/ }).first(),
+      "no version's download is reachable from the artifacts"
+    ).toBeVisible();
+    await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.image}`);
+    await expectIssuePageDrawn(page);
+    await expect(
+      page.locator('main img[src*="/versions/"]').first(),
+      "the image draws no picture at its own address"
+    ).toBeVisible();
 
-    // The image is a node that draws its picture, and no preset is a file list.
-    const image = nodeRow(page, seeded.documents.image).first();
-    await image.focus();
-    expect(await rowPictures(image).count(), "the image node draws no picture").toBeGreaterThan(0);
+    // Nothing is named Artifacts.
     expect(
       await presetTabs(page).allInnerTexts(),
       "a preset is still named Artifacts"
@@ -2641,9 +2995,9 @@ test("the new page carries every element of the old one @phone", async ({ browse
     // same way: its five presets and the four addresses beside them, the conversation, the
     // activity, the collaborators and the artifacts (R3, R12, R19). Three more views are the
     // page's own, because what they hold sits behind a control rather than behind an address:
-    // the node menu, where a document no block cites lives (R16); the identity block's actions
-    // menu, where Close and the parent editor live (R11); and each document's own node, whose
-    // body is what a document opens (R2).
+    // the node menu, where every document and artifact of the issue lives (R3); the identity
+    // block's actions menu, where Close and the parent editor live (R11); and each row of the
+    // tree, whose body is what a node opens (R6).
     // How far a walk over the tree reaches. The seeded issue draws fewer rows than this at
     // either width, and a view over a row the tree does not draw answers that it is not there
     // rather than reading the page the view before it left (`e2e/page-inventory.ts`), so the
@@ -2702,10 +3056,10 @@ test("the new page carries every element of the old one @phone", async ({ browse
         ).toHaveCount(1);
         await nodeMenuButton(page).click();
         await expect(openMenu(page)).toHaveCount(1);
-        // The menu's rows are the issue's own uncited documents (`issue-artifacts.ts`'s
-        // `uncitedArtifacts` over `issue.artifacts`), which arrive with the issue read rather
-        // than with the shell: a menu opened before that read lands draws the upload item
-        // alone, and the snapshot taken then records every document of this view as lost.
+        // The menu's rows are every artifact of the issue (`issue.artifacts`), which arrive with
+        // the issue read rather than with the shell: a menu opened before that read lands draws
+        // the upload item alone, and the snapshot taken then records every document of this view
+        // as lost.
         // Measured on this branch at 390 px, three times in two runs, each naming exactly
         // `button "Copy reference dispatch://LAY-2/artifact/notes-md"` and each passing on the
         // retry. So the view is not there until a document row of it is.
@@ -2754,7 +3108,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
       // still read, and still fitted, on its own.
       //
       // At a width that draws the whole tree the walk opens the branches the page opened
-      // folded first (R1): a node behind a fold - the document a requirement cites - is a
+      // folded first (R1): a node behind a fold - the check under a requirement - is a
       // twisty away for a reader, and a walk that never pressed one would read it as lost. At
       // 1024 px and below a twisty zooms instead, which the zoom walk below does.
       ...Array.from({ length: walkDepth }, (_unused, index) => async () => {
@@ -2812,7 +3166,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
                   // fills as the reads land (`expectLoadSettled`), so a set taken the moment
                   // the navigation returns holds the twisties of a half-filled tree, and a
                   // row missed here is a node this state never zooms into. Measured on a
-                  // loaded box at 390 px: the cited document's own copy control read as lost
+                  // loaded box at 390 px: a document's own copy control read as lost
                   // on the attempt and was found on the retry.
                   const settling = watchApiRequests(page);
                   await gotoIssue(page, `/issues/${seeded.key}`);
@@ -2839,7 +3193,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
                 return false;
               }
               // The zoomed node is the first row; its own nodes follow it, and the first of
-              // them - a document the row's requirement cites - is read by the view that
+              // them - a check under the row's requirement - is read by the view that
               // opened the zoom.
               const under = nodeRows(page);
               if ((await under.count()) > index + 1) await under.nth(index + 1).focus();
@@ -3149,12 +3503,18 @@ test("every address of the old page still resolves", async ({ browser }) => {
       seeded.children.keys.length
     );
 
+    // A document's address opens that document - its own text on the page - and no row of the
+    // outline is the document (R3).
     await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`);
     await expectIssuePageDrawn(page);
+    await expect(
+      page.getByText("The measurements behind the first requirement."),
+      "/artifacts/<slug> does not open that document"
+    ).toBeVisible();
     expect(
       await nodeRow(page, seeded.documents.cited).count(),
-      "/artifacts/<slug> opens no node for that document"
-    ).toBeGreaterThan(0);
+      "/artifacts/<slug> draws the document as a row of the outline"
+    ).toBe(0);
 
     // An ask the server indexed from a document's `ask` block *is* that block's node
     // (`e2e/issue-page.ts`), which is what the `?ask=` reading below asserts too: no row of the

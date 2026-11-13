@@ -893,10 +893,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push({ queryKey: myRepliesKey });
   }
   if (changesReferenceGraph(event)) {
-    // By prefix, not exactly: the References tab reads `["issue", key, "references"]` and the
-    // issue page's tree reads the issue's own closure under `["issue", key, "references", "own"]`
-    // (`useIssueTree.ts`), and a version that cites a document moves both. Nothing else hangs
-    // under this prefix, so the one rule holds whatever the next reader of the closure keys on.
+    // By prefix, not exactly: the References tab reads `["issue", key, "references"]`, and a
+    // read keyed under it with anything more holds the same edges, so the one rule holds
+    // whatever the next reader of the issue's references keys on.
     targets.push({ queryKey: ["issue", key, "references"] });
     targets.push(EVERY_REFERENCE_NAME);
   }
@@ -1181,8 +1180,8 @@ function changedReferenceTargets(event: DispatchEvent): RefreshTarget[] {
     if (target.kind === "issue") {
       targets.push(
         { exact: true, queryKey: ["issue", target.id] },
-        // By prefix: the References tab's read and the issue page's own closure
-        // (`["issue", key, "references", "own"]`) both hold the edges this target just lost.
+        // By prefix: the References tab's read, and any read keyed under it, holds the edges
+        // this target just lost.
         { queryKey: ["issue", target.id, "references"] },
         referencePanel(buildDispatchReference({ key: target.id, kind: "issue" }))
       );

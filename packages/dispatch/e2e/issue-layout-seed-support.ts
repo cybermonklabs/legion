@@ -95,14 +95,8 @@ export async function pause(milliseconds: number): Promise<void> {
  *  commit no pull request names stands at another commit and reads `older` instead
  *  (results_comparison.go's `passStandsOf`). `no-control` is a pass like any other. */
 function wantedState(state: SeededCheckState, repositoryInstalled: boolean): string {
-  switch (state) {
-    case "no-control":
-      return "passed";
-    case "unmarked":
-      return repositoryInstalled ? "older" : "unmarked";
-    default:
-      return state;
-  }
+  if (state === "no-control") return "passed";
+  return state === "unmarked" && repositoryInstalled ? "older" : state;
 }
 
 /** Waits until every check of the issue reads the state its seeding implies, so a fixture that

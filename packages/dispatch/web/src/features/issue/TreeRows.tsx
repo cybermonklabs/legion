@@ -67,7 +67,8 @@ export function TreeRows({
   zoomed: boolean;
 }): ReactNode {
   // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
-  // every row rather than once a row.
+  // every row rather than once a row: a name and a shape for every node, the page's own words
+  // where the model holds no author (R9).
   const agentText = useAgentText();
   return (
     <>
@@ -88,17 +89,13 @@ export function TreeRows({
         const place = documentOfNode(row.node.id, artifacts);
         return (
           <NodeRow
-            {...(row.node.author === undefined
+            {...(row.node.answer === undefined
               ? {}
-              : {
-                  author: {
-                    kind: authorKind(row.node.author),
-                    name: agentText.author(row.node.author),
-                  },
-                })}
-            {...(place?.blockId === undefined && place !== undefined
-              ? { artifact: place.artifact }
-              : {})}
+              : { answerer: agentText.author(row.node.answer.by) })}
+            author={{
+              kind: authorKind(row.node.author),
+              name: agentText.author(row.node.author),
+            }}
             body={
               focused === key ||
               pinned.has(key) ||
@@ -107,7 +104,7 @@ export function TreeRows({
               drawsBody(cycle, row.level)
             }
             context={context.has(row.node.id)}
-            {...(place?.blockId === undefined ? {} : { document: place.artifact })}
+            {...(place === undefined ? {} : { document: place.artifact })}
             {...(editing?.row === key ? { editing: editing.artifactId } : {})}
             expanded={row.expanded}
             focused={focused === key}

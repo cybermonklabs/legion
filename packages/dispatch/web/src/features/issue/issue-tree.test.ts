@@ -15,7 +15,6 @@ import type {
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
-  IssueReferences,
   Message,
   MessageRead,
   RequirementCoverage,
@@ -283,16 +282,29 @@ function depthOf(node: TreeNode): number {
   return 1 + Math.max(0, ...node.children.map(depthOf));
 }
 
-type ReferenceMember = NonNullable<IssueReferences["members"]>[number];
-
-/** One member of the references read: a document the issue reaches, named by the document that
- *  cites it and the blocks of that document the link stands in (`?own=1`). */
-function member(cited: Artifact, via: Artifact, blocks: readonly string[]): ReferenceMember {
+/** One question asked of the issue, under no document unless `extra` names its block. */
+function question(id: string, extra: Partial<Ask> = {}): Ask {
   return {
-    artifact: cited,
-    depth: 1,
-    via: { id: via.id, kind: "artifact" },
-    via_blocks: [...blocks],
+    anchor: null,
+    answer: null,
+    author: { id: "planner", kind: "session" },
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    block_id: null,
+    created_at: "2026-11-05T00:00:00Z",
+    edited_at: null,
+    id,
+    issue_key: KEY,
+    kind: "question",
+    multiple: false,
+    opened_event_id: 1,
+    options: [],
+    question: `Question ${id}?`,
+    state: "open",
+    urgency: "med",
+    ...extra,
   };
 }
 
@@ -499,8 +511,8 @@ test("a tree of one level and a tree of six are both drawn", () => {
   });
 
   expect(depthOf(root)).toBe(6);
-  // The five requirements and the document they are blocks of, which is a node of the tree too.
-  expect(root.held).toBe(6);
+  // The five requirements and nothing else: the document they are blocks of is no node (R3).
+  expect(root.held).toBe(5);
   expect(nodeOf(root, blockNodeId(SPEC, "r5"))?.children).toEqual([]);
   expect(placementsOf(root, blockNodeId(SPEC, "r5")).map((one) => one.parent)).toEqual([
     blockNodeId(SPEC, "r4"),
@@ -535,95 +547,170 @@ test("a first line ends at a sentence, at a word, or at the limit where there is
   expect(firstLineOf(atTheEdge)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
 });
 
-// R1, R16: a spec that cites the plan while the plan cites the spec is ordinary data, and the
-// references read answers each one via the other. Both documents are drawn, with every block
-// they hold: a ring hanging off nothing would be lost from the tree entirely.
-test("two documents that cite each other are both drawn, with what they hold", () => {
+// R1, R3, R4, R12: a document is a node of the issue and not of its conversation, so the tree
+// draws none; every typed block of an issue the conversion has not reached sits under the
+// issue, the spec's blocks first and each document's in its own order, and a block the model
+// places - a plan task by its `serves` - still sits where it says. A child issue is a node
+// under the issue, where the model places every child today.
+test("no document is a node, and each typed block and child sits under the issue", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const image: Artifact = { ...artifact("artifact-image", "shot-png", "shot.png"), kind: "image" };
   const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
     documents: [
-      { artifactId: spec.id, blocks: [block("r1", "requirement"), block("q1", "ask")] },
-      { artifactId: plan.id, blocks: [block("t1", "plan_task")] },
-    ],
-    issue: issueDetails([spec, plan]),
-    references: {
-      members: [member(plan, spec, ["r1"]), member(spec, plan, ["t1"])],
-      truncated: false,
-    },
-  });
-
-  // The spec is the issue's first document, so the citation it holds stands and the one that
-  // would put it back inside the plan is the citation the ring is opened at.
-  expect(placementsOf(root, SPEC).map((one) => one.parent)).toEqual([KEY]);
-  expect(placementsOf(root, "plan-md").map((one) => one.parent)).toEqual([blockNodeId(SPEC, "r1")]);
-  // Nothing the documents hold is lost with them: the question inside the spec is a row of the
-  // tree, which is what the fold opens the path to (R6).
-  expect(placementsOf(root, blockNodeId(SPEC, "q1")).map((one) => one.parent)).toEqual([SPEC]);
-  expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
-    "plan-md",
-  ]);
-});
-
-// R4: a `from` edge that points in a circle is the same case one level down, and `assemble`
-// answers it the same way: the first node of the ring comes home to the issue, so no node of
-// it is lost whatever the documents say.
-test("requirements whose `from` edges point in a circle are drawn under the issue", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const root = buildIssueTree({
-    coverage: coverage([requirement("r1", "The first."), requirement("r2", "The second.")]),
-    documents: [
+      { artifactId: notes.id, blocks: [block("n1", "callout")] },
       {
         artifactId: spec.id,
+        blocks: [block("summary", "callout"), block("r1", "requirement"), block("q1", "ask")],
+      },
+      {
+        artifactId: plan.id,
         blocks: [
-          block("r1", "requirement", { from: `dispatch://${KEY}/spec#b-r2` }),
-          block("r2", "requirement", { from: `dispatch://${KEY}/spec#b-r1` }),
+          block("t1", "plan_task", { serves: `dispatch://${KEY}/spec#b-r1` }),
+          block("t2", "plan_task"),
         ],
       },
     ],
-    issue: issueDetails([spec]),
+    // The issue carries its spec second, so a reading that ordered the blocks by their
+    // document's place in the list alone would draw the notes' block first.
+    issue: {
+      ...issueDetails([notes, spec, plan, image]),
+      children: [
+        {
+          active_at: "2026-11-05T00:00:00Z",
+          blocked_by: [],
+          claim: null,
+          external_links: [],
+          key: "CORE-2",
+          status: "todo",
+          subtree_done: 0,
+          subtree_total: 0,
+          title: "A child.",
+        },
+      ],
+    },
   });
 
-  expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
-  expect(placementsOf(root, blockNodeId(SPEC, "r2")).map((one) => one.parent)).toEqual([
+  const kinds = new Set<string>();
+  const walk = (node: TreeNode): void => {
+    kinds.add(node.type);
+    for (const child of node.children) walk(child);
+  };
+  walk(root);
+  for (const kind of ["document", "image", "handoff"]) {
+    expect(kinds.has(kind), kind).toBe(false);
+  }
+  for (const id of [SPEC, "notes-md", "plan-md", "shot-png"]) {
+    expect(nodeOf(root, id), id).toBeUndefined();
+  }
+  expect(root.children.map((child) => child.id)).toEqual([
+    blockNodeId(SPEC, "summary"),
+    blockNodeId(SPEC, "q1"),
+    blockNodeId("notes-md", "n1"),
+    blockNodeId("plan-md", "t2"),
+    blockNodeId(SPEC, "r1"),
+    "CORE-2",
+  ]);
+  expect(nodeOf(root, "CORE-2")?.type).toBe("child_issue");
+  expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
     blockNodeId(SPEC, "r1"),
   ]);
 });
 
-// R16: a slug is unique inside one issue only, so a member is this issue's document by its
-// artifact id. Another issue's `plan-md` cited from the spec places nothing here, and it does
-// not stop the member that names this issue's own `plan-md` either.
-test("a document of another issue with the same slug places nothing", () => {
+// R4: a decision sits under the ask it answers - the asks its blocks mention - edited under the
+// first and shown under the others, each placement naming the rest; an ask the tree holds no
+// node for stays a chip and places nothing, and a decision that answers no question of the
+// issue sits under the issue. The ask a document's block is answers by that block's node.
+test("a decision sits under the ask it answers, and one that answers none under the issue", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const plan = artifact("artifact-plan", "plan-md", "plan.md");
-  const foreign: Artifact = {
-    ...artifact("artifact-other-plan", "plan-md", "plan.md"),
-    issue_key: "OTHER-1",
-    project: "OTHER",
-  };
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const own = question("ask-own", { state: "answered" });
+  const inSpec = question("ask-block", {
+    block_artifact: { id: spec.id, primary: true, slug: SPEC },
+    block_id: "q1",
+  });
   const root = buildIssueTree({
+    asks: [own, inSpec],
+    decisions: decisions([
+      { ...decision("d1", "Answers the issue's own question.", []), asks: ["ask-own"] },
+      { ...decision("d2", "Answers both.", []), asks: ["ask-block", "ask-own"] },
+      { ...decision("d3", "Answers a question of another issue.", []), asks: ["ask-elsewhere"] },
+      decision("d4", "Answers nothing.", []),
+    ]),
+    documents: [{ artifactId: spec.id, blocks: [block("q1", "ask")] }],
+    issue: issueDetails([spec, made]),
+  });
+
+  const parents = (id: string) =>
+    placementsOf(root, blockNodeId("decisions-md", id)).map((one) => one.parent);
+  expect(parents("d1")).toEqual(["ask-own"]);
+  expect(parents("d2")).toEqual([blockNodeId(SPEC, "q1"), "ask-own"]);
+  expect(
+    placementsOf(root, blockNodeId("decisions-md", "d2")).map((one) => one.node.transcluded)
+  ).toEqual([false, true]);
+  expect(parents("d3")).toEqual([KEY]);
+  expect(parents("d4")).toEqual([KEY]);
+  // An ask that places the decision is its spine, so no chip names it; one that places
+  // nothing is still named.
+  expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips).toEqual([]);
+  expect(nodeOf(root, blockNodeId("decisions-md", "d3"))?.chips.map((chip) => chip.ref)).toEqual([
+    `dispatch://${KEY}/ask/ask-elsewhere`,
+  ]);
+});
+
+// R4: a decision is never a requirement's parent, whatever the requirement's own `from` names:
+// the requirement sits under the issue instead.
+test("a requirement whose `from` names a decision sits under the issue", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
+    decisions: decisions([decision("d1", "Shapes nothing.", [])]),
     documents: [
       {
         artifactId: spec.id,
-        // Spans of their own, since the row a citation is drawn on is the listed block whose
-        // span covers the citing one's (`citingRow`).
         blocks: [
-          { ...block("r1", "requirement"), from: 0, to: 10 },
-          { ...block("r2", "requirement"), from: 10, to: 20 },
+          block("r1", "requirement", { from: `dispatch://${KEY}/artifact/decisions-md#b-d1` }),
         ],
       },
-      { artifactId: plan.id, blocks: [] },
     ],
-    issue: issueDetails([spec, plan]),
-    references: {
-      // The foreign document is answered first, as the read orders its members by depth.
-      members: [member(foreign, spec, ["r1"]), member(plan, spec, ["r2"])],
-      truncated: false,
-    },
+    issue: issueDetails([spec, made]),
   });
 
-  expect(placementsOf(root, "plan-md").map((one) => one.parent)).toEqual([blockNodeId(SPEC, "r2")]);
-  expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.children).toEqual([]);
+  expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
+});
+
+// INFRA-1150 R3, R1: a person's answer is part of the ask and no node of its own. The ask's
+// node carries it as the store holds it, who answered, what they chose and what they wrote, and
+// the ask holds no child for it.
+test("an ask's answer is part of the ask's node and no node of its own", () => {
+  const answered = question("ask-1", {
+    answer: {
+      at: "2026-11-06T00:00:00Z",
+      selected: ["1280 px"],
+      text: "The preset row keeps its labels.\n\nAbove that width.",
+      user: "alice",
+    },
+    state: "answered",
+  });
+  const root = buildIssueTree({ asks: [answered], issue: issueDetails([]) });
+
+  const node = nodeOf(root, "ask-1");
+  expect(node?.answer).toEqual({
+    by: { id: "alice", kind: "user" },
+    selected: ["1280 px"],
+    text: "The preset row keeps its labels.\n\nAbove that width.",
+  });
+  expect(node?.children).toEqual([]);
+  expect(nodeOf(root, "ask-2")).toBeUndefined();
+});
+
+// R9: the issue's own node carries the author the issue read names, so its row draws who
+// opened it rather than an author nobody recorded.
+test("the issue's own node carries who opened it", () => {
+  expect(buildIssueTree({ issue: issueDetails([]) }).author).toEqual({ id: "alice", kind: "user" });
 });
 
 // R1: the conversation is one order. The comments and the messages are two reads, each
@@ -753,58 +840,6 @@ test("a declined ask is drawn Declined, as the card beside it is", () => {
   expect(nodeStateWord(node?.state ?? "open")).toBe(askResolutionBadge(declining));
 });
 
-// R16: where each document of the issue stands is read once (`documentRanks`), and that one
-// reading both decides which citation of a ring is cut and orders the documents' rows. Read
-// twice, a change to one reading would open a ring at a document other than the one drawn
-// first.
-test("the documents are drawn in the order the ring is opened by: the spec, then the rest", () => {
-  const notes = artifact("artifact-notes", "notes-md", "notes.md");
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const plan = artifact("artifact-plan", "plan-md", "plan.md");
-  // The issue carries its spec second, so a reading that ordered the documents by their place
-  // in the list alone would draw the spec after the notes.
-  const root = buildIssueTree({ issue: issueDetails([notes, spec, plan]) });
-
-  expect(root.children.map((child) => child.id)).toEqual([SPEC, "notes-md", "plan-md"]);
-});
-
-// R8: `serves` points only at a requirement (`blocks.json`), and the write that introduces one
-// is held to that; a target retyped afterwards leaves the citation naming a node that is no
-// longer a requirement. The page draws that as a gap on the node holding the citation, and
-// places nothing by it: the check keeps its place under its own document.
-test("a check whose citation names no requirement draws the gap, and keeps its place", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
-  const root = buildIssueTree({
-    coverage: coverage([requirement("r1", "The first.")]),
-    documents: [
-      {
-        artifactId: spec.id,
-        // `r-was` is the retyped target: the block the citation names is a callout now.
-        blocks: [block("r1", "requirement"), block("r-was", "callout")],
-      },
-      {
-        artifactId: checks.id,
-        blocks: [
-          block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r-was` }),
-          block("c2", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
-        ],
-      },
-    ],
-    issue: issueDetails([spec, checks]),
-  });
-
-  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual(["serves_not_requirement"]);
-  expect(placementsOf(root, blockNodeId(VERIFICATION, "c1")).map((one) => one.parent)).toEqual([
-    VERIFICATION,
-  ]);
-  // The check whose citation names a requirement draws no gap and sits under it.
-  expect(nodeOf(root, blockNodeId(VERIFICATION, "c2"))?.gaps).toEqual([]);
-  expect(placementsOf(root, blockNodeId(VERIFICATION, "c2")).map((one) => one.parent)).toEqual([
-    blockNodeId(SPEC, "r1"),
-  ]);
-});
-
 // R8: a plan task that names no requirement it serves and no declaration it attempts is work
 // nobody asked for. A check is held to neither - a check is there to prove a requirement and
 // attempts no declaration at all - so the gap is the plan task's alone.
@@ -839,43 +874,54 @@ test("a plan task that names no requirement and no declaration draws the gap", (
   expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual([]);
 });
 
-// R10: a check whose latest result records no negative control draws the gap, on the check: the
-// check is the node that owes the work. An older result's empty control says nothing about the
-// work as it stands, so only the latest result counts, no result carries the gap itself, and the
-// page states no verdict of its own.
-test("a check whose latest result records no negative control draws the gap, and its results do not", () => {
+// R10: a `serves` naming a node that is no longer a requirement draws the gap on the node
+// holding the citation, and places nothing by it: the check keeps its place under the issue.
+test("a check whose citation names no requirement draws the gap, and keeps its place", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
   const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
     documents: [
       {
+        artifactId: spec.id,
+        // `r-was` is the retyped target: the block the citation names is a callout now.
+        blocks: [block("r1", "requirement"), block("r-was", "callout")],
+      },
+      {
         artifactId: checks.id,
-        blocks: [block("c1", "check"), block("c2", "check"), block("c3", "check")],
+        blocks: [
+          block("c1", "check", { serves: `dispatch://${KEY}/spec#b-r-was` }),
+          block("c2", "check", { serves: `dispatch://${KEY}/spec#b-r1` }),
+        ],
       },
     ],
     issue: issueDetails([spec, checks]),
-    results: checkedResults([
-      { blockId: "c1", results: [recorded("result-latest", ""), recorded("result-older", "")] },
-      {
-        blockId: "c2",
-        results: [recorded("result-controlled", "Draw a row with no state and the test fails.")],
-      },
-      {
-        blockId: "c3",
-        results: [
-          recorded("result-newer-controlled", "Draw a row with no state and the test fails."),
-          recorded("result-older-uncontrolled", ""),
-        ],
-      },
-    ]),
   });
 
-  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual(["no_negative_control"]);
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual(["serves_not_requirement"]);
+  expect(placementsOf(root, blockNodeId(VERIFICATION, "c1")).map((one) => one.parent)).toEqual([
+    KEY,
+  ]);
+  // The check whose citation names a requirement draws no gap and sits under it.
   expect(nodeOf(root, blockNodeId(VERIFICATION, "c2"))?.gaps).toEqual([]);
-  expect(nodeOf(root, blockNodeId(VERIFICATION, "c3"))?.gaps).toEqual([]);
-  for (const result of ["result-latest", "result-older", "result-controlled"]) {
-    expect(nodeOf(root, result)?.gaps, result).toEqual([]);
-  }
+  expect(placementsOf(root, blockNodeId(VERIFICATION, "c2")).map((one) => one.parent)).toEqual([
+    blockNodeId(SPEC, "r1"),
+  ]);
+});
+
+// R10: a check is held to no gap about its results. A result that records no negative control
+// is one dispatch://INFRA-1253 R3 refuses, so the lack names nothing the page could hold.
+test("a check whose latest result records no negative control draws no gap", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const root = buildIssueTree({
+    documents: [{ artifactId: checks.id, blocks: [block("c1", "check")] }],
+    issue: issueDetails([spec, checks]),
+    results: checkedResults([{ blockId: "c1", results: [recorded("result-latest", "")] }]),
+  });
+
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual([]);
+  expect(nodeOf(root, "result-latest")?.gaps).toEqual([]);
 });
 
 /** The state the page reads for the one check of a Verification document: what `payload`

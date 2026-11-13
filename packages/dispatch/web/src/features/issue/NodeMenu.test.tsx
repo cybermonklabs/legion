@@ -14,15 +14,15 @@ import { NodeMenu } from "./NodeMenu";
 import { CONTROL_LABELS } from "./page-words";
 
 /**
- * The node menu's way to make a document (dispatch://INFRA-1196 R16): the issue page has no
- * Artifacts tab, so the control that makes a document from a title - the Artifacts panel's
- * `New document` (`CreateDocument.tsx`) - is an item of the menu that holds the upload, and
- * pressing it reaches the same write.
+ * The node menu (dispatch://INFRA-1196 R3): the issue page has no Artifacts tab and the tree
+ * draws no document, so every document and artifact of the issue is an item of this menu, and
+ * the control that makes a document from a title - the Artifacts panel's `New document`
+ * (`CreateDocument.tsx`) - is an item of it too, beside the upload, and reaches the same write.
  */
 
-/** A document of the issue a block cites, so it is not in the menu's own list: the title it
- *  holds is refused all the same, since the write compares the title with every artifact. */
-const cited = {
+/** A document of the issue: an item of the menu, whose title New document refuses, since the
+ *  write compares the title with every artifact. */
+const background = {
   created_at: "2026-11-12T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-background",
@@ -49,7 +49,7 @@ const cited = {
 } satisfies Artifact;
 
 const made = {
-  ...cited,
+  ...background,
   id: "artifact-design-notes",
   name: "Design notes",
   ref_key: "CORE-1/design-notes",
@@ -65,8 +65,7 @@ function Menu({ isClosed }: { readonly isClosed: boolean }) {
   const [open, setOpen] = useState(true);
   return (
     <NodeMenu
-      artifacts={[]}
-      documents={[cited]}
+      artifacts={[background]}
       isClosed={isClosed}
       issueKey="CORE-1"
       onClose={() => setOpen(false)}
@@ -89,6 +88,24 @@ function renderMenu(isClosed = false) {
     </MemoryRouter>
   );
 }
+
+// Every artifact of the issue is an item of the menu, named by its own name with its own copy
+// control, and opens at its own address.
+test("the node menu lists every document of the issue, each opening at its own address", async () => {
+  const user = userEvent.setup();
+  const view = renderMenu();
+  try {
+    const item = screen.getByRole("menuitem", { name: /^Background/ });
+    expect(
+      screen.getByRole("button", { name: "Copy reference dispatch://CORE-1/artifact/background" })
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Background" }));
+    expect(item).not.toBeInTheDocument();
+    expect(screen.getByTestId("location").textContent).toBe("/issues/CORE-1/artifacts/background");
+  } finally {
+    view.unmount();
+  }
+});
 
 // The item closes the menu and opens the title form beside it with the caret in its Title, and
 // Create sends the title alone - so the document holds nothing - and takes the reader to it, on
@@ -130,8 +147,8 @@ test("New document in the node menu makes an empty document and opens it", async
   }
 });
 
-// The title is held against every artifact of the issue, the ones a block cites included, so a
-// title the issue already holds is refused before the write, in the control's own words.
+// The title is held against every artifact of the issue, so a title the issue already holds is
+// refused before the write, in the control's own words.
 test("New document in the node menu refuses a title the issue already holds", async () => {
   const user = userEvent.setup();
   const uploadArtifact = spyOn(api, "uploadArtifact");

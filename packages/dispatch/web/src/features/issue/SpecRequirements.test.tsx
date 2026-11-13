@@ -82,8 +82,8 @@ test("an uncovered requirement is flagged with what it lacks and a covered one i
 });
 
 // R10: a requirement no plan task serves is no gap the page draws, plan document or not: the
-// gaps it draws are a requirement no check serves, a check or a plan task whose `serves` names
-// no requirement, and a check whose latest result records no negative control.
+// gaps it draws are a requirement no check serves, and a check or a plan task whose `serves`
+// names no requirement.
 test("a requirement with a check and no plan task carries no flag, even once the issue has a plan", async () => {
   const { getIssueCoverage, view } = renderRequirements({
     gaps: ["r1 has no plan task"],

@@ -11,7 +11,7 @@ import { IssueThreeThings, nodesOfType, specSummary } from "./IssueThreeThings";
 import { IssueTree } from "./IssueTree";
 import type { AddressTarget, IssueAddress } from "./issue-address";
 import { pathToTarget } from "./issue-address";
-import { artifactsBySlug, uncitedArtifacts } from "./issue-artifacts";
+import { artifactsBySlug } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { pageChrome } from "./page-structure";
 import { EMPTY_STATE_LINES, PRESET_ORDER, type Preset } from "./page-words";
@@ -101,10 +101,6 @@ export function IssueBody({
     [address.filter, address.preset, named, root]
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
-  const uncited = useMemo(
-    () => uncitedArtifacts(root, issue.artifacts ?? []),
-    [issue.artifacts, root]
-  );
   const specSlug = primarySpec(issue)?.slug ?? "";
   // What a key reported when it had nowhere to go, raised by the tree (`IssueTree`'s
   // `onReport`) and drawn here as the page's own status.
@@ -154,7 +150,6 @@ export function IssueBody({
           navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
         }}
         toolbar={isPhoneViewport ? undefined : toolbar}
-        uncited={uncited}
       />
       <IssueChildren issue={issue} />
       <IssueTree

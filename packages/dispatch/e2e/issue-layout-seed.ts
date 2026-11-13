@@ -17,7 +17,6 @@ import { blockId } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
   asPlanner,
-  awaitBlockAsk,
   awaitSeededCheckStates,
   BASELINE_REPO,
   PLANNER,
@@ -79,9 +78,9 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   person's when it mentions an ask (`packages/envoy/internal/dispatch/api/decisions.go:25-28`).
  * - **Depth below a document.** `document_blocks` holds no parent and no ordinal
  *   (`packages/envoy/internal/dispatch/store/migrations/0121_block_graph.up.sql:16-27`, read
- *   2026-11-05), so a tree below an issue reaches exactly two levels today: the issue, its
- *   documents, and each document's blocks. `seedFrontierDeep` puts its open question at that
- *   depth, **two** levels, not the four `c-tree` names: that seed waits on INFRA-1098 item 19.
+ *   2026-11-05), and a document is no node of the tree (dispatch://INFRA-1196 R3), so a typed
+ *   block sits directly under the issue unless its own `serves` places it, and the deepest path
+ *   a seed reaches is a turn's replies or a requirement's check and that check's result.
  * - **The five result states this seed can reach, on one issue.** A before-merge result stands
  *   at another commit when its commit is not a stored pull-request head and the check's issue
  *   resolves to a repository Dispatch can read, and is not known only when it cannot read one
@@ -106,13 +105,15 @@ import { ONE_PIXEL_PNG } from "./sends";
 export interface WholeIssueSeed {
   /** The answered question the decisions document names, which makes one decision a person's. */
   readonly answeredAskId: string;
-  /** The checks of the Verification document, by the state each one is seeded in. */
+  /** The checks of the Verification document, by the state each one is seeded in; `all` is
+   *  every check, and `uncontrolled` is a pass whose result records no negative control. */
   readonly checks: {
+    readonly all: readonly string[];
     readonly failed: string;
-    readonly noNegativeControl: string;
     readonly noResult: string;
     readonly older: string;
     readonly passed: string;
+    readonly uncontrolled: string;
     readonly unmarked: string;
   };
   readonly children: { readonly blocked: string; readonly done: string; readonly keys: string[] };
@@ -222,11 +223,12 @@ export async function seedWholeIssue(): Promise<WholeIssueSeed> {
   return {
     answeredAskId: seeded.answeredAskId,
     checks: {
+      all: seeded.checks,
       failed: checkBlockId(2),
-      noNegativeControl: checkBlockId(6),
       noResult: checkBlockId(3),
       older: checkBlockId(4),
       passed: checkBlockId(1),
+      uncontrolled: checkBlockId(6),
       unmarked: checkBlockId(5),
     },
     children: seeded.children,
@@ -260,35 +262,11 @@ export async function seedWholeIssue(): Promise<WholeIssueSeed> {
 
 export interface FrontierSeed {
   readonly askId: string;
-  /** The document block the open question is, or null when the ask hangs off the issue itself. */
-  readonly askBlockId: string | null;
-  /** How many levels below the issue the open question sits. */
-  readonly depth: 1 | 2;
-  /** A branch the page opens folded, with every node under it: a test reads the count the folded
-   *  row draws against `blockIds.length`. */
-  readonly foldedBranch: {
-    readonly artifactId: string;
-    readonly blockIds: readonly string[];
-    readonly slug: string;
-  };
   readonly key: string;
 }
 
-/** The folded branch both frontier seeds carry: one document of five requirement blocks. */
-async function seedFoldedBranch(issueKey: string): Promise<FrontierSeed["foldedBranch"]> {
-  const branch = await createIssueArtifact(issueKey, {
-    content: specDocument({ openQuestion: false, requirements: 5, summary: false }),
-    name: "branch.md",
-  });
-  return {
-    artifactId: branch.artifact.id,
-    blockIds: Array.from({ length: 5 }, (_, index) => requirementBlockId(index + 1)),
-    slug: branch.artifact.slug,
-  };
-}
-
 /** An issue whose open question sits one level below it: an ask on the issue itself, under no
- *  document. */
+ *  document, beside a spec of three requirements. */
 export async function seedFrontierShallow(): Promise<FrontierSeed> {
   await createProject({ key: PROJECT, name: "Issue layout" });
   const issue = await createIssue({
@@ -303,32 +281,7 @@ export async function seedFrontierShallow(): Promise<FrontierSeed> {
     { question: "Does the fold open to the frontier on a phone too?", urgency: "high" },
     asPlanner
   );
-  return {
-    askBlockId: null,
-    askId: ask.id,
-    depth: 1,
-    foldedBranch: await seedFoldedBranch(issue.key),
-    key: issue.key,
-  };
-}
-
-/** An issue whose open question sits as deep as today's model reaches: a block of a document,
- *  which is two levels below the issue and not the four `c-tree` names (see the doc comment). */
-export async function seedFrontierDeep(): Promise<FrontierSeed> {
-  await createProject({ key: PROJECT, name: "Issue layout" });
-  const issue = await createIssue({
-    force: true,
-    project: PROJECT,
-    spec: specDocument({ openQuestion: true, requirements: 3, summary: true }),
-    title: "The frontier is as deep as the model reaches",
-  });
-  return {
-    askBlockId: OPEN_QUESTION_BLOCK_ID,
-    askId: await awaitBlockAsk(issue.key, OPEN_QUESTION_BLOCK_ID),
-    depth: 2,
-    foldedBranch: await seedFoldedBranch(issue.key),
-    key: issue.key,
-  };
+  return { askId: ask.id, key: issue.key };
 }
 
 export interface SpineSeed {

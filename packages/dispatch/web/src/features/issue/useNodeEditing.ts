@@ -12,7 +12,7 @@ import { KEY_REPORTS } from "./page-structure";
  *  tells one placement of a node from another. */
 export interface EditedRow {
   readonly artifactId: string;
-  readonly blockId?: string;
+  readonly blockId: string;
   readonly row: string;
 }
 
@@ -72,11 +72,7 @@ export function useNodeEditing({
         onReport(KEY_REPORTS.no_text);
         return;
       }
-      setEditing({
-        artifactId: place.artifact.id,
-        ...(place.blockId === undefined ? {} : { blockId: place.blockId }),
-        row,
-      });
+      setEditing({ artifactId: place.artifact.id, blockId: place.blockId, row });
     },
     [artifacts, onReport]
   );

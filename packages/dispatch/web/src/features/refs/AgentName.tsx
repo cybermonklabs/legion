@@ -351,12 +351,13 @@ function agentInitials(name: string): string {
 }
 
 export interface AgentText {
-  /** Who wrote a node of the issue page, by name and never by an id (dispatch://INFRA-1196 R7,
-   *  R21): a session by its registry title, else the title stamped on its write, else the
+  /** Who wrote a node of the issue page, by name and never by an id (dispatch://INFRA-1196 R9,
+   *  R22): a session by its registry title, else the title stamped on its write, else the
    *  page's plain word for an agent nothing names (`CONTROL_LABELS.unnamed_author`); a person
-   *  by their login, the address Dispatch knows them by. It is the one rule the page names an
-   *  author with, on a tree row and in the panel's facts of the row the reader is on. */
-  author(actor: Actor): string;
+   *  by their login, the address Dispatch knows them by; and the page's words for an author the
+   *  model holds none of (`CONTROL_LABELS.unknown_author`). It is the one rule the page names
+   *  an author with, on a tree row and in the panel's facts of the row the reader is on. */
+  author(actor: Actor | undefined): string;
   /** The full label: name plus ` (for <owner>)` / ` (as ns/name)`. */
   label(actor: Actor): string;
   /** An `AgentPart` as text: a text part as is, an agent part by the rule `AgentParts` draws it
@@ -370,7 +371,8 @@ export interface AgentText {
 
 /** `AgentText.author`. Unlike `resolveAgent` it has no `session:<8>…` fallback: an author is
  *  where a reader looks for who wrote a thing, and a short id names nobody. */
-function authorName(actor: Actor, registry: AgentRegistry): string {
+function authorName(actor: Actor | undefined, registry: AgentRegistry): string {
+  if (actor === undefined) return CONTROL_LABELS.unknown_author;
   if (!isSessionActor(actor)) return personAuthorName(actor);
   const title = registry.title(actor.id) ?? actor.origin?.session_title?.trim();
   return title === undefined || title === "" ? CONTROL_LABELS.unnamed_author : title;
@@ -406,7 +408,7 @@ export function useAgentText(): AgentText {
       return `${acted}${attribution}`;
     };
     return {
-      author: (actor: Actor) => authorName(actor, registry),
+      author: (actor: Actor | undefined) => authorName(actor, registry),
       initials: (actor: Actor) => agentInitials(resolveAgent({ actor }, registry).name),
       label: (actor: Actor) => label({ actor }),
       part: (part: AgentPart) => (typeof part === "string" ? part : label(part)),

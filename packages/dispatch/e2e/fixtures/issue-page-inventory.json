@@ -2720,8 +2720,6 @@
     "button \"Upload\"": "menuitem \"Upload\"",
     "button \"Upload artifact\"": "button \"Upload a file\"",
     "searchbox \"Filter artifacts\"": "searchbox \"Filter\"",
-    "link \"Download version 1\"": "link \"Download 1\"",
-    "link \"Download version 2\"": "link \"Download 2\"",
     "link \"Block r1\"": "link \"Every property of the issue that carries a value is visible …\"",
     "link \"Block r2\"": "link \"Requirement 2 of the redesign stands on a row of its own.\"",
     "link \"Block r3\"": "link \"Requirement 3 of the redesign stands on a row of its own.\"",

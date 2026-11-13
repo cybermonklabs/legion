@@ -44,8 +44,8 @@ import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-
  * nothing is ever cut.
  *
  * The node menu sits beside the row and outside it, so the one control at the zoomed width is
- * unambiguous. What it holds is `NodeMenu.tsx`'s: what no block of the tree cites, the upload,
- * and the control that makes a document from a title.
+ * unambiguous. What it holds is `NodeMenu.tsx`'s: every document and artifact of the issue, the
+ * upload, and the control that makes a document from a title.
  */
 export function IssuePresets({
   active,
@@ -58,11 +58,10 @@ export function IssuePresets({
   onFilterChange,
   onLeave,
   toolbar,
-  uncited,
 }: {
   active: Preset;
-  /** Every artifact of the issue, which a title typed into the node menu's New document is held
-   *  against before the write. */
+  /** Every artifact of the issue, which the node menu lists and which a title typed into its
+   *  New document is held against before the write (R3). */
   artifacts: readonly Artifact[];
   /** How many nodes each preset's query holds, by `presets.ts`. */
   counts: Readonly<Record<string, number>>;
@@ -78,9 +77,6 @@ export function IssuePresets({
   onLeave: () => void;
   /** The open document's toolbar, where the preset has one. */
   toolbar?: ReactNode;
-  /** Every artifact of the issue no block of the tree cites, which is what the node menu
-   *  holds beside the upload (R16). */
-  uncited: readonly Artifact[];
 }): ReactNode {
   const navigate = useNavigate();
   // The row of five is drawn exactly where the tree is not zoomed: one query and its negation,
@@ -242,8 +238,7 @@ export function IssuePresets({
         )}
       </div>
       <NodeMenu
-        artifacts={uncited}
-        documents={artifacts}
+        artifacts={artifacts}
         isClosed={isClosed}
         issueKey={issueKey}
         onClose={() => setOpen(undefined)}

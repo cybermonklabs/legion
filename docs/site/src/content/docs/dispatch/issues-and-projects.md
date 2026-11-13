@@ -307,11 +307,14 @@ agents using it stop working at once.
 
 ### The tree
 
-The tree holds everything the issue holds, one row per node: its documents, and in them every
-note, ask, requirement, plan task and check block; its decisions; the results recorded against
-each check; its comments, messages and handoffs; its images; and its child issues. A check and a
-plan task sit under each requirement they serve, and a result sits under its check. A node whose
-source Dispatch does not hold sits under the issue.
+The tree is the issue's conversation and what it revealed, one row per node: every note, ask,
+requirement, plan task and check block of its documents; its decisions; the results recorded
+against each check; its comments and messages; and its child issues, under the issue. It draws
+no document or file: those are in **Files and documents**. A check and a plan task sit under
+each requirement they serve, a result under its check, and a decision under the ask it
+answers. A node whose source Dispatch does not hold sits under the issue. An answered ask carries
+its answer on a line of its own row: **Answer**, who answered, and the first line of what they
+wrote; its body holds what they chose and wrote, as they wrote it.
 
 The tree opens folded to its frontier. The path down to each thing that is open and unanswered
 is unfolded, however deep it is: an ask nobody has answered, a check that has not passed, a
@@ -323,12 +326,13 @@ rest.
 
 A row is one line: what the node is, who wrote it, its state, its links, and what it lacks in a
 few words. Who wrote it is a name and a shape: a person by their login, with one shape, and an
-agent by its session's title, with another, or **An agent** when the session has no title. A
-decision marked unsure says **Unsure**. A row marks what it lacks only where that sets it apart
-from rows of its kind and names work someone owes: **No check** on a requirement no check serves,
-**No reason given** on a plan task that serves no requirement, **Not a requirement** on a check or
-a plan task whose **serves** names something else, and **No proof it can fail** on a check whose
-latest result records no negative control. Focus a row, with the pointer or a key, and its body
+agent by its session's title, with another, or **An agent** when the session has no title; where
+Dispatch holds no author, as for a requirement, a check, a plan task or a decision, the row says
+**Author unknown**, with a shape of its own. A decision marked unsure says **Unsure**. A row
+marks what it lacks only where that sets it apart from rows of its kind and names work someone
+owes: **No check** on a requirement no check serves, **No reason given** on a plan task that
+serves no requirement, and **Not a requirement** on a check or a plan task whose **serves** names
+something else. Focus a row, with the pointer or a key, and its body
 opens under it with the rest: its facts, and each lack as a sentence. The body closes when the
 focus moves on, unless you choose **Keep open**; **Let it close** undoes that. A faint row is
 there only because a row under it matches the preset. A decision that waits for your review has
@@ -381,10 +385,9 @@ that names the preset you are on and opens a menu of the five.
 
 Beside the presets:
 
-- **Files and documents** lists each document and file of the issue that no block cites, marked
-  **Cited by nothing**, each with a copy control. A document a block cites is a row under that
-  block instead. The menu also holds **Upload**, which uploads the file you pick at once, and
-  **New document**, which asks for a title.
+- **Files and documents** lists every document and file of the issue, each with a copy control;
+  choose one to open it at its own address. The menu also holds **Upload**, which uploads the
+  file you pick at once, and **New document**, which asks for a title.
 - The **Filter** box narrows the preset to the rows whose text holds what you type, and the rows
   above them, with every branch it keeps unfolded. The counts follow it, and the address keeps it
   as `?q=`.
@@ -476,7 +479,7 @@ open:
 | `/issues/<KEY>/children` | The Tree preset. The **Children** section is above the tree on every preset |
 | `/issues/<KEY>/artifacts` | The Tree preset, with **Files and documents** open and every document and file of the issue listed under the tree |
 | `/issues/<KEY>/collaborators` | The Tree preset, with **Collaborators** open in the panel's **People** section |
-| `/issues/<KEY>/artifacts/<name>` | The Tree preset, with that document or file, its versions and its details under the tree, and the tree unfolded to its row. The spec's own name opens the Spec preset |
+| `/issues/<KEY>/artifacts/<name>` | The Tree preset, with that document or file, its versions and its details under the tree. The spec's own name opens the Spec preset |
 | `/issues/<KEY>/asks/<id>`, `/comments/<id>` or `/messages/<id>` | The Tree preset, with **What people said** chosen, the panel's conversation on that entry, and the tree unfolded to its row |
 
 On any of them, `?q=` fills the **Filter** box, and `#b-` with a block's id, `?ask=` or

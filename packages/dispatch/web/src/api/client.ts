@@ -1563,14 +1563,9 @@ export class DispatchApiClient {
     );
   }
 
-  /** `GET /api/v1/issues/{key}/references`. `own` asks for the issue's own documents as members
-   *  too, each with the blocks of its citer (`packages/contracts/AGENTS.md`). */
-  getIssueReferences(key: string, options: { own?: boolean } = {}) {
-    return this.read(
-      "/api/v1/issues/{key}/references",
-      { key },
-      { own: options.own === true ? "1" : undefined }
-    );
+  /** `GET /api/v1/issues/{key}/references`. */
+  getIssueReferences(key: string) {
+    return this.read("/api/v1/issues/{key}/references", { key });
   }
 
   /** Everyone who worked the issue, running or not: people, and agent sessions merged with the

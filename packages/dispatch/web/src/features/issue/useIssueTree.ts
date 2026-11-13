@@ -36,14 +36,13 @@ export interface IssueTreeView {
  * server and the page makes no request per node.
  *
  * The reads are the issue's own (handed in, because the page already has it), the coverage, the
- * decisions, the results, the references (`?own=1`, which names the blocks citing each document
- * of the issue), the issue's asks, and the blocks of each document - ids, types and attributes,
- * never text, which is how a `serves` edge is held without reading a document the reader has
- * not opened (R20). Every one of them is a key another surface of this issue already reads, so
- * opening the Conversation or the Decisions panel after the tree finds them answered rather
- * than fetching again. The conversation's comments and messages are nodes of this tree too, and
- * a child issue's check reads them (`tree-drafts.ts`, `treeDrafts`). A document's own text is
- * read by the node that opens it and by nothing else (`NodeArtifact.tsx`).
+ * decisions, the results, the issue's asks, and the blocks of each document - ids, types and
+ * attributes, never text, which is how a `serves` edge is held without reading a document the
+ * reader has not opened (R20). Every one of them is a key another surface of this issue already
+ * reads, so opening the Conversation or the Decisions panel after the tree finds them answered
+ * rather than fetching again. The conversation's comments and messages are nodes of this tree
+ * too, and a child issue's check reads them (`tree-drafts.ts`, `treeDrafts`). No document is a
+ * node of the tree (R3), so nothing here reads a document's own text.
  *
  * The names come last and all at once: the tree is built, every address it holds is read in one
  * batched request (`referenceTargetsQuery`; a tree holding more addresses than the server reads
@@ -57,13 +56,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const coverage = useQuery(issueCoverageQuery(key));
   const decisions = useQuery(issueDecisionsQuery(key, true));
   const results = useQuery(issueResultsQuery(key));
-  // `?own=1`, so the closure answers the issue's own documents too, each with the blocks of
-  // its citer: that is how a document is drawn under the block citing it (`tree-drafts.ts`'s
-  // `citations`) without reading any document's stored text, which R20 forbids on a first load.
-  const references = useQuery({
-    queryKey: ["issue", key, "references", "own"],
-    queryFn: () => api.getIssueReferences(key, { own: true }),
-  });
   const asks = useQuery({
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
@@ -107,7 +99,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       documents: documents.blocks,
       issue,
       messages: messages.data,
-      references: references.data,
       results: results.data,
     }),
     [
@@ -118,7 +109,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
       documents.blocks,
       issue,
       messages.data,
-      references.data,
       results.data,
     ]
   );
@@ -138,7 +128,6 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
     !coverage.isPending &&
     !decisions.isPending &&
     !messages.isPending &&
-    !references.isPending &&
     !results.isPending &&
     !documents.pending;
   // The last answer stands while the next one loads, because the key is the set of addresses

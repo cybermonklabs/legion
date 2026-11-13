@@ -6,13 +6,17 @@ import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
-import { api } from "../../api/client";
-import type { Artifact } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
 import type { OneLineBox } from "./one-line";
-import type { AuthorKind, GapKind, NodeType } from "./page-words";
+import {
+  type AuthorKind,
+  authorKind,
+  CONTROL_LABELS,
+  type GapKind,
+  type NodeType,
+} from "./page-words";
 
 /**
  * What one row of the tree draws, read as a reader reads it (dispatch://INFRA-1196 R7, R8).
@@ -39,23 +43,25 @@ function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): Tree
   };
 }
 
-/** One row, drawn with its body open, as the focused row draws it. `artifact` is the document
- *  or image the node is, whose body draws the artifact itself; `oneLineBox` draws the row on
- *  one line, cut to that reading of the tree's width; `author` is who made it, as the tree
- *  names them (`AgentText.author`). */
+/** Who made a node the model holds no author for, as the tree names one (`AgentText.author`). */
+const NOBODY_RECORDED = { kind: authorKind(undefined), name: CONTROL_LABELS.unknown_author };
+
+/** One row, drawn with its body open, as the focused row draws it. `oneLineBox` draws the row
+ *  on one line, cut to that reading of the tree's width; `author` is who made it, as the tree
+ *  names them (`AgentText.author`); `answerer` the person whose answer an ask carries. */
 function renderRow(
   drawn: TreeNode,
-  artifact?: Artifact,
   oneLineBox?: OneLineBox,
-  author?: { kind: AuthorKind; name: string }
+  author: { kind: AuthorKind; name: string } = NOBODY_RECORDED,
+  answerer?: string
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <NodeRow
-          artifact={artifact}
-          {...(author === undefined ? {} : { author })}
+          {...(answerer === undefined ? {} : { answerer })}
+          author={author}
           body
           context={false}
           focused={false}
@@ -87,16 +93,12 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   // A comment, which a person and an agent both write: a decision's body draws Keep and
   // Change, which are writes, and this row is about the words and the shape alone.
   const drawn = (author: { kind: AuthorKind; name: string }) => {
-    const view = renderRow(
-      node({ id: "comment-1", type: "comment" }),
-      undefined,
-      undefined,
-      author
-    );
+    const view = renderRow(node({ id: "comment-1", type: "comment" }), undefined, author);
     try {
       const shown = view.container.querySelector("[data-node-author]");
       const shape = shown?.querySelector("svg[data-glyph]");
       return {
+        chrome: shown?.querySelector("[data-page-chrome]") !== null,
         name: shape?.getAttribute("aria-label"),
         role: shape?.getAttribute("role"),
         text: shown?.textContent,
@@ -110,26 +112,73 @@ test("an author is drawn by a name and a shape of its own kind", () => {
   // exactly as the type's shape and the state's shape are. The shape carries its own accessible
   // name: a reader who cannot see it still hears what kind of author it stands for.
   expect(drawn({ kind: "person", name: "alice" })).toEqual({
+    chrome: false,
     name: "Written by a person",
     role: "img",
     text: "alice",
     token: "author-person",
   });
   expect(drawn({ kind: "agent", name: "Planner" })).toEqual({
+    chrome: false,
     name: "Written by an agent",
     role: "img",
     text: "Planner",
     token: "author-agent",
   });
+  // Where the model holds no author the row says so in the page's own words, which are marked
+  // as the page's rather than as somebody's name, with a shape neither other kind draws.
+  expect(drawn(NOBODY_RECORDED)).toEqual({
+    chrome: true,
+    name: "Written by an author nobody recorded",
+    role: "img",
+    text: "Author unknown",
+    token: "author-unknown",
+  });
 });
 
-test("a node with no author says nothing about one, and draws no shape for it", () => {
-  const view = renderRow(node({ id: "spec#b-r1", type: "requirement" }));
+// R1, R9, INFRA-1150 R3: an answered ask carries the person's answer in its own row and its own
+// body, and no row of its own: who answered by a name and a shape, and what they chose and wrote
+// as the store holds it, character for character. The row draws the first line of it; a row
+// drawn on one line has no width for it, and its body draws it.
+test("an answered ask draws the answer in its own row and body, word for word", () => {
+  const text = "The preset row keeps its labels above that width.\n\nBelow it, one control.";
+  const asked = node({
+    answer: { by: { id: "alice", kind: "user" }, selected: ["1280 px"], text },
+    id: "ask-1",
+    state: "answered",
+    text: "At which width does the identity block condense?",
+    type: "ask",
+  });
+  const planner = { kind: "agent" as const, name: "Planner" };
+  const wraps = renderRow(asked, undefined, planner, "alice");
   try {
-    expect(view.container.querySelector("[data-node-author]")).toBeNull();
-    expect(view.container.querySelector('svg[data-glyph^="author"]')).toBeNull();
+    const rows = wraps.container.querySelectorAll("[data-node-row]");
+    expect(rows.length).toBe(1);
+    const line = wraps.container.querySelector("[data-node-answer]");
+    expect(line?.querySelector("[data-page-chrome]")?.textContent).toBe("Answer");
+    expect(line?.querySelector("[data-answer-author]")?.textContent).toBe("alice");
+    expect(line?.querySelector("[data-answer-author] svg")?.getAttribute("data-glyph")).toBe(
+      "author-person"
+    );
+    // The label, the answerer, then the first line, cut at its first sentence as every first
+    // line is, with the rest after it.
+    expect(line?.textContent).toBe("AnsweraliceThe preset row keeps its labels above that width.…");
+    const body = wraps.container.querySelector("[data-node-body] [data-node-answer-body]");
+    expect(body?.querySelector("[data-answer-text]")?.textContent).toBe(text);
+    expect(
+      [...(body?.querySelectorAll("[data-answer-choice]") ?? [])].map((one) => one.textContent)
+    ).toEqual(["1280 px"]);
+    // The row's own author is still the asker's, and the answerer's name is no row author.
+    expect(wraps.container.querySelector("[data-node-author]")?.textContent).toBe("Planner");
   } finally {
-    view.unmount();
+    wraps.unmount();
+  }
+  const oneLine = renderRow(asked, treeOf(400), planner, "alice");
+  try {
+    expect(oneLine.container.querySelector("[data-node-answer]")).toBeNull();
+    expect(oneLine.container.querySelector("[data-answer-text]")?.textContent).toBe(text);
+  } finally {
+    oneLine.unmount();
   }
 });
 
@@ -161,9 +210,9 @@ function treeOf(width: number): OneLineBox {
 function oneLineOf(
   drawn: TreeNode,
   width: number,
-  author?: { kind: AuthorKind; name: string }
+  author: { kind: AuthorKind; name: string }
 ): string | null | undefined {
-  const view = renderRow(drawn, undefined, treeOf(width), author);
+  const view = renderRow(drawn, treeOf(width), author);
   try {
     return view.container.querySelector("[data-node-first-line]")?.textContent;
   } finally {
@@ -174,18 +223,18 @@ function oneLineOf(
 // R1, R9: a one-line row's first line is what its own box leaves it beside its other words,
 // the author's name and shape among them. The row is 10 px less than the tree (`border-l-2`,
 // `pr-2`), and a leaf's twisty, the comment's shape and word and the gaps between them take
-// 101 px of it; the author's shape, a name of 20 characters and its gap take 168 px more.
+// 101 px of it; the author's shape, a name of 20 characters and its gap take 168 px more, and
+// the page's 14 characters for an author nobody recorded, 126 px.
 test("a one-line row's first line is what its author leaves it", () => {
   const text = "The page draws the whole issue in one reading, with nothing lost.";
   const commented = node({ id: "comment-1", text, type: "comment" });
   const author = { kind: "agent" as const, name: "Planner of the issue" };
-  // 400 px: 288 px of line beside the words, or 120 px with the author's beside them, each
-  // cut at the last word whose run and ellipsis fit.
-  expect(oneLineOf(commented, 400)).toBe("The page draws the whole issue in one…");
+  // 400 px: 120 px of line beside the named author's words, or 162 px beside the page's own
+  // words for nobody, each cut at the last word whose run and ellipsis fit.
   expect(oneLineOf(commented, 400, author)).toBe("The page draws…");
-  // 300 px: 188 px beside the words, and 20 px with the author's - less than "The…" takes - so
-  // that line goes under them, where it has the row's whole 290 px.
-  expect(oneLineOf(commented, 300)).toBe("The page draws the whole…");
+  expect(oneLineOf(commented, 400, NOBODY_RECORDED)).toBe("The page draws the…");
+  // 300 px: 20 px with the named author's - less than "The…" takes - so that line goes under
+  // them, where it has the row's whole 290 px.
   expect(oneLineOf(commented, 300, author)).toBe("The page draws the whole issue in one…");
 });
 
@@ -225,24 +274,13 @@ test("a plan task nobody asked for says so, in words", () => {
   });
 });
 
-// R10: a check whose latest result records no negative control is drawn with that gap on the
-// check, the node that owes the work. The page states no verdict of its own on it: the line says
-// what is absent, which is a showing that the check can fail, no more, and in plain words rather
-// than the model's term.
-test("a check whose latest result records no negative control says so, in words", () => {
-  const gaps: GapKind[] = ["no_negative_control"];
-  expect(drawnGap(node({ gaps, id: "verification-md#b-c6", type: "check" }))).toEqual({
-    chip: "No proof it can fail",
-    line: "The latest result of this check does not show that it can fail.",
-  });
-});
-
 /** One row the way the tree draws it: unfocused until a focus lands inside it, and then the
  *  focused row, so a test reads what that focus does to the page. */
 function FocusableRow({ drawn }: { drawn: TreeNode }): ReactNode {
   const [focused, setFocused] = useState(false);
   return (
     <NodeRow
+      author={NOBODY_RECORDED}
       body
       context={false}
       focused={focused}
@@ -395,40 +433,5 @@ test("the links a body draws are out of the tab order", async () => {
     });
   } finally {
     view.unmount();
-  }
-});
-
-// R16, R20: a document's node opens the document itself, read when the body opens; that read
-// sends the server's reading of the text (`ArtifactText.markdown_tree`), which the body draws.
-test("a document's body draws the server's reading of its text", async () => {
-  const read = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: MARKED,
-    markdown_tree: displayTree(MARKED),
-    token: "sha256:marked",
-    version: 1,
-  });
-  const document: Artifact = {
-    created_at: "2026-11-05T00:00:00Z",
-    created_by: { id: "alice", kind: "user" },
-    id: "artifact-notes",
-    issue_key: "CORE-1",
-    kind: "doc",
-    name: "notes.md",
-    primary: false,
-    project: "CORE",
-    ref_key: "artifact:artifact-notes",
-    session_id: null,
-    slug: "notes-md",
-    versions: [],
-  };
-  const view = renderRow(node({ id: "notes-md", text: "notes.md", type: "document" }), document);
-  try {
-    await waitFor(() => expect(drawnWords(view).bold).toBe("decided"));
-    const body = view.container.querySelector("[data-node-body]")?.textContent ?? "";
-    expect(body).not.toContain("**");
-    expect(body).not.toContain("##");
-  } finally {
-    view.unmount();
-    read.mockRestore();
   }
 });

@@ -20,7 +20,8 @@ const ASK_CLOSED = "M3 3 l10 10 M13 3 l-10 10";
  *
  * An author's shape says which kind of author made the node, so two authors of different kinds
  * never share one (R9): a person is a head and shoulders, an agent a framed head with an
- * antenna, and the name beside either says who (`AgentText.author`, never an id).
+ * antenna, and an author the model holds none of a question mark; the name beside each says
+ * who (`AgentText.author`, never an id), or that nobody was recorded.
  */
 const GLYPH_PATHS: Readonly<Record<string, string>> = {
   /** The types: one outline each. */
@@ -41,6 +42,7 @@ const GLYPH_PATHS: Readonly<Record<string, string>> = {
   /** Who wrote the node, one shape per kind of author, drawn beside the author's name. */
   "author-agent": "M3 5 h10 v9 h-10 Z M8 5 v-3 M6 9 v1 M10 9 v1",
   "author-person": "M8 1.5 a2.5 2.5 0 1 0 0.01 0 Z M3 15 v-2 a5 4 0 0 1 10 0 v2 Z",
+  "author-unknown": "M5 6 a3 3 0 1 1 3 3 v2 M8 13.5 v1",
   /** An ask's two open states, and the one shape of a question that is closed. */
   "ask-answered": "M2 9 l4 4 l8 -10",
   "ask-open": "M8 2 a6 6 0 1 0 0.01 0 Z M8 6 v3 M8 11.5 v0.5",

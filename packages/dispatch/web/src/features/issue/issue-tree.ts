@@ -10,7 +10,6 @@ import type {
   IssueCoverage,
   IssueDecisions,
   IssueDetails,
-  IssueReferences,
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
@@ -32,15 +31,19 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
  * ## The spine
  *
  * The `from` edge is the single placement authority: a decision sits under the question it
- * settles, a requirement under the node its `from` names, a check and a plan task under each
+ * answers, a requirement under the node its `from` names, a check and a plan task under each
  * requirement their `serves` names (edited under the first, transcluded under the rest), and a
  * result under its check. A decision's `shaped` edge is that decision's chip and places nothing;
  * where a requirement's `from` and a decision's `shaped` disagree the node is placed by `from`
  * and the disagreement is drawn as a gap. A node whose spine parent is absent sits under the
  * issue, as a node like any other and never as an error: no gap says so, because under today's
  * reads every node of its kind lacks one, and a lack every sibling shares tells none of them
- * apart (R8). Every edge that is not the spine is a chip naming its target, and a node is drawn
- * again only under another requirement its own `serves` names.
+ * apart (R10). Every edge that is not the spine is a chip naming its target, and a node is
+ * drawn again only under another parent its own edge names.
+ *
+ * The tree is the issue's conversation (R1, R3): a document, an artifact and a handoff are nodes
+ * of the issue and no node of this tree, and a typed block of a document sits under the issue
+ * unless the model gives it a parent of its own (R4). A child issue sits under the issue (R12).
  *
  * ## What today's reads hold, and what they do not
  *
@@ -50,14 +53,14 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
  * - **No `from` on a requirement.** The `requirement` block carries no attributes at all
  *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05), so
  *   every requirement of the issue's spec sits under the issue, which is what c-home and c-spine
- *   read. A `requirement` block of any other document keeps its place
- *   under that document: the model holds no `from` for it and no coverage row either, so it is a
- *   block of a document and nothing more.
+ *   read. A `requirement` block of any other document sits there too: the model holds no
+ *   `from` for it and no coverage row either, so it is a block and nothing more.
  * - **No `shaped` on a decision.** The decisions read answers `kind` and a boolean `unsure`
  *   (`packages/contracts/src/dispatch-api.ts:2519-2534`), so a decision's links to spec blocks
- *   and the asks its blocks mention are its chips, it keeps its place under its own document,
- *   and no disagreement is found in today's data: a `shaped` edge disagreeing with a `from` is
- *   drawn as the `shaped_disagreement` gap the day both edges exist.
+ *   are its chips, and no disagreement is found in today's data: a `shaped` edge disagreeing
+ *   with a `from` is drawn as the `shaped_disagreement` gap the day both edges exist. What
+ *   places a decision is the asks its blocks mention (`Decision.asks`), which is the question
+ *   it answers.
  * - **No identities behind a requirement's coverage.** The coverage read counts the serving
  *   checks and plan tasks without naming them
  *   (`packages/contracts/src/dispatch-api.ts:805-816`), so a requirement draws those two counts
@@ -66,12 +69,12 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
  *
  * ## The reads
  *
- * The issue read, the coverage read, the decisions read, the results read, the references read,
- * the conversation, each document's blocks, and the one batched reference read. A document's
- * blocks answer block ids, types and attributes and never text (`ArtifactBlock`), which is how
- * the tree holds a `serves` edge without reading a document the reader has not opened; a block's
- * own words come from the batched reference read, whose `name` for a block is that block's
- * stored excerpt. It is one read per document, never one per node.
+ * The issue read, the coverage read, the decisions read, the results read, the conversation,
+ * each document's blocks, and the one batched reference read. A document's blocks answer block
+ * ids, types and attributes and never text (`ArtifactBlock`), which is how the tree holds a
+ * `serves` edge without reading a document the reader has not opened; a block's own words come
+ * from the batched reference read, whose `name` for a block is that block's stored excerpt. It
+ * is one read per document, never one per node.
  */
 
 /** One edge of a node that is not the spine, drawn beside the node as its target's name. */
@@ -99,6 +102,18 @@ export interface NodeCounts {
   readonly planTasks: number;
 }
 
+/** A person's answer to an ask, which is part of the ask and no node of its own
+ *  (dispatch://INFRA-1150 R3): the ask's own row and body draw it, word for word as the store
+ *  holds it and never restated (R9). */
+export interface NodeAnswer {
+  /** The person it is the answer of, with the agent they answered through where they did. */
+  readonly by: Actor;
+  /** The options they chose, each as the ask's own words name it. */
+  readonly selected: readonly string[];
+  /** What they wrote, as stored; `""` where they wrote nothing beside their choice. */
+  readonly text: string;
+}
+
 /**
  * How a fact's value is drawn in a node's body: a command in a monospace block with its own
  * copy control (R15), a picture loaded through the bytes route the page already serves, one of
@@ -118,9 +133,12 @@ export interface NodeFact {
 /** One node of the issue's tree. A node drawn under more than one parent is one node per
  *  placement, each naming the others in `alsoUnder`. */
 export interface TreeNode {
-  /** The other requirements this node is also drawn under (R23); empty for a node drawn once. */
+  /** The other parents this node is also drawn under (R1, R4); empty for a node drawn once. */
   readonly alsoUnder: readonly NodeChip[];
-  /** Who made it, where the model holds an author (R7). */
+  /** A person's answer to this ask, where it has one. */
+  readonly answer?: NodeAnswer;
+  /** Who made it, where the model holds an author; a row draws "Author unknown" where it holds
+   *  none (R9). */
   readonly author?: Actor;
   readonly children: readonly TreeNode[];
   readonly chips: readonly NodeChip[];
@@ -131,8 +149,8 @@ export interface TreeNode {
   readonly gaps: readonly GapKind[];
   /** How many nodes this one holds, at any depth: what a folded row says it holds. */
   readonly held: number;
-  /** The node's own address inside the issue: the issue key, an artifact slug,
-   *  `<slug>#b-<block id>`, else the id the model gives it. */
+  /** The node's own address inside the issue: the issue key, `<slug>#b-<block id>`, else the id
+   *  the model gives it. */
   readonly id: string;
   /** Whether this node is an open question that waits on the reader, which the fold unfolds the
    *  path to whatever its depth (R6). */
@@ -192,8 +210,6 @@ export interface IssueTreeReads {
   readonly issue: IssueDetails;
   /** The issue's messages with their replies, each a node of the tree (`addTurns`). */
   readonly messages?: readonly MessageRead[];
-  /** Which block cites each document the issue references (`via_blocks`). */
-  readonly references?: IssueReferences;
   /** Each check of the Verification document with the results recorded against it. */
   readonly results?: IssueCheckResults;
   /** What every `dispatch://` address the tree holds points at, in one read. */
@@ -261,11 +277,11 @@ export function treeReferences(root: TreeNode): string[] {
  * under a node it already holds, is dropped, so a `from` edge that ever points in a circle still
  * draws a tree.
  *
- * A parent no draft answers to is no placement at all: a document cited by a paragraph, which
- * is the document's own text and no node, and a reply to a turn the page never read. Rather
- * than dropping the node with its missing parent, it sits under the issue, which is where
- * every node whose parent is absent goes (R4). A draft the issue cannot reach is the same case
- * one step further out, and `bringHome` answers it the same way.
+ * A parent no draft answers to is no placement at all: a reply to a turn the page never read,
+ * or a `from` naming a node the tree holds no draft for. Rather than dropping the
+ * node with its missing parent, it sits under the issue, which is where every node whose parent
+ * is absent goes (R4). A draft the issue cannot reach is the same case one step further out,
+ * and `bringHome` answers it the same way.
  */
 function assemble(
   issue: IssueDetails,
@@ -301,6 +317,7 @@ function assemble(
     const others = parents.filter((one) => one !== parent);
     return {
       alsoUnder: parents.length > 1 ? others.map((one) => chipOf(references.get(one) ?? one)) : [],
+      ...(draft.answer === undefined ? {} : { answer: draft.answer }),
       ...(draft.author === undefined ? {} : { author: draft.author }),
       children,
       chips: draft.chips,
@@ -325,6 +342,7 @@ function assemble(
   const children = childrenOf(key, [key]);
   return {
     alsoUnder: [],
+    ...(issue.created_by === null ? {} : { author: issue.created_by }),
     children,
     chips: [],
     facts: [],
@@ -346,20 +364,16 @@ function assemble(
  * Puts back under the issue every draft the walk from the issue cannot reach, so that nothing
  * the reads hold is lost (R1): the tree is built downwards from the issue, so a ring of
  * placements nothing above it holds would be drawn nowhere, and every node inside it with it.
- * Two documents of the issue that cite each other make one - the references read answers each
- * one via the other, so each is placed under a block of the other (`tree-drafts.ts`'s
- * `citations`) - and so does a `from` edge that points in a circle.
+ * A `from` edge that points in a circle makes one.
  *
  * The ring is opened at one draft and no more, and that draft is a member of the ring itself:
  * the first of the ring members the issue cannot reach, in the order the tree draws siblings
  * in - its own order, then its id - comes home to the issue, and whatever that lets the issue
- * reach keeps the place its citation gave it. So the spec, which is the first document of the
- * issue, is drawn under the issue and the plan that cites it stays under the block of the spec
- * that cites the plan, and the same reads always draw the same tree.
+ * reach keeps the place its edge gave it, so the same reads always draw the same tree.
  *
  * It is the ring's own member and never the lowest order among the drafts the issue cannot
- * reach, because a node hanging off a ring is unreachable too and sorts before every member of
- * it: a block's order is its place in its own document, and a requirement's is
+ * reach, because a node hanging off a ring is unreachable too and may sort before every member
+ * of it: a block's order is its place among the issue's documents, and a requirement's is
  * `ROOT_ORDER.requirement` and up, so a plan task serving a requirement of a ring is the
  * first of them. Re-rooting that task would tear it off the requirement it serves and leave
  * the ring to be opened anyway.
