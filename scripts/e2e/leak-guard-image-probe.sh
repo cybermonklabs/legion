@@ -133,9 +133,9 @@ echo "HOME=$HOME XDG_CONFIG_HOME=$XDG_CONFIG_HOME TMPDIR=$TMPDIR"
 
 echo
 echo "== the stand-in shared public leak check this Job writes for itself"
-# A Job holds no credential, so the private shared check cannot be fetched here. These stand-ins
-# are what PUBLIC_LEAK_CHECK names instead. The clearing one passes every call, so every verdict
-# below is the embedded rule file's alone; the other two are k7's two shared-check failures.
+# A Job runs no launcher, so the daemon pushes it no copy of the private shared check. These
+# stand-ins are what PUBLIC_LEAK_CHECK names instead. The clearing one passes every call, so every
+# verdict below is the embedded rule file's alone; the other two are k7's two shared-check failures.
 check_dir=$scratch/leak-check
 must mkdir -p "$check_dir"
 clears=$check_dir/public-leak-check.sh
