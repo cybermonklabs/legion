@@ -1,0 +1,658 @@
+package rescue_test
+
+// The generated matrix of the differential (differential_test.go). The rows there are the shapes
+// reviews found, one at a time; this test builds its cases from the dimensions one path of a
+// worktree jj holds varies along, rather than from what a reader thought of, and holds the two
+// reads to the same rules over each of them.
+//
+// The dimensions:
+//
+//   - The index state of the path in the worktree's index copy, 7 of them: absent; a regular
+//     entry; an intent-to-add entry, a file new in @ that a role's `jj status` snapshotted; an
+//     entry marked assume-unchanged; one marked skip-worktree; a gitlink; and an entry forced
+//     into the index with `git add -f` under an ignore rule (the workspace's .gitignore holds
+//     `/forced.*/p`).
+//   - The disk state at the path, 11 of them: absent; the same content as the record; new
+//     content of the same size, written in a later second than the record and its mtime then set
+//     back to the record's, as an archive tool or `touch -r` leaves it; new content of another
+//     size; a directory holding a file; a directory holding a .git with a commit; a directory
+//     holding a .git without one; a directory holding a .jj; a symlink to a file; a symlink to a
+//     directory; and the path's parent replaced by a symlink to a directory that holds the path.
+//   - The worktree's git HEAD: born or unborn.
+//   - The worktree's index file: present or missing.
+//
+// HEAD and the index file belong to a workspace, so each of their four combinations is a disk of
+// its own (matrixWorkspace), and each index state with a disk state is a cell of it, at the
+// sub-path <index state>.<disk state>/p, such as absent.dir-jj/p or gitlink.parent-link/p. The
+// cell's name is that sub-path's directory, and every failure names it.
+//
+// What a record is. Under a born HEAD, the regular, assume-unchanged and skip-worktree entries are
+// files a role's jj committed, which HEAD holds (`jj commit`), and the gitlink is an embedded
+// repository committed with plain git, so HEAD holds it too; the intent-to-add and forced entries
+// are in no commit. Under an unborn HEAD nothing is committed: the regular, assume-unchanged and
+// skip-worktree entries and the gitlink are staged with `git add` after the last jj command, so
+// jj holds no record of them before the route's own snapshot. A disk state is read against the
+// entry's record: the committed or staged file, the file jj snapshotted for intent-to-add, the file
+// forced into the index, and for a gitlink the commit it names. The marks and the forced entry are
+// written after every jj command, since a jj command rewrites the index (buildMatrix).
+//
+// Which combinations collapse, or cannot be built, and so are not built twice (built):
+//
+//   - absent with absent: no record and nothing on disk, so nothing to build; both trees hold
+//     nothing there.
+//   - absent with the same content, or new content of either size: a path with no record has no
+//     content to be the same as or to differ from, so the three are one cell, absent.same, a new
+//     file.
+//   - gitlink with new content: a gitlink's content is the commit it names, so new content is a
+//     commit made inside its repository, one cell, gitlink.new-same-size. gitlink.new-other-size
+//     is the same build, and so is a gitlink with a directory holding a .git with a commit: a
+//     repository at the gitlink's path whose HEAD is not the commit recorded.
+//   - A missing index file: the copy is read from HEAD's tree under a born HEAD and is nothing
+//     under an unborn one (rescue.snapshotTree). An assume-unchanged or skip-worktree mark lives in
+//     the index file, so it goes with it: those cells are the regular cells, and are built once.
+//     The intent-to-add entry goes from the copy too, but jj's @ still holds the file, which is a
+//     state of its own, and is built. The forced entry goes, leaving an untracked path an ignore
+//     rule covers, and its record goes with it: the same content and new content of either size
+//     are one cell, forced.same, and forced.absent is nothing at all, as absent with absent is.
+//   - A missing index file under an unborn HEAD: the regular, assume-unchanged, skip-worktree and
+//     gitlink entries were only staged, and jj holds no record of them, so each is the absent cell
+//     of its disk state, and is built once.
+//
+// That leaves 72 cells under a born HEAD with an index file, 47 with none, 72 under an unborn HEAD
+// with an index file, and 27 with none: 218 cells. What the matrix does not cover, and the rows
+// do: two paths of one cell in different states, such as a record under another record; git's
+// content conversion and its configuration; sparse patterns and jj's size limit; a conflicted or
+// stale working copy; an unreadable directory; names git refuses or that are not valid UTF-8.
+//
+// How the cells are run. Today's read and the route each fail the whole workspace when any one
+// path fails, so a failing cell would hide every other cell of its workspace. So cells are
+// classified by what each read answers, a tree or a failure, measured, and never assumed
+// (matrixRun.classify): the cells of a combination are built in one jj workspace and read both
+// ways, and where both reads answer a tree, that is the class of every cell in it, since a path
+// that fails would have failed the workspace. Where either read fails, the workspace's cells are
+// split in two halves, each built in a workspace of its own and classified the same way, until a
+// cell that fails is in a workspace alone. Each cell is classified by measurement, as it would be
+// alone, without a workspace for every cell: measured on 2026-11-13, one workspace per cell ran
+// the matrix in 289 s and this in 134 s, since 16 of the 218 cells fail in a read, and they sit
+// side by side (cells).
+//
+// A cell that fails in either read is held to the rule a failure is held to, in its own
+// workspace (failedAsRuled): where today's read fails, the route must fail too, and a cell whose
+// route answers a tree there fails as a loss (failureLost); a cell where both fail, or where the
+// route fails alone, a refusal under R4 as with the unreadable directory's row, passes, and what
+// each read said is logged. Every cell of a workspace whose reads both answer a tree is held there,
+// by its entries at its path's directory and under it, to the rules of the rows in both directions
+// (heldEntriesAsRuled, entriesHeldAndAbsent), under what the cell declares (matrixDeclared). The
+// paths of no cell, .gitignore and base.txt, are held the same way.
+//
+// A cell whose trees differ in a way no declaration covers fails, naming the cell, and so does a
+// cell where today's read fails and the route answers a tree. Neither is decided here.
+// matrixDeclared holds only differences an existing kind already covers by its reason, each with
+// that reason.
+
+import (
+	"fmt"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
+)
+
+// matrixIndex is the index state of a cell's path in the worktree's index copy.
+type matrixIndex int
+
+const (
+	indexAbsent matrixIndex = iota
+	indexRegular
+	indexIntentToAdd
+	indexAssumeUnchanged
+	indexSkipWorktree
+	indexGitlink
+	indexForced
+	matrixIndexes
+)
+
+var matrixIndexNames = [matrixIndexes]string{"absent", "regular", "intent-to-add", "assume-unchanged", "skip-worktree", "gitlink", "forced"}
+
+// matrixDisk is the disk state at a cell's path.
+type matrixDisk int
+
+const (
+	diskAbsent matrixDisk = iota
+	diskSame
+	diskNewSameSize
+	diskNewOtherSize
+	diskDirWithFile
+	diskDirWithGitCommit
+	diskDirWithGitNoCommit
+	diskDirWithJJ
+	diskLinkToFile
+	diskLinkToDir
+	diskParentLink
+	matrixDisks
+)
+
+var matrixDiskNames = [matrixDisks]string{"absent", "same", "new-same-size", "new-other-size", "dir-file", "dir-git-commit", "dir-git-no-commit", "dir-jj", "link-file", "link-dir", "parent-link"}
+
+// matrixCell is one index state with one disk state, at the path p under a directory of the
+// cell's name.
+type matrixCell struct {
+	index matrixIndex
+	disk  matrixDisk
+}
+
+// dir is the cell's name, the directory its path is in.
+func (c matrixCell) dir() string { return matrixIndexNames[c.index] + "." + matrixDiskNames[c.disk] }
+
+// path is the cell's path.
+func (c matrixCell) path() string { return c.dir() + "/p" }
+
+// record is the body of the file the cell's record holds.
+func (c matrixCell) record() string { return recordOf(c.path()) }
+
+// recordOf is the body of the file the record at path holds.
+func recordOf(path string) string { return "the record of " + path + "\n" }
+
+// matrixWorkspace is one combination of the worktree's git HEAD and its index file.
+type matrixWorkspace struct{ born, indexFile bool }
+
+var matrixWorkspaces = []matrixWorkspace{{true, true}, {true, false}, {false, true}, {false, false}}
+
+func (w matrixWorkspace) String() string {
+	head, index := "unborn HEAD", "no index file"
+	if w.born {
+		head = "born HEAD"
+	}
+	if w.indexFile {
+		index = "an index file"
+	}
+	return head + " with " + index
+}
+
+// built is whether the cell is built in w, and false where it collapses into another cell or
+// cannot be built (the comment at the head of this file).
+func (w matrixWorkspace) built(c matrixCell) bool {
+	newContent := c.disk == diskNewSameSize || c.disk == diskNewOtherSize
+	switch {
+	case c.index == indexAbsent && (c.disk == diskAbsent || newContent):
+		return false
+	case c.index == indexGitlink && (c.disk == diskNewOtherSize || c.disk == diskDirWithGitCommit):
+		return false
+	case w.indexFile:
+		return true
+	case c.index == indexAssumeUnchanged || c.index == indexSkipWorktree:
+		return false
+	case c.index == indexForced && (c.disk == diskAbsent || newContent):
+		return false
+	case !w.born && (c.index == indexRegular || c.index == indexGitlink):
+		return false
+	}
+	return true
+}
+
+// cells is every cell w builds, by disk state and then by index state, so that the cells of one
+// disk state are side by side when a workspace of them is split (matrixRun.classify).
+func (w matrixWorkspace) cells() []matrixCell {
+	var cells []matrixCell
+	for disk := range matrixDisks {
+		for index := range matrixIndexes {
+			if c := (matrixCell{index, disk}); w.built(c) {
+				cells = append(cells, c)
+			}
+		}
+	}
+	return cells
+}
+
+// The reasons of matrixDeclared, each the reason of a row of the differential that declares the
+// same kind for the same cause.
+const (
+	// The row of a file jj snapshotted, rewritten at the same size with its mtime set back to
+	// the one jj recorded.
+	mtimeSetBack = "an mtime set back on purpose to the one jj recorded hides a same-size rewrite from jj's stat rule, so the route keeps the bytes jj read before and loses the new bytes the git read carried; the role's own jj commit misses it the same way, and the git read carried it only because the stat-less index makes git hash every file"
+)
+
+// matrixDeclared is the cells whose two trees differ in a way an existing kind covers by its
+// reason, by the combination and the cell's name, each path named relative to the cell's
+// directory, with that reason. Every other cell must answer the same entries in both trees.
+var matrixDeclared = map[string]differentialRow{
+	"born HEAD with an index file/regular.new-same-size":       {contentLost: map[string]string{"p": mtimeSetBack}},
+	"born HEAD with no index file/regular.new-same-size":       {contentLost: map[string]string{"p": mtimeSetBack}},
+	"born HEAD with an index file/intent-to-add.new-same-size": {contentLost: map[string]string{"p": mtimeSetBack}},
+}
+
+// declared is what matrixDeclared declares of the cell in w, its paths under the cell's directory.
+func (c matrixCell) declared(w matrixWorkspace) differentialRow {
+	rel, ok := matrixDeclared[w.String()+"/"+c.dir()]
+	if !ok {
+		return differentialRow{}
+	}
+	under := func(paths map[string]string) map[string]string {
+		if paths == nil {
+			return nil
+		}
+		full := make(map[string]string, len(paths))
+		for path, reason := range paths {
+			full[c.dir()+"/"+path] = reason
+		}
+		return full
+	}
+	return differentialRow{
+		name:        w.String() + ", " + c.dir(),
+		contentLost: under(rel.contentLost),
+		reformed:    under(rel.reformed),
+		lost:        under(rel.lost),
+		gained:      under(rel.gained),
+	}
+}
+
+// buildMatrix adds a jj workspace of d's clone named name, in w's shape, holding each of cells at
+// its path, and answers a disk whose Workspace is it. targets is the directory outside every
+// worktree that the cells' symlinks name (matrixTargets).
+//
+// The order is what the cells stand on. The workspace stands on the base commit under a born HEAD
+// and on the root commit under an unborn one. Under a born HEAD the gitlinks are committed first,
+// with plain git, and then the regular, assume-unchanged and skip-worktree files with jj, so jj
+// has imported every commit before the files change. Then the intent-to-add files are written and
+// snapshotted by `jj status`, the last jj command. Then git alone writes the index: the staged
+// entries under an unborn HEAD, the forced entries, and the marks. Each cell's index entry is
+// checked (requireCellIndex) before its disk state is made (becomes), and last, where w has no
+// index file, the index file is removed.
+//
+// Nothing a read keeps may hang on how fast the build ran, and git's stat rule would make it so
+// twice; measured on this build, forced.new-same-size under a born HEAD with an index file was
+// equal in one run and differed in the next. An entry git writes for a file whose mtime is not
+// older than the index file is racily clean, and git reads that file again whatever its stat data
+// says, so every record's mtime is set a minute back once it is written, before any index entry is
+// made of it. And git compares a file's ctime to the second, so a same-size rewrite waits for the
+// second after the record's ctime (becomes).
+func buildMatrix(t *testing.T, d *rescuetest.Disk, w matrixWorkspace, name, targets string, cells []matrixCell) *rescuetest.Disk {
+	t.Helper()
+	ws := *d
+	ws.Workspace = filepath.Join(filepath.Dir(d.Workspace), name)
+	add := []string{"jj", "workspace", "add", "--name", name}
+	if !w.born {
+		add = append(add, "--revision", "root()")
+	}
+	d.Run(d.Clone, append(add, ws.Workspace)...)
+	of := func(states ...matrixIndex) []string {
+		var paths []string
+		for _, c := range cells {
+			if slices.Contains(states, c.index) {
+				paths = append(paths, c.path())
+			}
+		}
+		return paths
+	}
+	write := func(paths []string) {
+		back := time.Now().Add(-time.Minute)
+		for _, path := range paths {
+			ws.Write(ws.Workspace, path, recordOf(path))
+			if err := os.Chtimes(filepath.Join(ws.Workspace, path), back, back); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	ws.Write(ws.Workspace, ".gitignore", "/forced.*/p\n")
+	if w.born {
+		if links := of(indexGitlink); len(links) > 0 {
+			for _, link := range links {
+				embeddedRepository(&ws, link)
+			}
+			ws.Git(append([]string{"add", "--"}, links...)...)
+			ws.Git("commit", "--quiet", "-m", "the gitlinks, committed with plain git")
+		}
+		write(of(indexRegular, indexAssumeUnchanged, indexSkipWorktree))
+		ws.JJ("commit", "-m", "the records")
+	}
+	if fresh := of(indexIntentToAdd); len(fresh) > 0 {
+		write(fresh)
+		intentToAdd(t, &ws, fresh...)
+	}
+	if !w.born {
+		staged := of(indexRegular, indexAssumeUnchanged, indexSkipWorktree)
+		write(staged)
+		for _, link := range of(indexGitlink) {
+			embeddedRepository(&ws, link)
+			staged = append(staged, link)
+		}
+		if len(staged) > 0 {
+			ws.Git(append([]string{"add", "--"}, staged...)...)
+		}
+	}
+	if forced := of(indexForced); len(forced) > 0 {
+		write(forced)
+		ws.Git(append([]string{"add", "-f", "--"}, forced...)...)
+	}
+	for flag, state := range map[string]matrixIndex{"--assume-unchanged": indexAssumeUnchanged, "--skip-worktree": indexSkipWorktree} {
+		if marked := of(state); len(marked) > 0 {
+			ws.Git(append([]string{"update-index", flag, "--"}, marked...)...)
+		}
+	}
+	for _, c := range cells {
+		requireCellIndex(t, &ws, c)
+		becomes(t, &ws, targets, name, c)
+	}
+	if !w.indexFile {
+		if err := os.Remove(strings.TrimSpace(gitRead(t, &ws, ws.Workspace, nil, "rev-parse", "--path-format=absolute", "--git-path", "index"))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if head := headOf(t, &ws, ws.Workspace); (head != "") != w.born {
+		t.Fatalf("the workspace %s has its git HEAD at %q, want it %s", name, head, w)
+	}
+	return &ws
+}
+
+// requireCellIndex fails the test unless the workspace's index holds at the cell's path the entry
+// its index state names: no entry where it is absent; a gitlink; an entry `ls-files -v` tags h
+// for assume-unchanged or S for skip-worktree; the empty blob of intent-to-add; and otherwise a
+// file's blob, for a regular entry and a forced one.
+func requireCellIndex(t *testing.T, ws *rescuetest.Disk, c matrixCell) {
+	t.Helper()
+	records := nulSplit(gitRead(t, ws, ws.Workspace, nil, "ls-files", "-s", "-v", "-z", "--", c.path()))
+	held := "absent"
+	switch {
+	case len(records) > 1:
+		held = fmt.Sprintf("%q", records)
+	case len(records) == 1:
+		meta, _, _ := strings.Cut(records[0], "\t")
+		switch fields := strings.Fields(meta); {
+		case len(fields) != 4:
+			held = fmt.Sprintf("%q", records[0])
+		case fields[1] == gitlinkMode:
+			held = "gitlink"
+		case fields[0] == "h":
+			held = "assume-unchanged"
+		case fields[0] == "S":
+			held = "skip-worktree"
+		case fields[2] == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391":
+			held = "intent-to-add"
+		case fields[0] == "H":
+			held = "regular"
+		default:
+			held = fmt.Sprintf("%q", records[0])
+		}
+	}
+	want := matrixIndexNames[c.index]
+	if c.index == indexForced {
+		want = "regular"
+	}
+	if held != want {
+		t.Fatalf("the cell %s: the index holds %s at %s, want the %s entry the cell stands on", c.dir(), held, c.path(), want)
+	}
+}
+
+// matrixTargets makes the directory outside every worktree of d that the cells' symlinks name, and
+// answers it: file.txt, a file; dir, a directory holding k.txt; and, made by becomes, the
+// directory each parent replaced by a symlink names.
+func matrixTargets(d *rescuetest.Disk) string {
+	targets := filepath.Join(filepath.Dir(d.Remote), "targets")
+	d.Write(targets, "file.txt", "the file a cell's symlink names\n")
+	d.Write(targets, "dir/k.txt", "a file of the directory a cell's symlink names\n")
+	return targets
+}
+
+// becomes makes the cell's disk state at its path in the workspace named workspace, after its
+// record. A path whose index state is absent has no record, so it is first written as a new file.
+func becomes(t *testing.T, ws *rescuetest.Disk, targets, workspace string, c matrixCell) {
+	t.Helper()
+	at := filepath.Join(ws.Workspace, c.path())
+	if c.index == indexAbsent {
+		ws.Write(ws.Workspace, c.path(), c.record())
+	}
+	switch c.disk {
+	case diskAbsent:
+		removeAll(t, at)
+	case diskSame:
+	case diskNewSameSize:
+		if c.index == indexGitlink {
+			ws.Run(at, "git", "add", "loose.txt")
+			ws.Run(at, "git", "commit", "--quiet", "-m", "a commit made inside the repository")
+			break
+		}
+		// git compares ctime to the second, so a rewrite in the record's second reads as unchanged to it.
+		pastCtimeSecond(t, at)
+		rewrittenAtTheSameSize(t, ws, c.path(), strings.ToUpper(c.record()), true)
+	case diskNewOtherSize:
+		ws.Write(ws.Workspace, c.path(), c.record()+"and a line more\n")
+	case diskDirWithFile:
+		removeAll(t, at)
+		ws.Write(ws.Workspace, c.path()+"/k.txt", "a file of the directory at the cell's path\n")
+	case diskDirWithGitCommit:
+		removeAll(t, at)
+		becomesAGitRepository(ws, c.path())
+	case diskDirWithGitNoCommit:
+		removeAll(t, at)
+		ws.Run(ws.Workspace, "git", "init", "--quiet", "--initial-branch=main", c.path())
+		ws.Write(ws.Workspace, c.path()+"/work.txt", "work in a repository with no commit\n")
+	case diskDirWithJJ:
+		removeAll(t, at)
+		ws.Write(ws.Workspace, c.path()+"/.jj/f", "the nested jj's own file\n")
+		ws.Write(ws.Workspace, c.path()+"/k.txt", "a file beside the nested .jj\n")
+	case diskLinkToFile:
+		removeAll(t, at)
+		symlink(t, filepath.Join(targets, "file.txt"), at)
+	case diskLinkToDir:
+		removeAll(t, at)
+		symlink(t, filepath.Join(targets, "dir"), at)
+	case diskParentLink:
+		parent := filepath.Join(ws.Workspace, c.dir())
+		moved := filepath.Join(targets, workspace, c.dir())
+		if err := os.MkdirAll(filepath.Dir(moved), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Rename(parent, moved); err != nil {
+			t.Fatal(err)
+		}
+		symlink(t, moved, parent)
+	}
+}
+
+// pastCtimeSecond waits until the clock is past the second of the ctime of the file at, so that a
+// rewrite of it now has a ctime git tells from the one an index entry made of it before holds.
+// git compares a ctime to the second: measured on this build, a file rewritten at its size with
+// its mtime set back read as unchanged to `git diff-files` in the second of its `git add`, three
+// times out of three, and as changed 1.2 s later, three times out of three. The wait is a second
+// at the most, and none where the clock has passed that second already.
+func pastCtimeSecond(t *testing.T, at string) {
+	t.Helper()
+	info, err := os.Lstat(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("the stat of %s holds no ctime: %T", at, info.Sys())
+	}
+	if next := time.Unix(stat.Ctim.Sec+1, 0); time.Now().Before(next) {
+		time.Sleep(time.Until(next))
+	}
+}
+
+// under is the entries at the cell's directory and below it.
+func under(entries map[string]entry, c matrixCell) map[string]entry {
+	held := map[string]entry{}
+	for path, e := range entries {
+		if path == c.dir() || strings.HasPrefix(path, c.dir()+"/") {
+			held[path] = e
+		}
+	}
+	return held
+}
+
+// listing is entries as a failure message says them, sorted by path.
+func listing(entries map[string]entry) string {
+	if len(entries) == 0 {
+		return "nothing"
+	}
+	paths := make([]string, 0, len(entries))
+	for path := range entries {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	for i, path := range paths {
+		paths[i] = fmt.Sprintf("%q at mode %s blob %s", path, entries[path].mode, entries[path].object)
+	}
+	return strings.Join(paths, ", ")
+}
+
+// failedAsRuled holds a cell that fails in either read, in the workspace ws it was built alone in,
+// to the rule a failure is held to, and answers its outcome. Where today's read fails and the
+// route answers a tree, the cell fails as a loss. Where both fail, or the route fails alone, a
+// refusal under R4, it passes, and what each read said is logged.
+func failedAsRuled(t *testing.T, w matrixWorkspace, c matrixCell, ws *rescuetest.Disk, r reads) string {
+	t.Helper()
+	cell := w.String() + ", " + c.dir()
+	if lost := failureLost(r); lost != "" {
+		t.Errorf("the cell %s: %s; the jj route's tree holds under the cell %s", cell, lost, listing(under(entriesOf(t, ws, r.route), c)))
+		return "undecided"
+	}
+	if r.todayErr != nil {
+		t.Logf("the cell %s: both reads fail the workspace. Today's read: %v. The jj route: %v", cell, r.todayErr, r.routeErr)
+		return "both fail"
+	}
+	t.Logf("the cell %s: the jj route fails the workspace where today's read answers a tree, a refusal under R4. Today's read's tree holds under the cell %s. The jj route: %v", cell, listing(under(entriesOf(t, ws, r.today), c)), r.routeErr)
+	return "route fails alone"
+}
+
+// declaredKinds is the kinds a cell's declaration uses, as its outcome says them.
+func declaredKinds(row differentialRow) string {
+	var kinds []string
+	for _, kind := range []struct {
+		word     string
+		declared map[string]string
+	}{{"contentLost", row.contentLost}, {"reformed", row.reformed}, {"lost", row.lost}, {"gained", row.gained}} {
+		if len(kind.declared) > 0 {
+			kinds = append(kinds, kind.word)
+		}
+	}
+	if len(kinds) == 0 {
+		return "equal"
+	}
+	return "declared " + strings.Join(kinds, " and ")
+}
+
+// matrixRun is the run of one combination's cells: the disk they are built on, the directory
+// their symlinks name (matrixTargets), the count of workspaces made so far, and each cell's
+// outcome, by outcome.
+type matrixRun struct {
+	w        matrixWorkspace
+	d        *rescuetest.Disk
+	targets  string
+	made     int
+	outcomes map[string][]string
+}
+
+// classify builds cells in one jj workspace and reads it both ways. Where both reads answer a
+// tree, every cell of it is held to the rules there (compare). Where either read fails, a cell
+// alone in the workspace is held to the rule a failure is held to (failedAsRuled), and more than
+// one cell are split in two halves, each classified the same way in a workspace of its own.
+func (m *matrixRun) classify(t *testing.T, cells []matrixCell) {
+	t.Helper()
+	m.made++
+	ws := buildMatrix(t, m.d, m.w, fmt.Sprintf("cells-%03d", m.made), m.targets, cells)
+	r := readBoth(t, ws, headOf(t, ws, ws.Workspace))
+	switch {
+	case r.todayErr == nil && r.routeErr == nil:
+		m.compare(t, ws, r, cells)
+	case len(cells) > 1:
+		m.classify(t, cells[:len(cells)/2])
+		m.classify(t, cells[len(cells)/2:])
+	default:
+		c := cells[0]
+		outcome := "undecided"
+		t.Run(c.dir(), func(t *testing.T) { outcome = failedAsRuled(t, m.w, c, ws, r) })
+		if _, ok := matrixDeclared[m.w.String()+"/"+c.dir()]; ok {
+			t.Errorf("matrixDeclared declares the cell %s, %s, which fails in a read alone and has no two trees to declare a difference of", m.w, c.dir())
+		}
+		m.outcomes[outcome] = append(m.outcomes[outcome], m.w.String()+", "+c.dir())
+	}
+}
+
+// compare holds every cell of the workspace ws, whose two reads r both answer a tree, to the
+// rules of the rows by its own entries, and the paths of no cell the same way.
+func (m *matrixRun) compare(t *testing.T, ws *rescuetest.Disk, r reads, cells []matrixCell) {
+	t.Helper()
+	was, now := entriesOf(t, ws, r.today), entriesOf(t, ws, r.route)
+	t.Run("the paths of no cell in "+filepath.Base(ws.Workspace), func(t *testing.T) {
+		outside := func(entries map[string]entry) map[string]entry {
+			left := maps.Clone(entries)
+			for _, c := range cells {
+				for path := range under(entries, c) {
+					delete(left, path)
+				}
+			}
+			return left
+		}
+		heldEntriesAsRuled(t, ws, outside(was), outside(now), conflictedPaths(t, ws), differentialRow{})
+	})
+	for _, c := range cells {
+		row := c.declared(m.w)
+		outcome := declaredKinds(row)
+		if !t.Run(c.dir(), func(t *testing.T) {
+			cellWas, cellNow := under(was, c), under(now, c)
+			heldEntriesAsRuled(t, ws, cellWas, cellNow, nil, row)
+			entriesHeldAndAbsent(t, row, map[string]map[string]entry{"git read's": cellWas, "jj route's": cellNow})
+			if t.Failed() {
+				t.Logf("the cell %s, %s: the git read's tree holds under the cell %s; the jj route's holds %s", m.w, c.dir(), listing(cellWas), listing(cellNow))
+			}
+		}) {
+			outcome = "undecided"
+		}
+		m.outcomes[outcome] = append(m.outcomes[outcome], m.w.String()+", "+c.dir())
+	}
+}
+
+// Every cell of the generated matrix that today's read and the jj route both answer a tree for
+// holds the same entries in both trees, but for what an existing kind covers by its reason; every
+// cell whose today's read fails has its route fail too. The comment at the head of this file says
+// what the cells are, which collapse, and how they are run.
+func TestTheJJRouteKeepsWhatTheWholeWorktreeGitReadKeepsInEveryCellOfTheMatrix(t *testing.T) {
+	names := map[string]bool{}
+	for _, w := range matrixWorkspaces {
+		for _, c := range w.cells() {
+			names[w.String()+"/"+c.dir()] = true
+		}
+	}
+	for name, row := range matrixDeclared {
+		if !names[name] {
+			t.Errorf("matrixDeclared declares %q, which is no cell the matrix builds", name)
+		}
+		for path, reason := range row.gained {
+			if strings.TrimSpace(reason) == "" {
+				t.Errorf("matrixDeclared declares %q gained in %q with no reason", path, name)
+			}
+		}
+	}
+	outcomes := map[string][]string{}
+	for _, w := range matrixWorkspaces {
+		t.Run(w.String(), func(t *testing.T) {
+			d := rescuetest.New(t, issue)
+			run := &matrixRun{w: w, d: d, targets: matrixTargets(d), outcomes: outcomes}
+			run.classify(t, w.cells())
+		})
+	}
+	total := 0
+	kinds := make([]string, 0, len(outcomes))
+	for outcome, cells := range outcomes {
+		total += len(cells)
+		kinds = append(kinds, outcome)
+	}
+	slices.Sort(kinds)
+	for _, outcome := range kinds {
+		t.Logf("%s: %d cells", outcome, len(outcomes[outcome]))
+		if outcome != "equal" {
+			for _, cell := range outcomes[outcome] {
+				t.Logf("  %s: %s", outcome, cell)
+			}
+		}
+	}
+	t.Logf("%d cells in all", total)
+}

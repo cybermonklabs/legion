@@ -1081,11 +1081,12 @@ func TestAnIgnoredDirectoryHoldingANestedJJIsLeftOutOfTheRescuedCommitAndFailsNo
 	}
 }
 
-// An untracked nested git repository is carried by neither read and fails neither. jj does not
-// snapshot it at all, so the rescued commit holds no gitlink — whose commit no object of this
-// repository would hold — and no file from inside it; what is in it goes with the pod, as it
-// would have gone had no check run. The file the role left beside it is rescued.
-func TestAnUntrackedNestedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothing(t *testing.T) {
+// An untracked nested git repository with a commit is recorded by both reads as the gitlink it
+// is, and fails neither. `git add --all` records it at its HEAD, whose commit no object of this
+// repository holds, and carries no file of it; the route records the same gitlink and no file
+// from inside it (rescue.carried), so what is in it goes with the pod, as it would have gone had
+// no check run. The file the role left beside it is rescued.
+func TestAnUntrackedNestedGitRepositoryIsRescuedAsItsGitlinkAndFailsNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	nested := filepath.Join(d.Workspace, "nested")
 	d.Run(d.Workspace, "git", "init", "--quiet", "--initial-branch=main", "nested")
@@ -1094,6 +1095,7 @@ func TestAnUntrackedNestedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothing(t *te
 	d.Run(nested, "git", "commit", "--quiet", "-m", "work inside the nested repository")
 	d.Write(nested, "loose.txt", "a file in no commit of the nested repository\n")
 	d.Write(d.Workspace, "notes.txt", "an edit in no commit\n")
+	gitlink := "160000 commit " + d.Run(nested, "git", "rev-parse", "HEAD") + "\tnested"
 
 	w := only(t, d, d.Check(context.Background(), prefix))
 	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
@@ -1103,10 +1105,14 @@ func TestAnUntrackedNestedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothing(t *te
 	if got := d.Run(d.Remote, "git", "show", commit+":notes.txt"); got != "an edit in no commit" {
 		t.Errorf("the rescued commit's notes.txt holds %q, want the file the role left beside the nested repository", got)
 	}
+	var held []string
 	for line := range strings.Lines(d.Run(d.Remote, "git", "ls-tree", "-r", "--full-tree", commit)) {
-		if strings.Contains(line, "nested") {
-			t.Errorf("the rescued commit holds %q, want nothing of the untracked nested repository", strings.TrimSpace(line))
+		if line = strings.TrimSpace(line); strings.Contains(line, "nested") {
+			held = append(held, line)
 		}
+	}
+	if !slices.Equal(held, []string{gitlink}) {
+		t.Errorf("the rescued commit holds %q of the nested repository, want only its gitlink %q, as the git read records it", held, gitlink)
 	}
 }
 
@@ -1114,11 +1120,10 @@ func TestAnUntrackedNestedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothing(t *te
 // for it no more than for the repository itself. A nested .jj inside such a repository is a
 // directory jj's snapshot leaves out, and `git ls-files --others --exclude-standard` lists the
 // embedded repository as itself, `b/`, with a trailing slash, and no file under it: the carry
-// leaves that entry out, adds nothing of it and reads back nothing of it as missing
-// (rescue.carried). That is the same nothing the `git add --all` this read stands in for
-// carries, which records the repository as a gitlink whose commit no object of this repository
-// holds and no file of it at all.
-func TestANestedJJInsideAnEmbeddedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothing(t *testing.T) {
+// records that entry as the gitlink at b's HEAD, adds no file of it and reads back only b
+// (rescue.carried). That is what the `git add --all` this read stands in for records: a gitlink
+// whose commit no object of this repository holds, and no file of it at all.
+func TestANestedJJInsideAnEmbeddedGitRepositoryIsRescuedAsItsGitlinkAndFailsNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	embedded := filepath.Join(d.Workspace, "b")
 	d.Run(d.Workspace, "git", "init", "--quiet", "--initial-branch=main", "b")
@@ -1128,6 +1133,7 @@ func TestANestedJJInsideAnEmbeddedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothi
 	d.Write(embedded, "sub/.jj/f", "the nested jj's own file, inside the embedded repository\n")
 	d.Write(embedded, "sub/keep.txt", "a file beside that nested .jj\n")
 	d.Write(d.Workspace, "notes.txt", "an edit in no commit\n")
+	gitlink := "160000 commit " + d.Run(embedded, "git", "rev-parse", "HEAD") + "\tb"
 
 	w := only(t, d, d.Check(context.Background(), prefix))
 	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
@@ -1137,10 +1143,14 @@ func TestANestedJJInsideAnEmbeddedGitRepositoryIsRescuedAsNoGitlinkAndFailsNothi
 	if got := d.Run(d.Remote, "git", "show", commit+":notes.txt"); got != "an edit in no commit" {
 		t.Errorf("the rescued commit's notes.txt holds %q, want the file the role left beside the embedded repository", got)
 	}
+	var held []string
 	for line := range strings.Lines(d.Run(d.Remote, "git", "ls-tree", "-r", "--full-tree", commit)) {
 		if name := strings.TrimSpace(line); strings.HasSuffix(name, "\tb") || strings.Contains(name, "\tb/") {
-			t.Errorf("the rescued commit holds %q, want nothing of the embedded repository: no gitlink and no file of it", name)
+			held = append(held, name)
 		}
+	}
+	if !slices.Equal(held, []string{gitlink}) {
+		t.Errorf("the rescued commit holds %q of the embedded repository, want only its gitlink %q, as the git read records it", held, gitlink)
 	}
 }
 
