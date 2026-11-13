@@ -49,8 +49,16 @@ function subjectOf(ask: InboxRow): PaneSubject {
 }
 
 export interface ReadingPaneProps {
+  /** The head's "Assign to me" write is in flight or refused, or has stopped being either: the
+   *  Inbox keeps a live row listed, which keeps this column on it under the Unassigned filter
+   *  the assignment takes it out of. */
+  onAssignLive: (askId: string, live: boolean) => void;
   /** The reader's own answer landed; the list selects the next row. */
   onAnswered: (askId: string) => void;
+  /** The head's priority pick is in flight or refused, or has stopped being either: the Inbox
+   *  keeps the row where it stood, which keeps this column on it under a priority filter the
+   *  pick takes it out of. */
+  onPriorityLive: (askId: string, live: boolean) => void;
   /** The head's Snooze write is in flight or refused, or has stopped being either: the Inbox
    *  keeps a live row listed, which is what keeps this column on it long enough for a refusal
    *  to be read. */
@@ -64,6 +72,8 @@ export interface ReadingPaneProps {
 interface PaneFlowProps {
   ask: InboxRow;
   onAnswered: (askId: string) => void;
+  onAssignLive: (askId: string, live: boolean) => void;
+  onPriorityLive: (askId: string, live: boolean) => void;
   onSnoozeLive: (askId: string, live: boolean) => void;
   viewer: string | undefined;
 }
@@ -86,7 +96,14 @@ function QuestionCard({ ask, onAnswered }: Pick<PaneFlowProps, "ask" | "onAnswer
 
 /** An anchored question, and a question in no document: the card the Inbox has always drawn,
  *  under the head's own controls. */
-function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): ReactNode {
+function CardBody({
+  ask,
+  onAnswered,
+  onAssignLive,
+  onPriorityLive,
+  onSnoozeLive,
+  viewer,
+}: PaneFlowProps): ReactNode {
   return (
     <PaneFrame
       head={
@@ -94,7 +111,9 @@ function CardBody({ ask, onAnswered, onSnoozeLive, viewer }: PaneFlowProps): Rea
           artifact={undefined}
           ask={ask}
           onAnswered={onAnswered}
+          onAssignLive={onAssignLive}
           onNextChange={undefined}
+          onPriorityLive={onPriorityLive}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
           sectionBlockId={undefined}
@@ -143,6 +162,8 @@ function ApprovalBody({
   artifactId,
   ask,
   onAnswered,
+  onAssignLive,
+  onPriorityLive,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { approval: AskApproval; artifactId: string }): ReactNode {
@@ -342,7 +363,9 @@ function ApprovalBody({
           artifact={artifact}
           ask={ask}
           onAnswered={onAnswered}
+          onAssignLive={onAssignLive}
           onNextChange={marked ? nextChange : undefined}
+          onPriorityLive={onPriorityLive}
           onSkipToAnswer={undefined}
           onSnoozeLive={onSnoozeLive}
           sectionBlockId={undefined}
@@ -364,6 +387,8 @@ function DecisionBody({
   ask,
   blockId,
   onAnswered,
+  onAssignLive,
+  onPriorityLive,
   onSnoozeLive,
   viewer,
 }: PaneFlowProps & { artifactId: string; blockId: string }): ReactNode {
@@ -378,7 +403,9 @@ function DecisionBody({
           artifact={document.artifact}
           ask={ask}
           onAnswered={onAnswered}
+          onAssignLive={onAssignLive}
           onNextChange={undefined}
+          onPriorityLive={onPriorityLive}
           onSkipToAnswer={document.showsDocument ? document.skipToBlock : undefined}
           onSnoozeLive={onSnoozeLive}
           sectionBlockId={document.sectionBlockId}
@@ -405,6 +432,8 @@ function DecisionBody({
  */
 export function ReadingPane({
   onAnswered,
+  onAssignLive,
+  onPriorityLive,
   onSnoozeLive,
   row,
   viewer,
@@ -414,7 +443,7 @@ export function ReadingPane({
   }
   const ask = row.ask;
   const subject = subjectOf(ask);
-  const flow = { ask, onAnswered, onSnoozeLive, viewer };
+  const flow = { ask, onAnswered, onAssignLive, onPriorityLive, onSnoozeLive, viewer };
   if (subject.kind === "approval") {
     return <ApprovalBody {...flow} approval={subject.approval} artifactId={subject.artifactId} />;
   }

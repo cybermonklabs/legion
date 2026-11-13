@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -18,19 +18,45 @@ const priorityOptions: readonly { label: string; value: IssuePriority | null }[]
 /**
  * The priority editor for a surface that owns no write of its own - a list row, a board card,
  * an Inbox row - where this control is the only thing that writes that issue's priority.
+ *
+ * `onLive` tells a host whose own placement reads the priority - the Inbox, which bands its
+ * rows by it and may filter by it - while this control's write is in flight or refused, so the
+ * host keeps the row where it stood and this control, with its refusal and Retry, mounted. It
+ * is told at the press: the store composes the pick over the host's read as the write joins,
+ * before TanStack tells this control its own press is pending, so a registration made from that
+ * state a commit later would come after the row had moved. Unregistered once the write settles
+ * cleanly or the control unmounts.
  */
 export function PriorityControl({
   disabled,
   issueKey,
+  onLive,
   priority,
 }: {
   disabled?: boolean;
   issueKey: string;
+  onLive?: (live: boolean) => void;
   priority: IssuePriority | null;
 }): ReactNode {
   const write = useIssuePriority(issueKey);
+  const live = write.pending || write.failed;
+  useEffect(() => {
+    if (!live || onLive === undefined) return;
+    onLive(true);
+    return () => onLive(false);
+  }, [live, onLive]);
+  const held: IssuePriorityWrite =
+    onLive === undefined
+      ? write
+      : {
+          ...write,
+          submit: (next) => {
+            onLive(true);
+            write.submit(next);
+          },
+        };
   return (
-    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={write} />
+    <PriorityEditor disabled={disabled} issueKey={issueKey} priority={priority} write={held} />
   );
 }
 

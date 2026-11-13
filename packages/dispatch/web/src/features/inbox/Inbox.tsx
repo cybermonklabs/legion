@@ -77,6 +77,7 @@ import {
 } from "./list-row";
 import { useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
+import { answerOutstanding } from "./outstanding-answers";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
 import { type PlacedRow, usePaneSelection } from "./pane-selection";
 import { useFoldedGroups } from "./preferences";
@@ -415,6 +416,7 @@ function InboxCardRow({
   onAnswered,
   onAssignLive,
   onMark,
+  onPriorityLive,
   onRelease,
   onSnoozeLive,
   ordinal,
@@ -432,12 +434,19 @@ function InboxCardRow({
   /** The same registration for this row's snooze write; the Inbox keeps a live row rendered
    *  even when its band is folded, so `Snoozing…` and a refusal survive the fold. */
   onSnoozeLive: (askId: string, live: boolean) => void;
+  /** The same registration for this row's priority pick: the Inbox keeps the row where it stood
+   *  while the pick is live or refused, so the pick's refusal and Retry stay in this control. */
+  onPriorityLive: (askId: string, live: boolean) => void;
   /** Timestamp of the Inbox snapshot that supplied this row's initial thread. */
   threadUpdatedAt: number;
   /** The signed-in person's lowercase email; "Assign to me" writes it. */
   viewer: string;
 }): ReactNode {
   const name = controlName(ask, ordinal);
+  const onPickLive = useCallback(
+    (live: boolean) => onPriorityLive(ask.id, live),
+    [ask.id, onPriorityLive]
+  );
   return (
     <InboxRowShell
       group={groupKey}
@@ -467,7 +476,11 @@ function InboxCardRow({
         <div className="flex max-w-full shrink-0 flex-wrap items-center gap-1">
           <RowUrgencyMark urgency={askUrgency(ask.urgency)} />
           {ask.issue_key === null ? null : (
-            <PriorityControl issueKey={ask.issue_key} priority={issuePriority(ask.priority)} />
+            <PriorityControl
+              issueKey={ask.issue_key}
+              onLive={onPickLive}
+              priority={issuePriority(ask.priority)}
+            />
           )}
           {ask.issue_key !== null && (isUnassigned(row) || assignLive) ? (
             <AssignToMe
@@ -791,6 +804,25 @@ export function Inbox({
       return next;
     });
   }, []);
+  // And the same for a row's own priority pick (`PriorityControl`'s `onLive`), which moves the
+  // row to the band of the priority it picked - and, under a priority filter, out of the list -
+  // the moment the store composes it. Each is held with the row as this list last drew it, the
+  // one it stood in at the press, which is where the list goes on placing it while the pick is
+  // live and its refusal shown (`placedAs`, below). Only a row this list drew is held.
+  const [picking, setPicking] = useState<ReadonlyMap<string, InboxListRow>>(() => new Map());
+  const onPriorityLive = useCallback((askId: string, live: boolean) => {
+    const drawn = presented.current.find(
+      (placed) => placed.row.kind === "ask" && placed.row.ask.id === askId
+    )?.row;
+    setPicking((current) => {
+      if (current.has(askId) === live) return current;
+      if (live && drawn === undefined) return current;
+      const next = new Map(current);
+      if (live && drawn !== undefined) next.set(askId, drawn);
+      else next.delete(askId);
+      return next;
+    });
+  }, []);
   // The row the reader's hand is on (focus or pointer), read from the DOM as last committed. When
   // the server has dropped it (answered or resolved elsewhere) or handed its turn the other way
   // (their own ask-back, an agent's note or reply), it is kept - `held` - where the reader last
@@ -831,25 +863,39 @@ export function Inbox({
   const threads = useInboxThreadRows({ asksOnly, listRef, show });
   /** Every row this list could hold before its five fields narrow it: what the bar counts. */
   const candidates = [...askRows, ...threads.rows];
-  // The filters and the typed text both decide what is listed, with two exceptions that
-  // outrank them all: a row whose "Assign to me" write is live stays, and so does one whose
-  // hand-on is. Taking a question under the Unassigned filter is exactly the first case - the
-  // row stops matching the moment the optimistic assignment lands - and handing a question on
-  // in the reader's own list is the second, since the optimistic `waiting_on_person` is read
-  // by this very filter. Unmounting either control would take `Assigning…` or `Handing on…`, a
-  // refusal and its Retry off the screen with it.
+  // The filters and the typed text both decide what is listed, with three exceptions that
+  // outrank them all: a row whose "Assign to me" write is live stays, so does one whose hand-on
+  // is, and so does one whose own priority pick is. Taking a question under the Unassigned
+  // filter is exactly the first case - the row stops matching the moment the optimistic
+  // assignment lands - and handing a question on in the reader's own list is the second, since
+  // the optimistic `waiting_on_person` is read by this very filter; a pick of another priority
+  // under a priority filter is the third. Unmounting any of those controls would take
+  // `Assigning…`, `Handing on…`, a refusal and its Retry off the screen with it.
   const narrowed = candidates.filter(
     (row) =>
-      (row.kind === "ask" && (assigning.has(row.ask.id) || handingOn.has(row.ask.id))) ||
+      (row.kind === "ask" &&
+        (assigning.has(row.ask.id) || handingOn.has(row.ask.id) || picking.has(row.ask.id))) ||
       (inAssigneeFilter(row, selection, viewer ?? "") &&
         matchesInboxSearch(row, words) &&
         INBOX_FILTER_FIELDS.every((field) =>
           inFieldFilter(row, field, filters[field], viewer ?? "")
         ))
   );
+  // Where a row is placed - its band and its place in it - is read off the row as it stood when
+  // its own priority pick was pressed, while that pick is live or refused: the bands are by
+  // priority by default, and a row moved to another band is another element, whose fresh control
+  // never failed (`onPriorityLive`). What the row shows is the row as it is, the pick composed.
+  // A pick that lands lets the row go, and it moves with the pick (R7 of dispatch://INFRA-299).
+  const asListed = new Map(narrowed.map((row) => [rowId(row), row]));
+  const placedAs = (row: InboxListRow): InboxListRow =>
+    row.kind === "ask" ? (picking.get(row.ask.id) ?? row) : row;
+  const asShown = (placed: readonly InboxListRow[]): InboxListRow[] =>
+    placed.map((row) => asListed.get(rowId(row)) ?? row);
   // The Dismissed view keeps the server's own order, newest dismissal first, and bands nothing:
   // it is one list of what the reader has already dealt with.
-  const shown = showDismissed ? narrowed : sortRows(narrowed, sort, viewer ?? "");
+  const shown = showDismissed
+    ? narrowed
+    : asShown(sortRows(narrowed.map(placedAs), sort, viewer ?? ""));
   const byId = new Map(shown.map((row) => [rowId(row), row]));
   // What a press that names the list's own narrowing rather than ids carries: the read mark of
   // the list read the reader is looking at, and undefined where no such press may be made at
@@ -876,7 +922,9 @@ export function Inbox({
       ? []
       : showDismissed
         ? [{ key: ALL_GROUP_KEY, label: undefined, rows: shown }]
-        : group(shown, groupBy, { now: place, titles, viewer: viewer ?? "" });
+        : group(shown.map(placedAs), groupBy, { now: place, titles, viewer: viewer ?? "" }).map(
+            (band) => ({ ...band, rows: asShown(band.rows) })
+          );
   // A row in a band the reader has not opened is not on the page: the band renders its heading
   // and count and none of its rows, so there is no checkbox to untick, and the reader may well
   // have set that row's own moment since marking it - a pick that wrote it would overwrite what
@@ -1446,7 +1494,16 @@ export function Inbox({
     listed === undefined
       ? undefined
       : bands.find(({ rows: banded }) => banded.includes(listed))?.key;
-  const held = heldRow(seen, listed, nowBand);
+  // A row moved to another band is kept in the band the reader saw it in only while that band
+  // is still drawn: a band that held nothing else has gone with the move, and a row kept in a
+  // band no longer drawn would be drawn nowhere. Then it is drawn where it is now - the band of
+  // the priority the reader's own pick gave it, once that pick lands and its hold ends
+  // (`picking`).
+  const kept = heldRow(seen, listed, nowBand);
+  const held =
+    kept !== undefined && listed !== undefined && !bands.some(({ key }) => key === kept.group)
+      ? undefined
+      : kept;
 
   // The filtered agent as its asks wrote it (the title it stamped, its attribution), or only its
   // id when none of its asks is listed; either way its registry title names it when listed.
@@ -1631,6 +1688,8 @@ export function Inbox({
                   <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
                     <ReadingPane
                       onAnswered={recordAnswered}
+                      onAssignLive={onAssignLive}
+                      onPriorityLive={onPriorityLive}
                       onSnoozeLive={onSnoozeLive}
                       row={subject}
                       viewer={viewer}
@@ -1672,8 +1731,26 @@ export function Inbox({
   }
 
   // The held row is drawn in the band the reader saw it in, after the row it then followed.
-  // A band the held row has left is empty, and an empty band has nothing to head.
-  const drawn = bands
+  // A band the held row has left is empty, and an empty band has nothing to head. A row the list
+  // dropped under the reader's hand while their own answer or decline of it is out or refused
+  // (`answerOutstanding`) brings the band it was seen in with it where it was that band's only
+  // row: a row held in a band no longer drawn is drawn nowhere, and the card that wrote, its
+  // draft and its refusal would go with it. Any other row the list dropped goes with its band,
+  // as it always has.
+  const heldBandGone =
+    held !== undefined &&
+    listed === undefined &&
+    held.row.kind === "ask" &&
+    answerOutstanding(held.row.ask.id) &&
+    !bands.some(({ key }) => key === held.group);
+  const bandsDrawn = heldBandGone
+    ? group([...shown, held.row].map(placedAs), groupBy, {
+        now: place,
+        titles,
+        viewer,
+      }).map((band) => ({ ...band, rows: asShown(band.rows) }))
+    : bands;
+  const drawn = bandsDrawn
     .map((band) => {
       const banded = withHeld(
         band.rows.filter((row) => rowId(row) !== (held === undefined ? "" : rowId(held.row))),
@@ -1744,6 +1821,7 @@ export function Inbox({
         key={id}
         onAnswered={recordAnswered}
         onAssignLive={onAssignLive}
+        onPriorityLive={onPriorityLive}
         onSnoozeLive={onSnoozeLive}
         threadUpdatedAt={inbox.dataUpdatedAt}
         viewer={viewer}

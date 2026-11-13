@@ -266,6 +266,8 @@ function renderPane({
             <AskHandOnLiveContext value={(askId, live) => handOnLiveness.push([askId, live])}>
               <ReadingPane
                 onAnswered={(id) => answered.push(id)}
+                onAssignLive={() => {}}
+                onPriorityLive={() => {}}
                 onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
                 row={{ ask: row, kind: "ask" }}
                 viewer="alice"
@@ -1225,6 +1227,8 @@ function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = 
           <MarginProvider>
             <ReadingPane
               onAnswered={() => {}}
+              onAssignLive={() => {}}
+              onPriorityLive={() => {}}
               onSnoozeLive={() => {}}
               row={{ kind: "thread", thread }}
               viewer="alice"

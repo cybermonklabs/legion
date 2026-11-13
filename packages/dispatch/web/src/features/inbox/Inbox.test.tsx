@@ -1949,6 +1949,171 @@ test("a hand-on refused at once keeps its row and its reason in the reader's own
   }
 });
 
+// The Inbox bands its rows by priority, so a row's own priority pick moves the row to another
+// band the moment the pick is composed over the Inbox's read - and a row in another band is
+// another element, whose fresh control never failed. So the row registers its pick with the list
+// at the press, and the list holds it in the band it stood in while the pick is live and while
+// its refusal is shown: the refusal and its Retry stay in the control the reader used. Under
+// TanStack's own scheduler, which hands the control its own press a task after the store has
+// composed it (the suite runs it synchronously, `__tests__/setup.ts`).
+test("a priority pick refused at once keeps its row where it stood, with the reason and Retry", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 2 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "not your project" })
+  );
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Which approach?");
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+    const control = within(rowOf("ask-a")).getByLabelText("Priority of CORE-1");
+    notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+    await user.selectOptions(control, "P2");
+    const alert = await waitFor(() => within(rowOf("ask-a")).getByRole("alert"));
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+  } finally {
+    notifyManager.setScheduler((callback) => callback());
+    unmount();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// R7 of dispatch://INFRA-299 under that hold: the row is held where it stood only while its pick
+// is live, so a pick Dispatch makes lets it go, and the row moves to the band of its priority.
+test("a priority pick that lands moves its row to the band it picked", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 2 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Which approach?");
+    expect(headings()).toEqual(["P1 (1)", "P2 (1)"]);
+    await user.selectOptions(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1"), "P2");
+    // Live, the row stands where it stood, showing the priority it picked.
+    expect(headings()).toEqual(["P1 (1)", "P2 (1)"]);
+    expect(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1")).toHaveValue("2");
+
+    getInbox.mockResolvedValue([{ ...rows[0], priority: 2 } as InboxRow, rows[1] as InboxRow]);
+    await act(async () => {
+      save.resolve({ ...narrowIssueOf(rows[0] as InboxRow, "alice"), priority: 2 });
+      await save.promise;
+    });
+    await waitFor(() => expect(headings()).toEqual(["P2 (2)"]));
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// Under a priority filter a pick of another priority takes its row out of the list the moment it
+// is composed. Where the reader's hand is not on the row - a keyboard pick, here a change the
+// pointer never made - nothing else holds it, so the pick itself does: the row stays listed
+// while the pick is live and while its refusal is shown, and the refusal and its Retry stay in
+// the control that wrote.
+test("a priority pick out of a priority filter, refused, keeps its row with the reason and Retry", async () => {
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-c", "CORE-3", "Which name?", { priority: 1 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?priority=P1");
+  try {
+    await screen.findByText("Which approach?");
+    expect(rowIds()).toEqual(["ask-a", "ask-c"]);
+    act(() => {
+      fireEvent.change(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1"), {
+        target: { value: "2" },
+      });
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    // Live: the row is still listed, showing the priority it picked.
+    expect(rowIds()).toEqual(["ask-a", "ask-c"]);
+    expect(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1")).toHaveValue("2");
+
+    await act(async () => {
+      save.reject(new ApiError(403, { code: "FORBIDDEN", error: "not your project" }));
+      await save.promise.catch(() => undefined);
+    });
+    const alert = await waitFor(() => within(rowOf("ask-a")).getByRole("alert"));
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(rowIds()).toEqual(["ask-a", "ask-c"]);
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// An answer takes its row out of the Inbox the moment it is composed, and the row the reader's
+// hand is in is held where they saw it. When that row was the only one of its band, the band has
+// gone with it, and a row held in a band no longer drawn was drawn nowhere, so the card that
+// wrote - and its refusal - went with it. The held row brings its band with it.
+test("a refused answer of the only row of its band keeps the card, its draft and its refusal", async () => {
+  const user = userEvent.setup();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 2 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const answerAsk = answerAskAnswers().mockRejectedValue(new Error("offline"));
+  const { unmount } = renderInbox("/");
+  try {
+    const card = await screen.findByTestId("ask-ask-a");
+    expect(headings()).toEqual(["P1 (1)", "P2 (1)"]);
+    const field = within(card).getByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("JSON");
+    const answer = within(card).getByRole("button", { name: "Answer" });
+    answer.focus();
+    await user.click(answer);
+    await waitFor(() => expect(answerAsk).toHaveBeenCalledTimes(1));
+    const alert = await waitFor(() => within(screen.getByTestId("ask-ask-a")).getByRole("alert"));
+    expect(alert).toBeTruthy();
+    expect(
+      within(screen.getByTestId("ask-ask-a")).getByLabelText<HTMLTextAreaElement>("Your answer")
+        .value
+    ).toBe("JSON");
+    expect(rowIds()).toEqual(["ask-a", "ask-b"]);
+  } finally {
+    unmount();
+    answerAsk.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
 test("a sibling ask of the same issue leaving the list does not drop an in-flight Assign to me: its refusal still shows", async () => {
   const user = userEvent.setup();
   // Two rows the server resolved nobody for, which is what "Assign to me" is written against.
@@ -4760,6 +4925,98 @@ test("a snooze of the only row, refused at once, keeps its refusal and Retry in 
     getInbox.mockRestore();
     getIssue.mockRestore();
     snoozeAsk.mockRestore();
+  }
+});
+
+// The column's head writes the row the column shows. Under a priority filter a pick of another
+// priority takes that row out of the list the moment the store composes it, and the column
+// follows the list, so the head would go with it and its refusal with the head. The head
+// registers the pick with the list at the press, as a row's own control does, and the list
+// keeps the row - and so the column and the head that wrote - while the pick is live and while
+// its refusal is shown.
+test("a priority pick in the column's head, out of a priority filter, keeps its refusal and Retry there", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
+    inboxIssue("ask-b", "CORE-2", "Which format?", { priority: 1 }),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?priority=P1");
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await user.selectOptions(within(pane).getByLabelText("Priority of CORE-1"), "P2");
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(selectedIds()).toEqual(["ask-a"]);
+
+    await act(async () => {
+      save.reject(new ApiError(403, { code: "FORBIDDEN", error: "not your project" }));
+      await save.promise.catch(() => undefined);
+    });
+    const alert = await waitFor(() => within(screen.getByTestId("inbox-pane")).getByRole("alert"));
+    expect(alert).toHaveTextContent("Could not update the priority of CORE-1.");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    unmount();
+    narrow();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The same for the head's "Assign to me" under the Unassigned filter, which the optimistic
+// assignment takes the row out of: the head tells the list, not only itself, so the column stays
+// on the row and the head's refusal is read where the reader pressed.
+test("an Assign to me in the column's head, under the Unassigned filter, keeps its refusal and Retry there", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const nobodys = (id: string, key: string, question: string) =>
+    issueAsk(
+      { id, issue: { assignee: null, key, title: `${key} title` }, issue_key: key, question },
+      null
+    );
+  const rows = [
+    nobodys("ask-a", "CORE-1", "Which approach?"),
+    nobodys("ask-b", "CORE-2", "Which format?"),
+  ];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { unmount } = renderInbox("/?assignee=unassigned");
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-a"]));
+    await user.click(within(pane).getByRole("button", { name: "Assign CORE-1 to me" }));
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    expect(selectedIds()).toEqual(["ask-a"]);
+
+    await act(async () => {
+      save.reject(
+        new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-1 is closed; reopen it first" })
+      );
+      await save.promise.catch(() => undefined);
+    });
+    const alert = await waitFor(() => within(screen.getByTestId("inbox-pane")).getByRole("alert"));
+    expect(alert).toHaveTextContent("CORE-1 is closed; reopen it first");
+    expect(within(alert).getByRole("button", { name: /Retry/ })).toBeTruthy();
+    expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    unmount();
+    narrow();
+    patchIssue.mockRestore();
+    getIssue.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
   }
 });
 
