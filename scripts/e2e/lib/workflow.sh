@@ -40,8 +40,9 @@
 #   smoke_file     the one product file that pull request's first implementation changed: the
 #                  spec's one-file change, which every review round's correction appends to
 # and defines note, pass and fail (which exits), and, for a caller of ensure_project, scrub, the
-# filter that hides the run's private hosts in what it prints (ensure_project runs curl's error
-# through it), plus the runtime seam — the only reads that depend on where an agent runs:
+# filter that hides the run's private hosts and its default assignee in what it prints
+# (ensure_project runs curl's error and a refused create's body through it), plus the runtime
+# seam — the only reads that depend on where an agent runs:
 #   assert_claim_endpoints ISSUE ROLE   fails the check when the claim's process could reach a
 #                                       service outside the rig; runs before every instruction
 #   claim_session_text ISSUE ROLE       prints the claim's session file; fails when there is none
@@ -126,14 +127,14 @@ dispatch_agent() {
 # naming somebody who never signed in 400 ASSIGNEE_NOT_ALLOWED, both before it reads the key, so
 # an unset person is refused here before any call and a project that already exists is no
 # exception. 201 and 409 PROJECT_EXISTS both leave the project ready for the run; anything else
-# fails loudly, naming the status and the body, with the person replaced by the variable's name
-# (ASSIGNEE_NOT_ALLOWED's body names the email it refused, and the repository carries no person's
-# email in any log a run keeps). Unlike dispatch_human, which only needs the body,
-# this call needs the status to tell a created project from a refusal, so it writes the body to a
-# file and reads %{http_code} off curl's stdout, the pattern every other status-checking call in
-# this proof uses (e.g. stage4b-sandbox-tree.sh's invalid-bearer control). curl's error goes to a
-# file of its own: a failed connection still prints its status, 000, on stdout, and the error is
-# flattened into the one FAIL line.
+# fails loudly, naming the status and the body through the caller's scrub, which replaces the
+# person with the variable's name: ASSIGNEE_NOT_ALLOWED's body names the email it refused, spelled
+# as the operator wrote it, and the repository carries no person's email in any log a run keeps.
+# Unlike dispatch_human, which only needs the body, this call needs the status to tell a created
+# project from a refusal, so it writes the body to a file and reads %{http_code} off curl's stdout,
+# the pattern every other status-checking call in this proof uses (e.g. stage4b-sandbox-tree.sh's
+# invalid-bearer control). curl's error goes to a file of its own: a failed connection still
+# prints its status, 000, on stdout, and the error is flattened into the one FAIL line.
 ensure_project() {
   local status body body_file=$work/create-project.json error_file=$work/create-project.err
   [ -n "${dispatch_default_assignee:-}" ] ||
@@ -148,20 +149,11 @@ ensure_project() {
     201) note "[dispatch] created project $project" ;;
     409)
       jq -e '.code == "PROJECT_EXISTS"' "$body_file" >/dev/null 2>&1 ||
-        fail "Dispatch answered 409 creating $project, not PROJECT_EXISTS: $(project_refusal_body "$body_file")"
+        fail "Dispatch answered 409 creating $project, not PROJECT_EXISTS: $(scrub <"$body_file")"
       note "[dispatch] project $project already exists"
       ;;
-    *) fail "Dispatch answered $status creating project $project: $(project_refusal_body "$body_file")" ;;
+    *) fail "Dispatch answered $status creating project $project: $(scrub <"$body_file")" ;;
   esac
-}
-# project_refusal_body FILE prints the body Dispatch answered a refused project create with, the
-# run's default assignee replaced by `<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>` as the operator wrote
-# it and as Dispatch canonicalises it (lowercase), so a refusal names the variable, never its value.
-project_refusal_body() {
-  local answer
-  answer=$(cat "$1")
-  answer=${answer//"$dispatch_default_assignee"/<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>}
-  printf '%s' "${answer//"${dispatch_default_assignee,,}"/<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>}"
 }
 # new_issue TITLE [PARENT] [SPEC] creates an issue in the run's project and prints its key. A root
 # carries the `legion` label, which hands it to the Go daemon (it admits no unlabeled root), and SPEC

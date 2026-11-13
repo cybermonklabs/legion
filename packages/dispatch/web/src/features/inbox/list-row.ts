@@ -62,17 +62,20 @@ export function rowUrgency(row: InboxListRow): AskUrgency | null {
 }
 
 /** Which project the row belongs to, or null for a row that belongs to none: the thread's own
- *  project (an Agent row has none), and for an ask the project of its issue or of the document
- *  it was asked on. A project key holds no hyphen, so the part of an issue key before the first
- *  one is its project: `CORE-12` belongs to `CORE`. */
+ *  project (an Agent row has none), and for an ask its `askProject`. */
 export function rowProject(row: InboxListRow): string | null {
-  if (row.kind === "thread") {
-    const thread = inboxThreadRow(row.thread);
-    return thread.kind === "agent" ? null : (thread.project ?? null);
-  }
-  const issue = row.ask.issue?.key ?? row.ask.issue_key;
+  if (row.kind === "ask") return askProject(row.ask);
+  const thread = inboxThreadRow(row.thread);
+  return thread.kind === "agent" ? null : (thread.project ?? null);
+}
+
+/** Which project an ask belongs to, or null for one that belongs to none: the project of its
+ *  issue or of the document it was asked on. A project key holds no hyphen, so the part of an
+ *  issue key before the first one is its project: `CORE-12` belongs to `CORE`. */
+export function askProject(ask: InboxRow): string | null {
+  const issue = ask.issue?.key ?? ask.issue_key;
   if (issue !== null && issue !== undefined) return issue.split("-")[0] ?? issue;
-  return row.ask.document?.project ?? null;
+  return ask.document?.project ?? null;
 }
 
 /**

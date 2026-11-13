@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
-import { rowProject } from "../inbox/list-row";
+import { askProject } from "../inbox/list-row";
 import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssueAssigneeWrite {
@@ -48,16 +48,23 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
       assignee === null
         ? queryClient.getQueryData(projectDefaultAssigneesQuery().queryKey)
         : undefined;
-    queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-      current?.map((row) => {
-        if (row.issue_key !== issueKey || row.issue === undefined) return row;
+    // A row the update moves: one of this issue that says who holds it.
+    const moves = (row: InboxRow): row is InboxRow & Required<Pick<InboxRow, "issue">> =>
+      row.issue_key === issueKey && row.issue !== undefined;
+    queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) => {
+      // Every row the update matches is of the one issue, so of the one project: its default
+      // is looked up once, off the first of them.
+      const first = current?.find(moves);
+      if (current === undefined || first === undefined) return current;
+      const project = askProject(first);
+      const person = assignee ?? defaults?.find((entry) => entry.project === project)?.assignee;
+      return current.map((row) => {
+        if (!moves(row)) return row;
         const moved = { ...row, issue: { ...row.issue, assignee } };
         if (row.asked_of !== null && row.asked_of !== undefined) return moved;
-        const project = rowProject({ ask: row, kind: "ask" });
-        const person = assignee ?? defaults?.find((entry) => entry.project === project)?.assignee;
         return person === undefined ? moved : { ...moved, waiting_on_person: person };
-      })
-    );
+      });
+    });
   };
   return useIssueFieldWrite<string | null>(issueKey, {
     label: (assignee) => `${issueKey} assigned to ${assignee ?? "nobody"}`,

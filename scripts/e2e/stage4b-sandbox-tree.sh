@@ -87,7 +87,8 @@
 #   none (400 INVALID_PROJECT) or naming somebody who never signed in (400 ASSIGNEE_NOT_ALLOWED),
 #   for a project that already exists too. The repository carries no person's email, and every
 #   refusal names the variable, never its value: the check before the call, and Dispatch's own
-#   answer, whose email ensure_project replaces with the variable's name (lib/workflow.sh).
+#   answer, which names the email as the operator spelled it and which scrub (below) prints with
+#   the variable's name in its place.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
 # - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
@@ -1399,11 +1400,22 @@ read_bearers() {
   [ -s "$work/dispatch-token" ] || fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
   [ -s "$work/envoy-token" ] || fail "Secrets Manager returned an empty bearer for LEGION_E2E_ENVOY_TOKEN_SECRET_ID"
 }
-# scrub replaces each production service's host with the variable that names it: the run prints
-# none of them, and a tool's error (a refused connection, an unresolved name) may carry one. A host
-# is matched in any case, since address-moved-env-same-pod hands the Envoy host upper-cased.
+# scrub replaces each production service's host with the variable that names it, and the run's
+# default assignee with LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE: the run prints none of them, and a
+# tool's error (a refused connection, an unresolved name) may carry a host, and Dispatch's refusal
+# of the project create (ensure_project, lib/workflow.sh) the email. Each is matched in any case,
+# since address-moved-env-same-pod hands the Envoy host upper-cased. The email is replaced first,
+# so a host inside it cannot split it, with each character sed's regular expression or the `#`
+# delimiter reads as special escaped, since an email may hold `.`, `#` and others; prerequisites
+# refuses one holding whitespace, so it is one line.
 scrub() {
   local args=() i names=(LEGION_E2E_DISPATCH_URL LEGION_E2E_ENVOY_URL LEGION_E2E_NATS_URL LEGION_E2E_MODEL_GATEWAY_URL) h
+  local person=${dispatch_default_assignee:-} c
+  if [ -n "$person" ]; then
+    person=${person//'\'/'\\'}
+    for c in '[' '.' '*' '^' '$' '#'; do person=${person//"$c"/"\\$c"}; done
+    args+=(-e "s#$person#<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>#gI")
+  fi
   for i in "${!service_hosts[@]}"; do
     h=${service_hosts[$i]%%:*}
     [ -n "$h" ] && args+=(-e "s#${h//./\\.}#<${names[$i]}>#gI")

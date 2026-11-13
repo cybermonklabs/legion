@@ -33,8 +33,9 @@ printf '%s' "$FAKE_CURL_STATUS"
 
 // The stage scripts' shell options, ERR trap, and check helpers, then the lib. note, fail and
 // scrub live in stage4b-sandbox-tree.sh, not workflow.sh, so the prelude stands in for them: note
-// and scrub are stage4b's own (scrub here is the identity, since no service host is under test),
-// fail matches stage4b's exact wording.
+// is stage4b's own, fail matches stage4b's exact wording, and scrub is the identity, which the
+// redaction rows below replace with a stand-in that marks what passes through it, or with
+// stage4b's own definition.
 const prelude = `set -Eeuo pipefail
 check=prerequisites
 note() { printf '   %s\\n' "$*"; }
@@ -202,37 +203,80 @@ describe("ensure_project", () => {
     expect(r.calls[0]).toContain(`"default_assignee":"${proofAssignee}"`);
   });
 
-  // A person nobody signed in as is refused before the key is read, so even an existing project
-  // answers it rather than 409; ensure_project reads it as the failure it is. Dispatch's body
-  // names the email it refused, which the line replaces with the variable's name, so a run's log
-  // carries no person's email.
-  test("400 ASSIGNEE_NOT_ALLOWED fails loudly, naming the status and the body with the variable, not the email", () => {
-    const r = run("write_dispatch_header\nensure_project", {
-      status: "400",
-      body: `{"error":"\\"${proofAssignee}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
+  // A refused create's body reaches the FAIL line through the caller's scrub, the one filter that
+  // keeps the run's private hosts and its default assignee out of what it prints, on both lines
+  // that print a body: here a stand-in that brackets whatever passes through it.
+  for (const [status, body, line] of [
+    [
+      "400",
+      `{"error":"\\"${proofAssignee}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
+      "Dispatch answered 400 creating project LPROOF2: ",
+    ],
+    [
+      "409",
+      '{"error":"something else entirely","code":"SOMETHING_ELSE"}',
+      "Dispatch answered 409 creating LPROOF2, not PROJECT_EXISTS: ",
+    ],
+  ] as const) {
+    test(`${status}: the refusal's body is printed through scrub`, () => {
+      const r = run(
+        `scrub() { printf 'scrubbed['; cat; printf ']'; }\nwrite_dispatch_header\nensure_project`,
+        { status, body }
+      );
+      expect(r.status).toBe(1);
+      expect(r.stderr.trimEnd().split("\n")).toEqual([
+        `CHECK prerequisites: FAIL: ${line}scrubbed[${body}]`,
+      ]);
     });
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("answered 400");
-    expect(r.stderr).toContain('"code":"ASSIGNEE_NOT_ALLOWED"');
-    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
-    expect(r.stderr).not.toContain(proofAssignee);
-  });
+  }
 
-  // Dispatch canonicalises the login to lowercase before it names it, so an operator's mixed-case
-  // spelling is replaced in the form Dispatch answers with too.
-  test("a refusal naming the lowercased person still names the variable, not the email", () => {
+  // A person nobody signed in as is refused before the key is read, so even an existing project
+  // answers it rather than 409. Dispatch's body names the email it refused as the operator spelled
+  // it (allowedLogin, packages/envoy/internal/dispatch/api/issue_assignee.go), and stage4b's own
+  // scrub, taken from its text, prints that spelling as the variable's name and the rest of the
+  // line as it was, so a run's log carries no person's email.
+  const stage4bScrub = readFileSync(
+    join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"),
+    "utf8"
+  ).match(/^scrub\(\) \{\n[\s\S]*?\n\}$/m)?.[0];
+  const operatorSpelling = "Smoke.Owner+e2e@Example.com";
+
+  test("400 ASSIGNEE_NOT_ALLOWED through stage 4b's scrub names the variable, never the email", () => {
+    expect(stage4bScrub).toBeDefined();
     const r = run(
-      "write_dispatch_header\nensure_project",
+      `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
       {
         status: "400",
-        body: `{"error":"\\"${proofAssignee}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
+        body: `{"error":"\\"${operatorSpelling}\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}`,
       },
       proofActor,
-      "Smoke-Owner@Example.com"
+      operatorSpelling
     );
     expect(r.status).toBe(1);
-    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
-    expect(r.stderr).not.toContain(proofAssignee);
+    expect(r.stderr.trimEnd().split("\n")).toEqual([
+      'CHECK prerequisites: FAIL: Dispatch answered 400 creating project LPROOF2: {"error":"\\"<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>\\" has not signed in to Dispatch","code":"ASSIGNEE_NOT_ALLOWED"}',
+    ]);
+  });
+
+  // The email is matched in any case, as the hosts are, and literally: each character sed's regular
+  // expression or its `#` delimiter reads as special stands for itself, so a line that differs only
+  // where the email holds `.` keeps it, and a host still names its own variable.
+  test("stage 4b's scrub matches the default assignee in any case and literally, beside the hosts", () => {
+    expect(stage4bScrub).toBeDefined();
+    const person = "a.b*c[d]^e$f#g\\h+i@Example.com";
+    const line = `${person.toUpperCase()} aXb*c[d]^e$f#g\\h+i@Example.com DISPATCH.example:443 ${person}`;
+    const result = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\ndispatch_default_assignee=$PERSON\nprintf '%s\\n' "$LINE" | scrub`,
+      ],
+      { env: { PATH: "/usr/bin:/bin", PERSON: person, LINE: line } }
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.toString()).toBe(
+      "<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE> aXb*c[d]^e$f#g\\h+i@Example.com <LEGION_E2E_DISPATCH_URL>:443 <LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>\n"
+    );
   });
 
   // A 409 could in principle mean something other than this key's own conflict; ensure_project

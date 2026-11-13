@@ -1,4 +1,4 @@
-import { rowProject } from "../features/inbox/list-row";
+import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
 import {
   agentMessagesQuery,
@@ -139,7 +139,7 @@ function inboxRowsDecidedByDefault(project: string): RefreshTarget {
       rowsOf<InboxRow>(data).some(
         (row) =>
           row.asked_of === null &&
-          rowProject({ ask: row, kind: "ask" }) === project &&
+          askProject(row) === project &&
           (row.issue_key === null || (row.issue?.assignee ?? null) === null)
       ),
   };
