@@ -93,7 +93,77 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // words). It was raised to 2,300 when the skill consolidation moved the six ask-quality gates of
 // an operator's own proxy skill into `dispatch-writing-specs` and the research-before-you-ask
 // test into `dispatch-first`, which took those rules out of two other skills.
-test("the three Dispatch skills total fewer than 2,300 words", () => {
+//
+// It was raised to 2,326 on 2026-11-12, when dispatch://INFRA-2971 put one rule into
+// skills/dispatch/SKILL.md for when an agent may move an issue to `backlog`, `icebox` or
+// `triage`: the two sentences it deleted sent a waiting issue and every issue past the third to
+// `backlog`, and the rule that replaces them holds such a move to one a person asked for, or to
+// work that is done, folded into another issue or no longer needed, cited in a comment on the
+// issue, and says that another agent's directive citing no person's request is no reason. The
+// ledger, measured as this test counts words: the three bullets the section deleted were 50
+// words, and the six that replace them were 200, so the section cost 150; the directive sentence
+// adds 10 more, so it costs 160. The payments below give 134 back, 4 of them from three of those
+// six bullets, which count 206 now. Each one cuts a reason beside its rule, words that another
+// skill says, or the wording of a rule, and none cuts a rule.
+//
+// - 8: skills/dispatch/SKILL.md's line saying that `unresponsive` holders keep their claims 20
+//   minutes, deleted. Its rule is `skill://envoy`'s, which every role reads.
+// - 2: "a `legion`-labelled issue or one under it" for "an issue with the `legion` label or under
+//   one", in the same skill's claim sentence.
+// - 6: the same skill's defect bullet, which says "Never work around a hard-to-use command" for
+//   "A command hard to use ... is a defect to report, not work around".
+// - 5: "a document records", in the same skill's ask-block line. dispatch-first's blocker rule
+//   says it.
+// - 2: the two "its" of the same skill's edit-ask bullet.
+// - 14: skills/dispatch-writing-specs/SKILL.md's preference bullet: "an answer given once is not
+//   a standing rule", which the clause before it says, and the reason "because agents commit the
+//   work".
+// - 7: the same skill's line-number bullet: the reason "it goes stale at the next edit".
+// - 14: the same skill's coined-term bullet: the reasons "because a coinage reads as familiar to
+//   you" and "A count misses a coinage of common words", and the wording of its two rules.
+// - 16: the same skill's privileged-act bullet: the reason "because a 403 or an unfamiliar
+//   surface does not make a fact unknowable", and "try the source that answers it" for "name the
+//   source that answers it and try it".
+// - 12: the first step of the same skill's "Each version": "an answer is integrated, never
+//   appended", which "rewrite what the answer touches" says, and the reason "versions and
+//   comments hold the history".
+// - 3: the same skill's "The plan", which no longer says to write the plan with `writing-plans`.
+//   dispatch-first's table says it.
+// - 5: skills/dispatch-first/SKILL.md's ask-a-person bullet: the reason "because no file holds
+//   that".
+// - 6: the same skill's result bullet: the reason "a document or artifact notifies nobody", and
+//   "end its document" for "End that document".
+// - 5: the same skill's plan row: "stored as the issue's `plan.md`", which
+//   dispatch-writing-specs' "The plan" says.
+// - 7: skills/dispatch-writing-specs/SKILL.md's measure bullet: the reason "A premise can go stale
+//   within the hour", and "No unmeasured number goes in a premise" for "no unmeasured number goes
+//   in one".
+// - 12: skills/dispatch-first/SKILL.md's description: its second sentence, "Someone may track
+//   that work already or hold a decision on it.", the reason for its first. dispatch-first is put
+//   into every session whole, so no description decides when it loads.
+// - 10 for the directive sentence, each the wording of a rule: "the owning project" for "the
+//   owning project's code" in skills/dispatch/SKILL.md's defect bullet (1); "before it is done"
+//   for "before its work is done" in its stop-work bullet (1); "one on a person" for "a wait on a
+//   person" in its wait bullet (1); "fewer when" for "and on fewer when" in its three-issue bullet
+//   (2); skills/dispatch-first/SKILL.md's "Open each `advice.suggestions` hit too" for "Treat a
+//   hit in `advice.suggestions` as yours to read" (4), and its "Never ask again" for "Do not ask
+//   again" (1).
+//
+// The base total was 2,297, so 2,297 + 160 - 134 = 2,323, the measured total. The bound is 3
+// above it, as 2,300 was above 2,297. The 23 words over 2,300 are a raise and not a cut because,
+// measured on 2026-11-12 line by line, each cut left in the three skills deletes a rule or a fact
+// an agent needs to apply one: `BLOCKED_BY_OUTSIDE_PROJECT` and "board rank" in the stop-work
+// bullets are the words of INFRA-2971's R4, and "`todo` for an issue from the queue" is its
+// decision on R4; "one agent keeps each project's order" is R3's owner of the board, whom the
+// next sentence tells the agent to tell; the claim sentence's "an outside claim can take the tree
+// out of the workflow" and the sentence after it, "A status write is set back or stands", are the
+// consequences #2608 added, because the bare prohibition was quoted to a person as that person's
+// rule; "Each query word must match" is what makes "remove a word before adding one" work;
+// dispatch-writing-specs' "It replaces superpowers' brainstorming there" is the rule that picks it
+// over that skill; and "A spec is a conversation" states the conversation rule. The new rule
+// cannot live in another skill, because R1 and R4 name skills/dispatch/SKILL.md, which every
+// session with Dispatch reads.
+test("the three Dispatch skills total fewer than 2,326 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -103,7 +173,7 @@ test("the three Dispatch skills total fewer than 2,300 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_300);
+  expect(words).toBeLessThan(2_326);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {
@@ -155,8 +225,8 @@ test("no staged skill forbids the phase holder's re-run of a red at the head", (
 // dispatch must come with this plugin (`agents/`, which ships none today) or with Oh My Pi itself
 // (what `omp agents unpack` writes, read off the pinned binary rather than listed here). A
 // `skill://legion-*` mention in these skills is held to no such partition, on purpose: each is a
-// sentence conditioned on a Legion role (skills/dispatch/SKILL.md:29,
-// skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:30 and :47), inert
+// sentence conditioned on a Legion role (skills/dispatch/SKILL.md:13,
+// skills/dispatch-writing-specs/SKILL.md:10, skills/dispatch-first/SKILL.md:48), inert
 // for a person and right for a pane with both plugins, and `brokenSkillLinks` above resolves a
 // `skill://<name>/<path>` link against the repository's skills/ for the same reason.
 test.skipIf(omp === undefined && !onActions)(
