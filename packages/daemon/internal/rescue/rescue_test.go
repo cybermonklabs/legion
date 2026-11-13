@@ -567,13 +567,16 @@ func TestRescueNamesTheIssuesBookmarkOnAnEmptyWorkingCopyAtTheCommitUnderIt(t *t
 	}
 }
 
-// A rescue commit names a bookmark other than the issue's own only when it is ahead of the remote's
-// branch of its name or the remote has no branch of its name: a put-back that set one at or behind
-// that branch would move the new pod's copy back. Local `main` behind the remote's, which moved
-// after the pod last fetched it so that the clone lacks its tip, is not named. `main` moved ahead
-// onto an own commit is, and stays named where only the issue's own branch on the remote holds
-// that commit, since a bookmark is compared with its own branch alone; and so is a bookmark the
-// remote has no branch of, on an own commit or on a commit the remote holds.
+// A rescue commit names a bookmark other than the issue's own only when it is ahead of what the
+// clone holds of the remote's branch of its name or the remote has no branch of its name: a
+// put-back that set one at or behind that branch would move the new pod's copy back. Local `main`
+// behind the remote's, which moved after the pod last fetched it so that the clone lacks its tip,
+// is not named: the remote-tracking ref holds it. A bookmark at the remote's tip of its branch,
+// which the clone holds while its remote-tracking ref of that branch is absent or older, is not
+// named either: the advertised tip holds it. `main` moved ahead onto an own commit is named, and
+// stays named where only the issue's own branch on the remote holds that commit, since a bookmark
+// is compared with its own branch alone; and so is a bookmark the remote has no branch of, on an
+// own commit or on a commit the remote holds.
 func TestRescueNamesNoBookmarkTheRemoteHasThatCarriesNoWorkOfItsOwn(t *testing.T) {
 	// ownWork commits work the remote lacks on the workspace's own line, over main, and is it.
 	ownWork := func(d *rescuetest.Disk) string {
@@ -630,6 +633,37 @@ func TestRescueNamesNoBookmarkTheRemoteHasThatCarriesNoWorkOfItsOwn(t *testing.T
 		d.JJ("commit", "-m", "more of the issue's own work")
 		if got, want := named(t, d), []string{d.Branch + " " + work, "main " + work}; !slices.Equal(got, want) {
 			t.Errorf("the rescue commit names the bookmarks %q, want %q: main carries work the remote's main lacks, whatever another branch holds", got, want)
+		}
+	})
+
+	t.Run("a bookmark at the remote's tip, which the clone holds and its remote-tracking ref does not reach", func(t *testing.T) {
+		for name, fetched := range map[string]bool{"no remote-tracking ref": false, "a remote-tracking ref at the base": true} {
+			t.Run(name, func(t *testing.T) {
+				d := rescuetest.New(t, issue)
+				remoteOnFailure(t, d)
+				work := ownWork(d)
+				tracking := "" // the clone's refs/remotes/origin/feature
+				if fetched {
+					// A push to origin by its name sets the clone's remote-tracking ref.
+					d.Run(d.Clone, "git", "push", "--quiet", "origin", d.Base+":refs/heads/feature")
+					tracking = d.Base
+				}
+				// A push to the remote's path sets no remote-tracking ref of the clone.
+				d.Run(d.Clone, "git", "push", "--quiet", d.Remote, work+":refs/heads/feature")
+				d.JJ("bookmark", "set", "feature", "-r", work)
+				// More work, so that the check has something to push.
+				d.Write(d.Workspace, "more.txt", "more of the issue's own work\n")
+				d.JJ("commit", "-m", "more of the issue's own work")
+				if held := d.Run(d.Clone, "git", "for-each-ref", "--format=%(objectname)", "refs/remotes/origin/feature"); held != tracking {
+					t.Fatalf("the clone's refs/remotes/origin/feature is %q, want %q: the case does not stand", held, tracking)
+				}
+				if remote, local := d.RemoteBranch("feature"), d.JJ("log", "--no-graph", "-r", `bookmarks(exact:"feature")`, "-T", "commit_id"); remote != work || local != work {
+					t.Fatalf("the remote holds feature at %q and the workspace at %q, want both at %s: the case does not stand", remote, local, work)
+				}
+				if got, want := named(t, d), []string{d.Branch + " " + d.Base}; !slices.Equal(got, want) {
+					t.Errorf("the rescue commit names the bookmarks %q, want %q alone: feature is at the remote's feature, %s, which the clone holds", got, want, work)
+				}
+			})
 		}
 	})
 

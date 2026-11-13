@@ -293,11 +293,11 @@ func check(ctx context.Context, req Request, dir string) shimwire.RescueWorkspac
 	}
 	previous := remoteBranches[branch]
 
-	candidates, ownBranch, head, edits, jj, err := run.candidates(clone, dir, own)
+	work, err := run.candidates(clone, dir, own)
 	if err != nil {
 		return fail(err)
 	}
-	candidates, err = run.objects(clone, candidates, "commit")
+	candidates, err := run.objects(clone, work.commits, "commit")
 	if err != nil {
 		return fail(err)
 	}
@@ -309,7 +309,7 @@ func check(ctx context.Context, req Request, dir string) shimwire.RescueWorkspac
 	if err != nil {
 		return fail(err)
 	}
-	tips, edits, err = run.independentTips(clone, tips, edits)
+	tips, err = run.independentTips(clone, tips, &work)
 	if err != nil {
 		return fail(err)
 	}
@@ -325,15 +325,15 @@ func check(ctx context.Context, req Request, dir string) shimwire.RescueWorkspac
 		return result
 	}
 
-	workingCopy, err := run.workingCopy(clone, dir, jj, edits, head)
+	workingCopy, err := run.workingCopy(clone, dir, &work)
 	if err != nil {
 		return fail(err)
 	}
-	local, err := run.localBookmarks(dir, own, ownBranch, jj)
+	local, err := run.localBookmarks(dir, own, &work)
 	if err != nil {
 		return fail(err)
 	}
-	bookmarks, err := run.bookmarks(clone, own, local, remoteBranches, held)
+	bookmarks, err := run.bookmarks(clone, own, local, remoteBranches)
 	if err != nil {
 		return fail(err)
 	}
@@ -394,54 +394,68 @@ func (r runner) remote(clone string) (branches map[string]string, advertised, he
 	return branches, advertised, held, nil
 }
 
-// candidates is the workspace's own work (check), in this order: the heads of its own line in jj
-// (ownHeads), where it has jj; the issue's git branch own, at ownBranch, where the clone has it;
-// the workspace's git HEAD, head, unless it is unborn; and edits, the workspace's files that no
-// commit holds as one commit on head (edits), where they differ from head's tree. Each of
-// ownBranch, head and edits is "" where there is none, and jj is whether the workspace has jj, a
-// .jj directory of its own.
-func (r runner) candidates(clone, dir, own string) (candidates []string, ownBranch, head, edits string, jj bool, err error) {
-	info, err := os.Lstat(filepath.Join(dir, ".jj"))
-	jj = err == nil && info.IsDir()
-	if jj {
-		heads, err := r.jj(dir, "log", "--no-graph", "-r", ownHeads(own), "-T", `commit_id ++ "\n"`)
-		if err != nil {
-			return nil, "", "", "", false, err
-		}
-		candidates = append(candidates, fields(heads)...)
-	}
-	if ownBranch, err = r.git(clone, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+own+"^{commit}"); err != nil {
-		ownBranch = ""
-	} else {
-		candidates = append(candidates, ownBranch)
-	}
-	if head, err = r.git(dir, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
-		head = "" // an unborn HEAD: a worktree with no git-visible commit yet
-	} else {
-		candidates = append(candidates, head)
-	}
-	if edits, err = r.edits(dir, head); err != nil {
-		return nil, "", "", "", false, err
-	}
-	if edits != "" {
-		candidates = append(candidates, edits)
-	}
-	return candidates, ownBranch, head, edits, jj, nil
+// ownWork is the workspace's own work (check), as candidates reads it: the commits a rescue may
+// push, and those of them that workingCopy and localBookmarks read by what they are.
+type ownWork struct {
+	// commits is the candidates, in this order: the heads of the workspace's own line in jj
+	// (ownHeads), where it has jj; then ownBranch, head and edits, each where it is not "".
+	commits []string
+	// ownBranch is the issue's git branch, `legion/<KEY>`, where the clone has it; else "".
+	ownBranch string
+	// head is the workspace's git HEAD; "" where it is unborn.
+	head string
+	// edits is the workspace's files that no commit holds, as one commit on head (edits), where
+	// they differ from head's tree; else "". independentTips sets it to "" when it drops that
+	// commit.
+	edits string
+	// jj is whether the workspace has jj: a .jj directory of its own.
+	jj bool
 }
 
-// unpushedWithTip is the candidates no held commit contains (unpushed), and held. When that
-// leaves work to push and the clone lacks previous, the rescue branch's tip on the remote, the tip
-// is fetched first (fetchTip) and both are read again with it held, so work the branch holds
-// already is not pushed again.
-func (r runner) unpushedWithTip(clone, branch, previous string, candidates, advertised, held []string) ([]string, []string, error) {
-	tips, err := r.unpushed(clone, candidates, held)
-	if err != nil {
+// candidates is the workspace's own work (ownWork), as the clone and dir hold it now.
+func (r runner) candidates(clone, dir, own string) (ownWork, error) {
+	var work ownWork
+	info, err := os.Lstat(filepath.Join(dir, ".jj"))
+	work.jj = err == nil && info.IsDir()
+	if work.jj {
+		heads, err := r.jj(dir, "log", "--no-graph", "-r", ownHeads(own), "-T", `commit_id ++ "\n"`)
+		if err != nil {
+			return ownWork{}, err
+		}
+		work.commits = append(work.commits, fields(heads)...)
+	}
+	if work.ownBranch, err = r.git(clone, nil, "rev-parse", "--verify", "--quiet", "refs/heads/"+own+"^{commit}"); err != nil {
+		work.ownBranch = ""
+	} else {
+		work.commits = append(work.commits, work.ownBranch)
+	}
+	if work.head, err = r.git(dir, nil, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"); err != nil {
+		work.head = "" // an unborn HEAD: a worktree with no git-visible commit yet
+	} else {
+		work.commits = append(work.commits, work.head)
+	}
+	if work.edits, err = r.edits(dir, work.head); err != nil {
+		return ownWork{}, err
+	}
+	if work.edits != "" {
+		work.commits = append(work.commits, work.edits)
+	}
+	return work, nil
+}
+
+// unpushedWithTip is tips, the candidates no held commit contains (unpushed), and held, the
+// advertised commits the clone holds, which is heldBefore unless the tip is fetched. When
+// heldBefore leaves work to push and the clone lacks previous, the rescue branch's tip on the
+// remote, the tip is fetched first (fetchTip) and both are read again with it held, so work the
+// branch holds already is not pushed again.
+func (r runner) unpushedWithTip(clone, branch, previous string, candidates, advertised, heldBefore []string) (tips, held []string, err error) {
+	if tips, err = r.unpushed(clone, candidates, heldBefore); err != nil {
 		return nil, nil, err
 	}
-	if len(tips) == 0 || previous == "" || slices.Contains(held, previous) {
-		return tips, held, nil
+	if len(tips) == 0 || previous == "" || slices.Contains(heldBefore, previous) {
+		return tips, heldBefore, nil
 	}
-	if err := r.fetchTip(clone, branch, previous); err != nil {
+	if err = r.fetchTip(clone, branch, previous); err != nil {
 		return nil, nil, err
 	}
 	if held, err = r.objects(clone, advertised, "commit", "tag"); err != nil {
@@ -454,28 +468,28 @@ func (r runner) unpushedWithTip(clone, branch, previous string, candidates, adve
 }
 
 // independentTips is tips, the candidates the remote lacks, reduced to the heads a rescue commit
-// takes as its parents, and edits, the edits commit, or "" once it is dropped. An edits commit
-// whose tree is another tip's holds nothing that tip does not: the working copy's files are that
-// commit's, as jj last snapshotted them. It is dropped, as a tip and as the working-copy commit.
-// Of more than one tip left, `merge-base --independent` keeps those no other contains, sorted.
-func (r runner) independentTips(clone string, tips []string, edits string) ([]string, string, error) {
-	if at := slices.Index(tips, edits); at >= 0 && len(tips) > 1 {
+// takes as its parents. An edits commit (work.edits) whose tree is another tip's holds nothing
+// that tip does not: the working copy's files are that commit's, as jj last snapshotted them. It
+// is dropped, as a tip and as the working-copy commit, so work.edits becomes "". Of more than one
+// tip left, `merge-base --independent` keeps those no other contains, sorted.
+func (r runner) independentTips(clone string, tips []string, work *ownWork) ([]string, error) {
+	if at := slices.Index(tips, work.edits); at >= 0 && len(tips) > 1 {
 		args := []string{"rev-parse"}
 		for _, tip := range tips {
 			args = append(args, tip+"^{tree}")
 		}
 		out, err := r.git(clone, nil, args...)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		trees := fields(out)
 		if len(trees) != len(tips) {
-			return nil, "", fmt.Errorf("git named %d trees for the %d tips %v", len(trees), len(tips), tips)
+			return nil, fmt.Errorf("git named %d trees for the %d tips %v", len(trees), len(tips), tips)
 		}
 		for i := range tips {
 			if i != at && trees[i] == trees[at] {
 				tips = slices.Delete(tips, at, at+1)
-				edits = ""
+				work.edits = ""
 				break
 			}
 		}
@@ -483,12 +497,12 @@ func (r runner) independentTips(clone string, tips []string, edits string) ([]st
 	if len(tips) > 1 {
 		independent, err := r.git(clone, nil, append([]string{"merge-base", "--independent"}, tips...)...)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		tips = fields(independent)
 		slices.Sort(tips)
 	}
-	return tips, edits, nil
+	return tips, nil
 }
 
 // heldOnBranch is the report of a workspace with nothing left to push whose own work, candidates,
@@ -522,15 +536,15 @@ func (r runner) heldOnBranch(clone, branch, previous string, candidates, held []
 	return []shimwire.RescueBranch{{Name: branch, Commit: previous, Commits: commits}}, nil
 }
 
-// workingCopy is the commit that holds the working copy's content: edits, the edits commit, when
-// the check keeps one; else, in a workspace with jj, jj's @ as standsFor maps it; else head, the
-// workspace's git HEAD. Like every commit a trailer names, it must be one the push carries or the
-// remote holds (findable).
-func (r runner) workingCopy(clone, dir string, jj bool, edits, head string) (string, error) {
+// workingCopy is the commit that holds the working copy's content: work.edits, the edits commit,
+// when the check keeps one; else, in a workspace with jj, jj's @ as standsFor maps it; else
+// work.head, the workspace's git HEAD. Like every commit a trailer names, it must be one the push
+// carries or the remote holds (findable).
+func (r runner) workingCopy(clone, dir string, work *ownWork) (string, error) {
 	switch {
-	case edits != "":
-		return edits, nil
-	case jj:
+	case work.edits != "":
+		return work.edits, nil
+	case work.jj:
 		at, err := r.jj(dir, "log", "--no-graph", "-r", "@", "-T", "commit_id")
 		if err != nil {
 			return "", err
@@ -541,15 +555,15 @@ func (r runner) workingCopy(clone, dir string, jj bool, edits, head string) (str
 		}
 		return stand[at], nil
 	}
-	return head, nil
+	return work.head, nil
 }
 
 // localBookmarks is the local bookmarks of the workspace's own line (ownLine), out of which
 // bookmarks picks those the trailers name: jj's listing (bookmarkTemplate), or, in a workspace
-// with no jj, the issue's git branch own alone, at ownBranch, where there is one.
-func (r runner) localBookmarks(dir, own, ownBranch string, jj bool) ([]bookmark, error) {
+// with no jj, the issue's git branch own alone, at work.ownBranch, where there is one.
+func (r runner) localBookmarks(dir, own string, work *ownWork) ([]bookmark, error) {
 	switch {
-	case jj:
+	case work.jj:
 		out, err := r.jj(dir, "bookmark", "list", "-r", ownLine(own), "-T", bookmarkTemplate)
 		if err != nil {
 			return nil, err
@@ -561,8 +575,8 @@ func (r runner) localBookmarks(dir, own, ownBranch string, jj bool) ([]bookmark,
 			}
 		}
 		return local, nil
-	case ownBranch != "":
-		return []bookmark{{name: own, commit: ownBranch}}, nil
+	case work.ownBranch != "":
+		return []bookmark{{name: own, commit: work.ownBranch}}, nil
 	}
 	return nil, nil
 }
