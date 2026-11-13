@@ -149,12 +149,18 @@ const smokeTimeout = 30 * time.Minute
 // row the deployment-wide delivery routes count. It takes the same random draws, so the history
 // is the default one with those issues moved to the project (and the project's issues numbered
 // to match).
+//
+// IssueOffset, zero by default, is how many of the project's issue numbers another history took
+// already: the project's issues are numbered from IssueOffset+1, so this history can be written
+// beside that one (a legiontest history of the same project, say). It takes the same random
+// draws, so only the project's issue keys move.
 type Spec struct {
-	Project    string    `json:"project"`
-	Now        time.Time `json:"now"`
-	Days       int       `json:"days"`
-	Seed       uint64    `json:"seed"`
-	OneProject bool      `json:"one_project,omitempty"`
+	Project     string    `json:"project"`
+	Now         time.Time `json:"now"`
+	Days        int       `json:"days"`
+	Seed        uint64    `json:"seed"`
+	OneProject  bool      `json:"one_project,omitempty"`
+	IssueOffset int       `json:"issue_offset,omitempty"`
 }
 
 // withDefaults is the spec with every zero field given its default.
@@ -456,7 +462,7 @@ func (s *seeding) newIssue(project string, before time.Time) string {
 	if !s.chance(0.25) {
 		priority = new(int16(1 + s.rng.IntN(3)))
 	}
-	number := int32(len(s.fixture.Issues[project]) + 1)
+	number := s.nextNumber(project)
 	key := fmt.Sprintf("%s-%d", project, number)
 	s.issueAt[key] = len(s.issues)
 	s.issues = append(s.issues, issue{
@@ -468,11 +474,21 @@ func (s *seeding) newIssue(project string, before time.Time) string {
 	return key
 }
 
+// nextNumber is the number the next issue of project takes: after the issues the history has
+// written of it, and after Spec.IssueOffset for the history's own project.
+func (s *seeding) nextNumber(project string) int32 {
+	taken := len(s.fixture.Issues[project])
+	if project == s.fixture.Project {
+		taken += s.spec.IssueOffset
+	}
+	return int32(taken + 1)
+}
+
 // unownedP0 writes two open P0 issues of the project with no claim and no route, which the
 // measures list as unowned and judge the P0 target by.
 func (s *seeding) unownedP0() {
 	for _, age := range []time.Duration{72 * time.Hour, 20 * time.Hour} {
-		number := int32(len(s.fixture.Issues[s.fixture.Project]) + 1)
+		number := s.nextNumber(s.fixture.Project)
 		key := fmt.Sprintf("%s-%d", s.fixture.Project, number)
 		s.issueAt[key] = len(s.issues)
 		s.issues = append(s.issues, issue{
@@ -720,7 +736,8 @@ func (s *seeding) judge() {
 // the one write of that row, and every other table as arrays unnested into one insert, so a
 // history of eighty thousand jobs costs a handful of round trips. The tables go in the order
 // their foreign keys need: projects, repositories and issues before the pull requests that name
-// them, and the runs before their jobs.
+// them, and the runs before their jobs. A project that has a row already keeps it, so the history
+// can join a project another history made first.
 func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
 		if _, err := pool.Exec(ctx, statement, args...); err != nil {
@@ -733,10 +750,11 @@ func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 		return fmt.Errorf("write the delivery settings of %s: %w", s.spec.Project, err)
 	}
 	projects := []string{s.fixture.Project, s.fixture.SecondProject}
-	nextNumbers := []int32{int32(len(s.fixture.Issues[s.fixture.Project]) + 1), int32(len(s.fixture.Issues[s.fixture.SecondProject]) + 1)}
+	nextNumbers := []int32{s.nextNumber(s.fixture.Project), s.nextNumber(s.fixture.SecondProject)}
 	if err := exec("projects", `
 		insert into projects (key, name, next_number)
-		select key, key, next from unnest($1::text[], $2::int[]) as seeded(key, next)`,
+		select key, key, next from unnest($1::text[], $2::int[]) as seeded(key, next)
+		on conflict (key) do nothing`,
 		projects, nextNumbers); err != nil {
 		return err
 	}

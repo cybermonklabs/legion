@@ -571,16 +571,32 @@ func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int)
 	windows := readGoldenLegionWindows(t)
 	spec := windows[0].Spec
 	history := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
-	rows, err := legionfacts.ComputeProject(ctx, database.Pool, history.Project, spec.Now)
-	if err != nil {
-		t.Fatalf("compute the facts of %s: %v", history.Project, err)
+	writeLegionEvals(t, database, registry, history.Project, history.From, spec.Now)
+	for _, project := range []string{fixture.Project, fixture.SecondProject, history.Project} {
+		if _, err := registry.Ensure(ctx, project); err != nil {
+			t.Fatalf("seed the evals of %s: %v", project, err)
+		}
 	}
-	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: history.Project, Rows: rows, Whole: true}); err != nil {
-		t.Fatalf("write the facts of %s: %v", history.Project, err)
-	}
-	population, err := metrics.ReadProject(ctx, database.Pool, nil, history.Project, spec.Now)
+	return fixture, windows
+}
+
+// writeLegionEvals stores what the server derives from project's Legion history, as of now: the
+// facts of every issue (legionfacts.ComputeProject, as the facts consumer computes them), the
+// filings metric 4 classes (metrics.ProjectFilings), and the project's Legion day rows of every
+// UTC day from the day of from to now's, written as the refresher writes them.
+func writeLegionEvals(t *testing.T, database *store.Store, registry *evals.Store, project string, from, now time.Time) {
+	t.Helper()
+	ctx := t.Context()
+	rows, err := legionfacts.ComputeProject(ctx, database.Pool, project, now)
 	if err != nil {
-		t.Fatalf("read the population of %s: %v", history.Project, err)
+		t.Fatalf("compute the facts of %s: %v", project, err)
+	}
+	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
+		t.Fatalf("write the facts of %s: %v", project, err)
+	}
+	population, err := metrics.ReadProject(ctx, database.Pool, nil, project, now)
+	if err != nil {
+		t.Fatalf("read the population of %s: %v", project, err)
 	}
 	var filings []legionfacts.Filing
 	seen := map[string]bool{}
@@ -588,29 +604,23 @@ func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int)
 		if !seen[filed.Key] {
 			seen[filed.Key] = true
 			filings = append(filings, legionfacts.Filing{
-				Project: history.Project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer, FilerIssue: filed.FilerIssue,
+				Project: project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer, FilerIssue: filed.FilerIssue,
 				FilerPhase: filed.FilerPhase, Class: filed.Class, RootKey: filed.Root,
 			})
 		}
 	}
-	if err := legionfacts.WriteFilings(ctx, database.Pool, legionfacts.FilingsWrite{Project: history.Project, Filings: filings, Whole: true}); err != nil {
-		t.Fatalf("write the filings of %s: %v", history.Project, err)
+	if err := legionfacts.WriteFilings(ctx, database.Pool, legionfacts.FilingsWrite{Project: project, Filings: filings, Whole: true}); err != nil {
+		t.Fatalf("write the filings of %s: %v", project, err)
 	}
-	since, err := registry.ReadLegionSince(ctx, history.Project)
+	since, err := registry.ReadLegionSince(ctx, project)
 	if err != nil {
-		t.Fatalf("read the first observations of %s: %v", history.Project, err)
+		t.Fatalf("read the first observations of %s: %v", project, err)
 	}
-	for day := utcDayOf(history.From); day.Before(spec.Now); day = day.AddDate(0, 0, 1) {
-		if err := registry.WriteLegionDay(ctx, history.Project, day, since, testServerBuild); err != nil {
+	for day := utcDayOf(from); day.Before(now); day = day.AddDate(0, 0, 1) {
+		if err := registry.WriteLegionDay(ctx, project, day, since, testServerBuild); err != nil {
 			t.Fatalf("write the Legion rows of %s: %v", day.Format(time.DateOnly), err)
 		}
 	}
-	for _, project := range []string{fixture.Project, fixture.SecondProject, history.Project} {
-		if _, err := registry.Ensure(ctx, project); err != nil {
-			t.Fatalf("seed the evals of %s: %v", project, err)
-		}
-	}
-	return fixture, windows
 }
 
 // nearly reports whether got is want within tolerance, a nil got standing for want's absence.

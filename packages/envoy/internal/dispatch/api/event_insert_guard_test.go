@@ -40,9 +40,11 @@ var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 // A test-only helper package is a test source that does not end in _test.go: storetest opens a
 // database for a test, legiontest seeds one test's Legion history. Such a package cannot be
 // written as _test.go files, because another package's test imports it, and its rows exist only
-// in the database one test made and dropped, where no reader of the log by id ever runs. The
-// scan names one by its package name, which ends in `test` in this repository (storetest,
-// pgmigratetest, legiontest), and no package a request reaches is named that way.
+// in the database one test made and dropped, where no reader of the log by id ever runs, or in
+// the scratch database a check loads through evals/evalfixture/cmd, whose open pages see the
+// rows once they reload. The scan names one by its package name, which ends in `test` in this
+// repository (storetest, pgmigratetest, legiontest), and no package a request reaches is named
+// that way.
 func TestOnlyTheBrokerInsertsEvents(t *testing.T) {
 	sources := moduleSources(t, "../../..")
 	constants, err := stringConstants(sources)

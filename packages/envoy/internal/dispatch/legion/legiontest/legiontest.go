@@ -2,18 +2,21 @@
 // what it wrote. The per-issue facts (dispatch://INFRA-2915) are counted over hundreds of issues
 // at once, and a check of them can count nothing until a history that size exists. It is an
 // ordinary package rather than a _test.go file, as store/storetest is, so every package whose
-// tests need such a history can import it: Go cannot share test-only code across packages.
+// tests need such a history can import it (Go cannot share test-only code across packages), and
+// a command can write the same history through Write (evals/evalfixture/cmd).
 //
-// Seed writes the rows a running Legion leaves behind: the project and its issues, an event of
+// Write stores the rows a running Legion leaves behind: the project and its issues, an event of
 // each role's session, the handoffs, and the observations of the phase, the slot, each role's
-// claim and the waits the daemon recorded. It writes them with plain pool.Exec, as every other
-// Legion test seeder does, and it batches each table into one statement. A history of 200 issues
-// is some thousands of rows, and a statement per row takes minutes against a real Postgres.
+// claim and the waits the daemon recorded. It writes them with plain Exec, as every other Legion
+// test seeder does, and it batches each table into one statement. A history of 200 issues is
+// some thousands of rows, and a statement per row takes minutes against a real Postgres. Its
+// events bypass events.Broker.Append, so a page that was open when they were written may not see
+// them until it reloads; a reader of the tables, which every check of them is, sees them all.
 //
 // Fixture answers every key the history holds and which set each key belongs to, so a caller
-// asserts against the names Seed wrote and never reads the database back to learn them. Seed
-// also logs one line naming the project, the counts and the window, so a reader of a check's
-// record can see which history the check ran over.
+// asserts against the names Write wrote and never reads the database back to learn them. Seed
+// also logs one line naming the project, the counts and the window (Fixture.Summary), so a
+// reader of a check's record can see which history the check ran over.
 package legiontest
 
 import (
@@ -23,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -48,9 +52,14 @@ const (
 	// the follow-up a person filed carries Legion phase work.
 	issuesPerTree = 6
 
+	// FinishedPerTree is how many issues of one tree finish with Legion phase work, which are the
+	// issues a Legion measure counts: the root and three of its children, since one child never
+	// closes and the follow-up a person filed carries no phase work.
+	FinishedPerTree = 4
+
 	// treeSpan is how long before the history's end the first tree opens. Each later tree opens
-	// one hour before the tree before it, so the trees overlap as a project's trees do, and the
-	// whole window is treeSpan plus one hour per tree.
+	// one hour (Spec.Spacing) before the tree before it, so the trees overlap as a project's trees
+	// do, and the whole window is treeSpan plus one hour per tree.
 	treeSpan = 60 * time.Hour
 
 	// slotCap is how many slot numbers the roots share out. A root takes index%slotCap and the
@@ -63,21 +72,57 @@ const (
 // person is the actor of every write a person made in the history.
 const person = `{"kind":"user","id":"alice"}`
 
-// Spec is the history Seed writes: the project the issues belong to, how many trees of a root
+// Spec is the history Write writes: the project the issues belong to, how many trees of a root
 // and its children it holds, and the moment the history ends. The caller gives its own Now, so
 // the hours an open issue has run are the hours the caller's own computation measures. A zero
 // field takes its default: the package's own project, DefaultTrees, and this moment.
+//
+// The other four fields are off where zero, and a Spec that sets none of them writes the history
+// every golden file of this change was recorded over, row for row. They shape the history a
+// check of the eval registry's Legion measures reads (dispatch://INFRA-2916, k6), which needs a
+// window before the project's first observation and one after it.
 type Spec struct {
 	Project string
 	Trees   int
 	Now     time.Time
+
+	// Spacing is how long before the tree after it each tree opens: one hour where zero. A wider
+	// spacing spreads the same trees over more days.
+	Spacing time.Duration
+	// Unobserved is how many of the oldest trees the daemon's sampler never saw: their events
+	// and handoffs are written and no observation of them is, so the project's first
+	// observation falls partway through the history and the issues before it carry the event
+	// log alone, as a project's issues did before Dispatch read its daemon.
+	Unobserved int
+	// Queued has each observed root wait for a slot: the sampler records it admitted from its
+	// creation, an hour before it takes its slot, and the root of each odd tree gives its slot
+	// up for the fourth hour of its history and waits again. Without it no issue of the history
+	// ever waits for a slot.
+	Queued bool
+	// IssueOffset is how many of the project's issue numbers another history took already: the
+	// issues are numbered from IssueOffset+1, so this history can be written beside that one.
+	IssueOffset int
 }
 
-// Fixture is what Seed wrote, in the terms a caller asserts against.
+// spacing is how long before the tree after it each tree opens.
+func (s Spec) spacing() time.Duration {
+	if s.Spacing <= 0 {
+		return time.Hour
+	}
+	return s.Spacing
+}
+
+// Execer is the database connection Write needs: one that runs a statement. A pool, a connection
+// or a transaction is one.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// Fixture is what Write wrote, in the terms a caller asserts against.
 type Fixture struct {
 	// Project is the project every issue below belongs to.
 	Project string
-	// Keys is every issue of the history, in the order Seed wrote them: each tree's root, then
+	// Keys is every issue of the history, in the order Write wrote them: each tree's root, then
 	// that tree's children.
 	Keys []string
 	// Roots is each tree's root, in the same order.
@@ -98,15 +143,40 @@ type Fixture struct {
 	// caller reads it to state which of legion.PhaseColumns the history reaches.
 	Phases map[string][]string
 	// SlotHours is how long each issue that held an admission slot of its own held it, from the
-	// slot observations Seed wrote as a history of taking one and giving it up.
+	// slot observations Write wrote as a history of taking one and giving it up.
 	SlotHours map[string]float64
 	// From and To are the two ends of the window the history falls in. To is the Spec's own Now.
 	From, To time.Time
+	// FirstObserved is the moment of the oldest observation the history holds, which is where
+	// the project's observed history begins; zero for a history with none. FirstFinished is the
+	// earliest close of an issue with Legion phase work, the first day a Legion measure has
+	// input.
+	FirstObserved, FirstFinished time.Time
 }
 
-// Seed writes one project's Legion history into the database and answers what it wrote.
+// Summary is one line naming the history and its counts, which Seed logs and a command prints.
+func (f Fixture) Summary() string {
+	return fmt.Sprintf("seeded %s: %d issues, %d with Legion phase work, %d open, %d with no measured work, from %s to %s",
+		f.Project, len(f.Keys), len(f.PhaseWork), len(f.Open), len(f.NoMeasuredWork),
+		f.From.Format(time.RFC3339), f.To.Format(time.RFC3339))
+}
+
+// Seed writes one project's Legion history into the database (Write), fails the test if it
+// cannot, logs one line naming what it wrote, and answers it.
 func Seed(t testing.TB, pool *store.Pool, spec Spec) Fixture {
 	t.Helper()
+	fixture, err := Write(t.Context(), pool, spec)
+	if err != nil {
+		t.Fatalf("seed the Legion history: %v", err)
+	}
+	t.Log(fixture.Summary())
+	return fixture
+}
+
+// Write writes the history spec names into the database q is on and answers what it wrote. The
+// project's row is written where the project has none and kept where it has one, so the history
+// can join a project another history, or a person, made first.
+func Write(ctx context.Context, q Execer, spec Spec) (Fixture, error) {
 	if spec.Project == "" {
 		spec.Project = defaultProject
 	}
@@ -124,30 +194,35 @@ func Seed(t testing.TB, pool *store.Pool, spec Spec) Fixture {
 			Project:   spec.Project,
 			Phases:    map[string][]string{},
 			SlotHours: map[string]float64{},
-			From:      spec.Now.Add(-(treeSpan + time.Duration(spec.Trees)*time.Hour)),
+			From:      spec.Now.Add(-(treeSpan + time.Duration(spec.Trees)*spec.spacing())),
 			To:        spec.Now,
 		},
 	}
 	for index := range spec.Trees {
 		run.tree(index)
 	}
-	run.write(t, pool)
-	fixture := run.fixture
-	t.Logf("seeded %s: %d issues, %d with Legion phase work, %d open, %d with no measured work, from %s to %s",
-		fixture.Project, len(fixture.Keys), len(fixture.PhaseWork), len(fixture.Open),
-		len(fixture.NoMeasuredWork), fixture.From.Format(time.RFC3339), fixture.To.Format(time.RFC3339))
-	return fixture
+	for index, key := range run.rows.issueKeys {
+		closed := run.rows.issueClosed[index]
+		if closed != nil && run.phaseWork[key] && (run.fixture.FirstFinished.IsZero() || closed.Before(run.fixture.FirstFinished)) {
+			run.fixture.FirstFinished = *closed
+		}
+	}
+	if err := run.write(ctx, q); err != nil {
+		return Fixture{}, err
+	}
+	return run.fixture, nil
 }
 
-// seeding is one run of Seed: the spec it was given, what it has written so far, the next event
-// sequence number of each issue, which events.seq is unique on, and the issues it has already
-// recorded Legion phase work for.
+// seeding is one run of Write: the spec it was given, what it has written so far, the next event
+// sequence number of each issue, which events.seq is unique on, the issues it has already
+// recorded Legion phase work for, and whether the sampler saw the tree it is writing.
 type seeding struct {
 	spec      Spec
 	fixture   Fixture
 	rows      rows
 	seq       map[string]int32
 	phaseWork map[string]bool
+	observed  bool
 }
 
 // rows is the four tables one seed writes, each held as the columns of one batched insert.
@@ -209,15 +284,19 @@ type phaseMark struct {
 // hours. The fifth is a follow-up a person filed and no Legion role worked, so it gets no facts
 // entry at all.
 func (s *seeding) tree(index int) {
-	start := s.spec.Now.Add(-(treeSpan + time.Duration(index)*time.Hour))
+	start := s.spec.Now.Add(-(treeSpan + time.Duration(index)*s.spec.spacing()))
 	at := func(hours float64) time.Time {
 		return start.Add(time.Duration(hours * float64(time.Hour)))
 	}
-	number := index*issuesPerTree + 1
+	number := s.spec.IssueOffset + index*issuesPerTree + 1
+	// The oldest Spec.Unobserved trees are the ones the sampler never saw.
+	s.observed = index < s.spec.Trees-s.spec.Unobserved
 
 	// The root. Its architect designs it while it holds a slot, its planner plans it, it waits on
 	// its children through its accepting phase, a person answers its ask, and its merger closes
-	// it once the merge is done.
+	// it once the merge is done. Under Spec.Queued it waits for its slot first, from its creation
+	// to its architect's first hour, and the root of an odd tree waits again for the fourth hour
+	// of its history.
 	root := s.issue(number, "A Legion root", "", 1, at(0), new(at(56)))
 	s.fixture.Roots = append(s.fixture.Roots, root)
 	s.event(root, "issue.created", person, `{"status":"triage"}`, at(0))
@@ -226,11 +305,20 @@ func (s *seeding) tree(index int) {
 	s.handoff(root, "plan", "planner", at(8))
 	s.ask(root, "architect", at(30), at(34))
 	s.roleEvent(root, "merger", "issue.closed", `{"status":"done"}`, at(56))
-	s.slot(root, index%slotCap, at(1), at(50))
+	admitted := 1.0
+	if s.spec.Queued {
+		admitted = 0
+	}
+	if s.spec.Queued && index%2 == 1 {
+		s.slot(root, index%slotCap, at(1), at(3))
+		s.slot(root, index%slotCap, at(4), at(50))
+	} else {
+		s.slot(root, index%slotCap, at(1), at(50))
+	}
 	s.claim(root, "architect", at(1), at(6))
 	s.claim(root, "planner", at(6), at(8))
 	s.phases(root, at, []phaseMark{
-		{1, legion.PhaseAdmitted},
+		{admitted, legion.PhaseAdmitted},
 		{6, legion.PhasePlanning},
 		{20, legion.PhaseAccepting},
 		{30, legion.PhaseAwaitingPerson},
@@ -420,10 +508,17 @@ func (s *seeding) observe(issue, field, value string, at time.Time) {
 	s.rows.observeFields = append(s.rows.observeFields, field)
 	s.rows.observeValues = append(s.rows.observeValues, value)
 	s.rows.observeAt = append(s.rows.observeAt, at)
+	if s.fixture.FirstObserved.IsZero() || at.Before(s.fixture.FirstObserved) {
+		s.fixture.FirstObserved = at
+	}
 }
 
-// phases writes the phases the sampler recorded of one issue, in the order it recorded them.
+// phases writes the phases the sampler recorded of one issue, in the order it recorded them. It,
+// slot, claim and waiting write nothing of a tree the sampler never saw (Spec.Unobserved).
 func (s *seeding) phases(issue string, at func(float64) time.Time, marks []phaseMark) {
+	if !s.observed {
+		return
+	}
 	for _, mark := range marks {
 		s.observe(issue, legion.FieldPhase, fmt.Sprintf("%q", mark.phase), at(mark.hour))
 		s.fixture.Phases[mark.phase] = append(s.fixture.Phases[mark.phase], issue)
@@ -432,16 +527,23 @@ func (s *seeding) phases(issue string, at func(float64) time.Time, marks []phase
 
 // slot writes the history of one admission slot: the moment the issue took it, and the moment it
 // gave it up. Two rows and not one, because a reader that measures how long the issue held a
-// slot needs an end as much as a start.
+// slot needs an end as much as a start. An issue that takes a slot twice holds the two stretches'
+// hours together.
 func (s *seeding) slot(issue string, index int, taken, released time.Time) {
+	if !s.observed {
+		return
+	}
 	s.observe(issue, legion.FieldSlot, fmt.Sprintf("%d", index), taken)
 	s.observe(issue, legion.FieldSlot, "null", released)
-	s.fixture.SlotHours[issue] = released.Sub(taken).Hours()
+	s.fixture.SlotHours[issue] += released.Sub(taken).Hours()
 }
 
 // claim writes one role's turn on the issue: the moment the role started to work and the moment
 // it stopped, which is the stretch the facts count as time in a turn.
 func (s *seeding) claim(issue, role string, started, ended time.Time) {
+	if !s.observed {
+		return
+	}
 	s.observe(issue, legion.ClaimFieldPrefix+role, `"working"`, started)
 	s.observe(issue, legion.ClaimFieldPrefix+role, `"idle"`, ended)
 }
@@ -449,6 +551,9 @@ func (s *seeding) claim(issue, role string, started, ended time.Time) {
 // waiting writes the wait the daemon recorded of the issue: the wait a read found while the
 // person still held it, and the same wait answered.
 func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
+	if !s.observed {
+		return
+	}
 	held := fmt.Sprintf(`{"kind":%q,"since":%q}`, kind, since.Format(time.RFC3339))
 	done := fmt.Sprintf(`{"kind":%q,"since":%q,"answeredAt":%q}`,
 		kind, since.Format(time.RFC3339), answered.Format(time.RFC3339))
@@ -458,19 +563,19 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 
 // write stores everything the trees built, one statement per table. Each statement takes its
 // table's columns as arrays and unnests them, so a history of thousands of rows costs four round
-// trips rather than thousands.
-func (s *seeding) write(t testing.TB, pool *store.Pool) {
-	t.Helper()
-	ctx := context.Background()
-	exec := func(what, statement string, args ...any) {
-		t.Helper()
-		if _, err := pool.Exec(ctx, statement, args...); err != nil {
-			t.Fatalf("seed the %s of %s (%s): %v", what, s.spec.Project, statement, err)
+// trips rather than thousands. The project's row is kept where it exists already.
+func (s *seeding) write(ctx context.Context, q Execer) error {
+	exec := func(what, statement string, args ...any) error {
+		if _, err := q.Exec(ctx, statement, args...); err != nil {
+			return fmt.Errorf("write the %s of %s: %w", what, s.spec.Project, err)
 		}
+		return nil
 	}
-	exec("project", `insert into projects (key, name, next_number) values ($1, $1, $2)`,
-		s.spec.Project, len(s.rows.issueKeys)+1)
-	exec("issues", `
+	if err := exec("project", `insert into projects (key, name, next_number) values ($1, $1, $2) on conflict (key) do nothing`,
+		s.spec.Project, s.spec.IssueOffset+len(s.rows.issueKeys)+1); err != nil {
+		return err
+	}
+	if err := exec("issues", `
 		insert into issues (key, project_key, number, title, status, rank, priority, parent_key,
 			created_by, created_at, closed_at)
 		select key, $1, number, title, status, rank, priority, parent, $2::jsonb, opened, closed
@@ -479,21 +584,27 @@ func (s *seeding) write(t testing.TB, pool *store.Pool) {
 			as seeded(key, number, title, status, rank, priority, parent, opened, closed)`,
 		s.spec.Project, person, s.rows.issueKeys, s.rows.issueNumbers, s.rows.issueTitles,
 		s.rows.issueStatuses, s.rows.issueRanks, s.rows.issuePriorities, s.rows.issueParents,
-		s.rows.issueOpened, s.rows.issueClosed)
-	exec("events", `
+		s.rows.issueOpened, s.rows.issueClosed); err != nil {
+		return err
+	}
+	if err := exec("events", `
 		insert into events (issue_key, seq, type, actor, payload, notify, created_at)
 		select issue, seq, kind, actor::jsonb, payload::jsonb, false, at
 		from unnest($1::text[], $2::int[], $3::text[], $4::text[], $5::text[], $6::timestamptz[])
 			as seeded(issue, seq, kind, actor, payload, at)`,
 		s.rows.eventIssues, s.rows.eventSeqs, s.rows.eventTypes, s.rows.eventActors,
-		s.rows.eventPayloads, s.rows.eventAt)
-	exec("handoffs", `
+		s.rows.eventPayloads, s.rows.eventAt); err != nil {
+		return err
+	}
+	if err := exec("handoffs", `
 		insert into handoffs (issue_key, phase, version, body, author, created_at)
 		select issue, phase, 1, '{}', author::jsonb, at
 		from unnest($1::text[], $2::text[], $3::text[], $4::timestamptz[])
 			as seeded(issue, phase, author, at)`,
-		s.rows.handoffIssues, s.rows.handoffPhases, s.rows.handoffAuthors, s.rows.handoffAt)
-	exec("observations", `
+		s.rows.handoffIssues, s.rows.handoffPhases, s.rows.handoffAuthors, s.rows.handoffAt); err != nil {
+		return err
+	}
+	return exec("observations", `
 		insert into legion_observations (project, issue_key, field, value, observed_at)
 		select $1, issue, field, value::jsonb, at
 		from unnest($2::text[], $3::text[], $4::text[], $5::timestamptz[])
