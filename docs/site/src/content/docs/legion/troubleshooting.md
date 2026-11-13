@@ -953,10 +953,13 @@ The daemon does not send a phase task while another claim of the same issue is i
 It sends the task when that turn ends, and the adoption runs then.
 
 **Three lines in the daemon's log show what each adoption did.**
-Each line carries the `claim` attribute, whose value names the issue key in lower case and then the role, so search for the key without regard to case:
+Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
+So search the daemon's own log for the key and the `-` after it, without regard to case: the `-` keeps out the lines of a longer key, such as `WIDGETS-120` for `WIDGETS-12`.
+Read the log of the daemon's pod under Kubernetes, or the output of `legion start` under tmux:
 
 ```sh
-kubectl -n legion logs <the daemon's pod> -c legion | grep -i '<KEY>' | grep -e 'adopted for the phase task' \
+kubectl -n <namespace> logs <the daemon's pod> > daemon.log
+grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
   -e 'rather than adopt the working copy' -e 'refused to adopt the working copy'
 ```
 
