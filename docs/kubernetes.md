@@ -4502,7 +4502,7 @@ Every claim of the issue that has a session and has not retired is asked, since 
 The daemon publishes one message to each such role's own Envoy topic, the architect's included (`askRound`, `record.UpdateAsk`):
 it names the drift, the round's own id, the moment the round ends and the prefix of the rescue branches the push check pushes to (below), and it asks the role to push its work to the issue branch and answer `ready_for_update` with that id.
 The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
-Each role is asked once per round, which its claim records (the `update_tasked_at` column), and nothing asks it again.
+Each role that has not answered is asked at most once per round, which its claim records (the `update_tasked_at` column), and nothing asks it again.
 The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
 A claim that is queued, launching, registered but not ready, or suspended has no live session on its role's topic, so the sweep asks it nothing and writes no mark on it.
 The first sweep after its agent is ready asks it.
