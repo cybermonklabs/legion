@@ -287,7 +287,7 @@ func linkReason(waitsOn []string) string {
 var heldSentences = map[record.HeldReason]heldSentence{
 	record.HeldTreeClosed: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is closed: " + heldBy + " has finished, or lingers after leaving the workflow, " +
-			"and nothing of that tree runs again until a re-admission opens it."
+			"and nothing of that tree runs."
 	}},
 	record.HeldTreeParked: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "A person parked its tree: " + heldBy + " stands in backlog or icebox, " +
@@ -299,7 +299,7 @@ var heldSentences = map[record.HeldReason]heldSentence{
 	}},
 	record.HeldAncestry: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its Dispatch chain reaches live work above it: " + heldBy + ". " +
-			"It stands as that tree's unreleased work until its architect releases it."
+			"It stands as that tree's unreleased work."
 	}},
 	record.HeldRootAwaitingPerson: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree's root waits on a person: " + heldBy + " waits for an answer or for a review of its spec, " +

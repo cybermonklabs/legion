@@ -19,18 +19,23 @@ type heldEntry struct {
 	state api.WhyState
 }
 
-// heldFixture is the store one entry of heldSentences is walked over, and the held row the
-// projected state must give the issue it names.
+// heldFixture is the store one entry of heldSentences is walked over, the held row the
+// projected state must give the issue it names, and the sentence that issue's `why` must read,
+// written out in full here rather than read from the table, so that a changed row of the table
+// fails its row of the walk.
 type heldFixture struct {
-	store projectionStore
-	row   api.HeldIssue
+	store    projectionStore
+	row      api.HeldIssue
+	sentence string
 }
 
 // The sentence table of `why` (heldSentences) is walked entry by entry through the whole pass:
 // for each word and each state the table serves it under, a fixture whose issue takes that word
 // is projected, and the issue must carry that word in its held row, stand in `admission.blocked`
 // under `blocked` and outside it under `unlisted`, and read that state with the table's sentence
-// for that word and state over its row's heldBy. Each fixture is one this package already proves
+// for that word and state over its row's heldBy, which each fixture writes out in full: the walk
+// compares the served sentence with that literal text, never with heldSentences itself, so a
+// change to a row's text fails that row here. Each fixture is one this package already proves
 // the word of (held_test.go, held_triaged_root_test.go); a blocked one adds a Dispatch link that
 // holds the issue, or, for a root whose label is off, an open Dispatch child under it, which the
 // children-first rule holds it for.
@@ -116,33 +121,47 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 	byRoot := []string{"LEGION-100"}
 	fixtures := map[heldEntry]heldFixture{
 		{record.HeldTreeClosed, api.WhyBlocked}: {linked(closedTree),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
+			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and nothing of that tree runs."},
 		{record.HeldTreeClosed, api.WhyUnlisted}: {closedTree,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
+			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and nothing of that tree runs."},
 		{record.HeldTreeParked, api.WhyBlocked}: {linked(parkedTree),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
+			"A person parked its tree: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until a person puts that root back at todo."},
 		{record.HeldTreeParked, api.WhyUnlisted}: {parkedTree,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
+			"A person parked its tree: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until a person puts that root back at todo."},
 		{record.HeldLabelOff, api.WhyBlocked}: {labelOffWithChild,
-			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff}},
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
+			"It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."},
 		{record.HeldLabelOff, api.WhyUnlisted}: {labelOff,
-			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff}},
+			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
+			"It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."},
 		{record.HeldAncestry, api.WhyBlocked}: {ancestryWithChild,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot},
+			"Its Dispatch chain reaches live work above it: LEGION-100. It stands as that tree's unreleased work."},
 		{record.HeldAncestry, api.WhyUnlisted}: {ancestry,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldAncestry, HeldBy: byRoot},
+			"Its Dispatch chain reaches live work above it: LEGION-100. It stands as that tree's unreleased work."},
 		{record.HeldRootAwaitingPerson, api.WhyBlocked}: {linked(awaitingPerson),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
+			"Its tree's root waits on a person: LEGION-100 waits for an answer or for a review of its spec, and nothing of that tree starts before that root resumes."},
 		{record.HeldRootAwaitingPerson, api.WhyUnlisted}: {awaitingPerson,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
+			"Its tree's root waits on a person: LEGION-100 waits for an answer or for a review of its spec, and nothing of that tree starts before that root resumes."},
 		{record.HeldDesignGate, api.WhyBlocked}: {linked(shutTree),
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot},
+			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and nothing of that tree starts until it opens."},
 		{record.HeldDesignGate, api.WhyUnlisted}: {shutTree,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot},
+			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and nothing of that tree starts until it opens."},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
-			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}}},
+			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
+			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},
 		{record.HeldUnclassified, api.WhyUnlisted}: {unclassified,
-			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified}},
+			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldUnclassified},
+			"The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, so no slot has been offered to it. No rule of the held list says what it waits for."},
 	}
 
 	for word, entry := range heldSentences {
@@ -183,7 +202,7 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 					t.Fatalf("%s carries no why; held = %#v, active = %v, waiting = %v",
 						key, projected.Admission.Held, projected.Admission.Active, projected.Admission.Waiting)
 				}
-				want := api.WhyView{State: state, Reason: entry.sentence(englishIssues(row.HeldBy))}
+				want := api.WhyView{State: state, Reason: fixture.sentence}
 				if *view.Why != want {
 					t.Errorf("%s's why = %+v, want %+v", key, *view.Why, want)
 				}

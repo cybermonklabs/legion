@@ -302,8 +302,8 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 		want  api.HeldIssue
 	}{
 		{
-			// tree_closed before design_gate: nothing of a closed tree runs again until a
-			// re-admission opens it, whatever its gate says.
+			// tree_closed before design_gate: nothing of a closed tree runs, whatever its gate
+			// says.
 			name: "a closed tree under a shut gate",
 			store: projectionStore{
 				issues: []record.Issue{treeRoot("LEGION-1", "done", phase.Done),
