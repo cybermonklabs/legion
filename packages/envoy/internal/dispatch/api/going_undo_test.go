@@ -256,6 +256,69 @@ func TestGoingUndoClosesAnIssueTheTurnCreatedWithTheReason(t *testing.T) {
 	}
 }
 
+// TestGoingUndoOfACreatedIssueResumesAfterTheReasonItPosted (review round 3, finding 1, in the
+// undo): an undo that closes an issue the turn created posts its reason and then closes it. Where
+// the reason landed and the close was refused 503, 408 or 429, the undo is recorded refused, with
+// the reason recorded landed, and stays undoable; the next undo resumes at the close, posting no
+// second reason, and closes the issue.
+func TestGoingUndoOfACreatedIssueResumesAfterTheReasonItPosted(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, tc := range []struct {
+		status int
+		code   string
+	}{
+		{http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE"},
+		{http.StatusRequestTimeout, "REQUEST_TIMEOUT"},
+		{http.StatusTooManyRequests, "RATE_LIMITED"},
+	} {
+		t.Run(tc.code, func(t *testing.T) {
+			run, line := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made by mistake " + tc.code, "force": true}, nil)
+			reason := "Filed by mistake, " + tc.code + "."
+			refused := false
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method == http.MethodPatch && r.URL.Path == "/api/v1/issues/"+line.Item && !refused {
+					refused = true
+					w.Header().Set("Retry-After", "1")
+					writeError(w, tc.code, tc.status, "the close was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			first := oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), false)
+			if first.Outcome.Status != tc.status {
+				t.Fatalf("the undo whose close was refused answered %+v, want the route's %d", first.Outcome, tc.status)
+			}
+			oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), true)
+			rig.served.inProcess = inner
+			if status := rig.issueRead(t, line.Item).Status; status != "done" {
+				t.Fatalf("the created issue is %s after the second undo, want done", status)
+			}
+			var posted int
+			if err := rig.database.Pool.QueryRow(context.Background(),
+				`select count(*) from messages where issue_key = $1 and body = $2`, line.Item, reason).Scan(&posted); err != nil || posted != 1 {
+				t.Fatalf("the created issue holds %d messages saying %q (%v), want the reason posted once", posted, reason, err)
+			}
+			// Read off the stored record itself, how each request of each undo went.
+			var undos []struct {
+				Outcome  goingWriteOutcome `json:"outcome"`
+				Requests []struct {
+					Outcome goingWriteOutcome `json:"outcome"`
+				} `json:"requests"`
+			}
+			if err := rig.database.Pool.QueryRow(context.Background(), `select undos from going_runs where id = $1::uuid`, run).Scan(&undos); err != nil {
+				t.Fatalf("read the run's undos: %v", err)
+			}
+			if len(undos) != 2 || undos[0].Outcome.OK || len(undos[0].Requests) != 2 || !undos[0].Requests[0].Outcome.OK ||
+				!undos[1].Outcome.OK || len(undos[1].Requests) != 2 || !undos[1].Requests[1].Outcome.OK {
+				t.Fatalf("the run keeps the undos %+v, want the refused undo with its reason landed, then the undo that closed it", undos)
+			}
+		})
+	}
+}
+
 // TestGoingUndoOfATraceLeavesTheWriteInPlaceAndMarksItUndone: a comment, a message and an artifact
 // the turn made stay where they are; the undo records the turn undone, so the run is no longer
 // undoable.
@@ -670,7 +733,7 @@ func TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused(t *testing.T) {
 	undoer := goingUndoer{s: &server{going: catalogue}}
 	// A row added later whose undo is stated as a reverse, with no reverse written for it here.
 	line := undoer.undo(context.Background(), goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"},
-		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoReverse})
+		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoReverse}, nil)
 	if line.Outcome.OK || line.Outcome.Status != http.StatusNotImplemented || line.Outcome.Code != codeGoingUndoUnserved || goingUndoSettles(line.Outcome) {
 		t.Fatalf("the undo of a reverse row with no reverse answered %+v, want 501 %s, unsettled", line.Outcome, codeGoingUndoUnserved)
 	}
@@ -692,11 +755,11 @@ func TestGoingUndoRunsTheUndoOfTheRowTheWriteWentThrough(t *testing.T) {
 	undoer := goingUndoer{s: &server{going: catalogue}}
 	write := goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"},
 		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoTrace}
-	if line := undoer.undo(context.Background(), write); !line.Outcome.OK || line.Undo != goingUndoTrace {
+	if line := undoer.undo(context.Background(), write, nil); !line.Outcome.OK || line.Undo != goingUndoTrace {
 		t.Fatalf("the undo of a write through a trace row answered %+v by %s, want it recorded undone by its trace", line.Outcome, line.Undo)
 	}
 	write.Undo = ""
-	if line := undoer.undo(context.Background(), write); line.Outcome.OK || line.Outcome.Code != codeGoingUndoUnknown {
+	if line := undoer.undo(context.Background(), write, nil); line.Outcome.OK || line.Outcome.Code != codeGoingUndoUnknown {
 		t.Fatalf("the undo of a write whose record names no undo answered %+v, want 409 %s", line.Outcome, codeGoingUndoUnknown)
 	}
 }

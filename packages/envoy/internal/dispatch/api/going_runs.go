@@ -151,6 +151,10 @@ type goingRunUndo struct {
 	Pending bool              `json:"pending"`
 	Fields  []goingUndoField  `json:"fields"`
 	At      time.Time         `json:"at"`
+	// Requests is how each request of an undo that sends more than one went, in the order sent:
+	// a created issue's close posts its reason, then closes it. A later undo of the write, under
+	// whatever key, resumes after those that landed (goingUndoLandedBefore).
+	Requests []goingWriteRequest `json:"requests,omitempty"`
 }
 
 // goingUndoField is how the undo of one field of a write went: put back (ok), or left as another
