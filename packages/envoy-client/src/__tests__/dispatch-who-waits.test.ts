@@ -806,3 +806,26 @@ test("no text states the old rule: a question reaches the project's default assi
   // pod, and the check runs this file with a bare `bun test` rather than the package's
   // `--timeout 30000`, so the row carries its own bound.
 }, 120_000);
+
+// An assignee move names, in `thread_logins`, the person the issue's questions reached on each
+// side of the write; a side where the issue holds nobody is the project's default assignee, which
+// `issueWriteThreadLogins` resolves (`api/thread_logins.go`). Each guide that describes that
+// field for an assignee move says so, or it tells a reader that a move off nobody names one
+// person when the server names two.
+test.each([
+  [
+    "packages/envoy/cmd/dispatch/README.md",
+    "for an assignee move the assignee the issue was taken from",
+  ],
+  [
+    "packages/contracts/AGENTS.md",
+    "moved the status or the assignee (`IssueEventChanges.thread_logins`)",
+  ],
+])("states the rule: %s names the project's default on an assignee move's side that holds nobody", (path, opening) => {
+  const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
+  const at = text.indexOf(opening);
+  expect(at).toBeGreaterThanOrEqual(0);
+  const end = text.indexOf(". ", at);
+  const sentence = text.slice(at, end === -1 ? undefined : end + 1);
+  expect(sentence).toMatch(/default assignee/);
+});
