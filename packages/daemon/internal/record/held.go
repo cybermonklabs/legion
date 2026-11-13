@@ -31,8 +31,8 @@ const (
 	// stands as that tree's unreleased work (the ancestry hold of Waiting).
 	HeldAncestry HeldReason = "ancestry"
 	// HeldRootAwaitingPerson is an issue of a tree whose root has handed work to a person
-	// (Issue.AwaitingPerson, answered or not): nothing of that tree starts before that root
-	// resumes.
+	// (Issue.AwaitingPerson, answered or not): the daemon starts no issue of that tree before
+	// that root resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
 	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
 	// deployment gates (TreeGate.Open).

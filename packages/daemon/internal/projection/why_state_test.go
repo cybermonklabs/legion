@@ -183,7 +183,7 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 				"It waits on LEGION-900, which is not done."},
 		"LEGION-401": {State: api.WhyUnlisted,
 			Reason: "The design gate of its tree stands shut: LEGION-401 waits for a person's approval of each gated " +
-				"step's document at its current version, and nothing of that tree starts until it opens."},
+				"step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 	}
 	for key, view := range got.Issues {
 		answer, answered := answers[key]

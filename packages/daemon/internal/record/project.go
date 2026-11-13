@@ -379,7 +379,7 @@ type LineFacts struct {
 	Roots map[string]Issue
 	// Now is the moment the pass reads the record, which classification alone reads: the
 	// tree_closed word asks whether a root's linger is still running at it (Lingering,
-	// HeldReasonOf), so that a root a person parked reads tree_parked once its linger has run
+	// HeldReasonOf), so that a parked root reads tree_parked once its linger has run
 	// out rather than tree_closed for ever. The one caller that fills it is the judgement every
 	// reader of the line comes through (blockers.JudgeLine), which takes the clock of the pass
 	// that called it. The zero moment reads every armed linger as still running, which is what a

@@ -291,7 +291,7 @@ var heldSentences = map[record.HeldReason]heldSentence{
 	}},
 	record.HeldTreeParked: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is parked: " + heldBy + " stands in backlog or icebox, " +
-			"and nothing of that tree runs again until that root is put back at todo."
+			"and the daemon starts no issue of that tree until that root is put back at todo."
 	}},
 	record.HeldLabelOff: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(string) string {
 		return "It is the root of its own tree and its record says the legion label is off, " +
@@ -303,11 +303,11 @@ var heldSentences = map[record.HeldReason]heldSentence{
 	}},
 	record.HeldRootAwaitingPerson: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree's root, " + heldBy + ", has handed work to a person, " +
-			"and nothing of that tree starts before that root resumes."
+			"and the daemon starts no issue of that tree before that root resumes."
 	}},
 	record.HeldDesignGate: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "The design gate of its tree stands shut: " + heldBy + " waits for a person's approval of each gated " +
-			"step's document at its current version, and nothing of that tree starts until it opens."
+			"step's document at its current version, and the daemon starts no issue of that tree until it opens."
 	}},
 	record.HeldAcceptedAncestor: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "The daemon has accepted the reviewed head of " + heldBy + ", which stands above it, " +

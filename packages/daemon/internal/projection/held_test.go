@@ -90,8 +90,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	underQueued := treeRoot("LEGION-140", "todo", phase.Admitted)
 	underQueued.Parent, underQueued.Ancestry = record.ParentOf("LEGION-130"), []string{"LEGION-130"}
 	// A root that handed work to a person, holding the slot its wait keeps, and a member of its
-	// tree: nothing of the tree starts before that root resumes. The root's gate stands open, so
-	// the word its member reads is the wait and nothing else.
+	// tree: the daemon starts no issue of the tree before that root resumes. The root's gate
+	// stands open, so the word its member reads is the wait and nothing else.
 	askingRoot := treeRoot("LEGION-150", "in_progress", phase.AwaitingPerson)
 	askingRoot.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}}
 	askingMember := treeMember("LEGION-151", "LEGION-150", "LEGION-150", "todo", phase.Admitted)
@@ -342,8 +342,9 @@ func TestTheHeldReasonIsTheFirstThatIsTrue(t *testing.T) {
 			want:  api.HeldIssue{Issue: "LEGION-1", Reason: record.HeldLabelOff},
 		},
 		{
-			// root_awaiting_person before design_gate: the members of such a tree start with the
-			// root's resume, which comes before anything its architect does to the design.
+			// root_awaiting_person before design_gate: the daemon starts no issue of such a tree
+			// before the root resumes, which comes before anything its architect does to the
+			// design.
 			name: "a root that waits on a person whose gate is also shut",
 			store: projectionStore{
 				issues: []record.Issue{func() record.Issue {

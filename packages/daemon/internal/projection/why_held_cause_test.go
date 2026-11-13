@@ -129,10 +129,10 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and the daemon starts no issue of that tree."},
 		{record.HeldTreeParked, api.WhyBlocked}: {linked(parkedTree),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"Its tree is parked: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until that root is put back at todo."},
+			"Its tree is parked: LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
 		{record.HeldTreeParked, api.WhyUnlisted}: {parkedTree,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"Its tree is parked: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until that root is put back at todo."},
+			"Its tree is parked: LEGION-100 stands in backlog or icebox, and the daemon starts no issue of that tree until that root is put back at todo."},
 		{record.HeldLabelOff, api.WhyBlocked}: {labelOffWithChild,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
 			"It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."},
@@ -147,16 +147,16 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"Its Dispatch chain reaches live work above it: LEGION-100. It stands as that tree's unreleased work."},
 		{record.HeldRootAwaitingPerson, api.WhyBlocked}: {linked(awaitingPerson),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
-			"Its tree's root, LEGION-100, has handed work to a person, and nothing of that tree starts before that root resumes."},
+			"Its tree's root, LEGION-100, has handed work to a person, and the daemon starts no issue of that tree before that root resumes."},
 		{record.HeldRootAwaitingPerson, api.WhyUnlisted}: {awaitingPerson,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
-			"Its tree's root, LEGION-100, has handed work to a person, and nothing of that tree starts before that root resumes."},
+			"Its tree's root, LEGION-100, has handed work to a person, and the daemon starts no issue of that tree before that root resumes."},
 		{record.HeldDesignGate, api.WhyBlocked}: {linked(shutTree),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot},
-			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and nothing of that tree starts until it opens."},
+			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 		{record.HeldDesignGate, api.WhyUnlisted}: {shutTree,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot},
-			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and nothing of that tree starts until it opens."},
+			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."},
 		{record.HeldAcceptedAncestor, api.WhyUnlisted}: {acceptedAncestor,
 			api.HeldIssue{Issue: "LEGION-102", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-101"}},
 			"The daemon has accepted the reviewed head of LEGION-101, which stands above it, and nothing of its own work starts before that issue closes."},
@@ -241,12 +241,18 @@ func TestTheHeldSentenceTableServesTheWordsTheLadderSendsToEachArm(t *testing.T)
 // the ways such a promise has been written, so a sentence that carries one breaks the rule; the
 // literal-text walk above (TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass) is
 // what holds each sentence to its approved text.
+//
+// The last phrase is a claim the rule forbids for another reason: "nothing of that tree runs" or
+// "starts" is false while a done member's production check is open, since a check look is the
+// one start a tree that holds its other issues still runs. What is true of such a tree is that
+// the daemon starts no issue of it, which is what the sentences say.
 func TestNoHeldSentencePromisesAStart(t *testing.T) {
 	for word, entry := range heldSentences {
 		sentence := entry.sentence("LEGION-1")
-		for _, promise := range []string{"starts when", "start when", "will start", "is started"} {
+		for _, promise := range []string{"starts when", "start when", "will start", "is started",
+			"nothing of that tree", "nothing of the tree", "nothing of this tree"} {
 			if strings.Contains(sentence, promise) {
-				t.Errorf("the sentence of %s promises a start (%q): %s", word, promise, sentence)
+				t.Errorf("the sentence of %s breaks the sentence rule (%q): %s", word, promise, sentence)
 			}
 		}
 	}
