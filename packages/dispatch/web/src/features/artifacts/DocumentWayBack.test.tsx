@@ -217,6 +217,46 @@ test("correcting the title back to one a stopped correction carried goes under i
   }
 });
 
+// A correction the reader stopped may have reached Dispatch, and here it had: the title is the new
+// one. The form is the only place the reader learns what became of it (the write is `inline`), so
+// it must not say the correction failed, which is a claim the page cannot know to be true; it says
+// what the stopped write is, as `CreateDocument` does for a stopped create (`stoppedCreate`).
+test("a stopped correction that reached Dispatch is not reported as a failed one", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  let stored = document();
+  const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
+    Promise.resolve([stored])
+  );
+  const renameArtifact = spyOn(api, "renameArtifact").mockImplementation((_id, input) => {
+    stored = { ...stored, name: input.name };
+    return Promise.reject(
+      new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
+    );
+  });
+  const view = renderPage(documentPath);
+  view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    await screen.findByRole("heading", { name: "Lauch notes" });
+    await user.click(screen.getByRole("button", { name: "Correct title" }));
+    await saveTitle(user, "Launch notes");
+    await stopTheLateWrite(view.queryClient);
+
+    expect(stored.name).toBe("Launch notes");
+    const said = screen
+      .getByRole("form", { name: "Correct title" })
+      .querySelector('[role="alert"]');
+    expect(said?.textContent ?? "").not.toBe("");
+    expect(said?.textContent).not.toBe("Could not correct the title.");
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    renameArtifact.mockRestore();
+    realClock();
+  }
+});
+
 // Every name rule is the server's, so its refusal is shown as the sentence it came as.
 test("a refused correction shows the server's own sentence", async () => {
   const user = userEvent.setup();
