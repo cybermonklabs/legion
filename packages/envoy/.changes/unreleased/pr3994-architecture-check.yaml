@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `architecture-check [--allow-empty] <directory>` judges a directory of Dispatch architecture
+  notes by the rules the Dispatch server's importer applies: which entries are notes, the 1 MiB
+  bound on a note, and every rule of the note set. It exits 0 with a count line for a valid set, 1
+  with one line for each problem for a refused set, and 2 for a directory that does not exist,
+  cannot be read or holds no note. `--allow-empty` reads a missing or empty directory as the empty
+  set. An entry that is not a note gives a warning. The composite action
+  `.github/actions/architecture-check` builds the command with its own Go and runs it over a
+  directory of the calling repository's checkout, and hands the note count to the calling job as
+  its `count` output. The rules now live in one package, `internal/dispatch/architecture/notes`,
+  which the importer and the GitHub App client call. A server's refusal of an unknown front-matter
+  key now names the type `notes.frontMatter` where it named `architecture.frontMatter`.
