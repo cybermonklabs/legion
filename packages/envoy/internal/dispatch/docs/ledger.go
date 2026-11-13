@@ -699,8 +699,11 @@ func pendingArtifact(ctx context.Context, artifactID string) (refs.DocumentAddre
 	return address, pending
 }
 
-// recordPendingApproval records ask as artifactID's open approval request on the ledger ctx
-// queues tx's writes on, when there is one: the caller has queued the write that leaves it so.
+// recordPendingApproval records ask as artifactID's approval request as this transaction's queued
+// writes leave it, on the ledger ctx queues tx's writes on: the open row a version write's move
+// leaves (MoveApprovalAsk), or the answered row the same write's carry leaves
+// (answerApprovalAsk). The caller has queued the write that leaves it so, and a reader before the
+// write phase takes the request from here (PendingApproval, api.movedApprovalRequestAdvice).
 func recordPendingApproval(ctx context.Context, tx pgx.Tx, artifactID string, ask *model.Ask) {
 	ledger := queueFor(ctx, tx)
 	if ledger == nil {

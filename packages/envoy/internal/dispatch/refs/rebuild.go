@@ -414,12 +414,15 @@ func queueSettleOwed(b *store.WriteBatch, source Owed) {
 // committed while it waited is the text it indexes; a direct message, whose conversation is no
 // owner, has no such lock and needs none, since nothing rewrites a message's body. It takes no
 // source row: a row lock would assign the transaction a transaction id to hold through
-// everything it reads and plans, and under the owner lock it excludes nothing the owner lock
-// does not. Everything it writes is read and planned first, under that lock and with no
-// transaction id held - the owed row itself (stillOwed), a comment's or a message's block index
-// (ReadItemIndex, PlanItemIndex), an ask's part index (PlanAskParts) and the references the text
-// cites (PlanReplace) - and its writes then go as one batch, the owed row's delete first
-// (queueSettleOwed, store.RunWrite). It reports whether it re-indexed the source.
+// everything it reads and plans, and what it would exclude beyond the owner lock is a writer of
+// that row that takes no owner lock, which no writer a server runs is: api's lock table queues
+// every serving writer of a comment, a message or an ask behind that item's owner lock
+// (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites,
+// item_row_owner_lock_test.go). Everything it writes is read and planned first, under that lock
+// and with no transaction id held - the owed row itself (stillOwed), a comment's or a message's
+// block index (ReadItemIndex, PlanItemIndex), an ask's part index (PlanAskParts) and the
+// references the text cites (PlanReplace) - and its writes then go as one batch, the owed row's
+// delete first (queueSettleOwed, store.RunWrite). It reports whether it re-indexed the source.
 //
 // The owed row is read and settled only while it holds the enqueued_at source was listed with: a
 // write that lands between the listing and the lock moves it, and this pass is left with nothing

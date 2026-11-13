@@ -31,7 +31,7 @@ func storedBlockID(t *testing.T, service *Service, commentID string) string {
 
 // BackfillAnchorBlocks writes comment and ask rows while the server serves them, so it takes
 // each row's owner lock before it writes that row, as every other serving writer of an item row
-// does (api's item-writer census, refs.lockItemOwner). The advisory lock excludes exactly the
+// does (refs.LockItemOwner, api's item-row lock table). The advisory lock excludes exactly the
 // writers that take it, so a writer of an item row that takes no owner lock is the one thing
 // main's `for no key update` of the item row covered and this lock does not.
 //

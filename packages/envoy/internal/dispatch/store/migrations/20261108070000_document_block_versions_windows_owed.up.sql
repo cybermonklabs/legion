@@ -13,7 +13,7 @@
 -- (INFRA-988).
 --
 -- It will not get cheaper. Since the version write stopped writing a document's windows
--- (refs.IndexBlocks), every edited document answers that read rather than none.
+-- (refs.BlockIndexing.Queue), every edited document answers that read rather than none.
 --
 -- windows_owed_at is that question written down, in the shape the items already have: set
 -- where the document's windows stop standing for its blocks, cleared only by the statement
@@ -24,9 +24,9 @@
 -- What sets it:
 --
 --   - the version write itself, in the transaction that writes the blocks those windows will
---     cover (refs.IndexBlocks, in the upsert of this row that records the version its blocks
---     are indexed at). No trigger is needed for that path, and a crash between the two leaves
---     the document owed rather than silently windowless.
+--     cover (refs.BlockIndexing.Queue, in the upsert of this row that records the version its
+--     blocks are indexed at). No trigger is needed for that path, and a crash between the two
+--     leaves the document owed rather than silently windowless.
 --   - this migration's rewrite of 0122's document_block_versions_owe, on every version any
 --     build inserts, for the reason 20261107194001 gives for the items' trigger: the release
 --     before this one writes a version, indexes its blocks and clears nothing it does not

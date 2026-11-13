@@ -64,8 +64,10 @@ const itemOwnerLockRule = "Every writer of a comment, a message, an ask or one o
 // tells the next why their write is safe, and whoever adds an entry writes the reason the entry
 // above theirs is written in - the lock named, and the caller or helper that takes it.
 //
-// The two exceptions take no owner lock, and each says why. Everything else on the list holds
-// the item's owner, which is what makes the advisory lock at refs.LockItemOwner enough.
+// Six entries take no owner lock - four exceptions, since cmd/dispatch-seed's three loaders share
+// one - and each says why. Everything else on the list holds the item's owner, which is what
+// makes the advisory lock at refs.LockItemOwner enough; that each of them still takes it is read
+// off no entry here, and proved by the lock table (item_row_owner_lock_test.go).
 var itemRowWriters = map[string]map[string]string{
 	"cmd/dispatch-seed/write_items.go": {
 		"writeAsks":     seedLoaderException,
@@ -187,17 +189,20 @@ const seedLoaderException = "none, and none to take: cmd/dispatch-seed is a comm
 	"there is no other writer for a lock to serialise it against; pointed at a database a " +
 	"server serves it would take the owner lock like every serving writer"
 
-// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus holds the invariant the advisory owner lock
-// rests on: every writer of a comment, a message, an ask or one of their block-state rows takes
-// that item's owner lock (itemOwnerLockRule).
+// TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus holds the names half of the invariant the
+// advisory owner lock rests on: every writer of a comment, a message, an ask or one of their
+// block-state rows takes that item's owner lock (itemOwnerLockRule), and this half is that every
+// such writer is named.
 //
 // main held it with a row lock. A writer of the item took the item's row `for no key update`, so
 // it excluded every other writer of that row, whether or not that writer took the owner's lock.
 // The advisory lock excludes only the writers that take it (store.LockOwner), so the one thing
 // the row lock covered and this lock does not is a writer that changes or deletes the item row
-// without taking its owner. No such writer exists, and this test is what keeps it so: a
-// `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its function is
-// on the census with the lock it takes.
+// without taking its owner. No writer a server runs is one: the lock table holds each of them
+// behind a held owner lock (item_row_owner_lock_test.go), and the six entries here that take no
+// owner lock each say why they take none. What this test keeps out is a writer arriving
+// unnamed: a `delete from comments` added tomorrow (dispatch://INFRA-1523) reds here until its
+// function is on the census with the lock it takes.
 //
 // What it catches is a missing name, in either direction: a writer the scan finds that no entry
 // names, and an entry whose function no longer exists. What it does not catch is the lock. The

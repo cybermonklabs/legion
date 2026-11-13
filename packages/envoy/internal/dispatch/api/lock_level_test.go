@@ -75,10 +75,11 @@ var (
 // makes.
 //
 // Row locks elsewhere are untouched: doc_checkpoints is read plainly under the document lock, and
-// message_deliveries, comment_mentions, comment_deliveries, user_issue_state, repo_projects and
+// message_deliveries, comment_mentions, comment_deliveries, repo_projects and
 // architecture_sources still use `for update`. A targeted message's own row is taken `for no key
 // update` (message_delivery.go), so the session's reply, whose foreign key takes it `for key
-// share`, never waits on it.
+// share`, never waits on it. The viewer's own state row takes none: its route serialises on the
+// project's advisory owner lock (state.go, store.LockOwner).
 //
 // The match is statement-scoped and conservative, and it prints the statement rather than naming
 // a table, because which row a statement locks is a property of the whole statement. A lock
