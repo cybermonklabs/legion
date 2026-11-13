@@ -301,10 +301,15 @@ func (d *Disk) StaleWorkingCopy() {
 // filter that sleeps, which is how a read is made slow with the real git
 // (cybermonklabs/legion#3614's own test).
 //
-// The filter is on a worktree with no .jj rather than on the issue's workspace because the
-// snapshot pins `git.filter.enabled=false` (rescue.snapshot): in a worktree jj holds, no filter
-// of git's runs at all and the file this one is on is read as fast as every other. A worktree
-// with no .jj still takes the git read, and git there still runs the filter.
+// The filter is on a worktree with no .jj rather than on the issue's workspace because the read
+// this stands for is the whole-tree git read, which a worktree with no .jj takes and git there
+// runs the filter in. In a worktree jj holds, jj's own snapshot runs no filter of git's, since it
+// pins `git.filter.enabled=false` (rescue.snapshot), but the carry does: its `update-index --add`
+// of each file the worktree's index does not track runs a configured clean filter. Measured on
+// this build, a new file b.fx under a clean filter of `tr a-z A-Z` is held by jj's tree at its
+// own bytes and by the route's at the filter's output, the git read's blob (the differential
+// row of a clean filter), so slow.txt, untracked in the issue's workspace, would be read through
+// the filter there too, by the carry.
 func (d *Disk) SlowWorktreeRead() string {
 	d.t.Helper()
 	other := filepath.Join(d.StateDir, "scratch", "review")

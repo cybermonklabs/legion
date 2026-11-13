@@ -26,32 +26,53 @@ package rescue_test
 //
 //   - An embedded git repository, which the git read records as a gitlink and the route records
 //     as nothing (gitlinks).
-//   - Gained: a file a role forced into the index with `git add -f` that .gitignore ignores,
+//   - gained: a file a role forced into the index with `git add -f` that .gitignore ignores,
 //     under an unborn git HEAD. The git read copies the worktree's index only where HEAD names a
 //     commit, and otherwise starts from an empty index (`read-tree --empty`), so it loses that
 //     file; the route reads the copy of the index whatever HEAD is, so it keeps the file.
-//   - Changed: a tracked file rewritten at its size with its mtime set back to the one jj
+//   - contentLost: a tracked file rewritten at its size with its mtime set back to the one jj
 //     recorded. jj's stat rule passes over it, as the role's own jj commit would, so jj's tree
-//     keeps the old blob; the git read carries the new one only because the index jj writes has
-//     no stat data and git hashes every file.
-//   - Lost: a skip-worktree entry whose file is gone. The git read leaves the entry alone and
-//     keeps its blob; the route reads the missing path as a deletion.
-//   - Changed: a committed submodule whose own HEAD moved. The git read records the submodule's
-//     new HEAD; jj's tree keeps the gitlink it holds.
+//     keeps the old blob, the one HEAD holds; the git read carries the new one only because the
+//     index jj writes has no stat data and git hashes every file.
+//   - contentLost: a committed submodule whose own HEAD moved. The git read records the
+//     submodule's new HEAD; jj's tree keeps the gitlink HEAD holds.
+//   - reformed: a file git converts on its way into the index, which jj's tree records as the
+//     worktree holds it: CRLF lines under an eol rule of .gitattributes or under core.autocrlf,
+//     a tracked file under a clean filter, and a tracked file whose executable bit was set under
+//     core.fileMode=false. The git read stores git's form of the file (LF lines, the filter's
+//     output, the mode the index records) and the route the worktree's own bytes and mode. A
+//     file the carry adds is in git's form already, since `update-index --add` runs the same
+//     conversion: a new file under the clean filter is in both trees at the same blob.
 //
-// The last four are declared by name in the row, each with its reason, under the word for what
-// the two trees hold there. A path declared changed is one both trees hold, at different
-// entries. A path declared lost is one the git read's tree holds and the jj route's does not. A
-// path declared gained is one the jj route's tree holds and the git read's does not, and one row
-// alone declares any: the unborn HEAD's, and a second must be argued for. There are kinds at all
-// because a declared absence is how a loss looks, so a path the route drops must be written as
-// lost, where a reader sees the word, never as an allowance that the two trees may differ. Each
-// declaration is checked against what the two trees hold, and a path declared in two kinds
-// fails. Everywhere else the route must answer the git read's tree exactly.
+// Those rows declare each path by name, with its reason, under the word for what the two trees
+// hold there, and each declaration is checked against both trees (heldAsRuled):
+//
+//   - contentLost is a path both trees hold at different entries, where the jj route's entry is
+//     the one the worktree's git HEAD holds at that path: the route keeps the old content, and
+//     the new content the git read kept is lost. It is a word of its own, and not one word for
+//     every change, because a change whose route content is the old content is a loss and must
+//     read as one.
+//   - reformed is a path both trees hold at entries that differ in form alone: the same blob at
+//     the other mode of a regular file, or, at the same mode, a blob that git's own conversion of
+//     the route's bytes (`git hash-object --path=<path> --stdin`, with the repository's
+//     attributes and configuration) turns into the git read's. The content is the same.
+//   - lost is a path the git read's tree holds and the jj route's does not.
+//   - gained is a path the jj route's tree holds and the git read's does not, and one row alone
+//     declares any: the unborn HEAD's, and a second must be argued for.
+//
+// There are kinds at all because a declared difference is how a loss looks: a path the route
+// drops passes only written as lost, and a path the route keeps at its old content only written
+// as contentLost, where a reader sees the word, never as an allowance that the two trees may
+// differ. A path declared in two kinds fails, and so does a declared path both trees hold at the
+// same entry, an allowance that no longer describes the route. Everywhere else the route must
+// answer the git read's tree exactly.
 //
 // A row whose route fails says so, and the failure is asserted: a workspace that fails is never a
 // silent loss, since its pod is not replaced for it. A row that expects a tree and gets a failure,
-// or expects a failure and gets a tree, fails.
+// or expects a failure and gets a tree, fails. Where the git read refuses the worktree too, the row
+// says so beside the route's failure (todayFails), and that refusal is asserted in place of its
+// tree; a row whose git read refuses while the route answers a tree fails, since there the route
+// keeps more than the git read.
 
 import (
 	"bytes"
@@ -118,8 +139,9 @@ func nulSplit(out string) []string {
 // HEAD is unborn), as that read builds it (rescue.indexTree): a copy of the worktree's own git
 // index in a scratch file where HEAD names a commit and the worktree has an index, and otherwise
 // a scratch index read from head's tree, or from the empty tree where HEAD is unborn; then `git
-// add --all` over that scratch index, and the tree it then writes.
-func readToday(t *testing.T, d *rescuetest.Disk, dir, head string) string {
+// add --all` over that scratch index, and the tree it then writes. Where refuses is not "", that
+// add must fail saying it, as that read then fails the workspace, and the answer is "".
+func readToday(t *testing.T, d *rescuetest.Disk, dir, head, refuses string) string {
 	t.Helper()
 	index := filepath.Join(t.TempDir(), "index")
 	env := []string{"GIT_INDEX_FILE=" + index}
@@ -144,7 +166,17 @@ func readToday(t *testing.T, d *rescuetest.Disk, dir, head string) string {
 	default:
 		gitRead(t, d, dir, env, "read-tree", "--empty")
 	}
-	gitRead(t, d, dir, env, "add", "--all", "--", ".")
+	_, code, stderr := gitExit(t, d, dir, env, "", "add", "--all", "--", ".")
+	switch {
+	case refuses == "" && code != 0:
+		t.Fatalf("the git read's `git add --all` exited %d: %s", code, stderr)
+	case refuses != "" && code == 0:
+		t.Fatalf("the git read's `git add --all` exited 0, want it to fail saying %q", refuses)
+	case refuses != "" && !strings.Contains(stderr, refuses):
+		t.Fatalf("the git read's `git add --all` failed saying %q, want %q", stderr, refuses)
+	case refuses != "":
+		return ""
+	}
 	return strings.TrimSpace(gitRead(t, d, dir, env, "write-tree"))
 }
 
@@ -201,16 +233,26 @@ var conflictTerm = regexp.MustCompile(`^\.jjconflict-(?:base|side)-[0-9]+/(.+)$`
 // one more or one fewer than the row names fails, as a lost entry does.
 //
 // The second is a path the row declares by name with its reason, under the word for what the two
-// trees hold there: changed, lost or gained. The walk over the git read's entries passes over a
-// path declared in any kind, which is checked below; the walk over the jj route's paths the git
-// read's lacks passes over only a path declared gained. Then each declaration is held to what the
-// two trees hold. A path declared changed must be in both trees, at different entries: one both
-// hold at the same entry fails as an allowance that no longer describes the route, and one either
-// tree lacks fails, since that is a loss or a gain and is declared as one. A path declared lost
-// must be in the git read's tree and not in the jj route's. A path declared gained must be in the
-// jj route's tree and not in the git read's. A path declared in more than one kind fails. There
-// are kinds at all because a declared absence is how a loss looks: a path the route drops passes
-// only written as lost, where a reader sees the word, never as an allowance that the trees differ.
+// trees hold there: contentLost, reformed, lost or gained. The walk over the git read's entries
+// passes over a path declared in any kind, which is checked below; the walk over the jj route's
+// paths the git read's lacks passes over only a path declared gained. Then each declaration is
+// held to what the two trees hold. A path declared contentLost or reformed must be in both trees,
+// at different entries: one both hold at the same entry fails as an allowance that no longer
+// describes the route, and one either tree lacks fails, since that is a loss or a gain and is
+// declared as one. Beyond that, a path declared contentLost must be held by the jj route's tree
+// at the entry the worktree's git HEAD holds at that path (headHolds), which is the old content:
+// the route lost the new content the git read kept, and an entry of any other content fails,
+// naming the two trees' entries and HEAD's. A path declared reformed must be a regular file in
+// both trees whose entries differ in form alone: the same blob at the other mode, or the same
+// mode and the blob git's own conversion of the route's bytes makes at that path (asGitStores);
+// anything else is a change of content, not of form, and fails. A path declared lost must be in
+// the git read's tree and not in the jj route's. A path declared gained must be in the jj route's
+// tree and not in the git read's. A path declared in more than one kind fails. There are kinds at
+// all because a declared difference is how a loss looks: a path the route drops passes only
+// written as lost, and a path the route keeps at its old content only written as contentLost,
+// where a reader sees the word, never as an allowance that the trees differ. contentLost is a
+// word apart from reformed for that reason: a change whose route content is the old content is a
+// loss, and must read as one, where a reformed path loses nothing.
 //
 // And it fails the test for every path of the jj route's tree that the git read's lacks, but for
 // the paths the row declares gained.
@@ -257,7 +299,7 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 	kinds := []struct {
 		word     string
 		declared map[string]string
-	}{{"changed", row.changed}, {"lost", row.lost}, {"gained", row.gained}}
+	}{{"contentLost", row.contentLost}, {"reformed", row.reformed}, {"lost", row.lost}, {"gained", row.gained}}
 	declared := func(path string) bool {
 		for _, kind := range kinds {
 			if _, ok := kind.declared[path]; ok {
@@ -285,7 +327,7 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 		case !held:
 			t.Errorf("lost: the git read keeps %q at mode %s blob %s, and the jj route's tree holds no such path", path, was[path].mode, was[path].object)
 		default:
-			t.Errorf("changed: the git read keeps %q at mode %s blob %s, and the jj route's tree holds it at mode %s blob %s", path, was[path].mode, was[path].object, kept.mode, kept.object)
+			t.Errorf("differs: the git read keeps %q at mode %s blob %s, and the jj route's tree holds it at mode %s blob %s, which the row declares neither contentLost nor reformed", path, was[path].mode, was[path].object, kept.mode, kept.object)
 		}
 	}
 	if !slices.Equal(coveredAsGitlinks, row.gitlinks) {
@@ -344,17 +386,43 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 			}
 			before, inWas := was[path]
 			after, inNow := now[path]
-			switch kind.word {
-			case "changed":
+			if kind.word == "contentLost" || kind.word == "reformed" {
 				switch {
 				case !inWas && !inNow:
-					t.Errorf("the row declares %q changed (%s), and neither tree holds that path: the allowance no longer describes the route", path, reason)
+					t.Errorf("the row declares %q %s (%s), and neither tree holds that path: the allowance no longer describes the route", path, kind.word, reason)
+					continue
 				case !inNow:
-					t.Errorf("the row declares %q changed (%s), and the jj route's tree holds no such path, where the git read's holds %s: a path one tree lacks is a loss or a gain, and is declared as one", path, reason, holding(was, path))
+					t.Errorf("the row declares %q %s (%s), and the jj route's tree holds no such path, where the git read's holds %s: a path one tree lacks is a loss or a gain, and is declared as one", path, kind.word, reason, holding(was, path))
+					continue
 				case !inWas:
-					t.Errorf("the row declares %q changed (%s), and the git read's tree holds no such path, where the jj route's holds %s: a path one tree lacks is a loss or a gain, and is declared as one", path, reason, holding(now, path))
+					t.Errorf("the row declares %q %s (%s), and the git read's tree holds no such path, where the jj route's holds %s: a path one tree lacks is a loss or a gain, and is declared as one", path, kind.word, reason, holding(now, path))
+					continue
 				case before == after:
-					t.Errorf("the row declares %q changed (%s), and both trees hold it at mode %s blob %s: the allowance no longer describes the route", path, reason, before.mode, before.object)
+					t.Errorf("the row declares %q %s (%s), and both trees hold it at mode %s blob %s: the allowance no longer describes the route", path, kind.word, reason, before.mode, before.object)
+					continue
+				}
+			}
+			switch kind.word {
+			case "contentLost":
+				if old, ok := headHolds(t, d, path); !ok || old != after {
+					head := "no such path"
+					if ok {
+						head = fmt.Sprintf("mode %s blob %s", old.mode, old.object)
+					}
+					t.Errorf("the row declares %q contentLost (%s), and the jj route's tree holds it at mode %s blob %s, where the git read's holds %s and the worktree's git HEAD holds %s: a path declared contentLost is one the route keeps at HEAD's old content, and this is other content", path, reason, after.mode, after.object, holding(was, path), head)
+				}
+			case "reformed":
+				regular := func(mode string) bool { return mode == "100644" || mode == "100755" }
+				switch {
+				case !regular(before.mode) || !regular(after.mode):
+					t.Errorf("the row declares %q reformed (%s), and the git read's tree holds it at mode %s blob %s and the jj route's at mode %s blob %s: git converts the form of a regular file alone, so this is a change of content, not of form", path, reason, before.mode, before.object, after.mode, after.object)
+				case before.object == after.object:
+				case before.mode != after.mode:
+					t.Errorf("the row declares %q reformed (%s), and the git read's tree holds it at mode %s blob %s and the jj route's at mode %s blob %s: both the mode and the blob differ, so this is a change of content, not of form", path, reason, before.mode, before.object, after.mode, after.object)
+				default:
+					if stored := asGitStores(t, d, path, after.object); stored != before.object {
+						t.Errorf("the row declares %q reformed (%s), and the git read's tree holds it at blob %s and the jj route's at blob %s, which git's own conversion at that path stores as blob %s: this is a change of content, not of form", path, reason, before.object, after.object, stored)
+					}
 				}
 			case "lost":
 				if !inWas || inNow {
@@ -367,6 +435,40 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 			}
 		}
 	}
+}
+
+// headHolds is the entry the worktree's git HEAD holds at path, read with `git ls-tree` in the
+// workspace, and false where HEAD holds no such path or is unborn.
+func headHolds(t *testing.T, d *rescuetest.Disk, path string) (entry, bool) {
+	t.Helper()
+	if headOf(t, d, d.Workspace) == "" {
+		return entry{}, false
+	}
+	for _, line := range nulSplit(gitRead(t, d, d.Workspace, nil, "ls-tree", "-z", "--full-tree", "HEAD", "--", path)) {
+		meta, name, ok := strings.Cut(line, "\t")
+		fields := strings.Fields(meta)
+		if !ok || len(fields) != 3 {
+			t.Fatalf("git ls-tree wrote %q, want `<mode> <type> <object>\\t<path>`", line)
+		}
+		if name == path {
+			return entry{mode: fields[0], object: fields[2]}, true
+		}
+	}
+	return entry{}, false
+}
+
+// asGitStores is the blob git stores at path for the bytes of the blob object: `git hash-object
+// --path=<path> --stdin` in the workspace over those bytes, which converts them as `git add`
+// converts the file at path, with the repository's attributes and configuration (an eol rule,
+// core.autocrlf, a clean filter).
+func asGitStores(t *testing.T, d *rescuetest.Disk, path, object string) string {
+	t.Helper()
+	body := gitRead(t, d, d.Workspace, nil, "cat-file", "blob", object)
+	out, code, stderr := gitExit(t, d, d.Workspace, nil, body, "hash-object", "--path="+path, "--stdin")
+	if code != 0 {
+		t.Fatalf("git hash-object --path=%s exited %d: %s", path, code, stderr)
+	}
+	return strings.TrimSpace(out)
 }
 
 // conflictedPaths is every path jj lists as conflicted in the workspace's working-copy commit,
@@ -456,16 +558,25 @@ type differentialRow struct {
 	// fails is a text the jj route's failure holds, where the row expects the route to fail; ""
 	// where it expects a tree.
 	fails string
+	// todayFails is a text the git read's failure holds, where the row expects that read to
+	// refuse the worktree as well; "" where it expects a tree. A row sets it only beside fails:
+	// where the git read refuses and the jj route answers a tree, the route keeps more than it.
+	todayFails string
 	// gitlinks is the entries the embedded-repository exception covers in this row, sorted.
 	gitlinks []string
-	// changed, lost and gained are the paths the row declares the two trees differ at, each with
-	// the reason they may: the exceptions the comment at the head of this file lists, each checked
-	// for exactly its path against what the two trees hold (heldAsRuled). changed is a path both
-	// trees hold, at different entries. lost is a path the git read's tree holds and the jj
-	// route's does not, written under that word because a declared absence is how a loss looks.
-	// gained is a path the jj route's tree holds and the git read's does not, and one row alone
-	// declares any (TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps).
-	changed, lost, gained map[string]string
+	// contentLost, reformed, lost and gained are the paths the row declares the two trees differ
+	// at, each with the reason they may: the exceptions the comment at the head of this file
+	// lists, each checked for exactly its path against what the two trees hold (heldAsRuled).
+	// contentLost is a path both trees hold at different entries, the jj route's being the entry
+	// the worktree's git HEAD holds there: the route keeps the old content, a loss, written under
+	// its own word so that it reads as one. reformed is a path both trees hold as a regular file
+	// at entries that differ in form alone, by git's conversion of the file on its way into the
+	// index: the same blob at the other mode, or a blob git's conversion of the route's bytes
+	// turns into the git read's. lost is a path the git read's tree holds and the jj route's does
+	// not, written under that word because a declared absence is how a loss looks. gained is a
+	// path the jj route's tree holds and the git read's does not, and one row alone declares any
+	// (TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps).
+	contentLost, reformed, lost, gained map[string]string
 	// holds is paths both trees must hold, and absent is paths neither may: the comparison
 	// alone passes two trees that agree in losing a file, or in keeping one they should not.
 	holds, absent []string
@@ -606,6 +717,36 @@ func becomesADirectory(t *testing.T, d *rescuetest.Disk, file string) {
 func deleted(t *testing.T, d *rescuetest.Disk, file string) {
 	t.Helper()
 	if err := os.Remove(filepath.Join(d.Workspace, file)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// removeAll removes the path at, and everything under it.
+func removeAll(t *testing.T, at string) {
+	t.Helper()
+	if err := os.RemoveAll(at); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// committedSubmodule makes dir an embedded git repository (embeddedRepository) and commits it with
+// plain git as the gitlink it is, which moves the workspace's git HEAD behind jj's back, and
+// answers the repository's directory.
+func committedSubmodule(d *rescuetest.Disk, dir string) string {
+	at := embeddedRepository(d, dir)
+	d.Git("add", dir)
+	d.Git("commit", "--quiet", "-m", "a submodule committed with plain git")
+	return at
+}
+
+// withoutIndexFile removes the workspace's own git index file, under a git HEAD that must name a
+// commit, so the git read starts from `read-tree <head>` (rescue.indexTree).
+func withoutIndexFile(t *testing.T, d *rescuetest.Disk) {
+	t.Helper()
+	if headOf(t, d, d.Workspace) == "" {
+		t.Fatal("the workspace's git HEAD is unborn, want it to name a commit, which this row stands on")
+	}
+	if err := os.Remove(strings.TrimSpace(gitRead(t, d, d.Workspace, nil, "rev-parse", "--path-format=absolute", "--git-path", "index"))); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1042,8 +1183,8 @@ var differentialRows = []differentialRow{
 			pushedByTheRole(t, d, "the file rewritten at the same size")
 			rewrittenAtTheSameSize(t, d, "f.txt", "BBBB", true)
 		},
-		changed: map[string]string{
-			"f.txt": "an mtime set back on purpose to the value jj recorded hides a same-size rewrite from jj's stat rule, the role's own jj commit misses it the same way, and the git read carried it only because the stat-less index makes git hash every file",
+		contentLost: map[string]string{
+			"f.txt": "an mtime set back on purpose to the value jj recorded hides a same-size rewrite from jj's stat rule, so the route keeps HEAD's AAAA and loses the BBBB the git read carried; the role's own jj commit misses it the same way, and the git read carried it only because the stat-less index makes git hash every file",
 		},
 		holds: []string{"f.txt"},
 	},
@@ -1084,9 +1225,7 @@ var differentialRows = []differentialRow{
 			d.Git("update-index", "--skip-worktree", "forced.log")
 			deleted(t, d, "forced.log")
 		},
-		lost: map[string]string{
-			"forced.log": "the git read leaves a skip-worktree entry alone and keeps its blob, where the route reads the missing path as a deletion and does not seed it",
-		},
+		holds: []string{"forced.log"},
 	},
 	{
 		name: "a committed submodule whose own HEAD moved",
@@ -1097,10 +1236,186 @@ var differentialRows = []differentialRow{
 			d.Run(at, "git", "add", "loose.txt")
 			d.Run(at, "git", "commit", "--quiet", "-m", "a commit made inside the submodule")
 		},
-		changed: map[string]string{
-			"sub": "the git read records the submodule's new HEAD, and jj's tree keeps the gitlink it holds",
+		contentLost: map[string]string{
+			"sub": "the git read records the submodule's new HEAD, and the route keeps the gitlink HEAD holds, so it loses the submodule's move",
 		},
 		holds: []string{"sub"},
+	},
+	{
+		// The reviewer's reproduction of round 10: HEAD names a commit and the worktree has no
+		// index file, so the git read starts from `read-tree <head>`, whose entry under d makes
+		// it walk into d although d holds a .git. jj's snapshot leaves d out whole.
+		name: "a born git HEAD with no index file, over a tracked file under a directory that becomes a git repository",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "d/x.txt", "a tracked file under what becomes a repository\n")
+			pushedByTheRole(t, d, "the file under d")
+			becomesAGitRepository(d, "d")
+			d.Write(d.Workspace, "d/x.txt", "edited under the directory's own repository\n")
+			withoutIndexFile(t, d)
+		},
+		holds: []string{"d/x.txt", "d/loose.txt"},
+	},
+	{
+		name: "a committed submodule whose directory becomes a regular file",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			at := committedSubmodule(d, "sub")
+			removeAll(t, at)
+			d.Write(d.Workspace, "sub", "a regular file where the submodule was\n")
+		},
+		holds: []string{"sub"},
+	},
+	{
+		name: "a committed submodule whose directory becomes a symlink",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			at := committedSubmodule(d, "sub")
+			removeAll(t, at)
+			symlink(t, "base.txt", at)
+		},
+		holds: []string{"sub"},
+	},
+	{
+		// The git read drops the gitlink of a submodule whose path is gone, as it drops a
+		// deleted file; jj's tree keeps it.
+		name: "a committed submodule whose directory is gone",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			removeAll(t, committedSubmodule(d, "sub"))
+		},
+		absent: []string{"sub"},
+	},
+	{
+		// The git read reads no file of an assume-unchanged entry, so it keeps the entry's
+		// recorded blob whatever the worktree holds; jj's snapshot reads the file.
+		name: "an assume-unchanged entry whose file is gone",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "au.txt", "a committed file marked assume-unchanged\n")
+			pushedByTheRole(t, d, "the file marked assume-unchanged")
+			d.Git("update-index", "--assume-unchanged", "au.txt")
+			deleted(t, d, "au.txt")
+		},
+		holds: []string{"au.txt"},
+	},
+	{
+		// The comparison proves both trees hold au.txt at its committed blob, not the edit.
+		name: "an assume-unchanged entry whose file is edited",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "au.txt", "a committed file marked assume-unchanged\n")
+			pushedByTheRole(t, d, "the file marked assume-unchanged")
+			d.Git("update-index", "--assume-unchanged", "au.txt")
+			d.Write(d.Workspace, "au.txt", "edited after it was marked assume-unchanged\n")
+		},
+		holds: []string{"au.txt"},
+	},
+	{
+		// The comparison proves both trees hold sw.txt at its committed blob, not the edit.
+		name: "a skip-worktree entry whose file is edited",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "sw.txt", "a committed file marked skip-worktree\n")
+			pushedByTheRole(t, d, "the file marked skip-worktree")
+			d.Git("update-index", "--skip-worktree", "sw.txt")
+			d.Write(d.Workspace, "sw.txt", "edited after it was marked skip-worktree\n")
+		},
+		holds: []string{"sw.txt"},
+	},
+	{
+		// Both reads record d as the symlink it is and d/p.txt as deleted: git reads no file
+		// beyond a symbolic link.
+		name: "a tracked file under a directory that becomes a symlink to a directory holding a file of that name",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "d/p.txt", "a tracked file under what becomes a symlink\n")
+			pushedByTheRole(t, d, "the file under d")
+			target := filepath.Join(filepath.Dir(d.Remote), "target")
+			d.Write(target, "p.txt", "the file of that name in the directory the symlink names\n")
+			removeAll(t, filepath.Join(d.Workspace, "d"))
+			symlink(t, target, filepath.Join(d.Workspace, "d"))
+		},
+		holds:  []string{"d"},
+		absent: []string{"d/p.txt"},
+	},
+	{
+		// Today's `git add --all` refuses GIT~1 and `.git. ` (`invalid path`, exit 128).
+		// jj's snapshot leaves both out for their size, and `update-index --add` ignores each
+		// with exit 0 (`Ignoring path GIT~1`), so the route's read-back refuses them too: both
+		// reads refuse the replacement.
+		name: "new files under names git refuses, above the workspace's own limit",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			limitTo(d, oneKiB)
+			d.Write(d.Workspace, "GIT~1", sized(4096, "g"))
+			d.Write(d.Workspace, ".git. ", sized(4096, "t"))
+		},
+		todayFails: "invalid path",
+		fails:      "left out paths that git could not carry",
+	},
+	{
+		// Measured on this build: the git read keeps y.txt at 100644 blob 975fbec8 ("y\n", which
+		// is HEAD's), and jj's tree and the route's both hold it at 100644 blob 5758d80d
+		// ("y\r\n"): jj records the file's own bytes, and the carry adds no file jj's tree holds.
+		name: "a tracked file rewritten with CRLF lines under a .gitattributes eol=lf rule",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, ".gitattributes", "*.txt text eol=lf\n")
+			d.Write(d.Workspace, "y.txt", "y\n")
+			pushedByTheRole(t, d, "the eol rule and the file it covers")
+			d.Write(d.Workspace, "y.txt", "y\r\n")
+		},
+		reformed: map[string]string{
+			"y.txt": "the eol rule has git store the CRLF lines as LF, and the route keeps the CRLF bytes the worktree holds: the same lines in another form",
+		},
+		holds: []string{"y.txt", ".gitattributes"},
+	},
+	{
+		// Measured on this build: the git read keeps c.txt at 100644 blob f2ad6c76 ("c\n", which
+		// is HEAD's), and jj's tree and the route's both hold it at 100644 blob 764d69f6
+		// ("c\r\n").
+		name: "a tracked file rewritten with CRLF lines under core.autocrlf=true",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "c.txt", "c\n")
+			pushedByTheRole(t, d, "the file core.autocrlf converts")
+			d.Git("config", "core.autocrlf", "true")
+			d.Write(d.Workspace, "c.txt", "c\r\n")
+		},
+		reformed: map[string]string{
+			"c.txt": "core.autocrlf has git store the CRLF lines as LF, and the route keeps the CRLF bytes the worktree holds: the same lines in another form",
+		},
+		holds: []string{"c.txt"},
+	},
+	{
+		// Measured on this build: the git read keeps a.fx at 100644 blob 03fbba43 ("A
+		// REWRITTEN\n", the filter's output), and jj's tree and the route's both hold it at 100644
+		// blob d3055428 ("a rewritten\n"); HEAD holds 37beafe0 ("a committed\n"). b.fx is new and
+		// untracked: jj's tree holds it at 100644 blob b32a5fba ("b new and untracked\n", its own
+		// bytes), and the carry's `update-index --add`, which runs the clean filter, records it at
+		// 100644 blob 7fe8dabd ("B NEW AND UNTRACKED\n"), the git read's entry, so both trees hold
+		// b.fx at the same entry.
+		name: "a tracked file rewritten and a new untracked file under a clean filter",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, ".gitattributes", "*.fx filter=up\n")
+			d.Write(d.Workspace, "a.fx", "a committed\n")
+			pushedByTheRole(t, d, "the filter rule and the file it covers")
+			d.Git("config", "filter.up.clean", "tr a-z A-Z")
+			d.Git("config", "filter.up.smudge", "cat")
+			d.Write(d.Workspace, "a.fx", "a rewritten\n")
+			d.Write(d.Workspace, "b.fx", "b new and untracked\n")
+		},
+		reformed: map[string]string{
+			"a.fx": "git stores the clean filter's output for the file, and the route keeps the bytes the worktree holds, from which that filter makes git's: the same file in another form",
+		},
+		holds: []string{"a.fx", "b.fx", ".gitattributes"},
+	},
+	{
+		// Measured on this build: the git read keeps x.sh at 100644 blob 67b376aa, the mode the
+		// index records, and jj's tree and the route's both hold it at 100755 blob 67b376aa.
+		name: "a tracked file whose executable bit was set under core.fileMode=false",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "x.sh", "echo x\n")
+			pushedByTheRole(t, d, "the file whose executable bit is set")
+			d.Git("config", "core.fileMode", "false")
+			if err := os.Chmod(filepath.Join(d.Workspace, "x.sh"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		reformed: map[string]string{
+			"x.sh": "core.fileMode=false has git keep the mode its index records, and the route keeps the executable bit the worktree's file has: the same blob at the other mode",
+		},
+		holds: []string{"x.sh"},
 	},
 	{
 		name:     "every shape that answers a tree at once, the tester's adversarial worktree",
@@ -1110,21 +1425,26 @@ var differentialRows = []differentialRow{
 			"forced.log", "big: 1B (1 bytes); the maximum size allowed is 1B\n  z", "refused-01\n  spill.bin",
 			"jd/a.txt", "jd/b.txt", "m/a.txt", "m/loose.txt", "x/k.txt",
 			"ga/loose.txt", "ga/new.txt", "jb/b.txt", "rw.txt", "pd/new.txt", "late.log",
+			"au.txt", "sw.txt", "skip.txt", "sf", "ss", "sl",
 		},
-		absent: []string{"x", "x/i.log", "gone.txt", "eg/inner.txt", "eg/loose.txt", "ga/old.txt", "jb/a.txt"},
+		absent: []string{"x", "x/i.log", "gone.txt", "eg/inner.txt", "eg/loose.txt", "ga/old.txt", "jb/a.txt", "sg", "sl/p.txt"},
 	},
 }
 
 // everyShapeAtOnce is one worktree holding every shape of the rows above whose route answers a
-// tree, whose git HEAD names a commit and that declare no path the two trees may differ at. The
-// rows that declare one are left out, each standing alone so that its exception covers its own
-// shape and no other: the unborn HEAD's, whose HEAD cannot be both anyway, the mtime set back,
-// the skip-worktree entry and the submodule. The jj commands come first, the snapshot that puts
-// jd/a.txt, m/a.txt, jb/a.txt, pd/new.txt and late.log in the colocated index among them, then
-// the plain git commit that moves the git HEAD behind jj's back, then the files and the
-// directories that change, and the `git add -f` last: any jj command of the workspace after it
-// would rewrite the index that holds the forced file. The rewrite of rw.txt at its size leaves
-// its mtime to move, so this row declares no path for it.
+// tree, whose git HEAD names a commit, whose worktree has an index file and that declare no path
+// the two trees may differ at. The rows that declare one are left out, each standing alone so
+// that its exception covers its own shape and no other: the unborn HEAD's, whose HEAD cannot be
+// both anyway, the mtime set back and the submodule whose own HEAD moved, which are contentLost,
+// and the four whose git converts a file, which are reformed and whose attributes and
+// configuration would convert the files of every other shape; so is the row with no index file,
+// which could not hold the index entries the other shapes stand on. The jj commands
+// come first, the snapshot that puts jd/a.txt, m/a.txt, jb/a.txt, pd/new.txt and late.log in the
+// colocated index among them, then the plain git commits that move the git HEAD behind jj's
+// back, the submodules sf, ss and sg among them, then the files and the directories that change,
+// and the `git add -f` and the flags last: any jj command of the workspace after them would
+// rewrite the index that holds the forced file and the flags. The rewrite of rw.txt at its size
+// leaves its mtime to move, so this row declares no path for it.
 func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	limitTo(d, oneMiB)
 	d.Write(d.Workspace, "aa", "the tracked file the refused name is magic for\n")
@@ -1134,6 +1454,10 @@ func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	d.Write(d.Workspace, "gone.txt", "a tracked file the role deletes\n")
 	d.Write(d.Workspace, "ga/old.txt", "a tracked file the role deletes before ga becomes a repository\n")
 	d.Write(d.Workspace, "rw.txt", "AAAA")
+	d.Write(d.Workspace, "au.txt", "a committed file marked assume-unchanged\n")
+	d.Write(d.Workspace, "sw.txt", "a committed file marked skip-worktree\n")
+	d.Write(d.Workspace, "skip.txt", "a committed file marked skip-worktree and deleted\n")
+	d.Write(d.Workspace, "sl/p.txt", "a tracked file under what becomes a symlink\n")
 	d.JJ("sparse", "set", "--add", "dir")
 	pushedByTheRole(t, d, "the tracked files the shapes stand on")
 	d.Write(d.Workspace, "jd/a.txt", "a file a role's jj snapshotted before jd became a repository\n")
@@ -1143,6 +1467,15 @@ func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	d.Write(d.Workspace, "late.log", "a file a role's jj snapshotted before *.log was ignored\n")
 	intentToAdd(t, d, "jd/a.txt", "m/a.txt", "jb/a.txt", "pd/new.txt", "late.log")
 	commitWithGit(d, "fix.txt", "a fix made with plain git\n")
+	for _, sub := range []string{"sf", "ss", "sg"} {
+		removeAll(t, committedSubmodule(d, sub))
+	}
+	d.Write(d.Workspace, "sf", "a regular file where the submodule was\n")
+	symlink(t, "base.txt", filepath.Join(d.Workspace, "ss"))
+	target := filepath.Join(filepath.Dir(d.Remote), "target")
+	d.Write(target, "p.txt", "the file of that name in the directory the symlink names\n")
+	removeAll(t, filepath.Join(d.Workspace, "sl"))
+	symlink(t, target, filepath.Join(d.Workspace, "sl"))
 	rewrittenAtTheSameSize(t, d, "rw.txt", "BBBB", false)
 
 	d.Write(d.Workspace, "base.txt", "base, edited\n")
@@ -1200,6 +1533,11 @@ func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 
 	d.Write(d.Workspace, "forced.log", "a file a role forced into the index\n")
 	d.Git("add", "-f", "forced.log")
+	d.Git("update-index", "--assume-unchanged", "au.txt")
+	deleted(t, d, "au.txt")
+	d.Git("update-index", "--skip-worktree", "sw.txt", "skip.txt")
+	d.Write(d.Workspace, "sw.txt", "edited after it was marked skip-worktree\n")
+	deleted(t, d, "skip.txt")
 }
 
 // heldAndAbsent fails the test where a tree of the row lacks a path the row says both hold, or
@@ -1238,12 +1576,15 @@ func TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps(t *testing.T) {
 	}
 	for _, row := range differentialRows {
 		t.Run(row.name, func(t *testing.T) {
+			if row.todayFails != "" && row.fails == "" {
+				t.Fatalf("the row expects the git read to fail saying %q and the jj route to answer a tree, which would keep more than the git read: want fails set as well", row.todayFails)
+			}
 			d := rescuetest.New(t, issue)
 			row.build(t, d)
 			head := headOf(t, d, d.Workspace)
 
-			today := readToday(t, d, d.Workspace, head)
-			route, err := rescue.TreeTheJJRouteBuilds(context.Background(), d.Env, d.Workspace)
+			today := readToday(t, d, d.Workspace, head, row.todayFails)
+			route, err := rescue.TreeTheJJRouteBuilds(context.Background(), d.Env, d.Workspace, head)
 
 			if row.fails != "" {
 				if err == nil {
@@ -1252,7 +1593,9 @@ func TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps(t *testing.T) {
 				if !strings.Contains(err.Error(), row.fails) {
 					t.Fatalf("the jj route failed saying %q, want %q", err, row.fails)
 				}
-				heldAndAbsent(t, d, row, map[string]string{"git read's": today})
+				if row.todayFails == "" {
+					heldAndAbsent(t, d, row, map[string]string{"git read's": today})
+				}
 				return
 			}
 			if err != nil {
