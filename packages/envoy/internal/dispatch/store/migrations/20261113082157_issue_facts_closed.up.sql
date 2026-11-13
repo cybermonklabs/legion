@@ -1,0 +1,23 @@
+-- 20261113082157_issue_facts_closed.up.sql
+--
+-- The index behind the read of the issues that closed in a window (dispatch://INFRA-2916): the
+-- Legion evals' day rows are built from the stored facts of the issues a project closed on each
+-- day, `... from issue_facts where project_key = $1 and closed_at >= $2 and closed_at < $3`.
+-- 20261111090000 left this index out because no statement read it yet; this release carries the
+-- statement. (project_key, closed_at desc) is that read's own order: one project, then its closes
+-- newest first, so one index range answers a window. The measurement of the root design read 111
+-- rows of a 28-day window through it in 1.6 to 2.6 ms over 28,000 rows
+-- (dispatch://INFRA-979/artifact/review-storage-measured-md, section 4).
+--
+-- A plain build in the runner's transaction, not a concurrent one. issue_facts holds one row per
+-- issue Legion worked, 8.5 MB for 28,000 rows in that measurement, far below the census's 1 GiB
+-- bound on a table a migration locks (pgmigrate.CensusTableLimit), so the README's rule for a
+-- large table does not apply. The build holds SHARE on issue_facts for one read of it, which
+-- holds the writes of the table's one writer, the Legion facts consumer, and no read; a
+-- concurrent build would instead wait for every transaction older than it anywhere in the
+-- database, twice, under the same five-second bound on each wait.
+--
+-- The release before this one neither reads nor writes the index, and an index decides a plan and
+-- never an answer, so it rolls beside this one. It refuses and rewrites no row; its census
+-- answers 0.
+create index issue_facts_closed on issue_facts (project_key, closed_at desc);

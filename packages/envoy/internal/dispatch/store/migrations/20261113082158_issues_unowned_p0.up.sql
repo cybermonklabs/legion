@@ -1,0 +1,27 @@
+-- pgmigrate:non-transactional
+-- 20261113082158_issues_unowned_p0.up.sql
+--
+-- The index behind the count of P0 issues with no owner (dispatch://INFRA-2916, R13), which the
+-- unowned-p0 eval and the delivery measures route answer: an issue with priority 0, a status
+-- other than done, no claim and no route, the rule of delivery.ListUnownedP0. No index of issues
+-- holds priority, so that read, over every project at once, scanned the whole table, and the same
+-- count for one project (`select count(*) from issues where project_key = $1 and priority = 0 and
+-- status <> 'done' and claimed_by is null and route is null`) could at best read every issue of
+-- that project.
+--
+-- The predicate is the rule itself, word for word, so the planner proves it from the read's own
+-- clauses and the index holds the unowned P0 issues alone: a handful of rows at any size of the
+-- table. It is keyed by project_key, so one project's count is one index range and the count of
+-- every project the whole of this small index. An issue enters it and leaves it as its priority,
+-- status, claim or route changes, which costs a write to this index on those updates alone.
+--
+-- It is built `concurrently`, outside the runner's transaction, because issues is the table every
+-- issue write, claim, route and status change writes. A plain build holds SHARE on it for one
+-- read of the table, which blocks every one of those writes until it ends. A concurrent build
+-- takes SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two passes
+-- over the table and a wait for the transactions already open, each wait bounded at five seconds
+-- and tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A failed
+-- build leaves an INVALID index of this name on issues, which the runner drops with DROP INDEX
+-- CONCURRENTLY and builds again on its next attempt or boot.
+create index concurrently if not exists issues_unowned_p0 on issues (project_key)
+    where priority = 0 and status <> 'done' and claimed_by is null and route is null;
