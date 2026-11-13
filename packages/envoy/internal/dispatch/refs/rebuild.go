@@ -178,12 +178,14 @@ func replaceInTx(ctx context.Context, pool Pool, fromKind, fromID, serverURL str
 }
 
 // sourceText reads the text one reference source writes, with the time that text was written: a
-// document's latest version's markdown (fromID its uuid) and that version's created_at, an ask's
-// question, a comment's body, or an issue message's body, with the row's edited_at where its table
-// has one (asks, comments) and its created_at otherwise. found is false when no such source
-// exists: a deleted row, a document with no markdown version, a direct message, which nothing
-// indexes. forUpdate takes the row read `for no key update`, the lock an edit of that text takes,
-// so the caller's index of the text and a concurrent edit of it are ordered.
+// document's latest version's markdown (fromID its uuid), an ask's question, a comment's body, or
+// an issue message's body. The time is the row's coalesce(edited_at, created_at) in each of the
+// three tables that records an edit - asks, comments and issue messages, whose edit is
+// PATCH /api/v1/messages/{id} - and the version's created_at for a document, since a stored
+// version is rewritten by nothing. found is false when no such source exists: a deleted row, a
+// document with no markdown version, a direct message, which nothing indexes.
+// forUpdate takes the row read `for no key update`, the lock an edit of that text takes, so the
+// caller's index of the text and a concurrent edit of it are ordered.
 func sourceText(ctx context.Context, q Queryer, kind, id string, forUpdate bool) (body string, writtenAt time.Time, found bool, err error) {
 	var query string
 	switch kind {
@@ -195,7 +197,7 @@ func sourceText(ctx context.Context, q Queryer, kind, id string, forUpdate bool)
 	case "comment":
 		query = `select body, coalesce(edited_at, created_at) from comments where id = $1::uuid`
 	case "message":
-		query = `select body, created_at from messages where id = $1::uuid and issue_key is not null`
+		query = `select body, coalesce(edited_at, created_at) from messages where id = $1::uuid and issue_key is not null`
 	default:
 		return "", time.Time{}, false, fmt.Errorf("read the text of %s %s: not a reference source", kind, id)
 	}

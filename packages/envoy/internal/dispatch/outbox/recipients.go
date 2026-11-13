@@ -195,12 +195,13 @@ func loadThreadRecipients(ctx context.Context, db queryer, what, query string, a
 }
 
 // takesPrimaryAuthors reports whether a person's comment event reaches the sessions of its issue's
-// primary document (addPrimaryDocumentAuthors): it is a comment.created or comment.edited, it
-// notifies (only a person's comment does, events.Broker.Notify), it names an issue, and that issue
-// has no route and no session claimant (routing), either of which hears it in their place. The
-// comment's thread does not matter.
+// primary document (addPrimaryDocumentAuthors): it is a comment.created, a comment.edited or a
+// comment.deleted, it notifies (only a person's comment does, events.Broker.Notify), it names an
+// issue, and that issue has no route and no session claimant (routing), either of which hears it
+// in their place. The comment's thread does not matter.
 func takesPrimaryAuthors(event model.Event, routing routing) bool {
-	if !event.Notify || (event.Type != "comment.created" && event.Type != "comment.edited") {
+	kind := event.Type
+	if !event.Notify || (kind != "comment.created" && kind != "comment.edited" && kind != "comment.deleted") {
 		return false
 	}
 	if event.IssueKey == nil || routing.claimant != "" {
@@ -225,8 +226,8 @@ func takesClaimantRoute(event model.Event, claimant string) bool {
 	}
 	switch event.Type {
 	case "ask.answered", "ask.handed_back", "ask.resolved",
-		"comment.created", "comment.edited", "comment.resolved", "comment.reopened",
-		"message.created", "message.answered":
+		"comment.created", "comment.edited", "comment.deleted", "comment.resolved", "comment.reopened",
+		"message.created", "message.answered", "message.edited", "message.deleted":
 		return true
 	}
 	return false

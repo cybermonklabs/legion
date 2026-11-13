@@ -8,10 +8,11 @@ import {
   cardHoverBorder,
   linkText,
   surfaceMutedBg,
+  textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-
 import { MarkdownPreview } from "./MarkdownPreview";
+import { DeletedBody, EditedMark } from "./PostBody";
 import { referenceSpans, trimReference } from "./reference-spans";
 import { useReferencePath, useReferenceTarget } from "./reference-target";
 import { buildDispatchReference, type DispatchReferenceRoute } from "./routes";
@@ -63,8 +64,14 @@ interface ReferenceCards {
   readonly github: readonly GitHubReference[];
 }
 
+/** A Dispatch reference's card: its title, and under it what the target says. A post its author
+ *  edited carries ` · edited` after its title, as its byline does. A post its author deleted
+ *  has neither title nor text left, so the deleted line is the card's title and nothing is drawn
+ *  under it; it never falls back to the words the body wrote, which would read as the post's. */
 function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
-  const { title, description, descriptionTree } = useReferenceTarget(card.route, { text: true });
+  const { title, deleted, description, descriptionTree, edited } = useReferenceTarget(card.route, {
+    text: true,
+  });
   const path = useReferencePath(card.route);
 
   return (
@@ -72,8 +79,21 @@ function DispatchUnfurl({ card }: { card: DispatchCard }): ReactNode {
       className={`block rounded-lg border px-3 py-2 text-sm ${surfaceMutedBg} ${borderDefault} ${cardHoverBorder}`}
       href={path}
     >
-      <span className={`block font-medium ${linkText}`}>{title ?? card.text}</span>
-      {description === undefined ? null : <Body markdown={description} tree={descriptionTree} />}
+      {deleted === null ? (
+        <>
+          <span className={`block font-medium ${linkText}`}>
+            {title ?? card.text}
+            <span className={`font-normal ${textMutedOnSurfaceMuted}`}>
+              <EditedMark at={edited} />
+            </span>
+          </span>
+          {description === undefined ? null : (
+            <Body markdown={description} tree={descriptionTree} />
+          )}
+        </>
+      ) : (
+        <DeletedBody className="block font-medium" deleted={deleted} />
+      )}
     </a>
   );
 }

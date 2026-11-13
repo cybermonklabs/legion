@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
-
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { api } from "../../api/client";
 import type {
   Agent,
@@ -53,6 +53,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,
@@ -93,6 +94,8 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
     author: { id: "alice", kind: "user" },
     body,
     created_at: "2026-10-12T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id,
@@ -259,4 +262,31 @@ test("a comment thread's card draws the quote it is anchored to and the thread w
   const turns = [...body.querySelectorAll("[data-inbox-thread-turn]")];
   expect(turns[0]?.hasAttribute("data-inbox-thread-unread")).toBe(false);
   expect(turns[1]?.hasAttribute("data-inbox-thread-unread")).toBe(true);
+});
+
+test("an inbox thread marks an edited message and reads a deleted one as deleted", async () => {
+  spy("listAgents", [session]);
+  spy("listAgentMessages", [
+    {
+      message: message("message-1", "Have a look at the build", {
+        edited_at: "2026-10-12T00:30:00Z",
+      }),
+      replies: [
+        message("reply-1", "", {
+          author: { id: "planner", kind: "session" },
+          created_at: "2026-10-12T01:00:00Z",
+          deleted_at: "2026-10-12T01:05:00Z",
+          deleted_by: { id: "planner", kind: "session" },
+          in_reply_to: "message-1",
+        }),
+      ],
+    } satisfies MessageRead,
+  ]);
+  renderCard(plannerAgentRow());
+
+  const body = await screen.findByTestId("inbox-thread-agent");
+  await waitFor(() => expect(body.textContent).toContain("Have a look at the build"));
+  const turns = [...body.querySelectorAll("[data-inbox-thread-turn]")];
+  expect(turns[0]?.textContent).toContain("edited");
+  await waitFor(() => expect(turns[1]?.textContent).toContain("Deleted by"));
 });

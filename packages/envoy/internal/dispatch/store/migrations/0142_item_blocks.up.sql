@@ -37,9 +37,13 @@ create table comment_blocks (
 create index comment_blocks_node_id on comment_blocks using hash (node_id);
 create index comment_blocks_comment_id_text on comment_blocks ((comment_id::text));
 
--- A message is never edited, so it has no revisions and no changed_revision: a block's made_at
--- and changed_at are both the message's created_at, and no reader shows a message block's changed
--- facts.
+-- A message records no revisions, so message_blocks has no changed_revision. When this was
+-- written no route edited a message either, so a block's made_at and changed_at were both the
+-- message's created_at and no reader showed a message block's changed facts;
+-- 20261110224508_post_corrections.up.sql adds PATCH /api/v1/messages/{id}, so a block now takes
+-- the time of the write that holds it first as its made_at and the write that last rewrote it as
+-- its changed_at (refs/item_blocks.go), and a reader of the block node shows both
+-- (refs/item_block_nodes.go).
 create table message_blocks (
   message_id uuid not null references messages (id) on delete cascade,
   block_id text not null,

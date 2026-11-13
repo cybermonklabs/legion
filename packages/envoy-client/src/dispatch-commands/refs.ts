@@ -5,6 +5,7 @@ import {
   dispatchDocumentRef,
   dispatchIssueRef,
   type ItemKind,
+  type Owner,
   type ParsedDispatchRef,
   parseDispatchRef,
 } from "../dispatch-owner";
@@ -48,6 +49,41 @@ export function messageIdOf(value: string): string | undefined {
       })()
     : value;
   return id === undefined ? undefined : normalizeUUID(id);
+}
+
+/** What `dispatch read --message`, `dispatch read --ref <message ref> --history` and the two
+ *  message corrections say of a value that names no message, named for the argument the caller
+ *  used: `message` for the corrections and the read's own `--message`, `ref` for the history
+ *  read, which resolves the message its `--ref` names. The corrections and the history read take
+ *  a prefix inside a reference as well, which the reference's own issue resolves; a bare id is
+ *  always the whole uuid, since nothing says which issue to resolve it against. */
+export const messageArgumentProblem = (argument: "message" | "ref"): string =>
+  `${argument} must be a full message id (uuid) or a dispatch://KEY/message/<id> reference`;
+
+/** A `dispatch://KEY/message/<id>` reference: a message lives on an issue, so its owner is one. */
+export type IssueMessageRef = ParsedDispatchRef & {
+  readonly owner: Extract<Owner, { kind: "issue" }>;
+};
+
+/** The message a `message` argument of `dispatch_edit_message` or `dispatch_delete_message`, or
+ *  the `ref` of a `dispatch_read` history read, names: the id - a full uuid, or, inside a
+ *  reference, the prefix `resolveMessageArgument` resolves against the reference's issue's
+ *  messages - and the reference itself, whose issue the message is then held to. Undefined for
+ *  anything else. */
+export function messageArgumentId(
+  value: string
+): { readonly id: string; readonly ref?: IssueMessageRef } | undefined {
+  if (!value.startsWith("dispatch://")) {
+    const bare = normalizeUUID(value);
+    return bare === undefined ? undefined : { id: bare };
+  }
+  const ref = parseDispatchRef(value);
+  if (ref?.kind !== "message") return undefined;
+  const full = normalizeUUID(ref.id);
+  const owner = ref.owner;
+  if (owner.kind !== "issue") return full === undefined ? undefined : { id: full };
+  if (full === undefined && !isIdPrefix(ref.id)) return undefined;
+  return { id: full ?? ref.id, ref: { ...ref, owner } };
 }
 
 /** A block reference to a part of an ask, or to a block of a comment or message: the item and
@@ -143,13 +179,14 @@ interface RefItem {
 }
 
 /**
- * Refuses an ask or comment a reference names under an owner it is not on. A full id is read as
- * it is, whatever owner the reference names, so the item read is held to that owner: its issue,
- * or for a project document's reference, that document (`documentId`, read only then).
+ * Refuses an ask, comment or message a reference names under an owner it is not on. A full id is
+ * read as it is, whatever owner the reference names, so the item read is held to that owner: its
+ * issue, or for a project document's reference, that document (`documentId`, read only then). A
+ * message is on an issue or on none, so only its issue is compared.
  */
 export async function refuseItemOffRef(
   tool: string,
-  kind: "ask" | "comment",
+  kind: "ask" | "comment" | "message",
   ref: ParsedDispatchRef,
   refText: string,
   item: RefItem,
@@ -172,7 +209,9 @@ export async function refuseItemOffRef(
   }
   const where =
     item.issue_key === null
-      ? "another document"
+      ? kind === "message"
+        ? "no issue: it is a message of a direct conversation"
+        : "another document"
       : `${item.issue_key}; name it dispatch://${item.issue_key}/${kind}/${item.id}`;
   throw new ToolInputError(tool, [
     `${refText} names ${kind} ${item.id} on ${refOwnerName(ref)}, but it is on ${where}`,
@@ -191,12 +230,13 @@ export interface PrefixCandidates<Item> {
 }
 
 /**
- * The full id an ask or comment reference names. A full uuid passes through; a unique prefix
- * is resolved against `list()`, the candidate set `ownerName` names; anything else is refused.
+ * The full id an ask, comment or message reference names. A full uuid passes through; a unique
+ * prefix is resolved against `list()`, the candidate set `ownerName` names; anything else is
+ * refused.
  */
 export async function resolveIdPrefix<Item extends { readonly id: string }>(
   tool: string,
-  kind: "ask" | "comment",
+  kind: "ask" | "comment" | "message",
   id: string,
   ownerName: string,
   list: () => Promise<readonly Item[]>,

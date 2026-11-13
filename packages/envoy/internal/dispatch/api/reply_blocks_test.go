@@ -446,6 +446,66 @@ func TestAMessageReplyNamesTheBlockItAnswers(t *testing.T) {
 	}
 }
 
+// requireQuotedPostMark fails unless block is the quote of a post in the state step names: no
+// mark while the post stands, and once alice deleted it the block removed with no text and her
+// delete's mark, so a reply's quote says the post is deleted rather than that one block is gone.
+func requireQuotedPostMark(t *testing.T, step string, block *model.ReplyBlock, deleted bool) {
+	t.Helper()
+	switch {
+	case block == nil:
+		t.Fatalf("%s: reply_block = null, want the block the reply names", step)
+	case !deleted && (block.DeletedAt != nil || block.DeletedBy != nil):
+		t.Fatalf("%s: reply_block %s carries the mark %v by %v while its post stands", step, describeReplyBlock(block), block.DeletedAt, block.DeletedBy)
+	case deleted && (!block.Removed || block.Text != ""):
+		t.Fatalf("%s: reply_block = %s, want it removed with no part of the deleted body", step, describeReplyBlock(block))
+	case deleted && (block.DeletedAt == nil || block.DeletedBy == nil || block.DeletedBy.ID != "alice"):
+		t.Fatalf("%s: reply_block mark = %v by %v, want alice's delete of the quoted post", step, block.DeletedAt, block.DeletedBy)
+	}
+}
+
+// A reply that names a block of a comment or an issue message its author then deleted reads that
+// block with the post's delete mark, on the thread's read and on the reply's own, so the quote
+// says the parent is deleted rather than showing the block as merely removed.
+func TestAReplysQuoteOfADeletedPostCarriesThePostsMark(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Quotes of a deleted post", "before")
+
+	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One.\n\nTwo."}, "alice")
+	reply := createThreadComment(t, handler, issue.Key, map[string]any{
+		"body": "On two.", "reply_to": root.ID, "reply_to_block": "b2",
+	}, "bob")
+	commentQuotes := func(deleted bool) {
+		t.Helper()
+		thread := readCommentThread(t, handler, root.ID)
+		if len(thread.Replies) != 1 || thread.Replies[0].ID != reply.ID {
+			t.Fatalf("the thread's replies = %#v, want the reply", thread.Replies)
+		}
+		requireQuotedPostMark(t, "the comment thread's reply", thread.Replies[0].ReplyBlock, deleted)
+		requireQuotedPostMark(t, "the comment reply read by its own id", readCommentThread(t, handler, reply.ID).Comment.ReplyBlock, deleted)
+	}
+	commentQuotes(false)
+	deleteThreadComment(t, handler, root.ID, "alice")
+	commentQuotes(true)
+
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "One.\n\nTwo."}, "alice")
+	answer := createIssueMessage(t, handler, issue.Key, map[string]any{
+		"body": "On two.", "in_reply_to": message.ID, "in_reply_to_block": "b2",
+	}, "bob")
+	messageQuotes := func(deleted bool) {
+		t.Helper()
+		thread := decodeBody[messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+message.ID, nil, "alice"))
+		if len(thread.Replies) != 1 || thread.Replies[0].Message.ID != answer.ID {
+			t.Fatalf("the message thread's replies = %#v, want the reply", thread.Replies)
+		}
+		requireQuotedPostMark(t, "the message thread's reply", replyBlockOf(thread.Replies[0].ReplyBlock), deleted)
+		byID := decodeBody[messageRead](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/messages/"+answer.ID, nil, "alice"))
+		requireQuotedPostMark(t, "the message reply read by its own id", replyBlockOf(byID.Message.ReplyBlock), deleted)
+	}
+	messageQuotes(false)
+	deleteIssueMessage(t, handler, message.ID, "alice")
+	messageQuotes(true)
+}
+
 // A7's last sentence: a reply an older build wrote, with no block state, still shows after the
 // reconciliation indexes it: under the comment it answers and under the ask, on the comment read,
 // the ask read and ?to=, each naming no block.

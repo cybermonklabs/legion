@@ -9,6 +9,8 @@ import { eventDescription } from "../issue/event-description";
 import { AgentParts, AskResolutionLine } from "../refs/AgentName";
 import { askResolutionReason } from "../refs/actor";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { buildIssuePath, buildReferencePath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -159,14 +161,18 @@ export function EventBody({
     event.type === "comment.answered"
   ) {
     const message = event.type.startsWith("message.");
+    const deleted = postDeletion(event.payload);
     // A body is bounded block by block, so one event carries its first part alone and says so
     // (`body_truncated`). The reader is given the text the event holds and the page that reads
-    // the stored body whole.
-    const whole = event.payload.body_truncated === true ? wholeItemPath(event) : undefined;
+    // the stored body whole. A deleted post's event carries neither field: the read of the
+    // event took them out, so the deleted line stands there and no "whole" link follows it.
+    const whole =
+      deleted === null && event.payload.body_truncated === true ? wholeItemPath(event) : undefined;
     return (
       <>
-        <MarkdownBody
-          markdown={event.payload.body}
+        <PostBody
+          deleted={deleted}
+          markdown={event.payload.body ?? ""}
           onRendered={onRendered}
           source={textSourceOf(message ? "message" : "comment", event.payload.id)}
           tree={payloadTree(event, "payload.body")}

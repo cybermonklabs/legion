@@ -1482,7 +1482,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on a document or one of its quotes.",
+        "description": "Comment on a document or one of its quotes. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1ArtifactsByIdComments",
         "parameters": [
           {
@@ -3126,8 +3126,63 @@
         },
         "x-auth": "any"
       },
+      "delete": {
+        "description": "Delete a comment: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The comment keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/comments/{id}/history reads the mark in its place. A suggestion of it still pending is rejected out of the document before the body goes, so an insert suggestion's text leaves the document with it; the suggestion's replacement text goes with the body, each block is removed with its excerpt cleared and the text every revision recorded of it cleared too, the margin mark is projected again with no text, and every mention attempt still pending is failed, 'not sent: the post was deleted'. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED.",
+        "operationId": "deleteApiV1CommentsById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
       "patch": {
-        "description": "Edit a comment's body. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text.",
+        "description": "Edit a comment's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The body it replaces is kept and GET /api/v1/comments/{id}/history reads it. The dashboard editor also sends blocks ([{id, from}], from in UTF-16 code units into the new body) and base_revision, the revision GET /api/v1/comments/{id}/blocks gave, so each block keeps its id; without them the ids follow the text.",
         "operationId": "patchApiV1CommentsById",
         "parameters": [
           {
@@ -3180,9 +3235,6 @@
           }
         },
         "x-auth": "any",
-        "x-oauth-scopes": [
-          "person"
-        ],
         "x-write-scope": "project"
       }
     },
@@ -3349,6 +3401,60 @@
         },
         "x-auth": "any",
         "x-write-scope": "project"
+      }
+    },
+    "/api/v1/comments/{id}/history": {
+      "get": {
+        "description": "Every body an edit or a delete of this comment replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read by whoever reads the comment, which is any authenticated caller. At most 200 rows in one answer; ?before=\u003cRFC3339 time\u003e answers the page after, the rows written before it. A comment nobody edited answers an empty list, and a deleted comment answers the mark with every body empty, since no read of a deleted post gives its text.",
+        "operationId": "getApiV1CommentsByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostHistoryRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/comments/{id}/reject": {
@@ -4689,7 +4795,7 @@
     },
     "/api/v1/going/catalogue": {
       "get": {
-        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
+        "description": "The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty-four of the thirty-seven tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty-four actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it.",
         "operationId": "getApiV1GoingCatalogue",
         "parameters": [
           {
@@ -6233,7 +6339,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask.",
+        "description": "Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. A reply to a deleted comment is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1IssuesByKeyComments",
         "parameters": [
           {
@@ -6759,7 +6865,7 @@
         "x-auth": "any"
       },
       "post": {
-        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block.",
+        "description": "Post an issue message; target and delivery address a session or role. A reply names the message it answers in in_reply_to, and one block of it in in_reply_to_block. A reply to a deleted message is 409 POST_DELETED: a withdrawn post takes no new text.",
         "operationId": "postApiV1IssuesByKeyMessages",
         "parameters": [
           {
@@ -8453,6 +8559,117 @@
           }
         },
         "x-auth": "any"
+      },
+      "delete": {
+        "description": "Delete an issue message: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing. The message keeps its row and its place in its thread, and every read of it gives deleted_at and deleted_by and no body; the body it held is kept, and GET /api/v1/messages/{id}/history reads the mark in its place. Each block is removed with its excerpt cleared, and every send still pending is failed, 'not sent: the post was deleted'. A message of a closed issue is deleted too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a second delete is 409 POST_DELETED.",
+        "operationId": "deleteApiV1MessagesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActorInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
+      },
+      "patch": {
+        "description": "Edit an issue message's body: its author alone (403 NOT_AUTHOR). A session names itself in actor where its credential proves none; a person's own credential - a browser cookie, or a personal token holding the person scope - is that person and names nothing, as the comment edit reads it. The body it replaces is kept and GET /api/v1/messages/{id}/history reads it; the block ids follow the text, since no editor carries them through the edit. A message of a closed issue is edited too. A message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a deleted message 409 POST_DELETED.",
+        "operationId": "patchApiV1MessagesById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditMessageInput"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any",
+        "x-write-scope": "project"
       }
     },
     "/api/v1/messages/{id}/blocks": {
@@ -8624,6 +8841,60 @@
         },
         "x-auth": "bearer",
         "x-write-scope": "session"
+      }
+    },
+    "/api/v1/messages/{id}/history": {
+      "get": {
+        "description": "Every body an edit or a delete of this message replaced, newest first, each with the actor that replaced it and the time: {deleted_at, deleted_by, entries: [{body, edited_by, edited_at}]}. Read under GET /api/v1/messages/{id}'s rule: a credential without the person scope reading a direct message names its session in ?session= (400 SESSION_REQUIRED, 403 THREAD_FORBIDDEN). At most 200 rows in one answer; ?before=\u003cRFC3339 time\u003e answers the page after, the rows written before it. A message nobody edited answers an empty list, and a deleted message answers the mark with every body empty, since no read of a deleted post gives its text.",
+        "operationId": "getApiV1MessagesByIdHistory",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostHistoryRead"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
       }
     },
     "/api/v1/messages/{id}/reply": {
@@ -11344,6 +11615,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -11450,6 +11738,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -15150,6 +15440,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -15250,6 +15557,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -15476,6 +15785,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -15576,6 +15902,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -15646,6 +15974,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/CommentDelivery"
@@ -15746,6 +16091,8 @@
           "resolved_by",
           "resolved_at",
           "edited_at",
+          "deleted_at",
+          "deleted_by",
           "suggestion",
           "created_at",
           "mentions",
@@ -18662,6 +19009,16 @@
       },
       "EditCommentInput": {
         "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "base_revision": {
             "type": [
               "null",
@@ -18717,6 +19074,27 @@
           "code",
           "error",
           "participants"
+        ],
+        "type": "object"
+      },
+      "EditMessageInput": {
+        "properties": {
+          "actor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "body": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
         ],
         "type": "object"
       },
@@ -19133,7 +19511,18 @@
           "changed_version": {
             "type": "integer"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "document": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
             "type": "string"
           },
           "id": {
@@ -19244,7 +19633,18 @@
           "changed_version": {
             "type": "integer"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "document": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
             "type": "string"
           },
           "id": {
@@ -21736,6 +22136,106 @@
         ],
         "type": "object"
       },
+      "Message": {
+        "properties": {
+          "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "body": {
+            "type": "string"
+          },
+          "broadcast_id": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deliveries": {
+            "items": {
+              "$ref": "#/components/schemas/MessageDelivery"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "in_reply_to": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "issue_key": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "reply_block": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReplyBlock"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "issue_key",
+          "author",
+          "body",
+          "target",
+          "in_reply_to",
+          "broadcast_id",
+          "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
+          "deliveries",
+          "reply_block"
+        ],
+        "type": "object"
+      },
       "MessageDelivery": {
         "properties": {
           "accepted_as": {
@@ -21913,6 +22413,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/MessageDelivery"
@@ -21924,6 +22441,13 @@
           },
           "duplicate": {
             "type": "boolean"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
           },
           "id": {
             "type": "string"
@@ -21966,6 +22490,9 @@
           "in_reply_to",
           "broadcast_id",
           "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
           "deliveries",
           "reply_block"
         ],
@@ -22002,6 +22529,23 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "deliveries": {
             "items": {
               "$ref": "#/components/schemas/MessageDelivery"
@@ -22009,6 +22553,13 @@
             "type": [
               "array",
               "null"
+            ]
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
             ]
           },
           "id": {
@@ -22052,6 +22603,9 @@
           "in_reply_to",
           "broadcast_id",
           "created_at",
+          "edited_at",
+          "deleted_at",
+          "deleted_by",
           "deliveries",
           "reply_block"
         ],
@@ -22131,6 +22685,17 @@
               "type"
             ],
             "type": "object"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
           },
           "id": {
             "type": "string"
@@ -22287,6 +22852,13 @@
             "format": "date-time",
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "first_line": {
             "type": "string"
           },
@@ -22311,12 +22883,23 @@
           "anchor": {
             "$ref": "#/components/schemas/Anchor"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "dismissed_at": {
             "format": "date-time",
             "type": "string"
           },
           "document": {
             "$ref": "#/components/schemas/OpenAskDocument"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
           },
           "issue": {
             "$ref": "#/components/schemas/OpenAskIssue"
@@ -22788,6 +23371,62 @@
         },
         "required": [
           "signins"
+        ],
+        "type": "object"
+      },
+      "PostHistoryEntry": {
+        "properties": {
+          "body": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "edited_by": {
+            "$ref": "#/components/schemas/Actor"
+          }
+        },
+        "required": [
+          "body",
+          "edited_by",
+          "edited_at"
+        ],
+        "type": "object"
+      },
+      "PostHistoryRead": {
+        "properties": {
+          "deleted_at": {
+            "format": "date-time",
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "deleted_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Actor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/PostHistoryEntry"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "deleted_at",
+          "deleted_by",
+          "entries"
         ],
         "type": "object"
       },
@@ -23473,6 +24112,13 @@
           "block_id": {
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "node": {
             "type": "string"
           },
@@ -23498,6 +24144,13 @@
         "properties": {
           "block_id": {
             "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
           },
           "node": {
             "type": "string"
@@ -24073,6 +24726,10 @@
           "block_id": {
             "type": "string"
           },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "href": {
             "type": "string"
           },
@@ -24129,6 +24786,13 @@
             "type": "string"
           },
           "author": {
+            "$ref": "#/components/schemas/Actor"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
             "$ref": "#/components/schemas/Actor"
           },
           "dispatch_words": {

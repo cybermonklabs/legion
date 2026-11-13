@@ -4,6 +4,8 @@ import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import type { PostDeletion } from "../refs/post-marks";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
@@ -29,7 +31,12 @@ export function passageItem<T extends { readonly id: string }>(
  *
  *  A reply that names one block of its parent (`block`, the reply's `reply_block`) quotes that
  *  passage instead, worded `Replying to <author>'s passage — <text>`; once the parent's edit
- *  removed the passage, the quote says so in place of its text.
+ *  removed the passage, the quote says so in place of its text. Once the parent's author
+ *  deleted the parent, the quote says that instead of either, since a delete gives no part of
+ *  the body to any read that quotes it.
+ *
+ *  A parent its author edited carries ` · edited` after its author's name, as its own byline
+ *  does (`edited`); without a loaded parent there is no author and no edit to mark.
  *
  *  The author is drawn by `AgentName`, whose name links to the agent, so it sits outside the
  *  quote's link, which holds the rest: the body, or with no author the whole line. */
@@ -37,6 +44,8 @@ export function ReplyQuote({
   author,
   block,
   className = "",
+  deleted = null,
+  edited,
   excerpt,
   excerptTree,
   to,
@@ -45,6 +54,11 @@ export function ReplyQuote({
   /** The block of the parent the reply answers; null or absent when it answers the whole. */
   block?: ReplyBlockWithTrees | null;
   className?: string;
+  /** The parent's deletion, where the host read one; null for a parent nobody deleted. */
+  deleted?: PostDeletion | null;
+  /** When the parent's author last replaced its body, where the host read the parent; null or
+   *  absent for a parent nobody edited. */
+  edited?: string | null;
   /** The quoted parent's body as its author wrote it (Markdown); `""` when none is known. */
   excerpt: string;
   /** The reading Go made of `excerpt`, which the quote draws; absent where the caller holds no
@@ -59,7 +73,12 @@ export function ReplyQuote({
   // The dash opens the quoted body, so the body is never an element of its own text: a reader
   // (or a test) matching the parent's body finds the parent's turn, not its every quote.
   const quoted =
-    passage && block.removed ? (
+    deleted !== null ? (
+      <span className="block truncate">
+        {author === undefined ? `${unknownParent} — ` : "— "}
+        <DeletedBody deleted={deleted} />
+      </span>
+    ) : passage && block.removed ? (
       <span className="block truncate">
         {author === undefined ? `${unknownParent} — ` : "— "}
         This passage was removed.
@@ -79,6 +98,7 @@ export function ReplyQuote({
         <span className="min-w-0 truncate">
           Replying to <AgentName actor={author} inline />
           {passage ? "'s passage" : ""}
+          <EditedMark at={edited} deleted={deleted} />
           {quoted === null ? "" : " "}
         </span>
       )}

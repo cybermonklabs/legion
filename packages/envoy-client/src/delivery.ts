@@ -8,6 +8,7 @@ import {
   agentSubject,
   ChildStatusEventPayloadSchema as ChildStatusPayloadSchema,
   CommentEventPayloadSchema as CommentPayloadSchema,
+  type CommentRead,
   DELIVERY_DUPLICATE_WINDOW_MS,
   type DeliveryCapability,
   DISPATCH_DOCUMENT_TOPIC_PREFIX,
@@ -26,10 +27,12 @@ import {
   IssueEventPayloadSchema as IssuePayloadSchema,
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
+  type MessageRead,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
+import { deletedMark } from "./actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
@@ -573,27 +576,30 @@ function carriedBodyNote(event: DispatchEvent): string | undefined {
 /** The whole body of a comment or message, read from the server. Undefined when the read fails
  *  or its answer does not hold the item, so the caller keeps the part its event carried: a body
  *  the server will not answer is still better read in part than not at all. A direct message,
- *  which belongs to no issue, is read through the session it was delivered to. */
+ *  which belongs to no issue, is read through the session it was delivered to. An item its
+ *  author deleted since answers the deleted line every read prints for one (`deletedMark`) in
+ *  place of the body the delete cleared; an edited one answers its current body, unmarked. */
 export async function wholeCarriedBody(
   client: DispatchClient,
   item: CarriedItem,
   session?: string
 ): Promise<string | undefined> {
   try {
+    let posts: readonly (CommentRead["comment"] | MessageRead["message"])[];
     if (item.resource === "comment") {
       const read = await client.getComment(item.id);
-      return [read.comment, ...(read.replies ?? [])].find((comment) => comment.id === item.id)
-        ?.body;
+      posts = [read.comment, ...(read.replies ?? [])];
+    } else {
+      if (item.issueKey === null && session === undefined) return undefined;
+      const read =
+        item.issueKey === null
+          ? await client.getMessageThread(item.id, session)
+          : await client.getMessage(item.issueKey, item.id);
+      posts = [read.message, ...(read.replies ?? [])];
     }
-    const read =
-      item.issueKey === null
-        ? session === undefined
-          ? undefined
-          : await client.getMessageThread(item.id, session)
-        : await client.getMessage(item.issueKey, item.id);
-    return read === undefined
-      ? undefined
-      : [read.message, ...(read.replies ?? [])].find((message) => message.id === item.id)?.body;
+    const post = posts.find((candidate) => candidate.id === item.id);
+    if (post === undefined) return undefined;
+    return post.deleted_at == null ? post.body : deletedMark(post.deleted_at, post.deleted_by);
   } catch {
     return undefined;
   }
@@ -656,11 +662,14 @@ const DISPATCH_PAYLOAD_SCHEMAS: Readonly<Record<string, z.ZodType>> = {
   "comment.resolved": CommentPayloadSchema,
   "comment.reopened": CommentPayloadSchema,
   "comment.edited": CommentPayloadSchema,
+  "comment.deleted": CommentPayloadSchema,
   "suggestion.accepted": CommentPayloadSchema,
   "suggestion.rejected": CommentPayloadSchema,
   "message.created": MessagePayloadSchema,
   "message.delivery": MessageDeliveryPayloadSchema,
   "message.answered": MessagePayloadSchema,
+  "message.edited": MessagePayloadSchema,
+  "message.deleted": MessagePayloadSchema,
   "child.status": ChildStatusPayloadSchema,
 };
 function topicDocument(
@@ -929,8 +938,9 @@ function isObject(value: unknown): value is Readonly<Record<string, unknown>> {
 }
 
 /** `event` with the whole body of the item it carried only the first part of, or none of: the
- *  body the server answered, and neither flag that said the body on the event was not the
- *  item's own (`bodyWasCut`). The event is left as it arrived when the caller read no body. */
+ *  body the server answered, or the deleted line for an item deleted since (`wholeCarriedBody`),
+ *  and neither flag that said the body on the event was not the item's own (`bodyWasCut`). The
+ *  event is left as it arrived when the caller read no body. */
 function withWholeBody(event: DispatchEvent, body: string | undefined): DispatchEvent {
   if (body === undefined || !isObject(event.payload) || !bodyWasCut(event.payload)) return event;
   const { body_truncated: _cut, payload_omitted: _omitted, ...carried } = event.payload;

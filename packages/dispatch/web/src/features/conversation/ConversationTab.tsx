@@ -50,7 +50,8 @@ import {
   useAgentText,
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -229,7 +230,8 @@ function ConversationReply({
       author={reply.author}
       body={
         <>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(reply)}
             markdown={reply.body}
             source={textSourceOf("message", reply.id)}
             tree={reply.body_tree}
@@ -238,6 +240,8 @@ function ConversationReply({
         </>
       }
       current={reply.id === currentReplyId}
+      deleted={postDeletion(reply)}
+      edited={reply.edited_at}
       markRef={markRef}
       delivery={
         lastAttempt === undefined
@@ -259,6 +263,8 @@ function ConversationReply({
       quote={{
         author: parent?.author,
         block: reply.reply_block,
+        deleted: postDeletion(parent),
+        edited: parent?.edited_at,
         excerpt: parent?.body ?? "",
         excerptTree: parent?.body_tree,
         to:
@@ -362,10 +368,14 @@ function MessageTurn({
         <div className="min-w-0 flex-1">
           <p className={`flex items-baseline gap-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={author} className="font-semibold" inline />
-            <Timestamp at={item.root.created_at} />
+            <span>
+              <Timestamp at={item.root.created_at} />
+              <EditedMark at={item.root.edited_at} deleted={postDeletion(item.root)} />
+            </span>
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(item.root)}
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}
@@ -859,11 +869,15 @@ function TargetedMessageTurn({
         <>
           <p className={`flex flex-wrap items-center gap-x-2 text-sm ${textSecondaryOnSurface}`}>
             <AgentName actor={asker} className="font-semibold" inline />
-            <Timestamp at={item.root.created_at} />
+            <span>
+              <Timestamp at={item.root.created_at} />
+              <EditedMark at={item.root.edited_at} deleted={postDeletion(item.root)} />
+            </span>
             <CopyRefButton route={{ id: item.root.id, key: issueKey, kind: "message" }} />
             {item.unread ? <UnreadMark /> : null}
           </p>
-          <MarkdownBody
+          <PostBody
+            deleted={postDeletion(item.root)}
             markdown={item.root.body}
             source={textSourceOf("message", item.root.id)}
             tree={item.root.body_tree}

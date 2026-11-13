@@ -90,6 +90,10 @@ export const commentFields = {
   resolved_by: ActorSchema.nullable(),
   resolved_at: z.string().nullable(),
   edited_at: z.string().nullable(),
+  /** When the comment's author deleted it, and who they are: the body is cleared and every read
+   *  of the comment gives the mark and no body. Null on every comment that stands. */
+  deleted_at: z.string().nullable(),
+  deleted_by: ActorSchema.nullable(),
   suggestion: SuggestionSchema.nullable(),
   created_at: z.string(),
   mentions: z.array(WrittenCommentMentionSchema),
@@ -106,13 +110,26 @@ export const CommentSchema = z.strictObject(commentFields).readonly();
  * The payload of every `comment.*` event. It is the comment row as it stood when the event was
  * written, and events are retained verbatim, so the row's later additions are optional here:
  * `mentions` and `deliveries` were added on 2026-09-18 (#1188), and every comment event recorded
- * before that day carries neither. A read row (`Comment`) always has both. `thread_logins` (the
- * comment's ask, else its root) is carried by `comment.created` and `comment.answered`.
+ * before that day carries neither; `deleted_at` and `deleted_by` were added by the post
+ * corrections, and every comment event recorded before them carries neither. A read row
+ * (`Comment`) always has all four. `thread_logins` (the comment's ask, else its root) is carried
+ * by `comment.created` and `comment.answered`.
  */
 export const commentEventPayloadFields = {
   ...commentFields,
   mentions: z.array(WrittenCommentMentionSchema).optional(),
   deliveries: z.array(WrittenCommentDeliverySchema).optional(),
+  /** The comment's body, and a suggestion's replacement text with it. Every comment row has
+   *  both, but a deleted comment's events carry neither: the read of the event takes `body`,
+   *  `body_truncated` and `suggestion` out of the payload (`attachDeletedPostFields` in
+   *  `api/events.go`), so both are optional here. */
+  body: commentFields.body.optional(),
+  suggestion: commentFields.suggestion.optional(),
+  /** When the comment's author deleted it, and who they are; both absent on a comment nobody
+   *  deleted and on every event written before the post corrections. The read of a deleted
+   *  comment's event stamps these two where the body was. */
+  deleted_at: commentFields.deleted_at.optional(),
+  deleted_by: commentFields.deleted_by.optional(),
   artifact_name: z.string(),
   /** The document owner for an artifact comment, including direct author routes. */
   project_key: z.string().optional(),
@@ -174,6 +191,11 @@ export const CommentEventPayloadSchema = z
     suggestion: z.object({ replace_with: suggestionFields.replace_with.optional() }).nullish(),
     author: InboundActorSchema.optional(),
     created_at: commentFields.created_at.optional(),
+    // The mark of a post its author deleted: absent on a live post and on every event written
+    // before the post corrections, and set on each event of a deleted one, whose body the read
+    // of the event takes out of the payload.
+    deleted_at: commentFields.deleted_at.optional(),
+    deleted_by: InboundActorSchema.nullish(),
     mentions: z.array(CommentMentionSchema).optional(),
     deliveries: z.array(CommentDeliverySchema).optional(),
     reply_block: ReplyBlockSchema.nullish(),

@@ -35,8 +35,8 @@ import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
-import { MarkdownBody } from "../refs/MarkdownBody";
-import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark, PostBody, PostPreview } from "../refs/PostBody";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -142,6 +142,38 @@ export interface ThreadCardProps {
   onEditingChange(id: string | undefined): void;
 }
 
+/** The collapsed card's preview of its root, and beside it the ` · edited` the expanded card's
+ *  byline carries: a collapsed card draws no byline, so the mark sits after the text it marks,
+ *  outside the clamp that would cut it. */
+function CollapsedRootPreview({
+  className = "",
+  comment,
+  deleted,
+  lines,
+}: {
+  className?: string;
+  comment: ThreadComment;
+  deleted: PostDeletion | null;
+  lines: 1 | 2;
+}): ReactNode {
+  return (
+    <span className={`flex min-w-0 items-baseline gap-1 ${className}`}>
+      <PostPreview
+        className="min-w-0 flex-1"
+        deleted={deleted}
+        lines={lines}
+        links="live"
+        markdown={comment.body}
+        source={textSourceOf("comment", comment.id)}
+        tree={comment.body_tree}
+      />
+      <span className={`shrink-0 text-xs ${textMutedOnSurfaceMuted}`}>
+        <EditedMark at={comment.edited_at} deleted={deleted} />
+      </span>
+    </span>
+  );
+}
+
 function CommentBody({
   artifactSlug,
   comment,
@@ -156,6 +188,7 @@ function CommentBody({
   showReference: boolean;
 }): ReactNode {
   const anchor = comment.anchor;
+  const deleted = postDeletion(comment);
   const suggestion = comment.suggestion;
   const reference = itemRoute("comment", comment, owner.kind === "document" ? owner : undefined);
   let orphanNotice: ReactNode = null;
@@ -197,7 +230,8 @@ function CommentBody({
       )}
       {orphanNotice}
       {suggestion === null ? (
-        <MarkdownBody
+        <PostBody
+          deleted={deleted}
           markdown={comment.body}
           source={textSourceOf("comment", comment.id)}
           tree={comment.body_tree}
@@ -208,7 +242,8 @@ function CommentBody({
           <SuggestionDiff clamp={false} quote={anchor.quote} suggestion={suggestion} />
           {comment.body === "Suggested replacement." ? null : (
             <div className={`font-sans ${textSecondaryOnSurface}`}>
-              <MarkdownBody
+              <PostBody
+                deleted={deleted}
                 markdown={comment.body}
                 source={textSourceOf("comment", comment.id)}
                 tree={comment.body_tree}
@@ -221,7 +256,7 @@ function CommentBody({
       <p className={`mt-2 flex flex-wrap items-center gap-x-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
           <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
-          {comment.edited_at === null ? null : " · edited"}
+          <EditedMark at={comment.edited_at} deleted={deleted} />
         </span>
         {showReference && reference !== undefined ? <CopyRefButton route={reference} /> : null}
       </p>
@@ -260,6 +295,7 @@ export function ThreadCard({
   const { focusBlock } = useMargin();
   const active = expanded || selected;
   const root = thread.root.comment;
+  const rootDeleted = postDeletion(root);
   const rootSuggestion = root.suggestion;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
@@ -292,6 +328,8 @@ export function ThreadCard({
     order: threadOrder,
     replies: thread.replies,
   });
+  // The thread's posts, root first: the post a reply quotes is looked up among them.
+  const threadItems = [root, ...thread.replies];
   // An edit whose save is out, or was refused, is the held-send store's: its editor stays open on
   // its comment until the save lands or the reader drops it, whatever closed the card meanwhile.
   const heldEdits = useHeldSendsUnder(COMMENT_EDIT_SEND_KEY);
@@ -308,9 +346,12 @@ export function ThreadCard({
       saveEdit={onEdit}
     />
   );
+  /* A deleted post takes no new text: the server refuses an edit of one (409), so its author is
+     offered none and the editor never opens on an empty body. */
   const editButton = (comment: ThreadComment) =>
     savingCommentEditId === undefined &&
     !isClosed &&
+    postDeletion(comment) === null &&
     comment.author.kind === "user" &&
     comment.author.id === viewerLogin ? (
       <button
@@ -327,26 +368,28 @@ export function ThreadCard({
      and sends there too (`closed` only hides the kinds a closed issue refuses), while Resolve,
      Reopen, Edit, Accept and Reject stay hidden; on a decided suggestion's thread, which offers
      no reply, it shows only a reply of its own still out or its refusal, and still sends
-     (`finishing`). `contents`, so the composer's own box is the one laid out. It sits next to
-     the newest message: under the root in Newest first, at the foot of the thread in Oldest
-     first. */
-  const replyComposer = expanded ? (
-    <div className="contents" hidden={hideReplyComposer}>
-      <MentionComposer
-        closed={isClosed}
-        finishing={terminalSuggestion}
-        frame={composerClassName}
-        inline
-        kind="comment"
-        mutationKey={replyMutationKey}
-        onCancelReply={onToggle}
-        onClose={onToggle}
-        onSent={() => {}}
-        owner={composerOwner(owner)}
-        replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
-      />
-    </div>
-  ) : null;
+     (`finishing`). A deleted root takes no reply either - the server refuses one (409) - so the
+     composer stays away from it. `contents`, so the composer's own box is the one laid out. It
+     sits next to the newest message: under the root in Newest first, at the foot of the thread
+     in Oldest first. */
+  const replyComposer =
+    expanded && rootDeleted === null ? (
+      <div className="contents" hidden={hideReplyComposer}>
+        <MentionComposer
+          closed={isClosed}
+          finishing={terminalSuggestion}
+          frame={composerClassName}
+          inline
+          kind="comment"
+          mutationKey={replyMutationKey}
+          onCancelReply={onToggle}
+          onClose={onToggle}
+          onSent={() => {}}
+          owner={composerOwner(owner)}
+          replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+        />
+      </div>
+    ) : null;
 
   return (
     <>
@@ -476,44 +519,52 @@ export function ThreadCard({
             {composerFirst ? replyComposer : null}
             {shown.length === 0 ? null : (
               <ol aria-label="Replies" className={`mt-3 space-y-2 border-t pt-3 ${borderDefault}`}>
-                {shown.map((reply) => (
-                  <li
-                    aria-current={reply.id === currentReplyId ? "true" : undefined}
-                    className={`rounded-lg p-2 ${card}`}
-                    data-reply=""
-                    key={reply.id}
-                    ref={reply === newestReply ? markRead : undefined}
-                    style={{ marginLeft: "0px" }}
-                  >
-                    {editing(reply) ? (
-                      renderEditor(reply)
-                    ) : (
-                      <>
-                        {reply.reply_block == null ? null : (
-                          <ReplyQuote
-                            author={
-                              passageItem(reply.reply_block, [root, ...thread.replies])?.author
-                            }
-                            block={reply.reply_block}
-                            className="mb-2"
-                            excerpt=""
+                {shown.map((reply) => {
+                  // The quoted post, read once: its author names the quote, and its deletion and
+                  // its edit mark it.
+                  const quoted =
+                    reply.reply_block == null
+                      ? undefined
+                      : passageItem(reply.reply_block, threadItems);
+                  return (
+                    <li
+                      aria-current={reply.id === currentReplyId ? "true" : undefined}
+                      className={`rounded-lg p-2 ${card}`}
+                      data-reply=""
+                      key={reply.id}
+                      ref={reply === newestReply ? markRead : undefined}
+                      style={{ marginLeft: "0px" }}
+                    >
+                      {editing(reply) ? (
+                        renderEditor(reply)
+                      ) : (
+                        <>
+                          {reply.reply_block == null ? null : (
+                            <ReplyQuote
+                              author={quoted?.author}
+                              block={reply.reply_block}
+                              className="mb-2"
+                              deleted={postDeletion(quoted)}
+                              edited={quoted?.edited_at}
+                              excerpt=""
+                            />
+                          )}
+                          <CommentBody
+                            artifactSlug={artifactSlug}
+                            comment={reply}
+                            owner={owner}
+                            showOrphan={false}
+                            showReference={showReference}
                           />
-                        )}
-                        <CommentBody
-                          artifactSlug={artifactSlug}
-                          comment={reply}
-                          owner={owner}
-                          showOrphan={false}
-                          showReference={showReference}
-                        />
-                        {renderDeliveries?.(reply)}
-                      </>
-                    )}
-                    {editing(reply) ? null : (
-                      <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
-                    )}
-                  </li>
-                ))}
+                          {renderDeliveries?.(reply)}
+                        </>
+                      )}
+                      {editing(reply) ? null : (
+                        <div className="mt-2 flex gap-3 text-sm">{editButton(reply)}</div>
+                      )}
+                    </li>
+                  );
+                })}
               </ol>
             )}
           </>
@@ -545,13 +596,11 @@ export function ThreadCard({
                     <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
                   </span>
                   {root.body === "Suggested replacement." ? null : (
-                    <MarkdownPreview
+                    <CollapsedRootPreview
                       className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                      comment={root}
+                      deleted={rootDeleted}
                       lines={1}
-                      links="live"
-                      markdown={root.body}
-                      source={textSourceOf("comment", root.id)}
-                      tree={root.body_tree}
                     />
                   )}
                 </>
@@ -564,13 +613,7 @@ export function ThreadCard({
                       {root.anchor.quote}
                     </blockquote>
                   )}
-                  <MarkdownPreview
-                    lines={2}
-                    links="live"
-                    markdown={root.body}
-                    source={textSourceOf("comment", root.id)}
-                    tree={root.body_tree}
-                  />
+                  <CollapsedRootPreview comment={root} deleted={rootDeleted} lines={2} />
                   <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
                 </>
               )}

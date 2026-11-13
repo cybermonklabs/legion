@@ -27,6 +27,7 @@ import {
   pinnedConversations,
   pinnedEventIds,
 } from "../issue/pins";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
@@ -104,11 +105,17 @@ export interface Thread {
 }
 
 /** A Conversation card the reader pinned, as the Pinned tab shows it: who opened it, when, and
- *  its text - an ask's question, a comment's or a message's body. */
+ *  its text - an ask's question, a comment's or a message's body. A flattened view model, so
+ *  the two marks a corrected post carries are read here and not from the row. */
 export interface PinnedConversationCard {
   readonly at: string;
   readonly author: Actor;
   readonly body: string;
+  /** The post's deletion, null for an ask and for a post nobody deleted. */
+  readonly deleted: PostDeletion | null;
+  /** When the post's author last replaced its body; null for an ask and for one nobody
+   *  edited. */
+  readonly edited: string | null;
   /** The reading Go made of `body`, which the card draws (`MarkdownBody`). */
   readonly tree?: DisplayTree;
   /** The `dismissed` id it is pinned under, which Unpin removes: `<kind>:<id>`. */
@@ -399,11 +406,14 @@ export function useMarginItems(
         return [];
       }
       const row = "message" in record ? record.message : record;
+      const post = "question" in row ? undefined : row;
       return [
         {
           at: row.created_at,
           author: row.author,
           body: "question" in row ? row.question : row.body,
+          deleted: postDeletion(post),
+          edited: post?.edited_at ?? null,
           tree: "question" in row ? row.question_tree : row.body_tree,
           id: conversationItemId(kind, id),
           kind,

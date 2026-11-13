@@ -247,6 +247,20 @@ func waitForCompacting(t *testing.T, h *harness, token claim.Token) {
 	t.Fatalf("%s never reported itself being compacted", token)
 }
 
+// waitForCompactionAsked waits until conn has received one compaction, which the machine asks
+// only once the take's store write has run.
+func waitForCompactionAsked(t *testing.T, conn *fake.Conn, token claim.Token) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(conn.Compactions()) == 1 {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("%s's connection never received the compaction", token)
+}
+
 // A second compaction of a claim already being compacted is refused, and the refusal says what
 // the claim is doing rather than what that compaction in flight will do.
 func TestASecondCompactionOfAClaimBeingCompactedIsRefused(t *testing.T) {
@@ -678,6 +692,9 @@ func TestACompactionWhoseEndTheStoreWouldNotWriteAnswersTheStoreFailure(t *testi
 		answered <- h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 	}()
 	waitForCompacting(t, h, token)
+	// The view reads compacting before the take's store write runs; only a compaction the
+	// connection has received proves that write ran, so the pool closes under the end's write alone.
+	waitForCompactionAsked(t, conn, token)
 
 	// The store is gone from here on, so the write the compaction's end makes fails.
 	h.store.Pool().Close()

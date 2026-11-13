@@ -310,6 +310,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/plain-http-proxy.e2e.ts` | counts the live socket upstream of a real proxy |
 | `e2e/polish.e2e.ts` | opens the margin ask composer on the live document |
 | `e2e/popover-escape.e2e.ts` | the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader |
+| `e2e/post-corrections.e2e.ts` | each mark is the server's record of an edit or a delete, written through the API and then read back on four pages |
 | `e2e/prefix-links.e2e.ts` | `sql`-forged id twins and the server's short-id resolution |
 | `e2e/progress.e2e.ts` | it asserts the progress the server computes over an issue's children before it opens a page |
 | `e2e/project-default-assignee.e2e.ts` | which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload |

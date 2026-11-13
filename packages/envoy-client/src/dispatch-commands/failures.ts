@@ -1,4 +1,4 @@
-import { DispatchGatewayError, DispatchServiceError } from "../dispatch-http";
+import { DispatchGatewayError, DispatchServiceError, isNoRoute } from "../dispatch-http";
 import { messageFor } from "../errors";
 
 /**
@@ -47,6 +47,69 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
 /** Whether Dispatch itself answered `status`; a gateway's answer of that status says nothing it decided. */
 export function dispatchAnswered(error: unknown, status: number): error is DispatchServiceError {
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
+}
+
+/** The message an older build's comment edit refuses the `actor` this client sends with: its
+ *  `decodeJSON` (`api/server.go`) writes "invalid JSON body: " and the decoder's error, which Go's
+ *  `encoding/json` words `json: unknown field "actor"`. */
+const OLDER_COMMENT_EDIT_ACTOR = 'invalid JSON body: json: unknown field "actor"';
+
+/**
+ * The answer of `call`, with an older Dispatch's refusal of a post correction replaced by the one
+ * sentence that names the real cause. The plugins release from main as this merges while
+ * Dispatch's own server is deployed by hand (dispatch://INFRA-1464), so for a while these
+ * commands run against a server with no route by which an agent edits or deletes a post or reads
+ * the bodies one replaced: its router answers `404 NOT_FOUND` "no route for …" (`isNoRoute`) to
+ * both deletes, the message edit and the history reads. Its comment edit, the one route that was
+ * there before, refuses this release's call in one of two ways, by the credential. It first reads
+ * the person it acts for (`actingPerson`), which answers a credential without the person scope
+ * `403 OAUTH_SCOPE_REQUIRED`; the route at this head names no scope, so only an older build
+ * answers that code there. A credential with that scope, a person's own token included, passes,
+ * and the body is then decoded into an input that holds only `body`, `base_revision` and `blocks`,
+ * with unknown fields disallowed; the body this client sends always carries `actor`, so that build
+ * answers `400 INVALID_JSON` naming the unknown field `actor` before it compares the author. This
+ * release's input takes `actor`, so only an older build answers that. Only the comment edit reads
+ * either code as the server's age, and only in those exact forms: an `INVALID_JSON` naming any
+ * other field is passed through. Without this, an agent is told its credential lacks a scope, or
+ * that its own request was malformed, and goes asking a person for one or rewriting the call.
+ */
+export async function throughPostCorrections<T>(
+  tool: string,
+  url: string,
+  call: Promise<T>
+): Promise<T> {
+  try {
+    return await call;
+  } catch (error) {
+    const commentEditIsAge =
+      tool === "dispatch_edit_comment" &&
+      ((dispatchAnswered(error, 403) && error.code === "OAUTH_SCOPE_REQUIRED") ||
+        (dispatchAnswered(error, 400) &&
+          error.code === "INVALID_JSON" &&
+          error.message === OLDER_COMMENT_EDIT_ACTOR));
+    if (!isNoRoute(error) && !commentEditIsAge) throw error;
+    throw new Error(
+      `This Dispatch (${url}) predates post corrections: it has no route by which an agent edits ` +
+        "or deletes a post or reads the bodies one replaced. Until it is deployed with this " +
+        "release's server, a correction is one more post saying what changed."
+    );
+  }
+}
+
+/**
+ * The sentence a refusal of a deleted post's block carries, for a message written in this
+ * command's own words to end with: ` This comment is deleted.`, ` This message is deleted.`, or
+ * nothing where the server said no such thing. The server writes it as the tail of its 404
+ * (`api/references.go`, `itemBlockNotFound`), and a read that quotes a post says that the post
+ * is deleted wherever it is read, so a message that drops the server's words keeps this one.
+ */
+export function deletedPostClause(error: DispatchServiceError): string {
+  for (const kind of ["comment", "message"] as const) {
+    if (error.message.endsWith(`: this ${kind} is deleted`)) {
+      return ` This ${kind} is deleted.`;
+    }
+  }
+  return "";
 }
 
 /**

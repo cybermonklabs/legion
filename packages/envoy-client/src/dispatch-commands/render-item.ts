@@ -1,4 +1,5 @@
 import type {
+  Actor,
   AskRead,
   AskWithTrees,
   BlockPath,
@@ -9,9 +10,10 @@ import type {
   MessageRead,
   OpenAsk,
   OpenAsksResponse,
+  PostHistoryRead,
 } from "@legion/contracts";
 import { actorActText, encodeBlockId } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
@@ -41,7 +43,7 @@ export function askSummary(
   const partRef = (id: string) => `${askRef}#b-${encodeBlockId(id)}`;
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   const resolutionWords = dispatchWordsText(ask.resolution?.dispatch_words);
   return [
@@ -195,6 +197,43 @@ export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: strin
     ...waitingOnAgent.map((ask) => openAskLine(ask, baseUrl)),
   ].join("\n");
 }
+/** A post as a read prints it: the deleted mark alone for a withdrawn post, else the body with
+ *  the time of the last edit above it where the author replaced it. */
+function postBodyLines(post: {
+  readonly body: string;
+  readonly edited_at?: string | null;
+  readonly deleted_at?: string | null;
+  readonly deleted_by?: Actor | null;
+}): string[] {
+  if (post.deleted_at != null) return [deletedMark(post.deleted_at, post.deleted_by)];
+  return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${post.body}`];
+}
+
+/**
+ * What `dispatch read --history` prints: each body an edit or a delete of the post replaced,
+ * newest first, under the time of that write and the actor that made it. A post nobody edited
+ * lists none. A deleted post gives no part of its body to any read, so its list carries the
+ * deleted mark and the times alone.
+ */
+export function postHistorySummary(
+  kind: "Comment" | "Message",
+  ref: string,
+  read: PostHistoryRead
+): string {
+  const entries = read.entries ?? [];
+  const deleted = read.deleted_at != null;
+  return [
+    `${kind} history: ${ref}`,
+    ...(read.deleted_at == null ? [] : [deletedMark(read.deleted_at, read.deleted_by)]),
+    ...(entries.length === 0
+      ? ["- none"]
+      : entries.flatMap((entry) => [
+          `${entry.edited_at} · ${actorText(entry.edited_by)}`,
+          ...(deleted ? [] : [`Body: ${entry.body}`]),
+        ])),
+  ].join("\n");
+}
+
 export function commentSummary(
   { comment, replies }: CommentRead,
   graph: readonly string[]
@@ -203,14 +242,14 @@ export function commentSummary(
     `${comment.id} · ${actorText(comment.author)}`,
     ...anchorLines(comment),
     ...replyBlockLines(comment),
-    `Body: ${comment.body}`,
+    ...postBodyLines(comment),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...anchorLines(reply),
     ...replyBlockLines(reply),
     ...(reply.answers != null && reply.answers !== comment.id ? [`Answers: ${reply.answers}`] : []),
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   return [
     "Comment:",
@@ -221,11 +260,18 @@ export function commentSummary(
   ].join("\n");
 }
 
-/** The block of its parent a reply answers: its id and the head of its text, or that no current
- *  revision of the parent holds it. A comment or message that answers no block prints nothing. */
+/** The block of its parent a reply answers: its id and the head of its text, that no current
+ *  revision of the parent holds it, or, where the parent is a post its author deleted, the
+ *  deleted line every read prints for one (`deletedMark`) in place of the text the delete
+ *  cleared. A comment or message that answers no block prints nothing. */
 function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
   const block = record.reply_block;
   if (block === undefined || block === null) return [];
+  if (block.deleted_at != null) {
+    return [
+      `Re: block ${block.block_id} (parent deleted): ${deletedMark(block.deleted_at, block.deleted_by)}`,
+    ];
+  }
   return [
     block.removed
       ? `Re: block ${block.block_id} (removed)`
@@ -279,12 +325,12 @@ export function messageSummary(
   const root = [
     `${message.id} · ${actorText(message.author)}`,
     ...replyBlockLines(message),
-    `Body: ${message.body}`,
+    ...postBodyLines(message),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...replyBlockLines(reply),
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
   return [
     "Message:",
@@ -355,7 +401,7 @@ export async function openAnchoredThreads(
     [
       `comment ${root.id} · ${actorText(root.author)} · ${root.created_at}`,
       ...anchorLines(root),
-      `Body: ${root.body}`,
+      ...postBodyLines(root),
       ...threadReplyLines(replies.get(root.id) ?? []),
     ].join("\n")
   );
@@ -366,7 +412,7 @@ export async function openAnchoredThreads(
 function threadReplyLines(replies: readonly Comment[]): string[] {
   return replies.flatMap((reply) => [
     `reply ${reply.id} · ${actorText(reply.author)} · ${reply.created_at}`,
-    `Body: ${reply.body}`,
+    ...postBodyLines(reply),
   ]);
 }
 

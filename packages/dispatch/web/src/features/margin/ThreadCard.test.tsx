@@ -768,3 +768,132 @@ test("a comment of several references shows a card for each of them", async () =
     view.unmount();
   }
 });
+
+test("a deleted comment reads as deleted where its body was, and its reply keeps its own text", async () => {
+  const deletedRoot = comment("root-1", "", "2026-09-10T00:00:00Z", {
+    deleted_at: "2026-09-10T00:05:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  });
+  const view = renderCard(thread({ root: { comment: deletedRoot, kind: "comment" } }));
+
+  try {
+    const card = screen.getByTestId(`margin-comment-${root.id}`);
+    expect(card).toHaveTextContent("Deleted by alice");
+    expect(card).not.toHaveTextContent("Root comment");
+    // The thread keeps its shape: the reply below the deleted root still reads as its author
+    // wrote it.
+    expect(await screen.findByText("First reply")).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A deleted post takes no new text: the server refuses an edit of one and a reply to one (409),
+// so the card offers neither where the post is gone, and both where it stands.
+test("a deleted comment offers no Edit and no reply, and its live reply keeps Edit", () => {
+  const deleted = {
+    deleted_at: "2026-09-10T00:05:00Z",
+    deleted_by: { id: "alice", kind: "user" } as const,
+  };
+
+  const deletedRoot = renderCard(
+    thread({ root: { comment: comment("root-1", "", root.created_at, deleted), kind: "comment" } })
+  );
+  try {
+    // Only the reply below it, which alice wrote and nobody deleted, is hers to edit.
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+  } finally {
+    deletedRoot.unmount();
+  }
+
+  const deletedReply = renderCard(
+    thread({
+      replies: [
+        comment("reply-1", "", reply.created_at, { ...deleted, anchor: null, reply_to: root.id }),
+      ],
+    })
+  );
+  try {
+    expect(screen.getAllByRole("button", { name: "Edit" })).toHaveLength(1);
+    // The root stands, so the thread still takes a reply.
+    expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
+  } finally {
+    deletedReply.unmount();
+  }
+});
+
+// A collapsed card folds its byline away, so the root's ` · edited` sits beside the preview: an
+// edited root carries it, a root nobody edited does not, and a deleted root reads as deleted.
+test("a collapsed card marks an edited root beside its preview, and a standing root carries no mark", async () => {
+  const editedRoot = comment("root-1", "Root comment", "2026-09-10T00:00:00Z", {
+    edited_at: "2026-09-10T00:04:00Z",
+  });
+  const edited = renderCard(thread({ root: { comment: editedRoot, kind: "comment" } }), {
+    expanded: false,
+  });
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    await within(card).findByText("Root comment");
+    expect(card).toHaveTextContent("Root comment · edited");
+  } finally {
+    edited.unmount();
+  }
+
+  const standing = renderCard(thread(), { expanded: false });
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    await within(card).findByText("Root comment");
+    expect(card).not.toHaveTextContent("edited");
+  } finally {
+    standing.unmount();
+  }
+});
+
+// The quote of a passage prints the post it is a passage of, so that post's edit is marked in
+// the quote as on the post's own byline.
+test("a margin reply's quote of a passage of an edited post marks the post as edited", async () => {
+  const bob = { id: "bob", kind: "user" } as const;
+  const passage = {
+    block_id: "b2",
+    node: "comment/reply-1#b2",
+    ref: "dispatch://CORE-1/comment/reply-1#b-b2",
+    removed: false,
+    text: "Beta.",
+  };
+  const editedReply = comment("reply-1", "Alpha.\n\nBeta.", "2026-09-10T00:01:00Z", {
+    anchor: null,
+    author: bob,
+    edited_at: "2026-09-10T00:01:30Z",
+    reply_to: root.id,
+  });
+  const toEdited = comment("reply-2", "Yes to that.", "2026-09-10T00:02:00Z", {
+    anchor: null,
+    reply_block: passage,
+    reply_to: root.id,
+  });
+  const toStanding = comment("reply-3", "And that?", "2026-09-10T00:03:00Z", {
+    anchor: null,
+    author: bob,
+    reply_block: { ...passage, block_id: "b1", node: `comment/${root.id}#b1`, text: "Root." },
+    reply_to: root.id,
+  });
+  const view = renderCard(thread({ replies: [editedReply, toEdited, toStanding] }));
+
+  try {
+    const row = async (body: string) => {
+      const element = (await screen.findByText(body)).closest("li");
+      if (element === null) throw new Error(`${body} has no reply row`);
+      return element;
+    };
+    const yes = await row("Yes to that.");
+    await waitFor(() =>
+      expect(yes).toHaveTextContent("Replying to bob's passage · edited — Beta.")
+    );
+    const other = await row("And that?");
+    await waitFor(() => expect(other).toHaveTextContent("Replying to alice's passage — Root."));
+    expect(other).not.toHaveTextContent("edited");
+  } finally {
+    view.unmount();
+  }
+});

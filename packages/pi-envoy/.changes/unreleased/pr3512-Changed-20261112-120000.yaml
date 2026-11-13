@@ -1,0 +1,5 @@
+kind: Changed
+body: 'AskGate reviews the four post corrections this release adds, as it reviews `dispatch comment` and `dispatch message`: `dispatch edit-comment` and `dispatch edit-message` with their new body as the reviewed text, and `dispatch delete-comment` and `dispatch delete-message`, which carry no body, as the call itself. Its warn note names the two edits as the way to correct a comment or an issue message. Before it told the agent that a comment or a message cannot be edited and to post a reply instead, which two lanes answered by resending whole comments. A message of a direct conversation takes no edit, so the note still asks there for a reply with the correction, and only where the original would mislead its reader. The four commands need a Dispatch of this release; against an older server each says that this Dispatch predates post corrections rather than passing on the refusal that server gives.'
+time: 2026-11-12T12:00:00.000000000Z
+custom:
+    Issue: pr3512

@@ -31,6 +31,8 @@ import {
   dispatchRefFromUrl,
   innerRefProblem,
   itemRefProblem,
+  messageArgumentId,
+  messageArgumentProblem,
   messageIdOf,
   messageIdProblem,
   messageInReplyTo,
@@ -47,6 +49,10 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_edit_ask: true,
   dispatch_resolve_ask: true,
   dispatch_resolve_comment: true,
+  dispatch_edit_comment: true,
+  dispatch_delete_comment: true,
+  dispatch_edit_message: true,
+  dispatch_delete_message: true,
   dispatch_follow: true,
   dispatch_search: true,
   dispatch_related: true,
@@ -115,10 +121,20 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
       }
       break;
     }
-    case "dispatch_resolve_comment": {
+    case "dispatch_resolve_comment":
+    case "dispatch_edit_comment":
+    case "dispatch_delete_comment": {
       const comment = optionalString(args, "comment");
       if (comment?.startsWith("dispatch://") && parseDispatchRef(comment)?.kind !== "comment") {
         problems.push(itemRefProblem(comment) ?? commentIdProblem);
+      }
+      break;
+    }
+    case "dispatch_edit_message":
+    case "dispatch_delete_message": {
+      const message = optionalString(args, "message");
+      if (message !== undefined && messageArgumentId(message) === undefined) {
+        problems.push(messageArgumentProblem("message"));
       }
       break;
     }
@@ -155,8 +171,17 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
     case "dispatch_read": {
       const message = optionalString(args, "message");
       if (message !== undefined && messageIdOf(message) === undefined) {
+        problems.push(messageArgumentProblem("message"));
+      }
+      // The contract holds --history to a call that names a ref, and says so itself when none
+      // does; what is left to say is that the ref must name one post, since the bodies a
+      // history read lists are that post's.
+      const historyRef =
+        optionalBoolean(args, "history") === true ? optionalString(args, "ref") : undefined;
+      const historyKind = historyRef === undefined ? undefined : parseDispatchRef(historyRef)?.kind;
+      if (historyRef !== undefined && historyKind !== "comment" && historyKind !== "message") {
         problems.push(
-          "message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference"
+          "--history lists the bodies an edit or a delete of one comment or issue message replaced, so --ref must name one: dispatch://KEY/comment/<id> or dispatch://KEY/message/<id>"
         );
       }
       const events = optionalNumber(args, "events");

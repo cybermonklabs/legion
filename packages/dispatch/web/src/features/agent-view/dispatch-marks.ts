@@ -1,6 +1,7 @@
 import type { ThreadMessageLike } from "@assistant-ui/react";
 
 import type { Actor } from "../../api/types";
+import type { PostDeletion } from "../refs/post-marks";
 
 /**
  * Who other than the viewer sent the session a message, kept as an identity until
@@ -23,11 +24,15 @@ export interface DispatchAuthor {
  * `dispatch` nor `author`. `turn` is the key a turn keeps across a rebuild of the transcript,
  * set only where it differs from the message's own id - a streamed turn that took over a stored
  * Dispatch message, which the same message carries as `dispatch:<id>` when only the stored copy
- * is shown.
+ * is shown. `deleted` and `edited` are the marks a stored issue message carries once its author
+ * corrected it: a deleted message's text is cleared, so the turn draws the deleted line in its
+ * place.
  */
 export interface DispatchMarks {
   readonly author?: DispatchAuthor;
+  readonly deleted?: PostDeletion;
   readonly dispatch?: true;
+  readonly edited?: string;
   readonly model?: string;
   readonly turn?: string;
 }
@@ -55,11 +60,22 @@ function readAuthor(value: unknown): DispatchAuthor | undefined {
     : undefined;
 }
 
+/** The `deleted` mark, when it has the shape `dispatchMetadata` wrote. Returned as the very
+ *  object the metadata holds, for the `Object.is` reason `readAuthor` gives. */
+function readDeleted(value: unknown): PostDeletion | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const { at, by } = value as Record<string, unknown>;
+  if (typeof at !== "string") return undefined;
+  return by === null || typeof by === "object" ? (value as PostDeletion) : undefined;
+}
+
 /** Reads the marks back from a message's `metadata.custom`. */
 export function readDispatchMarks(custom: Readonly<Record<string, unknown>>): DispatchMarks {
   return {
     author: readAuthor(custom.author),
+    deleted: readDeleted(custom.deleted),
     dispatch: custom.dispatch === true ? true : undefined,
+    edited: typeof custom.edited === "string" ? custom.edited : undefined,
     model: typeof custom.model === "string" ? custom.model : undefined,
     turn: typeof custom.turn === "string" ? custom.turn : undefined,
   };

@@ -1690,12 +1690,13 @@ a body of only whitespace has no blocks.
 Item blocks are top-level only, so the block holding a mention is the top-level block holding its start.
 A block's identity is `itemblocks.Hash`, the SHA-256 of its text with each CR LF read as LF, so an edit that only turns CR LF into LF (as a textarea does) changes no block.
 Its id is `b1`, `b2`, … in the order the item mints them, and no number is minted twice in one item, a removed block's included (`comment_block_state.next_block` and the ids stored).
-`comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerptRunes`), `made_at`, and for a comment `changed_revision` and `changed_at`.
+`comment_blocks` and `message_blocks` keep every block an item ever held, a removed one with `position` null and `removed_at` set, with its type, its identity hash, its text cut to 480 runes as its excerpt (`refs.BlockExcerptRunes`), `made_at` and `changed_at`, and for a comment `changed_revision`.
 A comment's `comment_block_state.revision` counts its indexed revisions, 1 the first indexing:
 an index raises it when it is the first, when the body differs byte for byte from the one last indexed (`body_sha256`), or when its blocks changed, and otherwise writes no block.
 At the new revision a new, changed or restored block takes the revision as `changed_revision` and the write's time as `changed_at` (a new one that time as `made_at` too, except at the first indexing of a comment edited before blocks were recorded, whose making Dispatch never recorded:
 null), an unchanged one moves only its position, type and excerpt, a current block the body no longer holds is removed, and `comment_block_texts` records the whole text of each new, changed or restored block, and a null text for each removed one.
-A message is never edited and has no revision: its blocks are made and changed at its `created_at`.
+Only its author edits a message (`PATCH /api/v1/messages/{id}`), which re-indexes its blocks at `edited_at` in the transaction that writes the new body, and a message has no revision: a block takes the time of the write that holds it first as its `made_at` - the moment the message was sent, or the edit that added it - and the time of the write that last rewrote it as its `changed_at`.
+A message stored before blocks existed and edited before its first index was never indexed at the moment it was sent, and the edit is what indexes it, so every block of that first index takes the edit as its `made_at`, where a comment's of such an indexing take none (null).
 
 An edit of a comment (`PATCH /api/v1/comments/{id}`, by its author alone) keeps each block's id by one of two rule sets (`refs.IndexItem`).
 With `blocks` (each id the dashboard editor carried through the edit and `from`, where its span starts in the new body in UTF-16 code units) and a `base_revision` equal to the comment's stored revision, the carried ids decide (`itemblocks.Carry`):
@@ -1737,7 +1738,7 @@ made as it was made, last changed by the comment's author at the block's `remove
 A pin past the comment's current revision is `404 NOT_FOUND` `no revision <N> of comment
 <id>; its current revision is <M>`, one to a revision that did not hold the block `404 NOT_FOUND` `no block "<block>" in comment <id> at revision <N>`, and an unpinned reference to a block no current revision holds `404 NOT_FOUND` `no block "<block>" in <comment or message> <id>`.
 An ask's part is named `part` where a comment's and a message's block is named `block` (`itemBlockNoun`, `api/references.go`), so a part no current revision of the ask holds reads `no part "<part>" in ask <id>` and a pin to a revision that did not hold it `no part "<part>" in ask <id> at revision <N>`.
-A message never changes, so a message block pinned with `@v<N>` is no reference:
+A message records no revisions, an edit of its body included, so a message block pinned with `@v<N>` is no reference:
 text holding one cites nothing, and `?to=` or `?from=` one is `400 INVALID_REFERENCE` saying a message block takes no pin.
 
 A reply keeps the comment it answers.
@@ -1800,7 +1801,7 @@ SQL NULL (a left join that found no row, an edit that names no editor) and JSON 
 Each entry of `nodeLoaders` reads its own kind's (`refs/graph.go`).
 An issue is made by `issues.created_by` at `created_at`, last changed by the actor of its latest `issue.created`, `issue.updated` or `issue.closed` event at that event's time, and part of its parent issue.
 An artifact (a document, a file, a picture) is made by `artifacts.created_by` at `created_at`, last changed by the authors of its latest version at that version's time, and part of its issue, else of the session whose conversation owns it, else (a project document) of no node.
-A message is made by its author, and last changed by its maker when it was made, since no route edits one;
+A message is made by its author, and only its author edits it (`PATCH /api/v1/messages/{id}`), so its last change is its author at `edited_at`, as a comment's is;
 a reply that names a block it answers (`in_reply_to_block`) is part of that block, another reply part of the message it answers, another issue message of its issue, a direct message of no node.
 A component is made and changed by nobody recorded, since Dispatch does not import a component's git author, at the times `component_facts` records (below), and is part of its parent component while the model holds it.
 A session has no fact on record.
@@ -1825,7 +1826,7 @@ A block is last changed by the authors of its `changed_version`, at `changed_at`
 The removed block a pinned reference names (`refs.RemovedBlockNode`) is made by the same rule, last changed by the authors of `removed_version` at its time, and part of its document at the latest version `document_indexed_versions` holds below `removed_version`, the last one known to hold it (null when none is);
 a pin to a current block carries the current block's facts.
 A comment's block is made by the comment's author at `made_at`, the time of the revision that first held it (null for a block found at the first indexing of a comment edited before blocks were recorded), last changed by the author at `changed_at`, and part of its comment at `changed_revision`, which is its node's `changed_version` too.
-A message's block is made by the message's author at its `created_at`, last changed by its maker when it was made, and part of its message, with no version (`loadCommentBlockNodes`, `loadMessageBlockNodes`).
+A message's block is made by the message's author at `made_at`, the time of the write that first held it - the moment the message was sent, or the edit that added it - last changed by that author at `changed_at`, the edit that last rewrote it or that same moment, and part of its message, with no version (`loadCommentBlockNodes`, `loadMessageBlockNodes`).
 
 Two records serve those facts from this release on.
 `comments.written_version` and `asks.written_version` (migrations `0130` and `0131`) hold the version current when an item was written on a document without an anchor.
@@ -1875,7 +1876,7 @@ An item is re-read `for no key update` and re-indexed with this build's grammar 
 its owed row is deleted before its text is written and only while it holds the `enqueued_at` the tick listed, so an edit that lands meanwhile leaves the item owed with nothing written for it, for the next tick to read and index.
 That re-index indexes a comment's or issue message's blocks and an ask's parts too (`refs.IndexAskParts`, read from the ask row it locked), so the batch of items owed their own blocks runs after it and finds such an item no longer owed.
 A comment, message or ask owed its blocks is indexed in a transaction of its own (`refs.IndexOwedItemBlocks`) that takes the item row `for no key update`, then its state row, and never an owner row, and indexes it only while it is still owed (`refs.IndexItemIfOwed`, which reaches an ask through `indexAskIfOwed`):
-its blocks - an ask's question, its options and the answer it holds - and the mentions each holds, and for a comment or an issue message its own refs, at the time its body was written (a comment's and an ask's `coalesce(edited_at, created_at)`, a message's `created_at`); a direct message writes no mention, and an ask's own `refs` rows, which hold its question's links, are left to its writers.
+its blocks - an ask's question, its options and the answer it holds - and the mentions each holds, and for a comment or an issue message its own refs, at the time its body was written (every kind's `coalesce(edited_at, created_at)`, a message's `edited_at` among them since `PATCH /api/v1/messages/{id}`); a direct message writes no mention, and an ask's own `refs` rows, which hold its question's links, are left to its writers.
 An item deleted since it was listed took its state row with it.
 A build without item blocks runs none of this batch and counts no item-block row, so a rollback leaves what it writes owed until this build returns.
 `rebuild-refs` marks every document owed and prints `blocks_owed=`, and marks every comment, message and ask owed its blocks (inserting a missing state row owed) and prints `items_owed=`;
@@ -1917,7 +1918,7 @@ A `#b-<id>` fragment after an issue's spec or document, or a project's document,
 a version page's fragment names no block.
 So does one after an ask (`KEY/ask/<id>`, or a project document's `PROJECT/artifact/<slug>/ask/<id>`), a comment (`KEY/comment/<id>`, or a project document's `PROJECT/artifact/<slug>/comment/<id>`) or an issue message (`KEY/message/<id>`), naming an ask's part or a block of that item (`text.Ref.Item` the item's kind, its target id `<item kind>/<item id>#<block id>`), and one on an ask's, comment's or message's dashboard page (`/issues/KEY/asks/<id>`, `/issues/KEY/comments/<id>`, `/issues/KEY/messages/<id>`, or a document page's `?comment=<id>`, a version page's included, since an ask's parts and a comment's blocks are its own: `pageBlock`).
 A versioned document's item and an agent conversation's document name no block.
-A message never changes, so a message block's `@v<N>` makes the text no reference.
+A message records no revisions, so a message block's `@v<N>` makes the text no reference.
 The id is read with any percent-encoding, and every writer writes it as `text.EncodeBlockID` and `encodeBlockId` (`@legion/contracts`) do:
 each UTF-8 byte but ASCII letters, digits and `-` percent-encoded in upper-case hex, so `@` is `%40` and a raw `@` in the fragment is only ever the `@v<N>` pin.
 A fragment whose pin is past 9223372036854775807 names no block:
@@ -1990,7 +1991,7 @@ a replace's `with`, an insert's markdown whether it becomes blocks or table rows
 in a suggestion's `replace_with` when it is created and when it is accepted;
 in the attributes written onto a typed block (`SetBlockAttributes`, `pmdoc.LineFeedAttrs`), and in an answer's text, which its ask block carries;
 and in a block ask's edited question and options.
-A message's body and a comment's body are written the same way where they are stored (`validateCreateMessage` in `api/messages.go`, `createCommentFor` in `api/comment_create.go`, `editComment` in `api/comment_actions.go`), so a body stored since sjawhar/legion#2712 holds no carriage return;
+A message's body and a comment's body are written the same way where they are stored (`validateCreateMessage` in `api/messages.go`, `createCommentFor` in `api/comment_create.go`, `editComment` in `api/comment_actions.go`, `editMessage` in `api/message_corrections.go`), so a body stored since sjawhar/legion#2712 holds no carriage return;
 the block ids an edit carries are the browser editor's own offsets, and a ProseMirror document holds no carriage return, so that normalisation shortens no offset a caller sent.
 The browser editor's own updates cannot carry a carriage return.
 No stored document holds one.
@@ -2568,10 +2569,13 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - A closed issue (`closed_at` set) still takes its conversation: a new comment - issue-level, a thread reply, a reply on an ask, one anchored to a quote of one of its documents, and that thread's replies - and a new message, from a person or an agent, with their deliveries, retries and the mentioned or targeted agent's reply.
   A reply still reopens a resolved root there, as it does on an open issue.
-  Those writes lock the issue row as any write does and skip the open check: `lockIssue` for a message, its deliveries and its reply; `lockedCommentForDelivery` for a comment's mention delivery and the agent's reply to it; and, for a comment that is not a suggestion, `lockCommentOwner`, which asks the one refusal below and is told the write is taken.
-  An anchored comment's document writes - its mark, the version its anchor is pinned to, its margin record, and the thread root's projection a reply adds itself to - run under `docs.WithCommentMarks`, owner-verified because the comment's transaction holds the owner row and decided there that the comment is written;
-  a content edit, a suggestion's mark, a named version or a rebuild under the same context still waits for a reopen.
-  Everything else is `409 ISSUE_CLOSED` until a reopen: a new ask, an ask's edit, answer or resolve, a suggestion (a proposed document edit, whose acceptance is its only outcome), a document edit, a named version, an upload, a review, an approval request, a claim, a PATCH field outside the closed allow-list above, and the comment actions resolve, reopen, edit, accept and reject on an existing comment (`lockedComment`).
+  Those writes lock the issue row as any write does and skip the open check: `lockIssue` for a message, its deliveries and its reply; `lockedCommentAllowingClosed` for a comment's mention delivery and the agent's reply to it; and, for a comment that is not a suggestion, `lockCommentOwner`, which asks the one refusal below and is told the write is taken.
+  An anchored comment's document writes - its mark, the version its anchor is pinned to, its margin record, and the thread root's projection a reply adds itself to - run under `docs.WithCommentMarks`, owner-verified because the comment's transaction holds the owner row and decided there that the comment is written, or that the body its author wrote there is that author's to replace or to withdraw.
+  So the edit and the delete mark their own document context too (`editComment`, `deleteComment`), under the owner lock `lockedCommentForCorrection` took: a closed issue takes the margin record each projects, for an anchored comment and for a reply to an anchored root.
+  The delete of a comment carrying a pending suggestion rejects it there as well (`docs.RejectDeletedCommentSuggestion`, under the context `deleteComment` marked), so that mark, and an insert suggestion's text, leave a closed issue's document with the body.
+  Every other write of a suggestion's mark, and a content edit, a named version or a rebuild under the same context, still waits for a reopen.
+  Everything else is `409 ISSUE_CLOSED` until a reopen: a new ask, an ask's edit, answer or resolve, a suggestion (a proposed document edit, whose acceptance is its only outcome), a document edit, a named version, an upload, a review, an approval request, a claim, a PATCH field outside the closed allow-list above, and the comment actions resolve, reopen, accept and reject on an existing comment (`lockedComment`).
+  A comment's edit and its delete are not in that list: a wrong post nobody can correct after the issue closes is the defect those two routes exist for, so each takes `lockedCommentForCorrection`, which locks the owner without the open check, and so does the edit and the delete of an issue message (`lockedMessageForCorrection`).
   The writes that take the owner's lock through `ownerStatus` make that refusal in one place, `refuseClosed(open, write)` (`api/server.go`), where `write` is `takenWhenClosed` for a comment that is not a suggestion and `refusedWhenClosed` for the rest: an ask, a suggestion, an upload, a document edit and a named version (`api/artifacts.go`, before the document service is called), a handoff (`api/handoffs.go`), a review, an approval request and the comment actions.
   It is asked under the write's own lock (`requireOpenOwnerStatus`, `lockCommentOwner`, `lockedComment`) and, for the same answer before the work is spent, from the pool before a comment resolves its mentions and before an upload spools its body (`refuseOwnerBeforeResolving`).
   The writes that read the issue row for themselves refuse for themselves, with the same 409: a claim (`issue_claim.go`), a PATCH field outside the allow-list above (`issue_patch.go`), a check result, which a closed issue takes only for an `after_merge` or `default_branch` check (`results.go`), and a document rebuild with supplied markdown (`api/artifact_rebuild.go`) and a write through a document's room, which the document service refuses with `docs.ErrIssueClosed` (`docs/rebuild.go`, `docs/websocket.go`'s `allowInject`).
@@ -4837,7 +4841,7 @@ It first settles `failed`, with the receipt the row owes, every owed attempt not
 a mention attempt whose comment no longer holds the mention, `not sent: the
 comment no longer mentions this target`, and one whose document is no longer a project's, `not sent: the document is gone`.
 A closed issue is not one of them:
-a message and a comment on a closed issue are delivered like any other (`lockIssue`, `lockedCommentForDelivery`), so an attempt stranded on an issue that closed under it is sent, not settled.
+a message and a comment on a closed issue are delivered like any other (`lockIssue`, `lockedCommentAllowingClosed`), so an attempt stranded on an issue that closed under it is sent, not settled.
 Each settle is a transaction of its own that takes the owner's lock first and checks the cause again under it, so a comment that holds its mention again keeps its attempt owed.
 A document-gone attempt has no owner left to take that lock or to hold its receipt (`lockEventOwner` reads a project's artifact alone), so its settle fails and the pass logs `settle an owed delivery nothing can send`;
 the pass leaves it out of what it sends all the same, so it crowds nothing, and `TestTheDeliverySweepSettlesWhatItCannotSend` holds the sweep to that.
@@ -5119,20 +5123,20 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   `notify` only controls agent wake and routing the same envelope to the issue's route (which also applies to a comment or ask anchored on the issue's own artifact):
   `notifications.agent.<session_id>` for a session route, and for a `role:<role>` route a forward to the role's holder, which the outbox resolves itself and sends to `notifications.agent.<holder>` with the topic `notifications.role.<role>`, counted reached on the stream's acknowledgement of the stored copy, so nothing of Dispatch's is published on `notifications.role.*`;
   a role no live holder can take is kept on that role's kept lane for its next holder instead ("Dispatch's outbox"), which is also no publish on `notifications.role.*`.
-  An ask-scoped event - `ask.answered`, `ask.edited`, `ask.handed_back`, `ask.resolved`, and `comment.created`, `comment.resolved`, `comment.reopened` or `comment.edited` carrying an `ask_id` - is additionally published straight to each follower's `notifications.agent.<session_id>` regardless of `notify` and of the issue's route, so a session-authored reply on an ask reaches its followers even though it wakes nobody through the issue topic;
-  the acting session is skipped, and so is a follower whose own mention of a new comment (`comment.created`) delivers it (the mention rule below) - the comment's edit, resolution and reopening reach every follower - and a session already reached by the issue's route is not sent the envelope twice.
+  An ask-scoped event - `ask.answered`, `ask.edited`, `ask.handed_back`, `ask.resolved`, and `comment.created`, `comment.resolved`, `comment.reopened`, `comment.edited` or `comment.deleted` carrying an `ask_id` - is additionally published straight to each follower's `notifications.agent.<session_id>` regardless of `notify` and of the issue's route, so a session-authored reply on an ask reaches its followers even though it wakes nobody through the issue topic;
+  the acting session is skipped, and so is a follower whose own mention of a new comment (`comment.created`) delivers it (the mention rule below) - the comment's edit, delete, resolution and reopening reach every follower - and a session already reached by the issue's route is not sent the envelope twice.
   A quiet `ask.edited` (a version move of an approval request that an earlier version already moved since it was opened or last handed back, `quiet: true`) has `notify` false and reaches no follower, as a human's unnamed `artifact.version` reaches nobody;
   the first move after an opening or a hand-back is not quiet.
 
 - A notifying comment-thread or message-reply event without an `ask_id` keeps the author routes:
-  a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;
-  a message reply's direct parent author; for a resolve or reopen, the resolved comment's root author only, so the reopen a reply makes in the same transaction tells no new session twice;
-  and for a new comment on a document (no `reply_to`, no `ask_id`) and its edit, where no session claims the issue, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
+  a person's comment reply (`reply_to` set), and its edit and its delete, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;
+  a message reply's direct parent author, for the reply itself and for its edit and its delete; for a resolve or reopen, the resolved comment's root author only, so the reopen a reply makes in the same transaction tells no new session twice;
+  and for a new comment on a document (no `reply_to`, no `ask_id`), its edit and its delete, where no session claims the issue, every session the document credits - the one that created it (`artifacts.created_by`) and every one a version lists (`artifact_versions.authors`), read in one query (`loadDocumentSessionAuthors`) - so a person's comment on a passage, on a whole document or as a suggestion reaches the agent that wrote the document.
   That document is the anchor's (`anchor.artifact_id`) for a comment on a passage of an issue's document, and the event's own for a project document;
   for a reply, it is the thread root's, since a reply carries no anchor.
   A comment on an issue's conversation names no document.
   A batch reads the thread sessions and the thread's document authors of all its replies in one statement (`outbox/recipients.go`, `loadCommentRecipients`, a lookup kind of `loadLookups`), keyed by the comment each reply is under, and each row says which of the two it came from (`from_thread`, the first element of the `min(rank)` the statement already orders by), so a session that is both a member and a credit counts as a member.
-  A person's `comment.created` or `comment.edited` on an issue with no route and no session claimant (`routing`:
+  A person's `comment.created`, `comment.edited` or `comment.deleted` on an issue with no route and no session claimant (`routing`:
   unclaimed, or a person holds the claim) also reaches every session the issue's primary document (`artifacts.is_primary`) credits, as `documentCreditsSQL` reads credits (`addPrimaryDocumentAuthors`), so a session that wrote the spec without a claim still hears comments on any of the issue's threads, an ask's thread included.
   A batch reads those sessions for all such events in one statement (`loadPrimaryDocumentAuthors`, another lookup kind of `loadLookups`), keyed by issue.
   A routed issue, or one a session claimed, takes no primary-document route: the route's holder and the claimant (the claimant route below) hear the comment.
@@ -5169,7 +5173,7 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   an id that is no uuid is never sent to Postgres and fails the event that asked it - except a reply's `reply_to`, which then replies under no comment:
   the reply reaches no thread session, is not failed and holds nothing back.
 
-- A person's (`actor.kind` `user`) `ask.answered`, `ask.handed_back`, `ask.resolved`, `comment.created`, `comment.edited`, `comment.resolved`, `comment.reopened`, `message.created` or `message.answered` on an issue also takes the claimant route (`addClaimantRoute`):
+- A person's (`actor.kind` `user`) `ask.answered`, `ask.handed_back`, `ask.resolved`, `comment.created`, `comment.edited`, `comment.deleted`, `comment.resolved`, `comment.reopened`, `message.created`, `message.answered`, `message.edited` or `message.deleted` on an issue also takes the claimant route (`addClaimantRoute`):
   it is published to the `notifications.agent.<session_id>` of the session holding the issue's claim (`issues.claimed_by` of kind `session`;
   a person holding the claim has no topic), whether or not that session subscribed to the issue.
   The claimant route runs beside the route and author routes, under `notify` and never for a targeted message (`message.created` or `message.answered` with a `target`), which reaches only its session.

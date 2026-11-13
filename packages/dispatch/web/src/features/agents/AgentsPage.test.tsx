@@ -12,6 +12,7 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { jump, realClock, tick } from "../../__tests__/fake-clock";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
@@ -166,6 +167,7 @@ function message(body: string, overrides: Partial<Message> = {}): Message {
     broadcast_id: null,
     created_at: "2026-09-14T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id: "message-1",
     in_reply_to: null,
     issue_key: null,
@@ -4578,6 +4580,72 @@ test("a send pressed offline goes late with Stop trying, and lands when the netw
   } finally {
     realClock();
     onlineManager.setOnline(online);
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+test("the Agents page marks an edited message and reads a deleted one as deleted", async () => {
+  const user = userEvent.setup();
+  const edited = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const deletedReply = message("", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    deleted_at: "2026-09-14T01:05:00Z",
+    deleted_by: { id: "planner-session", kind: "session" },
+    id: "reply-1",
+    in_reply_to: "message-1",
+  });
+  const page = renderAgents({ messages: [{ message: edited, replies: [deletedReply] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    await within(planner).findByText("Can this ship?");
+    await waitFor(() => expect(planner.textContent).toContain("edited"));
+    await waitFor(() => expect(planner.textContent).toContain("Deleted by"));
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
+// A reply's quote prints its parent, so a parent its author edited carries ` · edited` in the
+// quote as on its own byline, and a parent nobody edited carries none.
+test("the Agents page marks a reply's quote of an edited parent, and not of a standing one", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("Thanks.", {
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
+    await waitFor(() =>
+      expect(turn("reply-1")?.textContent).toContain("· edited — Can this ship?")
+    );
+    await waitFor(() => expect(turn("reply-2")?.textContent).toContain("— Yes, it can."));
+    expect(turn("reply-2")?.textContent).not.toContain("edited");
+  } finally {
     page.view.unmount();
     page.restore();
   }

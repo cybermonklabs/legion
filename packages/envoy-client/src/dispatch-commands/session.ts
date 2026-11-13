@@ -5,7 +5,7 @@ import type {
   WhoamiResponse,
 } from "@legion/contracts";
 import { inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
-import { actorText } from "../actor-text";
+import { actorText, deletedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
@@ -198,12 +198,16 @@ function inboxReplyAge(at: string, now: number): string {
 }
 
 /** One unread thread: who owns it, what kind of thread it is, the head of its subject, who wrote
- *  the newest reply and how long ago, and where to read it. */
+ *  the newest reply and how long ago, and where to read it. A thread whose root its author
+ *  deleted has no subject left, and the deleted line every read prints for one (`deletedMark`)
+ *  stands in its place. */
 function inboxThreadLine(row: MyReplyRow, now: number): string {
   return [
     `- ${inboxThreadLabel(row)}`,
     row.kind,
-    textHead(row.subject, INBOX_QUESTION_HEAD),
+    row.deleted_at == null
+      ? textHead(row.subject, INBOX_QUESTION_HEAD)
+      : deletedMark(row.deleted_at, row.deleted_by),
     actorText(row.reply.author),
     inboxReplyAge(row.reply.created_at, now),
     row.ref,

@@ -20,6 +20,8 @@ import { AskCard } from "../inbox/AskCard";
 import { AskOwnerLink } from "../inbox/AskOwnerLink";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark, PostBody } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
@@ -102,8 +104,13 @@ function AnswerRow({
       ) : null}
       {row.kind === "reply" && row.reply !== undefined ? (
         <p className={`mt-2 text-sm ${textPrimaryOnCanvas}`}>
-          <span className={`font-medium ${textMutedOnCanvas}`}>Replied:</span>{" "}
-          <MarkdownBody
+          {/* The reply's own edit, on its label: the row has no byline of the reply's. */}
+          <span className={`font-medium ${textMutedOnCanvas}`}>
+            Replied
+            <EditedMark at={row.reply.edited_at} deleted={postDeletion(row.reply)} />:
+          </span>{" "}
+          <PostBody
+            deleted={postDeletion(row.reply)}
             markdown={row.reply.body}
             source={source}
             tree={row.reply.body_tree}

@@ -298,7 +298,7 @@ func (s *server) loadOwnedCommentForUpdate(
 }
 
 // commentColumns is the comments select list scanComment reads, in scan order.
-const commentColumns = `id::text, issue_key, artifact_id::text, author, body, anchor, reply_to::text, ask_id::text, turn, resolved, resolved_by, resolved_at, edited_at, suggestion, created_at, replies_to_block, answers::text`
+const commentColumns = `id::text, issue_key, artifact_id::text, author, body, anchor, reply_to::text, ask_id::text, turn, resolved, resolved_by, resolved_at, edited_at, suggestion, created_at, replies_to_block, answers::text, deleted_at, deleted_by`
 
 // commentThreadColumns is commentColumns without the ::text casts, qualified to the comments
 // alias `c`. A recursive walk joins c.reply_to to the visited row's id, so those columns have
@@ -306,15 +306,15 @@ const commentColumns = `id::text, issue_key, artifact_id::text, author, body, an
 // is a tsvector, which has no hash operator.
 const commentThreadColumns = `c.id, c.issue_key, c.artifact_id, c.author, c.body, c.anchor, c.reply_to,
 		c.ask_id, c.turn, c.resolved, c.resolved_by, c.resolved_at, c.edited_at, c.suggestion, c.created_at, c.replies_to_block,
-		c.answers`
+		c.answers, c.deleted_at, c.deleted_by`
 
 func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 	var comment model.Comment
-	var author, anchor, resolvedBy, suggestion []byte
-	var resolvedAt, editedAt *time.Time
+	var author, anchor, resolvedBy, suggestion, deletedBy []byte
+	var resolvedAt, editedAt, deletedAt *time.Time
 	destinations := []any{
 		&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers,
+		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt, &comment.RepliesToBlock, &comment.Answers, &deletedAt, &deletedBy,
 	}
 	destinations = append(destinations, extra...)
 	if err := row.Scan(destinations...); err != nil {
@@ -336,6 +336,10 @@ func scanComment(row pgx.Row, extra ...any) (model.Comment, error) {
 			return model.Comment{}, fmt.Errorf("decode comment resolved_by: %w", err)
 		}
 		comment.ResolvedBy = &value
+	}
+	var err error
+	if comment.DeletedAt, comment.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.Comment{}, err
 	}
 	comment.ResolvedAt = timestampPtr(resolvedAt)
 	comment.EditedAt = timestampPtr(editedAt)

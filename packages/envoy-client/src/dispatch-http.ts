@@ -61,6 +61,7 @@ import type {
   MessageReplyResult,
   MyRepliesResponse,
   OpenAsksResponse,
+  PostHistoryRead,
   Project,
   RecordCheckResultInput,
   RelatedCheckInput,
@@ -1460,9 +1461,51 @@ export class DispatchClient {
   /** `GET /api/v1/messages/{id}`: the conversation a message belongs to, by any message id in
    *  it - the root and every reply. It takes no issue, so it reads a human's direct message to
    *  a session and the replies to it, which belong to none. It reads as `session`; which
-   *  threads a session may read is the route's rule (`GET /api/v1` describes it). */
-  async getMessageThread(id: string, session: string): Promise<MessageRead> {
-    return this.#json("GET", ["api", "v1", "messages", id], undefined, { session });
+   *  threads a session may read is the route's rule (`GET /api/v1` describes it). A caller with
+   *  no session of its own names none, as `messageHistory` does: a thread on an issue follows
+   *  the issue's rule, and a direct one is then refused (400 SESSION_REQUIRED). */
+  async getMessageThread(id: string, session?: string): Promise<MessageRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "messages", id],
+      undefined,
+      session === undefined ? undefined : { session }
+    );
+  }
+
+  /** `PATCH /api/v1/messages/{id}`: the author replaces the body of its own issue message whole.
+   *  Dispatch keeps the body it replaces, which `messageHistory` reads. */
+  async editMessage(
+    id: string,
+    input: { readonly body: string; readonly actor: Actor }
+  ): Promise<Message> {
+    return this.#json("PATCH", ["api", "v1", "messages", id], input);
+  }
+
+  /** `DELETE /api/v1/messages/{id}`: the author withdraws its own issue message. The row and its
+   *  place in the thread stay, and the answer carries `deleted_at`, `deleted_by` and no body. */
+  async deleteMessage(id: string, actor: Actor): Promise<Message> {
+    return this.#json("DELETE", ["api", "v1", "messages", id], { actor });
+  }
+
+  /** `GET /api/v1/messages/{id}/history`: every body an edit or a delete of the message
+   *  replaced, newest first, with the deleted mark the post carries. It is read under
+   *  `GET /api/v1/messages/{id}`'s rule, so the session goes in the query as `messageBlocks`
+   *  sends it. */
+  async messageHistory(id: string, session?: string): Promise<PostHistoryRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "messages", id, "history"],
+      undefined,
+      session === undefined ? undefined : { session }
+    );
+  }
+
+  /** `GET /api/v1/issues/{key}/messages`: the issue's message threads, each root with its
+   *  replies. It is read to resolve a `dispatch://KEY/message/<id>` reference whose id is a
+   *  prefix; a reference carrying a full id needs no listing. */
+  async issueMessages(issue: string): Promise<MessageRead[]> {
+    return this.#json("GET", ["api", "v1", "issues", await this.#resolveIssue(issue), "messages"]);
   }
 
   /** `POST /api/v1/messages/{id}/deliveries/{attempt}/accept`: this session records that it took
@@ -1622,6 +1665,28 @@ export class DispatchClient {
   /** Resolves a comment thread as `actor`; the server takes no reason and any actor may resolve. */
   async resolveComment(id: string, actor: Actor): Promise<Comment> {
     return this.#json("POST", ["api", "v1", "comments", id, "resolve"], { actor });
+  }
+
+  /** `PATCH /api/v1/comments/{id}`: the author replaces the comment's body whole. Dispatch keeps
+   *  the body it replaces, which `commentHistory` reads. */
+  async editComment(
+    id: string,
+    input: { readonly body: string; readonly actor: Actor }
+  ): Promise<Comment> {
+    return this.#json("PATCH", ["api", "v1", "comments", id], input);
+  }
+
+  /** `DELETE /api/v1/comments/{id}`: the author withdraws its own comment. The row and its place
+   *  in the thread stay, and the answer carries `deleted_at`, `deleted_by` and no body. */
+  async deleteComment(id: string, actor: Actor): Promise<Comment> {
+    return this.#json("DELETE", ["api", "v1", "comments", id], { actor });
+  }
+
+  /** `GET /api/v1/comments/{id}/history`: every body an edit or a delete of the comment
+   *  replaced, newest first, with the deleted mark the post carries. Any authenticated caller
+   *  reads it, as it reads `getComment`. */
+  async commentHistory(id: string): Promise<PostHistoryRead> {
+    return this.#json("GET", ["api", "v1", "comments", id, "history"]);
   }
 
   async getComments(issue: string): Promise<Comment[]> {

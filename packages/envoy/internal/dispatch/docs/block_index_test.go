@@ -1836,9 +1836,10 @@ func checkItemBlock(t *testing.T, label string, blocks map[string]itemBlockRow, 
 
 // A comment, an issue message and a direct message a build without item blocks inserted, and a
 // comment it edited after this build indexed it, are owed their blocks by the triggers, which no
-// write of theirs cleared. One tick indexes each, at the time its body was written (a comment's
-// coalesce(edited_at, created_at), a message's created_at): its blocks, the links each holds, and
-// for the comment and the issue message their own references; the direct message holds no link.
+// write of theirs cleared. One tick indexes each, at the time its body was written (each post's
+// coalesce(edited_at, created_at), which for both messages here is their created_at): its
+// blocks, the links each holds, and for the comment and the issue message their own references;
+// the direct message holds no link.
 // The edit is indexed at the comment's next revision under ids aligned with the ones it held: the
 // moved blocks keep theirs and their changed revision, the reworded block keeps its id at the new
 // revision, and the new block takes the next id. Nothing is left owed.

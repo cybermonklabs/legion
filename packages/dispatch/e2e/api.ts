@@ -704,6 +704,18 @@ export function editComment(
   return patch("/api/v1/comments/{id}", { body: input, params: { id } }, options);
 }
 
+/** `DELETE /api/v1/comments/{id}`: the comment's author withdraws it. The row keeps its place in
+ *  its thread, its body is cleared, and every read of it carries `deleted_at` and `deleted_by`. */
+export function deleteComment(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/comments/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/comments/{id}/history`: every body an edit or a delete of the comment replaced,
+ *  newest first, each with the actor that replaced it and the time, beside the deletion mark. */
+export function getCommentHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/comments/{id}/history", { params: { id } }, options);
+}
+
 export function listComments(
   issue: string,
   artifact: string | undefined = undefined,
@@ -921,6 +933,29 @@ export function getMessage(issue: string, messageID: string, options: ApiOptions
     { params: { id: messageID, key: issue } },
     options
   );
+}
+
+/** `PATCH /api/v1/messages/{id}`: the author of an issue message replaces its body. Every read
+ *  of the message then carries `edited_at`. */
+export function editMessage(
+  id: string,
+  input: Body<"/api/v1/messages/{id}", "patch">,
+  options: ApiOptions = {}
+) {
+  return patch("/api/v1/messages/{id}", { body: input, params: { id } }, options);
+}
+
+/** `DELETE /api/v1/messages/{id}`: the author of an issue message withdraws it. The row keeps
+ *  its place in its thread, its body is cleared, and every read carries `deleted_at` and
+ *  `deleted_by`. */
+export function deleteMessage(id: string, options: ApiOptions = {}) {
+  return del("/api/v1/messages/{id}", { body: {}, params: { id } }, options);
+}
+
+/** `GET /api/v1/messages/{id}/history`: every body an edit or a delete of the message replaced,
+ *  newest first, each with the actor that replaced it and the time, beside the deletion mark. */
+export function getMessageHistory(id: string, options: ApiOptions = {}) {
+  return get("/api/v1/messages/{id}/history", { params: { id } }, options);
 }
 
 /** `GET /api/v1/messages/{id}/blocks`: the message's blocks in body order, each with its span in

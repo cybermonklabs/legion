@@ -1,0 +1,5 @@
+kind: Added
+body: 'The author of a comment or of an issue message can replace its body or delete it: PATCH and DELETE on /api/v1/comments/{id} and on /api/v1/messages/{id}. GET /api/v1/comments/{id}/history and GET /api/v1/messages/{id}/history give each body a write replaced, with the actor that replaced it and the time. A deleted post keeps its place in its thread, and no read of it, and no read that quotes it, gives any part of its body.'
+time: 2026-11-11T07:23:15.742008842Z
+custom:
+    Issue: pr3512

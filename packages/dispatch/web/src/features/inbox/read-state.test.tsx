@@ -12,6 +12,7 @@ import { MemoryRouter } from "react-router-dom";
 import { onFakeClock } from "../../__tests__/fake-clock";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates, answerThreadReads } from "../../__tests__/send-answers";
 import { api } from "../../api/client";
 import {
@@ -76,6 +77,8 @@ function comment(id: string, body: string, overrides: Partial<Comment> = {}): Co
     author: { id: "alice", kind: "user" },
     body,
     created_at: "2026-10-12T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id,
@@ -257,6 +260,7 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
     broadcast_id: null,
     created_at: "2026-10-12T00:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: null,
     issue_key: null,

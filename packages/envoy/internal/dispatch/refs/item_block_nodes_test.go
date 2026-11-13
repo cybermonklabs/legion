@@ -188,6 +188,79 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	}
 }
 
+// A block node of a comment or of an issue message carries its post's edit time and delete mark,
+// as the post's own node does. A delete takes every block out of the post's current revision
+// (TombstoneItem), so no current block node of a deleted post resolves after it; the one read
+// that still builds a node of such a block is RemovedItemBlockNode, a comment's, which builds it
+// with the comment's mark. The message's current block is read with the mark stamped on its row
+// and no tombstone, the one state in which loadMessageBlockNodes can be seen to carry it.
+func TestAPostsBlockNodesCarryThePostsMarks(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin fixture transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "CORE")
+	createReferenceIssue(t, tx, "CORE-1", "CORE")
+	const body = "One.\n\nTwo."
+	comment := insertIndexedItem(t, tx, ItemComment, "CORE-1", body)
+	message := insertIndexedItem(t, tx, ItemMessage, "CORE-1", body)
+	editedAt := time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC)
+	deletedAt := time.Date(2026, 11, 2, 10, 45, 0, 0, time.UTC)
+	byAlice := func(actor *model.Actor) bool { return actor != nil && actor.Kind == "user" && actor.ID == "alice" }
+	node := func(step, kind, id string) model.GraphNode {
+		t.Helper()
+		found, ok, err := Node(ctx, tx, kind, id, false)
+		if err != nil || !ok {
+			t.Fatalf("%s: the node %s %s = %v, %v; want it", step, kind, id, ok, err)
+		}
+		return found
+	}
+	mark := func(table, id, set string, args ...any) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, `update `+table+` set `+set+` where id = $1`, append([]any{id}, args...)...); err != nil {
+			t.Fatalf("mark %s %s: %v", table, id, err)
+		}
+	}
+	commentBlock, messageBlock := "comment/"+comment+"#b1", "message/"+message+"#b1"
+	for _, block := range [][2]string{{"comment_block", commentBlock}, {"message_block", messageBlock}} {
+		if got := node("as written", block[0], block[1]); got.EditedAt != nil || got.DeletedAt != nil || got.DeletedBy != nil {
+			t.Fatalf("as written: the block %s = %#v, want no mark", block[1], got)
+		}
+	}
+
+	mark("comments", comment, `edited_at = $2`, editedAt)
+	mark("messages", message, `edited_at = $2`, editedAt)
+	for _, block := range [][2]string{{"comment_block", commentBlock}, {"message_block", messageBlock}} {
+		if got := node("after the edit", block[0], block[1]); got.EditedAt == nil || !got.EditedAt.Equal(editedAt) || got.DeletedAt != nil {
+			t.Fatalf("after the edit: the block %s = %#v, want the edit at %s alone", block[1], got, editedAt)
+		}
+	}
+
+	mark("messages", message, `deleted_at = $2, deleted_by = '{"kind":"user","id":"alice"}'`, deletedAt)
+	if got := node("the message's mark", "message_block", messageBlock); got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || !byAlice(got.DeletedBy) {
+		t.Fatalf("the message's block = %#v, want alice's delete at %s", got, deletedAt)
+	}
+
+	mark("comments", comment, `body = '', deleted_at = $2, deleted_by = '{"kind":"user","id":"alice"}'`, deletedAt)
+	if _, err := TombstoneItem(ctx, tx, ItemComment, comment, body, itemBlockServer, deletedAt); err != nil {
+		t.Fatalf("tombstone the comment: %v", err)
+	}
+	if _, current, err := Node(ctx, tx, "comment_block", commentBlock, false); err != nil || current {
+		t.Fatalf("the deleted comment's block resolves = %v, %v; want no current node", current, err)
+	}
+	removed, held, err := RemovedItemBlockNode(ctx, tx, ItemComment, commentBlock, 2)
+	if err != nil || !held {
+		t.Fatalf("the deleted comment's removed block = %v, %v; want its node", held, err)
+	}
+	if removed.EditedAt == nil || !removed.EditedAt.Equal(editedAt) ||
+		removed.DeletedAt == nil || !removed.DeletedAt.Equal(deletedAt) || !byAlice(removed.DeletedBy) {
+		t.Fatalf("the deleted comment's removed block = %#v, want the edit at %s and alice's delete at %s", removed, editedAt, deletedAt)
+	}
+}
+
 // A block of a comment reaches its item: a document a comment's paragraph cites joins the
 // issue's closure through the comment, and the document's referenced-by lists the comment once,
 // not the block holding the link. A document an item block's reference names reaches nothing:

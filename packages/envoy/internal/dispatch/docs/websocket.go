@@ -40,11 +40,12 @@ type ownerVerifiedContextKey struct{}
 // transaction; the publish of a committed live write, whose transaction held that row until it
 // committed; the block-id backfill, which is a command run against a database nobody is
 // serving from; or one of a comment's anchor operations under WithCommentMarks, whose caller
-// holds the owner row locked and decided under it that the comment is written. Their injections
-// skip the issue read in allowInject - for the settlement that read would be a second pooled
-// connection taken while its transaction is open (store.ErrNestedAcquire), for the publish a
-// read other writers' connections can starve (see publishLiveUpdate), for the backfill a
-// question already answered, and for a comment's anchor a refusal its closed issue does not make.
+// holds the owner row locked and decided under it that the comment is written, or deleted.
+// Their injections skip the issue read in allowInject - for the settlement that read would be
+// a second pooled connection taken while its transaction is open (store.ErrNestedAcquire), for
+// the publish a read other writers' connections can starve (see publishLiveUpdate), for the
+// backfill a question already answered, and for a comment's anchor a refusal its closed issue
+// does not make.
 type ownerVerifiedToken struct{ _ byte }
 
 func withOwnerVerified(ctx context.Context) context.Context {
@@ -60,17 +61,29 @@ type commentMarksContextKey struct{}
 
 // WithCommentMarks marks ctx as a comment's writes to the document its anchor is in, made by a
 // caller holding the document's owner row locked in its joined transaction that decided there
-// the comment is written. A closed issue still takes a comment, so its document still takes
-// that comment's anchor: the comment mark MarkQuote places and VerifyMark reads, the version
-// SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
-// SuggestionKind read of the thread root a reply projects. Each of those, and only those, runs
-// owner-verified under this context (commentMarkOperation). A suggestion's mark, a content edit,
-// a named version or a rebuild made under the same context is still refused on a closed issue.
+// the comment is written, or that the body its author wrote there is that author's to replace
+// or to withdraw. A closed issue still takes a comment, and takes its author's correction of
+// it, so its document still takes that comment's anchor writes: the comment mark MarkQuote
+// places and VerifyMark reads, the version SnapshotVersion pins the anchor to, the margin
+// record ProjectMark writes, and the SuggestionKind read a projection makes - of the thread
+// root a reply projects, and of the comment's own mark where an edit projects it. Each of
+// those, and only those, runs owner-verified under this context (commentMarkOperation). Its
+// callers are the comment create (api/comment_create.go), the edit (api/comment_actions.go,
+// editComment) and the delete (api/comment_delete.go).
+//
+// One operation more runs the same way, under the same context its caller marked: the reject of
+// the pending suggestion of a comment its author is deleting (RejectDeletedCommentSuggestion),
+// which the delete calls with the context it marked here, holding the owner lock under which it
+// decided that the comment is deleted. A closed issue still takes that delete, so its document
+// takes that one reject, which carries the suggestion's text out of it with the comment's body.
+// Every other way a suggestion's mark is placed or settled, and a content edit, a named version
+// or a rebuild made under this context, is still refused on a closed issue.
 func WithCommentMarks(ctx context.Context) context.Context {
 	return context.WithValue(ctx, commentMarksContextKey{}, true)
 }
 
-// commentMarkOperation is ctx for one of the comment anchor operations WithCommentMarks names:
+// commentMarkOperation is ctx for one of the comment anchor operations WithCommentMarks names,
+// and for the reject of a deleting author's suggestion (RejectDeletedCommentSuggestion):
 // owner-verified when the caller marked ctx, unchanged otherwise.
 func commentMarkOperation(ctx context.Context) context.Context {
 	if commentMarks(ctx) {
@@ -88,7 +101,8 @@ func commentMarks(ctx context.Context) bool {
 }
 
 // commentMarkAnchor is whether ctx is one of the comment anchor operations WithCommentMarks
-// names, inside the operation that made it owner-verified (commentMarkOperation): the reads and
+// names, or the reject of a deleting author's suggestion (RejectDeletedCommentSuggestion),
+// inside the operation that made it owner-verified (commentMarkOperation): the reads and
 // writes a closed issue's document takes for a comment, and no other caller's. It is the one
 // test of that, which the three decisions a closed issue turns share - the fork a comment's mark
 // is written on (closedIssueCommentMark), the tree its mark_id is verified against and the

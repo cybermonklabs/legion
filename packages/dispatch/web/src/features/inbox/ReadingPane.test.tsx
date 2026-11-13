@@ -1251,6 +1251,37 @@ test("a comment thread on an issue shows the issue and the thread, with no docum
   }
 });
 
+// The column's subject line prints the thread's root in one line: a root its author deleted has
+// no subject left and reads as the deleted line, an edited one carries ` · edited`, and one that
+// stands unedited carries neither.
+test("a thread's subject line reads as deleted for a deleted root and marks an edited one", async () => {
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const subject = async (overrides: Partial<MyReplyThreadRow>) => {
+    const { view } = renderThread(
+      threadRow({ issue: { key: "CORE-1", title: "Fix the thing" }, ...overrides })
+    );
+    try {
+      const body = await paneBody();
+      return body.querySelector("[data-inbox-thread-subject]")?.textContent;
+    } finally {
+      view.unmount();
+    }
+  };
+  try {
+    expect(await subject({ edited_at: "2026-10-12T00:20:00Z" })).toBe("The retry budget · edited");
+    expect(await subject({})).toBe("The retry budget");
+    const deleted = await subject({
+      deleted_at: "2026-10-12T00:40:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      subject: "",
+    });
+    expect(deleted).toContain("Deleted by alice");
+    expect(deleted).not.toContain("edited");
+  } finally {
+    listComments.mockRestore();
+  }
+});
+
 test("an issue message conversation reads the issue's messages", async () => {
   const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
   const { view } = renderThread(

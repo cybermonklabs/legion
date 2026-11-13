@@ -225,6 +225,8 @@ export const realStackReasons: Record<string, string> = {
   "popover-escape.e2e.ts":
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
+  "post-corrections.e2e.ts":
+    "each mark is the server's record of an edit or a delete, written through the API and then read back on four pages",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",

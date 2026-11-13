@@ -131,6 +131,8 @@ test("a pinned card's agent byline links to its live conversation", () => {
               at: "2026-09-10T00:00:00Z",
               author: agent,
               body: "Pinned question",
+              deleted: null,
+              edited: null,
               id: "ask:ask-1",
               kind: "ask",
             },
@@ -153,5 +155,40 @@ test("a pinned card's agent byline links to its live conversation", () => {
   } finally {
     view.unmount();
     listAgents.mockRestore();
+  }
+});
+
+test("a pinned conversation whose post was deleted says so in place of its body", () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <PinnedTab
+          conversations={[
+            {
+              at: "2026-09-10T00:00:00Z",
+              author: { id: "alice", kind: "user" },
+              body: "",
+              deleted: { at: "2026-09-10T00:05:00Z", by: { id: "alice", kind: "user" } },
+              edited: null,
+              id: "comment:comment-1",
+              kind: "comment",
+            },
+          ]}
+          events={[]}
+          onUnpin={() => {}}
+          onUnpinConversation={() => {}}
+          pinnedIds={["comment:comment-1"]}
+        />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    expect(screen.getByText(/Deleted by/)).not.toBeNull();
+  } finally {
+    view.unmount();
   }
 });

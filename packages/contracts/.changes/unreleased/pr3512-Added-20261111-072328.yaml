@@ -1,0 +1,5 @@
+kind: Added
+body: 'Four tools for the author of a post: dispatch_edit_comment, dispatch_delete_comment, dispatch_edit_message and dispatch_delete_message. dispatch_read takes history, which lists each body an edit or a delete replaced. Three event kinds join the union: comment.deleted, message.edited and message.deleted.'
+time: 2026-11-11T07:23:28.113040407Z
+custom:
+    Issue: pr3512

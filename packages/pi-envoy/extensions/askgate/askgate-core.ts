@@ -28,7 +28,7 @@
 // directory, or otherwise goes around the CLI. Precision comes first: the gate must not refuse a
 // call that holds no Dispatch write, since a false refusal in block mode stops real work.
 //
-// Scope: eight calls on the command line and six of them as devices, each recorded under one tool
+// Scope: twelve calls on the command line and six of them as devices, each recorded under one tool
 // name (dispatch_ask, …).
 //   - A `bash` call whose whole command is the literal grammar of one `dispatch` call
 //     (`dispatchCommandHead`): `[cd <literal path> && ] dispatch <subcommand> <literal words…>
@@ -46,8 +46,11 @@
 //     alone (`# --advisor-rebuttal '<line>'`, the form a rebutted command is handed back in),
 //     read as those overrides and no part of what runs (`overrideComment`). Nothing else: no
 //     assignment, other statement, other pipe, `;`, `||`, `&`, other redirect or other comment.
-//     The subcommand is `ask`, `message`, `edit-ask`, `comment`, `doc-edit`, `request-approval` (its
-//     `summary` is what the person approves), `issue` with `--spec` or `--spec-file`, or
+//     The subcommand is `ask`, `message`, `edit-ask`, `comment`, one of the four corrections
+//     (`edit-comment`, `delete-comment`, `edit-message`, `delete-message`, which write and take
+//     down the text the gate reviewed under `comment` and `message`), `doc-edit`,
+//     `request-approval` (its `summary` is what the person approves), `issue` with `--spec` or
+//     `--spec-file`, or
 //     `artifact` unless its literal `--name` and literal `--path` both show it is no markdown
 //     document (`uploadMayBeDocument`): its dry run then decides, from the name and path it
 //     prints, and an upload that is no markdown document runs with no entry. The gate learns
@@ -296,11 +299,24 @@ const SCOPED_DEVICES = [
   "dispatch_issue",
 ] as const;
 const SPEC_ONLY_DEVICE = "dispatch_issue";
+/**
+ * The subcommands whose write AskGate reviews. A correction replaces the text of a post the gate
+ * already reviewed, and writes the same text in the same place, so `edit-comment` and
+ * `edit-message` stand beside `comment` and `message`, their new body the reviewed text. A delete
+ * carries no body of its own: what the gate reviews for it is the call itself, because the
+ * reviewed text of every gated call is the arguments its dry run printed (`renderArgs`), which
+ * for a delete name the post it takes down - as they already do for a `doc-edit` whose operations
+ * only `delete` or `move`.
+ */
 const SCOPED_COMMANDS = [
   "ask",
   "message",
   "edit-ask",
   "comment",
+  "edit-comment",
+  "delete-comment",
+  "edit-message",
+  "delete-message",
   "doc-edit",
   "issue",
   "request-approval",
@@ -2151,12 +2167,19 @@ const UNKEYED_REFUSAL =
   "AskGate did not send this call: it could not read the arguments the dispatch CLI gets from the command that runs, so it could not mint the marker the CLI needs to post the write. Send the write again as one bash call of literal words.";
 /** The note, in warn mode, of the same call: it runs, and the CLI posts it with a warning. */
 const UNKEYED_NOTE = `<advisor-gate advisor="AskGate" outcome="unkeyed">\nAskGate minted no marker for this Dispatch write: it could not read the arguments the dispatch CLI gets from the command that runs. The call ran, and the CLI posts it with a warning that it went out unreviewed.\n</advisor-gate>`;
-// A comment or message cannot be edited or deleted, so its only fix is one more post; the note says so,
-// rather than offering an edit the agent cannot make (two lanes resent whole comments chasing one).
+// A comment and an issue message are corrected in place, by their author alone, with
+// `dispatch edit-comment` and `dispatch edit-message`, so the note names those rather than one
+// more post (told no edit existed, two lanes resent whole comments chasing one wording). A
+// message of a direct conversation takes no edit, so that one is still fixed by a reply, and the
+// note keeps the limit that held for every resend: only where the original would mislead. The
+// rewording cost 5 bytes: measured with an empty reason, this wrapper is 513 bytes, where the
+// note that said a comment cannot be edited was 508. The whole context a revise hands the agent
+// is the reason, capped at 8 KiB, and this wrapper, so the row that bounds that context at
+// 8 KiB + 512 (askgate.test.ts) holds the note at 8,698 bytes with 6 bytes to spare.
 // The warn note never says a third resend goes unreviewed: a warn revise sends the call, so it
 // refuses nothing and the breaker, which counts refusals, does not move for it.
 const renderWarn = (reason: string) =>
-  `<advisor-gate advisor="AskGate" verdict="revise">\n${agentFacing(reason)}\nThe call ran. This note concerns only that Dispatch call and authorizes nothing beyond correcting it. Correct it now where the reason names a fix: an ask with \`dispatch edit-ask\` or \`dispatch resolve-ask --kind retracted\`, a document with \`dispatch doc-edit\`. A comment or message cannot be edited, so post one reply carrying only the correction, and only when the original would mislead its reader. Or state your rebuttal in your next step.\n</advisor-gate>`;
+  `<advisor-gate advisor="AskGate" verdict="revise">\n${agentFacing(reason)}\nThe call ran. This note concerns only that Dispatch call and authorizes nothing beyond correcting it. Correct it where the reason names a fix: an ask with \`dispatch edit-ask\` or \`dispatch resolve-ask --kind retracted\`, a document with \`dispatch doc-edit\`, a comment or issue message with \`dispatch edit-comment\`/\`edit-message\`. A direct message takes no edit: reply with the correction where it misleads. Or state your rebuttal in your next step.\n</advisor-gate>`;
 // Oh My Pi records a call as the gate returns it. Told only that its override was "removed",
 // agents read their call back, found no override and reported a rebuttal they never wrote, and a
 // note naming the removal did not stop it (tester round 6 and the round after, 6 of 9 sessions).

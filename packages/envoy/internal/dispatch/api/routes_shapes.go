@@ -270,6 +270,15 @@ type messageReplyQuery struct {
 	FollowUp bool `query:"follow_up"`
 }
 
+// postHistoryQuery is the query GET /api/v1/comments/{id}/history and
+// GET /api/v1/messages/{id}/history share: where the page after the first one starts.
+type postHistoryQuery struct {
+	// Before answers the rows written strictly before this RFC3339 time, which is how the
+	// caller reads the page after one of 200 rows: the oldest edited_at it was answered.
+	// Anything that is not an RFC3339 time is 400 INVALID_QUERY.
+	Before string `query:"before"`
+}
+
 // inboxQuery is GET /api/v1/inbox's query.
 type inboxQuery struct {
 	// Project keeps the open asks of one project.
@@ -650,6 +659,13 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/handoffs/{id}":        {Status: http.StatusOK, Response: model.Handoff{}},
 	"GET /api/v1/messages/{id}":        {Status: http.StatusOK, Response: messageRead{}},
 	"GET /api/v1/messages/{id}/blocks": {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/messages/{id}/history": {
+		Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{},
+	},
+	"PATCH /api/v1/messages/{id}": {Status: http.StatusOK, Response: model.Message{}, Request: editMessageInput{}},
+	"DELETE /api/v1/messages/{id}": {
+		Status: http.StatusOK, Response: model.Message{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/messages/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.MessageDelivery{}, Request: createDeliveryInput{},
 	},
@@ -744,6 +760,7 @@ var routeShapes = map[string]routeShape{
 	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
+	"GET /api/v1/comments/{id}/history":  {Status: http.StatusOK, Response: postHistoryRead{}, Params: postHistoryQuery{}},
 	"POST /api/v1/comments/{id}/deliveries": {
 		Status: http.StatusCreated, Response: model.CommentDelivery{}, Request: createCommentDeliveryInput{},
 	},
@@ -758,6 +775,9 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/comments/{id}/accept": {Status: http.StatusOK, Response: acceptedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"PATCH /api/v1/comments/{id}":       {Status: http.StatusOK, Response: shapedComment{}, Request: editCommentInput{}},
+	"DELETE /api/v1/comments/{id}": {
+		Status: http.StatusOK, Response: model.Comment{}, Request: actorInput{}, OptionalRequest: true,
+	},
 	"POST /api/v1/comments/{id}/reject": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
 	"GET /api/v1/artifacts/{id}/asks":   {Status: http.StatusOK, Response: []shapedAsk{}, Params: artifactAsksQuery{}},
 	"POST /api/v1/artifacts/{id}/asks": {

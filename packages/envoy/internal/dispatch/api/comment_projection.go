@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -19,6 +20,47 @@ func (s *server) commentProjectionKind(ctx context.Context, comment model.Commen
 		return "", nil
 	}
 	return s.deps.Docs.SuggestionKind(ctx, comment.Anchor.ArtifactID, comment.Anchor.MarkID)
+}
+
+// projectThreadMark writes the document margin mark a change to comment's body leaves behind:
+// its own, when the comment carries an anchor, and otherwise the mark of the comment it
+// replies to, which holds the text of each reply (commentMarkRecord) and so goes stale when a
+// reply's body moves. A thread anchored nowhere projects nothing. ctx is the handler's
+// document context (Docs.Join), which is the request's context with the transaction joined to
+// it, so the reads below run inside that transaction as commentProjectionKind does.
+//
+// A decided or orphaned suggestion's mark is gone, so it has no projection kind to carry; the
+// write still lands and ProjectMark writes only the marks map, as a reply, a reopen and a
+// resolve of that suggestion do.
+func (s *server) projectThreadMark(ctx context.Context, tx pgx.Tx, comment model.Comment, actor model.Actor) error {
+	marked := comment
+	if marked.Anchor == nil {
+		if comment.ReplyTo == nil {
+			return nil
+		}
+		root, err := s.loadComment(ctx, tx, *comment.ReplyTo)
+		if err != nil {
+			return err
+		}
+		if root.Anchor == nil {
+			return nil
+		}
+		marked = root
+	}
+	replies, err := s.loadReplyChain(ctx, tx, "reply_to", marked.ID)
+	if err != nil {
+		return err
+	}
+	projectionKind := ""
+	kind, kindErr := s.commentProjectionKind(ctx, marked)
+	if kindErr != nil && !errors.Is(kindErr, docs.ErrAnchorMissing) {
+		return kindErr
+	}
+	if kindErr == nil {
+		projectionKind = kind
+	}
+	return s.deps.Docs.ProjectMark(ctx, marked.Anchor.ArtifactID, marked.Anchor.MarkID,
+		commentMarkRecord(marked, replies, projectionKind), actor)
 }
 
 func commentMarkRecord(comment model.Comment, replies []model.Comment, suggestionKind string) docs.MarkRecord {

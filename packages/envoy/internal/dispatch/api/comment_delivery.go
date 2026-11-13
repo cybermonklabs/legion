@@ -279,7 +279,7 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	defer tx.Rollback(ctx)
-	stored, err := s.lockedCommentForDelivery(ctx, tx, comment.ID)
+	stored, err := s.lockedCommentAllowingClosed(ctx, tx, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
@@ -917,6 +917,12 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 		return
 	}
+	// A delivery of a deleted comment would send the text the delete withdrew, so there is
+	// nothing left to send.
+	if comment.DeletedAt != nil {
+		s.writeHandlerError(w, deletedPostError(refs.ItemComment))
+		return
+	}
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select target from comment_mentions where comment_id = $1 order by target
 	`, comment.ID)
@@ -1033,13 +1039,19 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedCommentAllowingClosed(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
 			return
 		}
 		s.writeHandlerError(w, err)
+		return
+	}
+	// A reply adds text under the post, which a deleted one no longer holds; the session's own
+	// text is not withdrawn by it, so the refusal names the post and not the reply.
+	if comment.DeletedAt != nil {
+		s.writeHandlerError(w, deletedPostError(refs.ItemComment))
 		return
 	}
 	rows, err := tx.Query(r.Context(), `
@@ -1169,8 +1181,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// `reply_to_block` names a block of the comment this callback answers, the only item the
-	// request names, which lockedCommentForDelivery holds after its owner — never a part of the
-	// ask the thread hangs under, which a reply naming `ask_id` on the comments route names.
+	// request names, which lockedCommentAllowingClosed holds after its owner — never a part of
+	// the ask the thread hangs under, which a reply naming `ask_id` on the comments route names.
 	var block *namedBlock
 	if input.ReplyToBlock != nil {
 		block, err = s.namedReplyBlock(r.Context(), tx, refs.ItemComment, comment.ID, *input.ReplyToBlock)

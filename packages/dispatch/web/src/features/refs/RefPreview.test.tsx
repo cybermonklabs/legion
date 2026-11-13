@@ -7,6 +7,7 @@ import { Link, MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type {
@@ -1232,6 +1233,230 @@ test("a comment card names its agent by its current title and state, without a s
   } finally {
     view.unmount();
     listAgents.mockRestore();
+    getComment.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+test("a comment card of a deleted comment reads as deleted and gives no part of its body", async () => {
+  const getIssue = mockIssues();
+  const commentRead: CommentRead = {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      deleted_at: "2026-09-09T01:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+    replies: [],
+  };
+  const getComment = spyOn(api, "getComment").mockResolvedValue(commentRead);
+  jest.useFakeTimers();
+  const view = render(
+    <Harness>
+      <Link
+        to="/issues/CORE-1/comments/comment-1"
+        {...referenceTriggerProps({ id: "comment-1", key: "CORE-1", kind: "comment" })}
+      >
+        the comment
+      </Link>
+    </Harness>
+  );
+  try {
+    // The hover card opens on a pointer, and only a real pointer event starts its open delay.
+    fireEvent.pointerOver(screen.getByRole("link", { name: "the comment" }), {
+      pointerType: "mouse",
+    });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    const card = screen.getByRole("tooltip");
+    jest.useRealTimers();
+    await waitFor(() => expect(card.textContent).toContain("Deleted by alice"));
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+/** A read of alice's comment `comment-1`, `Looks good.`, with the overrides given. */
+function commentRead(overrides: Partial<CommentRead["comment"]> = {}): CommentRead {
+  return {
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "Looks good.",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      ...overrides,
+    },
+    replies: [],
+  };
+}
+
+// A post's card heads with its author, and an edited post carries ` · edited` after it, as the
+// post's own byline does; a post nobody edited carries none.
+test("a comment or message card marks an edited post after its author, and a standing one not at all", async () => {
+  const message = "33333333-3333-4333-8333-333333333333";
+  const getIssue = mockIssues();
+  const getComment = spyOn(api, "getComment").mockResolvedValue(
+    commentRead({ edited_at: "2026-09-09T01:00:00Z" })
+  );
+  const getMessage = spyOn(api, "getMessage").mockResolvedValue({
+    message: {
+      author: { id: "bob", kind: "user" },
+      body: "Ship it.",
+      broadcast_id: null,
+      created_at: "2026-09-09T00:00:00Z",
+      deliveries: [],
+      ...messageCorrectionFields(),
+      id: message,
+      in_reply_to: null,
+      issue_key: "CORE-1",
+      reply_block: null,
+      target: "session:planner-session",
+    },
+    replies: [],
+  });
+  const view = render(
+    <Harness>
+      <Link to="/" {...referenceTriggerProps({ id: "comment-1", key: "CORE-1", kind: "comment" })}>
+        the comment
+      </Link>
+      <Link to="/" {...referenceTriggerProps({ id: message, key: "CORE-1", kind: "message" })}>
+        the message
+      </Link>
+    </Harness>
+  );
+  try {
+    act(() => {
+      screen.getByRole("link", { name: "the comment" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Looks good."));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("alice · edited");
+
+    act(() => {
+      screen.getByRole("link", { name: "the message" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Ship it."));
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("edited");
+  } finally {
+    view.unmount();
+    getMessage.mockRestore();
+    getComment.mockRestore();
+    getIssue.mockRestore();
+  }
+});
+
+// A block of a comment or message carries its post's marks on its graph node: the card of a
+// block of an edited post marks it after the author, and a block of a post nobody edited does
+// not. A block of a deleted post has no node: its read answers 404 in words that end `: this
+// comment is deleted`, and the card reads the comment for the mark and says it is deleted,
+// where a block that is merely gone still reads as its short form.
+test("a block card marks its post's edit, and a block of a deleted post says the post is deleted", async () => {
+  const comment = "11111111-1111-4111-8111-111111111111";
+  const getIssue = mockIssues();
+  const getComment = spyOn(api, "getComment").mockResolvedValue(
+    commentRead({
+      body: "",
+      deleted_at: "2026-09-09T02:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      id: comment,
+    })
+  );
+  const blockNode = (block: string, editedAt: string | undefined) => ({
+    edges: [],
+    node: {
+      ...graphNodeFields(),
+      block_id: block,
+      edited_at: editedAt,
+      id: `comment/${comment}#${block}`,
+      issue_key: "CORE-1",
+      kind: "block",
+      made_by: [{ id: "alice", kind: "user" } as const],
+      parent: { id: comment, kind: "comment", ref: `dispatch://CORE-1/comment/${comment}` },
+      project: "CORE",
+      ref: `dispatch://CORE-1/comment/${comment}#b-${block}`,
+      text: `Text of ${block}.`,
+    },
+  });
+  const getReferences = spyOn(api, "getReferences").mockImplementation((reference) => {
+    if (reference.endsWith("#b-b1"))
+      return Promise.resolve(blockNode("b1", "2026-09-09T01:00:00Z"));
+    if (reference.endsWith("#b-b2")) return Promise.resolve(blockNode("b2", undefined));
+    return Promise.reject(
+      new ApiError(404, {
+        code: "NOT_FOUND",
+        error: `no block "b3" in comment ${comment}: this comment is deleted`,
+      })
+    );
+  });
+  const blockLink = (block: string, name: string) => (
+    <Link
+      to="/"
+      {...referenceTriggerProps({
+        block: { id: block },
+        id: comment,
+        key: "CORE-1",
+        kind: "comment",
+      })}
+    >
+      {name}
+    </Link>
+  );
+  const view = render(
+    <Harness>
+      {blockLink("b1", "the edited block")}
+      {blockLink("b2", "the standing block")}
+      {blockLink("b3", "the deleted block")}
+    </Harness>
+  );
+  try {
+    act(() => {
+      screen.getByRole("link", { name: "the edited block" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Text of b1."));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1 · Comment · alice · edited");
+
+    act(() => {
+      screen.getByRole("link", { name: "the standing block" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Text of b2."));
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("edited");
+    expect(getComment).not.toHaveBeenCalled();
+
+    act(() => {
+      screen.getByRole("link", { name: "the deleted block" }).focus();
+    });
+    await waitFor(() => expect(screen.getByRole("tooltip")).toHaveTextContent("Deleted by alice"));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1 · Comment");
+    expect(getComment).toHaveBeenCalledWith(comment);
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
     getComment.mockRestore();
     getIssue.mockRestore();
   }

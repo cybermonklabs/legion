@@ -141,3 +141,32 @@ test("an Inbox reply's `#q2` names the question of the document its comment is a
     listIssueAsks.mockRestore();
   }
 });
+
+test("a deleted reply in an ask thread reads as deleted and gives no part of its body", async () => {
+  const deleted: Comment = {
+    ...reply,
+    body: "",
+    deleted_at: "2026-09-09T03:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const thread = { data: { ...read, replies: [deleted] } } as unknown as AskThreadQuery;
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskThread ask={answeredAsk} order="oldest" showComposer={false} thread={thread} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const row = view.container.querySelector("[data-reply]");
+    if (row === null) throw new Error("the thread drew no reply");
+    await waitFor(() => expect(row.textContent).toContain("Deleted by alice"));
+    expect(row.textContent).not.toContain("Holding on");
+  } finally {
+    view.unmount();
+  }
+});

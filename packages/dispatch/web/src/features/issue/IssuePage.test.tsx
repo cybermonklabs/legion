@@ -2532,6 +2532,70 @@ test("IssuePage lists a match the reader cannot open by its kind alone, with no 
   }
 });
 
+// A match that is a post prints the post's first line, so it carries the post's marks: a deleted
+// comment has no first line left and its link reads as the deleted line, not its bare id; an
+// edited one carries ` · edited` where it stands; one that stands unedited carries neither.
+test("IssuePage lists a deleted match as deleted and marks an edited one", async () => {
+  const restore = stubIssuePage(issue);
+  const thirdId = "4c9f3e12-9999-4aaa-8bbb-cccccccccccc";
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          deleted_at: "2026-09-09T03:00:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          edited_at: "2026-09-09T02:00:00Z",
+          first_line: "The edited note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+        {
+          first_line: "The standing note",
+          id: thirdId,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${thirdId}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 3 items; write more of the id`,
+    })
+  );
+  const view = renderIssuePage(`/issues/CORE-1/comments/${SHORT_ID}`);
+
+  try {
+    await screen.findByText("Several items match that link");
+    const match = (href: string) => {
+      const link = view.container.querySelector(`a[href="${href}"]`);
+      const row = link?.closest("li");
+      if (link === null || row === null || row === undefined) throw new Error(`${href} unlisted`);
+      return { link, row };
+    };
+    const deleted = await waitFor(() => match(`/issues/CORE-1/comments/${WHOLE_ID}`));
+    await waitFor(() => expect(deleted.link.textContent).toContain("Deleted by alice"));
+    expect(deleted.link.textContent).not.toContain(WHOLE_ID);
+    expect(deleted.row.textContent).not.toContain("edited");
+    const edited = match(`/issues/CORE-1/comments/${OTHER_ID}`);
+    expect(edited.row.textContent).toContain("CORE-1 · edited");
+    expect(edited.link.textContent).toBe("The edited note");
+    const standing = match(`/issues/CORE-1/comments/${thirdId}`);
+    expect(standing.row.textContent).not.toContain("edited");
+    expect(standing.row.querySelector("[data-post-deleted]")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage shows its not-found view for an id prefix that names nothing", async () => {
   const restore = stubIssuePage(issue);
   const getReferences = spyOn(api, "getReferences").mockRejectedValue(

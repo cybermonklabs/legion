@@ -398,6 +398,42 @@ describe("dispatch inbox", () => {
     );
   });
 
+  test("a thread whose root its author deleted prints the deleted line where its subject was", async () => {
+    const now = Date.now();
+    // A comment thread whose root its author deleted, then the default rows: the delete cleared
+    // the root's body, which the subject is read from.
+    const rows = threadRows(now);
+    repliesAnswer = {
+      status: 200,
+      body: repliesBody(
+        [
+          {
+            ...rows[0],
+            thread_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            ref: "/issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+            subject: "",
+            deleted_at: "2026-11-02T08:00:00Z",
+            deleted_by: { kind: "user", id: "alice@theorem.dev" },
+          },
+          ...rows,
+        ],
+        now
+      ),
+    };
+
+    const { code, stdout, stderr } = await runInbox();
+
+    expect(stderr).toBe("");
+    expect(code).toBe(0);
+    expect(stdout).toContain(
+      [
+        "Unread threads 3",
+        "- DSP-6 · comment · Deleted by user alice@theorem.dev at 2026-11-02T08:00:00Z · user bob@theorem.dev · 5m · /issues/DSP-6/comments/eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "- DSP-6 · comment · The staging box lost its disk again · user bob@theorem.dev · 5m · /issues/DSP-6/comments/66666666-6666-4666-8666-666666666666",
+      ].join("\n")
+    );
+  });
+
   test("counts the unread threads in the call's details", async () => {
     const { code } = await runInbox();
 

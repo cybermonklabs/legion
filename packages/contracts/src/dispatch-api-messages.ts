@@ -1,10 +1,8 @@
 import { z } from "zod";
-import type { MessageWithTrees } from "./dispatch-api.generated";
 import { ActorSchema, InboundActorSchema } from "./dispatch-api-core";
 import { DELIVERY_CAPABILITIES } from "./dispatch-api-limits";
 import {
   carriedBodyFields,
-  type ReplyBlock,
   ReplyBlockSchema,
   referenceChangesFields,
   threadLoginsFields,
@@ -75,6 +73,13 @@ export const messageFields = {
   broadcast_id: z.string().nullable().optional(),
   deliveries: z.array(MessageDeliverySchema),
   created_at: z.string(),
+  /** When the author last replaced the body, null on a message nobody edited; only an issue
+   *  message can be edited. */
+  edited_at: z.string().nullable(),
+  /** When the message's author deleted it, and who they are: the body is cleared and every read
+   *  of the message gives the mark and no body. Null on every message that stands. */
+  deleted_at: z.string().nullable(),
+  deleted_by: ActorSchema.nullable(),
   /** The block of the message this reply answers (`in_reply_to_block`); null on every other
    *  message, and absent from a Dispatch older than the field. */
   reply_block: WrittenReplyBlockSchema.nullable().optional(),
@@ -82,11 +87,9 @@ export const messageFields = {
 
 export const MessageSchema = z.strictObject(messageFields).readonly();
 
-/** The message row without the tree a dashboard read carries: the body the route table holds
- *  (`MessageWithTrees`) with the block it answers back to the shape the bus payload carries. */
-export type Message = Omit<MessageWithTrees, "body_tree" | "reply_block"> & {
-  readonly reply_block: ReplyBlock | null;
-};
+/** The message row the bus payload carries is the route table's own `Message`: the edit and the
+ *  delete of a message answer that row, so the document declares it beside `MessageWithTrees`
+ *  and nothing here spells it a second time. */
 
 /** `thread_logins` is carried by `message.created` and `message.answered`: on an issue message
  *  the logins with a Replies row on its thread root (up `in_reply_to`), and on a direct
@@ -94,6 +97,18 @@ export type Message = Omit<MessageWithTrees, "body_tree" | "reply_block"> & {
  *  login, the one Inbox that conversation's Agent row sits in (`[]` when no person opened it). */
 export const messageEventPayloadFields = {
   ...messageFields,
+  /** The message's body. Every message row has one, but a deleted message's events carry none:
+   *  the read of the event takes `body` and `body_truncated` out of the payload
+   *  (`attachDeletedPostFields` in `api/events.go`), so it is optional here. */
+  body: messageFields.body.optional(),
+  /** When the message's author last replaced its body, and when they deleted it with who they
+   *  are. Events are retained verbatim and the three fields were added by the post corrections,
+   *  so every message event written before them carries none; a read row (`Message`) always has
+   *  all three. The read of a deleted message's event stamps the two delete marks where the body
+   *  was. */
+  edited_at: messageFields.edited_at.optional(),
+  deleted_at: messageFields.deleted_at.optional(),
+  deleted_by: messageFields.deleted_by.optional(),
   /** First 160 characters of the reply target's body, or of the block it names (`reply_block`);
    *  empty otherwise. */
   reply_body: z.string().optional(),
@@ -124,6 +139,11 @@ export const MessageEventPayloadSchema = z.object({
   in_reply_to: messageFields.in_reply_to.optional(),
   reply_body: messageEventPayloadFields.reply_body,
   thread_target: messageEventPayloadFields.thread_target,
+  // The marks of an edited and of a deleted message: this schema strips a field it does not
+  // declare, so an edited message's event loses the time of its edit without these three.
+  edited_at: messageFields.edited_at.optional(),
+  deleted_at: messageFields.deleted_at.optional(),
+  deleted_by: InboundActorSchema.nullish(),
   author: InboundActorSchema.optional(),
   reply_block: ReplyBlockSchema.nullish(),
   thread_logins: threadLoginsFields.thread_logins,

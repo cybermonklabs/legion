@@ -2574,6 +2574,35 @@ console.log(JSON.stringify(args, null, 2));
     );
     expect(g.calls[4].user).toContain('"summary": "A live sync replaces the nightly export."');
   }, 30_000);
+  // A correction writes or takes down the text a reviewed `comment` or `message` posted, so the
+  // gate reviews it too: without this, an agent could post a reviewed comment and rewrite it
+  // unreviewed with the very command the warn note names.
+  test("the four post corrections are reviewed, an edit on its new body and a delete on its call", async () => {
+    const g = bind({ env: STUB, cwd: work });
+    await g.bash("ec", "dispatch edit-comment --comment c-1 --body 'Corrected: 72 hours, not 24.'");
+    await g.bash("dc", "dispatch delete-comment --comment c-1");
+    await g.bash("em", "dispatch edit-message --message m-1 --body 'Corrected: 02:00 UTC.'");
+    await g.bash("dm", "dispatch delete-message --message m-1");
+    expect(g.entries.map((e) => [e.toolCallId, e.tool, e.outcome])).toEqual([
+      ["ec", "dispatch_edit_comment", "verdict"],
+      ["dc", "dispatch_delete_comment", "verdict"],
+      ["em", "dispatch_edit_message", "verdict"],
+      ["dm", "dispatch_delete_message", "verdict"],
+    ]);
+    expect(g.calls).toHaveLength(4);
+    // The new body is the text the model judges, as a comment's own body is.
+    expect(g.calls[0].user).toContain(
+      "The agent is about to run `dispatch edit-comment` with these arguments:"
+    );
+    expect(g.calls[0].user).toContain('"body": "Corrected: 72 hours, not 24."');
+    // A delete carries no body: what the gate reviews is the call, naming the post it takes down.
+    expect(g.calls[1].user).toContain(
+      "The agent is about to run `dispatch delete-comment` with these arguments:"
+    );
+    expect(g.calls[1].user).toContain('"comment": "c-1"');
+    // And each one is marked, so the CLI posts it as it posts a reviewed comment.
+    expect(markersIn(g.store)).toHaveLength(4);
+  }, 30_000);
   test("a command the agent already runs with --dry-run or --help sends nothing and is not reviewed", async () => {
     const g = bind({ env: STUB, cwd: work });
     await g.bash("a", "dispatch ask --dry-run --issue X-1 --question q");

@@ -49,8 +49,53 @@ func (kind ItemKind) tables() (itemTables, error) {
 }
 
 // revisions is whether the kind counts its indexed revisions and records the text its blocks held
-// at each: a comment's and an ask's, never a message's, which is never edited.
+// at each: a comment's and an ask's, never a message's. A message is edited since INFRA-1523,
+// and its blocks are re-indexed at the edit, but it keeps no per-revision block text: the whole
+// body an edit replaced is kept in post_body_history, which serves it to the history read.
 func (tables itemTables) revisions() bool { return tables.texts != "" }
+
+// postMarkColumns is the three columns of alias, a row of the kind's items table, that a read
+// carries beside a comment's or a message's text: edited_at, deleted_at and deleted_by, in that
+// order, which postMarks reads. An ask is no post a correction marks - no author deletes one, and
+// its own edit (asks.edited_at) is its question's, which its own reads carry - so for an ask
+// they are three nulls.
+func (kind ItemKind) postMarkColumns(alias string) string {
+	if kind == ItemAsk {
+		return `null::timestamptz, null::timestamptz, null::jsonb`
+	}
+	return alias + `.edited_at, ` + alias + `.deleted_at, ` + alias + `.deleted_by`
+}
+
+// postMarks is the three columns postMarkColumns selects as a read carries them: the time of the
+// last edit as it stands, and the delete mark as model.DeletedPostMark decodes it, the one
+// decoder of that mark.
+type postMarks struct {
+	editedAt, deletedAt *time.Time
+	deletedBy           []byte
+}
+
+// targets are the scan targets of postMarkColumns' three columns, in its order.
+func (marks *postMarks) targets() []any {
+	return []any{&marks.editedAt, &marks.deletedAt, &marks.deletedBy}
+}
+
+// deleted is the delete mark the columns hold, nil and nil for a post that stands.
+func (marks postMarks) deleted() (*time.Time, *model.Actor, error) {
+	return model.DeletedPostMark(marks.deletedAt, marks.deletedBy)
+}
+
+// ItemTable is where the items of this kind are stored: the table holding the items themselves
+// ("comments"), and the column naming one of them, which every table keyed by an item carries
+// ("comment_id"). It is the one map of a kind to its storage, which a caller outside this
+// package reads rather than restating (api's postHistoryOwner, whose post_body_history is keyed
+// by this column).
+func (kind ItemKind) ItemTable() (items, item string, err error) {
+	tables, err := kind.tables()
+	if err != nil {
+		return "", "", err
+	}
+	return tables.items, tables.item, nil
+}
 
 // BlockKind is the storage kind of a block of an item of this kind, in graph_edges and refs:
 // comment_block, message_block or ask_block. The API names every block node kind block; the
@@ -220,6 +265,57 @@ func IndexItem(
 			return itemBlockPairs(next, ids, located)
 		},
 	})
+}
+
+// TombstoneItem takes the body of comment or message itemID out of every table of its blocks,
+// in the caller's transaction, for the delete that cleared the item's own body column at `at`
+// (api's deleteComment and deleteMessage, the only callers). previous is the body the delete
+// cleared; it returns the reference changes that delete's event counts.
+//
+// The three writes are the three copies of the body the cleared column does not carry with it:
+//
+//   - the block index, re-indexed from the empty body, which splits into no block: each block's
+//     position is nulled, removed_at is stamped, a null text is written at the new revision for
+//     a kind that records one, each block mention goes, and every embedding window of the item
+//     is dropped (ReplaceCountedItemEdit, indexItemBlocks).
+//   - each block's stored excerpt, which a removal keeps and which is what a reply read serves
+//     as the text of the block it answers (ReplyBlocks), so without this clear a reply still
+//     prints the deleted text.
+//   - the text each revision recorded of a block, for a kind that records them, which a pinned
+//     block reference serves the latest of at or before its revision (ItemBlockAt) and which
+//     the null text the re-index wrote at this revision does not reach.
+//
+// The last two belong to the delete alone: an ordinary edit keeps the excerpt of a block it
+// removed, and the texts it recorded are what a pin to an earlier revision of an item that
+// stands reads.
+func TombstoneItem(
+	ctx context.Context,
+	tx pgx.Tx,
+	kind ItemKind,
+	itemID, previous, serverURL string,
+	at time.Time,
+) (model.ReferenceChanges, error) {
+	tables, err := kind.tables()
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	changes, err := ReplaceCountedItemEdit(ctx, tx, kind, itemID, previous, "", serverURL, at, nil)
+	if err != nil {
+		return model.ReferenceChanges{}, err
+	}
+	if _, err := tx.Exec(ctx, `
+		update `+tables.blocks+` set excerpt = '' where `+tables.item+` = $1::uuid and excerpt <> ''
+	`, itemID); err != nil {
+		return model.ReferenceChanges{}, fmt.Errorf("clear the stored excerpts of %s %s: %w", kind, itemID, err)
+	}
+	if tables.revisions() {
+		if _, err := tx.Exec(ctx, `
+			update `+tables.texts+` set text = null where `+tables.item+` = $1::uuid and text is not null
+		`, itemID); err != nil {
+			return model.ReferenceChanges{}, fmt.Errorf("clear the recorded block texts of %s %s: %w", kind, itemID, err)
+		}
+	}
+	return changes, nil
 }
 
 // itemBlockSource is one reading of an item's blocks, which indexItemBlocks writes: the blocks in
@@ -469,7 +565,8 @@ func clearItemWindowsOwed(tables itemTables, itemID string) blockState {
 // itemState is an item's state row as indexItemBlocks found it: whether a block-aware build
 // indexed it before (a revision above 0 where the kind counts revisions, a message's body_sha256
 // set), its revision and next block number (a message's are 0 and 1), the sum of the text it was
-// last indexed from, and whether the item was edited (edited_at set, which a message has not).
+// last indexed from, and whether the item was edited (edited_at set, which only the state read of
+// a kind that counts revisions reads: a message carries edited_at too, and this read leaves it).
 type itemState struct {
 	indexed    bool
 	revision   int
@@ -616,8 +713,14 @@ func writeItemBlocks(
 					removed_at = null`+makerUpdate+`
 			`, itemID, madeAt, revision, at, ids, positions, types, sums, excerpts, makers)
 		} else {
-			// A message is never edited, so its blocks are made and last changed when it was
-			// written; a reindex under another parser moves only those of new text.
+			// A message records no revisions, so a block it writes takes the time of the write
+			// as its made_at and its changed_at: the moment the message was sent, or the edit
+			// that added it (PATCH /api/v1/messages/{id}, indexed at edited_at). A block an edit
+			// rewrote keeps the made_at it was written with and takes the edit as its changed_at;
+			// a reindex under another parser moves only those of new text. A message stored
+			// before blocks existed and edited before its first index was never indexed at the
+			// moment it was sent, so every block of that first index is made at the edit, the
+			// one time Dispatch holds for its text, where a comment's are made at none (null).
 			_, err = tx.Exec(ctx, `
 				insert into message_blocks (message_id, block_id, node_id, position, type, text_sha256, excerpt, made_at, changed_at)
 				select $1::uuid, b.id, 'message/' || $1::uuid::text || '#' || b.id, b.position, b.type, b.sum, b.excerpt, $2, $2
@@ -788,9 +891,10 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // reports whether it indexed it. It takes the item row `for no key update`, the lock an edit of
 // the item takes, then indexes it as a reply naming one of its blocks does (IndexItemIfOwed),
 // which takes the state row after it; it never takes an owner row. A new block and a new mention
-// take the time the item's text was written: a comment's and an ask's coalesce(edited_at,
-// created_at), a message's created_at. An item a write site indexed since it was listed is no
-// longer owed and is left alone; one deleted since took its state row with it (on delete
+// take the time the item's text was written, read the same way for all three kinds: the row's
+// coalesce(edited_at, created_at), a message's edited_at among them since
+// PATCH /api/v1/messages/{id}. An item a write site indexed since it was listed is no longer
+// owed and is left alone; one deleted since took its state row with it (on delete
 // cascade), so nothing is owed. It runs from the block-index reconciliation
 // (docs.(*Service).ReconcileBlockIndex) and indexes through IndexItemIfOwed, which indexes nothing
 // unless the item's index is owed, so every mention it records is of text an earlier write

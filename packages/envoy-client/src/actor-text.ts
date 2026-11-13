@@ -1,12 +1,21 @@
-import { type Actor, actorActText, serviceSubjectLabel } from "@legion/contracts";
+import {
+  type Actor,
+  actorActText,
+  serviceSubjectLabel,
+  type WrittenActor,
+} from "@legion/contracts";
 
 /** How an event, comment, message or ask author reads in the tools: `<kind> <id>`, plus
  *  ` (as <namespace>/<name>)` — the verified service token's subject through
  *  `serviceSubjectLabel`, which keeps the namespace because every namespace has a `default`
  *  service account — when a service token authenticated the write, or `actorActText`'s act when
  *  an agent made the write for the person it acts for. A claim's holder is named by `claimText`
- *  instead, which follows the dashboard's session label. */
-export function actorText(actor: Actor): string {
+ *  instead, which follows the dashboard's session label.
+ *
+ *  The actor is taken in either reading: the served row's (`Actor`), and the one a
+ *  `DispatchEvent` payload carries (`WrittenActor`), which no build takes for the other
+ *  (`dispatch-api-spellings.test.ts`). */
+export function actorText(actor: Actor | WrittenActor): string {
   if (actor.kind === "user") {
     return actorActText(`user ${actor.id}`, actor.act);
   }
@@ -15,4 +24,21 @@ export function actorText(actor: Actor): string {
     return `${actor.kind} ${actor.id}`;
   }
   return `${actor.kind} ${actor.id} (as ${serviceSubjectLabel(service)})`;
+}
+
+/**
+ * How every read names a post its author withdrew, in place of its body: who deleted it and
+ * when. A deleted post gives no part of its body to any read, so this line stands wherever the
+ * body would, and never an empty one. The actor is unknown only on an older record that kept
+ * the time alone, which reads as `its author`.
+ *
+ * One wording for every surface: every read of a post a tool prints and a reply's quote of a
+ * deleted parent (`dispatch-commands/render-item.ts`), an event of one
+ * (`dispatch-commands/render-issue.ts`), a graph row naming one
+ * (`dispatch-commands/render-graph.ts`), an Inbox thread whose root is one
+ * (`dispatch-commands/session.ts`), a card's re-read of a body its event cut (`delivery.ts`) and
+ * the answers list a session is handed (`session-answers.ts`) all say this sentence.
+ */
+export function deletedMark(at: string, by: Actor | WrittenActor | null | undefined): string {
+  return `Deleted by ${by == null ? "its author" : actorText(by)} at ${at}`;
 }

@@ -52,14 +52,15 @@ const declinedResolution = `resolution->>'kind' = '` + model.AskResolutionDeclin
 //
 // Each source names a row by its id, and each kind's ids are a set, so an item reached several ways
 // is one row. Every row is then read at its current words: an ask's current answer (asks.answer)
-// when that answer's own time is in the window, a comment's current body, a message's body. A
-// decline is read from its ask.resolved event instead, since that event is where the read already
-// keeps the rows whose published_destinations hold the session's topic, which is what makes "each
-// session the delivery reached" the set this lists; the asks row gives it the ask's question and
-// owner alone. A comment or message an agent or the system wrote is left out by its author; an
-// answer is a person's by construction. The ids are compared as text, through the asks_id_text,
-// comments_id_text and messages_id_text indexes, so a payload id that is not a uuid cannot fail
-// the read.
+// when that answer's own time is in the window, a comment's current body, a message's body, each
+// with the time of its edit and the mark of its delete, so a reader meets a post its author
+// withdrew as deleted and not as an empty line. A decline is read from its ask.resolved event
+// instead, since that event is where the read already keeps the rows whose published_destinations
+// hold the session's topic, which is what makes "each session the delivery reached" the set this
+// lists; the asks row gives it the ask's question and owner alone. A comment or message an agent
+// or the system wrote is left out by its author; an answer is a person's by construction. The ids
+// are compared as text, through the asks_id_text, comments_id_text and messages_id_text indexes,
+// so a payload id that is not a uuid cannot fail the read.
 //
 // replaced counts an ask's real answers as api's answerEventsQuery does: the ask.answered events
 // whose actor is the user the answer names, one per answer time (a settlement that restores an
@@ -115,8 +116,8 @@ const query = `
 		where md.session_id = $1 and md.state = 'sent' and md.created_at >= $2 - interval '1 hour'
 	)
 	select 'answer' as kind, a.id::text as id, (a.answer->>'at')::timestamptz as at,
-	       null::timestamptz as edited_at, null::jsonb as author, null::text as body,
-	       null::text as dispatch_words, a.answer,
+	       null::timestamptz as edited_at, null::timestamptz as deleted_at, null::jsonb as deleted_by,
+	       null::jsonb as author, null::text as body, null::text as dispatch_words, a.answer,
 	       (select count(distinct ae.answer->>'at') from answer_events ae
 	         where ae.id = x.id and ae.actor->>'kind' = 'user' and ae.actor->>'id' = ae.answer->>'user') > 1 as replaced,
 	       a.id::text as ask_id, a.question as ask_question,
@@ -129,7 +130,7 @@ const query = `
 	left join artifacts ar on ar.id = a.artifact_id
 	where a.answer is not null and (a.answer->>'at')::timestamptz >= $2
 	union all
-	select 'comment', c.id::text, c.created_at, c.edited_at, c.author, c.body, null, null, false,
+	select 'comment', c.id::text, c.created_at, c.edited_at, c.deleted_at, c.deleted_by, c.author, c.body, null, null, false,
 	       q.id::text, q.question,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       x.mentioned,
@@ -143,7 +144,7 @@ const query = `
 	left join artifacts ar on ar.id = c.artifact_id
 	where c.author->>'kind' = 'user' and c.created_at >= $2
 	union all
-	select 'message', m.id::text, m.created_at, null, m.author, m.body, null, null, false,
+	select 'message', m.id::text, m.created_at, m.edited_at, m.deleted_at, m.deleted_by, m.author, m.body, null, null, false,
 	       null, null,
 	       i.key, i.title, null, null, null,
 	       false, false, false, false,
@@ -157,7 +158,7 @@ const query = `
 	-- A decline has no answer to take a time from, so it sits at the resolution's own time, and
 	-- that time, not the event's, is what the window holds it to: the event is written moments
 	-- after the resolution it carries.
-	select 'declined', a.id::text, (x.resolution->>'at')::timestamptz, null,
+	select 'declined', a.id::text, (x.resolution->>'at')::timestamptz, null, null, null,
 	       x.resolution->'actor', x.resolution->>'reason', x.resolution->>'dispatch_words',
 	       null, false,
 	       a.id::text, a.question,
@@ -172,8 +173,8 @@ const query = `
 	order by at desc, id desc`
 
 // List lists what people wrote that Dispatch delivered to session since since, newest first by
-// time, then by id descending: an ask's current answer, a comment at its current body, a message,
-// or a person's decline of an ask, each (kind, id) once (query).
+// time, then by id descending: an ask's current answer, a comment or a message at its current
+// body with the mark of a delete, or a person's decline of an ask, each (kind, id) once (query).
 //
 // An item reached several ways carries one relation, the most specific to the session, in this
 // order of precedence: a comment is mentioned_you when a mention delivered it to the session (it
@@ -205,19 +206,26 @@ func List(ctx context.Context, pool *store.Pool, session string, since time.Time
 func scan(row pgx.Row, session string) (model.SessionAnswer, error) {
 	var (
 		item                                                model.SessionAnswer
-		author, answer                                      []byte
+		author, answer, deletedBy                           []byte
+		deletedAt                                           *time.Time
 		body, dispatchWords, askID, askQuestion             *string
 		issueKey, issueTitle, docProject, docSlug, docName  *string
 		mentioned, inAskThread, inCommentThread, onDocument bool
 		repliesToSession                                    bool
 	)
 	if err := row.Scan(
-		&item.Kind, &item.ID, &item.At, &item.EditedAt, &author, &body, &dispatchWords, &answer,
-		&item.Replaced,
+		&item.Kind, &item.ID, &item.At, &item.EditedAt, &deletedAt, &deletedBy,
+		&author, &body, &dispatchWords, &answer, &item.Replaced,
 		&askID, &askQuestion, &issueKey, &issueTitle, &docProject, &docSlug, &docName,
 		&mentioned, &inAskThread, &inCommentThread, &onDocument, &repliesToSession,
 	); err != nil {
 		return model.SessionAnswer{}, err
+	}
+	// The mark of a deleted post, as every other read of one carries it: the time in UTC and
+	// the actor that deleted it, from the one decode that stands behind them all.
+	var err error
+	if item.DeletedAt, item.DeletedBy, err = model.DeletedPostMark(deletedAt, deletedBy); err != nil {
+		return model.SessionAnswer{}, fmt.Errorf("%s %s: %w", item.Kind, item.ID, err)
 	}
 	switch item.Kind {
 	case model.SessionAnswerKindAnswer:

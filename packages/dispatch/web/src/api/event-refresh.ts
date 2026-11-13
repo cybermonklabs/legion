@@ -314,6 +314,7 @@ function eventDocument(event: DispatchEvent): string | undefined {
     case "comment.resolved":
     case "comment.reopened":
     case "comment.edited":
+    case "comment.deleted":
     case "comment.anchor_refreshed":
     case "suggestion.accepted":
     case "suggestion.rejected":
@@ -345,8 +346,8 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
     event.type === "comment.delivery" ? event.payload.comment_id : payloadString(event, "id");
   if (id !== undefined) {
     targets.push({ queryKey: ["comment", id] });
-    if (event.type === "comment.edited") {
-      targets.push(commentBlockReads(id));
+    if (event.type === "comment.edited" || event.type === "comment.deleted") {
+      targets.push(itemBlockReads("comment", id));
     }
   }
   const root = payloadString(event, "reply_to");
@@ -361,14 +362,15 @@ function appendCommentReads(targets: RefreshTarget[], event: DispatchEvent): voi
 }
 
 /**
- * Every read of a block of comment `id` (`blockQuery`, which each link to the block and its own
- * panel share, pinned or not), found by its node, `comment/<id>#<block id>`. The node carries the
- * block's text, which the read keeps until an event refreshes it (`staleTime: Infinity`), and the
- * server names no block of a comment in `references_changed`: the comment's own edit does. An
- * issue message is never edited, so its blocks' text never moves.
+ * Every read of a block of comment or issue message `id` (`blockQuery`, which each link to the
+ * block and its own panel share, pinned or not), found by its node, `<kind>/<id>#<block id>`.
+ * The node carries the block's text, which the read keeps until an event refreshes it
+ * (`staleTime: Infinity`), and the server names no block of a post in `references_changed`: the
+ * post's own edit does, and its delete, which re-indexes the post with an empty body. A message
+ * has both since the post corrections gave it them.
  */
-function commentBlockReads(id: string): RefreshTarget {
-  const prefix = `comment/${id}#`;
+function itemBlockReads(kind: "comment" | "message", id: string): RefreshTarget {
+  const prefix = `${kind}/${id}#`;
   return referencePanels(({ node }) => node.kind === "block" && node.id.startsWith(prefix));
 }
 
@@ -406,6 +408,7 @@ function appendDocumentPanel(targets: RefreshTarget[], event: DispatchEvent): vo
     event.type !== "comment.created" &&
     event.type !== "comment.answered" &&
     event.type !== "comment.edited" &&
+    event.type !== "comment.deleted" &&
     event.type !== "comment.anchor_refreshed"
   ) {
     return;
@@ -458,6 +461,7 @@ function isCommentLikeEvent(event: DispatchEvent): boolean {
     event.type === "comment.resolved" ||
     event.type === "comment.reopened" ||
     event.type === "comment.edited" ||
+    event.type === "comment.deleted" ||
     event.type === "comment.anchor_refreshed" ||
     event.type === "suggestion.accepted" ||
     event.type === "suggestion.rejected"
@@ -503,7 +507,9 @@ function isMessageEvent(event: DispatchEvent): boolean {
     event.type === "message.created" ||
     event.type === "message.delivery" ||
     event.type === "message.accepted" ||
-    event.type === "message.answered"
+    event.type === "message.answered" ||
+    event.type === "message.edited" ||
+    event.type === "message.deleted"
   );
 }
 
@@ -619,9 +625,12 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
     case "comment.anchor_refreshed":
     case "comment.created":
     case "comment.edited":
+    case "comment.deleted":
     case "issue.created":
     case "message.answered":
     case "message.created":
+    case "message.edited":
+    case "message.deleted":
       return true;
     case "issue.updated": {
       const changes = issueChanges(event);
@@ -1191,6 +1200,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // Every message read of the issue (a reference to a message, which shows the thread under
     // its root): a reply changes its root's read, and a payload need not name the root.
     targets.push({ queryKey: ["issue-messages", key] }, { queryKey: ["issue-message", key] });
+    // An edit and a delete rewrite the message's blocks, so every read of one of them, as a
+    // comment's own edit does (`itemBlockReads`).
+    if (event.type === "message.edited" || event.type === "message.deleted") {
+      const id = payloadString(event, "id");
+      if (id !== undefined) {
+        targets.push(itemBlockReads("message", id));
+      }
+    }
     appendRepliedBlock(targets, event);
     return targets;
   }

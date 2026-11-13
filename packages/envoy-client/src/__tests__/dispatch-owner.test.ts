@@ -80,7 +80,7 @@ test.each([
   "dispatch://CORE-1#b-x",
   "dispatch://CORE-1/log#b-x",
   "dispatch://CORE/artifact/handbook-md/message/33333333-3333-4333-8333-333333333333#b-x",
-  // A message never changes, so a pinned message block names nothing.
+  // A message records no revisions, so a pinned message block names nothing.
   "dispatch://CORE-1/message/33333333-3333-4333-8333-333333333333#b-b2@v1",
   // An ask or a comment has no document version.
   "dispatch://CORE/artifact/handbook-md@v3/comment/88888888-8888-4888-8888-888888888888#b-b2",

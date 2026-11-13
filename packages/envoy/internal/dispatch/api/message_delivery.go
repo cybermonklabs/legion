@@ -49,6 +49,12 @@ func (s *server) createDelivery(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
 	}
+	// A send of a deleted message would carry the text the delete withdrew, so there is nothing
+	// left to send; every attempt still pending when the delete ran was failed by it.
+	if message.DeletedAt != nil {
+		s.writeHandlerError(w, deletedPostError(refs.ItemMessage))
+		return
+	}
 	// The send outlives the request's connection, keeping its values and dropping its
 	// cancellation, as createStoredMessage's does: the attempt is committed before the listener
 	// call, a cut connection must not strand it, and one a process death strands the delivery
@@ -878,10 +884,12 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	message, err := scanMessage(tx.QueryRow(r.Context(), `
-		select `+messageColumns+`
-		from messages where id = $1
-	`, r.PathValue("id")))
+	// The first read is for the issue key alone. A delete committing behind it leaves the row
+	// it holds stale, so the issue is locked first - the order createStoredMessage takes
+	// (messages.go) - and the row this route judges and answers from is the one read again
+	// under that lock. A message with no issue takes no lock and needs none: a delete refuses
+	// one (NOT_AN_ISSUE_MESSAGE), so its deleted_at is never set.
+	message, err := s.loadMessage(r.Context(), tx, "", r.PathValue("id"))
 	if err != nil {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message not found")
 		return
@@ -891,6 +899,16 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		if message, err = s.loadMessage(r.Context(), tx, "", message.ID); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// A reply adds text under the post, which a deleted one no longer holds. The session keeps
+	// its attempt: a reply it cannot post is this refusal, not a lost delivery.
+	if message.DeletedAt != nil {
+		s.writeHandlerError(w, deletedPostError(refs.ItemMessage))
+		return
 	}
 	if input.InReplyToBlock != nil {
 		// Before the attempt row, as the accept route takes them: issue, message, attempt.
@@ -1004,12 +1022,24 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 // automatic BTW answer is sent that way, so a frame the session is handed twice can never post a
 // second answer, and an error report after an answer is a retry too. A follow-up whose text the
 // session already posted in this conversation (its first reply, or an earlier follow-up) is a
-// resend and posts nothing; any other is posted under the first reply, and its event is returned.
+// resend and posts nothing; any other is posted under the first reply, and its event is
+// returned. A follow-up under an answer the session has deleted is refused, as a reply to any
+// other deleted post is.
 func (s *server) replyAfterAnswer(
 	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, body *string, followUp, trees bool,
 ) (replyRead, *model.Event, error) {
 	if body == nil || !followUp {
 		return replyRead{shapedMessage: newShapedMessage(answer, trees), Duplicate: true}, nil, nil
+	}
+	// The answer is the session's own post, which it may have deleted since it wrote it: a
+	// follow-up adds text under it, and a deleted post takes none, which is the refusal the
+	// message replied to takes above. A retry above this line posts nothing, so it stands and
+	// hands back the answer as every other read of a deleted post gives it, with no body.
+	//
+	// The answer was read under its issue's lock (replyMessage), so no delete commits behind
+	// it; an answer in a conversation with no issue is never deleted at all.
+	if answer.DeletedAt != nil {
+		return replyRead{}, nil, deletedPostError(refs.ItemMessage)
 	}
 	posted, err := scanMessage(tx.QueryRow(ctx, `
 		select `+messageColumns+`

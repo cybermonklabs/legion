@@ -251,7 +251,8 @@ func (s *Service) BlockForQuote(ctx context.Context, artifactID, quote string) (
 }
 
 // SuggestionKind returns the kind recorded on a verified browser or server suggestion mark. A
-// reply's projection of its thread root reads it under WithCommentMarks on a closed issue too.
+// projection reads it under WithCommentMarks on a closed issue too: of its thread root, where
+// a reply projects, and of the comment's own mark, where its author's edit does.
 func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (string, error) {
 	tree, err := s.docTree(commentMarkOperation(ctx), artifactID)
 	if err != nil {
@@ -272,6 +273,24 @@ func (s *Service) AcceptSuggestion(ctx context.Context, artifactID, id, replaceW
 // RejectSuggestion removes a suggestion mark and its inserted text when necessary.
 func (s *Service) RejectSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
 	return s.applySuggestion(context.WithValue(ctx, skippedAnchorRefreshKey{}, id), artifactID, id, "", actor, false)
+}
+
+// RejectDeletedCommentSuggestion rejects the pending suggestion of a comment its author is
+// deleting: the mark goes and an insert suggestion's text goes with it, as RejectSuggestion
+// does. Its one caller is the comment delete (api/comment_delete.go, deleteComment), whose
+// transaction holds the document's owner row locked (api/comment_actions.go,
+// lockedCommentForCorrection through lockOwnerOfComment) and has decided under that lock that
+// the comment is its author's to delete - the same standing a comment's own anchor writes have,
+// and the delete marks the context it passes here as theirs (WithCommentMarks). So this reject
+// runs as those writes run, owner-verified under the caller's mark (commentMarkOperation), and a
+// closed issue's document takes it: a closed issue still takes the delete of its comment, and
+// the suggestion's replacement text is the comment's text too, so it leaves the document with
+// the body. Owner-verified, the write meets no closed refusal (allowInject); a comment's mark
+// write, it forks the stored document cold (closedIssueCommentMark, readFork says why). The
+// accept and the reject routes keep RejectSuggestion, which a closed issue refuses as it always
+// did, and so does this reject under a context no caller marked.
+func (s *Service) RejectDeletedCommentSuggestion(ctx context.Context, artifactID, id string, actor model.Actor) error {
+	return s.RejectSuggestion(commentMarkOperation(ctx), artifactID, id, actor)
 }
 
 func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor, accept bool) error {

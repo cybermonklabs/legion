@@ -143,8 +143,10 @@ type storedItemBlocks struct {
 	rows       []itemBlockRow
 }
 
-// itemBlockRow is one current block row of an item; a message block has no changed revision or
-// time.
+// itemBlockRow is one current block row of an item; a message's query reads neither changed
+// fact, since a message records no revisions and its blocks route answers neither
+// (model.ItemBlock), though message_blocks.changed_at stands at the edit that last rewrote the
+// block and the block's graph node carries it (refs/item_block_nodes.go).
 type itemBlockRow struct {
 	blockID, nodeType, textSHA256 string
 	position                      int

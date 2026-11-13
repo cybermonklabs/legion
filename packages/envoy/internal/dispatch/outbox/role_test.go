@@ -1803,8 +1803,9 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 // copy to hold back, and the event settles blocked for mentionPendingDelay all the same.
 //
 // The owner's later events are held still, which is what the wait is for: the same comment's
-// edit is bound for that holder on that same key, waits behind the forward, and reaches the
-// holder only once the comment's own copy has.
+// edit and delete, and the edit and the delete of a message of that issue, are each bound for
+// that holder on that same key, wait behind the forward, and reach the holder only once the
+// comment's own copy has.
 func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
 	var logged lockedBuffer
@@ -1839,14 +1840,36 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	})
 	seedMentionDelivery(t, rig.database, commentID, bystander, "sent")
 	seedDelivery(t, rig.database, commentID, unanswered, holder, "pending")
-	edit := appendEvent(t, rig.database, rig.broker, model.Event{
-		IssueKey: issue, Type: "comment.edited", Actor: alice,
-		Payload: model.CommentEventPayload{Comment: model.Comment{
-			ID: commentID, IssueKey: issue, Body: body + " (edited)"}},
-	})
-	if !comment.Notify || !edit.Notify {
-		t.Fatalf("comment.created notifies %v and comment.edited %v, want both: an event that does not notify takes neither the route nor the claimant route and proves nothing",
-			comment.Notify, edit.Notify)
+	// The owner's later events: the comment's own edit and delete, and the edit and the delete
+	// of a message of the same issue. Each takes the claimant route and the issue's role route,
+	// so each is bound for that holder and waits behind the forward.
+	messageID := seedMessage(t, rig.database, "T-1", alice, "the message of the same issue", nil)
+	var later []model.Event
+	for _, write := range []struct {
+		eventType string
+		payload   any
+	}{
+		{"comment.edited", model.CommentEventPayload{Comment: model.Comment{
+			ID: commentID, IssueKey: issue, Body: body + " (edited)"}}},
+		{"comment.deleted", model.CommentEventPayload{Comment: model.Comment{
+			ID: commentID, IssueKey: issue}}},
+		{"message.edited", model.MessageEventPayload{Message: model.Message{
+			ID: messageID, IssueKey: issue, Body: "the message, edited"}}},
+		{"message.deleted", model.MessageEventPayload{Message: model.Message{
+			ID: messageID, IssueKey: issue}}},
+	} {
+		event := appendEvent(t, rig.database, rig.broker, model.Event{
+			IssueKey: issue, Type: write.eventType, Actor: alice, Payload: write.payload,
+		})
+		if !event.Notify {
+			t.Fatalf("%s does not notify: an event that does not notify takes neither the route nor the claimant route and proves nothing",
+				write.eventType)
+		}
+		later = append(later, event)
+	}
+	if !comment.Notify {
+		t.Fatalf("comment.created notifies %v, want it to: an event that does not notify takes neither the route nor the claimant route and proves nothing",
+			comment.Notify)
 	}
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
@@ -1888,21 +1911,24 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	}
 
 	// Round 15's finding: the owner's later events bound for that holder still wait behind the
-	// waiting forward.
-	_, _, editReached := eventState(t, rig.database, edit.ID)
-	if slices.Contains(editReached, holderSubject) {
-		t.Fatalf("the edit reached %v, want %s not among them: the owner's later events bound for that holder wait behind the forward, so that the holder is not shown the edit before the comment",
-			editReached, holderSubject)
-	}
-	if at := publishedAt(t, rig.database, edit.ID); at != nil {
-		t.Fatalf("the edit is published at %v while the comment's forward waits on the holder's own mention", at)
-	}
-	attempts, due = nextAttempt(t, rig.database, edit.ID)
-	if attempts != 0 {
-		t.Fatalf("the edit counts attempt_count = %d while it waits behind the comment's forward, want 0: a wait is no failure", attempts)
-	}
-	if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
-		t.Fatalf("the edit is due at %v, want about %v from now, the wait its blocker takes", due, mentionPendingDelay)
+	// waiting forward. Each kind of correction is one of them, so each is proven to take that
+	// holder's destinations and to keep the order its owner's events are written in.
+	for _, event := range later {
+		_, _, reached := eventState(t, rig.database, event.ID)
+		if slices.Contains(reached, holderSubject) {
+			t.Fatalf("the %s reached %v, want %s not among them: the owner's later events bound for that holder wait behind the forward, so that the holder is not shown them before the comment",
+				event.Type, reached, holderSubject)
+		}
+		if at := publishedAt(t, rig.database, event.ID); at != nil {
+			t.Fatalf("the %s is published at %v while the comment's forward waits on the holder's own mention", event.Type, at)
+		}
+		attempts, due = nextAttempt(t, rig.database, event.ID)
+		if attempts != 0 {
+			t.Fatalf("the %s counts attempt_count = %d while it waits behind the comment's forward, want 0: a wait is no failure", event.Type, attempts)
+		}
+		if due == nil || !due.After(time.Now()) || due.After(time.Now().Add(mentionPendingDelay+time.Second)) {
+			t.Fatalf("the %s is due at %v, want about %v from now, the wait its blocker takes", event.Type, due, mentionPendingDelay)
+		}
 	}
 
 	// The holder's own mention lands and its sender settles the attempt, as one does within the
@@ -1913,11 +1939,13 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 		t.Fatalf("settle the holder's mention: %v", err)
 	}
 	dueNow(t, rig.database, comment.ID)
-	dueNow(t, rig.database, edit.ID)
+	for _, event := range later {
+		dueNow(t, rig.database, event.ID)
+	}
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 
-	for _, event := range []model.Event{comment, edit} {
+	for _, event := range append([]model.Event{comment}, later...) {
 		if publishedAt(t, rig.database, event.ID) == nil {
 			attempts, failure, destinations := eventState(t, rig.database, event.ID)
 			t.Fatalf("event %d (%s) was not published once the holder's mention settled: attempt_count %d, publish_error %v, reached %v",
@@ -1928,18 +1956,21 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	for _, item := range recv.received() {
 		order = append(order, item.EventID)
 	}
-	editID := fmt.Sprintf("dispatch-%d", edit.ID)
-	seenEdit := false
+	laterIDs := map[string]bool{}
+	for _, event := range later {
+		laterIDs[fmt.Sprintf("dispatch-%d", event.ID)] = true
+	}
+	seenLater := false
 	for _, id := range order {
-		if id == editID {
-			seenEdit = true
-		} else if seenEdit {
-			t.Fatalf("%s was sent %v, want every copy of the comment before the edit's: both ride that holder's one chain, in the order the events were written",
+		if laterIDs[id] {
+			seenLater = true
+		} else if seenLater {
+			t.Fatalf("%s was sent %v, want every copy of the comment before the copies of the events after it: all of them ride that holder's one chain, in the order the events were written",
 				holder, order)
 		}
 	}
-	if !seenEdit {
-		t.Fatalf("%s was sent %v, want the edit's copies once the comment's forward had gone", holder, order)
+	if !seenLater {
+		t.Fatalf("%s was sent %v, want the later events' copies once the comment's forward had gone", holder, order)
 	}
 }
 

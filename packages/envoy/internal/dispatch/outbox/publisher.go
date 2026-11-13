@@ -1122,7 +1122,8 @@ func addRoute(d *destinations, route *string) error {
 	return nil
 }
 
-// addClaimantRoute delivers a person's answer, comment or untargeted message on an issue to
+// addClaimantRoute delivers a person's answer, comment or untargeted message on an issue - and
+// the edit or the delete of a post of either kind - to
 // claimant, the session that holds the issue's claim, on its own topic. Otherwise it reaches the
 // claimant only when the claimant subscribed to the whole issue, or happens to be the route, a
 // follower of the ask, or an author the thread or document names, and the session working the
@@ -1130,7 +1131,7 @@ func addRoute(d *destinations, route *string) error {
 // an agent's events reach nobody new through here, even the ones that notify. A new comment the
 // claimant's own mention of it delivers is left to that mention (destinations.addWorkingSession,
 // the mention rule); a claimant whose mention failed gets this copy instead, and the comment's
-// edit, resolution and reopening are never left to it. The claim is the one the batch
+// edit, delete, resolution and reopening are never left to it. The claim is the one the batch
 // read when the event is published (readBatch, routing), not when it was written, so a retry after
 // the claim moved reaches the new claimant. A claimant that is also the route, a follower or an
 // author gets one copy: destinations adds a subject once per event. The claimant's subject is an
@@ -1192,8 +1193,8 @@ func payloadPreviousClaimSession(payload any) string {
 // opened or last handed back, model.AskEditEventPayload.Quiet) reaches no follower. The event's own
 // actor is skipped, and a follower whose own mention of a new comment delivers it is left to that
 // mention (destinations.addSession, the mention rule); a follower whose mention failed gets this
-// copy instead. Only the reply's creation is left to the mention; its edit, resolution and
-// reopening reach every follower. A topic the route already reaches is not added twice.
+// copy instead. Only the reply's creation is left to the mention; its edit, delete, resolution
+// and reopening reach every follower. A topic the route already reaches is not added twice.
 func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 	var askID string
 	switch event.Type {
@@ -1203,7 +1204,7 @@ func addFollowerRoutes(event model.Event, look lookup, d *destinations) error {
 		}
 	case "ask.answered", "ask.handed_back", "ask.resolved":
 		askID = payloadString(event.Payload, "id")
-	case "comment.created", "comment.resolved", "comment.reopened", "comment.edited":
+	case "comment.created", "comment.resolved", "comment.reopened", "comment.edited", "comment.deleted":
 		askID = payloadString(event.Payload, "ask_id")
 	}
 	if askID == "" {
@@ -1374,7 +1375,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 	}
 
 	switch event.Type {
-	case "comment.created", "comment.edited":
+	case "comment.created", "comment.edited", "comment.deleted":
 		switch replyTo := payloadString(event.Payload, "reply_to"); {
 		case payloadString(event.Payload, "ask_id") != "":
 			// An ask's thread reaches the ask's followers (addFollowerRoutes).
@@ -1416,7 +1417,7 @@ func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destina
 				return err
 			}
 		}
-	case "message.created", "message.answered":
+	case "message.created", "message.answered", "message.edited", "message.deleted":
 		if inReplyTo := payloadString(event.Payload, "in_reply_to"); inReplyTo != "" {
 			if err := considerLoaded(look.messageAuthor(inReplyTo)); err != nil {
 				return err
@@ -1565,7 +1566,8 @@ func payloadSummary(event model.Event, slug string) string {
 		detail = fmt.Sprintf("%v version %v", values["phase"], values["version"])
 	case strings.HasPrefix(event.Type, "ask."):
 		detail = text.HeadRunes(payloadString(event.Payload, "question"), 120)
-	case event.Type == "message.created", event.Type == "message.answered":
+	case event.Type == "message.created", event.Type == "message.answered",
+		event.Type == "message.edited", event.Type == "message.deleted":
 		detail = payloadString(event.Payload, "body")
 	case strings.HasPrefix(event.Type, "comment."), strings.HasPrefix(event.Type, "suggestion."):
 		detail = payloadString(event.Payload, "body")

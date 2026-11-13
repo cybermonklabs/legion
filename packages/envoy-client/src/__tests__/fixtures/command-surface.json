@@ -1,5 +1,5 @@
 {
-  "commands": 33,
+  "commands": 37,
   "refusals": 29,
   "runs": [
     {
@@ -391,6 +391,74 @@
       ]
     },
     {
+      "tool": "dispatch_delete_comment",
+      "call": "valid",
+      "args": {
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/comments/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Deleted comment 01234567-0000-4000-8000-000000000001 on DSP-1. No read gives its body again."
+      ]
+    },
+    {
+      "tool": "dispatch_delete_message",
+      "call": "valid",
+      "args": {
+        "message": "<id>"
+      },
+      "requests": [
+        {
+          "method": "DELETE",
+          "path": "/api/v1/messages/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            }
+          }
+        }
+      ],
+      "outcome": "error",
+      "text": [
+        "unexpected request: DELETE /api/v1/messages/01234567-0000-4000-8000-000000000001"
+      ]
+    },
+    {
       "tool": "dispatch_doc_edit",
       "call": "refusal: artifact beside a ref naming another document",
       "args": {
@@ -669,6 +737,87 @@
       "outcome": "result",
       "text": [
         "Ask edited: Which way should the release go?"
+      ]
+    },
+    {
+      "tool": "dispatch_edit_comment",
+      "call": "valid",
+      "args": {
+        "body": "Corrected: the retry window is 72 hours, not 24.",
+        "comment": "<id>"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/comments/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "body": "Corrected: the retry window is 72 hours, not 24."
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "Edited comment 01234567-0000-4000-8000-000000000001 on DSP-1. Dispatch keeps the body it replaced."
+      ]
+    },
+    {
+      "tool": "dispatch_edit_message",
+      "call": "valid",
+      "args": {
+        "body": "Corrected: the export runs at 02:00 UTC, not 02:00 local.",
+        "message": "<id>"
+      },
+      "requests": [
+        {
+          "method": "PATCH",
+          "path": "/api/v1/messages/01234567-0000-4000-8000-000000000001",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "body": "Corrected: the export runs at 02:00 UTC, not 02:00 local."
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/healthz",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "error",
+      "text": [
+        "unexpected request: PATCH /api/v1/messages/01234567-0000-4000-8000-000000000001"
       ]
     },
     {
@@ -1229,7 +1378,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- ref dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001 names no document, so dispatch read would read it and drop artifact spec: drop --artifact to read the ref, or read the document with --issue DSP-1 --artifact spec",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1246,7 +1395,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- --events and --all-events both say how many events the read lists: name one, --events N for the last N or --all-events for every one",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1262,7 +1411,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- --events lists an issue's events, which dispatch read prints only for an issue or its dispatch://KEY/log, not for an ask: drop --events",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1277,7 +1426,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- message must be a full message id (uuid) or a dispatch://KEY/message/<id> reference",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1293,7 +1442,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- project CORE and ref dispatch://DSP-1 name two owners; --ref dispatch://DSP-1 alone acts on DSP-1, and --project CORE alone acts on that project document",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
@@ -1308,7 +1457,7 @@
       "text": [
         "dispatch read was not called: 1 problem",
         "- dispatch read prints the live document's summary, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: read that version with dispatch doc-read --ref dispatch://DSP-1/artifact/spec@v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --message, --message-file, --events, --all-events, --no-all-events, --history, --no-history, --help, --dry-run",
         "- Example: dispatch read --issue DSP-1"
       ]
     },
