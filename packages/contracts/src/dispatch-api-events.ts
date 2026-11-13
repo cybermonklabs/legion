@@ -18,6 +18,8 @@ import type {
 import type {
   ArtifactCreatedEventPayload,
   ArtifactHumanEditedEventPayload,
+  ArtifactRemovedEventPayload,
+  ArtifactRenamedEventPayload,
   ArtifactReviewEventPayload,
   ArtifactVersionEventPayload,
   BlockInvalidEventPayload,
@@ -162,6 +164,14 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "artifact.created";
       readonly payload: ArtifactCreatedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "artifact.renamed";
+      readonly payload: ArtifactRenamedEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "artifact.removed";
+      readonly payload: ArtifactRemovedEventPayload;
     })
   | (DispatchEventBase & {
       readonly type: "artifact.version";
