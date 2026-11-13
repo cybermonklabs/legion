@@ -175,15 +175,14 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// contract that added them, 85): one strip takes both, so a pod below it reads every
 		// member with its `place` and its `length` alone and no issue with a `why`.
 		answers bool
-		// wait is whether the caller is served what each reviewing issue's round waits on from
-		// GitHub (mergeWaitContract), the contract that added it, so a pod at it is served the
-		// object and every pod below it — a pod from whyAndLineFieldsContract to one below it,
-		// which is served every other key, among them — is not.
-		wait bool
 		// leak is whether the caller is served a claim view's `leakCheckCause`
 		// (leakCheckCauseContract, the contract that added it, 87), the sentence a launch try was
 		// refused with because the shared public leak check could not be installed.
 		leak bool
+		// wait is whether the caller is served what each reviewing issue's round waits on from
+		// GitHub (mergeWaitContract), the contract that added it, so a pod at it is served the
+		// object and every pod below it is not, whatever else the contracts it does reach give it.
+		wait bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
 		{name: "a pod below PodUpdateContract, below all fourteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},

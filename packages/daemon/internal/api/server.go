@@ -893,9 +893,9 @@ const leakCheckCauseContract = 87
 // refuse the whole body for a key it does not name, and one built after strips the key instead,
 // so the strip is what keeps the object from a caller that did not ask for it rather than what
 // keeps such a caller reading at all. A key's contract is the one that added it, so this is the
-// number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod at
-// whyAndLineFieldsContract or above and below this one is served every other key and no merge
-// wait.
+// number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod
+// below it is served the state without `mergeWait`, whatever else the contracts it does reach
+// give it.
 const mergeWaitContract = 93
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
