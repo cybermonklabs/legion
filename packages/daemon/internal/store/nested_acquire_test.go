@@ -128,11 +128,14 @@ func TestASecondPooledConnectionUnderAHeldOneIsRefused(t *testing.T) {
 	refusalsLogged(t, logged, 2)
 }
 
-// Each call site that asks for a second connection under a held one logs a line of its own, and a
-// site that asks again logs nothing more. Both sites here ask through pgx.BeginFunc, whose own
-// frame stands above the pool's at every one of its callers, as intake.ApplyFact's does for every
-// fact: a log remembered by the frame above the pool would let the first refusal through either
-// silence every other caller's, so the site a refusal is remembered by is the caller's.
+// Each path that asks for a second connection under a held one logs a line of its own, even where
+// two paths reach the pool through the same function, and a path that asks again logs nothing
+// more. Two callers here ask through one forwarder, a function that only passes the call on to
+// pgx.BeginFunc, as the daemon's own forwarders and intake.ApplyFact do for all their callers: the
+// frame just above the pool is pgx's on both paths, and the first frame past pgx is the
+// forwarder's on both, so a log keyed on either one frame would let the first caller's refusal
+// silence the second's. The first caller asks twice in a loop, which is one stack asking again and
+// logs once; the second caller's refusal then logs a line of its own. Every call is refused.
 func TestEachRefusingSiteLogsItsOwnLine(t *testing.T) {
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
@@ -145,18 +148,18 @@ func TestEachRefusingSiteLogsItsOwnLine(t *testing.T) {
 		}
 		asking, cancel := context.WithTimeout(ctx, refusalBound)
 		defer cancel()
-		firstSite := func() error { return pgx.BeginFunc(asking, pool, func(pgx.Tx) error { return nil }) }
+		forward := func() error { return pgx.BeginFunc(asking, pool, func(pgx.Tx) error { return nil }) }
+		callerA := func() error { return forward() }
+		callerB := func() error { return forward() }
 
-		if err := firstSite(); !errors.Is(err, ErrNestedAcquire) {
-			t.Fatalf("the first site's transaction under the held one = %v, want %v", err, ErrNestedAcquire)
+		for range 2 {
+			if err := callerA(); !errors.Is(err, ErrNestedAcquire) {
+				t.Fatalf("caller A's transaction under the held one = %v, want %v", err, ErrNestedAcquire)
+			}
+			refusalsLogged(t, logged, 1)
 		}
-		refusalsLogged(t, logged, 1)
-		if err := pgx.BeginFunc(asking, pool, func(pgx.Tx) error { return nil }); !errors.Is(err, ErrNestedAcquire) {
-			t.Fatalf("the second site's transaction under the held one = %v, want %v", err, ErrNestedAcquire)
-		}
-		refusalsLogged(t, logged, 2)
-		if err := firstSite(); !errors.Is(err, ErrNestedAcquire) {
-			t.Fatalf("the first site's transaction asked for again = %v, want %v", err, ErrNestedAcquire)
+		if err := callerB(); !errors.Is(err, ErrNestedAcquire) {
+			t.Fatalf("caller B's transaction under the held one = %v, want %v", err, ErrNestedAcquire)
 		}
 		refusalsLogged(t, logged, 2)
 		return nil
@@ -194,8 +197,8 @@ func refusalsLogged(t *testing.T, logged *bytes.Buffer, want int) {
 }
 
 // captureLog sends the process's default logger into a buffer for the length of the test, which
-// is where logRefusal writes, and gives the test the buffer to read. It forgets the sites logged
-// before the test, so a test the binary runs again (-count) logs its own sites again.
+// is where logRefusal writes, and gives the test the buffer to read. It forgets the stacks logged
+// before the test, so a test the binary runs again (-count) logs its own stacks again.
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var logged bytes.Buffer
