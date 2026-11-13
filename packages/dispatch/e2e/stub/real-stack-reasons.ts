@@ -228,7 +228,7 @@ export const realStackReasons: Record<string, string> = {
   "polish.e2e.ts": "opens the margin ask composer on the live document",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "priorities.e2e.ts":
-    "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, and the rail's count falls under an open page with no reload",
+    "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
   "project.e2e.ts": "the reference closure is the server's graph walk",

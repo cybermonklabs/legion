@@ -28,14 +28,15 @@ const NO_PRIORITY: IssueListing = { advances: "none", statuses: runningIssueStat
 const PARKED: IssueListing = { advances: "any", statuses: PARKED_STATUSES, moved: true };
 
 /** Each fault list's own stored layout. Both name each row's project, since neither stands on
- *  one; the parked list names what the work advances and when it was moved there besides. */
+ *  one, and when the issue last changed, which is how long it has stood as it is (R6); the
+ *  parked list names what the work advances and when it was moved there besides. */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
-  columns: issueTableLayout(["project"]),
+  columns: issueTableLayout(["project", "updated"]),
 };
 const PARKED_LAYOUT = {
   key: "priorities-parked",
-  columns: issueTableLayout(["project", "advances", "moved"]),
+  columns: issueTableLayout(["project", "advances", "moved", "updated"]),
 };
 
 /** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·

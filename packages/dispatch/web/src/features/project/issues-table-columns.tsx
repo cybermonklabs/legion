@@ -325,23 +325,29 @@ const LISTING_COLUMNS: readonly {
   },
 ];
 
+/** The columns a caller may name among those its table opens with shown: the listing columns,
+ *  and Updated, which a project's table opens with hidden and a fault list opens with shown,
+ *  since R6 asks every fault row to name how long it has stood. */
+export type ShownColumnId = ListingColumnId | "updated";
+
 /**
- * The layout of an issues table that shows `shown` of the listing columns: the registry's own
- * (`ISSUE_TABLE_COLUMNS`), with the listing columns at their widths and every one not in `shown`
- * hidden until the reader shows it. A project's table shows none of them; each fault list of the
- * priorities page shows its own. Build one per table once, in a module constant, since the
- * stored layout is read again whenever this object changes (`useTableLayout`).
+ * The layout of an issues table that opens with `shown` shown: the registry's own
+ * (`ISSUE_TABLE_COLUMNS`), with the listing columns at their widths, and every column the
+ * registry opens hidden or a listing column not in `shown` hidden until the reader shows it. A
+ * project's table names none of them; each fault list of the priorities page names its own.
+ * Build one per table once, in a module constant, since the stored layout is read again whenever
+ * this object changes (`useTableLayout`).
  */
-export function issueTableLayout(shown: readonly ListingColumnId[]): LayoutColumns {
+export function issueTableLayout(shown: readonly ShownColumnId[]): LayoutColumns {
+  const showing = new Set<string>(shown);
+  const hidden = {
+    ...ISSUE_TABLE_COLUMNS.hiddenByDefault,
+    ...Object.fromEntries(LISTING_COLUMNS.map(({ id }) => [id, false])),
+  };
   return {
     ...ISSUE_TABLE_COLUMNS,
     ids: [...ISSUE_TABLE_COLUMNS.ids, ...LISTING_COLUMNS.map(({ id }) => id)],
-    hiddenByDefault: {
-      ...ISSUE_TABLE_COLUMNS.hiddenByDefault,
-      ...Object.fromEntries(
-        LISTING_COLUMNS.filter(({ id }) => !shown.includes(id)).map(({ id }) => [id, false])
-      ),
-    },
+    hiddenByDefault: Object.fromEntries(Object.entries(hidden).filter(([id]) => !showing.has(id))),
     sizes: {
       ...ISSUE_TABLE_COLUMNS.sizes,
       ...Object.fromEntries(LISTING_COLUMNS.map(({ id, size }) => [id, size])),

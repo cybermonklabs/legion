@@ -8,7 +8,10 @@ body: |-
   stated or retracted on it, which is what the margin of its page draws. Work in any project
   states that it advances one (`advances` on the issue create and patch, held to its revision),
   a child inherits every priority the issues above it advance, and `GET /api/v1/issues` takes
-  `advances=<id>`, repeated, and `advances=none`.
+  `advances=<id>`, repeated, `advances=none` and `advances=any`, a repeated `status`, and
+  `moved=true`, which adds to each row standing in `backlog` or `icebox` when it was moved there
+  and by whom, so the issues table draws both faults over the one listing. An unknown `status`
+  is now `400 INVALID_STATUS` rather than an empty list.
   `GET /api/v1/priorities` answers every live priority in rank order with the work under it — its
   open issues by lifecycle status, how many are claimed, their open asks, what closed in the last
   seven days and when anything under it last moved — and the two faults: the work in flight that

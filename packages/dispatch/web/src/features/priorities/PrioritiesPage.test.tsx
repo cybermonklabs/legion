@@ -286,9 +286,13 @@ test("each fault table asks the issue listing for its statuses, and the parked o
     };
   };
 
-  // The no-priority list names each row's project, and shows neither of the parked columns.
+  // The no-priority list names each row's project and when it last changed, which is how long it
+  // has stood as it is (R6), and shows neither of the parked columns.
   const inFlight = await cellsOf(faults, "OPS-12 Work OPS-12");
   expect(inFlight("Project").textContent).toBe("OPS");
+  expect(within(inFlight("Updated")).getByRole("time").getAttribute("datetime")).toBe(
+    "2026-11-01T00:00:00Z"
+  );
   const faultHeaders = within(faults)
     .getAllByRole("columnheader")
     .map((header) => header.textContent ?? "");
@@ -299,6 +303,9 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   // when the work was moved there and by whom - or that no move is recorded.
   const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
+  expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
+    "2026-11-01T00:00:00Z"
+  );
   expect(
     within(moved("Advances"))
       .getByRole("link", { name: "Linkage closure eval" })

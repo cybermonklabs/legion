@@ -306,21 +306,23 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "priorities",
     path: () => "/priorities",
     pattern: "/priorities",
-    // Three facts, because the page draws three tables out of one read and a heading proves
-    // none of them: the page's own heading and both fault headings are on the screen while
-    // that read is still out, over `Loading priorities`
-    // (`web/src/features/priorities/PrioritiesPage.tsx`). So each locator is a row the seed
-    // wrote - the first priority of the order, the in-flight issue that advances none, and the
-    // parked issue that advances one - and together they say the priorities table and both
-    // fault lists have their rows rather than their empty words. The three issues are
+    // Three facts, because the page draws three tables and a heading proves none of them: the
+    // page's own heading is on the screen while the priorities read is still out, over `Loading
+    // priorities`, and both fault headings stand over their tables while each fault list's own
+    // issue listing is still out (`web/src/features/priorities/PrioritiesPage.tsx`). So each
+    // locator is a row the seed wrote - the first priority of the order, the in-flight issue
+    // that advances none, and the parked issue that advances one - and together they say the
+    // priorities table and both fault lists have their rows rather than their empty words. Each
+    // fault list is the Issues table, named by the label the page passes it with " table"
+    // after it (`features/project/IssuesTable.tsx`). The three issues are
     // `e2e/review-seed.ts`'s, so a change to that corpus fails this row rather than a baseline.
     ready: (page) => [
       page.getByRole("table", { name: "Priorities table" }).getByRole("row", { name: /^P1 / }),
       page
-        .getByRole("table", { name: "In flight under no priority" })
+        .getByRole("table", { exact: true, name: "Issues in flight under no priority table" })
         .getByRole("row", { name: /Broadcast recipients keep their send order/ }),
       page
-        .getByRole("table", { name: "Priority work in backlog or icebox" })
+        .getByRole("table", { exact: true, name: "Priority issues in backlog or icebox table" })
         .getByRole("row", { name: /Agents page freshness folds/ }),
     ],
   },

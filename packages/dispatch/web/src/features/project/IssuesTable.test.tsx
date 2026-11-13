@@ -1955,6 +1955,9 @@ test("a project's table keeps the listing columns hidden until the reader shows 
       .map((header) => header.textContent ?? "");
   for (const name of ["Project", "Advances", "Moved there"])
     expect(headers().some((text) => text.startsWith(name))).toBe(false);
+  // Nor does it show Updated, which the fault lists open with shown: a project's table opens
+  // with it hidden, as it always has.
+  expect(headers().some((text) => text.startsWith("Updated"))).toBe(false);
   await user.click(screen.getByRole("button", { name: "Columns" }));
   for (const name of ["Project", "Advances", "Moved there"])
     expect(screen.getByRole("checkbox", { name })).not.toBeChecked();
