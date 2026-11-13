@@ -52,10 +52,13 @@ type SpawnResult struct {
 
 // ProbeResult is one scripted answer to Probe: a verdict about the locator probed, or the
 // runtime failing to answer at all. The fake fills the observation's locator and time in.
+// OutOfMemory is the verdict's own (runtime.Observation.OutOfMemory), for a Gone whose pod ran
+// out of memory.
 type ProbeResult struct {
-	Kind   runtime.ObservationKind
-	Detail string
-	Err    error
+	Kind        runtime.ObservationKind
+	Detail      string
+	OutOfMemory bool
+	Err         error
 }
 
 // Runtime is the fake. The zero value is not usable; call NewRuntime.
@@ -71,6 +74,11 @@ type Runtime struct {
 	// Now stamps the observations the fake mints. NewRuntime sets it to time.Now; a test with a
 	// clock of its own replaces it before use.
 	Now func() time.Time
+	// OnResume, when set, runs at the start of every Resume, after the call is recorded, with that
+	// call's own context: a test that must act while a launch is still in the runtime blocks here
+	// and watches that context for the caller's cancellation. A non-nil answer is the Resume's,
+	// and nothing is started.
+	OnResume func(ctx context.Context) error
 
 	mu          sync.Mutex
 	pending     *sync.Cond
@@ -276,9 +284,9 @@ func (r *Runtime) Spawn(_ context.Context, spec runtime.SpawnSpec) (runtime.Loca
 	return r.mint(spec.Claim), nil
 }
 
-// Resume records its call, then refuses a previous incarnation of another claim, as every runtime
-// does.
-func (r *Runtime) Resume(_ context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
+// Resume records its call, then runs OnResume when a test set one, then refuses a previous
+// incarnation of another claim, as every runtime does.
+func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	r.mu.Lock()
 	hold := r.holdResume
 	r.mu.Unlock()
@@ -286,13 +294,21 @@ func (r *Runtime) Resume(_ context.Context, prev *runtime.Locator, spec runtime.
 		hold()
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	call := Call{Method: "Resume", Spec: spec}
 	if prev != nil {
 		recorded := *prev
 		call.Previous = &recorded
 	}
 	r.calls = append(r.calls, call)
+	hook := r.OnResume
+	r.mu.Unlock()
+	if hook != nil {
+		if err := hook(ctx); err != nil {
+			return runtime.Locator{}, err
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := (runtime.Known{Claim: spec.Claim, Locator: prev}).Validate(); err != nil {
 		return runtime.Locator{}, err
 	}
@@ -330,16 +346,16 @@ func (r *Runtime) Probe(_ context.Context, loc runtime.Locator) (runtime.Observa
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, Call{Method: "Probe", Locator: loc})
-	kind, detail := runtime.Alive, ""
+	kind, detail, outOfMemory := runtime.Alive, "", false
 	if len(r.probes) > 0 {
 		next := r.probes[0]
 		r.probes = r.probes[1:]
 		if next.Err != nil {
 			return runtime.Observation{}, next.Err
 		}
-		kind, detail = next.Kind, next.Detail
+		kind, detail, outOfMemory = next.Kind, next.Detail, next.OutOfMemory
 	}
-	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail}, nil
+	return runtime.Observation{Locator: loc, Kind: kind, At: r.Now(), Detail: detail, OutOfMemory: outOfMemory}, nil
 }
 
 // Observe is the sweep. Every observation emitted, before or after this call, reaches the

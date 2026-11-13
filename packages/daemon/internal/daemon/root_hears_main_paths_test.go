@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -94,7 +93,7 @@ type mainPathRig struct {
 	t         *testing.T
 	ctx       context.Context
 	key       string
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	engine    *workflow.Engine
 	admission *admit.Admission

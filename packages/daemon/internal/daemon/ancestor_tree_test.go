@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -23,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -242,7 +242,8 @@ func TestBootReconcileHoldsATodoUnderAnUnreleasedChildOfALiveTree(t *testing.T) 
 		if err != nil {
 			return err
 		}
-		for _, issue := range record.Waiting(issues, slots, facts) {
+		line, _ := record.Waiting(issues, slots, facts)
+		for _, issue := range line {
 			waiting = append(waiting, issue.Issue.Key)
 		}
 		for _, slot := range slots {
@@ -341,7 +342,7 @@ func TestATodoHeldUnderAnUnreleasedChildQueuesOnceItsParentLeavesTheLiveTree(t *
 // among them, at the top of its chain.
 type ancestryLine struct {
 	t       *testing.T
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	records *record.Postgres
 	client  *chainDispatch
 	w       *workflowRuntime
@@ -428,7 +429,8 @@ func (l *ancestryLine) waiting(key string) bool {
 			return err
 		}
 		facts, err := record.ReadLineFacts(context.Background(), tx, l.records, "LEGION", issues, nil)
-		waiting = slices.ContainsFunc(record.Waiting(issues, slots, facts), func(entry record.LineEntry) bool { return entry.Issue.Key == key })
+		line, _ := record.Waiting(issues, slots, facts)
+		waiting = slices.ContainsFunc(line, func(entry record.LineEntry) bool { return entry.Issue.Key == key })
 		return err
 	}); err != nil {
 		l.t.Fatalf("read the waiting line: %v", err)

@@ -175,9 +175,11 @@ configuration home — and tells the pane where it is
 (`resolveLeakCheck` and `panePairs`, `packages/daemon/internal/runtime/tmux`).
 An operator who points one pane at another copy still wins: `runtime.tmux.pane_env` and a spec's
 own `Env` are told after the resolved one, and the last value of a name is what the pane holds.
-Legion installs no check on a shared box — the pinned install is the pod's, from a tag the worker
-image carries — so a box that writes to public repositories carries it through the check's own
-installer, run on the machine the daemon runs on.
+Legion installs no check on a shared box.
+The pinned install is a pod's: the daemon reads the check at the tag the worker image carries and
+pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
+So a box that writes to public repositories carries the check through the check's own installer,
+run on the machine the daemon runs on.
 A daemon that resolves none logs one line per launch naming the pane, tells that pane no
 `PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
 error naming the missing check.
@@ -225,7 +227,7 @@ bearer as a service token or a personal token (`optionalActor`, the same file), 
 session then carries that token's service or owner as well. `dispatch whoami` in a pane tells the
 two apart: for a shared agent token it answers
 `Session <id> runs under the shared token: no owner, …`
-(`packages/envoy-client/src/dispatch-execute.ts`). A pod's side of this is in `docs/kubernetes.md`,
+(`packages/envoy-client/src/dispatch-commands/session.ts`). A pod's side of this is in `docs/kubernetes.md`,
 "Anatomy of a Sandbox pod". A person's own session on the same box uses a personal token instead,
 minted from Dispatch's Settings → Agent tokens
 (`docs/site/src/content/docs/dispatch/for-agents.md`).
@@ -538,22 +540,21 @@ written by whichever daemon wrote last — so the order matters:
 3. Set `runtime.tmux.take_over: kubernetes` and boot the tmux daemon with the same Postgres. Each
    claim whose recorded process is a pod is reported gone, displaced, and relaunched in a pane,
    charged nothing, on its session when step 2 put its file in one of those places, searched by
-   file name or session id. While `take_over` is set, a session found nowhere starts a fresh agent,
-   uncharged, which registers a session of its own, whatever the claim's last process was and
-   wherever the session was recorded: a claim the Kubernetes daemon left suspended carries no
-   process, and a host built from the worker image records its own sessions at the paths a pod
-   used, so neither tells the two apart. That is what the key buys and what it costs: in this
-   window a session of this host's own that has gone missing starts fresh too. Each workspace is
-   provisioned before its first launch.
+   file name or session id. A session found nowhere starts a fresh agent, uncharged, which
+   registers a session of its own; the loss is posted on the issue and told to its architect, to
+   the controller and to the new agent in its own prompt. That holds whether or not `take_over` is
+   set — a session no store holds is gone whichever runtime last wrote it — so what this key buys
+   is the takeover of the other runtime's locators: a claim whose pod this daemon cannot see is
+   resumed without waiting that process out. Each workspace is provisioned before its first launch.
 4. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
    (an architect relaunches on its session; a phase worker whose issue is held for its own role
    retries that phase).
 5. Remove `take_over` once no claim can still wake on a session a pod recorded: every claim that
    was running has relaunched in a pane, and no claim the Kubernetes daemon suspended (a
    production check's checking role — the one the project's `production_check` names — waiting
-   for the look its own `wake_at` asked for among them) is left to wake. From then on a session
-   found nowhere is refused again, and a tmux daemon pointed at a store a Kubernetes daemon still
-   drives refuses to start rather than take its claims.
+   for the look its own `wake_at` asked for among them) is left to wake. From then on a resume
+   over a locator of the other runtime is refused, and a tmux daemon pointed at a store a
+   Kubernetes daemon still drives refuses to start rather than take its claims.
 
 ## Rotating broker-held App keys
 
@@ -572,6 +573,35 @@ Rotate the keys in the broker's `github-app` secrets, not on the daemon's machin
 4. Only then revoke the old private keys in GitHub App settings.
    Revoking them before the broker can mint with the new keys would break token refresh and,
    once existing tokens expire, the panes' `gh` and `jj git push` credentials.
+
+## Saying when the daemon is serving
+
+`GET /readyz`, at the API port legion.yaml's `port` names (13370 by default, `defaultPort` in
+`packages/daemon/internal/config/config.go`), is the daemon saying whether it serves. It carries no
+token and reads no database, and what a caller sees follows the daemon's life:
+
+- While the boot runs, no answer at all. The daemon binds its port early in the boot but serves
+  HTTP only once the boot is done, so a request waits in the kernel's queue until the caller's own
+  timeout runs out.
+
+- `200 {"status":"ok"}` once the daemon serves: its runtime built, its launcher acceptor installed
+  and its API serving. `503 {"status":"starting","waitingFor":"the daemon to serve"}` answers only a
+  request that reaches the instant between the server starting and the latch being set.
+
+- `503 {"status":"stopping"}` from the moment the daemon's stop begins, on a connection the server
+  still holds through its drain. A new connection gets no answer, because the drain closes the
+  listener at once.
+
+It reports nothing beyond that boot's own progress, so the answer is the same under any load and
+while every connection of the pool is busy. `/healthz` answers 200 on every request the API takes,
+the drain's included, and says nothing about the boot, so a start script or a supervisor on this box
+waits on `/readyz` instead, with a bound on each try, since a try during the boot gets no answer:
+`until curl -fsS --max-time 2 http://127.0.0.1:13370/readyz; do sleep 1; done`.
+
+A Kubernetes deployment declares it as the daemon container's readiness probe. Those manifests are
+in another repository, not this one; the probe to declare on that container, and why it is a
+readiness probe and never a liveness probe, are in the Kubernetes guide's Configuration section
+(`docs/kubernetes.md`).
 
 ## Serving on a socket the harness holds
 

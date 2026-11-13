@@ -11,12 +11,18 @@ import (
 const backwardMovesVersion = 20261110225246
 
 // A hook-prompt row carries a hook's prompt to one role of the issue, and the counts of the moves
-// back it is fired by ride on the implementer's phase row. The outbox refuses a kind its
-// constraint does not name, and a write naming a column that does not exist is refused too, so
-// before the migration neither the row nor either count can be written: those two refusals are
-// the negative controls, read before it. After it the row is queued, and so is every kind the
+// back it is fired by ride on the implementer's phase row. A write naming a column that does not
+// exist is refused, so before the migration neither count can be written: that refusal is the
+// negative control, read before it. The kind is no control here any more, because this release's
+// own 20261108152000 stands below this migration and already names `hook_prompt` — it has to, so
+// that a database main migrated, which applies that list last, takes the hook-prompt rows main's
+// daemon queued (migration_upgrade_from_main_test.go). The row is written before the migration
+// for that reason, and the merge-lane kind below is what the constraint still refuses. After it the row is queued, and so is every kind the
 // constraint already named, since the migration rewrites the list whole and a kind left out would
-// stop its own effect. A kind that is none is still refused. The counts arrive empty on a row
+// stop its own effect. The list is the merged daemon's: this release's eighteen, `role_message`
+// among them and the three merge-lane kinds out, since the daemon submits no merge and arms no
+// auto-merge, with the hook prompt this migration adds. A kind that is none is still refused, and
+// so is a merge-lane kind, which the row below reads. The counts arrive empty on a row
 // recorded before the migration, which is the deploy's own reading: no count is filled in from
 // the past, and no row has told a cap.
 func TestTheOutboxTakesTheHookPromptKindAndThePhaseTakesItsCountsWith20261110225246(t *testing.T) {
@@ -38,12 +44,13 @@ func TestTheOutboxTakesTheHookPromptKindAndThePhaseTakesItsCountsWith20261110225
 			values ($1, 'LEGION-208', '{}', 0, now(), '')`, kind)
 		return err
 	}
-	err := queue("hook_prompt")
-	if err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
-		t.Fatalf("queueing a hook_prompt row before the migration = %v, want the kind constraint to refuse it: it is the row the migration exists for", err)
+	if err := queue("hook_prompt"); err != nil {
+		t.Fatalf("queueing a hook_prompt row before the migration = %v, want it taken: this release's 20261108152000 names the kind below this version", err)
 	}
-	t.Logf("before the migration the hook-prompt row is refused: %v", err)
-	_, err = store.Pool().Exec(ctx,
+	if err := queue("ready_merge"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+		t.Fatalf("queueing a ready_merge row before the migration = %v, want the kind constraint to refuse it: the merge lane's kinds went with the merge the daemon no longer submits", err)
+	}
+	_, err := store.Pool().Exec(ctx,
 		`update phases set backward_moves = '{"testing-implementing": 1}'::jsonb, cap_told = 3 where issue = 'LEGION-208' and role = 'implementer'`)
 	if err == nil || !strings.Contains(err.Error(), "backward_moves") {
 		t.Fatalf("counting a move back before the migration = %v, want the column to be unknown", err)
@@ -56,10 +63,9 @@ func TestTheOutboxTakesTheHookPromptKindAndThePhaseTakesItsCountsWith20261110225
 
 	for _, kind := range []string{
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
-		"linger_close", "workspace_remove", "merge_queue_publish", "issue_branch", "issue_suspend",
-		"auto_merge_disable", "ready_merge", "check_wake", "check_look", "check_bound",
-		"phase_ended", "issue_bundle", "issue_release", "gated_steps_publish", "claim_release",
-		"hook_prompt",
+		"linger_close", "workspace_remove", "issue_branch", "issue_suspend", "check_wake",
+		"check_look", "check_bound", "role_message", "phase_ended", "issue_bundle", "issue_release",
+		"gated_steps_publish", "claim_release", "hook_prompt",
 	} {
 		if err := queue(kind); err != nil {
 			t.Fatalf("queue a %s row after the migration: %v", kind, err)
@@ -68,6 +74,9 @@ func TestTheOutboxTakesTheHookPromptKindAndThePhaseTakesItsCountsWith20261110225
 	t.Logf("after the migration the outbox takes every kind, hook_prompt among them")
 	if err := queue("quiesce"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
 		t.Fatalf("queueing a row of a kind that is none = %v, want the constraint to refuse it", err)
+	}
+	if err := queue("ready_merge"); err == nil || !strings.Contains(err.Error(), "outbox_kind_check") {
+		t.Fatalf("queueing a ready_merge row = %v, want the constraint to refuse it: the merge lane's kinds went with the merge the daemon no longer submits", err)
 	}
 
 	var moves string

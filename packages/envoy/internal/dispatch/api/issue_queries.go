@@ -59,7 +59,7 @@ var (
 // projects (every project's first issue is "U"), nothing makes one unique within a project, and
 // created_at is the creating transaction's start.
 func issueSummaryQuery(pinned, paged bool) string {
-	parameter := 9
+	parameter := 11
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -94,8 +94,10 @@ func issueSummaryQuery(pinned, paged bool) string {
 `
 }
 
-// issueListFilters are the eight filters a listing request carries, written against `issues i`
-// alone so the filtered term joins nothing: the page and the count both read it.
+// issueListFilters are the ten filters a listing request carries, written against `issues i`
+// alone so the filtered term joins nothing: the page and the count both read it. The closed
+// window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
+// outside every window.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and ($2 = '' or i.status = $2)
 		  and ($3 = '' or i.parent_key = $3)
@@ -104,7 +106,9 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		  and (not $6::boolean or i.closed_at is null)
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
-		       or ($8::boolean and i.priority is null))`
+		       or ($8::boolean and i.priority is null))
+		  and ($9::timestamptz is null or i.closed_at >= $9)
+		  and ($10::timestamptz is null or i.closed_at < $10)`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -139,7 +143,8 @@ const issueSummaryColumns = `i.key, i.title, i.status, i.priority, i.rank, i.lab
 	       case when i.closed_at is null then coalesce(open_asks.total, 0) else 0 end,
 	       ` + issueProgressColumns + `,
 	       ` + issueComponentsColumns + `,
-	       ` + refs.IssueRepoColumns
+	       ` + refs.IssueRepoColumns + `,
+	       i.closed_at`
 
 // issueSummaryJoins resolve the six values a listing row carries beside the issue's own columns,
 // each for every issue of `subjects` at once rather than for one row at a time. The open-ask
@@ -197,6 +202,24 @@ func parsePriorityFilter(values []string) (priorities []int16, unset bool, err e
 		}
 	}
 	return priorities, unset, nil
+}
+
+// microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
+// timestamptz to the microsecond and pgx encodes a bound by truncating its nanoseconds, which
+// lowers it: an issue stored at the truncated microsecond, before the bound the caller named,
+// would be kept by `>= since` and dropped by `< before`. Every stored time is a whole
+// microsecond, so it is at or after a bound exactly when it is at or after the bound rounded up
+// to the next microsecond, and before the bound exactly when it is before that: rounding up keeps
+// both meanings. nil is no bound.
+func microsecondCeiling(bound *time.Time) *time.Time {
+	if bound == nil {
+		return nil
+	}
+	ceiling := bound.Truncate(time.Microsecond)
+	if ceiling.Before(*bound) {
+		ceiling = ceiling.Add(time.Microsecond)
+	}
+	return &ceiling
 }
 
 // claimScan reads an issue's two claim columns as one nullable claim. A row has both or
@@ -288,6 +311,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	for index, label := range labels {
 		labels[index] = strings.ToLower(label)
 	}
+	// Each time bound is read under its literal key rather than through a helper taking the key,
+	// so routes_query_keys_test.go's walk can tie each one to issueListQuery.
 	var updatedSince *time.Time
 	if query.Has("updated_since") {
 		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("updated_since")))
@@ -296,6 +321,31 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		updatedSince = &parsed
+	}
+	var closedSince *time.Time
+	if query.Has("closed_since") {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_since")))
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_SINCE", http.StatusBadRequest, "closed_since must be an RFC3339 timestamp")
+			return
+		}
+		closedSince = &parsed
+	}
+	var closedBefore *time.Time
+	if query.Has("closed_before") {
+		parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(query.Get("closed_before")))
+		if err != nil {
+			writeError(w, "INVALID_CLOSED_BEFORE", http.StatusBadRequest, "closed_before must be an RFC3339 timestamp")
+			return
+		}
+		closedBefore = &parsed
+	}
+	// The window is judged as the caller wrote it, before rounding: two bounds inside one
+	// microsecond are a valid window, not a backwards one, and the statement answers whatever
+	// stored times fall between their rounded values (none, unless the lower bound is whole).
+	if closedSince != nil && closedBefore != nil && !closedSince.Before(*closedBefore) {
+		writeError(w, "INVALID_CLOSED_WINDOW", http.StatusBadRequest, "closed_since must be before closed_before")
+		return
 	}
 	priorities, unsetPriority, err := parsePriorityFilter(query["priority"])
 	if err != nil {
@@ -315,7 +365,8 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
-	arguments := []any{project, status, parent, updatedSince, labels, open, priorities, unsetPriority}
+	arguments := []any{project, status, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
+		microsecondCeiling(closedSince), microsecondCeiling(closedBefore)}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -409,7 +460,8 @@ func (r *issueSummaryRow) targets(leading ...any) []any {
 	targets = append(targets, &r.issue.OpenAsks)
 	targets = append(targets, r.progress.targets()...)
 	targets = append(targets, r.components.targets()...)
-	return append(targets, r.repo.targets()...)
+	targets = append(targets, r.repo.targets()...)
+	return append(targets, &r.issue.ClosedAt)
 }
 
 // resolve turns the scanned row into the summary the response carries, refusing an issue whose
@@ -517,7 +569,7 @@ func (s *server) getIssue(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	read, err := s.readIssue(r.Context(), r.PathValue("key"))
+	read, err := s.readIssue(r.Context(), r.PathValue("key"), wantsDisplayTrees(r))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -544,7 +596,7 @@ type issueDetail struct {
 	// must never be stored in one (model.IssueClaimLiveness carries the rest of the reason).
 	model.IssueClaimLiveness
 	Progress  model.IssueProgress `json:"progress"`
-	Artifacts []model.Artifact    `json:"artifacts"`
+	Artifacts []artifactRead      `json:"artifacts"`
 	OpenAsks  []issueOpenAsk      `json:"open_asks"`
 	Children  []model.IssueChild  `json:"children"`
 	// DesignGates is the document each of this issue's Legion design-gate steps records
@@ -562,10 +614,12 @@ type issueDetail struct {
 // readIssue runs getIssue's two batches, whose statements and scans are the ones the sequential
 // loaders run - loadIssueWithProgress, loadArtifacts, queryOwnerAsks with issueOpenAsksOf,
 // issueChildrenStatement with scanIssueChildren and refs.BacklinkCounts - so the two paths answer
-// the same bytes.
-func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error) {
+// the same bytes. trees is what the request asked for (wantsDisplayTrees): the display trees of
+// the documents' approval reasons and of the open asks' texts, which only the dashboard reads.
+func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDetail, error) {
 	var read issueDetail
 	var links []model.ExternalLink
+	var artifacts []model.Artifact
 	var asks []model.Ask
 	var replies map[string]model.AskLastReply
 	issueCounts := map[string]int{}
@@ -588,7 +642,7 @@ func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error)
 	})
 	first.Queue(issueArtifactsStatement, key).Query(func(rows pgx.Rows) error {
 		scanned, err := collectArtifacts(rows)
-		read.Artifacts = scanned
+		artifacts = scanned
 		return err
 	})
 	first.Queue(listIssueAsksQueryOpen, key).Query(func(rows pgx.Rows) error {
@@ -618,10 +672,17 @@ func (s *server) readIssue(ctx context.Context, key string) (issueDetail, error)
 	read.Issue.ExternalLinks = links
 	read.ReferencedByCount = issueCounts[read.Issue.Key]
 
-	if err := s.readIssueDetails(ctx, artifactPointers(read.Artifacts), askReadPointers(asks)); err != nil {
+	if err := s.readIssueDetails(ctx, artifactPointers(artifacts), askReadPointers(asks)); err != nil {
 		return issueDetail{}, err
 	}
-	read.OpenAsks = issueOpenAsksOf(asks, replies)
+	// The approvals are read by the second batch, so their reasons are registered after it,
+	// where the sequential loader read them after loadArtifacts. The reasons and the open asks'
+	// texts are one query of the stored trees, and what it did not hold is stored on a goroutine
+	// of its own, beside the rest of the request.
+	reader := s.readDisplayTrees(ctx, trees)
+	read.Artifacts = artifactReads(artifacts, reader)
+	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
+	reader.resolve()
 	return read, nil
 }
 
@@ -647,16 +708,18 @@ func (s *server) readIssueDetails(ctx context.Context, artifacts []*model.Artifa
 // comment in its thread — the same last_reply the inbox row carries — so the
 // issue header can show who spoke last beside the ask's waiting_on.
 type issueOpenAsk struct {
-	model.Ask
+	shapedAsk
 	LastReply *model.AskLastReply `json:"last_reply"`
 }
 
 // issueOpenAsksOf pairs each ask with the newest reply in its thread, the shape the detail
-// response lists; an ask nobody has replied to carries a null last_reply.
-func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply) []issueOpenAsk {
+// response lists; an ask nobody has replied to carries a null last_reply. Each ask is read as
+// the dashboard reads one (shapedAsk.shape), its texts registered with the request's reader.
+func issueOpenAsksOf(asks []model.Ask, replies map[string]model.AskLastReply, reader *displayTreeReader) []issueOpenAsk {
 	openAsks := make([]issueOpenAsk, len(asks))
 	for index, ask := range asks {
-		openAsks[index] = issueOpenAsk{Ask: ask}
+		openAsks[index].shapedAsk.Ask = ask
+		openAsks[index].shapedAsk.shape(reader)
 		if reply, ok := replies[ask.ID]; ok {
 			openAsks[index].LastReply = &reply
 		}

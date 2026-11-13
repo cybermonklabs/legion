@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -91,7 +90,7 @@ const idleRigTick = 250 * time.Millisecond
 type idleWakeRig struct {
 	t        *testing.T
 	cfg      config.Config
-	pool     *pgxpool.Pool
+	pool     *store.Pool
 	natsURL  string
 	js       jetstream.JetStream
 	board    *liveDispatch
@@ -279,12 +278,12 @@ func (r *idleWakeRig) launchAll() {
 
 // idleRigDatabase and idleRigUser are the rig's own database and login, which its launchers'
 // session proxies carry the generation's session lookup to.
-func idleRigDatabase(t *testing.T, pool *pgxpool.Pool) string {
+func idleRigDatabase(t *testing.T, pool *store.Pool) string {
 	t.Helper()
 	return pool.Config().ConnConfig.Database
 }
 
-func idleRigUser(t *testing.T, pool *pgxpool.Pool) string {
+func idleRigUser(t *testing.T, pool *store.Pool) string {
 	t.Helper()
 	return pool.Config().ConnConfig.User
 }
@@ -301,14 +300,14 @@ func idleRigUser(t *testing.T, pool *pgxpool.Pool) string {
 // trust-authenticated server, which this repository's own pod serves, names no password, and an
 // empty PGPASSWORD is no setting at all (pgx's parseEnvSettings keeps only what is non-empty),
 // so the rig runs the same against either.
-func idleRigSessionPassword(t *testing.T, pool *pgxpool.Pool) {
+func idleRigSessionPassword(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	t.Setenv("PGPASSWORD", pool.Config().ConnConfig.Password)
 }
 
 // idleRigHostPort is the rig's Postgres as a dialable address, which the session proxy's upstream
 // dialer connects to.
-func idleRigHostPort(t *testing.T, pool *pgxpool.Pool) string {
+func idleRigHostPort(t *testing.T, pool *store.Pool) string {
 	t.Helper()
 	conn := pool.Config().ConnConfig
 	return conn.Host + ":" + strconv.Itoa(int(conn.Port))
@@ -728,6 +727,31 @@ func (r *idleWakeRig) newPrompts(issue idleRigIssue) []idleRigMessage {
 	return prompts[from:]
 }
 
+// adoptionsAhead is every adopt-working-copy frame the issue's role was sent ahead of the task at
+// index i of its prompts: after the task before that one was given, and before that one was.
+func (r *idleWakeRig) adoptionsAhead(issue idleRigIssue, i int) []idleRigAdoption {
+	var ahead []idleRigAdoption
+	for _, adoption := range r.agents.adoptions(issue.key, string(issue.role)) {
+		if adoption.Ahead == i {
+			ahead = append(ahead, adoption)
+		}
+	}
+	return ahead
+}
+
+// newAdoptions is every adopt-working-copy frame the issue's role was sent after the tasks
+// markPrompts counted: the frames ahead of each task newPrompts holds, and any ahead of a task
+// still to come. None of the frames the rig's start brought is among them.
+func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
+	var since []idleRigAdoption
+	for _, adoption := range r.agents.adoptions(issue.key, string(issue.role)) {
+		if adoption.Ahead >= r.baseline[issue.key] {
+			since = append(since, adoption)
+		}
+	}
+	return since
+}
+
 // quiet back-dates when every claim of the project was last written, so the next pass of the
 // daemon's idle tick reads a pod that has done nothing for longer than the idle period. The
 // session's own report is left as the session wrote it, because the rule reads it against that
@@ -960,8 +984,7 @@ func (r *idleWakeRig) publish(subject, source, eventID, payload string) {
 }
 
 // publishSettlement publishes the CI settlement of the issue's pull request head, as Envoy relays
-// GitHub's check report (ci_red_no_takeover_live_test.go's publishSettlement builds the same
-// payload).
+// GitHub's check report.
 func (r *idleWakeRig) publishSettlement(issue idleRigIssue) {
 	r.t.Helper()
 	group := func() map[string]any { return map[string]any{"names": []string{}, "truncated": false} }

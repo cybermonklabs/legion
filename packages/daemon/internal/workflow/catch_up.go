@@ -29,7 +29,9 @@ import (
 // never applied tells it once. The catch-up this ready writes names every decision nobody else
 // claims, so a decision a release left unclaimed reaches this architect here; one still claimed by
 // a queued start or catch-up is that row's to settle. A tree that lingers or has left the workflow
-// is told nothing, nor is a sub-architect (no workflow path starts one) or a phase worker.
+// is told nothing, nor is a sub-architect (no workflow path starts one). A phase worker's ready is
+// answered differently: it is given its phase's task again when it holds that phase with nothing
+// pending (readyWorkerTask).
 //
 // The catch-up a start writes in place of a launch (intake.ClaimReady.Paced) is a wake of the
 // architect — it reads its whole context when the catch-up arrives, which is what the per-minute
@@ -40,7 +42,7 @@ import (
 // at the machine's gate (supervise's reserveWake); so does every ready while the pacing is off.
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
-		return intake.Result{}, nil
+		return intake.Result{}, e.readyWorkerTask(ctx, tx, fact)
 	}
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -112,6 +114,124 @@ func QueueCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []re
 		notice.PacedAt, notice.PacedFrom = paced, now
 	}
 	return EnqueueNaming(ctx, tx, store, root.Key, root.Key, notice, kept, at)
+}
+
+// queuedRowCovers is whether a row the outbox already holds for this role covers its phase: a
+// start of the phase that will still act, which carries the phase's task itself, or a stop that
+// will still act, which is about to end the claim this ready came from. Both are StartFor's rule
+// about queued rows, read without its question about the claim's own liveness: this claim is
+// live, which is precisely why it is being given its task.
+func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase) bool {
+	var lastStart int64
+	if run.Claim != nil {
+		lastStart = run.Claim.LastStartRow
+	}
+	var stop int64
+	for _, queued := range run.Queued {
+		if StopActs(queued.ID, queued.Request, lastStart, &root) {
+			stop = max(stop, queued.ID)
+		}
+	}
+	if stop != 0 {
+		return true
+	}
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" && queued.Request.Phase == current {
+			return true
+		}
+	}
+	return false
+}
+
+// readyWorkerTask gives a phase worker whose claim has just become ready its phase's task again,
+// when it holds that phase and has nothing pending. Every start of a worker is a start of work it
+// must be told to do: the start row that moved the issue into this phase ran once, long before
+// this launch, and after a restart — the worker's process relaunched, its claim retried, its
+// session resumed — nothing else sends it anything. A tester that came back from a restart with no
+// task waited, and its issue waited with it, for 301 hours across 48 waits
+// (dispatch://INFRA-714 R7).
+//
+// The conditions are the ones a resume by rule already uses (resume.go's booted), read for this
+// one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this
+// claim's, its tree does not linger, and its phase's own terminating fact has not arrived
+// (PhaseFinished) — a merged root stands in merging for as long as the rest of its tree runs, and
+// its merger must not be handed merging again at every launch. A claim that holds any task is left
+// alone: it has work, and a second task would be a second prompt for work under way. So is a role
+// a queued row already covers (queuedRowCovers).
+//
+// What such a claim is sent is decided by the entry its role's phases row names
+// (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
+// owedEntryRoles): the whole row, below the skips above, so a ready this function passes over
+// costs no query and the row the rule is weighed against is the row whose work is sent. A claim
+// behind that entry — the entry it was given is under the row's and no queued start carries that
+// entry (OwedEntry) — is sent the work of that entry at that entry (SendOwedEntry), which is the
+// task the transition wrote when it raised the number. It is sent that rather than the phase's
+// resume task because the resume says to carry the existing phase work on, and the work of an
+// entry this claim was never given is work it does not have; the resume would also spend the turn
+// on the wrong prompt, since the completion it answers with is refused as behind that entry and
+// the entry's own task follows from the next admission pass or the entry sweep anyway.
+//
+// A claim level with its row is sent the phase's resume task, enqueued here and marked as a
+// resume task, so the one rule about already-delivered work stays the outbox's: it does not
+// deliver a resume task to a claim that by then holds its phase's task for this run. That row
+// reads no slot and carries no entry, the claim being on the entry its row names already; the
+// owed entry's start waits for the issue's admission slot as every start Engine.started builds
+// does (StartOrOwe). Either way the issue holds one: a claim whose agent has just said it is
+// ready is running, and admission has long since given its tree a slot.
+func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {
+		return err
+	}
+	role := RoleFor(issue.Phase)
+	if role == "" || role == claim.RoleArchitect || role != fact.Role {
+		return nil
+	}
+	root, err := e.store.Issue(ctx, tx, issue.Tree)
+	if err != nil || root == nil || root.Lingers() {
+		return err
+	}
+	finished, err := e.phaseFinished(ctx, tx, *issue)
+	if err != nil || finished {
+		return err
+	}
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return err
+	}
+	token, err := claim.NewToken(project, issue.Key, role)
+	if err != nil {
+		return err
+	}
+	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, role, issue.Generation)
+	if err != nil {
+		return err
+	}
+	if held := run.Claim; held == nil || held.Pending != nil {
+		return nil
+	}
+	if queuedRowCovers(run, *root, issue.Phase) {
+		return nil
+	}
+	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	if err != nil {
+		return err
+	}
+	if OwedEntry(run, *root, row.Entry) {
+		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
+			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
+		return nil
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
+		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), ResumeTask: true}); err != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",
+		"issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch)
+	return nil
 }
 
 // treeCatchUp is root's tree as the record holds it: whether a hand-over created the root at this

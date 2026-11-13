@@ -18,7 +18,10 @@ import {
   matchesFilter,
 } from "./conversation-model";
 
-const session: Actor = { id: "session-1", kind: "session" };
+// A writer carried by a frame's payload is one of the kinds Dispatch writes, where a route's
+// read states a plain string, so this one is written as the literal it is: a `block.invalid`
+// frame below names it, and so do the route reads here.
+const session = { id: "session-1", kind: "session" } as const satisfies Actor;
 const bob: Actor = { id: "bob", kind: "user" };
 
 const baseAsk: Ask = {
@@ -464,6 +467,29 @@ test("describes a malformed decision block", () => {
 
   expect(activityDescription(event)).toEqual([
     'marked decision ask-block malformed: ask block "ask-block" has an option without a label',
+  ]);
+});
+
+test("describes a refused ci_check as the check's refusal", () => {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
+    actor: session,
+    created_at: "2026-09-13T17:01:00Z",
+    id: 10,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "ci_check takes when of before_merge",
+      disturbed_by: session,
+      block_type: "check",
+    },
+    seq: 10,
+    type: "block.invalid",
+  };
+
+  expect(activityDescription(event)).toEqual([
+    "refused check k1: ci_check takes when of before_merge",
   ]);
 });
 

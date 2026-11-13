@@ -82,6 +82,18 @@ type Settings struct {
 	// check can drive each bound inside one run.
 	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
 	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
+	// phase worker's last recorded step may be in the past before the daemon reads that worker as
+	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
+	// four above are in hours, because the bound is tens of minutes and the file takes it that
+	// way (config's readMinutes).
+	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
+	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
+	// the background work a phase worker's own session reports may stand before the daemon names
+	// that worker to its architect, which it does once and with nothing sent. It is in hours,
+	// where the bound above is in minutes, because this bound is hours and the file takes it
+	// that way (config's readHours).
+	WorkerBackgroundHours float64 `json:"worker_background_hours"`
 	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
 	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and
 	// how many rounds one sweep may open in a minute. Each is null, and neither is omitted, when
@@ -237,10 +249,8 @@ type PluginsSettings struct {
 // ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
 // the state's `repositories` shows, never this file's.
 type ProjectSettings struct {
-	MergeQueueRole string         `json:"merge_queue_role,omitempty"`
-	Merge          MergeSettings  `json:"merge"`
-	SlackChannels  []string       `json:"slack_channels"`
-	Memory         MemorySettings `json:"memory"`
+	SlackChannels []string       `json:"slack_channels"`
+	Memory        MemorySettings `json:"memory"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
@@ -282,11 +292,6 @@ type DeploySettings struct {
 type RepositoryRenameSettings struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-}
-
-// MergeSettings is a project's `merge` policy: the by-hand expressions as written, never compiled.
-type MergeSettings struct {
-	ByHand []string `json:"by_hand"`
 }
 
 // GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
@@ -376,6 +381,8 @@ func SettingsOf(cfg config.Config) Settings {
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
 		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
 		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
+		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,
@@ -394,9 +401,7 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for key, project := range cfg.Projects {
 		entry := ProjectSettings{
-			MergeQueueRole: project.MergeQueueRole,
-			Merge:          MergeSettings{ByHand: make([]string, len(project.Merge.ByHand))},
-			SlackChannels:  stringsOf(project.SlackChannels),
+			SlackChannels: stringsOf(project.SlackChannels),
 			Memory: MemorySettings{
 				Mode:         project.Memory.Mode,
 				ConfigFiles:  stringsOf(project.Memory.ConfigFiles),
@@ -404,9 +409,6 @@ func SettingsOf(cfg config.Config) Settings {
 			},
 			ProductionCheck: project.ProductionCheckWord(),
 			Deploys:         []DeploySettings{},
-		}
-		for i, pattern := range project.Merge.ByHand {
-			entry.Merge.ByHand[i] = pattern.Expression
 		}
 		settings.Projects[key] = entry
 	}

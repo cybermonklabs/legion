@@ -100,7 +100,7 @@ func (r *bundleRestore) receive(frame shimwire.LauncherBundle) shimwire.Launcher
 	}
 	r.slices[frame.Index] = frame.Payload
 	result := shimwire.LauncherBundleResult{ID: frame.ID, Index: frame.Index, OK: true}
-	if whole := r.whole(); whole != nil {
+	if whole := joined(r.slices); whole != nil {
 		if got := shimwire.BundleDigest(whole); got != r.digest {
 			r.sequence, r.count, r.digest, r.release, r.slices = "", 0, "", 0, nil
 			clear(r.results)
@@ -123,17 +123,18 @@ func (r *bundleRestore) sliceAt(id string, index int) []byte {
 	return r.slices[index]
 }
 
-// whole joins the sequence once every slice has arrived, and nil while one has not.
-func (r *bundleRestore) whole() []byte {
+// joined is a slice sequence's whole body once every slice has arrived, and nil while one has
+// not: the pod's workspace bundle (bundleRestore) and its leak check (checkInstall) alike.
+func joined(slices [][]byte) []byte {
 	size := 0
-	for _, slice := range r.slices {
+	for _, slice := range slices {
 		if slice == nil {
 			return nil
 		}
 		size += len(slice)
 	}
 	body := make([]byte, 0, size)
-	for _, slice := range r.slices {
+	for _, slice := range slices {
 		body = append(body, slice...)
 	}
 	return body
