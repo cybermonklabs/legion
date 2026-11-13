@@ -1354,6 +1354,9 @@ const testHorizonStallWarning = 250 * time.Millisecond
 // port before it serves. DISPATCH_PORT names the same port, which Dispatch checks against the socket.
 func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatchOptions) *dispatchProcess {
 	t.Helper()
+	// The server must allow what this process and the ones this test already started may open
+	// (connection_ceiling_test.go), since a server that allows fewer fails later and elsewhere.
+	requireConnectionCeiling(t, databaseURL)
 	// The process's own database, for the events_start wait; a URL it cannot serve against is
 	// the test's own mistake, not a stall to wait out.
 	config, err := pgx.ParseConfig(databaseURL)

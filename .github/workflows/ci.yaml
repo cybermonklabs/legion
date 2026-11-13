@@ -5458,6 +5458,14 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
+      # This lane starts two Dispatch processes against the one service, and each may open
+      # store.ConnectionsPerProcess connections, so the service is sized from that constant
+      # rather than from a number written here (.github/scripts/pg-connection-ceiling.sh). A
+      # service that allows fewer fails later and elsewhere, as 53300 refusals inside a room, a
+      # lease or a socket; packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses such a
+      # server by name at the first process it starts.
+      - name: Size the service for two Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}" 2
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
@@ -5543,6 +5551,15 @@ jobs:
           PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
+      # Two builds of Dispatch serve this one service at once, each able to open
+      # store.ConnectionsPerProcess connections, and the browser half below adds its own: the
+      # service is sized from that constant rather than from a number here
+      # (.github/scripts/pg-connection-ceiling.sh), since the ceiling has climbed 105, 108 and
+      # 112 as pools were added and each climb left a literal wrong and silent. The failure a
+      # small service gives is 53300 refusals inside a room, a lease or a socket, which name
+      # nothing of the cause.
+      - name: Size the service for two Dispatch builds
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}" 2
       - name: Two-build tests of the Dispatch server
         env:
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
