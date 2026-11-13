@@ -1238,6 +1238,12 @@ jobs:
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
+              # e2e/harness-postgres.ts sizes each stack's Postgres from
+              # `go run ./internal/dispatch/store/cmd/connections`, which the binaries job of
+              # dispatch-browser.yaml runs for the shard and alone jobs; *dispatch_server carries
+              # the store.
+              - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
+              - 'packages/envoy/internal/dispatch/testlimits/*'
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
               # The workflow that holds every browser step, which this job reads as its own

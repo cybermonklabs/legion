@@ -112,6 +112,8 @@ jobs:
     # rather than the warm one, as the multiprocess job's Playwright install step below carries
     # its own retry arithmetic rather than its measured maximum.
     timeout-minutes: 10
+    outputs:
+      connections: ${{ steps.connections.outputs.connections }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -149,6 +151,15 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
           CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+        working-directory: packages/envoy
+      # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
+      # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
+      - name: Read the connections each stack's Postgres must allow
+        id: connections
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
       # One name for the whole run, with no `github.run_attempt` in it: a re-run of a run's
       # failed jobs re-runs a shard or an alone leg without this one, and that attempt must find
@@ -494,6 +505,8 @@ jobs:
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
           export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          # Read in the binaries job, since this container has no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           # What the binaries job built, which run-server.sh and run-broker.sh
           # execute instead of building: the server by its path, the broker's three by the
           # directory that holds them.
@@ -880,6 +893,8 @@ jobs:
           # binaries provider: initdb and pg_ctl live in that directory alone, and a job inside a
           # container has no docker to run the image provider's digest with.
           export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin
+          # Read in the binaries job, since this container has no Go (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ needs.binaries.outputs.connections }}
           # What the binaries job built, which run-server.sh and run-broker.sh
           # execute instead of building: the server by its path, the broker's three by the
           # directory that holds them.
