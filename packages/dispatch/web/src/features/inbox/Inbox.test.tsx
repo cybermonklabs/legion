@@ -2028,11 +2028,11 @@ test("a priority pick that lands moves its row to the band it picked", async () 
 });
 
 // Under a priority filter a pick of another priority takes its row out of the list the moment it
-// is composed. Where the reader's hand is not on the row - a keyboard pick, here a change the
-// pointer never made - nothing else holds it, so the pick itself does: the row stays listed
-// while the pick is live and while its refusal is shown, and the refusal and its Retry stay in
-// the control that wrote.
+// is composed. Nothing but the pick holds the row, as when a keyboard makes the pick, so the pick
+// itself does: the row stays listed while the pick is live and while its refusal is shown, and
+// the refusal and its Retry stay in the control that wrote. With that hold off, this row fails.
 test("a priority pick out of a priority filter, refused, keeps its row with the reason and Retry", async () => {
+  const user = userEvent.setup();
   const rows = [
     inboxIssue("ask-a", "CORE-1", "Which approach?", { priority: 1 }),
     inboxIssue("ask-c", "CORE-3", "Which name?", { priority: 1 }),
@@ -2046,11 +2046,7 @@ test("a priority pick out of a priority filter, refused, keeps its row with the 
   try {
     await screen.findByText("Which approach?");
     expect(rowIds()).toEqual(["ask-a", "ask-c"]);
-    act(() => {
-      fireEvent.change(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1"), {
-        target: { value: "2" },
-      });
-    });
+    await user.selectOptions(within(rowOf("ask-a")).getByLabelText("Priority of CORE-1"), "P2");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     // Live: the row is still listed, showing the priority it picked.
     expect(rowIds()).toEqual(["ask-a", "ask-c"]);

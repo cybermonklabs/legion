@@ -893,8 +893,8 @@ function ListFields(): ReactNode {
   );
 }
 
-/** The Inbox's own read, each row with the priority control the Inbox draws on it and the person
- *  it waits on, which is its issue's assignee until somebody hands the ask on. */
+/** The Inbox's own read: each row with the priority control the Inbox draws on it, and the
+ *  row's `waiting_on_person` as the read gives it. */
 function InboxRows(): ReactNode {
   const inbox = useShownQuery(inboxQuery());
   return (
