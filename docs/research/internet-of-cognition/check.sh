@@ -452,9 +452,10 @@ prepare_env() {
 # builtin, exec, eval, source, time, function definitions and the keywords if, while,
 # until, case and select, a shell given a string with -c, env, timeout, nice, nohup, sudo
 # or stdbuf running a program, find -exec, an input redirection, a here-document, a
-# background &, and IOC_EXPECT_STATUS written as a statement of its own. A row that needs
-# a new form adds it here and to the classifier, with a case of check.test.sh, in the
-# same commit.
+# background &, process substitution <( ) and >( ), whose code runs beside the row and
+# ends after it is read, arithmetic (( )) and $(( )), and IOC_EXPECT_STATUS written as a
+# statement of its own. A row that needs a new form adds it here and to the classifier,
+# with a case of check.test.sh, in the same commit.
 #
 # What the evaluator refuses in an admitted row, read after it runs:
 #
@@ -1148,6 +1149,8 @@ class Parser:
             return ("group", body)
         if kind == "op" and value == "(":
             self.take()
+            if self.peek() == ("op", "("):
+                raise Refused("an arithmetic command (( )), a form the evaluator does not admit")
             body = self.parse_list(closers=(")",))
             if self.peek() != ("op", ")"):
                 raise Refused("a subshell with no closing parenthesis")
@@ -1297,7 +1300,13 @@ def classify(command, depth=0):
     if depth > 3:
         return ("refused", "a command nested too deep")
     inner_programs = []
-    for _, _, code in substitutions(command):
+    for start, _, code in substitutions(command):
+        # Process substitution runs its code beside the row, so a failure in it lands
+        # after the row is read; an arithmetic expansion is no command. No row uses either.
+        if command[start] in "<>":
+            return ("refused", "a process substitution " + command[start] + "( ), whose code runs beside the row and ends after it is read")
+        if command.startswith("$((", start):
+            return ("refused", "an arithmetic expansion $(( )), a form the evaluator does not admit")
         inner = classify(code, depth + 1)
         if inner[0] == "refused":
             return inner
