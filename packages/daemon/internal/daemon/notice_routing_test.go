@@ -13,13 +13,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -82,7 +82,7 @@ func (p *holderPublisher) snapshot() (int, []outboxPublish) {
 }
 
 // noticeTree records a root, its child and the child's child, all of tree LEGION-1.
-func noticeTree(t *testing.T, pool *pgxpool.Pool, records record.Store, lingers bool) {
+func noticeTree(t *testing.T, pool *store.Pool, records record.Store, lingers bool) {
 	t.Helper()
 	root, child := "LEGION-1", "LEGION-2"
 	rootIssue := record.Issue{Key: root, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Title: "Root", Phase: phase.Implementing, Generation: 1, Status: "in_progress"}
@@ -109,7 +109,7 @@ func architectClaim(t *testing.T, sup *supervisor, issue string, state supervise
 // leasedOutboxRow enqueues row and leases it as the runner does before it executes a row, and
 // returns the row as the runner then holds it: the notice executor publishes only a row it finds
 // under its lease.
-func leasedOutboxRow(t *testing.T, pool *pgxpool.Pool, records record.Store, row record.OutboxRow) record.OutboxRow {
+func leasedOutboxRow(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) record.OutboxRow {
 	t.Helper()
 	enqueueOutbox(t, pool, records, row)
 	if err := pool.QueryRow(context.Background(), "select id from outbox order by id desc limit 1").Scan(&row.ID); err != nil {
@@ -120,7 +120,7 @@ func leasedOutboxRow(t *testing.T, pool *pgxpool.Pool, records record.Store, row
 }
 
 // leaseOutboxRow leases outbox row id for a minute and returns its lease token.
-func leaseOutboxRow(t *testing.T, pool *pgxpool.Pool, id int64) string {
+func leaseOutboxRow(t *testing.T, pool *store.Pool, id int64) string {
 	t.Helper()
 	token := fmt.Sprintf("lease-%d", id)
 	if _, err := pool.Exec(context.Background(), "update outbox set lease_token = $2, lease_until = now() + interval '1 minute' where id = $1", id, token); err != nil {
@@ -561,7 +561,7 @@ func TestAHeldChildCloseHoldsTheArchitectsLaterNotices(t *testing.T) {
 
 // reparent records a Dispatch re-parent of LEGION-2 as admission does: its parent changes and its
 // tree does not.
-func reparent(t *testing.T, pool *pgxpool.Pool, records record.Store, parent string) {
+func reparent(t *testing.T, pool *store.Pool, records record.Store, parent string) {
 	t.Helper()
 	root := "LEGION-1"
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-2", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root, Parent: &parent, Title: "Child", Phase: phase.Planning, Generation: 1, Status: "in_progress"})

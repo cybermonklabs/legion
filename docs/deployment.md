@@ -628,6 +628,35 @@ Rotate the keys in the broker's `github-app` secrets, not on the daemon's machin
    Revoking them before the broker can mint with the new keys would break token refresh and,
    once existing tokens expire, the panes' `gh` and `jj git push` credentials.
 
+## Saying when the daemon is serving
+
+`GET /readyz`, at the API port legion.yaml's `port` names (13370 by default, `defaultPort` in
+`packages/daemon/internal/config/config.go`), is the daemon saying whether it serves. It carries no
+token and reads no database, and what a caller sees follows the daemon's life:
+
+- While the boot runs, no answer at all. The daemon binds its port early in the boot but serves
+  HTTP only once the boot is done, so a request waits in the kernel's queue until the caller's own
+  timeout runs out.
+
+- `200 {"status":"ok"}` once the daemon serves: its runtime built, its launcher acceptor installed
+  and its API serving. `503 {"status":"starting","waitingFor":"the daemon to serve"}` answers only a
+  request that reaches the instant between the server starting and the latch being set.
+
+- `503 {"status":"stopping"}` from the moment the daemon's stop begins, on a connection the server
+  still holds through its drain. A new connection gets no answer, because the drain closes the
+  listener at once.
+
+It reports nothing beyond that boot's own progress, so the answer is the same under any load and
+while every connection of the pool is busy. `/healthz` answers 200 on every request the API takes,
+the drain's included, and says nothing about the boot, so a start script or a supervisor on this box
+waits on `/readyz` instead, with a bound on each try, since a try during the boot gets no answer:
+`until curl -fsS --max-time 2 http://127.0.0.1:13370/readyz; do sleep 1; done`.
+
+A Kubernetes deployment declares it as the daemon container's readiness probe. Those manifests are
+in another repository, not this one; the probe to declare on that container, and why it is a
+readiness probe and never a liveness probe, are in the Kubernetes guide's Configuration section
+(`docs/kubernetes.md`).
+
 ## Serving on a socket the harness holds
 
 `legion start` binds legion.yaml's `bind` and `port` for its API. With `LEGION_LISTEN_FD=<n>` in

@@ -2748,6 +2748,38 @@ A pod's own IP changes on every restart, so a daemon running inside the cluster 
 Pods dial it at the port the worker stream listens on, so the Service exposes `worker_stream_port` as that same port number.
 A daemon on a fixed host (a devbox or a VM) leaves `advertise_host` unset and binds that host's own address, which pods then dial.
 A loopback `bind` is refused either way: a listener bound only to loopback answers no Service and no pod.
+
+The daemon says when it is serving on `GET /readyz`, at the API port `port` names (13370 by default, `defaultPort` in `packages/daemon/internal/config/config.go`).
+It carries no token and reads no database, and what a caller sees follows the daemon's life:
+
+- While the boot runs, no answer at all.
+  The daemon binds its port early in the boot but serves HTTP only once the boot is done (`serve`), so a request waits in the kernel's queue until the caller's own timeout runs out, and a probe reads that as a failure, which it is.
+
+- `200 {"status":"ok"}` once the daemon serves: its runtime built, its launcher acceptor installed and its API serving.
+  The latch is set one goroutine start after the server begins, so `503 {"status":"starting","waitingFor":"the daemon to serve"}` answers only a request that reaches that instant.
+
+- `503 {"status":"stopping"}` from the moment the daemon's stop begins, on a connection the server still holds through its drain.
+  A new connection gets no answer, because the drain closes the listener at once.
+
+It is a one-way latch of that boot and reports nothing else: not the pool, not the database and not the load, so the answer is the same under any load and while every connection of the pool is busy.
+`/healthz` answers 200 on every request the API takes, the drain's included, and says nothing about the boot, so a probe reads `/readyz` instead.
+The daemon's own manifests are not in this repository; declare the probe on its container where they are:
+
+```yaml
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: 13370 # the daemon's `port`
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+  successThreshold: 1
+```
+
+Declare it as a readiness probe and never as a liveness probe.
+The daemon's Service carries the API port and the worker-stream port under one selector, so a probe that failed while the daemon was busy would take the worker stream out of the Service while every pod's launcher was trying to reach it, and the daemon's Deployment runs one replica with the `Recreate` strategy, so no second pod answers in its place.
+A liveness probe on it would restart that one daemon for the same reason, in the middle of its drain.
+
 `legion start --check-config` runs all of it without starting the daemon, writing a file or running a key command, and then every refusal boot makes from the files and the environment before its first write, in boot's words:
 the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, and the runtime's own reads (the kubeconfig and every value's translation;
 under tmux, the OMP invocation, through `mise where` when it names a `mise` tool, and the host's `gh`, `git` and `jj`).

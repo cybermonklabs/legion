@@ -10,13 +10,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -62,7 +62,7 @@ func mergeStateStandIn(t *testing.T, state string) *httptest.Server {
 // engine stands in for the whole workflow and is given the runtime's own merge-state queue, so a
 // fact a test applies asks for the read it asks for in production; the queue is empty and
 // nothing reads it until a test starts readMergeStates.
-func readRuntime(pool *pgxpool.Pool, api string, log *slog.Logger) *workflowRuntime {
+func readRuntime(pool *store.Pool, api string, log *slog.Logger) *workflowRuntime {
 	w := &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"},
 		tokens: outboxTokens{}, dispatchProject: "CAPTURE", bootID: "test-boot", log: log, githubAPI: api,
@@ -81,7 +81,7 @@ func servedAcme() *repositories {
 	return served
 }
 
-func capturePhase(t *testing.T, pool *pgxpool.Pool) (phase.Phase, *record.PullRequest) {
+func capturePhase(t *testing.T, pool *store.Pool) (phase.Phase, *record.PullRequest) {
 	t.Helper()
 	var issue *record.Issue
 	var pr *record.PullRequest
@@ -114,7 +114,7 @@ var captureHeadUpdated = time.Date(2026, 10, 8, 22, 15, 0, 0, time.UTC)
 // seedCapture records CAPTURE-1 in from with its pull request 86 at head code, whose required
 // check passed there and which GitHub's last read found clean, and its phases. A test about what
 // an unread or another merge state leaves undone sets its own (clearCaptureMergeState).
-func seedCapture(t *testing.T, pool *pgxpool.Pool, from phase.Phase, status string, phases ...record.PhaseRow) {
+func seedCapture(t *testing.T, pool *store.Pool, from phase.Phase, status string, phases ...record.PhaseRow) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -142,7 +142,7 @@ func seedCapture(t *testing.T, pool *pgxpool.Pool, from phase.Phase, status stri
 }
 
 // noticeReasons is the reason of every notice of kind in the outbox.
-func noticeReasons(t *testing.T, pool *pgxpool.Pool, kind string) []string {
+func noticeReasons(t *testing.T, pool *store.Pool, kind string) []string {
 	t.Helper()
 	var reasons []string
 	rows, err := pool.Query(context.Background(), "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = $1", kind)
