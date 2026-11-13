@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -51,9 +52,12 @@ func unreadableOwnEntry(t *testing.T) (located Workspace, entry, want string) {
 // The tmux runtime's provisioning locks the workspace's git worktree entry with no stale-lock
 // sweep before it to say anything about that entry, so an entry the workspace's .git names whose
 // gitdir cannot be read (case C) is the lock's error: locking nothing and saying nothing would
-// leave the entry to a bare `git worktree prune`. No `locked` file is written.
+// leave the entry to a bare `git worktree prune`. No `locked` file is written. Every later
+// provision of the workspace fails the same way and nothing repairs the entry, so the error says
+// what does, as restoreGitWorktree's refusal of a pointer outside the clone says it.
 func TestLockGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T) {
 	located, entry, want := unreadableOwnEntry(t)
+	want += "; provisioning cannot lock it. Remove the workspace so the next provisioning adds it again"
 	err := lockGitWorktree(located.Clone, located.Dir)
 	if err == nil || err.Error() != want {
 		t.Fatalf("lockGitWorktree answered %v, want %q", err, want)
@@ -207,5 +211,300 @@ func TestRestoreGitWorktreeAnswersWorktreesSwappedForAFifo(t *testing.T) {
 		}
 		<-done
 		t.Fatalf("restoreGitWorktree was still removing its temporary entry under %s after 5s: a .git/worktrees swapped for a fifo blocks the provision", resolved)
+	}
+}
+
+// gitDirAway is a runner for restoreGitWorktree alone: jj answers a working-copy parent, after
+// swapping the shared clone's .git for a symlink to away when away is set, as a role working the
+// clone can while jj runs; `git read-tree` succeeds and writes nothing.
+type gitDirAway struct {
+	clone, away string
+}
+
+func (gitDirAway) Timeout() time.Duration { return testTimeout }
+
+func (r gitDirAway) Run(_ context.Context, command Command) (Result, error) {
+	switch {
+	case command.Argv[0] == "jj":
+		if r.away != "" {
+			gitDir := filepath.Join(r.clone, ".git")
+			if err := os.Rename(gitDir, gitDir+".aside"); err != nil {
+				return Result{}, err
+			}
+			if err := os.Symlink(r.away, gitDir); err != nil {
+				return Result{}, err
+			}
+		}
+		return Result{Stdout: strings.Repeat("a", 40) + "\n"}, nil
+	case slices.Contains(command.Argv, "read-tree"):
+		return Result{}, nil
+	}
+	return Result{}, errors.New("gitDirAway runs jj log and git read-tree alone")
+}
+
+// A restore makes a directory and three files under the shared clone's .git/worktrees, through
+// .git, by path, with the store lock held under the tmux runtime. A role can make that .git a
+// symlink to a directory of its choosing, before the restore or while its jj runs, and the restore
+// must then refuse, naming the link, and make nothing where it points.
+func TestRestoreGitWorktreeRefusesAGitDirectorySymlinkedAway(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		whileJJ bool
+	}{
+		{name: "planted before the restore"},
+		{name: "swapped in while jj runs", whileJJ: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gitDir := filepath.Join(located.Clone, ".git")
+			away := filepath.Join(t.TempDir(), "away")
+			for _, dir := range []string{filepath.Join(gitDir, "worktrees"), away, located.Dir} {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(located.Dir, ".git"), []byte("gitdir: "+filepath.Join(gitDir, "worktrees", "infra-1")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			run := gitDirAway{clone: located.Clone}
+			if row.whileJJ {
+				run.away = away
+			} else {
+				if err := os.Mkdir(filepath.Join(away, "worktrees"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Rename(gitDir, gitDir+".aside"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(away, gitDir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = restoreGitWorktree(context.Background(), run, located, func(string) {})
+			if want := gitDir + " is a symlink"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("restoreGitWorktree answered %v, want a refusal saying %q", err, want)
+			}
+			// What was under away before the restore: away itself and, when the link was planted
+			// first, the worktrees directory it holds. Anything else the restore made there.
+			planted := []string{away}
+			if !row.whileJJ {
+				planted = append(planted, filepath.Join(away, "worktrees"))
+			}
+			var made []string
+			if walkErr := filepath.WalkDir(away, func(path string, _ os.DirEntry, err error) error {
+				if err == nil && !slices.Contains(planted, path) {
+					made = append(made, path)
+				}
+				return err
+			}); walkErr != nil {
+				t.Fatal(walkErr)
+			}
+			if len(made) != 0 {
+				t.Fatalf("the restore made %v under %s, where the clone's .git was linked", made, away)
+			}
+		})
+	}
+}
+
+// excludeClone lays out the git directory of a shared clone down to .git/info, which
+// excludeCodegraphDirectory writes under, and answers the clone and its exclude file.
+func excludeClone(t *testing.T) (clone, exclude string) {
+	t.Helper()
+	clone = filepath.Join(t.TempDir(), "widgets")
+	if err := os.MkdirAll(filepath.Join(clone, ".git", "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return clone, filepath.Join(clone, ".git", "info", "exclude")
+}
+
+// excludeWithin runs excludeCodegraphDirectory on clone and answers its error, failing the row when
+// it is still running after 5s: it holds the repository's store lock under the tmux runtime, so a
+// call that waits holds every later provision of the repository. fifo, when it is set, is the fifo
+// the call may be waiting on: held, the writer the row holds open on it, if any, is closed, and the
+// fifo is then opened and closed for both ends until the call returns, so the row's goroutine
+// ends whichever open or read it waits in.
+func excludeWithin(t *testing.T, clone, fifo string, held *os.File) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() { done <- excludeCodegraphDirectory(clone) }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+	}
+	if held != nil {
+		_ = held.Close()
+	}
+	stop := make(chan struct{})
+	go func() {
+		for fifo != "" {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if end, err := os.OpenFile(fifo, os.O_RDWR, 0); err == nil {
+				time.Sleep(20 * time.Millisecond)
+				_ = end.Close()
+			}
+		}
+	}()
+	<-done
+	close(stop)
+	t.Fatalf("excludeCodegraphDirectory(%s) was still running after 5s", clone)
+	return nil
+}
+
+// A clone's .git/info/exclude that is a fifo is refused, naming it, rather than waited on: in the
+// open of a read when nobody holds it, in the read when a writer holds it open and writes nothing,
+// and in the open of the write after. The fifo is left as it was.
+func TestExcludeCodegraphDirectoryRefusesAFifo(t *testing.T) {
+	for _, row := range []struct {
+		name   string
+		writer bool
+	}{
+		{name: "nobody holds it"},
+		{name: "a writer holds it open", writer: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			clone, exclude := excludeClone(t)
+			if err := syscall.Mkfifo(exclude, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var held *os.File
+			if row.writer {
+				var err error
+				if held, err = os.OpenFile(exclude, os.O_RDWR, 0); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = held.Close() })
+			}
+			err := excludeWithin(t, clone, exclude, held)
+			if want := exclude + " is a fifo"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
+			}
+			if info, err := os.Lstat(exclude); err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+				t.Fatalf("the fifo %s is no longer there as it was (%v, %v)", exclude, info, err)
+			}
+		})
+	}
+}
+
+// A clone's .git/info/exclude that is a symlink, or an info directory that is one, is refused,
+// naming the link, rather than followed: a role that can write the clone could otherwise have
+// provisioning append `.codegraph/` to any file the daemon can write. The file the link names is
+// left as it was.
+func TestExcludeCodegraphDirectoryRefusesASymlink(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		link func(t *testing.T, clone, outside string) string
+	}{
+		{name: "the exclude file", link: func(t *testing.T, clone, outside string) string {
+			link := filepath.Join(clone, ".git", "info", "exclude")
+			if err := os.Symlink(filepath.Join(outside, "exclude"), link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}},
+		{name: "its info directory", link: func(t *testing.T, clone, outside string) string {
+			link := filepath.Join(clone, ".git", "info")
+			if err := os.Remove(link); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			clone, _ := excludeClone(t)
+			outside := t.TempDir()
+			target := filepath.Join(outside, "exclude")
+			const before = "# a file outside the clone\n"
+			if err := os.WriteFile(target, []byte(before), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			link := row.link(t, clone, outside)
+			err := excludeWithin(t, clone, "", nil)
+			if want := link + " is a symlink"; err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
+			}
+			if body, err := os.ReadFile(target); err != nil || string(body) != before {
+				t.Fatalf("%s, outside the clone, now holds %q (%v), want %q", target, body, err, before)
+			}
+		})
+	}
+}
+
+// A clone's .git/info/exclude larger than excludeLimit is refused, naming it and the bound,
+// rather than read whole, and is left as it was.
+func TestExcludeCodegraphDirectoryRefusesAFileLargerThanItsBound(t *testing.T) {
+	clone, exclude := excludeClone(t)
+	if err := os.WriteFile(exclude, []byte(strings.Repeat("a", excludeLimit+1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := excludeWithin(t, clone, "", nil)
+	if want := fmt.Sprintf("%s is larger than %d bytes", exclude, excludeLimit); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("excludeCodegraphDirectory answered %v, want a refusal saying %q", err, want)
+	}
+	if info, err := os.Stat(exclude); err != nil || info.Size() != excludeLimit+1 {
+		t.Fatalf("%s changed (%v, %v)", exclude, info, err)
+	}
+}
+
+// An ordinary exclude file is handled as it always was: made at 0600 when missing, in an info
+// directory made at 0700 when that is missing too; `.codegraph/` appended on a line of its own,
+// after a newline the file lacked; and nothing written when a line already is `.codegraph/`.
+func TestExcludeCodegraphDirectoryAppendsToAnOrdinaryFile(t *testing.T) {
+	for _, row := range []struct {
+		name    string
+		plant   func(t *testing.T, exclude string)
+		want    string
+		infoNew bool
+	}{
+		{name: "no info directory", plant: func(t *testing.T, exclude string) {
+			if err := os.Remove(filepath.Dir(exclude)); err != nil {
+				t.Fatal(err)
+			}
+		}, want: ".codegraph/\n", infoNew: true},
+		{name: "no exclude file", plant: func(*testing.T, string) {}, want: ".codegraph/\n"},
+		{name: "a last line with no newline", plant: func(t *testing.T, exclude string) {
+			if err := os.WriteFile(exclude, []byte("*.log\nbuild"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "*.log\nbuild\n.codegraph/\n"},
+		{name: "the line already there", plant: func(t *testing.T, exclude string) {
+			if err := os.WriteFile(exclude, []byte("*.log\n.codegraph/\nbuild\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "*.log\n.codegraph/\nbuild\n"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			clone, exclude := excludeClone(t)
+			row.plant(t, exclude)
+			for range 2 {
+				if err := excludeWithin(t, clone, "", nil); err != nil {
+					t.Fatalf("excludeCodegraphDirectory: %v", err)
+				}
+			}
+			body, err := os.ReadFile(exclude)
+			if err != nil || string(body) != row.want {
+				t.Fatalf("%s holds %q (%v), want %q", exclude, body, err, row.want)
+			}
+			if row.name == "no exclude file" || row.infoNew {
+				if info, err := os.Stat(exclude); err != nil || info.Mode().Perm() != 0o600 {
+					t.Errorf("%s was made as %v (%v), want mode 0600", exclude, info, err)
+				}
+			}
+			if row.infoNew {
+				if info, err := os.Stat(filepath.Dir(exclude)); err != nil || info.Mode().Perm() != 0o700 {
+					t.Errorf("%s was made as %v (%v), want mode 0700", filepath.Dir(exclude), info, err)
+				}
+			}
+		})
 	}
 }

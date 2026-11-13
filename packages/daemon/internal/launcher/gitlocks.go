@@ -171,9 +171,9 @@ type gitLockSweep struct {
 // from the daemon to know which clone is its own. A working directory that cannot be read, or
 // whose clone cannot be derived from it — a directory outside the runtime's workspace layout, a
 // directory of that layout below the state directory that is a symlink, a derived clone with no
-// git directory, a workspace whose .git cannot be read or names no worktree entry (named with
-// that file's own error) and a derived git directory serving no worktree of this workspace alike,
-// which is every failure of workspace.WorkspaceOf — leaves the sweep without one: it writes that
+// git directory, and a workspace whose .git cannot be read, names no worktree entry, or names an
+// entry whose gitdir names another path (each named with the line that says so) alike, which is
+// every failure of workspace.WorkspaceOf — leaves the sweep without one: it writes that
 // here, once, and takes the workspace from the first role start it serves instead, which carries
 // LEGION_WORKSPACE. A workspace whose .git names an entry whose gitdir cannot be read is no such
 // failure: the derivation accepts it, so a container restarted over that disk still sweeps the
@@ -333,9 +333,9 @@ func (s *gitLockSweep) pass(ctx context.Context, first bool) bool {
 // The stored refusal is forgotten here, and only by a pass that made every read it meant to: a
 // pass that listed the locks and then could not read /proc, or found no entry of this workspace,
 // would otherwise clear the very reason it is about to write again, and refuse's rule — the same
-// reason once, rather than once a minute for the pod's life — would hold for no pass at all. An
-// entry that is readable again is therefore forgotten by the first pass that reads it, and
-// written again if it goes bad again.
+// reason once, rather than once a minute for the pod's life — would hold for no pass at all. A
+// reason that ends is therefore forgotten by the first pass that finds an own entry, and written
+// again if it comes back.
 func (s *gitLockSweep) sweep(ctx context.Context, first bool) bool {
 	if s.ws.Dir == "" {
 		return false

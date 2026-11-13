@@ -763,7 +763,7 @@ func TestALearnWhoseDerivationFailedLearnsNothingFromALaterStart(t *testing.T) {
 		log: (&roleLog{stdout: log, stderr: log}).linef,
 	}
 	s.learn(context.Background(), broken.dir)
-	refusal := fmt.Sprintf("the git directory %s of the clone of %s serves no git worktree of it", broken.gitDir, broken.dir)
+	refusal := fmt.Sprintf("the clone of %s: no git worktree entry's gitdir names the workspace %s, not even that of the entry %s, which its .git names", broken.dir, broken.dir, broken.worktree)
 	if !strings.Contains(log.String(), refusal) {
 		t.Fatalf("the learn that could derive no git directory said:\n%s", log.String())
 	}
@@ -2091,12 +2091,13 @@ func TestTheSweepKeepsTheLocksOfTheEntryItsPointerNamesWhenNoEntryIsItsOwn(t *te
 }
 
 // Case A of the table: an entry's gitdir names this workspace, so the walk sweeps it and writes
-// no line, whatever the workspace's .git says — the .git is not read at all. A .git pointing at a
-// sibling's entry whose gitdir cannot be read is no reason to name that entry, in the launcher's
-// passes or in the init container's sweep (workspace.RemoveStaleGitLocks), which would otherwise
-// write a line about another workspace's entry and say it swept only the git directory, having
-// swept this workspace's entry too. And a .git no read could finish, a fifo among them, holds no
-// pass: nothing reads it.
+// no line, whatever the workspace's .git says. A .git pointing at a sibling's entry whose gitdir
+// cannot be read is no reason to name that entry, in the launcher's passes or in the init
+// container's sweep (workspace.RemoveStaleGitLocks), which would otherwise write a line about
+// another workspace's entry and say it swept only the git directory, having swept this
+// workspace's entry too. And a .git no read could finish, a fifo among them, holds no pass. What
+// the row proves is that a sound own entry writes no line and holds no pass; it does not prove the
+// .git is never read, since a read of it through readGitdir would never block either.
 func TestTheSweepReadsNoPointerWhileThisWorkspacesEntryIsSound(t *testing.T) {
 	t.Run("a pointer at a sibling whose gitdir cannot be read", func(t *testing.T) {
 		c := newLockClone(t)

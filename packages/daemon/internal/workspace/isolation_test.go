@@ -797,9 +797,9 @@ func TestTheRunnerRefusesASymlinkedLayoutDirectory(t *testing.T) {
 	})
 }
 
-// A workspace's .jj/repo that is neither a directory nor a regular file is refused before anything
-// reads it: a FIFO there would otherwise block the runner, which reads .jj/repo before the
-// command's deadline starts.
+// A workspace's .jj/repo that is neither a directory nor a regular file is refused, naming what it
+// is, rather than waited on: a FIFO there would otherwise block the runner, which reads .jj/repo
+// before the command's deadline starts (readGitdir).
 func TestTheRunnerRefusesAWorkspaceWhoseRepoIsNotARegularFile(t *testing.T) {
 	run := newLocalRunner(t)
 	ws, err := Provision(context.Background(), run, provisionRequest(t))
@@ -821,7 +821,7 @@ func TestTheRunnerRefusesAWorkspaceWhoseRepoIsNotARegularFile(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		if err == nil || !strings.Contains(err.Error(), "neither a directory nor a regular file") {
+		if err == nil || !strings.Contains(err.Error(), "is a fifo") {
 			t.Errorf("jj in a workspace whose .jj/repo is a FIFO = %v, want a refusal naming what it is", err)
 		}
 	case <-time.After(20 * time.Second):

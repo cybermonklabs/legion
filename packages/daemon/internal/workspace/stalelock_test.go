@@ -165,3 +165,32 @@ func TestRemoveStaleGitLocksSaysNothingOfADiskWithNoClone(t *testing.T) {
 		t.Fatalf("the sweep of a disk with no clone wrote:\n%s", strings.Join(lines, "\n"))
 	}
 }
+
+// A first attempt the kubelet retries can leave a clone and no workspace yet: killed after it made
+// the clone and before it added the workspace. The retry's sweep removes the clone's locks, and
+// writes no line saying it swept only the git directory: the workspace's .git cannot be read only
+// because the workspace is not made yet (the row above the last of gitWorktreeEntries' table).
+func TestRemoveStaleGitLocksSaysNothingOfAWorkspaceNotYetMade(t *testing.T) {
+	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(located.Clone, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(gitDir, "index.lock")
+	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	if err := RemoveStaleGitLocks(located, time.Now(), func(line string) { lines = append(lines, line) }); err != nil {
+		t.Fatalf("the sweep failed the provisioning: %v", err)
+	}
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("the sweep left %s (%v); its lines:\n%s", stale, err, strings.Join(lines, "\n"))
+	}
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "removed the stale git lock "+stale) {
+		t.Fatalf("the sweep of a clone whose workspace is not made yet wrote:\n%s\nwant its removal line alone", strings.Join(lines, "\n"))
+	}
+}

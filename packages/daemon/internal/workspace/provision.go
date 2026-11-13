@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"path/filepath"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"golang.org/x/sys/unix"
 )
 
 // Provision ports provisionIssueWorkspace (packages/workspace/src/workspace.ts). It updates an
@@ -198,12 +199,57 @@ func underDirectory(root, dir string) bool {
 	return filepath.IsLocal(relative)
 }
 
+// excludeLimit bounds how much of the shared clone's .git/info/exclude excludeCodegraphDirectory
+// reads: an exclude file a person or a tool wrote can pass gitdirLimit's 4 KiB, and one past a
+// MiB is no list of patterns anyone keeps, so it is refused rather than read whole into memory.
+const excludeLimit = 1 << 20
+
 // excludeCodegraphDirectory appends ".codegraph/" to cloneDir's ".git/info/exclude" unless a
-// line already matches it exactly, so repeated provisioning of the same clone writes it once.
+// line already matches it exactly, so repeated provisioning of the same clone writes it once. A
+// missing .git or info directory is made at 0700, and a missing exclude file at 0600.
+//
+// The file is on the issue's volume, which every role of the pod writes, and the call runs under
+// whatever Provision's caller holds: the tmux daemon's outbox, with the repository's store lock
+// held, which every later provision and removal of the repository waits on. So it is opened once,
+// read and appended to through that one descriptor, and opened as openRegular opens a file a role
+// can write: a symlink there is refused rather than followed, which would grow whatever file the
+// link names, and a fifo or a device is refused rather than waited on, in its open or its read. A
+// directory, or a file larger than excludeLimit, is refused too, each naming the file. The clone
+// and the two directories between it and the file are opened the same way, without following a
+// link (openDirectory), each under the descriptor of the one above it, so a link a role leaves at
+// .git or at info is refused as one at the file is, and nothing below the clone is reached by a
+// path a role could swap between two opens.
 func excludeCodegraphDirectory(cloneDir string) error {
 	excludePath := filepath.Join(cloneDir, ".git", "info", "exclude")
-	existing, err := os.ReadFile(excludePath)
-	if err != nil && !os.IsNotExist(err) {
+	dir, err := openDirectory(unix.AT_FDCWD, cloneDir, cloneDir)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", excludePath, err)
+	}
+	path := cloneDir
+	for _, name := range []string{".git", "info"} {
+		path = filepath.Join(path, name)
+		next, err := openDirectory(dir, name, path)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := unix.Mkdirat(dir, name, 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
+				_ = unix.Close(dir)
+				return fmt.Errorf("create %s: %w", path, err)
+			}
+			next, err = openDirectory(dir, name, path)
+		}
+		_ = unix.Close(dir)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", excludePath, err)
+		}
+		dir = next
+	}
+	defer unix.Close(dir)
+	file, err := openRegular(dir, "exclude", excludePath, unix.O_RDWR|unix.O_CREAT|unix.O_APPEND, 0o600)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", excludePath, err)
+	}
+	defer file.Close()
+	existing, err := readBounded(file, excludePath, excludeLimit)
+	if err != nil {
 		return fmt.Errorf("read %s: %w", excludePath, err)
 	}
 	for _, line := range strings.Split(string(existing), "\n") {
@@ -211,15 +257,14 @@ func excludeCodegraphDirectory(cloneDir string) error {
 			return nil
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(excludePath), 0o700); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(excludePath), err)
+	content := ".codegraph/\n"
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		content = "\n" + content
 	}
-	content := string(existing)
-	if len(content) > 0 && !strings.HasSuffix(content, "\n") {
-		content += "\n"
+	if _, err := file.WriteString(content); err != nil {
+		return fmt.Errorf("write %s: %w", excludePath, err)
 	}
-	content += ".codegraph/\n"
-	if err := os.WriteFile(excludePath, []byte(content), 0o600); err != nil {
+	if err := file.Close(); err != nil {
 		return fmt.Errorf("write %s: %w", excludePath, err)
 	}
 	return nil

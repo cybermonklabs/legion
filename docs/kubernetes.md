@@ -2928,7 +2928,8 @@ architect, planner, implementer, tester, reviewer, merger):
    — when the retry runs before the daemon replaces the pod, which it does within seconds of reading the failure (see `workspace-fetch` above).
    No process can hold one when the retry runs, since the pod's `roles` container has not started and no other pod mounts the disk.
    Another worktree entry of the clone keeps its locks;
-   when a clone it finds has no entry whose `gitdir` names the workspace (its own entry unreadable among the reasons), it writes one line saying why and fails nothing for it;
+   when a clone it finds has no entry whose `gitdir` names the workspace (its own entry unreadable among the reasons), it writes one line saying why and fails nothing for it,
+   unless the workspace has no directory yet (a first attempt killed before it added the workspace);
    a lock it cannot remove, and a clone whose `.git` or `.git/worktrees` is a symlink (git never makes either one, and it would take the removal outside the clone), fail the container naming the path.
    jj's own locks are `flock(2)` locks, which end with their holder, so it leaves them.
    The `roles` container's launcher sweeps the same files for the life of the pod.
@@ -2958,7 +2959,7 @@ architect, planner, implementer, tester, reviewer, merger):
    A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
    A layout directory below the state directory that is a symlink — the workspace, the clone, or a directory above either up to the state directory — is a line naming that directory (`refuseSymlinkedLayout`).
    A derived clone with no git directory is a line naming the missing `.git` and the read's error.
-   Where no entry's `gitdir` names the workspace, a `.git` that cannot be read or names no entry is a line naming its error, and one naming another workspace's entry, a line naming the git directory.
+   Where no entry's `gitdir` names the workspace, a `.git` that cannot be read or names no entry is a line naming its error, and one naming another workspace's entry, a line naming that entry.
    Each of the five is no sweep at all.
    A workspace whose `.git` names an entry whose `gitdir` cannot be read (a fifo, a symlink, a socket, a device, a directory, larger than 4096 bytes, missing, or the error) is swept, the clone's `.git` alone, with a line naming the entry and the cause.
    What the derivation settles is the text of a path, which no role can write; the directories that text names are on the issue's disk, which the `roles` container mounts read-write and where every role writes as the pod's uid.
@@ -4852,7 +4853,7 @@ jj 0.38 and later keep a repository's and a workspace's configuration in the con
 Every jj command run in a workspace names it with `-R`, so jj never walks up to an ancestor's `.jj`, and a jj command is refused when the `.jj` it would open, or the clone's `.jj` or `.jj/repo`, is a symlink or anything but a real directory;
 when any directory of the layout between the root (`/legion` in a pod, the state directory under tmux, which itself may be one) and a workspace or the clone (`repos/<host>/<owner>/<name>`, `workspaces/<owner>/<name>/<issue>`) is a symlink, which the refusal names;
 when it runs in a workspace that has no `.jj`;
-and when the workspace's `.jj/repo` names any other directory, followed through symlinks and `..` as jj itself follows it, or is neither a directory nor a regular file (`guardWorkspace`, the same file).
+and when the workspace's `.jj/repo` names any other directory, followed through symlinks and `..` as jj itself follows it, is neither a directory nor a regular file, is a symlink to a regular file, or is a file larger than 4,096 bytes (`guardWorkspace`, the same file).
 The worker image's jj is 0.45; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
 
 The boundary above protects the provisioning token alone.

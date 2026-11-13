@@ -536,17 +536,16 @@ func sharedRepository(jjDir, clone string) (string, error) {
 // itself unless it is a regular file, else the path that file holds, appended to `.jj` unless it
 // is absolute. It is never cleaned: jj canonicalizes it physically, each symlink resolved before a
 // `..` after it, and filepath.Join would cancel `link/..` before anything resolved `link`, naming
-// a different directory than the one jj opens. A `.jj/repo` that is neither a directory nor a
-// regular file (a FIFO, a socket, a device) is refused before anything reads it: reading a FIFO
-// blocks, and nothing here runs under the command's deadline.
+// a different directory than the one jj opens.
 //
-// The pointer file is read through readGitdir, the bounded read with no link followed and no wait
-// that the sweeps make of a worktree's gitdir: a tree agent can write it, and this read runs under
+// The pointer file is read through readGitdir, the bounded read of a pointer file a role can
+// write, with no link followed and no wait: a tree agent can write it, and this read runs under
 // whatever the runner's caller holds — the tmux daemon's outbox provisions with the repository's
-// store lock held, which every later provision of the repository waits on. A file swapped for a
-// FIFO after the stat above is answered rather than waited on, one larger than any path jj writes
-// (4096 bytes) is refused rather than read whole into memory, and a symlink to a regular file,
-// which jj never writes there, is refused rather than followed.
+// store lock held, which every later provision of the repository waits on. A `.jj/repo` that is
+// neither a directory nor a regular file (a FIFO, a socket, a device), even one swapped in after
+// the stat that tells a directory from a file, is refused rather than waited on, one larger than
+// any path jj writes (4096 bytes) is refused rather than read whole into memory, and a symlink to
+// a regular file, which jj never writes there, is refused rather than followed.
 func workspaceRepository(jjDir string) (string, error) {
 	repo := filepath.Join(jjDir, "repo")
 	info, err := os.Stat(repo)
@@ -555,9 +554,6 @@ func workspaceRepository(jjDir string) (string, error) {
 	}
 	if info.IsDir() {
 		return repo, nil
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s is neither a directory nor a regular file (mode %s)", repo, info.Mode().Type())
 	}
 	pointer, err := readGitdir(repo)
 	if err != nil {

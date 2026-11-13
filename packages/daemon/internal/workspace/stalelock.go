@@ -84,7 +84,11 @@ func GitLocksOf(workspace Workspace) (locks []string, unswept error, err error) 
 // entry keeping its locks. Each removal is logged with the lock's path and age, and a lock it
 // cannot remove is an error naming it, which fails the provisioning. No entry whose gitdir names
 // the workspace (GitLocksOf's unswept) is a line saying why after the removals, and fails
-// nothing: the git directory's locks are gone, and every entry's are left where they are.
+// nothing: the git directory's locks are gone, and every entry's are left where they are. A
+// workspace whose directory does not exist yet is no line at all: that is the disk of a first
+// attempt the kubelet retries, killed after it made the clone and before it added the workspace,
+// where unswept would say the workspace's .git cannot be read for no reason but that the
+// workspace is not made yet (the row above the last of gitWorktreeEntries' table).
 //
 // A lock some process still holds must never be removed: two writers would then replace one file.
 // This caller removes each lock unasked because no process of the issue can hold one yet: it is a
@@ -107,6 +111,9 @@ func RemoveStaleGitLocks(workspace Workspace, now time.Time, log func(string)) e
 		}
 	}
 	if unswept != nil {
+		if _, err := os.Lstat(workspace.Dir); errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		log(fmt.Sprintf("swept only the git directory of the workspace %s's clone: %v", workspace.Dir, unswept))
 	}
 	return nil
