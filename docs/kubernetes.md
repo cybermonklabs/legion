@@ -1867,7 +1867,7 @@ A turn that daemon did not prompt then takes such an answer back, and that daemo
 A rollback to a release before `legion-v19.16.0` needs no statement: `legion-v19.15.0` names neither column in `packages/daemon/internal/store/claims.go`.
 An earlier release reads no `pod_update_grace_minutes` and refuses it as `unknown key pod_update_grace_minutes`, so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 The reset of the open pod rounds that this migration made needs no step.
-The earlier release queues its task at once for a claim with no ask mark, and it reads the mark that this release wrote as its own task, so it asks that role again at its re-ask bound after the mark (`pod_update_retask_hours`).
+The earlier release queues its task at once for a claim with no ask mark, and it reads the mark that this release wrote as its own task, so it asks that role again at its own re-ask bound after the mark.
 A queued `update_ask` outbox row needs no step either.
 The earlier release puts that kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs the row, and the row holds back no other row.
 A later roll forward runs the row, and the row publishes nothing for a round that its claim no longer records (`updateAsk`).
