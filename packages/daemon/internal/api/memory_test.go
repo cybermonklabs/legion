@@ -219,17 +219,17 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band at 57 alone, from stallRecordContract to below waitingLineContract: the step
 		// record is served too, and the places in the admission line, the counts of the moves
 		// back, the count of claims the refresh lane has left, each issue's answer, the leak
-		// check's cause and the two entry numbers are all held back.
+		// check's cause, the two entry numbers and the merge waits are all held back.
 		{name: "a pod at stallRecordContract", remote: statePodAddr + ":41000", claims: podClaims(stallRecordContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true},
 		// The band from waitingLineContract to below backwardMovesContract: the places in the
 		// admission line are served too, and none of the counts of the moves back, the count of
-		// claims the refresh lane has left, each issue's answer, the leak check's cause and the
-		// two entry numbers is.
+		// claims the refresh lane has left, each issue's answer, the leak check's cause, the two
+		// entry numbers and the merge waits is.
 		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
 		// The band from backwardMovesContract to below claimsToRefreshContract: the counts of
 		// the moves back are served too, and `claimsToRefresh`, the nine keys of the decided
-		// record, each issue's answer, the leak check's cause and the two entry numbers are held
-		// back.
+		// record, each issue's answer, the leak check's cause, the two entry numbers and the
+		// merge waits are held back.
 		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
 		// The band at 73 and 74, from claimsToRefreshContract to below recordFieldsContract: the
 		// count of claims the refresh lane has left is served too, and the nine keys of the
@@ -272,11 +272,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-214": true, "LEGION-215": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
-			// The two issues whose current phase names a phase worker role carry the entry
-			// numbers: LEGION-208, whose implementer holds the work its row names, and
-			// LEGION-211, whose implementer is behind it. The held, awaiting_person and done
-			// issues carry neither whoever asks.
-			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true}
+			// The four issues whose current phase names a phase worker role carry the entry
+			// numbers: LEGION-208, whose implementer holds the work its row names, LEGION-211,
+			// whose implementer is behind it, and the two reviewing roots LEGION-214 and
+			// LEGION-215, whose reviewers hold theirs. The held, awaiting_person and done issues
+			// carry neither whoever asks.
+			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true, "LEGION-214": true, "LEGION-215": true}
 			waits := map[string]bool{"LEGION-214": true, "LEGION-215": true}
 			for key, view := range issueViews(t, body) {
 				carries := view["memoryGroup"] != nil || view["memoryDrawMode"] != nil || view["memoryDrawnAt"] != nil

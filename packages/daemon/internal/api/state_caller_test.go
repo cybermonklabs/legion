@@ -285,8 +285,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `phaseEntry` and `givenEntry` gone, the two keys contract 94 added
 			// (withoutPhaseEntries), and with what each reviewing issue's round waits on from
 			// GitHub gone, the object contract 97 added (withoutMergeWait). Every row that
-			// reaches here is below all of them, so those sixteen keys go whatever the row
-			// is.
+			// reaches here is below all of them, so every one of them goes whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)

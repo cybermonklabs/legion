@@ -50,11 +50,14 @@ const (
 // embedded migration but phaseEntryMigration, each applied as Store.Migrate applies one — the
 // migration's SQL, the widening of schema_version for a timestamped version, and the version row
 // — and that migration itself withheld, for the test's own Store.Migrate to run. The migrations
-// above it are the fixture's too, because the release before this one records them: the one
-// standing there, 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so a
-// database that release migrated holds its row and its claims.leak_check_cause before the phase
-// entry runs, and Store.Migrate, which decides each migration on its own row, then applies the
-// phase entry alone. That column is one no statement of the phase entry reads or writes.
+// above it are the fixture's too. Two stand there. 20261112180548_claim_leak_check_cause is the
+// contract 87 release's own, so a database that release migrated holds its row and its
+// claims.leak_check_cause before the phase entry runs. 20261112070503_pull_request_state_read_at
+// (dispatch://INFRA-3027) is applied first as well, because the fixture applies every embedded
+// migration but the phase entry; that is harmless here, since it adds pull_requests.state_read_at
+// and the phase entry touches no pull_requests column. Store.Migrate, which decides each migration
+// on its own row, then applies the phase entry alone. Neither column is one any statement of the
+// phase entry reads or writes.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as

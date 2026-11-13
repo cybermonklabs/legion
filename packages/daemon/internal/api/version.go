@@ -1384,8 +1384,8 @@ package api
 // by the architect's decision: check-daemon-api-contract.sh compares a change with its base,
 // main at 86, so 93 passes, a renumber costs a push, a full check run and a test round each time
 // while the open heads move the free number again within the hour, and the change that lands
-// second is the one renumbered (AGENTS.md). If main carries 93 before this change merges, it
-// takes the free number then, in one push. A seventh reading, at the forward merge of
+// second is the one renumbered (AGENTS.md). If main declares this change's number or a higher
+// one before it merges, it takes the free number then, in one push. A seventh reading, at the forward merge of
 // 2026-11-13T04:21Z over the 139 open pull requests, found main at 87 (dispatch://INFRA-3219's
 // entry above), #3730 88, #3659 89, #3830 90, #3519, #3573 and #3712 91, #3715 92, #3677 93 beside
 // this change, #3708 94 and #3575 95; main carries no 93, so this change keeps it. An eighth

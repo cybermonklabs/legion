@@ -846,10 +846,8 @@ const backwardMovesContract = 62
 // one built after strips the key instead, so the strip is what keeps the count from a caller
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
-// whyAndLineFieldsContract, leakCheckCauseContract and phaseEntriesContract stand above it now,
-// so a caller in a pod at 73 or 74 is served the count and neither the decided record's keys,
-// nor each issue's answer with the line's own fields, nor a claim view's `leakCheckCause`, nor
-// the two entry numbers.
+// whyAndLineFieldsContract and every later row of stateNarrowings stand above it now, so a
+// caller in a pod at 73 or 74 is served the count and none of the keys those later rows add.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and

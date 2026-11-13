@@ -386,9 +386,10 @@ func populatedState(t *testing.T) State {
 					},
 				},
 				// The implementer holds the work its phases row names: the two numbers are equal,
-				// which is every role the daemon has reached. LEGION-211 below is the other case,
-				// and LEGION-210, LEGION-212 and LEGION-207 carry neither number, since no phase
-				// worker role works held, awaiting_person or done.
+				// which is every role the daemon has reached, as LEGION-214's and LEGION-215's
+				// reviewers are too. LEGION-211 below is the other case, and LEGION-210, LEGION-212
+				// and LEGION-207 carry neither number, since no phase worker role works held,
+				// awaiting_person or done.
 				PhaseEntry: 4,
 				GivenEntry: 4,
 				PullRequest: &PullRequestView{
@@ -657,6 +658,11 @@ func populatedState(t *testing.T) State {
 					},
 					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_214", State: "idle"}, Pass: 1},
 				},
+				// Reviewing names the reviewer, so the issue carries its entry numbers as every
+				// issue whose phase names a phase worker role does: its reviewer was handed the
+				// round's one entry and holds it.
+				PhaseEntry: 1,
+				GivenEntry: 1,
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
 					Number:         1251,
@@ -701,6 +707,9 @@ func populatedState(t *testing.T) State {
 					},
 					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_215", State: "idle"}, Pass: 2, Rounds: 1},
 				},
+				// The reviewer is on its second round, its second entry, and holds it.
+				PhaseEntry: 2,
+				GivenEntry: 2,
 				PullRequest: &PullRequestView{
 					Repo:           "zeta/tools",
 					Number:         642,

@@ -466,7 +466,9 @@
         "waitsOn": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
         "headUpdatedAt": "2026-09-22T08:58:40Z",
         "checkRuns": 0
-      }
+      },
+      "phaseEntry": 1,
+      "givenEntry": 1
     },
     "LEGION-215": {
       "key": "LEGION-215",
@@ -525,7 +527,9 @@
         "checkRuns": 2,
         "toldHead": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
         "toldState": "blocked"
-      }
+      },
+      "phaseEntry": 2,
+      "givenEntry": 2
     }
   },
   "pendingStatusWrites": [],
