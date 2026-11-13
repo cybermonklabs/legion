@@ -310,6 +310,14 @@ type Notice struct {
 	// report, so the controller names each there and takes nothing for it. A tick with nothing
 	// blocked carries none.
 	Blocked []BlockedIssue `json:"blocked,omitempty"`
+	// Held is every issue of the project the daemon's own record holds in the workflow that
+	// stands in neither the active set nor the waiting line, with the one word for why
+	// (C3 of dispatch://INFRA-3107), in the shape the state carries them (api.Admission.Held,
+	// an alias of this row). Only a tick controller notice carries it, as OpenCapabilities and
+	// Blocked are: the tick is the turn that posts the day's report, so the controller reads
+	// there what nothing starts beside what waits on a Dispatch issue. A tick with nothing held
+	// carries none.
+	Held []HeldIssue `json:"held,omitempty"`
 	// Silent is every issue of the project whose phase worker is one nothing will prompt
 	// (workflow.SilentPhaseWorker, dispatch://INFRA-3163), and every one whose worker's own
 	// report of background work has stood past its bound, which the daemon never prompts
@@ -1310,6 +1318,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if update := value.Update; update != nil && (update.Round == "" || len(update.Waiting) == 0) {
 			return fmt.Errorf("an update-stalled notice requires its round and the claims it waits on")
+		}
+		if value.Kind != TickNotice && len(value.Held) > 0 {
+			return fmt.Errorf("a %s notice carries held issues only when it is a tick", value.Kind)
 		}
 		if err := validateNoticeFailure(value.Kind, value.Failure); err != nil {
 			return err

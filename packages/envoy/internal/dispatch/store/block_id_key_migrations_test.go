@@ -102,6 +102,7 @@ func TestTheBlockIDKeyIndexesHoldIDsPastTheKeyLimit(t *testing.T) {
 		}
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate over the rows main wrote: %v", err)
 	}

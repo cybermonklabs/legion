@@ -2,12 +2,14 @@ import { createHash } from "node:crypto";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import {
+  baseUrl,
   createIssue,
   createProject,
   getIssue,
   listProjectDefaultAssignees,
   putProjectDefaultAssignee,
   putRepoProject,
+  userHeaders,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { expect, test } from "./test";
@@ -199,11 +201,20 @@ test("a human creates a project from Settings and immediately creates an issue u
     ).toBeVisible();
     await page.getByLabel("Key", { exact: true }).fill("qa");
     await page.getByLabel("Name", { exact: true }).fill("Quality");
+    // The form asks for the person the new project names, and starts on the one the server would
+    // take anyway: the person creating it. The control is read by its role, as every other
+    // select of this page is: the label wraps the select, so its text carries the options too.
+    const defaultAssignee = page.getByRole("combobox", { exact: true, name: "Default assignee" });
+    await expect(defaultAssignee).toHaveValue("alice");
     await page.getByRole("button", { name: "New project" }).click();
     await expect(page.getByRole("cell", { exact: true, name: "QA" })).toBeVisible();
     await expect(
       page.getByRole("combobox", { exact: true, name: "Project" }).locator('option[value="QA"]')
     ).toHaveCount(1);
+    // The project names her from the moment it exists, and the row says so.
+    await expect(
+      page.getByRole("combobox", { exact: true, name: "Default assignee of QA" })
+    ).toHaveValue("alice");
     await page.screenshot({
       path: testInfo.outputPath("project-create-settings.png"),
       fullPage: true,
@@ -388,12 +399,12 @@ test("Settings stays inside the viewport @phone", async ({ browser }, testInfo) 
   }
 });
 
-test("a person sets, changes and clears a project's default assignee, and a project with none reads Unassigned", async ({
+test("a person sets and changes a project's default assignee, and no write clears one", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
-  // OPS is the negative control: it never gets a default. Creating it as bob also makes him a
-  // person who has signed in, so he is an option in the control.
+  // Creating OPS as bob makes him a person who has signed in, so he is an option in the control,
+  // and OPS names him from the moment it exists: every project names somebody.
   await createProject({ key: "OPS", name: "Ops" }, "bob");
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
@@ -404,14 +415,17 @@ test("a person sets, changes and clears a project's default assignee, and a proj
     const ops = page.getByRole("combobox", { exact: true, name: "Default assignee of OPS" });
     await expect(core).toBeVisible();
     // The sentence beside the control: an issue from an unmapped repository lands in the default
-    // project, so a default set there catches all of them.
+    // project, so that project's default assignee catches all of them.
     await expect(page.getByText("no project mapping")).toBeVisible();
+    // Each project names the person who created it until somebody moves it.
+    await expect(core).toHaveValue("alice");
     await expect(ops).toBeEnabled();
-    await expect(ops).toHaveValue("");
+    await expect(ops).toHaveValue("bob");
 
-    // Who has signed in is read only once the reader reaches for the control.
+    // Who has signed in is read only once the reader reaches for the control, and the control
+    // offers people and nothing else: there is no way to name nobody.
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["Unassigned", "alice", "bob"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob"]);
 
     const saved = page.waitForResponse(
       (response) =>
@@ -439,20 +453,26 @@ test("a person sets, changes and clears a project's default assignee, and a proj
     await page.reload();
     await expect(core).toHaveValue("alice");
     await expect(ops).toBeEnabled();
-    await expect(ops).toHaveValue("");
+    await expect(ops).toHaveValue("bob");
 
-    const cleared = page.waitForResponse(
-      (response) =>
-        response.request().method() === "PUT" &&
-        new URL(response.url()).pathname === "/api/v1/projects/CORE/default-assignee"
-    );
-    await core.selectOption({ label: "Unassigned" });
-    expect((await cleared).ok()).toBe(true);
+    // The clearing the page no longer offers is refused at the route as well: the body the old
+    // Unassigned option sent is a 400, and the project still names its person. The call is made
+    // here rather than through `putProjectDefaultAssignee`, whose body the route table now types
+    // as a person's email and which cannot express this one.
+    const refused = await fetch(new URL("/api/v1/projects/CORE/default-assignee", baseUrl), {
+      body: JSON.stringify({ assignee: null }),
+      headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+      method: "PUT",
+    });
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toMatchObject({ code: "INVALID_PROJECT" });
     await page.reload();
-    await expect(core).toHaveValue("");
+    await expect(core).toHaveValue("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.map((row) => row.project)).not.toContain("CORE");
-    expect(defaults.map((row) => row.project)).not.toContain("OPS");
+    expect(defaults.map((row) => [row.project, row.assignee]).sort()).toEqual([
+      ["CORE", "alice"],
+      ["OPS", "bob"],
+    ]);
   } finally {
     await context.close();
   }
@@ -486,9 +506,9 @@ test("a default assignee picked while the last pick is saving waits its turn, an
     await page.goto("/settings");
     const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
     await expect(core).toBeEnabled();
-    await expect(core).toHaveValue("");
+    await expect(core).toHaveValue("alice");
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["Unassigned", "alice", "bob"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob"]);
 
     // The pick shows at once, while its save is still held.
     await core.selectOption("bob");
@@ -513,8 +533,11 @@ test("a default assignee picked while the last pick is saving waits its turn, an
 
     await page.reload();
     await expect(core).toHaveValue("alice");
+    // Every project is listed now, so CORE's own row is the one this reads.
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.map((row) => [row.project, row.assignee])).toEqual([["CORE", "alice"]]);
+    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
+      { assignee: "alice", project: "CORE" },
+    ]);
   } finally {
     await context.close();
   }
@@ -552,9 +575,9 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await page.goto("/settings");
     const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
     await expect(core).toBeEnabled();
-    await expect(core).toHaveValue("");
+    await expect(core).toHaveValue("alice");
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["Unassigned", "alice", "bob", "carol"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
 
     await core.selectOption("bob");
     await expect(core).toHaveValue("bob");
@@ -569,7 +592,7 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await navigation.getByRole("link", { name: "Settings" }).click();
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["Unassigned", "alice", "bob", "carol"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol"]);
     await core.selectOption("alice");
     await expect(core).toHaveValue("alice");
 
@@ -580,7 +603,9 @@ test("default assignee picks made when Settings is left and reopened supersede t
     await page.reload();
     await expect(core).toHaveValue("alice");
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.map((row) => [row.project, row.assignee])).toEqual([["CORE", "alice"]]);
+    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
+      { assignee: "alice", project: "CORE" },
+    ]);
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice", "answered alice"]);
   } finally {
     await context.close();
@@ -619,13 +644,7 @@ test("default assignee picks made while a save is out are superseded by the newe
     const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText([
-      "Unassigned",
-      "alice",
-      "bob",
-      "carol",
-      "dave",
-    ]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob", "carol", "dave"]);
 
     await core.selectOption("bob");
     await expect.poll(() => wire).toEqual(["sent bob"]);
@@ -640,7 +659,9 @@ test("default assignee picks made while a save is out are superseded by the newe
     await expect(core).toHaveValue("alice");
     expect(wire).toEqual(["sent bob", "answered bob", "sent alice", "answered alice"]);
     const defaults = await listProjectDefaultAssignees({ as: "user", login: "alice" });
-    expect(defaults.map((row) => [row.project, row.assignee])).toEqual([["CORE", "alice"]]);
+    expect(defaults.filter((row) => row.project === "CORE")).toEqual([
+      { assignee: "alice", project: "CORE" },
+    ]);
   } finally {
     await context.close();
   }
@@ -675,7 +696,7 @@ test("a default assignee save refused while Settings is left says so when Settin
     const core = page.getByRole("combobox", { exact: true, name: "Default assignee of CORE" });
     await expect(core).toBeEnabled();
     await core.focus();
-    await expect(core.locator("option")).toHaveText(["Unassigned", "alice", "bob"]);
+    await expect(core.locator("option")).toHaveText(["alice", "bob"]);
     await core.selectOption("bob");
 
     const navigation = page.getByRole("navigation", { name: "Navigation" });
