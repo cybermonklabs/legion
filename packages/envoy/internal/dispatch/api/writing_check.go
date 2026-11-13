@@ -39,6 +39,10 @@ const (
 	// writingCheckUnreadUpload is an uploaded file the check does not read: any upload that is
 	// not stored as a Markdown document.
 	writingCheckUnreadUpload = "exempt_unread_upload"
+	// writingCheckNoReader is an agent's write whose text no person reads
+	// (writingCheckReader): a send to an agent, a broadcast, a reply between two sessions, or a
+	// record that names nobody. The check does not read it.
+	writingCheckNoReader = "exempt_no_reader"
 )
 
 // codeWritingCheckRefused is the refusal a write the check refused is answered with.
@@ -115,9 +119,11 @@ type writingCheckOverrideCarrier interface{ writingCheckOverrideValue() string }
 type unreadUploadCarrier interface{ unreadUpload() string }
 
 // writingCheck runs the writing check over the prose input carries (proseFieldsOf), for the write
-// actor makes, and reports whether the write goes on. A false answer has been written: 400 for an
-// override value the check does not know, 422 WRITING_CHECK_REFUSED for a refusal. Call it once
-// input is decoded and actor resolved, and before any transaction, lock or write.
+// actor makes, and reports whether the write goes on. It reads a write only when the actor rule
+// says an agent makes it (writingCheckReads) and a person reads it (writingCheckReader), and it
+// records that person on every row. A false answer has been written: 400 for an override value
+// the check does not know, 422 WRITING_CHECK_REFUSED for a refusal. Call it once input is decoded
+// and actor resolved, and before any transaction, lock or write.
 func (s *server) writingCheck(w http.ResponseWriter, r *http.Request, actor model.Actor, input any) bool {
 	override := ""
 	if carrier, ok := input.(writingCheckOverrideCarrier); ok {
@@ -156,8 +162,20 @@ func (s *server) writingCheck(w http.ResponseWriter, r *http.Request, actor mode
 	if actor.Act != nil {
 		event.ActSession = actor.Act.Session
 	}
+	readerOf, err := s.writingCheckReader(r.Context(), r, method+" "+route, actor, input)
+	if err != nil {
+		// The write is let through unread rather than refused: the check never fails closed.
+		slog.Warn("dispatch: decide the reader of a write", "route", method+" "+route, "error", err)
+		event.Detail = "the reader could not be decided: " + err.Error()
+	}
+	event.Reader = readerOf
 	if checked, exemption := writingCheckReads(actor); !checked {
 		event.Outcome = exemption
+		s.recordWritingCheck(r.Context(), event)
+		return true
+	}
+	if readerOf == "" {
+		event.Outcome = writingCheckNoReader
 		s.recordWritingCheck(r.Context(), event)
 		return true
 	}

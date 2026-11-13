@@ -253,7 +253,7 @@ type writingCheckRig struct {
 type writingCheckFixture struct {
 	issue, spec, notesID, notesSlug, editOneID, editTwoSlug, projectDocID, projectDocSlug string
 	askEdit, askAnswer, askResolve, askDecline                                            string
-	message, comment                                                                      string
+	message, comment, result                                                              string
 }
 
 func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
@@ -292,8 +292,31 @@ func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 		t.Fatalf("create comment: %d %s", comment.Code, comment.Body.String())
 	}
 	rig.fixture.comment = decodeBody[model.Comment](t, comment).ID
+	// A result recorded on the issue, so its retraction is text on that issue.
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	result := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, nil))
+	if result.Code != http.StatusCreated {
+		t.Fatalf("record a result: %d %s", result.Code, result.Body.String())
+	}
+	rig.fixture.result = decodeBody[recordedResult](t, result).Result.ID
+	// alice's direct conversation with the agent session checkWriter, which makes her the person
+	// who reads what that session puts into its conversation.
+	rig.openConversation("user", "alice", checkWriter)
 	rig.clearEvents()
 	return rig
+}
+
+// openConversation opens a direct conversation to session, as the author kind and id write it,
+// and answers its root message's id.
+func (rig *writingCheckRig) openConversation(kind, id, session string) string {
+	rig.t.Helper()
+	var root string
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		insert into messages (author, body, target) values (jsonb_build_object('kind', $1::text, 'id', $2::text), 'Is the queue empty?', $3)
+		returning id::text`, kind, id, "session:"+session).Scan(&root); err != nil {
+		rig.t.Fatalf("open a direct conversation to %s: %v", session, err)
+	}
+	return root
 }
 
 // asSession writes as the agent session checkWriter, with the deployment's shared token.
@@ -319,16 +342,16 @@ func (rig *writingCheckRig) asTokenFor(session, method, target string, body map[
 }
 
 type writingCheckEventRow struct {
-	Route, Method, ActorKind, ActorID, ActSession, TokenID, Outcome, Override, Detail string
-	Rules, Fields                                                                     []string
-	Candidates                                                                        int
+	Route, Method, ActorKind, ActorID, ActSession, TokenID, Outcome, Override, Detail, Reader string
+	Rules, Fields                                                                             []string
+	Candidates                                                                                int
 }
 
 func (rig *writingCheckRig) events() []writingCheckEventRow {
 	rig.t.Helper()
 	rows, err := rig.database.Pool.Query(context.Background(), `
 		select route, method, actor_kind, actor_id, coalesce(act_session, ''), coalesce(token_id, ''), outcome,
-			coalesce(override_value, ''), coalesce(detail, ''), rules, fields, candidates
+			coalesce(override_value, ''), coalesce(detail, ''), coalesce(reader, ''), rules, fields, candidates
 		from writing_check_events order by id`)
 	if err != nil {
 		rig.t.Fatalf("read writing check events: %v", err)
@@ -338,7 +361,7 @@ func (rig *writingCheckRig) events() []writingCheckEventRow {
 	for rows.Next() {
 		var row writingCheckEventRow
 		if err := rows.Scan(&row.Route, &row.Method, &row.ActorKind, &row.ActorID, &row.ActSession, &row.TokenID,
-			&row.Outcome, &row.Override, &row.Detail, &row.Rules, &row.Fields, &row.Candidates); err != nil {
+			&row.Outcome, &row.Override, &row.Detail, &row.Reader, &row.Rules, &row.Fields, &row.Candidates); err != nil {
 			rig.t.Fatalf("scan a writing check event: %v", err)
 		}
 		events = append(events, row)
@@ -417,8 +440,8 @@ func proseRouteCases() []proseRouteCase {
 		}, http.StatusCreated},
 		{"POST /api/v1/issues/{key}/results", "run", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/results" },
 			field("run", "check", "no-such-check", "role", "tester", "commit", strings.Repeat("a", 40), "verdict", "pass")), 0},
-		{"POST /api/v1/results/{id}/retract", "reason", session(post, func(writingCheckFixture) string {
-			return "/api/v1/results/01234567-0000-4000-8000-0000000000aa/retract"
+		{"POST /api/v1/results/{id}/retract", "reason", session(post, func(f writingCheckFixture) string {
+			return "/api/v1/results/" + f.result + "/retract"
 		}, field("reason")), 0},
 		{"POST /api/v1/issues/{key}/messages", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/messages" }, field("body")), http.StatusCreated},
 		{"POST /api/v1/messages/{id}/reply", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/messages/" + f.message + "/reply" }, field("body", "attempt", 1)), 0},
@@ -489,8 +512,11 @@ func (rig *writingCheckRig) multipartUpload(target, name, contentType, content, 
 
 // TestTheWritingCheckRefusesAndWritesOnEveryProseRoute is R1's behaviour on every route the
 // registry marks: a body breaking an enabled rule is refused 422 with the finding in its field
-// and recorded refused, and a clean one is written and recorded clean. The cases are held to
-// the registry: a route that starts to carry prose needs a case here.
+// and recorded refused with its reader, and a clean one is written and recorded clean. A route
+// whose text no person reads (readerNone) writes both, recorded exempt_no_reader. The cases are
+// held to the registry: a route that starts to carry prose needs a case here. Every reader in
+// the rig is alice: she holds the issue, the project defaults to her, she wrote the comment and
+// the message the replies answer, and she opened the direct conversation.
 func TestTheWritingCheckRefusesAndWritesOnEveryProseRoute(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	cases := proseRouteCases()
@@ -506,7 +532,19 @@ func TestTheWritingCheckRefusesAndWritesOnEveryProseRoute(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.route, func(t *testing.T) {
 			rig.t = t
+			method, route, _ := strings.Cut(c.route, " ")
 			rig.clearEvents()
+			if writingCheckReaderRules[c.route] == readerNone {
+				written := c.call(rig, badProse)
+				if written.Code == http.StatusUnprocessableEntity {
+					t.Fatalf("bad text to no person: %d %s, want it written", written.Code, written.Body.String())
+				}
+				if event := rig.lastEvent("bad text to no person"); event.Outcome != writingCheckNoReader || event.Reader != "" ||
+					event.Route != route || event.Method != method {
+					t.Errorf("event = %+v, want %s with no reader", event, writingCheckNoReader)
+				}
+				return
+			}
 			refused := c.call(rig, badProse)
 			if refused.Code != http.StatusUnprocessableEntity {
 				t.Fatalf("bad text: %d %s, want 422", refused.Code, refused.Body.String())
@@ -517,10 +555,9 @@ func TestTheWritingCheckRefusesAndWritesOnEveryProseRoute(t *testing.T) {
 				t.Errorf("refusal = %+v, want one %s finding in %s", body, badRule, c.field)
 			}
 			event := rig.lastEvent("bad text")
-			method, route, _ := strings.Cut(c.route, " ")
-			if event.Outcome != "refused" || event.Route != route || event.Method != method ||
+			if event.Outcome != "refused" || event.Route != route || event.Method != method || event.Reader != "alice" ||
 				!slices.Equal(event.Rules, []string{badRule}) || !slices.Equal(event.Fields, []string{c.field}) {
-				t.Errorf("refused event = %+v", event)
+				t.Errorf("refused event = %+v, want refused with reader alice", event)
 			}
 			rig.clearEvents()
 			written := c.call(rig, cleanProse)
@@ -531,8 +568,8 @@ func TestTheWritingCheckRefusesAndWritesOnEveryProseRoute(t *testing.T) {
 			if c.route == "POST /api/v1/agents/{session_id}/artifacts" {
 				want = writingCheckUnreadUpload
 			}
-			if event := rig.lastEvent("clean text"); event.Outcome != want {
-				t.Errorf("clean event = %+v, want %s", event, want)
+			if event := rig.lastEvent("clean text"); event.Outcome != want || event.Reader != "alice" {
+				t.Errorf("clean event = %+v, want %s with reader alice", event, want)
 			}
 		})
 	}
@@ -609,15 +646,15 @@ func TestTheWritingCheckActorCases(t *testing.T) {
 	if response := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", maps.Clone(answer), "alice"); response.Code != http.StatusOK {
 		t.Errorf("a person for themselves: %d %s, want 200", response.Code, response.Body.String())
 	}
-	if event := rig.lastEvent("a person"); event.Outcome != writingcheck.ExemptPerson || event.ActorID != "alice" {
-		t.Errorf("a person's event = %+v", event)
+	if event := rig.lastEvent("a person"); event.Outcome != writingcheck.ExemptPerson || event.ActorID != "alice" || event.Reader != "alice" {
+		t.Errorf("a person's event = %+v, want exempt_person with its reader recorded", event)
 	}
 
 	rig.clearEvents()
 	if response := rig.asSessionNamed(daemonID, http.MethodPost, comments, map[string]any{"body": badProse}); response.Code != http.StatusCreated {
 		t.Errorf("the daemon session: %d %s, want 201", response.Code, response.Body.String())
 	}
-	if event := rig.lastEvent("the daemon"); event.Outcome != writingcheck.ExemptDaemon || event.ActorID != daemonID || event.TokenID != "" {
+	if event := rig.lastEvent("the daemon"); event.Outcome != writingcheck.ExemptDaemon || event.ActorID != daemonID || event.TokenID != "" || event.Reader != "alice" {
 		t.Errorf("the daemon's event = %+v", event)
 	}
 
@@ -671,21 +708,24 @@ func TestTheWritingCheckReadsAMarkdownUploadAndNotAFile(t *testing.T) {
 	}
 }
 
-// TestTheWritingCheckCountsAndStateRoutes reads the two read routes.
+// TestTheWritingCheckCountsAndStateRoutes reads the two read routes. The counts list every
+// outcome the day recorded, the agent's broadcast's exempt_no_reader among them.
 func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": badProse})
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": badProse, "override_writing_check": "generated"})
 	rig.asSession(http.MethodPost, comments, map[string]any{"body": cleanProse})
+	rig.asTokenFor(checkWriter, http.MethodPost, "/api/v1/broadcasts", map[string]any{"body": badProse, "delivery": "btw", "session_ids": []string{"s-reader"}})
 	today := time.Now().UTC().Format(time.DateOnly)
 	response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?day="+today, nil, "alice")
 	if response.Code != http.StatusOK {
 		t.Fatalf("counts: %d %s", response.Code, response.Body.String())
 	}
 	counts := decodeBody[store.WritingCheckCounts](t, response)
-	if counts.Day != today || counts.Total != 3 || counts.Outcomes["refused"] != 1 || counts.Outcomes["forced"] != 1 ||
-		counts.Outcomes["clean"] != 1 || counts.Overrides["generated"] != 1 || counts.Routes["POST /api/v1/issues/{key}/comments"] != 3 {
+	if counts.Day != today || counts.Total != 4 || counts.Outcomes["refused"] != 1 || counts.Outcomes["forced"] != 1 ||
+		counts.Outcomes["clean"] != 1 || counts.Outcomes[writingCheckNoReader] != 1 || counts.Overrides["generated"] != 1 ||
+		counts.Routes["POST /api/v1/issues/{key}/comments"] != 3 || counts.Routes["POST /api/v1/broadcasts"] != 1 {
 		t.Errorf("counts = %+v", counts)
 	}
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/writing-check/counts?day=2026-01-01", nil, "alice"); response.Code != http.StatusOK ||

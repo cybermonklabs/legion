@@ -12,7 +12,7 @@ const WritingCheckRetention = 90 * 24 * time.Hour
 
 // WritingCheckEvent is one row of writing_check_events: what the writing check decided for one
 // write. Every string the write did not carry is "", stored as null; ReaderMS is nil where the
-// reader was not called.
+// model reader was not called.
 type WritingCheckEvent struct {
 	Route         string
 	Method        string
@@ -27,6 +27,9 @@ type WritingCheckEvent struct {
 	Candidates    int
 	ReaderMS      *int
 	Detail        string
+	// Reader is the login of the person who reads the write's text, as the server decided it from
+	// the record; "" where no person reads it.
+	Reader string
 }
 
 // InsertWritingCheckEvent records one decision of the writing check. It runs on the pool and
@@ -43,10 +46,10 @@ func (s *Store) InsertWritingCheckEvent(ctx context.Context, event WritingCheckE
 	if _, err := s.Pool.Exec(ctx, `
 		insert into writing_check_events (
 			route, method, actor_kind, actor_id, act_session, token_id, outcome, override_value,
-			rules, fields, candidates, reader_ms, detail
-		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, nullif($8, ''), $9, $10, $11, $12, nullif($13, ''))
+			rules, fields, candidates, reader_ms, detail, reader
+		) values ($1, $2, $3, $4, nullif($5, ''), nullif($6, ''), $7, nullif($8, ''), $9, $10, $11, $12, nullif($13, ''), nullif($14, ''))
 	`, event.Route, event.Method, event.ActorKind, event.ActorID, event.ActSession, event.TokenID, event.Outcome,
-		event.OverrideValue, rules, fields, event.Candidates, event.ReaderMS, event.Detail); err != nil {
+		event.OverrideValue, rules, fields, event.Candidates, event.ReaderMS, event.Detail, event.Reader); err != nil {
 		return fmt.Errorf("record writing check event: %w", err)
 	}
 	return nil
