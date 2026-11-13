@@ -1882,8 +1882,9 @@ func (i Issue) Standing() pods.Standing {
 // its tree's linger, say) has no run to carry — carried at done, its new root would take a slot
 // and start an architect with nothing to run. Every path that moves a child to a tree of its own
 // asks it: a hand-over's event, the outbox's direct consumption, and a person's labelling of an
-// orphan. And work already under way is never stopped and never re-checked, so a candidate that
-// carries a run waits on nothing, whatever its links say (blockers.Exempt).
+// orphan. And the promotion never holds a candidate that carries a run by its links, whatever
+// they say (blockers.Exempt); once it holds a slot, blockers.waitsOf reads its links like any
+// other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
 // ParentOf is an observed parent key as a record holds it: nil for none. Dispatch says "no parent"
