@@ -214,7 +214,8 @@ test("New document refuses a title the project already holds, as a name and as a
 // New document sends the title alone, so a title this list did not show as taken - a document
 // created since the list was read, or one whose slug the title matches - reaches Dispatch as a
 // write with no content over a document that exists. Dispatch refuses that write whatever token
-// it names (`blankWriteToADocumentThatExists`, `api/artifacts.go`), before it reads any token, so
+// it names (`blankWriteToADocumentThatExists`, `api/artifacts.go`), ahead of every check of the
+// token against the document - the form sends none, so no malformed one is answered first - so
 // the person reads that refusal, whose remedies Dispatch takes, and never the token refusal of a
 // replacement, whose remedy - name the token - would be refused in its turn.
 test("a New document over a title Dispatch holds reads the blank write's refusal, not a token's", async () => {
