@@ -1380,11 +1380,13 @@ export const LegionOperatorClaimResponse = z.object({
   sessionFile: z.string(),
   forgottenSession: nonEmptyString.optional(),
   forgottenSessionFile: nonEmptyString.optional(),
-  /** Why nothing restarted the claim's phase, on a `retry` that asked for a fresh session
-   * (`{"freshSession":true}`) and nowhere else: the claim is back in a new session owing no
-   * task, and the workflow refused the restart that would have handed it one. The claim started
-   * either way, which is why the refusal rides a successful answer; absent when the phase was
-   * restarted, and when no restart was due. */
+  /** What the request did to the claim that the claim itself does not record, on a `retry` that
+   * asked for a fresh session (`{"freshSession":true}`) and nowhere else: the claim is back in a
+   * new session owing no task and the workflow refused the restart that would have handed it
+   * one, or the request stopped the claim and a step that would have brought it back — the
+   * forget of its session, or its start — was refused, and the sentence names the state that
+   * left the claim in. Either rides a successful answer, because the request changed the claim;
+   * absent when the claim came back and nothing else is to be said. */
   phaseNotRestarted: nonEmptyString.optional(),
   locator: legionLocator.optional(),
   budgets: z.object({

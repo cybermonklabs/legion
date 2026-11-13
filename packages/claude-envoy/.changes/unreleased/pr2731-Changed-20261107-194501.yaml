@@ -1,5 +1,5 @@
 kind: Changed
-body: The plugin speaks Legion daemon API contract 106, whose state says where each setting came from beside the setting itself and names the commit the daemon was built from.
+body: The plugin speaks Legion daemon API contract 112, whose state says where each setting came from beside the setting itself and names the commit the daemon was built from.
 time: 2026-11-07T19:45:01.000000000Z
 custom:
     Issue: pr2731

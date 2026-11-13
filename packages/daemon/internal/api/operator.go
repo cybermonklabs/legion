@@ -83,11 +83,12 @@ type OperatorClaim struct {
 	SessionFile          string      `json:"sessionFile"`
 	ForgottenSession     string      `json:"forgottenSession,omitempty"`
 	ForgottenSessionFile string      `json:"forgottenSessionFile,omitempty"`
-	// PhaseNotRestarted is why nothing restarted the claim's phase, which only the retry with
-	// `--fresh-session` sets (freshSession) and only where the claim came back owing no task and
-	// the workflow refused that phase's restart; absent everywhere else, that refusal included,
-	// since the claim is back in a new session either way and the state records nowhere that the
-	// restart did not run.
+	// PhaseNotRestarted is what the request did to the claim that the claim itself does not
+	// record, which only the retry with `--fresh-session` sets (freshSession): the claim came
+	// back owing no task and the workflow refused that phase's restart, or this request
+	// stopped the claim and the machine refused the forget or the start that would have
+	// brought it back (notStartedAgain). It is absent everywhere else, a refused retry
+	// included, since that answer is the refusal itself and nothing of the claim changed.
 	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 	// Locator is the claim's process, the runtime's nested shape; none while nothing runs.
 	Locator         *runtime.Locator `json:"locator,omitempty"`
@@ -510,8 +511,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 // claimEvent posts one request to a claim's machine (postClaimEvent), as every operator request
 // on a claim does (claimRequest): it answers the caller itself when the daemon is stopping or
 // the machine refuses, and reports whether the machine held the request for the agent's turn
-// (supervise.ErrSuspendHeld), which is no refusal. The fresh session's resume posts through it
-// too.
+// (supervise.ErrSuspendHeld), which is no refusal.
 func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	request string, ev supervise.Event) (held, ok bool) {
 	posted, err := s.postClaimEvent(w, r, m, token, request, ev)
@@ -653,7 +653,10 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 		notRestarted string
 	)
 	if req.FreshSession {
-		status, notRestarted, ok = s.freshSession(w, r, m, token)
+		// Whether the claim started again is not this door's line to write: the one Info line
+		// it logs names the request and nothing it did (operatorDone), and freshSession logs
+		// its own Warn where it stopped the claim and did not start it.
+		status, notRestarted, _, ok = s.freshSession(w, r, m, token)
 	} else {
 		status, ok = s.retryStart(w, r, m, token, false)
 	}
@@ -783,19 +786,20 @@ func failedOrRetired(state supervise.ClaimState) bool {
 }
 
 // forgetRecordedSession has the claim drop the session it recorded, for a caller that is
-// starting it in a new one (freshSession), and reports whether it did: a machine that refuses
-// it — a claim running the session, which no fresh session reaches, or one that recorded
-// another session since the route read it — is the caller's answer, given in place of the
-// start's own.
-func (s *server) forgetRecordedSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token, session string) bool {
+// starting it in a new one (freshSession), and hands back the machine's refusal, if any, for
+// that caller to answer: a claim running the session, which no fresh session reaches, one that
+// recorded another session since the route read it, or a forget the store would not write. What
+// such a refusal means depends on what the caller did before it — a fresh session that had
+// already stopped the claim gives it as a sentence of its answer (notStartedAgain) — so this
+// writes no answer of its own.
+func (s *server) forgetRecordedSession(r *http.Request, m *supervise.Machine, token claim.Token, session string) error {
 	ctx, decided := s.decision(r, token)
 	defer decided()
 	if err := m.Handle(ctx, supervise.RequestForgetSession{Claim: token, Session: session}); err != nil {
-		s.operatorFailure(w, "forget-session", token, err)
-		return false
+		return err
 	}
 	s.log.Info("api: a fresh session left the claim's recorded session behind", "claim", token, "session", session)
-	return true
+	return nil
 }
 
 // closeTree is the operator closing a tree no workflow issue backs, through its root claim: the

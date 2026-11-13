@@ -1079,7 +1079,7 @@ const phaseEntriesContract = 94
 // before sjawhar/legion#2788 refuses the whole body for a key it does not name. It is the
 // highest of the sixteen bands, this daemon's own contract, so the only caller served the two
 // is one at it.
-const settingSourcesContract = 106
+const settingSourcesContract = 112
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
