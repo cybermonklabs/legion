@@ -8,8 +8,10 @@
  *    page's silence rule, `LIVE_SOCKET_SILENT_MS` (45 s, three heartbeats). A first dial that
  *    has not opened by then fails the watch, and a first connection that is refused or closed
  *    fails it at once. A later connection that is refused or never opens is dialled again.
- *  - After the first open, `--minutes` counted from that open, which ends the watch cleanly. A
- *    reconnect's open does not count it again.
+ *  - After the first open, `--minutes` counted from that open, which ends the watch cleanly and
+ *    writes an `end` line. The `open` and `end` lines read one clock, so `end.at - open.at` is
+ *    the watch's length and never less than `--minutes`. A reconnect's open does not count it
+ *    again.
  *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
  *    (4001), up to `RECONNECT_SPREAD_MS` (2 s) after Dispatch's restart close (1012), and up to
  *    30 s with backoff after any other close. `--minutes` ends the watch during that delay as
@@ -120,6 +122,13 @@ export interface ProbeCloseLine {
   readonly retry_ms: number | null;
 }
 
+/** The watch's end once `--minutes` has passed since the first open, by the clock that open's
+ *  line reads. No other end of the watch writes it. */
+export interface ProbeEndLine {
+  readonly at: string;
+  readonly type: "end";
+}
+
 /** The ids a GET answer holds that the probe's body lacks (`missing`), and the reverse (`extra`). */
 export interface ProbeIdsComparison {
   readonly equal: boolean;
@@ -142,7 +151,12 @@ export interface ProbeCompareLine {
   readonly error?: { readonly code: string; readonly message: string };
 }
 
-export type ProbeLine = ProbeFrameLine | ProbeOpenLine | ProbeCloseLine | ProbeCompareLine;
+export type ProbeLine =
+  | ProbeFrameLine
+  | ProbeOpenLine
+  | ProbeCloseLine
+  | ProbeEndLine
+  | ProbeCompareLine;
 
 /** What `--body-file` holds: the last change the probe applied, the body and its revisions. */
 export interface ProbeHeld {
@@ -477,10 +491,23 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   // Armed at the first dial for `--open-within`, which fails the watch; the first open arms it
   // again for `--minutes` from then, which ends the watch cleanly.
   let timer: Timer | undefined;
+  // The first open, by the clock its `open` line and the `end` line both read.
+  let openedAt = 0;
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
   const fail = (reason: string) => ended.resolve(new Error(reason));
   const stop = () => ended.resolve(undefined);
+  // `--minutes` is up only once that much of this clock has passed since the first open; a timer
+  // that fires early is armed again for what is left.
+  const timeUp = () => {
+    const left = openedAt + options.minutesMs - Date.now();
+    if (left > 0) {
+      timer = setTimeout(timeUp, left);
+      return;
+    }
+    write({ at: now(), type: "end" });
+    stop();
+  };
 
   const subscribeFrame = (): LiveSubscribe =>
     held === null
@@ -550,13 +577,15 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     // Each listener ignores a socket the probe has already let go, whose events still arrive.
     next.addEventListener("open", () => {
       if (socket !== next) return;
+      const at = Date.now();
       if (!opened) {
         clearTimeout(timer);
-        timer = setTimeout(stop, options.minutesMs);
+        openedAt = at;
+        timer = setTimeout(timeUp, options.minutesMs);
       }
       opened = true;
-      lastFrameAt = Date.now();
-      write({ at: now(), resume: held?.seq ?? null, type: "open" });
+      lastFrameAt = at;
+      write({ at: new Date(at).toISOString(), resume: held?.seq ?? null, type: "open" });
       next.send(JSON.stringify(subscribeFrame()));
     });
     next.addEventListener("message", (event) => {

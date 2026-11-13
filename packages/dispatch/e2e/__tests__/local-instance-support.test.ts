@@ -541,7 +541,10 @@ describe("awaitSeededInbox", () => {
   async function settledAfter(ms: number, waiting: Promise<unknown>): Promise<void> {
     const settled = watch(waiting);
     await pass(ms);
-    expect(settled()).toBe(true);
+    expect(
+      settled(),
+      `awaitSeededInbox had neither answered nor rejected once the fake clock moved ${ms} ms more`
+    ).toBe(true);
   }
 
   /** The message `waiting` rejects with, which must be an Error ending in the owner line. */
