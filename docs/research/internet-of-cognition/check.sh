@@ -561,32 +561,90 @@ github_budget() {
 }
 
 # unpinned_installs; prints one line per package a recorded command installs or runs with
-# no version, as <id><TAB><what it runs>, over every row of claims.jsonl, in the runner
-# forms a recorded command uses: uv run --with, uvx, pip install and uv pip install,
-# bunx and npx, go run and go install. A version is ==<v> for Python, @<v> for npm and
-# Go, and a local path or a variable naming one needs none; an install that reads a
-# constraints file, a requirements file or env.sh's pinned list is pinned by that file.
+# no version, as <id><TAB><what it runs>, over every row of claims.jsonl. It reads each
+# runner form a recorded command may use: uv run --with, uvx and uv tool run (and uv tool
+# install), pipx run, pip install and uv pip install, bunx, npx and npm exec, and go run
+# and go install. A version is a concrete one: ==<digits> for Python, @<digits> or
+# @v<digits> for npm and Go; @latest, a branch or a bare name is none. A local path, or a
+# variable this deliverable sets that names one (IOC_…), needs none, and an install that
+# reads a constraints file, a requirements file or env.sh's pinned list is pinned by it.
+# What the reader cannot read it refuses: an option of a runner it does not know, which
+# could take the package's place, and a package written as any other variable, are
+# printed as unread, never passed, because a reader that passes what it cannot read is
+# the fault this family exists to find.
 unpinned_installs() {
     claims | python3 -c '
 import json, re, shlex, sys
 
+PY_VERSION = re.compile(r"==[0-9]")
+AT_VERSION = re.compile(r".@v?[0-9]")
+
 def local(arg):
-    return arg.startswith((".", "/", "$", "~")) or arg in ("-",)
+    return arg.startswith((".", "/", "~")) or re.match(r"\$\{?IOC_[A-Z_]+\}?(/|$)", arg) is not None
 
 def python_ok(arg):
-    return "==" in arg or local(arg)
+    return PY_VERSION.search(arg) is not None or local(arg)
 
-def node_ok(arg):
-    return re.search(r".@[0-9]", arg) is not None or local(arg)
-
-def go_ok(arg):
-    return "@" in arg or local(arg)
+def at_ok(arg):
+    return AT_VERSION.search(arg) is not None or local(arg)
 
 def words(text):
     try:
         return shlex.split(text, posix=True)
     except ValueError:
         return text.split()
+
+# The options of each runner that take a value, and those that take none; any other
+# option before the package is a form this reader does not know.
+UV_TOOL_VALUE = {"--python", "-p", "--from", "--with", "--with-editable", "--with-requirements",
+                 "--index", "--index-url", "--extra-index-url", "--default-index", "--cache-dir",
+                 "--python-preference", "--constraints", "-c", "--overrides"}
+UV_TOOL_FLAG = {"--isolated", "--offline", "--no-cache", "-q", "--quiet", "-v", "--verbose",
+                "--refresh", "--no-project", "--no-config", "-n"}
+PIPX_VALUE = {"--python", "--spec", "--index-url", "--pip-args"}
+PIPX_FLAG = {"--no-cache", "-q", "--quiet", "-v", "--verbose"}
+NODE_VALUE = {"--package", "-p", "--registry", "--cache"}
+NODE_FLAG = {"-y", "--yes", "--no", "-q", "--quiet", "--silent", "--bun"}
+GO_VALUE = {"-C", "-o", "-tags", "-ldflags", "-gcflags", "-mod", "-overlay", "-modfile", "-exec"}
+
+def option_value(word):
+    return word.split("=", 1)[1] if "=" in word else None
+
+def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=()):
+    # rest: the words after the runner. Returns the problems found.
+    problems, pins, i = [], {}, 0
+    while i < len(rest):
+        word = rest[i]
+        if not word.startswith("-"):
+            break
+        key = word.split("=", 1)[0]
+        if key in value_opts:
+            value = option_value(word)
+            if value is None:
+                value = rest[i + 1] if i + 1 < len(rest) else ""
+                i += 1
+            pins.setdefault(key, []).append(value)
+        elif key not in flag_opts:
+            problems.append(name + " " + word + " (an option this reader does not know)")
+            return problems
+        i += 1
+    for key in ("--with", "--with-editable"):
+        for value in pins.get(key, []):
+            if not python_ok(value):
+                problems.append(name + " " + key + " " + value)
+    package = rest[i] if i < len(rest) else ""
+    source = None
+    for key in pinned_by:
+        if pins.get(key):
+            source = pins[key][-1]
+    target = source if source is not None else package
+    if not target:
+        problems.append(name + " (no package this reader can find)")
+    elif target.startswith("$") and not local(target):
+        problems.append(name + " " + target + " (a package this reader cannot read)")
+    elif not ok(target):
+        problems.append(name + " " + target)
+    return problems
 
 for line in sys.stdin:
     row = json.loads(line)
@@ -597,22 +655,36 @@ for line in sys.stdin:
         found = []
         for i, word in enumerate(w):
             nxt = w[i + 1] if i + 1 < len(w) else ""
-            if word == "--with" and not python_ok(nxt):
-                found.append("uv run --with " + nxt)
-            elif word.startswith("--with=") and not python_ok(word[7:]):
-                found.append("uv run " + word)
-            elif word == "uvx":
-                pkg = w[i + 2] if nxt == "--from" and i + 2 < len(w) else nxt
-                if not (python_ok(pkg) or "@" in pkg):
-                    found.append("uvx " + pkg)
-            elif word in ("bunx", "npx"):
-                pkg = w[i + 2] if nxt == "--package" and i + 2 < len(w) else nxt
-                if not node_ok(pkg):
-                    found.append(word + " " + pkg)
+            after = w[i + 1:]
+            if word == "uvx":
+                found += read_runner("uvx", after, UV_TOOL_VALUE, UV_TOOL_FLAG,
+                                     lambda a: python_ok(a) or at_ok(a), ("--from",))
+            elif word == "uv" and nxt == "tool" and i + 2 < len(w) and w[i + 2] in ("run", "install"):
+                found += read_runner("uv tool " + w[i + 2], w[i + 3:], UV_TOOL_VALUE, UV_TOOL_FLAG,
+                                     lambda a: python_ok(a) or at_ok(a), ("--from",))
+            elif word == "uv" and nxt == "run":
+                # uv run runs a script or a command of the environment; what it fetches is
+                # each --with, which every one of them must pin.
+                rest, j = w[i + 2:], 0
+                while j < len(rest):
+                    key = rest[j].split("=", 1)[0]
+                    if key in ("--with", "--with-editable"):
+                        value = option_value(rest[j])
+                        if value is None:
+                            value = rest[j + 1] if j + 1 < len(rest) else ""
+                            j += 1
+                        if not python_ok(value):
+                            found.append("uv run " + key + " " + value)
+                    elif not rest[j].startswith("-"):
+                        break
+                    j += 1
+            elif word == "pipx" and nxt == "run":
+                found += read_runner("pipx run", w[i + 2:], PIPX_VALUE, PIPX_FLAG, python_ok, ("--spec",))
+            elif word in ("bunx", "npx") or (word == "npm" and nxt == "exec"):
+                name, rest = (word, after) if word != "npm" else ("npm exec", w[i + 2:])
+                found += read_runner(name, rest, NODE_VALUE, NODE_FLAG, at_ok, ("--package", "-p"))
             elif word == "go" and nxt in ("run", "install"):
-                args = [a for a in w[i + 2:] if not a.startswith("-")]
-                if args and not go_ok(args[0]):
-                    found.append("go " + nxt + " " + args[0])
+                found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, set(), at_ok)
             elif word == "install" and i > 0 and w[i - 1] in ("pip", "pip3"):
                 rest = w[i + 1:]
                 if any(a in ("-c", "--constraint", "-r", "--requirement") or a.startswith(("--constraint=", "--requirement=")) for a in rest) or "$IOC_ENV_PY_PINS" in part:
@@ -622,11 +694,11 @@ for line in sys.stdin:
                     if skip:
                         skip = False
                         continue
+                    if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
+                        break
                     if a in ("--python", "-p", "--target", "--prefix", "--index-url", "--extra-index-url"):
                         skip = True
                         continue
-                    if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
-                        break
                     if a.startswith("-"):
                         continue
                     if not python_ok(a):
@@ -729,7 +801,7 @@ mode_replay() {
     unpinned="$(unpinned_installs)"
     while IFS=$'\t' read -r unpinned_id unpinned_what; do
         [ -n "$unpinned_id" ] || continue
-        fail install-pinned "$unpinned_id runs '$unpinned_what', a package with no version, so the run reads whatever release is newest"
+        fail install-pinned "$unpinned_id runs '$unpinned_what': a package with no version reads whatever release is newest, and a form this reader cannot read is refused rather than passed"
     done <<<"$unpinned"
     [ -z "$unpinned" ] && pass install-pinned "every package a recorded command installs or runs names its version, or is pinned by a constraints file, a pinned list or a local path"
 
