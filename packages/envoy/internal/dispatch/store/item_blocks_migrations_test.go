@@ -70,6 +70,7 @@ func TestAnOlderBuildsWriteLeavesTheItemOwed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
+	seedCoreWithADefaultAssignee(t, store)
 	seedBlockIndexIssue(t, store)
 
 	comment := insertReturningID(t, store, `
@@ -187,6 +188,7 @@ func TestTheItemBlockMigrationsOweEveryStoredItem(t *testing.T) {
 	racedComment := insertComment("Raced")
 	racedMessage := insertMessage("Raced")
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

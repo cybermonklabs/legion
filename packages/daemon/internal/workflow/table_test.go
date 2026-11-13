@@ -12,7 +12,7 @@ import (
 var allWorkflowTriggers = []TriggerKind{
 	TriggerGateOpened, TriggerPlannerCompleted, TriggerImplementationReady, TriggerTesterPassed,
 	TriggerTesterFailed, TriggerReviewApproved, TriggerReviewRejected, TriggerRetroCompleted,
-	TriggerReady, TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerChecksRed,
+	TriggerPullRequestMerged, TriggerSignOff, TriggerBackward, TriggerConflict,
 }
 
 func TestEveryPhaseAndTriggerHasARowOrNamedIgnore(t *testing.T) {
@@ -55,10 +55,9 @@ func TestBackwardRowsMatchPhaseBackwardPairs(t *testing.T) {
 	if !maps.Equal(fromTable, fromPhase) {
 		t.Fatalf("table backward moves = %v, phase.BackwardPairs = %v", sortedPairs(fromTable), sortedPairs(fromPhase))
 	}
-	// The backward trigger carries every pair but one: awaiting_merge goes back to implementing on
-	// the explicit checks_red row, because a queued pull request whose checks turn red is sent back
-	// by the daemon, not by a worker asking for a move.
-	delete(fromPhase, phase.Pair(phase.AwaitingMerge, phase.Implementing))
+	// The backward trigger carries every pair: a worker may ask for any move back the phases
+	// allow, and the daemon's own move for a conflicting head is a trigger of its own
+	// (TriggerConflict) over the same pairs rather than a pair the backward trigger is missing.
 	if !maps.Equal(fromTrigger, fromPhase) {
 		t.Fatalf("%s rows = %v, want %v", TriggerBackward, sortedPairs(fromTrigger), sortedPairs(fromPhase))
 	}
@@ -134,14 +133,12 @@ func workflowTransitionRequired(from phase.Phase, trigger TriggerKind) bool {
 		return from == phase.Testing
 	case TriggerReviewApproved, TriggerReviewRejected:
 		return from == phase.Reviewing
-	case TriggerChecksRed:
-		return from == phase.Testing || from == phase.Reviewing || from == phase.Accepting || from == phase.Retro || from == phase.Merging || from == phase.AwaitingMerge
+	case TriggerConflict:
+		return from == phase.Testing || from == phase.Reviewing || from == phase.Accepting || from == phase.Retro || from == phase.Merging
 	case TriggerRetroCompleted:
 		return from == phase.Retro
-	case TriggerReady:
-		return from == phase.Merging
 	case TriggerPullRequestMerged:
-		return from == phase.AwaitingMerge
+		return from == phase.Merging
 	case TriggerSignOff:
 		return from == phase.Accepting
 	case TriggerBackward:

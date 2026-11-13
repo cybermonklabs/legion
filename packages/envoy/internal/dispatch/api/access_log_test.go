@@ -174,7 +174,7 @@ func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
 
 func seedTestProject(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := database.Pool.Exec(t.Context(), `insert into projects (key, name) values ('ACCESS', 'Access')`); err != nil {
+	if _, err := database.Pool.Exec(t.Context(), `insert into projects (key, name, default_assignee) values ('ACCESS', 'Access', 'alice')`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 }

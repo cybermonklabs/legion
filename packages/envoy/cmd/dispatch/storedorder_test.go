@@ -37,7 +37,7 @@ func TestStoredOrderSubcommandExitCodes(t *testing.T) {
 	}
 	var artifactID string
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('DOC', 'Documents')`,
+		`insert into projects (key, name, default_assignee) values ('DOC', 'Documents', 'alice')`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank) values ('DOC-1', 'DOC', 1, 'Issue', 'todo', '{"kind":"user","id":"alice"}', 'U')`,
 	} {
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {

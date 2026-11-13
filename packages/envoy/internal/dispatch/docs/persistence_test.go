@@ -59,7 +59,7 @@ func createIssueDocument(t testing.TB, database *store.Store, number int, markdo
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `
-		insert into projects (key, name) values ('DOC', 'Documents')
+		insert into projects (key, name, default_assignee) values ('DOC', 'Documents', 'alice')
 		on conflict (key) do nothing
 	`); err != nil {
 		t.Fatalf("create test project: %v", err)
@@ -109,7 +109,7 @@ func createProjectDocument(t *testing.T, database *store.Store, markdown string)
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `
-		insert into projects (key, name) values ('DOC', 'Documents')
+		insert into projects (key, name, default_assignee) values ('DOC', 'Documents', 'alice')
 		on conflict (key) do nothing
 	`); err != nil {
 		t.Fatalf("create test project: %v", err)

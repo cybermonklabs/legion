@@ -46,7 +46,7 @@ func TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce(t *te
 	rig := newRoleRig(t)
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
-	claimant := rig.receiver(t, holder, true)
+	claimant := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	route := target

@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The role prompt parts Compose joins. A core and the interactive fragment are also composed for an
@@ -263,22 +264,133 @@ func TestEveryTaskAgentARolePromptDispatchesIsShipped(t *testing.T) {
 	}
 }
 
-// The daemon submits the merge itself once it accepts READY, and Legion enforces no GitHub
-// restriction the repository itself does not: a part that says Legion never merges, shared or the
-// Go daemon's, contradicts what the merger is told the daemon does. The phrases, in any case,
-// are a pattern rather than spelled out, so a grep for them over this directory finds only prompt
-// text.
-func TestNoPartSaysLegionNeverMerges(t *testing.T) {
-	saysLegionNeverMerges := regexp.MustCompile(`(?i)never merg(es)|merg(e|es) nothing`)
+// The merger merges the pull request itself, at the head it read, and the daemon submits no merge
+// and changes no merge setting (dispatch://INFRA-714, R2). So a part that has the daemon submit a
+// merge, arm auto-merge or enqueue a pull request contradicts what the merger is told to do, while
+// the parts may — and do — say the daemon merges nothing. The claim is a pattern rather than
+// spelled out, so a grep for it over this directory finds only prompt text; it matches the claim
+// made of the daemon and not its denial, which is why the verb must follow `daemon` directly and
+// name what is merged.
+func TestNoPartSaysTheDaemonMerges(t *testing.T) {
+	daemonMerges := regexp.MustCompile(`(?i)daemon\s+(submits|arms|enqueues|enables|merges|turns)\s+(the|a|an|that|its|it|ready|auto)\b`)
 	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
 		err := eachPart(parts, dir, func(name string, body []byte) error {
-			if phrase := saysLegionNeverMerges.Find(body); phrase != nil {
+			if phrase := daemonMerges.Find(body); phrase != nil {
 				t.Errorf("%s/%s says %q", dir, name, phrase)
 			}
 			return nil
 		})
 		if err != nil {
 			t.Fatalf("read the %s parts: %v", dir, err)
+		}
+	}
+	// The merger's own parts carry the other half: the merge it runs, the head GitHub is held to,
+	// the one setting it never touches, and the daemon's own silence on all three.
+	for _, want := range []string{"gh pr merge <n> --squash --match-head-commit <head>", "Never turn auto-merge on"} {
+		if !strings.Contains(rolePart(t, "merger.md"), want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	goMerger, err := goParts.ReadFile("go/merger.md")
+	if err != nil {
+		t.Fatalf("read go/merger.md: %v", err)
+	}
+	if want := "It submits no merge and changes no merge setting"; !strings.Contains(string(goMerger), want) {
+		t.Errorf("go/merger.md does not say %q", want)
+	}
+}
+
+// GitHub's default squash message, `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every
+// commit message of a pull request, which put this tree's Dispatch keys, `Omp-Session:` trailers
+// and `skip-checks: true` lines on the default branch (dispatch://INFRA-714, R2). So the merger
+// writes the message itself, and on the one path that cannot — `enqueuePullRequest` takes no
+// message — it reads the repository's setting first and stops rather than enqueueing under a
+// setting that joins them. The command's shape is the instruction: a merge that drops `--subject`
+// or `--body ”` lets GitHub write the message again.
+func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''",
+		"--subject",
+		"--body ''",
+		"squash_merge_commit_message",
+		"COMMIT_MESSAGES",
+		"`enqueuePullRequest` takes no message",
+		"Do not enqueue it and do not complete.",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+}
+
+// Every update round a part describes is one a daemon of this release can open. The stale-plugin
+// lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
+// plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),
+// and the parts that still told a role its process alone would be replaced "on a different
+// plugin" promised a task no daemon could send. Nothing saw that: the sentences were true when
+// they were written and no row read them against the lane they described.
+//
+// So the rule is read off the daemon's own vocabulary rather than off the prose. The openers are
+// counted in supervise's own source: a kind a prompt may describe is one some path builds an id
+// for. A pod round has PodRound, which is why the parts may — and do — describe a pod the daemon
+// replaces; a plugin round has no such path, so no part may promise one. The day someone builds
+// a plugin round id again this row fails and names what the parts must say once more, which a
+// row quoting the deleted sentences could never do: it would have passed on the day the lane
+// went, exactly as the empty census did.
+func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
+	buildsAPluginRound := regexp.MustCompile(`\bPluginRoundPrefix\s*\+`)
+	buildsAPodRound := regexp.MustCompile(`\bPodRoundPrefix\s*\+`)
+	files, err := os.ReadDir(filepath.Join("..", "supervise"))
+	if err != nil {
+		t.Fatalf("read the supervise package: %v", err)
+	}
+	pod, plugin := false, false
+	for _, entry := range files {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join("..", "supervise", name))
+		if err != nil {
+			t.Fatalf("read supervise/%s: %v", name, err)
+		}
+		pod = pod || buildsAPodRound.Match(body)
+		plugin = plugin || buildsAPluginRound.Match(body)
+	}
+	// A reader that found neither opener would pass below while checking nothing, so the pod
+	// round's own constructor is the control: it is what the parts are allowed to describe.
+	if !pod {
+		t.Fatalf("nothing in supervise builds a %q round id; this row reads the openers and would check nothing", supervise.PodRoundPrefix)
+	}
+	promisesAPluginRound := regexp.MustCompile(`(?i)your process alone|on a different plugin|plugin (update )?(round|task)`)
+	whitespace := regexp.MustCompile(`\s+`)
+	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
+		err := eachPart(parts, dir, func(name string, body []byte) error {
+			phrase := promisesAPluginRound.Find(whitespace.ReplaceAll(body, []byte(" ")))
+			if phrase != nil && !plugin {
+				t.Errorf("%s/%s says %q, and no path builds a plugin round id: a daemon of this release replaces the pod and never a role's process alone", dir, name, phrase)
+			}
+			if phrase == nil && plugin && strings.Contains(string(body), "ready_for_update") {
+				t.Errorf("%s/%s describes an update round and never the plugin round, which supervise builds again: say what a role answering one must do", dir, name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", dir, err)
+		}
+	}
+	// The pod half is what survives, and the two parts that carry it are listed rather than
+	// counted: a part that stopped telling a role how to answer an update round fails here.
+	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
+		body, err := goParts.ReadFile(part)
+		if err != nil {
+			t.Fatalf("read %s: %v", part, err)
+		}
+		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles"} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("%s does not say %q", part, want)
+			}
 		}
 	}
 }
@@ -413,16 +525,20 @@ func TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait(t *testing.T
 	}
 }
 
-// dispatch://INFRA-332's four role-prompt rules and dispatch://INFRA-924's fifth, each pinned by
-// the sentence that carries it. A pin fails when a later edit deletes the rule; it does not show
-// that an agent follows it, which each issue's session runs measure. Each of the first four
-// sentences sits in the core its role composes, so the rule reaches that role and no other: the
-// simplify pass and the class search are the implementer's, the procedure and can-fail rules the
-// tester's, the open-decision rule the planner's, and the planner's WAITING line is phase
-// mechanics, so it lives in its residue rather than its core. R5 is the exception: Compose names
-// core/oracle.md for no role, and it is pinned beside core/common.md to keep one wording of that
-// rule in the prompt tree, which a later core would copy from.
+// dispatch://INFRA-332's four role-prompt rules, dispatch://INFRA-924's fifth and
+// dispatch://INFRA-3204's check CI proves, each pinned by the sentence that carries it. A pin fails
+// when a later edit deletes the rule; it does not show that an agent follows it, which each
+// issue's session runs measure. Each of the first four sentences sits in the core its role
+// composes, so the rule reaches that role and no other: the simplify pass and the class search are
+// the implementer's, the procedure and can-fail rules the tester's, the open-decision rule the
+// planner's, and the planner's WAITING line is phase mechanics, so it lives in its residue rather
+// than its core. R5 is the exception: Compose names core/oracle.md for no role, and it is pinned
+// beside core/common.md to keep one wording of that rule in the prompt tree, which a later core
+// would copy from.
 func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
+	// The phrase every text of dispatch://INFRA-3204's rule carries once, the skills included
+	// (packages/pi-legion/src/skills-guard.test.ts).
+	const ciCheckRule = "check carrying `ci_check` is CI's"
 	for _, pin := range []struct{ file, rule string }{
 		// R1: the simplify pass covers every file of the diff and reports what it sees.
 		{"core/implementer.md", "Your behaviour-preserving simplify pass covers every file of the change"},
@@ -446,6 +562,27 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"core/common.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "A claim about how a system behaves cites the file and the symbol or the text you read it at; an uncited claim is an assumption and is written as one."},
 		{"core/oracle.md", "Findings cite the file and the symbol, or text quoted from it."},
+		// A check CI proves: a check carrying `ci_check` is proved by the CI run it names, so no
+		// role runs it or records its result, and `dispatch results` derives that result
+		// (dispatch://INFRA-3204, R5 of its spec). Each part that orders a check run, recorded or
+		// judged, or lists a check's attributes, carries the exception. The tester's and the
+		// implementer's role parts point at the worker skill's page, which a core part may not name.
+		{"core/tester.md", ciCheckRule},
+		{"core/implementer.md", ciCheckRule},
+		{"core/reviewer.md", ciCheckRule},
+		{"tester.md", ciCheckRule},
+		{"implementer.md", ciCheckRule},
+		{"architect.md", ciCheckRule},
+		{"architect-root.md", ciCheckRule},
+		{"tester.md", "`skill://legion-worker/references/ci-checks.md`"},
+		{"implementer.md", "`skill://legion-worker/references/ci-checks.md`"},
+		{"architect.md", "takes no `run`"},
+		{"architect-root.md", "takes no `run`"},
+		// The reviewer's gate takes R5's three cases for a check CI proves: a run still going or
+		// unread is waited for, and a name no run answers goes to the architect, rather than sending
+		// the work back to an implementer who cannot cure it. The final gate points at that rule.
+		{"reviewer.md", "Wait for a `ci_check` run still going or unread, and send a name no run answers to the architect."},
+		{"reviewer.md", "A `ci_check` check with no pass takes the end-of-round rule above, with its three cases."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)

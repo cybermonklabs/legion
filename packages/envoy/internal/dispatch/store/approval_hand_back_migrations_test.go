@@ -56,6 +56,7 @@ func TestMigrate0064To0066RecordApprovalHandBacks(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed pre-0064 approval ask: %v", err)
 	}
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -206,8 +207,15 @@ func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing
 	`, askID); err != nil {
 		t.Fatalf("insert the reply: %v", err)
 	}
+	// The runner is given the set up to 0066, the migration under test, and not the whole
+	// set: this database is seeded at 0065, older than `people`, so the backfill at the end
+	// of the set (20261111210103) would refuse CORE, whose default assignee nothing here can
+	// name. It is the runner's own path either way (Store.Migrate is migrate over every
+	// embedded file), so the lock timeout, the retry and the log line it is read for are the
+	// same.
+	through0066 := migrationsThrough(t, 66)
 	migrated := make(chan error, 1)
-	go func() { migrated <- store.Migrate(ctx) }()
+	go func() { migrated <- store.migrate(ctx, through0066) }()
 	waitForQueuedLock(t, store, "comments", "ShareRowExclusiveLock")
 	if _, err := writer.Exec(ctx, `update asks set urgency = 'high' where id = $1`, askID); err != nil {
 		t.Fatalf("the comment write's ask update failed while 0066 waited for comments: %v", err)

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +125,71 @@ func (s *Service) addConnection(room string, id uint64, actor model.Actor) {
 		panic(fmt.Sprintf("register connection %d on room %s: the connection cap (%d) is reached", id, room, s.connectionCap))
 	}
 	s.registerConnectionLocked(state, id, actor)
+}
+
+// refuseSpelling dials spelling's document socket as a browser does and requires the service to
+// refuse it 404 before any upgrade, with the sentence that tells a developer where the document
+// really is: its id as Dispatch writes it, canonical.
+func refuseSpelling(t *testing.T, serverURL, spelling, canonical, what string) {
+	t.Helper()
+	connection, response, err := gws.DefaultDialer.Dial(socketURL(serverURL, spelling), http.Header{"X-Dispatch-User": []string{"alice"}})
+	if connection != nil {
+		leaveDocument(connection)
+	}
+	if err == nil || response == nil || response.StatusCode != http.StatusNotFound {
+		t.Fatalf("%s: response=%v err=%v, want the socket refused 404", what, response, err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("%s: read the refusal's body: %v", what, readErr)
+	}
+	want := "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here " + canonical
+	if got := strings.TrimRight(string(body), "\n"); got != want {
+		t.Fatalf("%s: the refusal says %q, want %q", what, got, want)
+	}
+}
+
+// A document's address is its id as Dispatch writes it, lower case with dashes, and a socket
+// naming it any other way uuid.Parse would take - upper case, braced, a dash-free run of hex,
+// urn:uuid:<id> - is refused. Refusing is what keeps one document one room, and therefore one
+// lock: a durable write takes its lock on the room's own name (lockDocumentRoom) while the
+// stream it appends to is keyed by the document's uuid, so two rooms of one id would be two
+// editor states over one stream, neither browser seeing the other's typing and the stored
+// markdown ending as text that matched neither. Naming the room canonically and admitting the
+// socket anyway is no answer either: the client routes each frame by the name it asked for, so
+// such a browser holds a connection and a room's place and never syncs. What the refusal must
+// not break is the canonical spelling itself, which is why this drives it first: two browsers
+// on it share one room and what one types reaches the other.
+func TestASocketNamingADocumentByAnotherSpellingOfItsIdIsRefused(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "Shared.")
+	service, server := newTestServiceInstance(t, database)
+	seedServiceText(t, service, artifactID, "Shared.")
+	waitForLandedAppends(t, service, artifactID)
+	stored := storedMarkdown(t, database, artifactID)
+	alice := connectWithScope(t, server.URL, artifactID, "alice", "read-write", stored)
+	bob := connectWithScope(t, server.URL, artifactID, "bob", "read-write", stored)
+	if rooms := service.ResidentRooms(); !slices.Equal(rooms, []string{artifactID}) {
+		t.Fatalf("the process holds the rooms %v, want the one room %s", rooms, artifactID)
+	}
+	typeOver(t, alice, "Shared.", "Alice typed this.")
+	if err := bob.WaitForText(peerMarkdown, "Alice typed this.\n", roomWait(t)); err != nil {
+		t.Fatalf("bob's browser, on the canonical id %s, never saw what alice typed in the same room: %v", artifactID, err)
+	}
+
+	for _, spelling := range []struct{ what, room string }{
+		{"the id in upper case", strings.ToUpper(artifactID)},
+		{"the id in braces", "{" + artifactID + "}"},
+		{"the id without its dashes", strings.ReplaceAll(artifactID, "-", "")},
+		{"the id as a urn", "urn:uuid:" + artifactID},
+	} {
+		refuseSpelling(t, server.URL, spelling.room, artifactID, "a socket naming "+spelling.what)
+		if rooms := service.ResidentRooms(); !slices.Equal(rooms, []string{artifactID}) {
+			t.Fatalf("after a socket naming %s the process holds the rooms %v, want the one room %s and no other",
+				spelling.what, rooms, artifactID)
+		}
+	}
 }
 
 // A socket's admission refuses a room outside the Proof schema, which it decides by rendering the

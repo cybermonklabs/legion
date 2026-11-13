@@ -25,7 +25,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -1847,7 +1846,7 @@ func TestALaneRunsOnWhileTheClaimsWakeWaits(t *testing.T) {
 	// claim's wake still waits: the lanes of an issue are not held behind one another, and none of
 	// them is held behind a wake.
 	tree.commit(t, "board-status", mustOutboxRow(t, tree.root.Key,
-		record.StatusWrite{Status: "in_progress", ObservedStatus: "todo"}, tree.clock.Now()))
+		record.OrdinaryStatusWrite("in_progress", "todo", ""), tree.clock.Now()))
 	testwait.Eventually(t, "the board row of the same issue to run while the wake waits", func() bool {
 		return tree.client.count() == 1 && outboxRows(t, tree.pool) == 0
 	})
@@ -1939,7 +1938,7 @@ func TestASecondStartOfAWaitingClaimTakesNoTokenAndStartsNoSecondLaunch(t *testi
 }
 
 // noticeRowOf is the notice row of one issue, and whether the outbox holds one.
-func noticeRowOf(t *testing.T, pool *pgxpool.Pool, issue string) (noticeRow, bool) {
+func noticeRowOf(t *testing.T, pool *store.Pool, issue string) (noticeRow, bool) {
 	t.Helper()
 	var row noticeRow
 	// A notice the pacing reserved no moment for carries no paced_at at all (omitzero).

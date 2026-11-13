@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -228,8 +231,8 @@ func requireFrames(t *testing.T, frames []relayedFrame, want ...contracts.Envelo
 }
 
 // A session away during publishes (its connection gone) receives each on its return, when it
-// registers with a new epoch, once and in stream order, from its consumer: it asks nothing of
-// /v1/replay.
+// registers with a new epoch, once and in stream order, from its consumer: nothing it receives
+// comes from a subscription of its own.
 func TestSessionConsumerAwaySessionReceivesEachMessageOnceOnReturn(t *testing.T) {
 	rig := newRelayRig(t)
 	const sessionID = "ses_away"
@@ -955,10 +958,9 @@ func bindTestDurable(t *testing.T, rig *relayRig, name, subject string) {
 }
 
 // keepTheDurableReading gives topic a second recipient whose interest outlives its session entry,
-// and returns its session id. A session whose own consumer holds a stored message takes it from
-// there, and one that is self-subscribed takes it off its own subscription, so the durable path
-// acknowledges such a message before it decodes it (durableNeedsDelivery,
-// takesStoredMessagesItself) and the fan-out never judges it. An interest the fan-out can match
+// and returns its session id. A stored message held by the own consumer of every session whose
+// interest matches its topic is acknowledged by the durable path before it is decoded
+// (durableNeedsDelivery), so the fan-out never judges it. An interest the fan-out can match
 // whose entry it cannot read is the ordinary state of a session whose entry has lapsed -- an
 // entry lives about five minutes (session.registry) and an interest about fifteen -- and it is
 // what keeps the durable path reading a topic for a test whose subject is what the fan-out does
@@ -1036,10 +1038,11 @@ func grantConfigBeforeSessionConsumers(public string) string {
 		public, strings.Join(quoted, ", "))
 }
 
-// On a hub whose grant predates session consumers, the first refused consumer call holds every
-// registration on core for ten minutes without another call: the server sees one consumer call
-// refused however many sessions register in that time, and one more after it, at the next
-// registration, which probes the grant again. The refusal is logged once.
+// On a hub whose grant predates session consumers, the first refused consumer call refuses every
+// registration for ten minutes without another call: the server sees one consumer call refused
+// however many sessions register in that time, and one more after it, at the next registration,
+// which probes the grant again. The refusal is logged once. Without the backoff every heartbeat
+// of every session would call the server and log a permissions violation there and here.
 func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 	seed, public := testnats.User(t)
 	server, uri := testnats.StartConfig(t, grantConfigBeforeSessionConsumers(public), []string{"-DV", "-js"}, false)
@@ -1063,10 +1066,8 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 		return calls
 	}
 	register := func(i int) {
-		answer := rig.subscribe(t, consumerRegistration(fmt.Sprintf("ses_no_grant_%d", i), "e"))
-		if answer.Delivery == nil || answer.Delivery.Mode != "core" || answer.Delivery.Reason != "no_grant" {
-			t.Fatalf("answer %s, want delivery core with reason no_grant", answer.raw)
-		}
+		refusal := rig.refusedSubscribe(t, consumerRegistration(fmt.Sprintf("ses_no_grant_%d", i), "e"))
+		refusal.requireRefused(t, http.StatusServiceUnavailable, "no_grant")
 	}
 	awaitRefusedCalls := func(want int) {
 		deadline := time.Now().Add(listenerWait)
@@ -1090,7 +1091,192 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 	register(5)
 	register(6)
 	awaitRefusedCalls(2)
-	if lines := strings.Count(rig.harness.logs.String(), "sessions stay on core delivery until the grant carries them"); lines != 1 {
+	if lines := strings.Count(rig.harness.logs.String(), "every registration is refused until the grant carries them"); lines != 1 {
 		t.Fatalf("the missing grant was logged %d times, want once:\n%s", lines, rig.harness.logs.String())
+	}
+}
+
+// Every session takes its messages from a session consumer this listener manages on a connection
+// of its own, so a listener that cannot open that connection would refuse every registration: it
+// ends its start instead, exits 1 and says why, as the live topics lane's failure does
+// (TestAListenerWhoseGrantRefusesEveryTopicEndsItsStart). The connection is refused here by the
+// account's connection limit, two: the main client and the role lane take them both, and the
+// session consumers' is the third.
+func TestAListenerThatCannotOpenItsSessionConsumersEndsItsStart(t *testing.T) {
+	config := `jetstream {}
+accounts {
+  LISTENER: {
+    jetstream: enabled
+    users: [ { user: listener, password: listener } ]
+    limits: { max_connections: 2 }
+  }
+}
+`
+	_, uri := testnats.StartConfig(t, config, []string{"-js"}, false)
+	uri = strings.Replace(uri, "nats://", "nats://listener:listener@", 1)
+
+	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), uri, "session-consumers-refused")
+	listener.WaitExit(t, "its start")
+	output := listener.Output.String()
+	if code := listener.Cmd.ProcessState.ExitCode(); code != 1 {
+		t.Fatalf("exit code = %d, want 1:\n%s", code, output)
+	}
+	for line := range strings.SplitSeq(output, "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) != nil || record["level"] != "ERROR" {
+			continue
+		}
+		if strings.Contains(fmt.Sprint(record["msg"]), "session consumer connection failed") {
+			return
+		}
+	}
+	t.Fatalf("no ERROR says the session-consumer connection failed:\n%s", output)
+}
+
+// nakLadderAcker is the acker of a frame whose naks are read rather than sent: it records the
+// delay the relay asked the server for each time, as the stand-in rows read what the session was
+// sent. Nothing it answers fails, so the relay logs nothing.
+type nakLadderAcker struct {
+	mu     sync.Mutex
+	delays []time.Duration
+}
+
+func (a *nakLadderAcker) Ack() error        { return nil }
+func (a *nakLadderAcker) InProgress() error { return nil }
+
+func (a *nakLadderAcker) NakWithDelay(delay time.Duration) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.delays = append(a.delays, delay)
+	return nil
+}
+
+// last is the delay of the nak the relay asked for last, or -1 when it asked for none.
+func (a *nakLadderAcker) last() time.Duration {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.delays) == 0 {
+		return -1
+	}
+	return a.delays[len(a.delays)-1]
+}
+
+// A frame the session refuses is naked with a delay that climbs with the message's own delivery
+// count -- 1, 2, 4, 8, 16 s and then 30 s a lap (relayNakDelayMax) -- so a frame nobody can take
+// is relayed to one consumer at most 8,644 times over the stream's 72-hour retention instead of
+// the 259,201 a flat second costs (TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention). A count
+// the relay has none of (0), and one past the ladder, take the ceiling: never a delay under the
+// rung before it, and never one the shift overflowed.
+func TestTheNakDelayClimbsWithTheMessagesDeliveryCount(t *testing.T) {
+	if relayNakDelay<<relayNakShiftMax < relayNakDelayMax {
+		t.Fatalf("relayNakDelay << relayNakShiftMax is %s, under the ceiling %s: the ladder stops below its own ceiling and the guard no longer bounds the shift",
+			relayNakDelay<<relayNakShiftMax, relayNakDelayMax)
+	}
+	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.New("test")}
+	run := &relayRun{sessionID: "ses_nak_ladder", outstanding: map[string]*relayFrame{}}
+	acker := &nakLadderAcker{}
+	// nakAt refuses one frame of delivery count delivered, as a session that cannot take it
+	// does, and answers the delay the relay asked the server for.
+	nakAt := func(delivered uint64) time.Duration {
+		t.Helper()
+		token := strconv.FormatUint(delivered, 10)
+		frame := &relayFrame{run: run, acker: acker, sentAt: time.Now(), delivered: delivered}
+		relays.framesMu.Lock()
+		relays.frames[token] = frame
+		run.outstanding[token] = frame
+		relays.framesMu.Unlock()
+		relays.onReply(&natsgo.Msg{Subject: relays.replyPrefix + token, Data: []byte(relayReplyNak)})
+		return acker.last()
+	}
+
+	ladder := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, 30 * time.Second, 30 * time.Second}
+	// The negative control the rungs stand on: a relay that naks flat answers relayNakDelay to
+	// every one of them, which is the first rung alone.
+	if !slices.ContainsFunc(ladder[1:], func(d time.Duration) bool { return d != relayNakDelay }) {
+		t.Fatalf("every rung this row drives is relayNakDelay (%s), so a flat delay would pass it", relayNakDelay)
+	}
+	for rung, want := range ladder {
+		delivered := uint64(rung + 1)
+		if got := nakAt(delivered); got != want {
+			t.Errorf("the nak of delivery %d asked the server for %s, want %s", delivered, got, want)
+		}
+	}
+	for _, delivered := range []uint64{0, uint64(relayNakShiftMax) + 2, 1000, math.MaxUint64} {
+		if got := nakAt(delivered); got != relayNakDelayMax {
+			t.Errorf("the nak of delivery %d asked the server for %s, want the ceiling %s", delivered, got, relayNakDelayMax)
+		}
+	}
+}
+
+// The nak ladder is the whole bound on how often a frame nobody can take is relayed: the session
+// consumer carries MaxDeliver -1 (bus.SessionConsumers, applySettings), so the server delivers
+// such a frame again for as long as the stream holds it, which is the stream's 72-hour retention
+// (its MaxAge, contracts.DeliveryDuplicateWindow by way of bus streamCfg). Summed over that
+// retention, the ladder's delays -- 1, 2, 4, 8, 16 s, then relayNakDelayMax, 30 s, a lap -- leave
+// room for at most 8,644 deliveries of one frame to one consumer, the first included, about two a
+// minute, where a flat relayNakDelay leaves room for 259,201; the round trip each delivery costs
+// only lowers the count, and a relay restart, which recreates the consumer at delivery 1, adds the
+// five relays of the first rungs again. The figure is pinned here, so a change to the ladder or
+// its ceiling says what it does to it.
+func TestARefusedFrameIsRelayedAtMost8644TimesOverTheStreamsRetention(t *testing.T) {
+	const retention = 72 * time.Hour
+	if contracts.DeliveryDuplicateWindow != retention {
+		t.Fatalf("the stream's retention is %s, want the %s this row sums the ladder over", contracts.DeliveryDuplicateWindow, retention)
+	}
+	// relays counts the deliveries of one frame the session refuses every time that fall inside
+	// the retention: the first at 0, and each later one the nak delay its predecessor's delivery
+	// count earns after it.
+	relays := func(delay func(delivered uint64) time.Duration) uint64 {
+		var at time.Duration
+		delivered := uint64(1)
+		for at+delay(delivered) <= retention {
+			at += delay(delivered)
+			delivered++
+		}
+		return delivered
+	}
+	// The control the count stands on: at a flat relayNakDelay it is one delivery a second and the
+	// first, 72 * 3,600 + 1.
+	if flat := relays(func(uint64) time.Duration { return relayNakDelay }); flat != 259_201 {
+		t.Fatalf("a flat %s delay counts %d deliveries over %s, want 259,201", relayNakDelay, flat, retention)
+	}
+	if got := relays(relayNakDelayFor); got != 8_644 {
+		t.Errorf("the nak ladder relays a refused frame %d times over the stream's %s retention, want 8,644: 6 deliveries in the first 31 s, then one every %s", got, retention, relayNakDelayMax)
+	}
+}
+
+// The count the ladder climbs is the message's own, carried from the pull that published the
+// frame to the reply that refuses it (relayFrame.delivered): a session that refuses the same
+// frame over and over has it back about a second later, then about two seconds later, rather
+// than every second. The row reads the frames' arrivals on the session's own connection, as the
+// relay rows above read what the session was sent, and their Envoy-Delivered headers, which is
+// the same count the ladder is read from.
+func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
+	rig := newRelayRig(t)
+	const sessionID = "ses_nak_relay_ladder"
+	standIn := startSessionStandIn(t, rig.url, sessionID, func(relayedFrame) []string {
+		return []string{relayReplyReceived, relayReplyNak}
+	})
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1"))
+	stored, seq := rig.storeEvent(t, contracts.AgentSubject(sessionID))
+
+	frames := standIn.collect(t, 3, 20*time.Second)
+	for i, frame := range frames {
+		if frame.item.EventID != stored.EventID || frame.seq != seq {
+			t.Fatalf("frame %d carries %d:%s, want the one refused frame %d:%s", i+1, frame.seq, frame.item.EventID, seq, stored.EventID)
+		}
+		if got := frame.msg.Header.Get(relayHeaderDelivered); got != strconv.Itoa(i+1) {
+			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
+		}
+	}
+	first := frames[1].arrived.Sub(frames[0].arrived)
+	second := frames[2].arrived.Sub(frames[1].arrived)
+	t.Logf("the refused frame came back after %s and then %s", first, second)
+	if first < 500*time.Millisecond || first > 2500*time.Millisecond {
+		t.Errorf("the first redelivery came %s after the refusal, want about relayNakDelay (%s)", first, relayNakDelay)
+	}
+	if second < 1600*time.Millisecond {
+		t.Errorf("the second redelivery came %s after the first, want about twice relayNakDelay (%s): the delay is flat, so the frame comes back every second for the stream's whole retention",
+			second, 2*relayNakDelay)
 	}
 }

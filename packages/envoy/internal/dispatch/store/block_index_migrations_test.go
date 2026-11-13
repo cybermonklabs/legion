@@ -80,7 +80,8 @@ func documentBlockVersion(t *testing.T, store *Store, artifactID string) (*int, 
 func seedBlockIndexIssue(t *testing.T, store *Store) {
 	t.Helper()
 	if _, err := store.Pool.Exec(context.Background(), `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name)
+		select 'CORE', 'Core' where not exists (select 1 from projects where key = 'CORE');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
 	`); err != nil {
@@ -98,6 +99,7 @@ func TestTheBlockIndexTriggersOweWhatAnyBuildWrites(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
+	seedCoreWithADefaultAssignee(t, store)
 	seedBlockIndexIssue(t, store)
 	doc := insertReturningID(t, store, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
@@ -267,6 +269,7 @@ func TestTheBlockGrammarSeedOwesOlderText(t *testing.T) {
 		t.Fatalf("age the raced comment: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

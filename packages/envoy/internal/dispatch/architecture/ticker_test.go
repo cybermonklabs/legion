@@ -27,7 +27,7 @@ func TestAnImportPassSyncsEverySourceAndGoesOnPastAFailure(t *testing.T) {
 	}}
 	importer, database := newImporterFixture(t, fake)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('OPS', 'Operations');
+		insert into projects (key, name, default_assignee) values ('OPS', 'Operations', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by) values
 			('CORE', 'acme/broken', 'main', 11, '{"kind":"user","id":"alice"}'),
 			('OPS', 'legion/ops', 'main', 11, '{"kind":"user","id":"alice"}');
@@ -85,7 +85,7 @@ func TestAnImportPassOverUnchangedHeadsFetchesNothingAndTouchesEachSourceOnce(t 
 	}}
 	importer, database := newImporterFixture(t, fake)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('OPS', 'Operations');
+		insert into projects (key, name, default_assignee) values ('OPS', 'Operations', 'alice');
 		insert into architecture_sources (project_key, repo, branch, installation_id, created_by) values
 			('CORE', 'acme/infra', 'main', 11, '{"kind":"user","id":"alice"}'),
 			('OPS', 'legion/ops', 'main', 11, '{"kind":"user","id":"alice"}');

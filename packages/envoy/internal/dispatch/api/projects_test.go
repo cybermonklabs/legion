@@ -12,12 +12,14 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 type projectResponse struct {
-	Key       string `json:"key"`
-	Name      string `json:"name"`
-	CreatedAt string `json:"created_at"`
+	Key             string `json:"key"`
+	Name            string `json:"name"`
+	DefaultAssignee string `json:"default_assignee"`
+	CreatedAt       string `json:"created_at"`
 }
 
 func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
@@ -43,20 +45,127 @@ func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
 	}
 }
 
+// Every project names a person, whoever creates it and however the create is made: the column
+// refuses nothing (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql),
+// because the person a question reaches ends at the project's default. The create resolves it in
+// three steps — the login the call names, the person creating the project, the person its
+// credential acts for — a caller that reaches the end of them is refused, whichever step answers
+// must name somebody who has signed in, and no write clears a stored default.
+func TestEveryProjectNamesAPerson(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+
+	named := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "NAMED", "name": "Named", "default_assignee": " Bob ",
+	}, "alice")
+	if named.Code != http.StatusCreated {
+		t.Fatalf("a create naming a default: status=%d body=%s", named.Code, named.Body.String())
+	}
+	if created := decodeBody[projectResponse](t, named); created.DefaultAssignee != "bob" {
+		t.Fatalf("a create naming a default = %#v, want bob", created)
+	}
+
+	own := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "OWN", "name": "Own",
+	}, "alice")
+	if own.Code != http.StatusCreated {
+		t.Fatalf("a person creating a project with no default: status=%d body=%s", own.Code, own.Body.String())
+	}
+	if created := decodeBody[projectResponse](t, own); created.DefaultAssignee != "alice" {
+		t.Fatalf("a person's own project = %#v, want it defaulting to alice", created)
+	}
+
+	// A personal token proves no session of its own, so the call names one in actor; the person
+	// it acts for is the token's owner, which is the second step the create falls through to.
+	acting := agentRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "ACTS", "name": "Acts for bob", "actor": sessionActor(),
+	}, personalTokenOwnedBy(t, database, "bob"))
+	if acting.Code != http.StatusCreated {
+		t.Fatalf("a session acting for a person: status=%d body=%s", acting.Code, acting.Body.String())
+	}
+	if created := decodeBody[projectResponse](t, acting); created.DefaultAssignee != "bob" {
+		t.Fatalf("a session acting for bob created %#v, want it defaulting to bob", created)
+	}
+
+	nobody := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "NOBODY", "name": "For nobody", "actor": sessionActor(),
+	})
+	refusal := nobody.Body.String()
+	if nobody.Code != http.StatusBadRequest || !strings.Contains(refusal, `"code":"INVALID_PROJECT"`) ||
+		!strings.Contains(refusal, "default_assignee") {
+		t.Fatalf("a session acting for nobody and naming none: status=%d body=%s, want 400 INVALID_PROJECT naming default_assignee", nobody.Code, refusal)
+	}
+
+	unknown := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "UNKNOWN", "name": "Unknown", "default_assignee": "mallory",
+	}, "alice")
+	if unknown.Code != http.StatusBadRequest || !strings.Contains(unknown.Body.String(), `"code":"ASSIGNEE_NOT_ALLOWED"`) {
+		t.Fatalf("a create naming a login nobody has signed in with: status=%d body=%s, want 400 ASSIGNEE_NOT_ALLOWED", unknown.Code, unknown.Body.String())
+	}
+
+	// The person a credential acts for is held to the check a named login is: a broker-issued
+	// token's owner comes from the broker rather than from the people table, so a derived login
+	// nobody has signed in with is refused, never stored as the default. A personal token owned
+	// by somebody who has never signed in stands in for it here.
+	unseen := agentRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
+		"key": "UNSEEN", "name": "Acts for mallory", "actor": sessionActor(),
+	}, personalTokenOwnedBy(t, database, "mallory"))
+	if unseen.Code != http.StatusBadRequest || !strings.Contains(unseen.Body.String(), `"code":"ASSIGNEE_NOT_ALLOWED"`) {
+		t.Fatalf("a session acting for a person nobody has signed in as: status=%d body=%s, want 400 ASSIGNEE_NOT_ALLOWED", unseen.Code, unseen.Body.String())
+	}
+
+	var refused int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from projects where key in ('NOBODY', 'UNKNOWN', 'UNSEEN')`).Scan(&refused); err != nil {
+		t.Fatalf("count the refused projects: %v", err)
+	}
+	if refused != 0 {
+		t.Fatalf("a refused create stored %d project(s)", refused)
+	}
+
+	cleared := dispatchRequest(t, handler, http.MethodPut, "/api/v1/projects/NAMED/default-assignee",
+		map[string]any{"assignee": nil}, "alice")
+	if cleared.Code != http.StatusBadRequest || !strings.Contains(cleared.Body.String(), `"code":"INVALID_PROJECT"`) {
+		t.Fatalf("clearing a stored default: status=%d body=%s, want 400 INVALID_PROJECT", cleared.Code, cleared.Body.String())
+	}
+	var stored string
+	if err := database.Pool.QueryRow(context.Background(),
+		`select default_assignee from projects where key = 'NAMED'`).Scan(&stored); err != nil {
+		t.Fatalf("read the stored default: %v", err)
+	}
+	if stored != "bob" {
+		t.Fatalf("stored default = %q, want bob: a refused clear writes nothing", stored)
+	}
+
+	// And under every route, the column itself: a project with no default is not storable.
+	_, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name) values ('DIRECT', 'Written straight to the table')`)
+	if err == nil {
+		t.Fatal("the database stored a project naming no default assignee")
+	}
+	if !strings.Contains(err.Error(), `null value in column "default_assignee"`) ||
+		!strings.Contains(err.Error(), "23502") {
+		t.Fatalf("a direct insert with no default was refused with %v, want the not-null violation on default_assignee", err)
+	}
+}
+
 // An agent session creates a project with its bearer, as it creates an issue: the project is
-// listed like any other, and its project.created event names the session that created it.
+// listed like any other, and its project.created event names the session that created it. The
+// session acts for nobody, so the call names the person the project's unowned work lands on,
+// which every project has (createProject, projects.go); the create's answer names that person,
+// and the list does not, since the person-scoped GET /api/v1/settings/project-default-assignees
+// is the one read of a project's default.
 func TestASessionBearerCreatesAProject(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
-		"key": "AGENT", "name": "Agent project", "actor": sessionActor(),
+		"key": "AGENT", "name": "Agent project", "default_assignee": "alice", "actor": sessionActor(),
 	})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("a session creates a project: status=%d body=%s", created.Code, created.Body.String())
 	}
 	project := decodeBody[projectResponse](t, created)
-	if project.Key != "AGENT" || project.Name != "Agent project" || project.CreatedAt == "" {
+	if project.Key != "AGENT" || project.Name != "Agent project" || project.DefaultAssignee != "alice" || project.CreatedAt == "" {
 		t.Fatalf("created project = %#v", project)
 	}
 
@@ -82,16 +191,26 @@ func TestASessionBearerCreatesAProject(t *testing.T) {
 	if len(projects) != 1 || projects[0].Key != "AGENT" || projects[0].Name != "Agent project" {
 		t.Fatalf("listed projects = %#v, want the session's AGENT", projects)
 	}
+	if listedProjects := decodeBody[[]map[string]any](t, listed); len(listedProjects) != 1 {
+		t.Fatalf("listed projects = %#v, want one", listedProjects)
+	} else if _, carried := listedProjects[0]["default_assignee"]; carried {
+		t.Fatalf("the project list carried default_assignee: %s", listed.Body.String())
+	}
 }
 
 // A key that already exists is refused whoever asks: a session's bearer and a signed-in person's
-// cookie each get 409 PROJECT_EXISTS, and the project keeps the name it was created with.
+// cookie each get 409 PROJECT_EXISTS, and the project keeps the name it was created with. The
+// bearer acts for nobody, so it names the person whose cookie this server issues; that person is
+// seeded here because establishing their session records no `people` row (newCookieServerOn),
+// and a create names somebody who has signed in.
 func TestCreatingATakenProjectKeyIsRefusedForABearerAndACookie(t *testing.T) {
 	t.Parallel()
-	handler, _, _, withCookie := newCookieServer(t)
+	database := storetest.Open(t)
+	seedPeople(t, database, "alice@d.example")
+	handler, _, _, withCookie, _ := newCookieServerOn(t, database, 0)
 
 	if first := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
-		"key": "TAKEN", "name": "First", "actor": sessionActor(),
+		"key": "TAKEN", "name": "First", "default_assignee": "alice@d.example", "actor": sessionActor(),
 	}); first.Code != http.StatusCreated {
 		t.Fatalf("create TAKEN: status=%d body=%s", first.Code, first.Body.String())
 	}
@@ -100,7 +219,7 @@ func TestCreatingATakenProjectKeyIsRefusedForABearerAndACookie(t *testing.T) {
 		response *httptest.ResponseRecorder
 	}{
 		{"bearer", sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
-			"key": "TAKEN", "name": "Again", "actor": sessionActor(),
+			"key": "TAKEN", "name": "Again", "default_assignee": "alice@d.example", "actor": sessionActor(),
 		})},
 		{"cookie", withCookie(http.MethodPost, "/api/v1/projects", map[string]string{"key": "TAKEN", "name": "Again"})},
 	} {
@@ -227,7 +346,8 @@ func TestAVisibleNameWithFormatCharactersIsAcceptedForABearerAndAPerson(t *testi
 		"Team 🫩",
 	} {
 		bearer := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
-			"key": fmt.Sprintf("VISB%d", index), "name": name, "actor": sessionActor(),
+			"key": fmt.Sprintf("VISB%d", index), "name": name,
+			"default_assignee": "alice", "actor": sessionActor(),
 		})
 		if bearer.Code != http.StatusCreated {
 			t.Errorf("a bearer creating name %q: status=%d body=%s, want 201", name, bearer.Code, bearer.Body.String())
@@ -263,7 +383,7 @@ func TestACodePointGoLeavesUnassignedIsVisibleForABearerAndAPerson(t *testing.T)
 	handler := newTestHandler(t)
 	name := string(unassigned)
 	if bearer := sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]any{
-		"key": "UNASB", "name": name, "actor": sessionActor(),
+		"key": "UNASB", "name": name, "default_assignee": "alice", "actor": sessionActor(),
 	}); bearer.Code != http.StatusCreated {
 		t.Errorf("a bearer creating name U+%04X: status=%d body=%s, want 201", unassigned, bearer.Code, bearer.Body.String())
 	}
@@ -286,6 +406,8 @@ func TestAProjectNameOverTheCapIsCapExceededForABearerAndAPerson(t *testing.T) {
 	}{
 		{"bearer", "CAPB", func(body map[string]any) *httptest.ResponseRecorder {
 			body["actor"] = sessionActor()
+			// The session acts for nobody, so it names the person the project defaults to.
+			body["default_assignee"] = "alice"
 			return sessionRequest(t, handler, http.MethodPost, "/api/v1/projects", body)
 		}},
 		{"person", "CAPP", func(body map[string]any) *httptest.ResponseRecorder {

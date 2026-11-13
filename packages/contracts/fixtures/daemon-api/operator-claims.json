@@ -45,7 +45,7 @@
       "uncertainStreak": 0,
       "pending": {
         "id": "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
-        "task": "Implement the plan in .legion/plan.json.",
+        "task": "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
         "queuedAt": "2026-09-22T09:30:58Z",
         "deliveredAt": "2026-09-22T09:31:04Z",
         "confirmedAt": "2026-09-22T09:31:04Z",
@@ -67,6 +67,25 @@
         "argsHash": "c40d9e1b7a52f368",
         "startedAt": "2026-09-22T09:31:22Z"
       }
+    },
+    {
+      "token": "legion-legion-legion-211-tester",
+      "tree": "LEGION-211",
+      "issue": "LEGION-211",
+      "role": "tester",
+      "generation": 3,
+      "state": "launching",
+      "session": "",
+      "sessionFile": "",
+      "budgets": {
+        "launchFailures": 2,
+        "deaths": 0,
+        "promptFailures": 0,
+        "promptRetires": 0
+      },
+      "uncertainStreak": 0,
+      "pluginContract": 0,
+      "leakCheckCause": "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s"
     }
   ],
   "pod_update_rounds": {

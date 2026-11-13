@@ -109,7 +109,7 @@ func seedItems(t *testing.T, q querier, project string) seededItems {
 	t.Helper()
 	ctx := context.Background()
 	items := seededItems{issueKey: project + "-1"}
-	mustExec(t, q, `insert into projects (key, name) values ($1, 'Test') on conflict (key) do nothing`, project)
+	mustExec(t, q, `insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing`, project)
 	mustExec(t, q, `
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ($1, $2, 1, 'Ünïcödé title — 日本語 ✓ 🚀', '{"kind":"user","id":"alice"}', 'A')
@@ -540,7 +540,7 @@ func TestCoverRequeuesAnIssueEmbeddedWithItsTitleAlone(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	withTriggersOff(t, database, func(q querier) {
-		mustExec(t, q, `insert into projects (key, name) values ('OLDE', 'Test')`)
+		mustExec(t, q, `insert into projects (key, name, default_assignee) values ('OLDE', 'Test', 'alice')`)
 		mustExec(t, q, `
 			insert into issues (key, project_key, number, title, created_by, rank)
 			values ('OLDE-1', 'OLDE', 1, 'Old title', '{"kind":"user","id":"alice"}', 'A')`)
@@ -920,7 +920,7 @@ func TestASuccessfulEmbedProvesTheEmbedderForThePass(t *testing.T) {
 func seedCoverageWork(t *testing.T, database *store.Store) {
 	t.Helper()
 	withTriggersOff(t, database, func(q querier) {
-		mustExec(t, q, `insert into projects (key, name) values ('CONC', 'Test')`)
+		mustExec(t, q, `insert into projects (key, name, default_assignee) values ('CONC', 'Test', 'alice')`)
 		mustExec(t, q, `
 			insert into issues (key, project_key, number, title, created_by, rank)
 			select 'CONC-' || n, 'CONC', n, 'Unseen ' || n, '{"kind":"user","id":"alice"}', 'A' from generate_series(1, 1200) n`)
@@ -1086,7 +1086,7 @@ func TestCoverageCountsEveryStateAnItemCanBeIn(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	withTriggersOff(t, database, func(q querier) {
-		mustExec(t, q, `insert into projects (key, name) values ('CVRG', 'Test')`)
+		mustExec(t, q, `insert into projects (key, name, default_assignee) values ('CVRG', 'Test', 'alice')`)
 		mustExec(t, q, `
 			insert into issues (key, project_key, number, title, created_by, rank, created_at)
 			values ('CVRG-1', 'CVRG', 1, 'No row', '{"kind":"user","id":"alice"}', 'A', now() - interval '2 hours')`)
@@ -1374,7 +1374,7 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	const blockedTitle = "Issue whose row an open transaction is inserting"
 	longTitle := strings.Repeat("long pending title ", 1600)
 	withTriggersOff(t, database, func(q querier) {
-		mustExec(t, q, `insert into projects (key, name) values ('SIDE', 'Test')`)
+		mustExec(t, q, `insert into projects (key, name, default_assignee) values ('SIDE', 'Test', 'alice')`)
 		mustExec(t, q, `
 			insert into issues (key, project_key, number, title, created_by, rank)
 			values ('SIDE-1', 'SIDE', 1, $1, '{"kind":"user","id":"alice"}', 'A')`, blockedTitle)

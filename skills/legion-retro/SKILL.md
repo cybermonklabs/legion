@@ -7,32 +7,26 @@ description: "Use when the Legion daemon starts you, the implementer, on `Phase:
 
 If this skill disagrees with the code, a command's output or its `--help`, follow those and say which line of this skill is wrong.
 
-Retro runs on the reviewed head, after the architect's acceptance and before the merger's READY
-(its `handoff_complete` with `ready: true`, which the daemon checks;
-`skill://legion-worker/references/merge-gate.md` has the whole order). `<issue>` is your
-`LEGION_ISSUE`. Run steps 1-6 even when the change looks mechanical; each gives its reason.
+Retro runs on the reviewed head, after the architect's acceptance and before the merger merges it
+(`skill://legion-worker/references/merge-gate.md` has the whole order).
+`<issue>` is your `LEGION_ISSUE`.
+Run steps 1-6 even when the change looks mechanical; each gives its reason.
 
 Retro commits nothing and pushes nothing: every handoff is a record on the Dispatch issue, no
 commit carries one, and what the work taught is a `dispatch comment` on the issue, for the skill
 librarian to read. `docs/solutions/` stays as history, and no role writes there.
 The head the merger names is the head the reviewer approved.
 
-## What READY refuses
+## What sends the issue back here
 
-- **A change after the approved head** (`READY_UNREVIEWED_CHANGE`): the
-  daemon diffs the reviewer's approved head against the head on GitHub, and the issue goes back to
-  the reviewer for another review. READY still lets through a commit that changes only
-  `docs/solutions/`, which no role writes any more, and a change whose every path is under
-  `.legion/`, where handoffs lived before they moved to the Dispatch issue and which nothing
-  writes or reads now, so nobody reviews a path there. Since retro commits nothing, an ordinary
-  head carries neither.
-- `READY_UNREVIEWED_CHANGE` has more causes than a path outside retro's own. Every one of them
-  sends the head back to review and none is an error to retry; the complete list, with each
-  remedy, is the merger's own role prompt part.
+Nothing does.
+No Legion check compares the head that merges with the one the review approved, so whether a push
+made after the approval must be reviewed again is the repository's own rule, and no handoff is a
+commit, so no head carries one for a retro to remove.
 
 Work on the existing issue branch: never rebase it onto another base, never make another branch or
-bookmark, and push nothing, because READY reads this branch's head and a push of yours would void
-the reviewer's approval.
+bookmark, and push nothing, because the merger merges this branch's head and a push of yours
+would put a commit above the head the reviewer approved.
 
 ## When retro stops
 
@@ -50,12 +44,20 @@ for a finished retro only.
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
    that line quotes). A pass stands for every `before_merge` check of the issue at the approved
    head, from the implementer and from the tester alike, and the pull request
-   body's `Checks` block carries each of those lines. In
+   body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
+   result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
+   (`skill://legion-worker/references/ci-checks.md`). In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. When a check has no pass standing at that head, or its only evidence is a unit suite,
-   call the `legion` tool's `request_backward_move` with `to: implementing` for the implementer's
-   result or `to: testing` for the tester's, its `reason` naming the check by its block id. When
+   request. A `ci_check` check has no pass standing at that head when its derived result is a
+   fail, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
+   concluded, and read again where GitHub could not be read. Send a name that no run answers
+   (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
+   wait nor that finding moves the issue back. When a check has no pass standing at that head, or
+   a check with no `ci_check` has a unit suite as its only evidence, call the `legion` tool's
+   `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check`
+   check, or `to: testing` for the tester's result, its `reason` naming the check by its block
+   id. When
    retro runs again, that gap is your first learning.
 2. **Get a second reading**, because a reader without your context sees what you stopped seeing.
    First list, in your session, the constraints the issue did not state, choices between two
@@ -108,8 +110,8 @@ for a finished retro only.
 ## Before you complete
 
 - `jj -R "$LEGION_WORKSPACE" diff --from "legion/${LEGION_ISSUE:?}@origin" --to @ --name-only`
-  lists nothing: retro leaves the workspace as it found it. READY checks the approved head the
-  review round recorded, which `read_record` does not show.
+  lists nothing: retro leaves the workspace as it found it, and the merger merges the head the
+  reviewer approved.
 - Each body line you added or changed that says work was done names work this pull request did.
 - The Dispatch comment and the Dispatch message are posted, and the pull request's head is the
   head you found.

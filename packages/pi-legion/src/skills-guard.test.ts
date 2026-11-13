@@ -78,15 +78,19 @@ test("every legion-worker reference is linked from a skill or a prompt", () => {
   expect(unlinked).toEqual([]);
 });
 
-// The daemon submits the merge itself once it accepts READY, and Legion enforces no GitHub
-// restriction the repository itself does not: no skill a Legion pane loads, and no daemon prompt,
-// says Legion never merges.
-test("no skill or prompt says Legion never merges", () => {
+// The merger merges the pull request itself, at the head it read, and the daemon submits no merge
+// and changes no merge setting (dispatch://INFRA-714, R2): no skill a Legion pane loads, and no
+// daemon prompt, may hand the merge back to the daemon. The pattern matches the claim made of the
+// daemon and not its denial, so the verb follows `daemon` directly and names what is merged.
+test("no skill or prompt says the daemon merges", () => {
   const saying = [staged, promptsRoot]
     .flatMap(files)
     .filter(
       (file) =>
-        file.endsWith(".md") && /never merges|merges? nothing/i.test(readFileSync(file, "utf8"))
+        file.endsWith(".md") &&
+        /daemon\s+(submits|arms|enqueues|enables|merges|turns)\s+(the|a|an|that|its|it|ready|auto)\b/i.test(
+          readFileSync(file, "utf8")
+        )
     )
     .map((file) => path.relative(REPO_ROOT, file));
   expect(saying).toEqual([]);
@@ -110,6 +114,48 @@ test("no skill or prompt sends an agent to the workspace recovery marker, which 
         : path.relative(REPO_ROOT, file)
     );
   expect(sending).toEqual([]);
+});
+
+// The stale-plugin lane replaces a stale process at a paced wake and asks its worker nothing, so
+// no daemon of this release opens a plugin update round: `supervise.PodRound` builds a pod
+// round's id and nothing builds a plugin round's. The controller reads an `update-stalled` wake
+// through its own reference, so a reference that still tells it a round may be
+// `plugin:<daemon contract>` teaches it to read a round the daemon cannot open — which is what
+// that reference did until this change, with nothing to see it. The rule is read off the
+// daemon's own source rather than off the sentence, and it reads both ways: while nothing builds
+// a plugin round id, no skill or prompt may promise one; the day something builds one again, the
+// controller's own reference — the file that tells it how to read a stalled round — must name
+// that round again, and this row fails until it does. The Go census beside it
+// (prompts/roles_test.go's TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen) asks the same of the
+// embedded prompts; a row quoting the deleted prose would have passed the day the lane went.
+test("no skill or prompt promises an update round no daemon can open", () => {
+  const supervise = files(path.join(REPO_ROOT, "packages/daemon/internal/supervise"))
+    .filter((file) => file.endsWith(".go") && !file.endsWith("_test.go"))
+    .map((file) => readFileSync(file, "utf8"));
+  // A reader that found no opener at all would pass below while checking nothing, so the pod
+  // round's own constructor is the control: it is the kind a skill may describe.
+  expect(supervise.some((body) => /\bPodRoundPrefix\s*\+/.test(body))).toBe(true);
+  const opensAPluginRound = supervise.some((body) => /\bPluginRoundPrefix\s*\+/.test(body));
+  const promising = [staged, promptsRoot]
+    .flatMap(files)
+    .filter(
+      (file) =>
+        file.endsWith(".md") &&
+        /plugin:<|your process alone|on a different plugin|plugin (update )?(round|task)/i.test(
+          readFileSync(file, "utf8").replace(/\s+/g, " ")
+        )
+    )
+    .map((file) =>
+      file.startsWith(staged)
+        ? path.join("skills", path.relative(staged, file))
+        : path.relative(REPO_ROOT, file)
+    );
+  expect(opensAPluginRound ? [] : promising).toEqual([]);
+  if (opensAPluginRound) {
+    const escalation = path.join(staged, "legion-controller", "references", "escalation.md");
+    const names = /plugin:<daemon contract>/.test(readFileSync(escalation, "utf8"));
+    expect(names ? [] : ["skills/legion-controller/references/escalation.md"]).toEqual([]);
+  }
 });
 
 // The controller's `gh` acts as the review App (LEGION-668): the skill must say how it checks a
@@ -227,21 +273,6 @@ test("no staged skill or daemon prompt says what a pull request body `CI` line h
         .map(({ index }) => `${name}:${text.slice(0, index).split("\n").length}`);
     });
   expect(instructing).toEqual([]);
-});
-
-// The daemon refuses a close reason and a READY packet holding a decision block with
-// CLOSE_REASON_DECISION_BLOCK and READY_PACKET_DECISION_BLOCK, however short the text is, since
-// nobody can answer a question put in a message (INFRA-1201). An architect meets both refusals
-// at `close_root` and `handoff_complete`, and reads what they mean in this reference, which
-// describes the daemon's refusals of those two calls: a code named nowhere a role reads is one
-// it cannot act on.
-test("the architect's merge-notices reference names both decision-block refusals", () => {
-  const reference = path.join(repoSkillsRoot, "legion-architect/references/merge-notices.md");
-  const text = readFileSync(reference, "utf8");
-  const missing = ["CLOSE_REASON_DECISION_BLOCK", "READY_PACKET_DECISION_BLOCK"].filter(
-    (code) => !text.includes(code)
-  );
-  expect(missing, path.relative(REPO_ROOT, reference)).toEqual([]);
 });
 
 // Background work is on for every role: Legion writes no Oh My Pi settings
@@ -457,28 +488,6 @@ test("every shipped prompt and bash-running agent says how to read a piped comma
   );
 });
 
-// R7: `READY_UNREVIEWED_CHANGE` has more causes than retro's own paths, and the merger's own
-// prompt part is the one complete list, so neither file gets a second copy of it
-// (dispatch://INFRA-427, and the spec's decision "A pointer, not a second list"). The pin counts
-// the pointer and refuses the list: a second copy would have to be kept equal to `ready.go`.
-test("retro and the merge gate point at the merger's list of READY_UNREVIEWED_CHANGE's causes", () => {
-  const files = ["skills/legion-worker/references/merge-gate.md", "skills/legion-retro/SKILL.md"];
-  countedOncePerFile(
-    "`READY_UNREVIEWED_CHANGE` has more causes than a path outside retro's own",
-    files
-  );
-  countedOncePerFile(
-    "the complete list, with each remedy, is the merger's own role prompt part",
-    files
-  );
-  for (const file of files) {
-    const text = collapsed(path.join(staged, file.slice("skills/".length)));
-    expect(text, `${file} lists the causes instead of pointing at them`).not.toContain(
-      "300-file limit"
-    );
-  }
-});
-
 // R8: every role of an issue shares one $TMPDIR on the issue's volume, so a glob sweep deletes
 // another role's open directory (dispatch://INFRA-654). The reviewer's pair states it in
 // `thermonuclear-code-quality`, which the Envoy plugin now ships and whose guard holds it there.
@@ -514,7 +523,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head is a different commit, so record each `before_merge` check again at the new head.",
+    "A new head is a different commit, so record each `before_merge` check again at the new head. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update task is the exception: that task has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger pushes nothing, so this step never falls to it; it reports a mismatch it sees to the architect.",
@@ -546,6 +555,84 @@ test("the worker skill tells a role to read the pull request's head after its ow
   expect(collapsed(path.join(staged, "legion-worker", "SKILL.md"))).toContain(
     "When the last read still is not your commit, carry the pull request with a commit of its own, an empty one when your work is complete and an empty one just as much when `@` holds work of yours, since a push of a commit the branch already holds moves no ref; the push section of your role prompt gives the one `jj` recipe, which leaves `@` and everything in it where it is."
   );
+});
+
+// dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
+// runs it or records its result, and `dispatch results` derives that result. The worker skill's
+// page holds the whole rule, and each skill text that orders a check run, recorded or judged, or
+// lists a check's attributes, carries the exception in one phrase, counted once per file, as does
+// the worker prompt's copy of the push step above. The role prompt parts are pinned in
+// roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`, and `dispatch-writing-specs` in the
+// Envoy plugin's guard.
+test("each text that orders a check run or recorded leaves out a check CI proves", () => {
+  countedOncePerFile("check carrying `ci_check` is CI's", [
+    "skills/legion-worker/references/ci-checks.md",
+    "skills/legion-worker/SKILL.md",
+    "skills/legion-worker/references/pr-body.md",
+    "skills/legion-worker/references/merge-gate.md",
+    "skills/legion-retro/SKILL.md",
+    "skills/legion-architect/SKILL.md",
+    "skills/legion-architect/references/design-gate.md",
+    "packages/daemon/internal/prompts/go/worker-common.md",
+  ]);
+});
+
+// The same rule where a text orders a check's evidence judged or recorded. Retro's trigger is met
+// by a derived result and names R5's three cases: a derived fail, or a run that concluded and
+// proved nothing, goes back to implementing; a run not concluded is waited for; and a name no run
+// answers is the architect's finding. The architect's last round records only the checks with no
+// `ci_check`, and the tester reads a `ci_check` job as that check's evidence, which its prompt's
+// core part says too.
+test("a derived result satisfies the passages that judge or record a check's evidence", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    "A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`."
+  );
+  expect(retro).toContain(
+    "Wait for a run that has not concluded, and read again where GitHub could not be read."
+  );
+  expect(retro).toContain("Neither wait nor that finding moves the issue back.");
+  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
+    "run each check with no `ci_check` on the default branch and record each result"
+  );
+  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
+    "recorded for no later step, except a `ci_check` job"
+  );
+  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
+    "A name no run answers once the head's checks have settled goes to the architect as a finding."
+  );
+  expect(
+    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
+  ).toContain(
+    "record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run)"
+  );
+});
+
+// The architect writes a check as `ci_check` where a CI job on an ordinary pull request already
+// makes its proof, so the mechanism is used rather than only available (R5).
+test("the architect writes a check CI already proves as ci_check", () => {
+  expect(
+    collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"))
+  ).toContain(
+    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write that check as `ci_check` rather than as a command."
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
+    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write `ci_check` rather than a command."
+  );
+});
+
+// A `ci_check` that no run of its name answers is a defect of the check's words, which the
+// architect corrects, and no role sends that to an implementer who cannot cure it
+// (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass
+// back names that case and gives it to the architect, so the two texts say the same thing
+// (dispatch://INFRA-3204, tester round 5).
+test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  const sentences = retro.split(/(?<=\.)\s+/);
+  const absent = sentences.filter((sentence) => sentence.includes("`absent`"));
+  expect(absent.length).toBeGreaterThan(0);
+  expect(absent.some((sentence) => sentence.includes("architect"))).toBe(true);
+  expect(absent.some((sentence) => sentence.includes("to: implementing"))).toBe(false);
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites

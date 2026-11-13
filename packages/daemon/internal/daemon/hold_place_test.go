@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // slotTakenLine is what admission logs as an issue takes one of the cap's slots (admit's logSlot).
@@ -29,11 +29,11 @@ func heldRuntimeTick(t *testing.T, w *workflowRuntime, eventID string) {
 }
 
 // waitingLine is the line the state route serves, in its order.
-func waitingLine(t *testing.T, pool *pgxpool.Pool) []string {
+func waitingLine(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	var line []string
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, catchUpClock())
+		state, err := projection.Project(context.Background(), tx, record.NewStore(), "CAPTURE", nil, nil, nil, nil, catchUpClock())
 		if err != nil {
 			return err
 		}

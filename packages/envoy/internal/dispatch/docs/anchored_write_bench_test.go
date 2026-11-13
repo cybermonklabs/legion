@@ -152,7 +152,7 @@ func newAnchoredWriteFixture(b *testing.B, markdown string, anchors int) *anchor
 	})
 	fixture := &anchoredWriteFixture{service: service, anchors: anchors}
 	fixture.commit(b, func(ctx context.Context, tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `insert into projects (key, name) values ('BENCH', 'Benchmark')`); err != nil {
+		if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('BENCH', 'Benchmark', 'alice')`); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `

@@ -468,7 +468,7 @@ func TestTheListenerHearsTheTriggersItListensFor(t *testing.T) {
 		t.Fatalf("PutSettings: %v", err)
 	}
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('LIVE', 'Live')`,
+		`insert into projects (key, name, default_assignee) values ('LIVE', 'Live', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank) values ('LIVE-1', 'LIVE', 1, 'x', '{"kind":"user","id":"alice"}', 'U')`,
 		`insert into events (issue_key, seq, type, actor, payload, notify) values ('LIVE-1', 1, 'issue.created', '{"kind":"user","id":"alice"}', '{}', false)`,
 	} {

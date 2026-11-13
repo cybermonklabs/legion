@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,13 +24,11 @@ type testSuggestionOwner struct {
 }
 
 type testSuggestionItem struct {
-	Kind       string              `json:"kind"`
-	ID         string              `json:"id"`
-	Href       string              `json:"href"`
-	Owner      testSuggestionOwner `json:"owner"`
-	Ask        *model.SearchAsk    `json:"ask"`
-	AnsweredBy string              `json:"answered_by"`
-	AnsweredAt *string             `json:"answered_at"`
+	Kind  string              `json:"kind"`
+	ID    string              `json:"id"`
+	Href  string              `json:"href"`
+	Owner testSuggestionOwner `json:"owner"`
+	Ask   *model.SearchAsk    `json:"ask"`
 }
 
 type testSuggestions struct {
@@ -36,7 +37,6 @@ type testSuggestions struct {
 	SearchNote   string                     `json:"search_note"`
 	SearchQuery  string                     `json:"search_query"`
 	Related      []testSuggestionItem       `json:"related"`
-	Decision     *testSuggestionItem        `json:"decision"`
 	Missing      string                     `json:"missing"`
 	TitleMatches []model.DuplicateCandidate `json:"title_matches"`
 }
@@ -122,63 +122,6 @@ func TestCreateIssueSuggestsSimilarOpenIssue(t *testing.T) {
 	}
 }
 
-// TestCreateAskSuggestsAnsweredPastDecision is LEGION-550's second acceptance line: filing an
-// ask that a past answered ask settles returns that decision with who answered and when.
-func TestCreateAskSuggestsAnsweredPastDecision(t *testing.T) {
-	t.Parallel()
-	handler := newTestHandler(t)
-	createSuggestionProject(t, handler, "DEC")
-
-	issue := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "DEC", "title": "Choose a transport for the billing service",
-	}, "alice")
-	if issue.Code != http.StatusCreated {
-		t.Fatalf("create issue: status=%d body=%s", issue.Code, issue.Body.String())
-	}
-	issueKey := decodeBody[testIssueWithSuggestions](t, issue).Key
-
-	opened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/asks", map[string]any{
-		"question": "Should the billing service use REST or GraphQL for its public API?",
-	}, "alice")
-	if opened.Code != http.StatusCreated {
-		t.Fatalf("open ask: status=%d body=%s", opened.Code, opened.Body.String())
-	}
-	askID := decodeBody[testAskWithSuggestions](t, opened).ID
-
-	answered := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/answer", map[string]any{
-		"text": "REST: the rest of the platform already standardizes on it.",
-	}, "alice")
-	if answered.Code != http.StatusOK {
-		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
-	}
-
-	secondIssue := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "DEC", "title": "Pick an API transport for the new notifications service",
-	}, "alice")
-	if secondIssue.Code != http.StatusCreated {
-		t.Fatalf("create second issue: status=%d body=%s", secondIssue.Code, secondIssue.Body.String())
-	}
-	secondIssueKey := decodeBody[testIssueWithSuggestions](t, secondIssue).Key
-
-	newAsk := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+secondIssueKey+"/asks", map[string]any{
-		"question": "Should the notifications service use REST or GraphQL for its public API?",
-	}, "alice")
-	if newAsk.Code != http.StatusCreated {
-		t.Fatalf("open second ask: status=%d body=%s", newAsk.Code, newAsk.Body.String())
-	}
-	created := decodeBody[testAskWithSuggestions](t, newAsk)
-	if created.Advice == nil || created.Advice.Suggestions == nil || created.Advice.Suggestions.Decision == nil {
-		t.Fatalf("advice.suggestions.decision missing from %+v", created)
-	}
-	decision := created.Advice.Suggestions.Decision
-	if decision.Kind != "ask" || decision.ID != askID {
-		t.Fatalf("decision = %+v, want the answered ask %s", decision, askID)
-	}
-	if decision.AnsweredBy != "alice" || decision.AnsweredAt == nil || *decision.AnsweredAt == "" {
-		t.Fatalf("decision = %+v, want who answered and when", decision)
-	}
-}
-
 // TestRelatedCheckReportsNotMadeWhenItsContextIsDone: the write succeeds whatever its check does,
 // and a check that could not search says it was not made and why. The check runs after the
 // write already committed, so this calls it directly with an already-expired context rather than
@@ -200,8 +143,8 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the request that ran it ended before the check finished" || suggestions.Search != "" {
 		t.Fatalf("suggestions = %+v, want not_made with the request's end as missing and no search when the context is already done", suggestions)
 	}
-	if len(suggestions.Related) != 0 || suggestions.Decision != nil {
-		t.Fatalf("suggestions = %+v, want nothing related or decided when search could not run", suggestions)
+	if len(suggestions.Related) != 0 {
+		t.Fatalf("suggestions = %+v, want nothing related when search could not run", suggestions)
 	}
 	// The wire shape matters as much as the Go value: every other path sends `related` as an
 	// array, and a client iterating it breaks on `null`.
@@ -221,55 +164,78 @@ func TestRelatedCheckReportsNotMadeWhenItsContextIsDone(t *testing.T) {
 	}
 }
 
-// TestSuggestionsDecisionIsNotReorderedByOwnerStatus: Decision picks the best-ranked answered ask
-// in the search's own order, even when a worse-matching answered ask whose issue is still open
-// would sort ahead of it in Related (closedOwner's open-before-done rule applies only there).
-func TestSuggestionsDecisionIsNotReorderedByOwnerStatus(t *testing.T) {
+// TestSuggestionsOfferNoAnsweredAskBehindTheTopThree writes down what INFRA-2337 gave up on
+// purpose, so a reader of this suite sees the loss rather than guesses at it: a filing is offered
+// the three items most like it and nothing else. The corpus holds an ask with an answer on a done
+// issue, which relatedItemRank puts behind the three open issues, so no related place is left for
+// it. The no-write check below, with those three issues left out, shows the search does find that
+// ask, so this case fails on the bound and not on an empty corpus. The filing's answer then names
+// the ask nowhere. A change that offers it again fails here, and that is what this case is for.
+func TestSuggestionsOfferNoAnsweredAskBehindTheTopThree(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
-	createSuggestionProject(t, handler, "DECORD")
+	createSuggestionProject(t, handler, "NOOFFER")
+	const question = "Should the billing service public API use REST or GraphQL?"
 
-	weakOpen := createSuggestionIssue(t, handler, map[string]any{
-		"project": "DECORD", "title": "Choose a transport for the notifications service",
-	})
-	weakAsk := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+weakOpen+"/asks", map[string]any{
-		"question": "Should the notifications service use REST for its API?",
+	// The done issue's own title shares no word with the question, so the one row of that owner
+	// the search finds is the ask itself.
+	closed := createSearchIssue(t, handler, "NOOFFER", "Quarterly hangar roster", "")
+	opened := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+closed+"/asks", map[string]any{
+		"question": question,
 	}, "alice")
-	weakAskID := decodeBody[testAskWithSuggestions](t, weakAsk).ID
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+weakAskID+"/answer", map[string]any{
+	if opened.Code != http.StatusCreated {
+		t.Fatalf("open the ask: status=%d body=%s", opened.Code, opened.Body.String())
+	}
+	settled := decodeBody[testAskWithSuggestions](t, opened).ID
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+settled+"/answer", map[string]any{
 		"text": "REST.",
 	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("answer weak ask: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("answer the ask: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+closed,
+		map[string]any{"status": "done"}, "alice"); response.Code != http.StatusOK {
+		t.Fatalf("close the issue holding the ask: status=%d body=%s", response.Code, response.Body.String())
 	}
 
-	strongDone := createSuggestionIssue(t, handler, map[string]any{
-		"project": "DECORD", "title": "Billing service transport",
-	})
-	strongAsk := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+strongDone+"/asks", map[string]any{
-		"question": "Should the billing service public API use REST or GraphQL?",
-	}, "alice")
-	strongAskID := decodeBody[testAskWithSuggestions](t, strongAsk).ID
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+strongAskID+"/answer", map[string]any{
-		"text": "REST.",
-	}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("answer strong ask: status=%d body=%s", response.Code, response.Body.String())
-	}
-	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+strongDone, map[string]any{"status": "done"}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("close strong issue: status=%d body=%s", response.Code, response.Body.String())
+	// Three open issues on the same words take every related place: relatedItemRank puts an open
+	// issue before anything a done issue owns.
+	var open []string
+	for _, title := range []string{
+		"Billing service public API over REST or GraphQL for invoices",
+		"Billing service public API over REST or GraphQL for receipts",
+		"Billing service public API over REST or GraphQL for statements",
+	} {
+		open = append(open, createSearchIssue(t, handler, "NOOFFER", title, ""))
 	}
 
-	target := createSuggestionIssue(t, handler, map[string]any{
-		"project": "DECORD", "title": "Pick an API transport for the checkout service",
+	withoutTheThree := getRelated(t, handler, "NOOFFER", url.Values{
+		"title": {question}, "exclude_issues": open,
 	})
+	if relatedAsk(t, withoutTheThree, settled).ID != settled {
+		t.Fatalf("related = %+v, want the ask %s, which the search does find", withoutTheThree.Related, settled)
+	}
+
+	target := createSearchIssue(t, handler, "NOOFFER", "Pick an API transport for the checkout service", "")
 	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+target+"/asks", map[string]any{
-		"question": "Should the billing service public API use REST or GraphQL?",
+		"question": question,
 	}, "alice")
-	created := decodeBody[testAskWithSuggestions](t, response)
-	if created.Advice == nil || created.Advice.Suggestions == nil || created.Advice.Suggestions.Decision == nil {
-		t.Fatalf("advice.suggestions.decision missing: %s", response.Body.String())
+	if response.Code != http.StatusCreated {
+		t.Fatalf("open the new ask: status=%d body=%s", response.Code, response.Body.String())
 	}
-	if decision := created.Advice.Suggestions.Decision; decision.ID != strongAskID {
-		t.Fatalf("decision = %+v, want the better-matching ask %s even though its issue %s is done", decision, strongAskID, strongDone)
+	created := decodeBody[testAskWithSuggestions](t, response)
+	if created.Advice == nil || created.Advice.Suggestions == nil {
+		t.Fatalf("advice.suggestions missing: %s", response.Body.String())
+	}
+	if owners := relatedOwners(*created.Advice.Suggestions); len(owners) != suggestionRelatedCount {
+		t.Fatalf("related owners = %v, want the %d open issues %v", owners, suggestionRelatedCount, open)
+	}
+	for _, item := range created.Advice.Suggestions.Related {
+		if !slices.Contains(open, item.Owner.Key) {
+			t.Fatalf("related item = %+v, want one of the open issues %v", item, open)
+		}
+	}
+	if strings.Contains(response.Body.String(), settled) {
+		t.Fatalf("the ask %s reaches the filer: %s", settled, response.Body.String())
 	}
 }
 
@@ -390,36 +356,36 @@ func TestRelatedCheckRespectsDeadlineWhenProjectLookupIsLocked(t *testing.T) {
 // each case's outcome is its own choice rather than its machine's speed.
 func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 	t.Parallel()
-	// fileAsk seeds the corpus — an answered ask that settles the question, plus a separate
+	// fileAsk seeds the corpus — an ask with an answer on the same question, plus a separate
 	// target issue — and files the ask on the target through the real route with the
 	// write-advice query failing. Each call builds its own handler, and so its own database
 	// clone (storetest.Open), so the two cases are independent under -count=N and in any order.
 	type filedAsk struct {
-		advice        testAdvisedSuggestions
-		decisionAskID string
-		createdAskID  string
-		database      *store.Store
+		advice       testAdvisedSuggestions
+		seededIssue  string
+		createdAskID string
+		database     *store.Store
 	}
 	// Both asks are filed by a session, not a human: the armed advice hook fires from
 	// computeWriteAdvice, which writeAdvice runs for a session actor alone (write_advice.go), so
 	// a human-actor write would never reach the failing query these cases are about and the
-	// suggestions-only fallback (asks.go) would never run. Answering the decision ask stays a
+	// suggestions-only fallback (asks.go) would never run. Answering the seeded ask stays a
 	// human's, as it is.
 	askActor := adviceSessionActor("session-advice-fails")
 	fileAsk := func(t *testing.T, allowance time.Duration) filedAsk {
 		t.Helper()
 		handler, database := newFailingAdviceHandler(t, "session_writes_since_human", allowance)
 		createAdviceProject(t, handler, "ADVFAIL")
-		decisionSpec := ""
-		decisionIssue := createAdviceIssue(t, handler, "ADVFAIL", "Choose a transport for the billing service", &decisionSpec)
-		decisionAsk := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+decisionIssue.Key+"/asks", map[string]any{
+		seededSpec := ""
+		seededIssue := createAdviceIssue(t, handler, "ADVFAIL", "Choose a transport for the billing service", &seededSpec)
+		seededAsk := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+seededIssue.Key+"/asks", map[string]any{
 			"question": "Should the billing service public API use REST or GraphQL?", "actor": askActor,
 		})
-		decisionAskID := decodeBody[testAskWithSuggestions](t, decisionAsk).ID
-		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+decisionAskID+"/answer", map[string]any{
+		seededAskID := decodeBody[testAskWithSuggestions](t, seededAsk).ID
+		if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+seededAskID+"/answer", map[string]any{
 			"text": "REST.", "expected_edited_at": nil,
 		}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("answer decision ask: status=%d body=%s", response.Code, response.Body.String())
+			t.Fatalf("answer the seeded ask: status=%d body=%s", response.Code, response.Body.String())
 		}
 
 		targetSpec := ""
@@ -446,15 +412,15 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 		}
 		createdAskID := decodeBody[testAskWithSuggestions](t, response).ID
 		return filedAsk{
-			advice:        advice,
-			decisionAskID: decisionAskID,
-			createdAskID:  createdAskID,
-			database:      database,
+			advice:       advice,
+			seededIssue:  seededIssue.Key,
+			createdAskID: createdAskID,
+			database:     database,
 		}
 	}
 
 	t.Run("an allowance no database can meet still answers with an envelope", func(t *testing.T) {
-		// decision being absent here is meaningful only because the generous case below finds it
+		// The empty related list here is meaningful only because the generous case below fills it
 		// in an identically seeded corpus: trim this case's seeding and this assertion goes green
 		// because there was nothing to find, not because the allowance ran out.
 		filed := fileAsk(t, time.Nanosecond)
@@ -466,30 +432,32 @@ func TestCreateAskOnIssueKeepsSuggestionsWhenWriteAdviceFails(t *testing.T) {
 		if filed.advice.Suggestions.Outcome != "not_made" || filed.advice.Suggestions.Missing == "" {
 			t.Fatalf("advice.suggestions = %+v, want not_made with a reason the check was not made", filed.advice.Suggestions)
 		}
-		if filed.advice.Suggestions.Decision != nil {
-			t.Fatalf("advice.suggestions.decision = %+v, want none under an allowance no database can meet", filed.advice.Suggestions.Decision)
+		if len(filed.advice.Suggestions.Related) != 0 {
+			t.Fatalf("advice.suggestions.related = %+v, want none under an allowance no database can meet", filed.advice.Suggestions.Related)
 		}
 	})
 
-	t.Run("a generous allowance finds the answered question and records it", func(t *testing.T) {
+	t.Run("a generous allowance finds the related items and records them", func(t *testing.T) {
 		filed := fileAsk(t, 30*time.Second)
 		if filed.advice.Suggestions == nil {
-			t.Fatalf("advice.suggestions = null, want the decision ask %s despite the failed write-advice query: advice = %+v", filed.decisionAskID, filed.advice)
+			t.Fatalf("advice.suggestions = null, want the seeded issue %s despite the failed write-advice query: advice = %+v", filed.seededIssue, filed.advice)
 		}
-		if filed.advice.Suggestions.Outcome != "found" || filed.advice.Suggestions.Decision == nil {
-			t.Fatalf("advice.suggestions = %+v, want found with the answered ask %s as its decision", filed.advice.Suggestions, filed.decisionAskID)
+		if filed.advice.Suggestions.Outcome != "found" {
+			t.Fatalf("advice.suggestions = %+v, want found with the seeded issue %s among its related items", filed.advice.Suggestions, filed.seededIssue)
 		}
-		if filed.advice.Suggestions.Decision.ID != filed.decisionAskID {
-			t.Fatalf("advice.suggestions.decision.id = %q, want the answered ask %q", filed.advice.Suggestions.Decision.ID, filed.decisionAskID)
+		// The seeded issue's own row or the row of the ask it holds, whichever the fusion ranked
+		// better: each owner keeps one item.
+		if relatedIndex(filed.advice.Suggestions.Related, filed.seededIssue) < 0 {
+			t.Fatalf("advice.suggestions.related = %+v, want the seeded issue %s among them", filed.advice.Suggestions.Related, filed.seededIssue)
 		}
 		var persisted int
 		if err := filed.database.Pool.QueryRow(context.Background(), `
-			select count(*) from write_suggestions where source_ask_id = $1
+			select count(*) from write_suggestions where source_ask_id = $1 and role = 'related'
 		`, filed.createdAskID).Scan(&persisted); err != nil {
 			t.Fatalf("count persisted suggestions: %v", err)
 		}
 		if persisted == 0 {
-			t.Fatalf("write_suggestions has no rows for ask %s despite the response carrying decision %s", filed.createdAskID, filed.advice.Suggestions.Decision.ID)
+			t.Fatalf("write_suggestions has no related row for ask %s though the response carries %d related items", filed.createdAskID, len(filed.advice.Suggestions.Related))
 		}
 	})
 }

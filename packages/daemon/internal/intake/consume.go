@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 const notificationStream = "ENVOY_NOTIFICATIONS"
@@ -227,7 +227,7 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // when it last handled a message (Lag).
 type Consumers struct {
 	spec     ConsumerSpec
-	pool     *pgxpool.Pool
+	pool     Pool
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
 	github   jetstream.Consumer
@@ -254,7 +254,7 @@ type Consumers struct {
 // it, and takes the rest of this boot's configuration. A consumer that applied messages before and
 // is now missing starts at the last one it applied (openConsumer). pool is required: it is where
 // facts are applied and positions kept.
-func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool *pgxpool.Pool, spec ConsumerSpec) (*Consumers, error) {
+func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
 	}
@@ -344,9 +344,9 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 // only when a fact is applied, never for a message acknowledged without a transaction, so on a
 // quiet project an old position is no sign of loss: the messages between it and the stream's first
 // may have been handled by the consumer before it went missing, or may have been missed. The
-// daemon applied none of them, and the pass heals those it would have acted on. A consumer with no
-// position starts at the next message.
-func openConsumer(ctx context.Context, stream jetstream.Stream, pool *pgxpool.Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+// daemon applied none of them, and nothing replays them. A consumer with no position starts at the
+// next message.
+func openConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return createConsumer(ctx, stream, pool, logger, config)
@@ -361,7 +361,7 @@ func openConsumer(ctx context.Context, stream jetstream.Stream, pool *pgxpool.Po
 
 // createConsumer creates the missing durable consumer config names, at its stored position when
 // pool keeps one and at the next message otherwise (openConsumer).
-func createConsumer(ctx context.Context, stream jetstream.Stream, pool *pgxpool.Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func createConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
@@ -384,7 +384,7 @@ func createConsumer(ctx context.Context, stream jetstream.Stream, pool *pgxpool.
 	// The stored time keeps microseconds; the stream's, nanoseconds. A start at the stream's first
 	// message itself is not before it.
 	if first := info.State.FirstTime; start.Before(first.Truncate(time.Microsecond)) {
-		logger.Warn("intake: a missing durable consumer's last applied message is older than the stream's first message; events published between may have been missed: the daemon applied none of them, and the pass heals those it would have acted on",
+		logger.Warn("intake: a missing durable consumer's last applied message is older than the stream's first message; events published between may have been missed: the daemon applied none of them, and nothing replays them, so an issue one of them would have moved waits for its next event",
 			"consumer", config.Durable, "start", start.UTC().Format(time.RFC3339Nano), "stream_first", first.UTC().Format(time.RFC3339Nano))
 	}
 	return consumer, nil
@@ -702,7 +702,7 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // long as it hangs (the delivery mechanism: ConsumerSpec.HandlerLimit's comment). The handler is
 // cut at that limit instead, its message naked and delivered again rather than held for the
 // length of the hang.
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool *pgxpool.Pool, handlers []Handler) bool {
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
 		logMessage(spec.Logger, slog.LevelError, "poison JetStream message", message, "error", err)
@@ -726,7 +726,13 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 		return ackMessage(spec.Logger, message)
 	}
 
-	work, cancel := context.WithTimeout(ctx, spec.HandlerLimit)
+	// One message's work is one entry point of the daemon's pool, and it takes a hold mark of its
+	// own (store.ForConcurrentWorker): the three durable consumers run beside each other on one
+	// context, so a mark they shared would have one consumer's open transaction refuse the other
+	// two their first connection, while a mark per message refuses only the handling that already
+	// holds one (store.ErrNestedAcquire). A consumer delivers its messages one at a time, so this
+	// mark covers one handling and is gone with it.
+	work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
 	defer cancel()
 	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
 	started := time.Now()
@@ -803,7 +809,7 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 // should become of the message. It acknowledges, naks and terminates nothing. Each read keeps its
 // own AckWait bound, nested under work, so one dependency that is slow to answer is cut while the
 // handling as a whole runs to HandlerLimit.
-func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool *pgxpool.Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
+func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
 	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
@@ -903,14 +909,13 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // names it (ghrepo.Under, ConsumerSpec.Renames), as the workflow reads the row: a pull request
 // already open when its repository was transferred is recorded under the name it moved from,
 // while the fact names the one it moved to. It is one read of the pool per name within the one
-// AckWait, in no transaction and under no lock, made before
-// the review's GitHub reads (resolveReviewBody, resolveReviewPermission): the workflow applies
-// either fact only to a recorded pull request, so one of any other pull request is acknowledged
-// with no transaction under the fact lock (ApplyFact) and no GitHub read, whatever the number of
-// other pull requests a mapped repository reviews and checks. A pull request recorded after this
-// read, by a later opened, gets its checks and reviews from their next event or from the pass's
-// read.
-func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool *pgxpool.Pool, fact Fact) (bool, error) {
+// AckWait, in no transaction and under no lock, made before the review's GitHub reads
+// (resolveReviewBody, resolveReviewPermission): the workflow applies either fact only to a
+// recorded pull request, so one of any other pull request is acknowledged with no transaction
+// under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
+// a mapped repository reviews and checks. A pull request recorded after this read, by a later
+// opened, gets its checks and reviews from their next event.
+func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
 	var repo string
 	var number int
 	switch fact := fact.(type) {

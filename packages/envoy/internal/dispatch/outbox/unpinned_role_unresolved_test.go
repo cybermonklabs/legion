@@ -85,7 +85,7 @@ func TestACommentAnUnansweredRoleMentionWhoseHolderTheOutboxCannotNameReachesTha
 	// No claim stands for the role when the outbox reads it: the listener names its holder to
 	// the mention's sender a round trip later, and the sender pins that session on the row.
 	rig.silent(t, roleTopic)
-	claimant := rig.receiver(t, holder, true)
+	claimant := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	route := target

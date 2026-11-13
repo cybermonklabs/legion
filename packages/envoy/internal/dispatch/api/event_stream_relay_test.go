@@ -682,7 +682,7 @@ func seedLiveEvents(t *testing.T, database *store.Store, seeds []liveEventSeed) 
 	t.Helper()
 	ctx := context.Background()
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('LIVE', 'Live') on conflict do nothing`,
+		`insert into projects (key, name, default_assignee) values ('LIVE', 'Live', 'alice') on conflict do nothing`,
 		`insert into issues (key, project_key, number, title, created_by, rank) values ('LIVE-1', 'LIVE', 1, 'x', '{"kind":"user","id":"alice"}', 'U') on conflict do nothing`,
 	} {
 		if _, err := database.Pool.Exec(ctx, statement); err != nil {

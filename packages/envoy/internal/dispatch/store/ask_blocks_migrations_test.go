@@ -67,6 +67,7 @@ func TestAnOlderBuildsWriteLeavesTheAskBlocksOwed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := openTestStore(t)
+	seedCoreWithADefaultAssignee(t, store)
 	seedBlockIndexIssue(t, store)
 
 	ask := insertReturningID(t, store, `
@@ -172,6 +173,7 @@ func TestTheAskBlockMigrationsOweEveryStoredAsk(t *testing.T) {
 	migrateThrough(t, store, askBlockTables)
 	racedAsk := insertAsk("Raced?")
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

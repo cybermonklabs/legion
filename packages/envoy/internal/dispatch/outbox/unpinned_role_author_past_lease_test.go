@@ -46,7 +46,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	// sweep's resend pins it on the attempt row - this very author among the sessions it may
 	// name.
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	wrote := rig.receiver(t, author, true)
+	wrote := rig.receiver(t, author)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", nil)

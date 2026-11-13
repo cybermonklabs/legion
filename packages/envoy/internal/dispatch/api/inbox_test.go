@@ -186,10 +186,14 @@ func TestInboxCarriesAnchorDocumentForIssueAsk(t *testing.T) {
 	}
 }
 
-// The inbox partitions by the owning issue's assignee: ?assignee=me is the caller's own issues,
-// ?assignee=unassigned is issues nobody owns plus every document ask (a document has no
-// assignee), and no filter is everything. A named person is lowercased before it is checked
-// against the people who have signed in.
+// The inbox partitions by the person each question reaches, three steps resolved as the
+// question is read (askedOfPersonExpression): the person it was handed to, its issue's
+// assignee, then its project's default assignee. ?assignee=me is every question that reaches
+// the caller - the ones on their own issues, and the ones on an issue nobody holds or on a
+// project document in a project that defaults to them - and no filter is everything. Every
+// project names a default, so ?assignee=unassigned, the questions nobody waits on, answers
+// nothing. A named person is lowercased before it is checked against the people who have
+// signed in.
 func TestInboxFiltersByAssignee(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -254,23 +258,30 @@ func TestInboxFiltersByAssignee(t *testing.T) {
 		return byQuestion
 	}
 
+	// CORE was created by alice, so it defaults to her: her list holds the question on her own
+	// issue, the one on the issue the shared token created, which nobody handed on, and the one
+	// on the project document, which has no issue at all.
 	mine := questions(readInbox("?assignee=me", "Alice"))
-	if len(mine) != 1 || mine["Alice's question"].Issue == nil || mine["Alice's question"].Issue.Key != aliceKey {
-		t.Fatalf("alice's ?assignee=me = %#v, want only her issue's ask", mine)
+	if len(mine) != 3 || mine["Alice's question"].Issue == nil || mine["Alice's question"].Issue.Key != aliceKey {
+		t.Fatalf("alice's ?assignee=me = %#v, want the three questions that reach her", mine)
 	}
 	if got := mine["Alice's question"].Issue.Assignee; got == nil || *got != "alice" {
 		t.Fatalf("inbox row assignee = %v, want alice", got)
+	}
+	if row := mine["Nobody's question"]; row.Issue == nil || row.Issue.Key != nobodyKey {
+		t.Fatalf("the question on the shared token's issue = %#v, want %s's, which CORE defaults to alice",
+			row, nobodyKey)
+	}
+	if row, listed := mine["Document question"]; !listed || row.Issue != nil {
+		t.Fatalf("the project document's question = %#v (listed=%t), want it in alice's list and owned by no issue",
+			row, listed)
 	}
 	byLogin := questions(readInbox("?assignee=Bob", "alice"))
 	if len(byLogin) != 1 || byLogin["Bob's question"].Issue == nil || byLogin["Bob's question"].Issue.Key != bobKey {
 		t.Fatalf("?assignee=Bob = %#v, want only bob's issue's ask", byLogin)
 	}
-	unassigned := questions(readInbox("?assignee=unassigned", "alice"))
-	if len(unassigned) != 2 || unassigned["Nobody's question"].Issue == nil || unassigned["Nobody's question"].Issue.Key != nobodyKey || unassigned["Document question"].Issue != nil {
-		t.Fatalf("?assignee=unassigned = %#v, want the unassigned issue's ask and the document ask", unassigned)
-	}
-	if got := unassigned["Nobody's question"].Issue.Assignee; got != nil {
-		t.Fatalf("unassigned inbox row assignee = %q, want null", *got)
+	if unassigned := readInbox("?assignee=unassigned", "alice"); len(unassigned) != 0 {
+		t.Fatalf("?assignee=unassigned = %#v, want nothing: every question reaches a person", unassigned)
 	}
 	if everything := readInbox("", "alice"); len(everything) != 4 {
 		t.Fatalf("unfiltered inbox has %d rows, want 4: %#v", len(everything), everything)

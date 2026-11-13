@@ -147,15 +147,20 @@ func testDatabaseURLFor(database string) string {
 	return server.String()
 }
 
-// cloneTestDatabase makes a database of this test's own, a file copy of template, and drops it
-// in the background when t ends; TestMain waits for the drops. The template is the migrated one,
-// or template1 for a test that migrates.
-func cloneTestDatabase(t *testing.T, prefix, template string) string {
+// cloneTestDatabase makes a database of this test's own, a file copy of a template, and drops it
+// in the background when t ends; TestMain waits for the drops. The template is the migrated one
+// when migrated is set, or template1 for a test that migrates.
+func cloneTestDatabase(t *testing.T, prefix string, migrated bool) string {
 	t.Helper()
 	raw := testDatabaseURL(t)
 	shared.once.Do(func() { shared.err = prepareClones(raw) })
 	if shared.err != nil {
 		t.Fatalf("prepare the migrated template database: %v", shared.err)
+	}
+	// Read after the once: a caller that passed shared.template read it before prepareClones set it.
+	template := "template1"
+	if migrated {
+		template = shared.template
 	}
 	suffix, err := randomSuffix()
 	if err != nil {
@@ -191,7 +196,7 @@ func dropTestDatabase(name string) {
 // about the runner itself migrates, and there from an empty database (openEmptyTestStore).
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-	name := cloneTestDatabase(t, "dispatch_test_", shared.template)
+	name := cloneTestDatabase(t, "dispatch_test_", true)
 	store, err := Open(context.Background(), testDatabaseURLFor(name), WithMaxConns(testPoolSize))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
@@ -206,7 +211,7 @@ func openTestStore(t *testing.T) *Store {
 // current schema and takes a clone of the migrated template (openTestStore).
 func openEmptyTestStore(t *testing.T) *Store {
 	t.Helper()
-	name := cloneTestDatabase(t, "dispatch_empty_test_", "template1")
+	name := cloneTestDatabase(t, "dispatch_empty_test_", false)
 	store, err := Open(context.Background(), testDatabaseURLFor(name), WithMaxConns(testPoolSize))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
@@ -1003,6 +1008,7 @@ func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed pre-rank issues: %v", err)
 	}
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0015: %v", err)
 	}
@@ -1052,6 +1058,7 @@ func TestMigrate0009BackfillsProjectAndRefKeyFrom0007(t *testing.T) {
 	migrateThrough(t, store, 7)
 	seedGraphAt0007(t, store)
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0009: %v", err)
 	}
@@ -1113,6 +1120,7 @@ func TestMigrate0009DropsMalformedArtifactReferences(t *testing.T) {
 		t.Fatalf("seed malformed artifact reference: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate malformed artifact reference: %v", err)
 	}
@@ -1144,7 +1152,7 @@ func TestMigrateMarksLegacyNonNotifyingEventsPublished(t *testing.T) {
 		t.Fatalf("forget backfill migration: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Legacy', '{"kind":"session","id":"s"}', 'U');
 		insert into events (issue_key, seq, type, actor, payload, notify)
@@ -1197,6 +1205,7 @@ func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 		t.Fatalf("seed null options: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0031: %v", err)
 	}
@@ -1245,6 +1254,7 @@ func TestMigrate0035FoldsActionAsksIntoQuestions(t *testing.T) {
 		t.Fatalf("seed action ask: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0035: %v", err)
 	}
@@ -1283,7 +1293,7 @@ func TestMigrate0053RefusesAnApprovalOnAnyAskButAnApprovalAsk(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');
 	`); err != nil {

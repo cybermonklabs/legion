@@ -33,6 +33,15 @@
           "LEGION-301"
         ]
       }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "design_gate",
+        "heldBy": [
+          "LEGION-208"
+        ]
+      }
     ]
   },
   "issues": {
@@ -101,7 +110,11 @@
       "tree": "LEGION-208",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "why": {
+        "state": "blocked",
+        "reason": "The design gate of its tree stands shut: LEGION-208 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."
+      }
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -114,7 +127,20 @@
       "workers": {},
       "waitingLine": {
         "place": 1,
-        "length": 2
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 1,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00010",
+        "ownRank": "00010",
+        "rootKey": "LEGION-210",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank. It waits on LEGION-301, which is not done."
       }
     },
     "LEGION-211": {
@@ -128,7 +154,20 @@
       "workers": {},
       "waitingLine": {
         "place": 2,
-        "length": 2
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 2,
+        "partLength": 2,
+        "holdsSlot": false,
+        "rootRank": "00011",
+        "ownRank": "00011",
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
+      },
+      "why": {
+        "state": "waiting",
+        "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
       }
     }
   },
@@ -190,6 +229,8 @@
     "production_check_hours": 336,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "worker_silence_minutes": 30,
+    "worker_background_hours": 4,
     "pod_update_max_open_rounds": null,
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,

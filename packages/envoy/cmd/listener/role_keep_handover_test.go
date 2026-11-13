@@ -56,10 +56,10 @@ type keptLaneUnderClaim struct {
 // own client and under the Nats-Msg-Id this records, before it is recorded: that is what the
 // real forward does (startRoleForward), and a test about what the holder's host is handed - the
 // comment under one key, and under which - can read it nowhere else, the recorded handover
-// saying only what the drain meant to send. The holder's receipt is not waited for, the stand-in
-// being the holder here, so the publish costs the drain one round trip to the stream and no
-// receipt window; the stream collapses two forwards of one message to one holder, as it does in
-// production, since they carry one id.
+// saying only what the drain meant to send. No holder is waited for, the stand-in being the
+// holder here and no session answering a forward at all, so the publish costs the drain one
+// round trip to the stream and nothing more; the stream collapses two forwards of one message
+// to one holder, as it does in production, since they carry one id.
 func newKeptLaneUnderClaim(t *testing.T, harness listenerDeliveryHarness, forward func(attempt int, holder string, item contracts.Envelope) error) *keptLaneUnderClaim {
 	t.Helper()
 	lane := &keptLaneUnderClaim{harness: harness, forwards: make(chan keptHandover, 64)}

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -76,6 +76,9 @@ func (d *gatePublishDispatch) GetIssue(_ context.Context, key string) (dispatch.
 func (d *gatePublishDispatch) SetStatus(context.Context, string, string) (dispatch.Issue, error) {
 	return dispatch.Issue{}, nil
 }
+func (d *gatePublishDispatch) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
+	return dispatch.Issue{}, nil
+}
 func (d *gatePublishDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *gatePublishDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("gatePublishDispatch takes no hand-over")
@@ -109,7 +112,7 @@ func (d *gatePublishDispatch) PutGatedSteps(context.Context, string, []string) e
 type gatePublishRig struct {
 	t         *testing.T
 	ctx       context.Context
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   *record.Postgres
 	engine    *workflow.Engine
 	admission *admit.Admission

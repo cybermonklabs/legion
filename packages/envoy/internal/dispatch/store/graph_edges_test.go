@@ -24,7 +24,7 @@ func TestGraphEdgesUnionsMentionsWithEveryStructuralRelation(t *testing.T) {
 		Spec, ProjectDoc, BlockAsk, AnchoredAsk, ProjectAsk, PlainAsk, AnchoredComment, ProjectComment, Reply, AskReply, Message, MessageReply string
 	}
 	if err := store.Pool.QueryRow(ctx, `
-		with p as (insert into projects (key, name) values ('CORE', 'Core') returning key),
+		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),
 		parent as (insert into issues (key, project_key, number, title, created_by, rank) values ('CORE-1', 'CORE', 1, 'Parent', '{"kind":"user","id":"alice"}', 'A') returning key),
 		child as (insert into issues (key, project_key, number, title, created_by, rank, parent_key) select 'CORE-2', 'CORE', 2, 'Child', '{"kind":"user","id":"alice"}', 'B', key from parent returning key),
 		blocker as (insert into issue_links (issue_key, kind, target_key) values ('CORE-2', 'blocked_by', 'CORE-1') returning issue_key),
@@ -130,7 +130,7 @@ func TestGraphEdgesCarryBlockMentionsAndPartOf(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
 	if _, err := store.Pool.Exec(ctx, `
-		with p as (insert into projects (key, name) values ('CORE', 'Core') returning key),
+		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),
 		issue as (insert into issues (key, project_key, number, title, created_by, rank) select 'CORE-1', key, 1, 'One', '{"kind":"user","id":"alice"}', 'A' from p returning key),
 		target as (insert into issues (key, project_key, number, title, created_by, rank) select 'CORE-2', 'CORE', 2, 'Two', '{"kind":"user","id":"alice"}', 'B' from issue returning key),
 		spec as (insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by) select key, 'CORE', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}' from issue returning id),
@@ -185,7 +185,7 @@ func TestItemBlockArmsAreGraphEdges(t *testing.T) {
 	store := openTestStore(t)
 	var comment, reply, message, messageReply, ask, askReply string
 	if err := store.Pool.QueryRow(ctx, `
-		with p as (insert into projects (key, name) values ('CORE', 'Core') returning key),
+		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),
 		issue as (insert into issues (key, project_key, number, title, created_by, rank) select 'CORE-1', key, 1, 'One', '{"kind":"user","id":"alice"}', 'A' from p returning key),
 		target as (insert into issues (key, project_key, number, title, created_by, rank) select 'CORE-2', 'CORE', 2, 'Two', '{"kind":"user","id":"alice"}', 'B' from issue returning key),
 		comment as (insert into comments (issue_key, author, body) select key, '{"kind":"user","id":"alice"}', 'Alpha CORE-2' from issue returning id),

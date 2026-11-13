@@ -93,6 +93,7 @@ func TestUserThreadsSeedStartsReadAndTriggersKeepEachRow(t *testing.T) {
 		insert into comments (artifact_id, author, body) values ($1, '{"kind":"user","id":"alice"}', 'Nice.')
 		returning id::text`, file)
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -192,6 +193,7 @@ func TestUserThreadsSeedMergesWithRowsTheTriggerWrote(t *testing.T) {
 	if row, ok := readUserThread(t, store, "alice", comment); !ok || !row.unread {
 		t.Fatalf("before the seed: %+v (found %v), want the trigger's unread row", row, ok)
 	}
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -249,6 +251,7 @@ func TestUserThreadsCatchUpCountsAReplyTheSeedRaced(t *testing.T) {
 		t.Fatalf("after the raced seed: %+v (found %v), want the read row that missed the reply", row, ok)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -278,6 +281,7 @@ func TestUserThreadsCountAnAnswerAsAWrite(t *testing.T) {
 		values ('CORE-1', '{"kind":"user","id":"alice"}', 'Which region?', 'answered',
 			jsonb_build_object('user', 'bob', 'selected', '["eu-west-1"]'::jsonb, 'at', now() - interval '1 hour'))
 		returning id::text`)
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
@@ -335,6 +339,7 @@ func TestUserThreadsSeedStopsTheMessageWalkWhereTheTriggerDoes(t *testing.T) {
 	insertReturningID(t, store, `
 		insert into messages (issue_key, author, body, in_reply_to) values ('CORE-1', '{"kind":"user","id":"alice"}', 'Deepest', $1)
 		returning id::text`, chain[64])
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

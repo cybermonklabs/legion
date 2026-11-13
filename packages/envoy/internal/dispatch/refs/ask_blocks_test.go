@@ -469,7 +469,7 @@ func TestTheReconciliationIndexesAnAskOwedItsParts(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('CORE', 'CORE project')`,
+		`insert into projects (key, name, default_assignee) values ('CORE', 'CORE project', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank)
 		 values ('CORE-1', 'CORE', 1, 'Reference issue', '{"kind":"user","id":"alice"}', 'U')`,
 	} {

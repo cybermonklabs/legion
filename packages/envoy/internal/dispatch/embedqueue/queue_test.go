@@ -106,7 +106,7 @@ func seedIssue(t *testing.T, database *store.Store, projectKey, issueKey, title 
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, 'Test') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing
 	`, projectKey); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -747,7 +747,7 @@ func seedManyIssues(t *testing.T, database *store.Store, projectKey string, coun
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, 'Test') on conflict (key) do nothing
+		insert into projects (key, name, default_assignee) values ($1, 'Test', 'alice') on conflict (key) do nothing
 	`, projectKey); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}

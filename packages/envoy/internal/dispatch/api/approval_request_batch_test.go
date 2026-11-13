@@ -123,12 +123,13 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs at most thirty-four round trips,
+// One approval request on a document with no request open costs at most thirty-seven round trips,
 // counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
 // for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
 // is where it goes today: the first eight read the coverage the answer reports, before the
-// request's transaction opens (approvalCoverage); the twenty-six after them are the transaction
-// itself. In the order it sends them:
+// request's transaction opens (approvalCoverage); the twenty-seven after them are the transaction
+// itself, and the last two store the display trees of the texts it wrote, after the commit. In the
+// order it sends them:
 //
 //  1. the artifact row the coverage is read for (loadArtifact);
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
@@ -172,12 +173,19 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 //     (events.Broker.AppendAll);
 //  31. the references' source sequence (refs.Stamp);
 //  32. the source sequence of the links the ask's parts hold, none here (refs.Stamp's block arm);
-//  33. a batch of 2: the approval as the request leaves it (attachApproval again);
-//  34. commit.
+//  33. the person this request reaches, which the answer names (askWaitingOnPerson, the one rule
+//     every read of that person shares);
+//  34. a batch of 2: the approval as the request leaves it (attachApproval again);
+//  35. commit;
+//  36. the display trees of the texts the ask.opened event carries - its question and both option
+//     labels - stored in one statement by the publish path (storeEventDisplayTrees);
+//  37. the display tree of the question the request wrote, stored by the route itself, which the
+//     table already holds from the statement before it (`on conflict do nothing`): the route
+//     stores what it wrote whether or not the event it published carried the same text.
 //
 // The five batches hold twelve statements between them, so a request that sent each statement on
-// its own would send forty-one round trips.
-func TestApprovalRequestsCostAtMostThirtyFourRoundTrips(t *testing.T) {
+// its own would send forty-four round trips.
+func TestApprovalRequestsCostAtMostThirtySevenRoundTrips(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
@@ -202,8 +210,8 @@ func TestApprovalRequestsCostAtMostThirtyFourRoundTrips(t *testing.T) {
 	// A ceiling, not an equality: the round trips are counted through helpers several other
 	// requests share, so an exact count reds this row for a change that sends one round trip
 	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
-	// says where the thirty-four go.
-	const ceiling = 34
+	// says where the thirty-seven go.
+	const ceiling = 37
 	if len(counted) > ceiling {
 		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
 			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))

@@ -28,7 +28,7 @@ func seedIssues(t *testing.T, ctx context.Context, pool *store.Pool, project str
 	if _, err := pool.Exec(ctx, `delete from issues where project_key = $1`, project); err != nil {
 		t.Fatalf("clear %s issues: %v", project, err)
 	}
-	if _, err := pool.Exec(ctx, `insert into projects (key, name) values ($1, $1) on conflict do nothing`, project); err != nil {
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, project); err != nil {
 		t.Fatalf("seed project %s: %v", project, err)
 	}
 	for number, issue := range issues {
