@@ -13,8 +13,12 @@ import (
 // (internal/config/keytable.go) as JSON and reads nothing — no legion.yaml, no daemon, no cluster
 // — so a documentation build can run it anywhere. The output is one array, one object per
 // top-level key in table order, each with its `name`, `default`, `required` and `description` and,
-// under `nested`, every key of the mappings that belong to it, each with its own line, since the
-// loader reads no nested key without one (TestNoKeyBypassesTheKeyTable). JSON is the one shape it
+// under `nested`, every key of the mappings that belong to it, each with its line, since the
+// loader reads no nested key without one (TestNoKeyBypassesTheKeyTable). A line is a group's and
+// not a mapping's, and one group serves four mappings: an item of the `items` of a Secret or a
+// ConfigMap source, a volume's own or a projected one's, is read against the `secret.items[]` lines
+// (config's readObjectSource), so the output prints those lines once, under that path, and the
+// `items` lines of the ConfigMap and projected sources point there. JSON is the one shape it
 // prints, as `envoy-dispatch settings` prints one shape, so --json is required rather than a
 // choice among formats.
 func runConfigReference(_ context.Context, args []string, stdout, stderr io.Writer) int {

@@ -231,8 +231,12 @@ func checkDescriptor(t *testing.T, label, name, required, description string) {
 }
 
 // checkNestedKeys holds the nested half of the table: every group belongs to a top-level key and
-// is used, and every member carries a line. A describedMembers site's names carry their own
-// lines, so a name described under one mapping never stands in for the same name under another.
+// is named by a describedMembers site, and every member carries a line. It holds groups, not
+// mappings: describedMembers reads a mapping against the one group its site names, so a name
+// described under one group never stands in for the same name under another, and every mapping
+// read against one group shares that group's lines. readObjectSource's one site reads an item of
+// the `items` of every Secret and ConfigMap source, a volume's own and a projected one's alike,
+// against `secret.items[]`, so this holds the lines of those four mappings' items once, there.
 func checkNestedKeys(t *testing.T, keys loaderKeys, described map[string]bool) {
 	t.Helper()
 	for _, group := range nestedKeys {

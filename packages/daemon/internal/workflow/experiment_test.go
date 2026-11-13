@@ -118,10 +118,14 @@ func TestAnIssueExperimentIsDrawnForEachIssueOfATree(t *testing.T) {
 
 // An issue the daemon has already recorded is never drawn again, so an experiment declared after
 // it was recorded never reaches it: the draw is made where the daemon first records an issue and
-// nowhere else. The child here is recorded by an engine handed no experiment at all, and the
-// experiment is declared afterwards; the person then moves it back to todo, which re-enters it
-// through the same door its first record came through (ReenterChild), under a source that fails
-// the test when it is read.
+// nowhere else. The child here is first recorded by an engine handed no experiment at all, and
+// that record goes through recordChild, which enters the child (enterChild) and then draws its
+// issue-unit experiments (drawExperiments), none for that engine. The experiment is declared
+// afterwards, and the person moves the recorded child back to todo: that fact finds the record,
+// so it goes through Engine.ReenterChild instead, which enters the child through the same
+// enterChild and draws nothing. The test depends on that difference, and holds the re-entry to it
+// under a source that fails the test when it is read; the fresh child at the end, recorded
+// through recordChild under the declaring engine, is drawn.
 func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})

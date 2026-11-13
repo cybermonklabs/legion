@@ -2200,6 +2200,7 @@ The four columns stay in the schema exactly as they stand, this release writes n
 To roll this release back to contract 94, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
 There is no SQL to run and no table to drop:
 the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
+A `legion` of this release kept through the rollback reads the rolled-back daemon's `memory` line as the earlier release's own `legion state` prints it: that daemon serves no `assignments`, so the line counts every issue whose `memoryGroup` is set, by that group and its `memoryDrawMode` (`experimentLines` in `packages/daemon/cmd/legion/main.go`).
 What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
 The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.8.1`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
 it changes arms all the same.

@@ -2117,6 +2117,74 @@ func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.
 	}
 }
 
+// R6 holds the documented rollback to contract 94 to a deployment that keeps this `legion`: the
+// daemon it then reads serves no `assignments` and no `settings.projects.<KEY>.experiments`, and
+// every issue's draw is in its three memory fields, which every daemon from contract 49 serves.
+// The memory line counts those fields where an issue carries no `assignments`, as the merge
+// base's own `memorySummary` counted them, so the line is the one that release's `legion` prints.
+// Where an issue carries `assignments` the fields are not counted a second time.
+func TestPlainStateCountsTheMemoryLineFromTheMemoryFieldsOfADaemonThatServesNoAssignments(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	// An issue as a daemon at contract 94 serves it: the three memory fields, and no
+	// `assignments`.
+	fields := func(key, group, mode string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"memoryGroup":"` + group + `","memoryDrawMode":"` + mode + `","memoryDrawnAt":"2026-10-25T10:00:00Z"}`
+	}
+	// An issue no draw reached, which that daemon serves none of the three for.
+	undrawn := `"LEGION-500":{"key":"LEGION-500","generation":1,"phase":"implementing","status":"in_progress"}`
+	rolledBack := `{` + fields("LEGION-208", "memory", "on") + `,` + fields("LEGION-209", "memory", "random") + `,` +
+		fields("LEGION-210", "memory", "random") + `,` + fields("LEGION-300", "none", "off") + `,` +
+		fields("LEGION-301", "none", "random") + `,` + undrawn + `}`
+	// The same draw as this release serves it, the row and the three fields it fills.
+	both := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress"` +
+		`,"memoryGroup":"memory","memoryDrawMode":"random","memoryDrawnAt":"2026-10-25T10:00:00Z"` +
+		`,"assignments":[{"experiment":"memory","variant":"memory","mode":"random","drawnAt":"2026-10-25T10:00:00Z"}]}}`
+	for _, tc := range []struct {
+		name, issues, settings, want string
+	}{
+		{
+			// The settings as the daemon at contract 94 serves them: the block, no `experiments`.
+			name:     "a daemon at contract 94",
+			issues:   rolledBack,
+			settings: `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random","config_files":[]},"deploys":[]}}}`,
+			want:     "memory: 5 issues — 1 memory (on), 2 memory (random), 1 none (off), 1 none (random)\n",
+		},
+		{
+			name:   "a daemon that serves no settings",
+			issues: rolledBack,
+			want:   "memory: 5 issues — 1 memory (on), 2 memory (random), 1 none (off), 1 none (random)\n",
+		},
+		{
+			name:     "an issue that carries both",
+			issues:   both,
+			settings: `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random","config_files":[]},"experiments":[]}}}`,
+			want:     "memory: 1 issue — 1 memory (random)\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + `,"issues":` + tc.issues + tc.settings + "}"
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // An operator reading plain `legion state` is told which claims nothing will wake, each by issue
 // and role under the move that brings it back (api.StrandedClaim.Move), on one line however many
 // there are; with none the line says so.

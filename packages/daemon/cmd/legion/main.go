@@ -777,20 +777,43 @@ const waitingLineNamedCap = 10
 // off (config.Project.ExperimentsDeclared), and its line counts the arms its issues hold —
 // `memory: none` for a deployment that has drawn nothing yet, which is the line such a
 // deployment read before any experiment was declared.
+//
+// A daemon older than contract 99 serves no `assignments` on any issue, and that is the daemon an
+// operator who rolls the daemon back and keeps this `legion` reads. So an issue that carries no
+// `assignments` is counted from its memory fields instead (api.Issue.MemoryGroup and
+// MemoryDrawMode, which every daemon from contract 49 serves), under the `memory` experiment,
+// wherever its `memoryGroup` is set, as the memory line counted them before any experiment was
+// declared: its group, `memory` or `none`, is the arm and its mode the mode. Such a daemon's
+// settings carry the `memory` block and no `experiments` key, and a daemon that serves no
+// settings carries neither, so the list above declares the `memory` experiment alone and the
+// line is the one the `legion` of contract 94 prints for the same body. A daemon of this release
+// serves the memory fields only where an issue's `memory` row records a draw, and serves that row
+// in `assignments` as well to every caller but a pod below contract 99 (api's stateFor), so in the
+// body it serves `legion state` an issue with no `assignments` carries no `memoryGroup` either and
+// the fallback counts nothing; in the body it serves such a pod it counts the `memory` draws.
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
 	declared := settings.Projects[project].DeclaredExperiments(project)
 	counts := make(map[string]map[armDraw]int, len(declared))
+	count := func(experiment string, draw armDraw) {
+		held, counted := counts[experiment]
+		if !counted {
+			held = map[armDraw]int{}
+			counts[experiment] = held
+		}
+		held[draw]++
+	}
 	for _, issue := range issues {
+		if len(issue.Assignments) == 0 {
+			if issue.MemoryGroup != "" {
+				count(config.MemoryExperimentName, armDraw{variant: issue.MemoryGroup, mode: issue.MemoryDrawMode})
+			}
+			continue
+		}
 		for _, assignment := range issue.Assignments {
 			if assignment.DrawnAt == nil {
 				continue
 			}
-			held, counted := counts[assignment.Experiment]
-			if !counted {
-				held = map[armDraw]int{}
-				counts[assignment.Experiment] = held
-			}
-			held[armDraw{variant: assignment.Variant, mode: assignment.Mode}]++
+			count(assignment.Experiment, armDraw{variant: assignment.Variant, mode: assignment.Mode})
 		}
 	}
 	lines := make([]string, len(declared))
