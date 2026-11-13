@@ -1731,14 +1731,57 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), the write mark its
-// retirement took (retired_at_write_mark), and the task it holds, nil for none, with the task's
-// generation, phase and confirmation.
+// is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
+// in (update_round), the write mark its retirement took (retired_at_write_mark), the moment its
+// agent last stepped (step_at, turn_started_at), what its own session last reported it was doing
+// (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
+// none, with the task's generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
+	// UpdateRound is the round the claim is in, "" when none is open: a pod round over its pod
+	// or its own plugin round (supervise.Claim.UpdateRound). A rule over a run reads it to tell
+	// a worker the round itself prompts, whose replacement is what starts it again, from one
+	// nothing will prompt (workflow.SilentPhaseWorker).
+	UpdateRound string
+	// Step is the claim's record of its agent's last step as far as the two columns this read
+	// takes it: At from step_at and TurnStartedAt from turn_started_at, both of them the zero
+	// time where the column is null, and none of the call's own fields (supervise.StepRecord,
+	// whose other columns say which call was open and are no rule's to read). It is the whole
+	// record rather than one moment so that a reader asks it the one question the record
+	// answers, supervise.StepRecord.LastStep, as the daemon's stall backstop asks it, and so no
+	// second reading of "the last step" is written anywhere.
+	//
+	// What it is for: a rule over a run that must tell a worker still moving from one nothing
+	// will prompt (workflow.SilentPhaseWorker, whose lastStep this is) needs the moment from
+	// the record, because the one reader that has the live claim at hand is the sweep over the
+	// supervisor, and admission has no claim of that supervisor at all (admit's silentWorkers).
+	Step supervise.StepRecord
+	// ActivityAt, ActivityBackground and ActivityNextReminderAt are the activity report of the
+	// process this claim runs now (POST /legion/v1/claims/activity, store's PutClaimActivity):
+	// when that session read what it was doing, zero for one that has reported nothing; whether
+	// that reading found background work of the session's own running; and when the phase
+	// reminder armed in that session is due, zero when none was live. The kinds that report
+	// named (activity_kinds) are no part of this read: a rule over a run asks whether such work
+	// is running, never what it is, where the idle release names the kinds in the hold it
+	// records.
+	//
+	// A report an earlier process of this claim made is no report, and these three read as the
+	// zero values that say nothing has been reported: the launch that replaced that process
+	// cleared it (store's putClaim, which clears the four activity columns on every write that
+	// moves the claim's generation). So a worker whose pod was replaced while a background task
+	// of its own ran reads here as what it is — a session that has said nothing yet — rather
+	// than as one still waiting on work its replacement killed.
+	//
+	// What they are for: a worker that waits on its own async job or subagent, and one whose own
+	// phase reminder is still ahead of it, take no step and are no workers nothing will prompt
+	// (workflow.SilentPhaseWorker). The idle release holds a pod on these same two readings
+	// (workflow's IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder).
+	ActivityAt             time.Time
+	ActivityBackground     bool
+	ActivityNextReminderAt time.Time
 	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
 	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
 	// does not), and 0 for a claim that has never retired and for one an earlier release retired,

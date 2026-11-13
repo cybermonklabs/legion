@@ -1242,6 +1242,33 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
 // 92: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
 // `GET /legion/v1/state` gains a fifth word, `waiting_on_issue`: an issue the daemon has started
 // that gave its admission slot back to wait on another issue — a Dispatch blocker of it that is
@@ -1249,21 +1276,26 @@ package api
 // stands in the returned part with `since` the moment its row was taken
 // (record.Issue.ReleasedForWaitAt) and `holdsSlot` false, the promotion passes over it while
 // the wait lasts, and it takes a row again at the first pass after the wait ends. A plugin from
-// 85 through 91, INFRA-714's 86 above among them, reads `kind` with a `z.enum` of the four
-// words before it, which refuses a word it does not name and with it the whole state body, so a
-// caller from a pod whose claims record a contract below 92 is served every member of that kind
-// without its `kind` (api's stateFor, withoutWaitingOnIssue), which that schema takes as
-// optional; every other field of the member is 85's, and a caller below 85 has lost `kind` with
-// the rest of them already (withoutWhyAndLineFields). Nothing else of this change is on the
-// wire.
+// 85 through 91, INFRA-714's 86 and INFRA-3219's 87 above among them, reads `kind` with a
+// `z.enum` of the four words before it, which refuses a word it does not name and with it the
+// whole state body, so a caller from a pod whose claims record a contract below 92 is served
+// every member of that kind without its `kind` (api's stateFor, withoutWaitingOnIssue), which
+// that schema takes as optional; every other field of the member is 85's, `leakCheckCause` on
+// the claim views is 87's and narrowed as 87 says, and a caller below 85 has lost `kind` with the
+// rest of them already (withoutWhyAndLineFields). It is the fourteenth narrowing and the last
+// row of stateNarrowings. Nothing else of this change is on the wire.
 // (This branch took 86 at the forward merge of 2026-11-12 that brought main in at fbe970ee,
-// which declared 85. main has since landed INFRA-714's 86, the entry right above, at a4c0ff99,
-// so this branch moves off it at the forward merge that brought that commit in. A reading of
+// which declared 85. main has since landed INFRA-714's 86 at a4c0ff99, so this branch moved off
+// it at the forward merge that brought that commit in. A reading of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 144 open pull requests of
 // cybermonklabs/legion at 2026-11-12T19:36Z gave, above 86: 87 (#3939), 88 (#3730), 89 (#3519
 // and #3659) and 90 (#3575, #3830 and #3937), and this branch took 91. The same reading of the
-// 141 open pull requests at 2026-11-12T20:41Z gives 87 (#3939), 88 (#3730), 89 (#3519 and
-// #3659), 90 (#3575 and #3830) and 91 (#3937, which had moved up from 90 meanwhile), so 92 is
-// the lowest number above the base and above every open head. Read the base's own number and
-// every open pull request again at every forward merge rather than from this line.)
+// 141 open pull requests at 2026-11-12T20:41Z gave 87 (#3939), 88 (#3730), 89 (#3519 and
+// #3659), 90 (#3575 and #3830) and 91 (#3937, which had moved up from 90 meanwhile), so this
+// branch took 92. main has since landed #3939's 87, INFRA-3219's, the entry right above, at
+// 12ba4e6a, and the forward merge that brought that commit in read the 139 open pull requests
+// again at 2026-11-13T05:17Z: above 87 they declare 88 (#3730), 89 (#3659), 90 (#3830), 91
+// (#3519, #3573 and #3712), 93 (#3937), 96 (#2731 and #3677), 97 (#3575) and 98 (#3708), and no
+// open head declares 92, so this branch keeps it. Read the base's own number and every open pull
+// request again at every forward merge rather than from this line.)
 const DaemonAPIVersion = 92

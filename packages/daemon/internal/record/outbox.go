@@ -309,6 +309,18 @@ type Notice struct {
 	// report, so the controller names each there and takes nothing for it. A tick with nothing
 	// blocked carries none.
 	Blocked []BlockedIssue `json:"blocked,omitempty"`
+	// Silent is every issue of the project whose phase worker is one nothing will prompt
+	// (workflow.SilentPhaseWorker, dispatch://INFRA-3163), and every one whose worker's own
+	// report of background work has stood past its bound, which the daemon never prompts
+	// (workflow.BackgroundStalledWorker, SilentIssue.BackgroundSince), as admission derives the
+	// list (admit.Admission.silentWorkers). Only a tick controller notice carries it, as Blocked
+	// does: the tick is the turn that posts the day's report, and a tick with nothing silent
+	// carries none. The issue's architect was told each of these by a `worker-silent` or
+	// `worker-background-stalled` notice of its own, judged by the same rules, though a handler
+	// also refuses a fact of another generation of the issue, which the tick never reads; the
+	// controller is the second reader, because that architect may be failed or gone, so its
+	// notice reaches nobody, and the controller holds `fresh_session` and reads the whole project.
+	Silent []SilentIssue `json:"silent,omitempty"`
 	// Actor is who made the spec decision a design-approved, design-changes-requested or
 	// carried-gate-opened notice reports, or the decision a parked-decision notice relays: the
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
@@ -440,6 +452,33 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 		out.BlockedBy = []string{}
 	}
 	return json.Marshal(out)
+}
+
+// SilentIssue is one issue whose phase worker nothing will prompt, as the tick notice above
+// carries it: the issue, the role whose claim is silent, the moment that claim's agent last
+// stepped (supervise.StepRecord.LastStep), and how long it has been quiet. For a plain silence
+// the last step is never the zero time, which workflow.SilentPhaseWorker refuses to judge from.
+// It lives here beside BlockedIssue, below its reader, for the same reason that one does: one
+// shape of the fact, named where every reader of the notice can see it.
+//
+// BackgroundSince is set on an entry of the other kind alone: a worker whose own session's
+// report of background work has stood past `worker_background_hours`
+// (workflow.BackgroundStalledWorker), which the daemon tells of and never prompts. It is the
+// moment of that report (RoleClaim.ActivityAt), and absent from a plain silence's entry.
+//
+// Silent is text rather than a number of seconds or a time.Duration, and it is
+// time.Duration.String's own text rounded to the minute ("2h30m0s"): the controller reads this
+// list in the day's report, where a reader needs the length at a glance, and the `worker-silent`
+// notice the issue's architect was sent states the same silence the same way (workflow's
+// workerSilentRecord). The minute is the smallest unit any of this is measured in — the sweep
+// that finds a silence runs every minute, and the bound is `worker_silence_minutes` — so no
+// reader is owed the seconds.
+type SilentIssue struct {
+	Issue           string     `json:"issue"`
+	Role            claim.Role `json:"role"`
+	LastStep        time.Time  `json:"lastStep"`
+	Silent          string     `json:"silent"`
+	BackgroundSince time.Time  `json:"backgroundSince,omitzero"`
 }
 
 // CatchUp is what a tree's root architect is told of its tree when its claim is ready at a launch
@@ -1374,8 +1413,23 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // says what became of that stalled process as well, where the end let it go: that it was
 // stopped, or that the runtime did not confirm the stop and it may be running still
 // (internal/daemon's stallBackstopEnds, stallStopClause).
+//
+// `worker-silent` is the worker that stopped between turns rather than inside one: its process
+// is up, it holds no task, and its agent has not stepped for longer than the bound the
+// deployment sets (`worker_silence_minutes`), so nothing in the daemon and nothing in that
+// process will prompt it (workflow's SilentPhaseWorker, workerSilent). It is that worker's
+// issue's architect's to read, as `worker-stalled` is, and it says what the daemon wrote about
+// it: the start row that sends the phase's task again, under the assignment the phase row
+// names where it holds one (workflow's workerSilentDid).
+//
+// `worker-background-stalled` is the worker the silence repair must leave alone: its own
+// session reports background work of its own running, which no bound can tell from a job that
+// hung, and that report has stood past `worker_background_hours` (workflow's
+// workerBackgroundStalled). It is that worker's issue's architect's to read, and it is a telling
+// and not a repair: it names the kinds the session reported and how long the report has stood,
+// and says that nothing was sent and nothing will be sent for it.
 var validNoticeKinds = []NoticeKind{
-	"phase-finished", "worker-died", "worker-stalled", "held",
+	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
 	"design-approved", "design-changes-requested", "carried-gate-opened",
 	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",

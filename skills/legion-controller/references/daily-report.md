@@ -73,6 +73,13 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   and that it takes a slot again by itself at the first pass after its wait ends.
   That kind is the one reading that says the daemon started the issue and it gave its slot back:
   the state gives it to no issue Legion has not started.
+- **Phase workers nothing will prompt.** Each entry of the tick's `silent` list, with the role whose
+  claim is silent and how long it has been quiet (`skill://legion-controller/references/wakes.md`).
+  That list arrives on the tick wake alone and is in no `read_state` field, so the report names the
+  most recent tick's list and says nothing of them on a day no tick carried one.
+  An entry with `backgroundSince` is a worker whose own background work has stood past `worker_background_hours`,
+  which the daemon does not prompt.
+  Name it with how long that work has stood, counted from `backgroundSince`.
 - **Free slots.** Counted as the skill's "Free slots" says, in issues rather than trees; each
   stays free until an issue in the line takes it.
 - **Open capabilities.** Each row of `read_state`'s `capabilities` whose `status` is `open`: its
