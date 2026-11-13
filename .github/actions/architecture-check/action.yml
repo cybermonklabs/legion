@@ -1,0 +1,80 @@
+name: Check Dispatch architecture notes
+description: >-
+  Checks a repository's Dispatch architecture notes by the Dispatch server's own rules: which
+  entries of the directory are notes, how large a note may be, and whether the note set is
+  valid. It builds packages/envoy's architecture-check command from this repository, with the Go
+  that packages/envoy/go.mod names, and runs it over a directory of the caller's checkout.
+
+  It is meant to be called from other repositories, pinned by a full commit SHA. README.md beside
+  this file gives the inputs, the output, the exit statuses and a job to copy.
+
+inputs:
+  path:
+    description: >-
+      The notes directory. A relative path is resolved against the caller's checkout,
+      $GITHUB_WORKSPACE, and an absolute path is kept as it is.
+    default: .dispatch/architecture
+  allow-empty:
+    description: >-
+      `true` accepts an empty directory and a directory that does not exist as the empty note
+      set, as the Dispatch server does, so a mistyped path also passes with a count of 0. Set it
+      only while the repository has no note.
+    default: 'false'
+
+outputs:
+  count:
+    description: >-
+      The number of notes the command judged. It is set whenever the command printed its count
+      line: on exit 0 (a valid set) and on exit 1 (a refused set).
+    value: ${{ steps.run.outputs.count }}
+
+runs:
+  using: composite
+  steps:
+    # The runner fetches this whole repository for the action, and github.action_path is
+    # .github/actions/architecture-check inside it, so the version comes from this repository's
+    # packages/envoy/go.mod and never from the caller's tree.
+    - id: setup-go
+      name: Install the Go that packages/envoy/go.mod names
+      uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      with:
+        go-version-file: ${{ github.action_path }}/../../../packages/envoy/go.mod
+        cache: false
+
+    # The command's own module and build caches, which check.sh points the build at, so an entry
+    # holds this build alone and never the caller's caches.
+    - id: cache
+      name: Restore the command's module and build caches
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/architecture-check/mod
+          ${{ runner.temp }}/architecture-check/build
+        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+
+    - name: Build the architecture-check command
+      shell: bash
+      run: bash "$GITHUB_ACTION_PATH/check.sh" build
+
+    # Saves on a miss only, and never in a pull request or a merge group: their entry lands in
+    # their own cache scope, which no other pull request reads, and pull_request_target runs in
+    # the base branch's scope, where a build of a pull request's code must not write. A step runs
+    # only after every step above it succeeded, so this one also follows a successful build.
+    - name: Save the command's module and build caches
+      if: steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && github.event_name != 'merge_group'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: |
+          ${{ runner.temp }}/architecture-check/mod
+          ${{ runner.temp }}/architecture-check/build
+        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+
+    # The inputs reach the script as environment variables and never as text of `run:`, so no
+    # input can become shell code.
+    - id: run
+      name: Check the architecture notes
+      shell: bash
+      env:
+        INPUT_PATH: ${{ inputs.path }}
+        INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
+      run: bash "$GITHUB_ACTION_PATH/check.sh" run
