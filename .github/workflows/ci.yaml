@@ -2305,6 +2305,9 @@ jobs:
               - 'packages/dispatch/e2e/**'
               - 'docs/site/src/**'
               - '**/AGENTS.md'
+              # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
+              # an assignee move, which must name the project's default assignee.
+              - 'packages/envoy/cmd/dispatch/README.md'
               # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
