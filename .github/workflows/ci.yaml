@@ -1431,6 +1431,10 @@ jobs:
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              - '.github/scripts/pg-connection-ceiling.sh'
+              # internal/dispatch/testlimits/testlimits_test.go holds this script's
+              # max_connections to testlimits.ServerConnections.
+              - 'packages/daemon/docker/legion-testpg'
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
             # checks, the seven shell-script tests, and the build and pack of the envoy commands.
             # gofmt -l . walks every .go file under packages/envoy, those tests and the scripts
@@ -1502,6 +1506,7 @@ jobs:
               # edit of either alone must start this job.
               - 'docs/site/src/content/docs/dispatch/running-dispatch.md'
               - '.dispatch/architecture/dispatch-store.md'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # The API race job. internal/dispatch/api's lock_level_test.go:120-133 walks every
             # non-test .go file under packages/envoy (event_insert_guard_test.go:32 and
             # review_write_guard_test.go:44 use the same walk), so this filter keeps the wide root
@@ -1516,6 +1521,7 @@ jobs:
               - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
             # a race job of twenty minutes or more must not run on every change under that tree
             # (INFRA-490). This is the closure of ./internal/dispatch/docs/ (`go list -deps -test
@@ -1525,6 +1531,9 @@ jobs:
               - '.github/workflows/ci.yaml'
               # The race step runs the package under this sampler (the step's comment says why).
               - '.github/scripts/race_memory.py'
+              # The step that sizes each job's Postgres runs this script, which runs
+              # internal/dispatch/store/cmd/connections (and so testlimits and the store, below).
+              - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/contracts/testdata/**'
@@ -1554,10 +1563,12 @@ jobs:
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/refs/*'
               - 'packages/envoy/internal/dispatch/store/*'
+              - 'packages/envoy/internal/dispatch/store/cmd/connections/*'
               # internal/dispatch/store embeds every migration.
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/store/searchtest/*'
               - 'packages/envoy/internal/dispatch/store/storetest/*'
+              - 'packages/envoy/internal/dispatch/testlimits/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/dispatch/texttrees/*'
@@ -1587,6 +1598,7 @@ jobs:
               - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
             dispatch_multiprocess:
               - '.github/workflows/ci.yaml'
@@ -1597,6 +1609,7 @@ jobs:
               - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # `go test -tags twobuild ./cmd/dispatch`, as dispatch_multiprocess plus what the job
             # runs beside it: the current build's CLI (`bun packages/envoy-client/bin/dispatch.ts`,
             # with the contracts it imports, after a frozen Bun install) and the script that builds
@@ -1620,6 +1633,7 @@ jobs:
               - 'packages/proof-editor/**'
               - 'scripts/third-party-notices.ts'
               - 'scripts/e2e/lib/held-port.py'
+              - '.github/scripts/pg-connection-ceiling.sh'
               - *bun_install
             # The server-change soak (listener-server-change): `go test -tags serverchange
             # ./cmd/listener`. The listener's own packages, and what its test binary compiles
@@ -1907,6 +1921,7 @@ jobs:
               # loads six of @legion/broker-client's seven modules through envoy-client's
               # src/broker-credential.ts:21-22.
               - 'packages/broker-client/**'
+              - '.github/scripts/pg-connection-ceiling.sh'
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
             # job (.github/workflows/worker-image.yaml, which the build reads too): the root
             # manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
@@ -4878,7 +4893,6 @@ jobs:
       TESTCONTAINERS_RYUK_DISABLED: "true"
       # (The smoke test and the image it runs live in the envoy-smoke job below.)
     steps:
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -4898,16 +4912,10 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
-      # The server's version and the pgvector version it offers, read from the service itself, so
-      # the run shows which Postgres the tests below ran on.
-      # Every row that starts a Dispatch process needs a server that can serve what it may
-      # open. The size is derived from the code rather than written here: testlimits.
-      # RequiredConnections is what the most processes any one test starts may open together
-      # (.github/scripts/pg-connection-ceiling.sh);
-      # packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses a start the server
-      # cannot serve, naming the arithmetic.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # The server's version and the pgvector version it offers, read from the service itself, so
+      # the run shows which Postgres the tests below ran on.
       - name: Postgres service version
         run: |
           docker exec "${{ job.services.postgres.id }}" psql -U postgres -Atc "select current_setting('server_version_num'), coalesce((select default_version from pg_available_extensions where name = 'vector'), 'no vector')"
@@ -5150,7 +5158,6 @@ jobs:
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -5158,12 +5165,6 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Every row that starts a Dispatch process needs a server that can serve what it may
-      # open. The size is derived from the code rather than written here: testlimits.
-      # RequiredConnections is what the most processes any one test starts may open together
-      # (.github/scripts/pg-connection-ceiling.sh);
-      # packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses a start the server
-      # cannot serve, naming the arithmetic.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch
@@ -5206,7 +5207,6 @@ jobs:
       # variable they never run under the race detector.
       BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -5214,12 +5214,6 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Every row that starts a Dispatch process needs a server that can serve what it may
-      # open. The size is derived from the code rather than written here: testlimits.
-      # RequiredConnections is what the most processes any one test starts may open together
-      # (.github/scripts/pg-connection-ceiling.sh);
-      # packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses a start the server
-      # cannot serve, naming the arithmetic.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test the Dispatch API
@@ -5271,7 +5265,6 @@ jobs:
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -5289,6 +5282,8 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # Under the sampler, not bare: the race detector maps about four bytes of shadow memory per
       # byte of heap, and this package's race binary asked for more than the runner's 16 GiB,
       # which has no swap. The kernel killed this step three times with no output at all, which
@@ -5301,14 +5296,6 @@ jobs:
       # out, so the log still carries the --- FAIL lines and the package's own line. -count=1
       # because the job restores the Go build cache above, and a cached pass must not stand in
       # for a run.
-      # Every row that starts a Dispatch process needs a server that can serve what it may
-      # open. The size is derived from the code rather than written here: testlimits.
-      # RequiredConnections is what the most processes any one test starts may open together
-      # (.github/scripts/pg-connection-ceiling.sh);
-      # packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses a start the server
-      # cannot serve, naming the arithmetic.
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Race-test the document service
         run: RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/
         working-directory: packages/envoy
@@ -5367,7 +5354,6 @@ jobs:
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -5388,19 +5374,13 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
+      - name: Size the service for this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       # -v, because the package's leak check prints its line from TestMain after the tests have
       # run: go test in package-list mode buffers the test binary's own output and drops it when
       # the package passes, so without -v a green run would carry the `ok` line and nothing else,
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
-      # Every row that starts a Dispatch process needs a server that can serve what it may
-      # open. The size is derived from the code rather than written here: testlimits.
-      # RequiredConnections is what the most processes any one test starts may open together
-      # (.github/scripts/pg-connection-ceiling.sh);
-      # packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses a start the server
-      # cannot serve, naming the arithmetic.
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Test the document service under the cleanup detector
         run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 34m ./internal/dispatch/docs/
         working-directory: packages/envoy
@@ -5442,7 +5422,6 @@ jobs:
     env:
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -5450,12 +5429,6 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Every row that starts a Dispatch process needs a server that can serve what it may
-      # open. The size is derived from the code rather than written here: testlimits.
-      # RequiredConnections is what the most processes any one test starts may open together
-      # (.github/scripts/pg-connection-ceiling.sh);
-      # packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses a start the server
-      # cannot serve, naming the arithmetic.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Memory tests of the Dispatch server
@@ -5512,12 +5485,6 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # This lane starts two Dispatch processes against the one service, and each may open
-      # store.ConnectionsPerProcess connections, so the service is sized from that constant
-      # rather than from a number written here (.github/scripts/pg-connection-ceiling.sh). A
-      # service that allows fewer fails later and elsewhere, as 53300 refusals inside a room, a
-      # lease or a socket; packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses such a
-      # server by name at the first process it starts.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-process tests of the Dispatch server
@@ -5605,14 +5572,7 @@ jobs:
           PREVIOUS_COMMIT: ${{ steps.previous.outputs.commit }}
           DISPATCH_PREVIOUS_BUILD: ${{ runner.temp }}/dispatch-previous
         run: packages/envoy/scripts/build-dispatch-build.sh --commit "$PREVIOUS_COMMIT" --out "$DISPATCH_PREVIOUS_BUILD"
-      # Two builds of Dispatch serve this one service at once, each able to open
-      # store.ConnectionsPerProcess connections, and the browser half below adds its own: the
-      # service is sized from that constant rather than from a number here
-      # (.github/scripts/pg-connection-ceiling.sh), since the ceiling has climbed 105, 108 and
-      # 112 as pools were added and each climb left a literal wrong and silent. The failure a
-      # small service gives is 53300 refusals inside a room, a lease or a socket, which name
-      # nothing of the cause.
-      - name: Size the service for this lane's Dispatch builds
+      - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Two-build tests of the Dispatch server
         env:
@@ -6116,7 +6076,6 @@ jobs:
       LEGION_E2E_DISPATCH_STACK: "1"
       DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -6136,12 +6095,6 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
-      # Every row that starts a Dispatch process needs a server that can serve what it may
-      # open. The size is derived from the code rather than written here: testlimits.
-      # RequiredConnections is what the most processes any one test starts may open together
-      # (.github/scripts/pg-connection-ceiling.sh);
-      # packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses a start the server
-      # cannot serve, naming the arithmetic.
       - name: Size the service for this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites
