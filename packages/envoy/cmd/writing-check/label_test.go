@@ -161,3 +161,35 @@ func TestChunksCutALongWriteWithoutItsRawText(t *testing.T) {
 		t.Errorf("a short write: chunks = %v, raw %v", ranges, raw)
 	}
 }
+
+func TestResumeKeepsOnlyWritesLabelledWithoutAnError(t *testing.T) {
+	path := t.TempDir() + "/labels.jsonl"
+	records := []labelRecord{
+		{EventID: 1, SourceID: "a", WriteLabel: writePass},
+		{EventID: 2, SourceID: "b", WriteLabel: writeError, Error: "chunk 0: the run went past 5m0s",
+			Calls: []labelCall{{Fault: string(agentloop.FaultTime), Error: "the run went past 5m0s"}}},
+		{EventID: 3, SourceID: "c", Copy: "p0001", WriteLabel: writeFailure},
+	}
+	if _, err := writeJSONL(path, records); err != nil {
+		t.Fatal(err)
+	}
+	kept, err := keepLabelled(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 2 || kept[0].EventID != 1 || kept[1].Copy != "p0001" {
+		t.Errorf("kept %+v; want the two writes with no error, so --resume labels write 2 again", kept)
+	}
+}
+
+func TestEachCallIsBoundByTheCallTimeout(t *testing.T) {
+	var bound time.Duration
+	l := &labeller{chunk: 60, callTime: 7 * time.Minute, sleep: sleepCtx, call: func(ctx context.Context, req agentloop.Request) (agentloop.Result, error) {
+		bound = req.Bounds.Time
+		return (&fakeReplies{}).run(ctx, req)
+	}}
+	l.label(context.Background(), labelJob{cases: []Case{{Field: "body", Surface: surfaceComment, Text: "The cat sleeps on the mat."}}})
+	if bound != 7*time.Minute {
+		t.Errorf("the call was bound at %s, want 7m0s", bound)
+	}
+}

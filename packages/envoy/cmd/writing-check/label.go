@@ -24,8 +24,9 @@ import (
 
 // Bounds of the labeller's calls.
 const (
-	// labelCallTime bounds one model call, its one transport retry included.
-	labelCallTime = 120 * time.Second
+	// defaultLabelCallTime bounds one model call, its one transport retry included, unless
+	// --call-timeout says otherwise.
+	defaultLabelCallTime = 300 * time.Second
 	// labelOutputTokens is the most tokens one reply may take.
 	labelOutputTokens = 16000
 	// labelContextChars is the most characters of raw field text one call carries. A write over
@@ -168,6 +169,8 @@ type labeller struct {
 	model  agentloop.Model
 	system string
 	chunk  int
+	// callTime bounds one model call.
+	callTime time.Duration
 	// call is agentloop.Run, replaced in tests.
 	call func(context.Context, agentloop.Request) (agentloop.Result, error)
 	// sleep waits out a backoff, replaced in tests.
@@ -189,11 +192,12 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	modelID := flags.String("model", "claude-opus-5-5", "the labeller's model id")
 	effort := flags.String("effort", "off", "the reasoning effort asked of the model (off turns thinking off)")
 	chunk := flags.Int("chunk", 60, "the most sentences one call labels")
+	callTime := flags.Duration("call-timeout", defaultLabelCallTime, "the time bound of one model call")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
-	if *in == "" || *definition == "" || *out == "" || flags.NArg() > 0 || *concurrency < 1 || *chunk < 1 {
-		fmt.Fprintln(stderr, "writing-check label: --in, --definition, --out, --endpoint and --key-file are required, and nothing else")
+	if *in == "" || *definition == "" || *out == "" || flags.NArg() > 0 || *concurrency < 1 || *chunk < 1 || *callTime <= 0 {
+		fmt.Fprintln(stderr, "writing-check label: --in, --definition, --out, --endpoint and --key-file are required, --concurrency, --chunk and --call-timeout must be above 0, and nothing else")
 		return 2
 	}
 	model, err := probeModel(*kind, *endpoint, *modelID, "", *keyFile, embed.EntraConfig{})
@@ -260,7 +264,7 @@ func runLabel(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 	fmt.Fprintf(stderr, "writing-check label: %d writes, %d already labelled, %d to label\n", len(jobs), len(done), len(todo))
 
-	l := &labeller{model: model, system: labelPreamble + string(rubric), chunk: *chunk, call: agentloop.Run, sleep: sleepCtx}
+	l := &labeller{model: model, system: labelPreamble + string(rubric), chunk: *chunk, callTime: *callTime, call: agentloop.Run, sleep: sleepCtx}
 	records := slices.Clone(done)
 	var mu sync.Mutex
 	var writeErr error
@@ -569,7 +573,7 @@ func (l *labeller) callChunk(ctx context.Context, input labelInput) (labelCall, 
 				{Kind: agentloop.TextBlock, Text: ask},
 			}}},
 			NoCache: true,
-			Bounds:  agentloop.Bounds{Time: labelCallTime, Calls: 1, OutputTokens: labelOutputTokens},
+			Bounds:  agentloop.Bounds{Time: l.callTime, Calls: 1, OutputTokens: labelOutputTokens},
 			Final:   labelSchema,
 		})
 		call.Attempts, call.LatencyMS = attempt, float64(time.Since(start).Microseconds())/1000

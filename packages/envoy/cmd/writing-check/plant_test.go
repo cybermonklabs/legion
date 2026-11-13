@@ -51,6 +51,30 @@ func TestEveryPlantedSentenceReadsAsOneSentence(t *testing.T) {
 	}
 }
 
+// literalSubjects are nouns of things that literally display, carry, hold or pay. No fault's
+// subject may be one, so no fault has a literal reading.
+var literalSubjects = strings.Fields("plan log page dashboard output view table report screen wallet invoice queue pipe bucket record field list diff patch summary")
+
+func TestFaultsHaveNoLiteralReadingAndStateNoValue(t *testing.T) {
+	for _, v := range plantVerbs {
+		for _, s := range v.subjects(kindFault) {
+			for _, w := range strings.Fields(strings.ToLower(s.text)) {
+				if slices.Contains(literalSubjects, strings.TrimSuffix(w, "s")) || slices.Contains(literalSubjects, w) {
+					t.Errorf("%s fault subject %q is a thing that literally displays, carries, holds or pays", v.forms.base, s.text)
+				}
+			}
+		}
+		for _, rest := range v.rests(kindFault) {
+			if strings.ContainsAny(rest, "0123456789`$\"'") {
+				t.Errorf("%s fault object %q states a value", v.forms.base, rest)
+			}
+			if v.forms.base != "pay" && strings.Contains(rest, "change") {
+				t.Errorf("%s fault object %q can repeat its subject (\"This change … the change\")", v.forms.base, rest)
+			}
+		}
+	}
+}
+
 func TestPlantPutsOneSentenceInEachCopyAndPairsEachFaultWithAControl(t *testing.T) {
 	dir := t.TempDir()
 	cases := syntheticCorpus(map[string]int{"comment": 20, "document": 20, "message": 20, "result": 20, "issue_title": 20})

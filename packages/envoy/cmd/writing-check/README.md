@@ -305,10 +305,15 @@ work.
 The sentences come from templates in `plant.go`. They are written for this command, with generic
 subjects and objects, in the present, the past and the future:
 
-- A fault states no fact for its verb, for example "The new section names the risk." The other
-  verbs are *frame*, *capture*, *surface*, *anchor*, *land*, *carry*, *unblock*, *cover*,
-  *drive*, *own*, *close*, *track*, *signal*, *reflect*, *mirror*, *hold*, *gate* and *back*,
-  used figuratively, taken in turn in a seeded order.
+- A fault states no fact for its verb and has no literal reading, for example "The new section
+  names the risk." Its object is an abstract noun that states no value (the risk, the gap, the
+  problem, the cause, the work and the like). Its subject is a text, a change or an approach,
+  never a thing that literally displays, carries, holds or pays (a plan, a log, a page, an
+  output, a table, a report, a queue). The pays faults have subjects that pay no money (a
+  branch, a cache, a scan). The other verbs are *frame*, *capture*, *surface*, *anchor*, *land*,
+  *carry*, *unblock*, *bridge*, *drive*, *own*, *close*, *track*, *signal*, *reflect*, *move*,
+  *hold*, *shape* and *back*, used figuratively, taken in turn in a seeded order.
+  `TestFaultsHaveNoLiteralReadingAndStateNoValue` checks the subjects and objects.
 - A control uses the same verb in a sentence that states the fact (a value, a holder, a date, an
   amount or an observed event), or in its literal sense with a fact, as the definition's boundary
   cases allow. For example: "The config file names `us-west1` as the region."
@@ -353,6 +358,7 @@ Output, in `--out`:
 | `--model` | The model id (default `claude-opus-5-5`). |
 | `--effort` | The reasoning effort (default `off`, no thinking). |
 | `--chunk` | The most sentences one call labels (default 60). |
+| `--call-timeout` | The time bound of one model call (default 5m). |
 
 For each write, the command numbers the prose sentences of all its fields (`prose.ProseSentences`)
 `s1`, `s2` and so on. It sends one JSON input to `agentloop.Run`: the issue title the write's
@@ -365,7 +371,7 @@ sentence) followed by the definition file. The reply must match the schema
 `not_vacuous`, `unresolved` and `shape` one of `names`, `shows`, `pays`, `other`, `none`. A reply
 that leaves out a sentence, labels one twice or labels one that was not sent is unusable.
 
-Each call is bounded at 120 s and 16,000 output tokens. A write whose sentences are more than
+Each call is bounded at `--call-timeout` and 16,000 output tokens. A write whose sentences are more than
 `--chunk` is labelled in chunks of `--chunk` sentences, each sent with the two sentences before
 and after it as context. A write whose raw text is more than 150,000 characters is sent without
 the raw text. A call that fails with a 429, a 5xx or a network error is made again up to 5 times,
