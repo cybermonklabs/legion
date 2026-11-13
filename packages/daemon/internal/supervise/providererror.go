@@ -42,10 +42,11 @@ func promptRetryDelay(attempt int) time.Duration {
 
 // providerErrored is a turn that ran and ended in a provider error. The task is kept whatever the
 // decision: it goes back unconfirmed under a new id, keeping its read mark, because the turn ran
-// and the agent read it. No prompt budget is charged — chargePrompt retires and then fails a
-// claim past Limits.PromptFailures, which would fail every claim at once in a provider outage,
-// and R2 forbids an attempt limit — so the claim counts its own run of such turns instead, and a
-// turn that ends with no error puts that run back to zero (promptResulted).
+// and the agent read it. No prompt budget is charged — the policy waives OutcomeProviderError
+// (Charges), since chargePrompt retires and then fails a claim past Limits.PromptFailures, which
+// would fail every claim at once in a provider outage, and R2 forbids an attempt limit — so the
+// claim counts its own run of such turns instead, and a turn that ends with no error puts that run
+// back to zero (promptResulted).
 //
 // The decision is made here, from this prompt's own result and nothing else
 // (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
@@ -65,8 +66,13 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 	if err := m.takeBackPending(ctx, taskRead); err != nil {
 		return err
 	}
+	// The site names the outcome and the policy charges it nothing (Charges): what bounds a run
+	// of these turns is the claim's own count above, never the prompt budget.
+	if err := m.chargePrompt(ctx, OutcomeProviderError); err != nil {
+		return err
+	}
 	if holdsTheIssue(r.HTTPStatus) {
-		return m.fail(ctx, CauseProviderError, "a provider error that cannot clear ended this claim's turn: "+cause)
+		return m.fail(ctx, failureCause(OutcomeProviderError), "a provider error that cannot clear ended this claim's turn: "+cause)
 	}
 	return m.providerErrorClears(ctx, cause)
 }

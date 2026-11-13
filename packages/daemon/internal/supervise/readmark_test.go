@@ -33,13 +33,14 @@ func TestOnlyTheTurnBoundLeavesTheTaskMarkedAsRead(t *testing.T) {
 		{
 			name: "refused in a turn of the agent's own",
 			refuse: func(h *harness, delivery string) {
-				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: delivery, Error: "Agent is already processing"})
+				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: delivery, Error: busyWords, Outcome: OutcomeAgentBusy})
 			},
 		},
 		{
 			name: "refused with no turn running",
 			refuse: func(h *harness, delivery string) {
-				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: delivery, Error: "No API key found for provider anthropic"})
+				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: delivery, Error: "No API key found for provider anthropic",
+					Outcome: OutcomePromptRefused})
 			},
 		},
 	} {
@@ -271,7 +272,7 @@ func TestAStaleRefusalLeavesARunningTurnsRun(t *testing.T) {
 	// back. Nothing read the task, since the given-up prompt's mark went with that prompt's refusal,
 	// so no run is attributed to it. A memory cleared at confirm would have dropped that refusal and
 	// left the mark standing.
-	gated.RefusePrompt("Agent is already processing")
+	gated.FailPrompt(busyRefusal())
 	gated.release <- struct{}{}
 	h.m.Wait()
 	if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
@@ -463,7 +464,7 @@ func TestABusyRefusalWhoseWriteFailsLeavesTheTaskToBeSentAgain(t *testing.T) {
 	h.must(StreamTurnStart{Claim: testToken})
 
 	h.store.fail("PutDelivery", errBoom)
-	if err := h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: "Agent is already processing a request"}); err == nil {
+	if err := h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: OutcomeAgentBusy}); err == nil {
 		t.Fatal("the refusal reported success with the delivery write failing")
 	}
 	h.store.fail("PutDelivery", nil)

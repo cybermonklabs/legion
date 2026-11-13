@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // agentEndFrame is the frame that arrives chunked: the only worker frame whose size grows with
@@ -420,7 +421,7 @@ func TestAPromptResultNamesTheDeliveryItsRequestIDCarries(t *testing.T) {
 	want := []Event{
 		TurnEnd{Claim: testClaim},
 		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", AgentInvoked: true},
-		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model"},
+		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model", Outcome: supervise.OutcomeNoTurnRun},
 	}
 	for _, want := range want {
 		if got := h.next(); got != want {
@@ -504,7 +505,8 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 	p.conn.Close()
 	want := []Event{
 		TurnStart{Claim: testClaim},
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", ConnSequence: conn.Sequence()},
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: supervise.OutcomePromptRefused,
+			ConnSequence: conn.Sequence()},
 		Closed{Claim: testClaim},
 	}
 	var got []Event
@@ -602,7 +604,8 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	replacement.send(shimwire.Response{ID: frame.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is busy"})
 	replacement.conn.Close()
 	want := []Event{
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Replayed: true, ConnSequence: replaced.Sequence()},
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: supervise.OutcomePromptRefused,
+			Replayed: true, ConnSequence: replaced.Sequence()},
 		Closed{Claim: testClaim},
 	}
 	var got []Event

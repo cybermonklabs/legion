@@ -16,9 +16,11 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/claudebridge"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 var _ runtime.Conn = (*Conn)(nil)
@@ -36,17 +38,33 @@ var (
 // RefusedError is the far side answering a request with a refusal — OMP's `{success:false}`, or
 // a shim's failed adoption, enrollment or token read. The connection is fine; the agent said no.
 //
-// A refused prompt is runtime.ErrPromptRefused, which is what the supervisor charges a prompt
-// budget on unless Reason is OMP's busy answer (runtime.RefusalReason); a refused adoption is
-// runtime.ErrAdoptRefused, charged to that same budget with no such exemption (the busy answer is
-// OMP's about a turn, not the shim's about a working copy); and a refused token request is
-// runtime.ErrTokenRefused. No other refusal is any of them — a refused negotiation ahead of the
-// prompt, a refused get_state — so the match is on the command rather than an unconditional
-// Unwrap.
+// A refused prompt is runtime.ErrPromptRefused, a refused adoption runtime.ErrAdoptRefused, and a
+// refused token request runtime.ErrTokenRefused. No other refusal is any of them — a refused
+// negotiation ahead of the prompt, a refused get_state — so the match is on the command rather
+// than an unconditional Unwrap.
+//
+// Outcome is the member of supervise's closed set this refusal is, minted here from the frame
+// that carried it, since this is where the daemon reads the far side's answer: a refused prompt is
+// PromptRefusalOutcome of its words, a refused adoption supervise.OutcomeAdoptionRefused whatever
+// its words say (the shim's own answer about a working copy, never a turn's), and every other
+// refusal carries none. Whether it charges a budget is supervise.Charges's alone.
 type RefusedError struct {
 	Claim   claim.Token
 	Command string
 	Reason  string
+	Outcome supervise.Outcome
+}
+
+// refusal is the far side refusing command in reason's words, with the outcome that refusal is.
+func (c *Conn) refusal(command, reason string) *RefusedError {
+	refused := &RefusedError{Claim: c.claim, Command: command, Reason: reason}
+	switch command {
+	case shimwire.TypePrompt:
+		refused.Outcome = PromptRefusalOutcome(reason)
+	case shimwire.TypeAdoptWorkingCopy:
+		refused.Outcome = supervise.OutcomeAdoptionRefused
+	}
+	return refused
 }
 
 func (e *RefusedError) Error() string {
@@ -59,6 +77,10 @@ func (e *RefusedError) Error() string {
 // RefusalReason is the words the far side refused with (runtime.RefusalReason).
 func (e *RefusedError) RefusalReason() string { return e.Reason }
 
+// RefusalOutcome is the outcome this refusal was minted as, which the supervisor reads from the
+// send's error rather than from its words (supervise's sendOutcome).
+func (e *RefusedError) RefusalOutcome() supervise.Outcome { return e.Outcome }
+
 func (e *RefusedError) Is(target error) bool {
 	switch target {
 	case runtime.ErrPromptRefused:
@@ -69,6 +91,35 @@ func (e *RefusedError) Is(target error) bool {
 		return e.Command == shimwire.TypeAgentSecretsToken
 	}
 	return false
+}
+
+// ompBusy is how Oh My Pi begins its refusal of a prompt that reaches it in a turn already
+// running, in full "Agent is already processing. Use steer() or followUp() to queue messages, or
+// wait for completion.". Only those first words are read, which is all the daemon has ever
+// relied on of that sentence.
+const ompBusy = "Agent is already processing"
+
+// PromptRefusalOutcome is the outcome a refusal of a prompt is, read from the refusal's words:
+// supervise.OutcomeAgentBusy where the agent says it is in a turn of its own, and
+// supervise.OutcomePromptRefused for any other words — a provider that answered before any turn
+// began among them. It reads both refusal frames of a prompt, before its acknowledgement
+// (RefusedError) and after it (LateRefusal), and a result that ran no turn (PromptResult).
+//
+// Two spellings are the busy answer. Oh My Pi's begins "Agent is already processing" (ompBusy),
+// and is matched on those words, since the rest of its sentence is free to change. The Claude Code
+// bridge's is its own constant (claudebridge.Busy), matched whole: the bridge's sentence happens
+// to begin with Oh My Pi's words too, and nothing here relies on that.
+//
+// The daemon reads words here because words are all it is given. The shim's wire carries the
+// agent's sentence and not a kind: Oh My Pi's `{success:false}` names no reason by anything but
+// its `error`, and the shim and the bridge ship in the worker image while the daemon ships on its
+// own, so a daemon meeting an older shim would read words anyway. This is the one reader of
+// either sentence, so the supervisor decides on the member and never on the words.
+func PromptRefusalOutcome(reason string) supervise.Outcome {
+	if reason == claudebridge.Busy || strings.HasPrefix(reason, ompBusy) {
+		return supervise.OutcomeAgentBusy
+	}
+	return supervise.OutcomePromptRefused
 }
 
 // The RPC protocol version the daemon speaks: v2 is the one with rpc_chunk, without which OMP
@@ -269,12 +320,12 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 		if answer.OK {
 			return nil
 		}
-		return &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
+		return c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error)
 	case shimwire.Response:
 		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
 		// it does not know.
 		if !answer.Success {
-			return &RefusedError{Claim: c.claim, Command: shimwire.TypeAdoptWorkingCopy, Reason: answer.Error}
+			return c.refusal(shimwire.TypeAdoptWorkingCopy, answer.Error)
 		}
 	}
 	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
@@ -419,7 +470,7 @@ func (c *Conn) callWithin(ctx context.Context, frame shimwire.Frame, id, deliver
 		return shimwire.Response{}, fmt.Errorf("worker-stream: %s %s answered by a %s response", c.claim, command, response.Command)
 	}
 	if !response.Success {
-		return shimwire.Response{}, &RefusedError{Claim: c.claim, Command: command, Reason: response.Error}
+		return shimwire.Response{}, c.refusal(command, response.Error)
 	}
 	return response, nil
 }
@@ -561,6 +612,15 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 				event.Provider = frame.Error.Provider
 				event.Model = frame.Error.Model
 			}
+			if !frame.AgentInvoked {
+				// A prompt that ran no turn says why in the same words a refusal would, Oh My Pi's
+				// busy answer among them; any other words, or none, are a prompt that ran no turn
+				// and names no turn of the agent's own.
+				event.Outcome = supervise.OutcomeNoTurnRun
+				if PromptRefusalOutcome(event.Error) == supervise.OutcomeAgentBusy {
+					event.Outcome = supervise.OutcomeAgentBusy
+				}
+			}
 			c.events.push(event)
 		}
 	case shimwire.Response:
@@ -646,11 +706,13 @@ func (c *Conn) answer(response shimwire.Response) {
 	case late != nil:
 		c.log.Warn("worker-stream: prompt refused after its acknowledgement",
 			"claim", c.claim, "deliveryId", late.deliveryID, "error", response.Error)
-		c.events.push(LateRefusal{Claim: c.claim, DeliveryID: late.deliveryID, Error: response.Error, ConnSequence: c.seq})
+		c.events.push(LateRefusal{Claim: c.claim, DeliveryID: late.deliveryID, Error: response.Error,
+			Outcome: PromptRefusalOutcome(response.Error), ConnSequence: c.seq})
 	case earlier != "":
 		c.log.Warn("worker-stream: a refusal replayed from an earlier connection names its delivery",
 			"claim", c.claim, "deliveryId", earlier, "error", response.Error)
-		c.events.push(LateRefusal{Claim: c.claim, DeliveryID: earlier, Error: response.Error, Replayed: true, ConnSequence: c.seq})
+		c.events.push(LateRefusal{Claim: c.claim, DeliveryID: earlier, Error: response.Error,
+			Outcome: PromptRefusalOutcome(response.Error), Replayed: true, ConnSequence: c.seq})
 	case refusal:
 		c.log.Warn("worker-stream: refusal for a prompt request this connection is not waiting on",
 			"claim", c.claim, "request", response.ID, "error", response.Error)

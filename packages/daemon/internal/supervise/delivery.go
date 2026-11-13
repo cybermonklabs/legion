@@ -1070,16 +1070,17 @@ func (m *Machine) settle(ctx context.Context) error {
 }
 
 // promptFailed is a prompt that was acknowledged and then came to nothing: the wait for its turn
-// ran out, or Oh My Pi answered it a failure with no turn of its own running. The task goes back
-// to waiting and the prompt is charged, so an agent that never takes one walks its budget to the
-// relaunch and the retirement. read says whether the agent may have read it: the bound's caller
-// passes true, since the turn that has not started may still be this task's, and a refusal passes
-// false, since a prompt the agent answered a failure never ran.
-func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error {
+// ran out, Oh My Pi answered it a failure, or its result ran no turn. The task goes back to
+// waiting and the prompt's outcome is handed to the prompt budget, which charges it where the
+// policy says so (chargePrompt, Charges), so an agent that never takes one walks its budget to the
+// relaunch and the retirement. read says whether the agent may have read it, and is the caller's
+// to answer, not the policy's: a turn that has not started may still be this task's, and a prompt
+// the agent answered a failure, or answered that it is in a turn of its own, never ran.
+func (m *Machine) promptFailed(ctx context.Context, o Outcome, read bool) error {
 	if err := m.takeBackPending(ctx, read); err != nil {
 		return err
 	}
-	return m.chargePrompt(ctx, why)
+	return m.chargePrompt(ctx, o)
 }
 
 // interruptedTask begins a task re-sent because the process running its turn died. Oh My Pi does
@@ -1255,7 +1256,7 @@ func (m *Machine) markUnread(ctx context.Context) error {
 // still waiting rather than as a turn that is over (turnOver, resultPending).
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
-	m.awaitingResult = ""
+	m.awaitingResult, m.answeredBusy = "", ""
 	p := m.claim.Pending
 	p.ConfirmedAt = time.Time{}
 	if !read {

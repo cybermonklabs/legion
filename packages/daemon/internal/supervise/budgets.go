@@ -24,8 +24,9 @@ import (
 //   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
 //     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
 //     want of a connection, or refused because the agent is in a turn of its own (Oh My Pi's busy
-//     answer, before or after its acknowledgement), is re-queued at no charge. Reset by a started
-//     turn.
+//     answer or the Claude Code bridge's, before or after its acknowledgement, or as a result that
+//     ran no turn), is re-queued at no charge. Which events charge this budget, and the other two,
+//     is one policy's (Charges, outcome.go). Reset by a started turn.
 //   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn,
 //     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
 type Budgets struct {
@@ -49,6 +50,15 @@ type Limits struct {
 // different events today, and a reader of it cannot tell a dead process from an agent that never
 // came up. The set is closed, so an agent choosing between a retry and an escalation reads a word
 // it can decide on and the sentence stays for the person behind it.
+//
+// It answers a different question than Outcome, which is why the two are two types. An Outcome is
+// one event and whether it charges a budget (Charges), and it is never stored; a FailureCause is
+// what ended a claim whose budget ran out, stored on the claim (Claim.FailureCause,
+// Claim.PendingCause), served as `failure.cause` and `pendingCause`, and pinned to the contracts
+// suite's enum. Many outcomes fail a claim under one cause — every prompt outcome under
+// prompt_retires_exhausted — and some charge nothing and fail none. A charge site names its
+// Outcome, and the cause the launch and death budgets fail under is derived from it in one place
+// (failureCause).
 type FailureCause string
 
 const (
@@ -102,31 +112,55 @@ var FailureCauses = []FailureCause{
 // relaunchAfterFailure charges one launch failure for a process that did not survive, and
 // relaunches the same session after it, once the backoff for the failures charged so far has
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
-// when the budget is spent. A relaunch the tree lifecycle refuses (its cleanup reserved) is
-// checked before the charge, so it costs none; one whose process is already stopped is
-// relaunchRefused's.
+// when the budget is spent. Whether o charges is the policy's (Charges, through chargeLaunch); an
+// outcome it waives relaunches with no charge and no backoff.
 //
-// cause is what failed the process this relaunch replaces, from the caller that saw it, and it is
-// recorded on the claim before the charge: it is what the claim fails under when this budget runs
-// out, and what a launch the runtime refuses on the way fails under too (launchNow,
-// Claim.PendingCause). The retry of a relaunch the lifecycle check refused carries the same
-// cause, which is why it is handed over in a closure rather than as the method value.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) error {
+// A relaunch the tree lifecycle refuses (its cleanup reserved) is checked before the charge, so
+// it costs none; one whose process is already stopped is relaunchRefused's. That check is a guard
+// of this site's and no outcome question: it asks whether the tree may launch at all, which no
+// event of the claim's answers.
+//
+// o is what failed the process this relaunch replaces, from the caller that saw it, and the cause
+// derived from it (failureCause) is recorded on the claim before the charge: it is what the claim
+// fails under when this budget runs out, and what a launch the runtime refuses on the way fails
+// under too (launchNow, Claim.PendingCause). The retry of a relaunch the lifecycle check refused
+// carries the same outcome, which is why it is handed over in a closure rather than as the method
+// value.
+func (m *Machine) relaunchAfterFailure(ctx context.Context, o Outcome) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause)
+			return m.relaunchAfterFailure(ctx, o)
 		}, err)
 	}
+	cause := failureCause(o)
 	m.claim.PendingCause = cause
-	m.claim.Budgets.LaunchFailures++
-	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
+	if !Charges(o) {
+		m.log.Info("supervise: relaunching after an outcome the policy charges nothing", "outcome", string(o))
+		return m.launchAfter(ctx, false, false)
+	}
+	if m.chargeLaunch(o) {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
 	return m.launchAfter(ctx, true, false)
 }
 
+// chargeLaunch counts one launch failure where the policy charges o (Charges), and reports whether
+// the launch budget is spent. It is the count both launch-budget sites make: a process that did not
+// survive (relaunchAfterFailure) and a launch the runtime refused (launchNow, which retries in its
+// own loop rather than relaunching).
+func (m *Machine) chargeLaunch(o Outcome) bool {
+	if !Charges(o) {
+		return false
+	}
+	m.claim.Budgets.LaunchFailures++
+	return m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures
+}
+
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
-// reports whether those deaths have reached the limit. Work is outstanding when the claim holds a
+// reports whether those deaths have reached the limit. Whether the death charges is the policy's
+// (Charges, asked of o); whether there is anything to charge it against is this function's guard,
+// which is no outcome question (decision 10): a claim not yet ready owes nothing a death could
+// cost, and neither does one with no work outstanding. Work is outstanding when the claim holds a
 // task, and also when a turn of the agent's was open at the death — the claim's last turn started
 // and has not ended — since a turn an Envoy message began does the issue's work with no task
 // behind it, and a root architect killed six times inside its turns was relaunched for ever
@@ -138,7 +172,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) 
 // open for ever and every later death of the relaunched agent — idle, with nothing pending —
 // would be charged against it, failing a claim that is doing nothing wrong. Each death after
 // this one is judged on the turn it finds, as the first was.
-func (m *Machine) chargeDeath() bool {
+func (m *Machine) chargeDeath(o Outcome) bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false
 	}
@@ -146,9 +180,12 @@ func (m *Machine) chargeDeath() bool {
 	if m.claim.Pending == nil && !open {
 		return false
 	}
+	if !Charges(o) {
+		return false
+	}
 	m.claim.Budgets.Deaths++
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
-	m.log.Warn("supervise: the agent died with work outstanding", "deaths", m.claim.Budgets.Deaths,
+	m.log.Warn("supervise: the agent died with work outstanding", "outcome", string(o), "deaths", m.claim.Budgets.Deaths,
 		"limit", m.deps.Limits.LaunchFailures, "pending", pendingID(m.claim.Pending), "turnOpen", open)
 	return m.claim.Budgets.Deaths >= m.deps.Limits.LaunchFailures
 }
@@ -161,17 +198,28 @@ func (m *Machine) turnOpen() bool {
 	return m.claim.State == StateWorking || m.claim.LastTurnStart.After(m.claim.LastTurnEnd)
 }
 
-// chargePrompt counts one prompt failure. At the limit the process is retired — suspended, the
-// session kept — and the same session relaunched, or, once retirements run out too, the claim
-// fails with its prompt count left at the limit. A suspension that fails charges nothing: the next
-// failure reaches the limit again and retries the retirement. So does a relaunch the tree lifecycle
-// refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
-// suspension is held is that suspension's stop instead, charged nothing (suspendHeld).
-func (m *Machine) chargePrompt(ctx context.Context, why string) error {
+// chargePrompt counts one prompt failure where the policy charges o (Charges), and charges
+// nothing where it does not. At the limit the process is retired — suspended, the session kept —
+// and the same session relaunched, or, once retirements run out too, the claim fails with its
+// prompt count left at the limit, under the prompt budget's own word: what ran out is the
+// retirements, whichever event spent the last of them (CausePromptRetiresExhausted).
+//
+// Three guards here are not outcome questions, and stay this function's (decision 10). A
+// relaunch the tree lifecycle refuses is checked before the suspension so the process is kept
+// (checkLaunch): it asks whether the tree may launch at all. A retirement while an operator's
+// suspension is held is that suspension's stop instead, charged nothing (suspendHeld): the
+// operator decided what becomes of the process. And the last retirement fails the claim (fail)
+// rather than relaunching it, which is the budget running out, not an event's charge. A suspension
+// that fails charges nothing: the next failure reaches the limit again and retries the retirement.
+func (m *Machine) chargePrompt(ctx context.Context, o Outcome) error {
+	if !Charges(o) {
+		m.log.Info("supervise: the prompt's outcome charges nothing", "outcome", string(o))
+		return nil
+	}
 	failures := m.claim.Budgets.PromptFailures + 1
 	if failures < m.deps.Limits.PromptFailures {
 		m.claim.Budgets.PromptFailures = failures
-		m.log.Warn("supervise: prompt failure", "why", why, "promptFailures", failures,
+		m.log.Warn("supervise: prompt failure", "outcome", string(o), "promptFailures", failures,
 			"limit", m.deps.Limits.PromptFailures)
 		return m.persist(ctx)
 	}
@@ -190,7 +238,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
-	m.log.Warn("supervise: retired after prompt failures", "why", why, "promptFailures", failures,
+	m.log.Warn("supervise: retired after prompt failures", "outcome", string(o), "promptFailures", failures,
 		"relaunchCycle", retires, "limit", m.deps.Limits.PromptRetires)
 	if last {
 		m.claim.Budgets.PromptFailures = failures

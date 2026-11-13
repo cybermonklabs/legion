@@ -38,9 +38,11 @@ const (
 	// 4.1 s, which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
-	// Busy is the refusal of a prompt that arrives during a turn. It begins with Oh My Pi's own
-	// words, which the daemon reads as a turn of the agent's own (supervise's agentBusy): the task
-	// goes back unread, uncharged, and is sent again when the turn ends.
+	// Busy is the refusal of a prompt that arrives during a turn, and the bridge refuses with
+	// exactly this constant: the daemon's stream matches it whole (stream.PromptRefusalOutcome)
+	// and mints the agent's answer that it is in a turn of its own, so the task goes back unread,
+	// uncharged, and is sent again when the turn ends. Nothing relies on its first words being Oh
+	// My Pi's; the sentence is for a person reading a log.
 	Busy = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
 )
 

@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -459,7 +460,7 @@ func (r *keptRuntime) refused() int {
 //
 // A prompt the agent refuses busy is recorded nowhere: Oh My Pi answers that way exactly when a
 // turn of its own is already running, so the frame reached no agent and told it nothing
-// (supervise's agentBusy, and its own "the agent never read this task"). The run reads tellings
+// (supervise.OutcomeAgentBusy, and its own "the agent never read this task"). The run reads tellings
 // from the frames the connection kept, so a refused one must not stand among them.
 type keptConn struct {
 	*fake.Conn
@@ -479,8 +480,8 @@ type keptGate struct {
 }
 
 // keptBusyRefusal is Oh My Pi's own answer to a prompt arriving while a turn runs, worded as it
-// words it: the daemon reads it as the agent being busy rather than refusing the work, and charges
-// it nothing (supervise's agentBusy).
+// words it: the stream mints it as the agent being in a turn of its own
+// (stream.PromptRefusalOutcome), which the daemon charges nothing (supervise.Charges).
 const keptBusyRefusal = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 
 // keptSendBound is how long a step that armed the gate waits for the prompt. A send starts inside
@@ -534,14 +535,17 @@ func (c *keptConn) Prompt(ctx context.Context, deliveryID, message string) error
 	return c.Conn.Prompt(ctx, deliveryID, message)
 }
 
-// keptRefusal is the agent answering a prompt `success: false`, as the runtime's own double writes
-// one (fake.Conn.RefusePrompt): an error that is runtime.ErrPromptRefused and carries the reason
-// the daemon reads to tell a busy agent from one that will not take the work.
+// keptRefusal is the agent answering a prompt `success: false`, as the stream's refusal carries
+// it (stream.RefusedError): an error that is runtime.ErrPromptRefused, with the agent's words and
+// the outcome the stream mints from them, which is what the daemon decides on.
 type keptRefusal struct{ reason string }
 
 func (r keptRefusal) Error() string         { return r.reason + ": " + runtime.ErrPromptRefused.Error() }
 func (r keptRefusal) Is(target error) bool  { return target == runtime.ErrPromptRefused }
 func (r keptRefusal) RefusalReason() string { return r.reason }
+func (r keptRefusal) RefusalOutcome() supervise.Outcome {
+	return stream.PromptRefusalOutcome(r.reason)
+}
 
 // keptCounts is what a run's injected failures drove, reported at the run's end so the operations
 // the generator chose are shown to have fired rather than assumed.
@@ -2777,7 +2781,7 @@ func (r *keptRun) lateRefusalAfterAConfirmation(tree *keptTree) {
 	// connection's (supervise's sentThrough).
 	r.sup.deps.Conns.(*fake.Conns).Register(tree.token, tree.conn)
 	r.handle(machine, supervise.StreamLateRefusal{Claim: tree.token, DeliveryID: sent, Error: keptBusyRefusal,
-		Replayed: true, ConnSequence: tree.conn.Sequence()})
+		Outcome: stream.PromptRefusalOutcome(keptBusyRefusal), Replayed: true, ConnSequence: tree.conn.Sequence()})
 	r.waitMachines()
 	r.noteTakeBack(tree, sent)
 	// The turn the agent was in ends, and its end sends the task again.
