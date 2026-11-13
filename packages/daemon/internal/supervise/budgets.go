@@ -30,19 +30,23 @@ import (
 //     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
 //   - PodEndsNotOurs: ends of the claim's pod in a row that the runtime read as made by something
 //     outside the pod (runtime.PodEndNotOurs), with no turn of the claim completed between them,
-//     counted while the claim's agent is not yet ready, and once it is ready only while the claim
-//     has work outstanding (workOutstanding), as Deaths is charged. Each such end is continued
-//     uncharged until this reaches the launch failure limit; from there every such end is charged
-//     as the claim's own death (died) — a launch failure for an agent not yet ready, a death for
-//     a ready one with work outstanding — until a turn completes (turnEnded), the task it was
-//     counted against ends (retirePending, as Deaths does), or the agent becomes ready with no
-//     work outstanding (ready), any of which resets it. A pod that uses more memory than it
-//     requested can drive its own node into pressure, a pod's start (the workspace's restore and
-//     six agents starting at once) as much as its work, and the eviction that follows carries
-//     DisruptionTarget exactly as a neighbour's does, so the reading cannot tell the two apart; a
-//     claim whose start or work keeps ending its pod that way would otherwise be relaunched for
-//     ever, which is the outcome every other budget here exists to stop. It is durable, as the
-//     other four are, so a daemon restart between two such ends does not start the run again.
+//     counted while the claim holds a task, whether or not its agent is ready yet, and while a
+//     ready agent has a turn open (endedFromOutside, workOutstanding); a claim relaunched with no
+//     task, whose agent is not yet ready and so in no turn, has no work for an end to count
+//     against. Each such end is continued uncharged until this reaches the launch failure limit;
+//     from there every such end is charged as the claim's own death (died) — a launch failure for
+//     an agent not yet ready, a death for a ready one — until a turn completes (turnEnded) or the
+//     task it was counted against ends (retirePending, as Deaths does), either of which resets it.
+//     The agent's ready does not, as it does not reset Deaths: a relaunch completes no turn, and
+//     a turn a message started, which leaves the relaunched agent with no task and no turn, would
+//     otherwise start a new run at each relaunch and never reach the limit. A pod that uses more
+//     memory than it requested can drive its own node into pressure, a pod's start (the
+//     workspace's restore and six agents starting at once) as much as its work, and the eviction
+//     that follows carries DisruptionTarget exactly as a neighbour's does, so the reading cannot
+//     tell the two apart; a claim whose start or work keeps ending its pod that way would
+//     otherwise be relaunched for ever, which is the outcome every other budget here exists to
+//     stop. It is durable, as the other four are, so a daemon restart between two such ends does
+//     not start the run again.
 type Budgets struct {
 	LaunchFailures int
 	Deaths         int
@@ -172,8 +176,7 @@ func (m *Machine) chargeDeath() bool {
 // (chargeDeath): a process that ends before its agent is ready is a launch failure instead
 // (relaunchAfterFailure), and the death of an agent that holds no task and has no turn open is
 // the environment's, with no work for it to be about. An end from outside the pod is counted in
-// this state and before the agent is ready (endedFromOutside), and an agent that becomes ready
-// outside this state ends that count (ready).
+// this state, and before the agent is ready only while the claim holds a task (endedFromOutside).
 func (m *Machine) workOutstanding() bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false

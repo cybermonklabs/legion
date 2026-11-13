@@ -4,12 +4,15 @@
 --
 -- claims.pod_ends_not_ours is supervise.Budgets.PodEndsNotOurs. An end read pod_end_not_ours —
 -- an eviction, a preemption, a node going down, a delete no act of the daemon's accounts for —
--- is continued uncharged until this reaches launch_failure_limit; from there each such end is
--- charged as the claim's own death, until a turn completes and puts it back to 0. A pod that uses
--- more memory than it requested can drive its own node into pressure, and that eviction carries
--- the same DisruptionTarget condition a neighbour's does, so a claim whose work keeps ending its
--- own pod that way would otherwise be relaunched for ever. It is written with the claim, as the
--- four other budgets are, so a daemon restart between two such ends does not start the run again.
+-- is continued uncharged, and counted here where it finds the claim holding a task or its ready
+-- agent in a turn. From launch_failure_limit such ends on, each is charged as the claim's own
+-- death (a launch failure where the agent was not yet ready). Only a completed turn and the end
+-- of the task the run was counted against put it back to 0; a relaunch does not, so the run goes
+-- on across the claim's pods. A pod that uses more memory than it requested can drive its own
+-- node into pressure, and that eviction carries the same DisruptionTarget condition a
+-- neighbour's does, so a claim whose work keeps ending its own pod that way would otherwise be
+-- relaunched for ever. It is written with the claim, as the four other budgets are, so a daemon
+-- restart between two such ends does not start the run again.
 --
 -- 0 for every row the table already holds, and nothing backfills it: the release this upgrades
 -- from counted these ends nowhere, so a claim in the middle of such a run when the image changes

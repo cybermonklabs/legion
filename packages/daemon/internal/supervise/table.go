@@ -2212,25 +2212,18 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 // since it is what dates the two causes beside it — a death and a failed start are both older
 // than the agent that is running now (machine.go's Claim).
 //
-// An agent that becomes ready with no work outstanding — no task pending and no turn open
-// (workOutstanding) — ends the claim's run of pod ends from outside it (Budgets.PodEndsNotOurs,
-// endedFromOutside): the ends before this ready were counted against the start it completes, and
-// that start is over. A claim that holds no task completes no turn, so a run it kept would only
-// grow, by one end each time the cluster repacks its pod while it starts, until such an end weeks
-// later charged it a launch failure for a start that came up. One that becomes ready holding its
-// task keeps its run, which that task's completed turn or its end resets (turnEnded,
-// retirePending). The run is cleared before the write below, as the launch failures are, so the
-// reset is stored with the ready.
+// The ready resets the launch failures and not the run of pod ends from outside the pod
+// (Budgets.PodEndsNotOurs), which outlives it as the deaths do: a relaunch completes no turn, so
+// only a turn that completes or the end of the task the run was counted against resets it
+// (turnEnded, retirePending). An agent relaunched after a turn a message started comes up with no
+// task and no turn, and a run ended here would be one again at each such turn the cluster ends,
+// never reaching the limit (endedFromOutside).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	m.claim.LastReady = m.deps.Clock.Now()
 	// The pending cause goes with the launch failures it names: the episode they measure ended
 	// when this agent came up (Claim.PendingCause).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
-	if run := m.claim.Budgets.PodEndsNotOurs; run != 0 && !m.workOutstanding() {
-		m.log.Info("supervise: the agent is ready with no work outstanding; the run of pod ends from outside the pod is over", "podEndsNotOurs", run)
-		m.claim.Budgets.PodEndsNotOurs = 0
-	}
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)
