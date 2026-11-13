@@ -287,11 +287,11 @@ func linkReason(waitsOn []string) string {
 var heldSentences = map[record.HeldReason]heldSentence{
 	record.HeldTreeClosed: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is closed: " + heldBy + " has finished, or lingers after leaving the workflow, " +
-			"and nothing of that tree runs."
+			"and the daemon starts no issue of that tree."
 	}},
 	record.HeldTreeParked: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
-		return "A person parked its tree: " + heldBy + " stands in backlog or icebox, " +
-			"and nothing of that tree runs again until a person puts that root back at todo."
+		return "Its tree is parked: " + heldBy + " stands in backlog or icebox, " +
+			"and nothing of that tree runs again until that root is put back at todo."
 	}},
 	record.HeldLabelOff: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(string) string {
 		return "It is the root of its own tree and its record says the legion label is off, " +
@@ -302,7 +302,7 @@ var heldSentences = map[record.HeldReason]heldSentence{
 			"It stands as that tree's unreleased work."
 	}},
 	record.HeldRootAwaitingPerson: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
-		return "Its tree's root waits on a person: " + heldBy + " waits for an answer or for a review of its spec, " +
+		return "Its tree's root, " + heldBy + ", has handed work to a person, " +
 			"and nothing of that tree starts before that root resumes."
 	}},
 	record.HeldDesignGate: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {

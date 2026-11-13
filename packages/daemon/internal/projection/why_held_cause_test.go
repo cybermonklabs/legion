@@ -37,8 +37,9 @@ type heldFixture struct {
 // compares the served sentence with that literal text, never with heldSentences itself, so a
 // change to a row's text fails that row here. Each fixture is one this package already proves
 // the word of (held_test.go, held_triaged_root_test.go); a blocked one adds a Dispatch link that
-// holds the issue, or, for a root whose label is off, an open Dispatch child under it, which the
-// children-first rule holds it for.
+// holds the issue, or, for a root whose label is off and for the root of an ancestry hold, an
+// open Dispatch child under it, which the children-first rule holds it for (the ancestry root's
+// gate opened as well, since that rule reads only the children of a root under an open gate).
 //
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
@@ -122,16 +123,16 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 	fixtures := map[heldEntry]heldFixture{
 		{record.HeldTreeClosed, api.WhyBlocked}: {linked(closedTree),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
-			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and nothing of that tree runs."},
+			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and the daemon starts no issue of that tree."},
 		{record.HeldTreeClosed, api.WhyUnlisted}: {closedTree,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeClosed, HeldBy: byRoot},
-			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and nothing of that tree runs."},
+			"Its tree is closed: LEGION-100 has finished, or lingers after leaving the workflow, and the daemon starts no issue of that tree."},
 		{record.HeldTreeParked, api.WhyBlocked}: {linked(parkedTree),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"A person parked its tree: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until a person puts that root back at todo."},
+			"Its tree is parked: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until that root is put back at todo."},
 		{record.HeldTreeParked, api.WhyUnlisted}: {parkedTree,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldTreeParked, HeldBy: byRoot},
-			"A person parked its tree: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until a person puts that root back at todo."},
+			"Its tree is parked: LEGION-100 stands in backlog or icebox, and nothing of that tree runs again until that root is put back at todo."},
 		{record.HeldLabelOff, api.WhyBlocked}: {labelOffWithChild,
 			api.HeldIssue{Issue: "LEGION-100", Reason: record.HeldLabelOff},
 			"It is the root of its own tree and its record says the legion label is off, so nothing hands it to the daemon."},
@@ -146,10 +147,10 @@ func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.
 			"Its Dispatch chain reaches live work above it: LEGION-100. It stands as that tree's unreleased work."},
 		{record.HeldRootAwaitingPerson, api.WhyBlocked}: {linked(awaitingPerson),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
-			"Its tree's root waits on a person: LEGION-100 waits for an answer or for a review of its spec, and nothing of that tree starts before that root resumes."},
+			"Its tree's root, LEGION-100, has handed work to a person, and nothing of that tree starts before that root resumes."},
 		{record.HeldRootAwaitingPerson, api.WhyUnlisted}: {awaitingPerson,
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldRootAwaitingPerson, HeldBy: byRoot},
-			"Its tree's root waits on a person: LEGION-100 waits for an answer or for a review of its spec, and nothing of that tree starts before that root resumes."},
+			"Its tree's root, LEGION-100, has handed work to a person, and nothing of that tree starts before that root resumes."},
 		{record.HeldDesignGate, api.WhyBlocked}: {linked(shutTree),
 			api.HeldIssue{Issue: "LEGION-101", Reason: record.HeldDesignGate, HeldBy: byRoot},
 			"The design gate of its tree stands shut: LEGION-100 waits for a person's approval of each gated step's document at its current version, and nothing of that tree starts until it opens."},
@@ -236,8 +237,10 @@ func TestTheHeldSentenceTableServesTheWordsTheLadderSendsToEachArm(t *testing.T)
 }
 
 // The sentence rule heldSentences states: every sentence says what is true of the issue now and
-// what does not start it, and never promises what will start it. The phrases below are the ways
-// such a promise has been written, so a sentence that carries one breaks the rule.
+// what does not start it, and never promises what will start it. The phrases below are some of
+// the ways such a promise has been written, so a sentence that carries one breaks the rule; the
+// literal-text walk above (TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass) is
+// what holds each sentence to its approved text.
 func TestNoHeldSentencePromisesAStart(t *testing.T) {
 	for word, entry := range heldSentences {
 		sentence := entry.sentence("LEGION-1")

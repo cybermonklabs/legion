@@ -19,9 +19,9 @@ type HeldReason string
 // is written there alone; this block is the vocabulary, one constant per word.
 const (
 	// HeldTreeClosed is an issue of a tree whose root has finished or lingers after its close:
-	// nothing of such a tree runs.
+	// the daemon starts no issue of such a tree.
 	HeldTreeClosed HeldReason = "tree_closed"
-	// HeldTreeParked is an issue of a tree a person stopped, its root in backlog or icebox: the
+	// HeldTreeParked is an issue of a tree that was parked, its root in backlog or icebox: the
 	// two statuses of OutOfWorkflowStatuses that stop work without finishing it.
 	HeldTreeParked HeldReason = "tree_parked"
 	// HeldLabelOff is a root of its own tree whose record says the Legion label is off
@@ -30,8 +30,9 @@ const (
 	// HeldAncestry is a root whose Dispatch chain names a live root that is not itself: it
 	// stands as that tree's unreleased work (the ancestry hold of Waiting).
 	HeldAncestry HeldReason = "ancestry"
-	// HeldRootAwaitingPerson is an issue of a tree whose root handed work to a person: nothing
-	// of that tree starts before that root resumes.
+	// HeldRootAwaitingPerson is an issue of a tree whose root has handed work to a person
+	// (Issue.AwaitingPerson, answered or not): nothing of that tree starts before that root
+	// resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
 	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
 	// deployment gates (TreeGate.Open).
