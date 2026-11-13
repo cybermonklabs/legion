@@ -69,8 +69,9 @@ import (
 // must not make a reviewer refuse an approval.
 //
 // Where the reader was given a commit (?at=), that one commit is the only basis of every check
-// of the issue and no read of GitHub is made at all: the reader asked what the results say
-// about one commit, and nothing about that question turns on what GitHub holds now.
+// of the issue and the comparison makes no read of GitHub at all: the reader asked what the
+// results say about one commit, and nothing about that question turns on what GitHub holds now.
+// The check runs of a check CI proves are read apart from this reader (deriveCIResults).
 //
 // The repository each issue resolves to, its default branch, the branch each issue's pull
 // request merged into, the pull request heads of each issue, the stored heads of each
