@@ -10,7 +10,6 @@ import {
 import { seedDeliveryFixture } from "./delivery-seed";
 import { decisionRecord, modelsLane, scriptChat, scriptDecision } from "./fake-models-helpers";
 import {
-  ANSWER_ENDS_MS,
   answerPanel,
   answerText,
   askAndWait,
@@ -36,6 +35,67 @@ import { asUser } from "./users";
 // and not below it, and with the display fit turned off only an asked chart is drawn. A chart is
 // not stored: the issue and the project hold no new artifact after one, and reopening the bar
 // draws it again from the same run. Every row runs in the models lane alone.
+
+declare global {
+  interface Window {
+    __goingFrames?: string[];
+  }
+}
+
+/** Records, from before the page loads, the name of every frame of the answer stream
+ *  (`GET /api/v1/going/requests/{id}/stream`) in the order it arrives, read off a copy of the body
+ *  of the `fetch` the API client calls beside the page's own reading of it. A connection the page
+ *  opens again resumes after the last frame it read, so the record holds each frame once. Returns
+ *  a reader of what was recorded. */
+async function recordStreamedFrames(page: Page): Promise<() => Promise<string[]>> {
+  await page.addInitScript(() => {
+    const frames: string[] = [];
+    window.__goingFrames = frames;
+    const sent = window.fetch;
+    // Every name of the page's own is read off `window`: this module's `Request` and `Response`
+    // are Playwright's.
+    const recording = async (
+      input: Parameters<typeof window.fetch>[0],
+      init?: Parameters<typeof window.fetch>[1]
+    ) => {
+      const response = await sent(input, init);
+      const asked = input instanceof window.Request ? input.url : String(input);
+      const path = new URL(asked, window.location.href).pathname;
+      if (response.body === null || !/^\/api\/v1\/going\/requests\/[^/]+\/stream$/.test(path)) {
+        return response;
+      }
+      const [read, copy] = response.body.tee();
+      void (async () => {
+        const pieces = copy.getReader();
+        const text = new TextDecoder();
+        let held = "";
+        try {
+          for (;;) {
+            const piece = await pieces.read();
+            if (piece.done) return;
+            held += text.decode(piece.value, { stream: true });
+            const lines = held.split("\n");
+            held = lines.pop() ?? "";
+            for (const line of lines) {
+              const name = /^event: (\w+)\r?$/.exec(line)?.[1];
+              if (name !== undefined) frames.push(name);
+            }
+          }
+        } catch {
+          // A connection cut under the page is the page's to open again; the record keeps what
+          // arrived on it.
+        }
+      })();
+      return new window.Response(read, {
+        headers: response.headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
+    };
+    window.fetch = recording as typeof window.fetch;
+  });
+  return () => page.evaluate(() => [...(window.__goingFrames ?? [])]);
+}
 
 /** The issues the fixture seeds, by the status each is set to: the counts every block is read
  *  against. */
@@ -332,11 +392,8 @@ test("115 words with a table draws both, the prose uncut, and the block frame af
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
+    const streamedFrames = await recordStreamedFrames(page);
     await openBarOver(page, "/projects/CORE/issues");
-    const streamed = page.waitForResponse(
-      (response) => /\/api\/v1\/going\/requests\/[^/]+\/stream$/.test(response.url()),
-      { timeout: ANSWER_ENDS_MS }
-    );
     await askAndWait(page, "show the CORE issues by status as a table");
 
     expect(await shownWords(page)).toHaveLength(115);
@@ -350,9 +407,9 @@ test("115 words with a table draws both, the prose uncut, and the block frame af
       await block(page).elementHandle()
     );
     expect(after).toBe(true);
-    const frames = [...(await (await streamed).text()).matchAll(/^event: (\w+)$/gm)].map(
-      ([, name]) => name
-    );
+    // The panel drew the whole answer, so its stream has ended; the record reads its last frame.
+    await expect.poll(streamedFrames).toContain("end");
+    const frames = await streamedFrames();
     expect(frames.lastIndexOf("text")).toBeGreaterThanOrEqual(0);
     expect(frames.indexOf("block")).toBeGreaterThan(frames.lastIndexOf("text"));
   } finally {
