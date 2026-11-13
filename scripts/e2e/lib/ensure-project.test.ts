@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptFunctions } from "./script-functions";
 
 // ensure_project, write_dispatch_header and dispatch_agent (lib/workflow.sh) against a fake curl on
 // PATH: it logs every invocation, writes FAKE_CURL_BODY to whatever file follows -o, prints
@@ -235,14 +236,12 @@ describe("ensure_project", () => {
   // it (allowedLogin, packages/envoy/internal/dispatch/api/issue_assignee.go), and stage4b's own
   // scrub, taken from its text, prints that spelling as the variable's name and the rest of the
   // line as it was, so a run's log carries no person's email.
-  const stage4bScrub = readFileSync(
-    join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"),
-    "utf8"
-  ).match(/^scrub\(\) \{\n[\s\S]*?\n\}$/m)?.[0];
+  const stage4bScrub = scriptFunctions(join(import.meta.dir, "..", "stage4b-sandbox-tree.sh"))(
+    "scrub"
+  );
   const operatorSpelling = "Smoke.Owner+e2e@Example.com";
 
   test("400 ASSIGNEE_NOT_ALLOWED through stage 4b's scrub names the variable, never the email", () => {
-    expect(stage4bScrub).toBeDefined();
     const r = run(
       `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
       {
@@ -264,7 +263,6 @@ describe("ensure_project", () => {
   // An email may hold `&`, so the body spells it differently from the variable, and the FAIL line
   // must still name the variable and never the email.
   test("400 ASSIGNEE_NOT_ALLOWED for an email Dispatch's JSON escapes still names the variable, never the email", () => {
-    expect(stage4bScrub).toBeDefined();
     const person = "Smoke&Owner@Example.com";
     const r = run(
       `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
@@ -284,7 +282,6 @@ describe("ensure_project", () => {
   // and again by the JSON body: the refusal carries `\\\"` and `\\\\` where the email held `"`
   // and `\`. scrub must hide that spelling too.
   test("400 ASSIGNEE_NOT_ALLOWED for an email Go quotes and JSON escapes again names the variable, never the email", () => {
-    expect(stage4bScrub).toBeDefined();
     const person = 'Smoke"Quoted\\Owner@Example.com';
     const goQuoted = `"${person.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
     const r = run(
@@ -308,7 +305,6 @@ describe("ensure_project", () => {
   // expression or its `#` delimiter reads as special stands for itself, so a line that differs only
   // where the email holds `.` keeps it, and a host still names its own variable.
   test("stage 4b's scrub matches the default assignee in any case and literally, beside the hosts", () => {
-    expect(stage4bScrub).toBeDefined();
     const person = "a.b*c[d]^e$f#g\\h+i@Example.com";
     const line = `${person.toUpperCase()} aXb*c[d]^e$f#g\\h+i@Example.com DISPATCH.example:443 ${person}`;
     const result = Bun.spawnSync(

@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
@@ -513,12 +513,12 @@ const OLD_RULE_ROOTS = [
   "docs/site/src",
 ];
 
-/** Tracked paths no reader is sent to for the rule: recorded HTTP answers, the solutions log and
- *  the changelogs with their `.changes` notes, each a history of what was true when it was
- *  written. What git ignores (dependencies, build output, generated reference pages, test
- *  results) is never listed. */
-const OLD_RULE_LEFT_OUT =
-  /(?:^|\/)(?:__recordings__|\.changes)\/|^docs\/solutions\/|(?:^|\/)CHANGELOG\.md$/;
+/** Tracked paths under the roots no reader is sent to for the rule: the recorded HTTP answers
+ *  under `packages/dispatch/e2e/__recordings__`, each what a server answered when it was
+ *  recorded. The changelogs, their `.changes` notes and `docs/solutions` are histories too, but no
+ *  root holds them, so the listing never returns one. What git ignores (dependencies, build
+ *  output, generated reference pages, test results) is never listed. */
+const OLD_RULE_LEFT_OUT = /(?:^|\/)__recordings__\//;
 
 /** Wordings of the two-step rule. `sentence` is false for a wording that is the two-step rule on
  *  its own, whatever else its sentence says. */
@@ -660,19 +660,29 @@ interface OldRuleHit {
 }
 
 /** Every text file the scan reads, by its path from the repository root: what git tracks under
- *  the roots, and every tracked `AGENTS.md`, less the paths no reader is sent to and this file,
- *  whose allowlist quotes each sentence it allows a second time. */
+ *  the roots and every tracked `AGENTS.md`, beside the untracked files git does not ignore there,
+ *  less the paths no reader is sent to and this file, whose allowlist quotes each sentence it
+ *  allows a second time. Only a path that is a regular file on disk is read: in a jj workspace
+ *  git's index follows the parent commit, so a file the working copy deleted is still listed
+ *  (`.github/scripts/ci_filter_coverage.py`'s `repo_files` keeps the same two listings). */
 function oldRuleFiles(): string[] {
-  const listed = Bun.spawnSync(
-    ["git", "ls-files", "-z", "--", ...OLD_RULE_ROOTS, ":(glob)**/AGENTS.md"],
-    { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }
-  );
-  if (!listed.success) throw new Error(`git ls-files failed: ${listed.stderr.toString()}`);
+  const listed = new Set<string>();
+  for (const extra of [[], ["--others", "--exclude-standard"]]) {
+    const listing = Bun.spawnSync(
+      ["git", "ls-files", "-z", ...extra, "--", ...OLD_RULE_ROOTS, ":(glob)**/AGENTS.md"],
+      { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }
+    );
+    if (!listing.success) throw new Error(`git ls-files failed: ${listing.stderr.toString()}`);
+    for (const path of listing.stdout.toString().split("\0")) listed.add(path);
+  }
   const self = relative(REPO_ROOT, import.meta.path);
-  return listed.stdout
-    .toString()
-    .split("\0")
-    .filter((path) => path !== "" && path !== self && !OLD_RULE_LEFT_OUT.test(path));
+  return [...listed].filter(
+    (path) =>
+      path !== "" &&
+      path !== self &&
+      !OLD_RULE_LEFT_OUT.test(path) &&
+      statSync(join(REPO_ROOT, path), { throwIfNoEntry: false })?.isFile() === true
+  );
 }
 
 /** A file's text as prose: each line without its comment marker or the quotes of a string that
