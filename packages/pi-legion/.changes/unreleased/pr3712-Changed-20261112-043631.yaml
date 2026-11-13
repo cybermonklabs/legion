@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The daemon API contract is 101. An issue of `GET /legion/v1/state` carries `repoBefore` and
+    The daemon API contract is 106. An issue of `GET /legion/v1/state` carries `repoBefore` and
     `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
     correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that
     the daemon has not applied and why. The end-of-turn reminder no longer keeps a phase of its own:

@@ -229,18 +229,23 @@ another owner took. A root whose architect requested approval of its spec and re
 wait on you is no reason for the controller to label or admit anything: a root you
 handed to Legion takes its place through the waiting line.
 
-A parked root waits on nobody. When a person approves its spec, asks for changes, or answers or
-replies on one of its asks, the controller reads the decision. If the controller parked the root
-for a hold of its own, which it marks with a comment that begins `Parked by Legion while it waits
-on:`, and the decision gives the work a next step, the controller sets the root back to `todo`, and
-the architect starts by reading that decision. Every other park stays parked until whoever parked
-it sets the root to `todo`: a root you parked yourself, one another agent's session parked, and
-one an operator parked with `legion status`. The controller says so in a comment, and the
-architect then starts with the decision. When the approved version is no longer the spec's current
-one, the architect asks for approval of the current one. A question alone leaves the root parked:
-the controller answers it on its ask from the issue's record, or says that setting the root to
-`todo` brings the architect back to answer. A reply an agent session writes on such an ask is no
-decision: it stays on the ask for the person who asked, and nothing wakes.
+A parked root waits on nobody. When you approve its spec, the daemon sets it to `todo` itself,
+whoever parked it, when the root keeps its `legion` label and has no parent. An approval on a root
+that has a parent, and one that Dispatch carries in your name from an earlier one, do not queue it.
+Such an approval, a request for changes, and an answer or a reply on one of its asks go to the
+controller, which reads the decision. If the controller parked the root for a hold of its own, which
+it marks with a comment that begins `Parked by Legion while it waits on:`, and the decision gives
+the work a next step, the controller sets the root back to `todo`, and the architect starts by
+reading that decision. The controller's walk also sets such a root back to `todo`, with a comment
+that cites the mark, once the hold's cause is gone or the event it waits on has happened. Every
+other park, a root you parked yourself, one another agent's session parked, or one an operator
+parked with `legion status`, stays parked until a person sets the root to `todo`, approves its spec
+as above, or asks the controller to start it. The controller says so in a comment, and the architect
+then starts with the decision. When the approved version is no longer the spec's current one, the
+architect asks for approval of the current one. A question alone leaves the root parked: the
+controller answers it on its ask from the issue's record, or says that setting the root to `todo`
+brings the architect back to answer. A reply an agent session writes on such an ask is no decision:
+it stays on the ask for the person who asked, and nothing wakes.
 
 A held root is not a parked one. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the
@@ -491,7 +496,8 @@ outstanding, prompts it acknowledged without taking a turn, and the times it was
 that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 `prompt_retire_limit` in the configuration) the daemon stops relaunching that agent and **holds**
 the issue. A held phase worker is its architect's to retry or escalate to the controller; an
-architect that runs out goes to the controller, which can re-admit the tree.
+architect that runs out goes to the controller, which restarts a running tree when it finds no
+cause or the cause is gone, and otherwise asks a person whether to park it.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
@@ -509,9 +515,9 @@ phase and its worker starts again at the same generation, in the same pod and at
 in the admission line. Where the pull request's head is red, the issue goes on to implementing
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
-does the same at the cost of that session. Parking the root and admitting it again runs the
-whole tree over as a new generation, which is the move for a tree that must start from its
-architect.
+does the same at the cost of that session. A restart, the root set to `backlog` and then to
+`todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
+from its architect.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

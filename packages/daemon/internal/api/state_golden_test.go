@@ -274,6 +274,18 @@ func populatedState(t *testing.T) State {
 				{Issue: "LEGION-209", BlockedBy: []string{"LEGION-210", "LEGION-213"}},
 				{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}},
 			},
+			// The issues the record holds in the workflow that stand in neither list above, each
+			// with the one word for why. Both shapes of the row are here, and that is what the
+			// fixture is for: LEGION-209 is held by the issues `blocked` names, so its row
+			// carries `heldBy`, and LEGION-214, a root of its own tree whose record says the
+			// label is off (`label_off`), is held by no issue at all, so its row carries none. The contracts
+			// gate walks the keys the file holds (packages/contracts/src/legion-api.test.ts), so
+			// a list of one shape would prove nothing of the other — an absent `heldBy` is as
+			// much part of the row's schema as a filled one.
+			Held: []HeldIssue{
+				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
+				{Issue: "LEGION-214", Reason: record.HeldLabelOff},
+			},
 		},
 		Issues: map[string]Issue{
 			"LEGION-208": {
@@ -593,6 +605,24 @@ func populatedState(t *testing.T) State {
 					Index:      2,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
 				},
+			},
+			// LEGION-214 is the fixture's one held row that names no issue holding it, which is
+			// what it is here for: the contracts gate walks the keys the file holds, so a held list
+			// of one shape would prove nothing of a row with no `heldBy`. It is a root of its own
+			// tree at admitted whose record says the Legion label is off, so the admission queue
+			// does not carry it, it stands in neither `active` nor `waiting`, and its word is
+			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
+			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
+			// no memory group.
+			"LEGION-214": {
+				Key:           "LEGION-214",
+				Generation:    1,
+				Phase:         phase.Admitted,
+				Status:        "todo",
+				Tree:          "LEGION-214",
+				Repo:          "zeta/tools",
+				DefaultBranch: "release/v7.1",
+				Workers:       map[claim.Role]PhaseView{},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),

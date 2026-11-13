@@ -1335,7 +1335,49 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 101: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
+// the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
+// eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
+// `record.HeldAtWork` says) and the issues that hold it where any do (`heldBy`, absent where none
+// does — a root whose Legion label is off, an issue none of the other words is true of). The
+// three lists together are every issue of the workflow and what each is doing, which `active` and
+// `waiting` alone never were: an issue in neither was simply missing, and a reader could not tell
+// one the daemon was about to start from one nothing will start again.
+// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
+// refuses a value it does not name rather than stripping it like an unknown key, so a word added
+// to the ladder later bumps this number again. The key itself is written on every body, empty
+// rather than null, and a caller from a pod whose claims record a contract below 98 is served the
+// admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
+// issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
+// `leakCheckCause`, one below 85 every issue without its rendered answer and every member of the
+// waiting line without that contract's own fields, one below 75 the body without the nine keys
+// of the decided record and its contract mark, one below 73 without `claimsToRefresh`, one below
+// 62 the workers without their counts of the moves back and one below 51 the admission block
+// without its trees; the fifteen strips compose, and every reader from 98 on takes the key as
+// optional for exactly those stripped bodies. No other key of the wire moves: no list above it
+// changes, though `why.reason` now follows the held word for some issues in `admission.blocked`
+// and `unlisted` alike, for every caller at 85 or above (the sentence table of
+// `internal/projection/why.go` is the one statement of which), which moves no contract, since the
+// reason is free text. The rows are read from the judgement the state already made
+// (`blockers.JudgeLine`, which now answers the rows the pass left behind beside the line it
+// built), so the body costs no further read of the store.
+// (The base declares 94, main's #3677 entry right above this one, landed by
+// cybermonklabs/legion#3677 (INFRA-2800). By the rule of 2026-11-13T06:29Z this change keeps 98
+// while it stands above its base and no other open head declares it, and renumbers only when the
+// base takes 98 or a number above it. It declared 76 when this pull request opened, then 78 and
+// 86, each renumbered when another change took the number first, then 94, which it left for 98
+// because an open head declared a higher number that could land first; 86 was read at
+// 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
+// already declared it, merged at 18:19Z. A reading
+// of the open heads is of this file at refs/pull/<n>/head for every open pull request, not of a
+// file list: GitHub cuts a pull request's file list short, so one that changes more files than
+// the page holds answers without this path. Read the base's own number and every open pull
+// request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 106: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -1343,7 +1385,7 @@ package api
 // no key changes its meaning, and an issue no correction has reached and nothing waits on carries
 // none of them, so most issues are served exactly as before. A plugin below this contract is
 // served every issue with the four stripped (`withoutRepositoryCorrection`), composed with the
-// fourteen narrowings 94 describes, because one built before sjawhar/legion#2788 reads the state
+// fifteen narrowings 98 describes, because one built before sjawhar/legion#2788 reads the state
 // with a strict schema and would refuse the whole body for a key it does not name.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional.
 //
@@ -1356,7 +1398,7 @@ package api
 // and its production check — and what that work is called, "the testing phase of LEGION-208" or
 // "the production check of LEGION-208", empty when nothing is owed. The end-of-turn reminder
 // renders that answer in both harnesses and keeps no model of the phase of its own
-// (dispatch://INFRA-2746). A plugin below 101 calls no such route,
+// (dispatch://INFRA-2746). A plugin below 106 calls no such route,
 // and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -1373,18 +1415,19 @@ package api
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
 // Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
 // writes: a row it keeps carries no sequence and its own clock, as before this release.
-// (This entry takes 101. It took 95
-// at the fifth forward merge of 2026-11-13, when main declared 87, and held 95 through the sixth,
-// which brought main in at 045ee0762538, #3677, declaring 94, the entry right above this one. The
-// reading of 2026-11-13T09:11:43Z, with main at bc52296a74c2 declaring 94, found #3519 declaring
-// 95 too since its update of 08:16Z, and the open heads declaring 37 (#2213), 61 (#2230), 71
-// (#3577) and 86 (#3534) below the base and, above it, 88 (#3730), 89 (#3659), 90 (#3830), 95
-// (#3519), 96 (#2731, #3573), 97 (#3937), 98 (#3708), 99 (#3575) and 100 (#3715). So 101 is
-// the lowest number above the base's 94 that no other open head declares, and this entry takes
-// it. A reading is of this file at refs/pull/<n>/head for every open pull request, not of a file
-// list: GitHub cuts a pull request's file list short, so one that changes more files than the
-// page holds answers without this path. Read the base's own number and every open pull request
-// again at the next merge rather than from this line, as
+// (This entry takes 106. It took 95 at the fifth forward merge of 2026-11-13, when main declared
+// 87, held 95 through the sixth, which brought main in at 045ee0762538, #3677, declaring 94, and
+// took 101 at that sixth merge. The seventh brings main in at 0fde2dcff6e4, #3707, which declares
+// 98, the entry right above this one, landed by #3708. The reading of 2026-11-13T13:43:48Z, with
+// main declaring 98, still found 101 free. The reading of 2026-11-13T13:47:56Z found #3659
+// declaring 105, and likely to land before this change, beside the other open heads declaring
+// 37, 61, 71, 86 and 96 below the base and 99, 100 (two heads), 102, 103 and 104 (two heads)
+// above it. 101 is still free, but a release at 105 landing first would put this entry below
+// its base and force the renumber then, so this entry takes 106, the lowest number above 105
+// that no other open head declares. A reading is of this file at refs/pull/<n>/head for every
+// open pull request, not of a file list: GitHub cuts a pull request's file list short, so one
+// that changes more files than the page holds answers without this path. Read the base's own
+// number and every open pull request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 101
+const DaemonAPIVersion = 106
