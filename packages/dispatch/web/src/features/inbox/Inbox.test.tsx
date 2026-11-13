@@ -1707,8 +1707,9 @@ test("the assignee options list Unassigned first, then the logins, and detail th
     await openAssignee(user);
     // The detail runs into the label in `textContent`: each row ends with how many rows that
     // value holds, counted under the other four fields' filters, and the reader's own says so
-    // first.
-    expect(await assigneeOptionTexts()).toEqual(["Unassigned2", "aliceyou · 1", "bob1"]);
+    // first. Unassigned reads 0: the two rows nobody holds or was handed fall to their project's
+    // default assignee (`FIXTURE_PROJECT_DEFAULT`), as the server's third step puts them.
+    expect(await assigneeOptionTexts()).toEqual(["Unassigned0", "aliceyou · 1", "bob1"]);
   } finally {
     unmount();
     listUsers.mockRestore();
@@ -1729,7 +1730,7 @@ test("a failed people read says so and leaves the assignee filter working from t
     await openAssignee(user);
     await screen.findByText("Could not load the people list.");
     // What the address filters by is still there to see and to switch off.
-    expect(await assigneeOptionTexts()).toEqual(["Unassigned2", "✓carol@example.com0"]);
+    expect(await assigneeOptionTexts()).toEqual(["Unassigned0", "✓carol@example.com0"]);
 
     const listbox = await screen.findByRole("listbox", { name: "Assignee options" });
     await user.click(within(listbox).getByRole("option", { name: /carol/ }));
@@ -1755,7 +1756,7 @@ test("a selected person the people list does not hold is still a row of the assi
     await screen.findByText("Nothing matches this filter");
     await openAssignee(user);
     expect(await assigneeOptionTexts()).toEqual([
-      "Unassigned2",
+      "Unassigned0",
       "aliceyou · 1",
       "bob1",
       "✓carol@example.com0",
