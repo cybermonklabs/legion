@@ -13,8 +13,9 @@ refuses `ci_check` on a check that already holds a recorded result.
 
 ## No role runs it
 
-A check carrying `ci_check` is CI's. No role runs it, and no role records a result for it:
-Dispatch refuses such a result with `409 CHECK_PROVED_BY_CI`. `dispatch results --issue <issue>`
+A check carrying `ci_check` is CI's. No role runs its work in its own pod, and no role records a
+result for it: Dispatch refuses such a result with `409 CHECK_PROVED_BY_CI`. The CI job stays a
+job like any other, and the rules for a red CI job apply to it. `dispatch results --issue <issue>`
 reads the named check run at the head of the issue's pull request. It prints the one result it
 derives from that run, and the line for the pull request body:
 
