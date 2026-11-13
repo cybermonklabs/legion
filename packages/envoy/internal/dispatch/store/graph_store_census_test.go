@@ -125,8 +125,9 @@ func graphTuplesIndexState(t *testing.T, store *Store) (oid uint32, valid bool) 
 //
 // The whole route is read against a real Postgres: graph_tuples is filled past a limit this run
 // sets itself, the index as an ordinary migration is refused on the table's size, the same index
-// under the marker passes the census and is applied for real, a second application of it does
-// nothing, and a UNIQUE build under the same marker is refused like the ordinary migration.
+// under the marker passes the census and is built for real by the store's own runner, a second
+// application of it through that runner does nothing, and a UNIQUE build under the same marker
+// is refused like the ordinary migration.
 //
 // The run creates no event trigger, so it needs no superuser, which the test server's login is
 // not. It reads pg_event_trigger at the end instead, since an enabled DDL event trigger is what
@@ -228,53 +229,80 @@ func TestAnIndexIsStillPossibleOnceTheLogPassesTheCensusLimit(t *testing.T) {
 	}
 	t.Logf("the census read the marked build as ConcurrentIndex over graph_tuples at %d bytes (%s)", table.Bytes, mebibytes(table.Bytes))
 
-	// The build itself, on a connection the test holds, through the executor the store's runner
-	// applies a marked migration with (applyNonTransactionalMigration). The test holds that
-	// session so it can ask it what the runner left behind: a build outside a transaction leaves
-	// the session idle with no transaction id assigned, where a runner that had wrapped the
-	// statement would leave an open transaction holding one.
-	conn, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect for the build: %v", err)
-	}
-	t.Cleanup(func() { conn.Close(context.Background()) })
-	marked := pgmigrate.Migration{Version: graphIndexVersion, Name: graphIndexFile, SQL: graphMarkedIndexSQL, NonTransactional: true}
-	if err := pgmigrate.ExecNonTransactional(ctx, conn, marked, nil); err != nil {
-		t.Fatalf("build the index: %v", err)
-	}
-	var assigned *string
-	if err := conn.QueryRow(ctx, "select txid_current_if_assigned()::text").Scan(&assigned); err != nil {
-		t.Fatalf("read txid_current_if_assigned(): %v", err)
-	}
-	if assigned != nil {
-		t.Fatalf("the session that ran the build holds transaction %s, so the build ran inside a transaction", *assigned)
-	}
-	if status := conn.PgConn().TxStatus(); status != 'I' {
-		t.Fatalf("the session that ran the build is in transaction status %q, want idle", string(status))
-	}
-	t.Logf("the session that ran the build is idle and txid_current_if_assigned() is null: no transaction was held open around it")
-
-	built, valid := graphTuplesIndexState(t, store)
-	if built == 0 || !valid {
-		t.Fatalf("%s after the build: oid %d, valid %v", graphTuplesIndex, built, valid)
-	}
-
-	// The same migration a second time, through the real runner, which runs the statement again
-	// because no version records it yet: IF NOT EXISTS makes that second run do nothing, and the
-	// index Postgres has is the one the first run built, still valid.
+	// The build itself, through the store's own runner (store.migrate), which applies a marked
+	// migration on a connection of its own and outside any transaction
+	// (applyNonTransactionalMigration). The index does not exist until the runner runs, so the
+	// index read valid afterwards is the one the runner built.
 	set := migrationsThrough(t, graphStoreVersion)
 	set[graphIndexMigrationID] = &fstest.MapFile{Data: []byte(graphMarkedIndexSQL)}
+	if before, _ := graphTuplesIndexState(t, store); before != 0 {
+		t.Fatalf("%s exists before the runner applied the migration that builds it: oid %d", graphTuplesIndex, before)
+	}
 	if err := store.migrate(ctx, set); err != nil {
 		t.Fatalf("apply the marked migration through the runner: %v", err)
 	}
 	if got := schemaVersion(t, store); got != graphIndexVersion {
 		t.Fatalf("the runner recorded version %d, want %d", got, graphIndexVersion)
 	}
+	built, valid := graphTuplesIndexState(t, store)
+	switch {
+	case built == 0:
+		t.Fatalf("the runner recorded %s applied and no %s exists: the runner did not build the index the census passed",
+			graphIndexFile, graphTuplesIndex)
+	case !valid:
+		t.Fatalf("%s after the runner applied %s is oid %d and invalid; a concurrent build that fails leaves an index nothing uses",
+			graphTuplesIndex, graphIndexFile, built)
+	}
+	t.Logf("the runner applied %s and recorded version %d; %s is oid %d and valid", graphIndexFile, graphIndexVersion, graphTuplesIndex, built)
+
+	// The same migration a second time, through the same runner. Its version row is taken off,
+	// so the runner reads it as pending and runs the statement again: IF NOT EXISTS makes that
+	// second run do nothing, and the index Postgres has is the one the first run built, still
+	// valid.
+	if tag, err := store.Pool.Exec(ctx, `delete from schema_migrations where version = $1`, graphIndexVersion); err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("take version %d off schema_migrations: %v rows, %v", graphIndexVersion, tag.RowsAffected(), err)
+	}
+	if err := store.migrate(ctx, set); err != nil {
+		t.Fatalf("apply the marked migration through the runner a second time: %v", err)
+	}
+	if got := schemaVersion(t, store); got != graphIndexVersion {
+		t.Fatalf("the runner's second application recorded version %d, want %d", got, graphIndexVersion)
+	}
 	rebuilt, valid := graphTuplesIndexState(t, store)
 	if rebuilt != built || !valid {
 		t.Fatalf("the second application changed %s: oid %d -> %d, valid %v", graphTuplesIndex, built, rebuilt, valid)
 	}
-	t.Logf("the runner applied %s and recorded version %d; %s is oid %d and valid, the oid the first run built", graphIndexFile, graphIndexVersion, graphTuplesIndex, rebuilt)
+	t.Logf("the runner applied %s again and recorded version %d; %s is still oid %d and valid", graphIndexFile, graphIndexVersion, graphTuplesIndex, rebuilt)
+
+	// The runner closes the connection it applied the statement on before migrate returns, so
+	// that session can no longer be asked whether it held a transaction. The executor the runner
+	// applies the statement with can be, on a session the test holds: a statement run outside a
+	// transaction leaves the session idle with no transaction id assigned, where an executor that
+	// had wrapped it would leave an open transaction holding one. The index exists by now, so this
+	// third run is the no-op the second one was.
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect for the executor's own run: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	marked := pgmigrate.Migration{Version: graphIndexVersion, Name: graphIndexFile, SQL: graphMarkedIndexSQL, NonTransactional: true}
+	if err := pgmigrate.ExecNonTransactional(ctx, conn, marked, nil); err != nil {
+		t.Fatalf("run the marked statement through the runner's executor: %v", err)
+	}
+	var assigned *string
+	if err := conn.QueryRow(ctx, "select txid_current_if_assigned()::text").Scan(&assigned); err != nil {
+		t.Fatalf("read txid_current_if_assigned(): %v", err)
+	}
+	if assigned != nil {
+		t.Fatalf("the session the executor ran the statement on holds transaction %s, so the statement ran inside a transaction", *assigned)
+	}
+	if status := conn.PgConn().TxStatus(); status != 'I' {
+		t.Fatalf("the session the executor ran the statement on is in transaction status %q, want idle", string(status))
+	}
+	t.Logf("the session the executor ran the statement on is idle and txid_current_if_assigned() is null: no transaction was held open around it")
+	if again, valid := graphTuplesIndexState(t, store); again != built || !valid {
+		t.Fatalf("the executor's own run changed %s: oid %d -> %d, valid %v", graphTuplesIndex, built, again, valid)
+	}
 
 	// A UNIQUE build validates the rows it scans, so it gets no size exception. No file can carry
 	// one: the loader refuses it before any database is read.

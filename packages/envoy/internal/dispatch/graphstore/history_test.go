@@ -74,11 +74,15 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 	ctx := context.Background()
 	pool := storetest.Open(t).Pool
 
+	// The relation is a block's in_document, the one relation of a block's own that graph_edges
+	// renders - as the part_of to its document the view has always answered - so the same
+	// relation is also the edge that shows the view's tuple arm is live. A block's part_of is no
+	// row of that view (20261109215947_graph_edges_tuples.up.sql).
 	const (
 		nodeKind  = "block"
 		nodeID    = "CORE/plan#b1"
 		attribute = "text"
-		relation  = "part_of"
+		relation  = "in_document"
 	)
 	// Postgres keeps a timestamptz to the microsecond, so the times written are the times read
 	// back and an equality is an equality.
@@ -173,14 +177,39 @@ func TestAnAttributeHistoryReadsBackAsARelationHistoryDoes(t *testing.T) {
 	}
 
 	// A value is no node, so it is the far end of no edge: graph_edges answers the projections,
-	// and a literal a block holds is never an address in it.
+	// and a literal a block holds is never an address in it. The view's tuple arm answers a kind
+	// only once that kind's graph_store_cutover row reads true, and every row reads false until a
+	// backfill completes it, so with the rows as the first migration left them the arm answers
+	// nothing and no value could reach an edge whatever the arm let through. This database is
+	// this test's own, so every kind is marked complete here, which is the view a deployment
+	// reads once its backfill has run.
+	if _, err := pool.Exec(ctx, `update graph_store_cutover set complete = true`); err != nil {
+		t.Fatalf("mark every kind's cutover complete: %v", err)
+	}
+	// The arm is live: each far end the relation was stated to is one edge of the view, so the
+	// count of edges at a value below is read off an arm that answers this node's tuples, and a
+	// zero there is the value being kept out rather than the arm answering nothing.
+	for _, written := range steps {
+		var edges int
+		if err := pool.QueryRow(ctx, `
+			select count(*) from graph_edges
+			where from_kind = $1 and from_id = $2 and kind = 'part_of' and to_kind = 'artifact' and to_id = $3`,
+			nodeKind, nodeID, written.far).Scan(&edges); err != nil {
+			t.Fatalf("read graph_edges for the far end %q: %v", written.far, err)
+		}
+		if edges != 1 {
+			t.Errorf("graph_edges holds %d part_of edges from %s/%s to artifact/%q, want the one its %s tuple states: with every cutover complete the tuple arm answers that relation",
+				edges, nodeKind, nodeID, written.far, relation)
+		}
+	}
 	for _, written := range steps {
 		var edges int
 		if err := pool.QueryRow(ctx, `select count(*) from graph_edges where to_id = $1`, written.value).Scan(&edges); err != nil {
 			t.Fatalf("read graph_edges for the value %q: %v", written.value, err)
 		}
 		if edges != 0 {
-			t.Errorf("graph_edges holds %d edges whose far end is the value %q, want none", edges, written.value)
+			t.Errorf("graph_edges holds %d edges whose far end is the value %q, want none: the tuple arm excludes a literal far end",
+				edges, written.value)
 		}
 	}
 }

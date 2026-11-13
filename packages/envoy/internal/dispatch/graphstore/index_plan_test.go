@@ -35,10 +35,20 @@ const (
 	crowdedID   = "GRAPH/seed#crowded"
 )
 
-// crowdedInboxKinds are the kinds the crowded node's inbox holds, which the kinded inbox read
-// names. The list is written out here rather than read from the store, so the count of index
-// scans the plan must hold is a number this test knows.
+// crowdedInboxKinds are the kinds the seed spreads the crowded node's inbox over. The inbox read
+// does not take its kind list from here: it names the kinds the store holds into that node
+// (inboxKindsInTheStore), so a kind a later writer first states into a node is a kind the read
+// names that same day, where a list written out in Go would leave it out of the inbox without a
+// word. The seed adds one kind this list lacks (crowdedSupertagKind) to hold that to it.
 var crowdedInboxKinds = []string{"replies_to", "mentions", "answers", "part_of", "anchored_to"}
+
+// The supertag node that states one tuple into the crowded node under a kind crowdedInboxKinds
+// lacks, at a time after every tuple the seed appends there, so it heads the crowded node's
+// inbox: an inbox read that named the seed's own list would answer every row but that one.
+const (
+	crowdedSupertagID   = "decision"
+	crowdedSupertagKind = "exemplified_by"
+)
 
 // How many rows each shape of the seed appends. The total is above a million, which is the size
 // this test is for: below it the planner reads a table of any shape as a scan, and a plan proves
@@ -110,6 +120,7 @@ func TestEveryCurrentStoreReadRunsThroughTheTupleIndexes(t *testing.T) {
 	database := storetest.Open(t)
 	pool := database.Pool
 	seedTupleLog(t, ctx, pool)
+	writeSupertagIntoTheCrowdedNode(t, ctx, pool)
 	writeProbeTuples(t, ctx, pool)
 	longValue := writeOneLongValue(t, ctx, pool)
 	// The planner reads row counts and column statistics off the catalog, and a table just
@@ -157,7 +168,14 @@ func requireReadRunsThroughTheIndexes(
 		t.Errorf("%s scans graph_tuples:\n%s", subject, text)
 	}
 	scans := readIndexScans(t, plan)
-	if len(scans) < read.wantIndexScans {
+	switch {
+	case read.wantMergedInTime && len(scans) != read.wantIndexScans:
+		// A read merged in time order reads one index scan for each kind it names and no
+		// more: a scan more than that is a branch reading graph_tuples for nothing the
+		// answer holds, and the count of branches is the count of kinds.
+		t.Errorf("%s reads graph_tuples through %d index scans, want exactly %d, one for each kind it names:\n%s",
+			subject, len(scans), read.wantIndexScans, text)
+	case len(scans) < read.wantIndexScans:
 		t.Errorf("%s reads graph_tuples through %d index scans, want %d, one for each kind it names:\n%s",
 			subject, len(scans), read.wantIndexScans, text)
 	}
@@ -229,13 +247,14 @@ type storeRead struct {
 }
 
 // storeReads runs each read the package states, checks its answer against the reference walk and
-// returns the statement each one sent. The six reads are the five current and as-of reads of one
-// node and the inbox read of the crowded node; the seventh, the inbox read naming no kind, is
-// the negative control that shows the kind list is what keeps that read off the whole inbox.
+// returns the statement each one sent. The seven reads are the five current and as-of reads of
+// one node, the history of one of its relations, and the inbox read of the crowded node naming
+// every kind the store holds into it; the eighth, the inbox read naming no kind, is the negative
+// control that shows the kind list is what keeps that read off the whole inbox.
 func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference logReference) []storeRead {
 	t.Helper()
 	recorder := &recordedQueryer{Queryer: pool}
-	reads := make([]storeRead, 0, 7)
+	reads := make([]storeRead, 0, 8)
 	record := func(name string, wantWholeInbox bool, wantIndexScans int, merged bool) {
 		t.Helper()
 		reads = append(reads, storeRead{
@@ -282,12 +301,24 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 	requireSameTuples(t, "AsOfIn", asOfIn, reference.asOfIn)
 	record("AsOfIn", false, 1, false)
 
-	inbox, err := TuplesIntoNode(ctx, recorder, crowdedKind, crowdedID, crowdedInboxKinds, inboxLimit)
+	// History answers in log order, so its answer is held to the walk's row for row.
+	history, err := History(ctx, recorder, probeKind, probeID, probeRelation)
+	if err != nil {
+		t.Fatalf("History: %v", err)
+	}
+	requireSameOrder(t, "History", history, reference.history)
+	record("History", false, 1, false)
+
+	kinds := inboxKindsInTheStore(t, ctx, pool)
+	inbox, err := TuplesIntoNode(ctx, recorder, crowdedKind, crowdedID, kinds, inboxLimit)
 	if err != nil {
 		t.Fatalf("TuplesIntoNode: %v", err)
 	}
-	requireSameOrder(t, "TuplesIntoNode naming its kinds", inbox, reference.inboxByKind)
-	record("TuplesIntoNode naming its kinds", false, len(crowdedInboxKinds), true)
+	// Naming every kind the store holds into the node is reading every tuple into it, so the
+	// answer is the whole inbox's.
+	requireSameOrder(t, "TuplesIntoNode naming the kinds the store holds", inbox, reference.inboxAnyKind)
+	record("TuplesIntoNode naming the kinds the store holds", false, len(kinds), true)
+	requireBindsKind(t, reads[len(reads)-1], crowdedSupertagKind)
 
 	unkinded, err := TuplesIntoNode(ctx, recorder, crowdedKind, crowdedID, nil, inboxLimit)
 	if err != nil {
@@ -296,6 +327,49 @@ func storeReads(t *testing.T, ctx context.Context, pool *store.Pool, reference l
 	requireSameOrder(t, "TuplesIntoNode naming no kind", unkinded, reference.inboxAnyKind)
 	record("TuplesIntoNode naming no kind", true, 0, false)
 	return reads
+}
+
+// inboxKindsInTheStore is the kinds of every tuple the store holds into the crowded node, which
+// is the kind list the inbox read names. It is read off graph_tuples rather than written out
+// here, and held to holding both the seed's own kinds and the supertag's, which the seed's list
+// lacks: a list that missed the supertag's kind would read an inbox without its newest row.
+func inboxKindsInTheStore(t *testing.T, ctx context.Context, pool *store.Pool) []string {
+	t.Helper()
+	if slices.Contains(crowdedInboxKinds, crowdedSupertagKind) {
+		t.Fatalf("crowdedInboxKinds holds %s, so a read naming that list would name it too, and nothing tells the store's kinds from the list", crowdedSupertagKind)
+	}
+	rows, err := pool.Query(ctx, `
+		select distinct kind from graph_tuples
+		where to_kind = $1 and to_id = $2 and to_kind <> '`+KindValue+`'
+		order by kind`, crowdedKind, crowdedID)
+	if err != nil {
+		t.Fatalf("read the kinds the store holds into %s/%s: %v", crowdedKind, crowdedID, err)
+	}
+	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the kinds the store holds into %s/%s: %v", crowdedKind, crowdedID, err)
+	}
+	for _, want := range append(slices.Clone(crowdedInboxKinds), crowdedSupertagKind) {
+		if !slices.Contains(kinds, want) {
+			t.Fatalf("the store holds the kinds %v into %s/%s, and the seed wrote %s there", kinds, crowdedKind, crowdedID, want)
+		}
+	}
+	t.Logf("the store holds %d kinds into %s/%s: %v", len(kinds), crowdedKind, crowdedID, kinds)
+	return kinds
+}
+
+// requireBindsKind holds the inbox read to binding kind, the one the store holds and the seed's
+// own list lacks: the kinds are the statement's arguments, so a read that named a list of its
+// own rather than the store's would bind every kind but that one.
+func requireBindsKind(t *testing.T, read storeRead, kind string) {
+	t.Helper()
+	bound := slices.ContainsFunc(read.statement.args, func(argument any) bool {
+		text, ok := argument.(string)
+		return ok && text == kind
+	})
+	if !bound {
+		t.Errorf("%s binds %v, which is not the kinds the store holds: it leaves out %s", read.name, read.statement.args, kind)
+	}
 }
 
 // recordedStatement is one statement a read sent, with the arguments it bound.
@@ -626,6 +700,28 @@ func kindArray(kinds []string) string {
 	return "array[" + strings.Join(literals, ",") + "]"
 }
 
+// writeSupertagIntoTheCrowdedNode writes one supertag node through Write, with one tuple into
+// the crowded node under crowdedSupertagKind, a kind the seed's own list lacks. It is timed after
+// every tuple the seed appends into that node, so it heads that node's inbox and an inbox read
+// that names the seed's list rather than the store's kinds answers every row but this one.
+func writeSupertagIntoTheCrowdedNode(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	at := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	who := model.Actor{Kind: "user", ID: "alice"}
+	const event = 9200001
+	node := Node{
+		Kind: "supertag", ID: crowdedSupertagID, Supertag: "supertag",
+		Visibility: VisibilityProject, State: StateLive,
+		MadeAt: at, MadeBy: who, SourceEvent: event,
+	}
+	tuple := Tuple{
+		FromKind: "supertag", FromID: crowdedSupertagID, Kind: crowdedSupertagKind,
+		ToKind: crowdedKind, ToID: crowdedID, At: at, Who: who, SourceEvent: event, Asserted: true,
+	}
+	writeInOneTransaction(t, ctx, pool, []Node{node}, []Tuple{tuple},
+		fmt.Sprintf("the supertag %s's tuple into %s/%s", crowdedSupertagID, crowdedKind, crowdedID))
+}
+
 // The probe node's own attribute and relations, and the moment the as-of reads are taken at.
 const (
 	probeAttribute = "text"
@@ -805,7 +901,7 @@ type logReference struct {
 	currentValueFound bool
 	asOfOut           []int64
 	asOfIn            []int64
-	inboxByKind       []int64
+	history           []int64
 	inboxAnyKind      []int64
 }
 
@@ -821,10 +917,10 @@ type loggedFact struct {
 
 // walkTheWholeLog reads every tuple the store holds, in no particular order, and folds each
 // read's answer out of it. Each fold is order-independent - the newest of a group by sequence,
-// the newest at or before a moment, the top of an inbox by time - so the walk needs no sort and
-// keeps no more rows in memory than the answers hold. It binds nothing and names no node, so no
-// index can serve it and nothing it answers can be short for the same reason a read's index
-// could be: that is what makes it a reference.
+// the newest at or before a moment, the top of an inbox by time, the rows of one relation sorted
+// once at the end - so the walk keeps no more rows in memory than the answers hold. It binds
+// nothing and names no node, so no index can serve it and nothing it answers can be short for
+// the same reason a read's index could be: that is what makes it a reference.
 func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logReference {
 	t.Helper()
 	started := time.Now()
@@ -834,8 +930,9 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 	currentValue := newestOfEachGroup{by: bySeq}
 	asOfOut := newestOfEachGroup{by: byTimeThenSeq}
 	asOfIn := newestOfEachGroup{by: byTimeThenSeq}
-	inboxByKind := topOfInbox{limit: inboxLimit}
 	inboxAnyKind := topOfInbox{limit: inboxLimit}
+	var history []int64
+	supertagTuple := int64(0)
 
 	rows, err := pool.Query(ctx,
 		`select seq, from_kind, from_id, kind, to_kind, to_id, at, asserted from graph_tuples`)
@@ -871,10 +968,14 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 		if intoProbe && fact.toKind != KindValue && !fact.at.After(asOf) {
 			asOfIn.offer([3]string{fact.kind, fact.fromKind, fact.fromID}, fact)
 		}
+		// History answers every row of one kind out of a node, asserting and retracting alike.
+		if outOfProbe && fact.kind == probeRelation {
+			history = append(history, fact.seq)
+		}
 		if intoCrowded && fact.toKind != KindValue {
 			inboxAnyKind.offer(fact)
-			if slices.Contains(crowdedInboxKinds, fact.kind) {
-				inboxByKind.offer(fact)
+			if fact.kind == crowdedSupertagKind {
+				supertagTuple = fact.seq
 			}
 		}
 	}
@@ -884,6 +985,7 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 	if walked < seedTotal {
 		t.Fatalf("the walk read %d tuples, want at least the %d the seed appended", walked, seedTotal)
 	}
+	slices.Sort(history)
 	value, found := "", false
 	if newest, ok := currentValue.by3([3]string{probeAttribute}); ok && newest.asserted {
 		value, found = newest.toID, true
@@ -895,16 +997,16 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 		currentValueFound: found,
 		asOfOut:           asOfOut.assertedSeqs(),
 		asOfIn:            asOfIn.assertedSeqs(),
-		inboxByKind:       inboxByKind.seqs(),
+		history:           history,
 		inboxAnyKind:      inboxAnyKind.seqs(),
 	}
-	t.Logf("walked %d tuples in %s; the reference holds %d current out, %d current in, %d as-of out, %d as-of in",
+	t.Logf("walked %d tuples in %s; the reference holds %d current out, %d current in, %d as-of out, %d as-of in, %d of history",
 		walked, time.Since(started).Round(time.Millisecond), len(reference.currentOut), len(reference.currentIn),
-		len(reference.asOfOut), len(reference.asOfIn))
+		len(reference.asOfOut), len(reference.asOfIn), len(reference.history))
 	for name, answer := range map[string][]int64{
 		"CurrentOut": reference.currentOut, "CurrentIn": reference.currentIn,
 		"AsOfOut": reference.asOfOut, "AsOfIn": reference.asOfIn,
-		"the kinded inbox": reference.inboxByKind, "the unkinded inbox": reference.inboxAnyKind,
+		"History": reference.history, "the inbox": reference.inboxAnyKind,
 	} {
 		if len(answer) == 0 {
 			t.Fatalf("the reference answers nothing for %s, so comparing a read with it proves nothing", name)
@@ -912,6 +1014,13 @@ func walkTheWholeLog(t *testing.T, ctx context.Context, pool *store.Pool) logRef
 	}
 	if !reference.currentValueFound {
 		t.Fatal("the reference answers no current value for the probe, so comparing CurrentValue with it proves nothing")
+	}
+	// The supertag's tuple heads the crowded node's inbox, so a read that left its kind out
+	// answers a different inbox; were it outside the newest inboxLimit rows, the two would
+	// answer the same and the kind list would go untested.
+	if supertagTuple == 0 || !slices.Contains(reference.inboxAnyKind, supertagTuple) {
+		t.Fatalf("the supertag's %s tuple (seq %d) is not among the newest %d tuples into %s/%s, so an inbox read naming only %v would answer the same rows",
+			crowdedSupertagKind, supertagTuple, inboxLimit, crowdedKind, crowdedID, crowdedInboxKinds)
 	}
 	return reference
 }
@@ -1158,14 +1267,18 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 
 	// A value has no length bound and a btree key is bounded at about 2,704 bytes, so an index
 	// keying to_id refuses the insert of a tuple whose to_id holds one. Every such index is
-	// partial on to_kind, which is what keeps the values out of it.
+	// partial on to_kind, which is what keeps the values out of it. A key holds the far end
+	// whether it names to_id bare, sorted (to_id desc) or through an expression (md5(to_id),
+	// left(to_id, 64)), so the rule reads every key that mentions the column: an expression that
+	// shrinks the value passes the long write this test makes and still keys a value and an
+	// address in one index, which is what a to_kind predicate keeps apart.
 	for _, indexes := range declared {
 		for _, index := range indexes {
-			if index.table != "graph_tuples" || !slices.Contains(strings.Split(index.keys, ", "), "to_id") {
+			if index.table != "graph_tuples" || !keysTheFarEnd.MatchString(index.keys) {
 				continue
 			}
 			if !strings.Contains(index.predicate, "to_kind") {
-				t.Errorf("%s (%s) in %s keys to_id under no to_kind predicate: a tuple whose to_id holds a value would fail its insert",
+				t.Errorf("%s (%s) in %s keys the far end under no to_kind predicate: a value and an address share that key, and a key over to_id itself refuses the insert of a long value",
 					index.name, index.keys, index.migration)
 			}
 		}
@@ -1173,6 +1286,10 @@ func requireIndexSetOfTheFirstMigration(t *testing.T) {
 	t.Logf("the index set of %s: %d indexes read from the migration files in order, over %d files",
 		graphStoreMigration, len(requiredGraphIndexes)+1, len(files))
 }
+
+// keysTheFarEnd matches an index key list that mentions to_id anywhere, bare or inside an
+// expression.
+var keysTheFarEnd = regexp.MustCompile(`\bto_id\b`)
 
 // migrationsDirectory is where the migration files are, read from this package's own directory.
 const migrationsDirectory = "../store/migrations"
