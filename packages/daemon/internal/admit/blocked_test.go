@@ -28,6 +28,16 @@ func quiet(t *testing.T, cap int) *Admission {
 	return newAdmission(t, cap, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
+// blocked is the whole of the tick's blocked list in one call, reading the issues and line facts
+// itself as the tick does (lineFacts, blockedFrom).
+func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIssue, error) {
+	issues, facts, err := a.lineFacts(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	return a.blockedFrom(ctx, tx, issues, facts)
+}
+
 // seedMirror writes what Dispatch says of key — its status and, in order, the keys it waits on —
 // as the blockers.Mirror handler writes one from an event. Its sequence is 1, so any event a test
 // then applies through the mirror (sequence 2 or more) wins the row's fence.

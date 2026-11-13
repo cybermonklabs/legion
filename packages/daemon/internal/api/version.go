@@ -1242,12 +1242,39 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
-// 91: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
+// 96: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
 // live tree gains that tree's quiet time: `treeMovedAt`, the newest movement the daemon has
 // seen anywhere in the tree, and `quietHours`, how long the tree has been still at this read,
 // as a number of hours. The pair is the tree's and not the issue's, so every issue of one tree
 // carries the same two values — the root, a child past its own review, which holds no admission
-// slot since 91's first slice, and a done child recorded under the tree alike — and a reader
+// slot since 96's first slice, and a done child recorded under the tree alike — and a reader
 // that wants to know whether a tree has stopped asks any one of its issues. The measure behind
 // the keys is `record.QuietTrees`, the one statement of the question the admission pass reads
 // too, so the state and the pass read one rule and neither keeps a measure of its own — the
@@ -1262,9 +1289,10 @@ package api
 // deployment, so the two values are in `--json` and in the one issue a pane prints, which is
 // where the memory keys and the waiting line each landed.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 91 is served the issues without the two keys (api's stateFor,
-// withoutQuietTime), as a caller below 85 is served it without each issue's one rendered
-// answer and without the waiting line's own fields beside each member's place, the entry two
+// contract below 96 is served the issues without the two keys (api's stateFor,
+// withoutQuietTime), as a caller below 87 is served every claim view without `leakCheckCause`,
+// the entry right above (withoutLeakCheckCause), one below 85 without each issue's one rendered
+// answer and without the waiting line's own fields beside each member's place, the entry three
 // above (withoutWhyAndLineFields), one below 75 the state with none of the record fields of
 // the entry before that, one below 73 a body with no `claimsToRefresh`, one below 62 the
 // workers with no `backwardMoves`, one below 58 the issues with no `waitingLine`, one
@@ -1272,8 +1300,8 @@ package api
 // entries, one below 55 the issues without the gated steps, one below 53 a body with no wakes
 // waiting, one below 51 the issues without the admission's trees and each issue's tree, one
 // below 49 without the memory draw and one below 46 without the claim views' update rounds; the
-// thirteen compose, and every reader from 91 on takes both keys as optional
-// (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 90 does
+// fourteen compose, and every reader from 96 on takes both keys as optional
+// (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 95 does
 // not refuse them, as a plugin before one of the earlier contracts above refuses its own: every
 // answer-side schema of `packages/contracts` has stripped a key it does not name since
 // sjawhar/legion#2788. The strip is still what serves such a caller: a reader that did not ask
@@ -1313,20 +1341,23 @@ package api
 // 9009dc1d5c73e017bc8a293873265f3629f00b33, where #3662's 75 was the entry above and was the
 // number the base then carries: 82 was above it, so nothing was renumbered. It took 86 at the
 // forward merge of 2026-11-12 that brought main in at
-// fbe970eef84df8635b58ba73b380a13f1e6f0a78, which lands INFRA-2554's 85. It takes 91 at the
+// fbe970eef84df8635b58ba73b380a13f1e6f0a78, which lands INFRA-2554's 85. It took 91 at the
 // forward merge of 2026-11-12 that brought main in at
-// a4c0ff994adc50fe79ca0e3b07ddde3af8aff708, which lands INFRA-714's own 86, the two entries
-// right above, and is the number the base now carries: 86 is no longer above the base, so
-// .github/scripts/check-daemon-api-contract.sh was run as CI runs it, refused this tree for
-// declaring 86 against a base at 86, and named 91 — the lowest number above the base's that no
-// every open pull request and never from a file list, which passed over 87 (#3939), 88
-// (#3730), 89 (#3519 and #3659) and 90 (#3575, #3830 and #3937) — which is the number this
-// change declares. Each of those is the number that head declared at that reading and no
-// head's for good: read again on 2026-11-13, in each head's own copy of this file, #3939
-// declares 87, #3730 declares 88, #3659 declares 89, #3830 declares 90, #3519 and #3712
-// declare 91, and #3575 and #3937 declare 93. So 91 is now a three-way collision, which the
-// check decides at the merge and not here: the first of the three to land refuses the other
-// two, and the refusal names the free number the later tree takes, which is why this line is a
-// reading and never the rule. Read the base's own number and every open head again at the next
-// forward merge rather than from this line.)
-const DaemonAPIVersion = 91
+// a4c0ff994adc50fe79ca0e3b07ddde3af8aff708, which lands INFRA-714's own 86: 86 was no longer
+// above the base, so .github/scripts/check-daemon-api-contract.sh was run as CI runs it,
+// refused this tree for declaring 86 against a base at 86, and named 91 — the lowest number
+// above the base's that no open pull request declared, read in each head's own copy of this
+// file and never from a file list, which passed over 87 (#3939), 88 (#3730), 89 (#3519 and
+// #3659) and 90 (#3575, #3830 and #3937). It takes 96 at the forward merge of 2026-11-13 that
+// brought main in at 12ba4e6afa71acf380d0b64738de7a44653f9ea8, which lands #3939's INFRA-3219
+// at 87, the entry right above, and is the number the base now carries. 91 was still above it
+// but was declared by #3519 and #3712 as well, a three-way collision where the first of the
+// three to land refuses the other two, so the check was run as CI runs it against this tree
+// declaring the base's own 87, refused it, and named 96 — the lowest number above the base's
+// that no open pull request declares, which passed over 88 (#3730), 89 (#3659), 90 (#3830), 91
+// (#3519, #3712 and this change's own former number), 92 (#3715), 93 (#3677 and #3937), 94
+// (#3708) and 95 (#3575) — which is the number this change declares. Each of those is the number
+// that head declared at that reading and no head's for good, which is why this line is a reading
+// and never the rule. Read the base's own number and every open head again at the next forward
+// merge rather than from this line.)
+const DaemonAPIVersion = 96

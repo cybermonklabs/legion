@@ -393,3 +393,174 @@ func TestTheReaperKeepsAnInterestWhoseSessionItCouldNotRead(t *testing.T) {
 		t.Fatalf("ses_unread's interest after the reaper: %v, want it kept", err)
 	}
 }
+
+// The reaper judges the row its copy holds, and the row the bucket holds is another one while a
+// recreated bucket's first read is under way: the copy holds no revision for the key then
+// (kvwatch.Copy.FenceFor), and a registration on another listener has already written the
+// session's row into the new bucket. A pass that deleted whatever revision the bucket answered
+// would take that fresh row - a session's live registration, past no allowance, which no pass
+// ever judged - and count it reaped. So the pass reads the row and its revision from the bucket
+// and deletes only the row it judged, which the fresh row's UpdatedAt is not.
+func TestTheReaperKeepsARowWrittenWhileItsCopyHeldNoRevisionForTheKey(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	reg, held, delayed := rebuiltRegistry(t, conn)
+	reg.watcher.Start()
+	waitFor(t, 5*time.Second, reg.watcher.Following)
+
+	stale := time.Now().Add(-20 * time.Minute).UnixMilli()
+	putInterest(t, delayed.KeyValue, Interest{SessionID: "ses_x", MachineID: "m1", Topics: []string{"notifications.old"}, UpdatedAt: stale})
+	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached("ses_x"); return ok })
+
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	if err := js.DeleteKeyValue(bus.InterestBucket); err != nil {
+		t.Fatalf("delete the interest bucket: %v", err)
+	}
+	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: natsgo.FileStorage})
+	fresh := time.Now().UnixMilli()
+	putInterest(t, recreated, Interest{SessionID: "ses_x", MachineID: "m1", Topics: []string{"notifications.fresh"}, UpdatedAt: fresh})
+
+	// The new bucket's read is under way and has not delivered ses_x yet, nor swept, so the copy
+	// still holds the old bucket's row and no revision of the new bucket's for it.
+	apply := held.holdApply(t, "ses_x")
+	completion := held.holdCompletion(t, nil)
+	if err := reg.Rewatch(conn); err != nil {
+		t.Fatalf("Rewatch: %v", err)
+	}
+	waitClosed(t, apply.reached, "the new bucket's read to deliver ses_x")
+	if item, ok := reg.Cached("ses_x"); !ok || item.UpdatedAt != stale {
+		t.Fatalf("precondition: the copy holds %+v (%v), want the old bucket's stale row", item, ok)
+	}
+
+	count, err := reg.Reap(func(string) (bool, error) { return false, nil }, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("Reap: %v", err)
+	}
+	if _, err := recreated.Get("ses_x"); err != nil {
+		t.Fatalf("ses_x's fresh row (updated_at %d) after a pass that judged the stale row (updated_at %d, reaped=%d): %v, want it kept", fresh, stale, count, err)
+	}
+	if count != 0 {
+		t.Fatalf("the pass reaped %d, want nothing: the only row the bucket holds is one it never judged", count)
+	}
+	apply.open()
+	completion.open()
+	row, _, err := reg.RefreshAt(context.Background(), "ses_x")
+	if err != nil || row.UpdatedAt != fresh {
+		t.Fatalf("the bucket's row after the pass = %+v (%v), want the fresh one", row, err)
+	}
+}
+
+// An unsubscribe writes the row the bucket holds, under that row's revision, and never the row
+// its own copy holds: a registration of the same session on another listener, which the copy
+// here has not been delivered, was answered 200 for a topic it added, and a write built from the
+// stale row would drop that topic from the record for good - nothing puts it back, since the
+// session's later heartbeats merge into whatever the record holds. The bucket refuses the write
+// built from the stale row, and the unsubscribe builds it again from the row that refused it.
+func TestAnUnsubscribeKeepsATopicAnotherWriterAddedToTheRow(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	reg, _, delayed := rebuiltRegistry(t, conn)
+	reg.watcher.Start()
+	waitFor(t, 5*time.Second, reg.watcher.Following)
+
+	const sessionID = "ses_unsub"
+	const kept, dropped, added = "notifications.kept", "notifications.dropped", "notifications.added"
+	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept, dropped}})
+	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached(sessionID); return ok })
+	// From here the copy is delivered nothing: it holds the row the unsubscribe reads, and the
+	// bucket holds the row another listener's registration stored after it.
+	reg.StopWatch()
+	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{added, dropped, kept}})
+
+	if _, err := reg.Remove(context.Background(), sessionID, []string{dropped}, releasedByItsProcess); err != nil {
+		t.Fatalf("unsubscribe from %s: %v", dropped, err)
+	}
+	row, _, err := reg.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the row the unsubscribe left: %v", err)
+	}
+	if want := []string{added, kept}; !slices.Equal(row.Topics, want) {
+		t.Fatalf("the row after the unsubscribe holds %v, want %v: the topic the other listener's registration added is the row's too", row.Topics, want)
+	}
+}
+
+// A role claim merges its topic into the row the bucket holds, under that row's revision, and
+// never into the row its own copy holds: the claim carries no topic set of its own, so a write
+// built from a stale row stores that row's topics back, dropping every topic a registration on
+// another listener was answered 200 for since and putting back every topic an unsubscribe
+// removed. The bucket refuses the write built from the stale row, and the claim builds it again
+// from the row that refused it (UpsertWithin).
+func TestARoleClaimKeepsATopicAnotherWriterAddedToTheRow(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	reg, _, delayed := rebuiltRegistry(t, conn)
+	reg.watcher.Start()
+	waitFor(t, 5*time.Second, reg.watcher.Following)
+
+	const sessionID = "ses_role_claim_fence"
+	const kept, added = "notifications.kept", "notifications.added"
+	const role, roleTopic = "legion-controller", "notifications.role.legion-controller"
+	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept}})
+	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached(sessionID); return ok })
+	// From here the copy is delivered nothing: it holds the row the claim would merge into, and
+	// the bucket holds the row another listener's registration stored after it.
+	reg.StopWatch()
+	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{added, kept}})
+
+	if _, err := reg.SetRole(sessionID, "m1", role, false); err != nil {
+		t.Fatalf("claim %s for %s: %v", role, sessionID, err)
+	}
+	row, _, err := reg.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the row the role claim left: %v", err)
+	}
+	if want := []string{added, kept, roleTopic}; !slices.Equal(row.Topics, want) {
+		t.Fatalf("the row after the role claim holds %v, want %v: the topic the other listener's registration added is the row's too", row.Topics, want)
+	}
+}
+
+// A registration's write judges the row the bucket holds and not the one its copy holds, even
+// where that judgement is to write nothing: a heartbeat whose plan merges to the row the copy
+// holds would otherwise be answered 200 from that row with nothing stored and no
+// compare-and-swap made, while the bucket holds the row a registration on another listener was
+// answered 200 for. The row moved under the plan, so the write is refused and the route plans
+// again over what the bucket holds and filters the session's consumer on that plan
+// (UpsertPlanned, cmd/listener's registerSession).
+func TestAPlannedWriteThatWouldStoreNothingIsRefusedWhenTheRowMoved(t *testing.T) {
+	conn, cleanup := connectNATS(t)
+	defer cleanup()
+	reg, _, delayed := rebuiltRegistry(t, conn)
+	reg.watcher.Start()
+	waitFor(t, 5*time.Second, reg.watcher.Following)
+
+	const sessionID = "ses_planned_skip_fence"
+	const kept, added = "notifications.kept", "notifications.added"
+	// The row is stamped now, so a heartbeat that merges to it is young enough to leave alone
+	// (InterestRefreshAge) and the plan below would store nothing.
+	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{kept}, UpdatedAt: time.Now().UnixMilli()})
+	waitFor(t, 5*time.Second, func() bool { _, ok := reg.Cached(sessionID); return ok })
+	plan, err := reg.PlanInterest(context.Background(), sessionID, []string{kept})
+	if err != nil {
+		t.Fatalf("plan the registration of %s: %v", sessionID, err)
+	}
+
+	// From here the copy is delivered nothing: it holds the row the plan read, and the bucket
+	// holds the row another listener's registration stored after it.
+	reg.StopWatch()
+	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{added, kept}, UpdatedAt: time.Now().UnixMilli()})
+
+	row, err := reg.UpsertPlanned(context.Background(), Interest{SessionID: sessionID, MachineID: "m1"}, plan)
+	if !errors.Is(err, ErrInterestPlanConflict) {
+		t.Fatalf("the planned write answered %+v (%v), want %v: the row it would have answered from is not the one the bucket holds", row, err, ErrInterestPlanConflict)
+	}
+	stored, _, err := reg.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the row the refused write left: %v", err)
+	}
+	if want := []string{added, kept}; !slices.Equal(stored.Topics, want) {
+		t.Fatalf("the row after the refused write holds %v, want %v: a refused write stores nothing", stored.Topics, want)
+	}
+}

@@ -1,5 +1,5 @@
 kind: Added
-body: 'Daemon API contract 91: every issue of a live tree carries `treeMovedAt`, when the daemon last saw anything of that issue''s tree move, and `quietHours`, how long that tree has been still at that read. The pair is the tree''s, so every issue of one tree carries the same two values; an issue whose tree is not live carries neither, and a caller from a pod below 91 is served the state without them.'
+body: 'Daemon API contract 96: every issue of a live tree carries `treeMovedAt`, when the daemon last saw anything of that issue''s tree move, and `quietHours`, how long that tree has been still at that read. The pair is the tree''s, so every issue of one tree carries the same two values; an issue whose tree is not live carries neither, and a caller from a pod below 96 is served the state without them.'
 time: 2026-11-11T07:50:15.000000000Z
 custom:
     Issue: pr3573

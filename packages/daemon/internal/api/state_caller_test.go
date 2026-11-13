@@ -198,6 +198,35 @@ func withoutQuietKeys(t *testing.T, body []byte) []byte {
 	return encoded
 }
 
+// withoutLeakCheckCauses is a state body with no claim view carrying `leakCheckCause`, which is
+// what a caller below leakCheckCauseContract is served of a state that carries one (api's
+// withoutLeakCheckCause). It serves the table below as withoutQuietKeys does: a row's baseline
+// is the full state with exactly the keys that row's own contract holds back taken out of it.
+func withoutLeakCheckCauses(t *testing.T, body []byte) []byte {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	for _, issue := range served["issues"].(map[string]any) {
+		issue := issue.(map[string]any)
+		views := []any{issue["architect"]}
+		for _, worker := range issue["workers"].(map[string]any) {
+			views = append(views, worker.(map[string]any)["claim"])
+		}
+		for _, view := range views {
+			if view, ok := view.(map[string]any); ok {
+				delete(view, "leakCheckCause")
+			}
+		}
+	}
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its leak-check causes: %v", body, err)
+	}
+	return encoded
+}
+
 // stripAnswerKeys takes the answer keys off one issue of a decoded state body: its `why`, and
 // every field of its waiting-line view beside the `place` and the `length` waitingLineContract
 // added before it. The two go together because they are one contract and one strip on the
@@ -286,27 +315,35 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// contract 85 added). One strip takes both (withoutWhyAndLineFields), so one column
 		// answers for the whole of that contract.
 		answers bool
+		// leak is whether the caller is served a claim view's `leakCheckCause`, the sentence a
+		// launch try was refused with because the shared public leak check could not be
+		// installed (leakCheckCauseContract, the contract 87 added).
+		leak bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 86 added, which is
+		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 96 added, which is
 		// this daemon's own), so the only pod served the measure is one at it. The two leave
 		// together (withoutQuietTime), so one column answers for both.
 		quiet bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		// The newest contract that strips a key of the claim views, which is what a pod must
-		// record to be served every one of them. What the caller is served is decided by its own
-		// recorded claim contract (podContract) and never by the declared constant, which is why
-		// this row names recordFieldsContract rather than the declaration. Such a pod stands
-		// below whyAndLineFieldsContract and below quietTimeContract, the two bands above it, so
-		// the issues it is served carry neither an answer nor a tree quiet time.
-		{name: "a pod at recordFieldsContract, the newest contract that strips a claim view's key", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
+		// The band from recordFieldsContract to below whyAndLineFieldsContract. What the caller
+		// is served is decided by its own recorded claim contract (podContract) and never by the
+		// declared constant, which is why these rows name the contracts rather than the
+		// declaration. Such a pod stands below whyAndLineFieldsContract, leakCheckCauseContract
+		// and quietTimeContract, the three bands above it, so the issues it is served carry
+		// neither an answer nor a tree quiet time and its claim views no leak check's cause.
+		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), rounds: true, wakes: true, stall: true, refresh: true},
 		// The band at whyAndLineFieldsContract: the answers and the line's own fields are served
-		// too, and the tree quiet time is the one band left above it.
+		// too, and the leak check's cause and the tree quiet time are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, quiet: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, quiet: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, quiet: true},
+		// The newest contract that strips a key of the claim views, which is what a pod must
+		// record to be served every one of them: the tree quiet time is the one band left above
+		// it.
+		{name: "a pod at leakCheckCauseContract, the newest contract that strips a claim view's key", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, quiet: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, quiet: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, answers: true, leak: true, quiet: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -330,13 +367,18 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// caller at a contract is told its own beside it (TestANarrowedBodySaysSo). The
 			// rest of the body is compared whole, against the baseline without the keys this
 			// row's own contract holds back: a pod at recordFieldsContract is served every
-			// claim view key and neither the issues' answers nor the tree quiet time, the two
-			// bands between it and this daemon's own, and a pod at whyAndLineFieldsContract is
-			// served the answers and no measure.
+			// claim view key the decided record added and neither the issues' answers, nor the
+			// leak check's cause, nor the tree quiet time, the three bands between it and this
+			// daemon's own; a pod at whyAndLineFieldsContract is served the answers and neither
+			// of the other two; and a pod at leakCheckCauseContract is served the cause and no
+			// measure.
 			if tc.rounds && tc.stall {
 				want := full
 				if !tc.answers {
 					want = withoutAnswerKeys(t, want)
+				}
+				if !tc.leak {
+					want = withoutLeakCheckCauses(t, want)
 				}
 				if !tc.quiet {
 					want = withoutQuietKeys(t, want)
@@ -374,10 +416,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields), and with the two keys contract 86 added gone, each
-			// issue of a live tree's `treeMovedAt` and `quietHours` (withoutQuietTime). Every
-			// row that reaches here is below all of them, so those fourteen keys go whatever
-			// the row is.
+			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
+			// sentence contract 87 added (withoutLeakCheckCause), and with the two keys contract
+			// 96 added gone, each issue of a live tree's `treeMovedAt` and `quietHours`
+			// (withoutQuietTime). Every row that reaches here is below all of them, so those
+			// fifteen keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -422,7 +465,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause"} {
+					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause", "leakCheckCause"} {
 						delete(view, key)
 					}
 				}

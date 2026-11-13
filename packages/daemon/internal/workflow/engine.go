@@ -257,6 +257,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.listenerWake(ctx, tx, fact)
 	case intake.PodBackstopDue:
 		return e.podBackstopDue(ctx, tx, fact)
+	case intake.WorkerSilent:
+		return e.workerSilent(ctx, tx, fact)
+	case intake.WorkerBackgroundStalled:
+		return e.workerBackgroundStalled(ctx, tx, fact)
 	case intake.ControllerTick:
 		return e.statusRepairTick(ctx, tx)
 	default:
@@ -1167,7 +1171,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
+	return from, e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession, newsOfTheIssue)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that

@@ -126,7 +126,12 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, s.relatedCheck(r.Context(), relatedInput{
+	// The answered asks this check offers carry the display tree of their answer for a caller
+	// that asked for the trees, as the same answer does in a search hit: the dashboard's related
+	// panel reads that tree rather than parsing the markdown itself. The reader is resolved
+	// before the response is written, which is where every tree field is filled.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	suggestions := s.relatedCheck(r.Context(), relatedInput{
 		project:       project,
 		text:          request.checkText(),
 		title:         request.Title,
@@ -134,7 +139,10 @@ func (s *server) answerRelated(w http.ResponseWriter, r *http.Request, request r
 		excludeIssues: excluded,
 		keywordsOnly:  request.KeywordsOnly,
 		question:      question,
-	}))
+		trees:         reader,
+	})
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, suggestions)
 }
 
 // requireProjectIssue refuses an exclude_issue that is not an issue of project, as a create

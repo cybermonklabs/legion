@@ -33,7 +33,7 @@ child, so the issue it names may be either. Name the free slots; take nothing.
 daemon waits half a minute and folds that window's events into one wake. Take nothing: it is not
 Legion's.
 
-## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?}`)
+## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?, silent?}`)
 
 The daemon's periodic wake, a minute after it starts and then every
 `controller_wake_interval_seconds` (an hour by default), whatever the slots. Run the skill's every-turn
@@ -57,6 +57,32 @@ A link's wait ends when each blocker reaches `done` (a person's close, or the bl
 link is taken off (by a person or the tree's architect), and a children-first wait ends when the
 last open child leaves the workflow: name the waits in the day's report and
 take nothing for them.
+
+`silent`, when present, is `[{issue, role, lastStep, silent, backgroundSince?}, …]`: every issue whose phase worker
+nothing will prompt, with the role whose claim is silent, the moment that claim's agent last
+stepped, and how long it has been quiet.
+Such a worker's process is up and between turns, it holds no task, and its last recorded step is
+older than this deployment's `worker_silence_minutes`, so nothing in the daemon and nothing in the
+worker's own process was going to prompt it again.
+The daemon writes the start row that sends that phase's task again, and tells the issue's
+architect the same fact in a `worker-silent` notice.
+An entry with `backgroundSince` is a worker whose own background work has stood since that moment,
+past `worker_background_hours`, which the daemon does not prompt; its architect got a `worker-background-stalled` notice.
+Name it in the day's report with how long its background work has stood.
+Most entries here are ones that architect has been told of, and an entry is not proof of it: this
+list is derived at the tick from the record, where the notice is written by the sweep that runs
+each minute, so an issue that went quiet since the last sweep is named here before its architect
+hears anything.
+One reading parts the two as well, and it leaves an issue named here whose architect is told
+nothing: this list asks nothing of the claim's serving run, where the sweep's fact names it and the
+handler refuses a fact of another generation.
+So read the issue's record for every entry rather than taking its architect as told:
+`read_state`'s `issues.<KEY>` gives its phase and each role's claim, and says whether the worker
+has moved since the tick was queued.
+Where the architect of that issue is itself a claim that is not answering — its claim reads
+`failed`, or the Envoy registry shows its session gone — `fresh_session` on that architect, because
+a notice sent to a claim that reads nothing reaches nobody and the work stands still.
+Name each silent issue in the day's report, with its role and the length of its silence.
 
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
 

@@ -298,6 +298,15 @@ const legionClaimView = z.object({
    * `died` here, which is what an architect deciding a retry or an escalation acts on while
    * `failure` is still empty. It is stripped with `failure` below the same contract. */
   pendingCause: legionFailureCause.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod, beginning `the shared public leak check could
+   * not be installed: `; absent once a try starts its process or fails for another reason. It
+   * stands beside `failure` rather than in it: a claim that runs out of launches on it fails with
+   * the cause and the sentence it would have failed with anyway, and this key says which check
+   * refused it. A caller in a pod whose plugin declares a contract below 87 is served the state
+   * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
+   * optional. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -676,11 +685,11 @@ const legionIssue = z.object({
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has
-   * been still at this read, in hours (contract 91). The pair is the tree's and not the issue's,
+   * been still at this read, in hours (contract 96). The pair is the tree's and not the issue's,
    * so every issue of one tree carries the same two values — an issue past its own review, which
    * holds no admission slot, and a done child recorded under a live tree among them. Both are
    * absent together for an issue whose tree is not live and for an issue the workflow does not
-   * record, and a daemon before contract 91 writes neither at all, which is why a reader takes
+   * record, and a daemon before contract 96 writes neither at all, which is why a reader takes
    * them as optional. A tree the record shows no movement for is measured from the zero time,
    * where the daemon's duration saturates, so `quietHours` reads 2562047.788 — 292 years, the
    * largest span it holds. That is "this tree has never moved", not a fault to refuse the body
@@ -1311,6 +1320,11 @@ export const LegionOperatorClaimResponse = z.object({
    * record. It stands on a claim an operator retired after it failed, which is what lets the seat
    * reading the listing say why that worker is gone. */
   failure: legionClaimFailureView.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod; absent once a try starts its process or fails
+   * for another reason. These routes are the only surface the controller's claim reaches, so the
+   * controller's cause is read here alone. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;

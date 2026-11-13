@@ -238,6 +238,8 @@ func defaultsFor(port int) Config {
 		PodUpdateRetask:      time.Hour,
 		PodUpdateNotice:      4 * time.Hour,
 		StalledTreeNotice:    6 * time.Hour,
+		WorkerSilence:        30 * time.Minute,
+		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
 		Hooks:                DefaultHooks(),
@@ -368,6 +370,7 @@ github_apps:
 linger_hours: 96
 production_check_hours: 48
 review_round_cap: 5
+worker_silence_minutes: 45
 hooks:
   - name: back-to-implementing
     on: work_back
@@ -405,6 +408,9 @@ hooks:
 	}
 	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
 		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h and 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+	}
+	if cfg.WorkerSilence != 45*time.Minute {
+		t.Errorf("WorkerSilence = %s, want the file's 45m", cfg.WorkerSilence)
 	}
 	if want := []Hook{{
 		Name: "back-to-implementing", On: HookEventWorkBack, Every: 2,
@@ -1738,6 +1744,8 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "linger_hours", line: "linger_hours: 72", class: modelled},
 		{key: "production_check_hours", line: "production_check_hours: 336", class: modelled},
 		{key: "review_round_cap", line: "review_round_cap: 3", class: modelled},
+		{key: "worker_silence_minutes", line: "worker_silence_minutes: 45", class: modelled},
+		{key: "worker_background_hours", line: "worker_background_hours: 6", class: modelled},
 		{
 			key: "max_fix_attempts", line: "max_fix_attempts: 3", class: warned,
 			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",

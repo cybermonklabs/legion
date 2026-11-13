@@ -114,11 +114,27 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // suspension that holds for the operator (supervise's RuleHolds) is woken by no start, queued or
 // not, since each waits for the operator's resume, so Stranded lists it without asking. The
 // architect's start names no phase, so its current is "".
+//
+// Its reading of run.Queued is queuedStartActs, which SilentPhaseWorker shares.
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
+	stop := actingStop(run, root)
+	if queuedStartActs(run, stop, current) {
+		return false
+	}
 	held := run.Claim
+	if stop != 0 || held == nil || held.Tree != root.Key {
+		return true
+	}
+	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)
+	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
+}
+
+// actingStop is the id of the newest queued stop of run that will still act (StopActs), 0 where
+// none will: a stop that acts undoes any older start. root is read for a tree close alone.
+func actingStop(run record.RoleRun, root record.Issue) int64 {
 	var lastStart int64
-	if held != nil {
-		lastStart = held.LastStartRow
+	if run.Claim != nil {
+		lastStart = run.Claim.LastStartRow
 	}
 	var stop int64
 	for _, queued := range run.Queued {
@@ -126,16 +142,121 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 			stop = max(stop, queued.ID)
 		}
 	}
+	return stop
+}
+
+// queuedStartActs is whether a queued start for current with an id above stop, the newest stop
+// that still acts (actingStop), will reach the claim. StartFor and SilentPhaseWorker both read
+// it, so they answer that term alike.
+func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
-			return false
+			return true
 		}
 	}
-	if stop != 0 || held == nil || held.Tree != root.Key {
-		return true
+	return false
+}
+
+// PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a
+// bound of zero or less is one no deployment can set (config's readMinutes and readHours refuse
+// it), so both answer false.
+func PastBound(at time.Time, bound time.Duration, now time.Time) bool {
+	if at.IsZero() || bound <= 0 {
+		return false
 	}
-	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)
-	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
+	return at.Add(bound).Before(now)
+}
+
+// ReportExplainsQuiet is whether a claim's own session's report explains why it takes no turn:
+// it found background work of its own running, or its phase reminder is due later than now. The
+// launch that replaces a process clears its report (store's putClaim), and a report is written
+// only onto the launch whose secret authenticated it (store's PutClaimActivity), so the report
+// read is the running process's. A reminder already due explains nothing: it is the timer a
+// silence repair backs up.
+func ReportExplainsQuiet(background bool, nextReminder time.Time, now time.Time) bool {
+	return background || nextReminder.After(now)
+}
+
+// SilentPhaseWorker is whether role's claim in run is a phase worker nothing will prompt: a claim
+// unpromptedPhaseWorker holds, whose session's report does not explain its quiet
+// (ReportExplainsQuiet), and whose agent's last recorded step is past bound (PastBound). A live
+// claim holding no task is owed nothing by the daemon, and the timer that carries a worker
+// through its phase runs in its own process (packages/pi-shared/src/phase-reminder.ts), so it
+// dies with that process.
+//
+// Terms the code does not show:
+//   - a suspension held for the agent's turn is not a term: no record carries it
+//     (supervise.Claim.SuspensionHeld), and the outbox refuses the start while it holds.
+//   - a finished phase or an accepted completion is not a term: this reads no store, so its
+//     callers ask PhaseWorkerOwedTurn as well.
+func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
+	bound time.Duration, now time.Time,
+) bool {
+	if !unpromptedPhaseWorker(issue, root, gate, role, run) {
+		return false
+	}
+	c := run.Claim
+	if ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
+		return false
+	}
+	return PastBound(c.Step.LastStep(), bound, now)
+}
+
+// unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
+// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
+// not linger, up and between turns, in no update round, holding no task it still works, with no
+// acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
+// waiting to be prompted; the role, not the state, tells a fault from health. The last three
+// terms are StartFor's, read the other way, so admission's slot repair and the silence repair
+// never act on one claim. BackgroundStalledWorker stands on it too, so the two rules agree on
+// which claim they are about.
+func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
+	if run.Claim == nil {
+		return false
+	}
+	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+		return false
+	}
+	if !record.AtWork(issue, gate) || root.Lingers() {
+		return false
+	}
+	c := run.Claim
+	if c.State != supervise.StateReady && c.State != supervise.StateIdle {
+		return false
+	}
+	if c.UpdateRound != "" {
+		return false
+	}
+	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
+		return false
+	}
+	stop := actingStop(run, root)
+	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
+}
+
+// PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
+// a silence only the store can answer: false for a phase its terminating fact has met
+// (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
+// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
+// role's phase row too, an empty row naming the issue and role where the record holds none, so
+// the silence repair reads it once.
+func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
+	finished, err := PhaseFinished(ctx, store, tx, issue)
+	if err != nil || finished {
+		return record.PhaseRow{}, false, err
+	}
+	rows, err := store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return record.PhaseRow{}, false, err
+	}
+	row := record.PhaseRow{Issue: issue.Key, Role: role}
+	for _, r := range rows {
+		if r.Role == role {
+			row = r
+			break
+		}
+	}
+	return row, row.CompletedAt.IsZero(), nil
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
@@ -292,7 +413,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, assignment, freshSession)
+	return e.started(ctx, tx, issue, role, task, assignment, freshSession, newsOfTheIssue)
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -304,8 +425,10 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // assignment nothing ever delivered, for good. Carrying the row's own value rather than nothing
 // keeps the fence live for a worker the retry does start afresh: its task names the entry, so a
 // later entry of the same phase still refuses this one's completion. A retry told not to resume
-// the claim's recorded session passes that on, freshSession, as a start does.
-func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool) error {
+// the claim's recorded session passes that on, freshSession, as a start does. move is whether
+// the start is news of the issue, which every restart is but the silence repair's resend of a
+// task its worker already holds (reassertion, startOrOwe).
+func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool, move movement) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
@@ -313,18 +436,20 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, row.Assignment, freshSession)
+	return e.started(ctx, tx, issue, role, task, row.Assignment, freshSession, move)
 }
 
 // ResumeSlottedWorker starts again the worker of the phase issue stands in, with restart's
 // semantics: the assignment the role's phases row already names, so a completion still in flight
 // is never refused for an assignment nothing ever delivered, and the phase's resume task, which
-// says to carry the work on rather than beginning it. It is exported for admission's repair of a
-// slot whose worker has no task (admit's resumeSlottedWorkers), which is the one caller: every
-// other way back into a phase is a transition with a task of its own. The task names no head:
-// the merger reads the head it merges on GitHub, so no task of the daemon's names one.
+// says to carry the work on rather than beginning it. It is exported for admission's repair of
+// a slot whose worker has no task (admit's resumeSlottedWorkers), which is its one caller: this
+// package's own repair of a phase worker nothing will prompt (silence.go's repairSilence) writes
+// the same start through restart, told it is a reassertion, and every other way back into a
+// phase is a transition with a task of its own. The task names no head: the merger reads the
+// head it merges on GitHub, so no task of the daemon's names one.
 func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	return e.restart(ctx, tx, issue, role, ResumePhaseTask(issue), false)
+	return e.restart(ctx, tx, issue, role, ResumePhaseTask(issue), false, newsOfTheIssue)
 }
 
 // started enqueues the start both make, for a role start and restart have already held to one
@@ -332,11 +457,31 @@ func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue recor
 // carries its new task, and that row waits for the issue's admission slot where the phase it
 // starts holds one: a transition's start into a phase up to the review puts a worker to work on
 // the change, which is exactly what the cap counts. The issue carries the phase the transition
-// wrote on it, so the rule reads the phase the start is for.
-func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task, assignment string, freshSession bool) error {
-	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Assignment: assignment, FreshSession: freshSession}, e.now())
+// wrote on it, so the rule reads the phase the start is for. move is passed on to startOrOwe,
+// which marks the issue moved for every start but a reassertion.
+func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task, assignment string, freshSession bool,
+	move movement,
+) error {
+	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
+		Generation: issue.Generation, Phase: issue.Phase, Assignment: assignment, FreshSession: freshSession}, e.now(), move)
 }
+
+// movement says whether a start of a phase worker is news of its issue, which startOrOwe marks
+// (record.Store.MarkIssueMoved). It is a type of its own rather than a bare bool because the
+// starts that carry it carry freshSession beside it, and two bare bools side by side at a call
+// site read alike.
+type movement bool
+
+const (
+	// newsOfTheIssue is every start but one: a transition putting a worker to work, a held
+	// phase's retry, admission's repair of a slot whose worker has no task and its start of a
+	// mid-phase member, and the boot's resume by rule.
+	newsOfTheIssue movement = true
+	// reassertion is the daemon sending a phase worker again the task it already holds, which
+	// is the silence repair's resend (silence.go's repairSilence) and no movement of the issue
+	// (startOrOwe says why).
+	reassertion movement = false
+)
 
 // StartOrOwe writes the start of a phase worker as one outbox row in the caller's own
 // transaction: the caller's own request, the task on it. The outbox's start case does the whole
@@ -413,6 +558,16 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // enqueued directly and stay claimable at once. None of them puts a worker to work on a phase,
 // so none of them is the cap's to hold, and a slot they waited for might never be offered.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
+	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)
+}
+
+// startOrOwe is StartOrOwe told whether the start is news of its issue (movement). The one start
+// that is not is written through here all the same, so it takes the slot mark, the coalescing
+// and the refusal of a start with no task or no phase from the one implementation rather than
+// from a second start path that would have to keep in step with this one.
+func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time,
+	move movement,
+) error {
 	if payload.Task == "" || payload.Phase == "" {
 		return fmt.Errorf("the start of a phase worker on %s requires a task and a phase", issue)
 	}
@@ -430,8 +585,24 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 	// It is marked whether the row is enqueued or replaces one the issue already owes: an issue
 	// that has waited for its slot since its first start and takes a later transition's task has
 	// moved, and the row it keeps is only its place in the waiting line.
-	if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
-		return err
+	//
+	// A reassertion is not marked. It is the silence repair's resend (silence.go's
+	// repairSilence): the daemon read a phase worker that nothing will prompt and wrote again the
+	// task that worker already holds, under the assignment its phase row already names. A
+	// movement is a fact new to the record, and the daemon's own re-assertions are none
+	// (dispatch://INFRA-2560, R3): nothing outside the daemon happened, and the task is not new to
+	// the worker. It is the case of the pod wake (wake.go's wakeRow), whose start brings a woken
+	// role back to work it already holds and is enqueued directly, so it marks nothing either. The
+	// reason is what the mark is for: the quiet time measures a tree that has stopped, and the
+	// resend is the daemon reacting to that stop, so marking it would make the measure read its
+	// own repair as recovery — a stopped tree's clock set back at every resend, and the
+	// stalled-tree notice put off for as long as the daemon kept resending. When the resend
+	// works, the worker's own claim steps move the tree through the quiet measure
+	// (record.QuietTrees), which is where a recovery is read.
+	if move == newsOfTheIssue {
+		if err := store.MarkIssueMoved(ctx, tx, issue, at); err != nil {
+			return err
+		}
 	}
 	replaced, err := store.ReplaceOwedStart(ctx, tx, row)
 	if err != nil || replaced {

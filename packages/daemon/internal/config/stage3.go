@@ -695,6 +695,12 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.StalledTreeNotice != nil {
 		cfg.StalledTreeNotice = *file.StalledTreeNotice
 	}
+	if file.WorkerSilence != nil {
+		cfg.WorkerSilence = *file.WorkerSilence
+	}
+	if file.WorkerBackground != nil {
+		cfg.WorkerBackground = *file.WorkerBackground
+	}
 	// Each round cap is carried across as the pointer it is: nil through, so a file that names
 	// neither key leaves the sweep with no limit rather than with a number nobody chose.
 	if file.PodUpdateMaxOpenRounds != nil {

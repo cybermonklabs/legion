@@ -129,7 +129,7 @@ func TestAQuietTreeIsMeasuredFromItsFactsAndItsSteps(t *testing.T) {
 	// measure: it is not a step, and a session that reports while its agent waits to be prompted
 	// is the very thing a stopped tree looks like.
 	reported := claim.SessionActivity{At: at(1), BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}}
-	if known, err := records.PutClaimActivity(ctx, implementer, reported); err != nil || !known {
+	if known, err := records.PutClaimActivity(ctx, implementer, 1, reported); err != nil || !known {
 		t.Fatalf("report the activity of the implementer claim of %s = %t, %v", quietChild, known, err)
 	}
 	if landed := activityAt(t, pool, implementer); !landed.After(recorded) {

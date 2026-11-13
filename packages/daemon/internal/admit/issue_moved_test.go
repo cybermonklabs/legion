@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -197,7 +198,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// movement would write, and that is the shape this pins; a mark written from the wall clock
 	// instead is older than every time this test asserts and is hidden by the same monotone rule,
 	// which no fixture whose stamps run ahead of real time can show.
-	if known, err := records.PutClaimActivity(ctx, awaitingArchitect(t, movedIssue),
+	if known, err := records.PutClaimActivity(ctx, awaitingArchitect(t, movedIssue), 1,
 		claim.SessionActivity{At: ahead, BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}}); err != nil || !known {
 		t.Fatalf("report the activity of the architect claim of %s = %t, %v", movedIssue, known, err)
 	}
@@ -555,6 +556,96 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		if got := movedAt(t, pool, issueKey); !got.Equal(died) {
 			t.Fatalf("after a second report of the same dead claim the record says %s last moved at %s, want %s still: a repeat of a fact the record already took moves no tree",
 				issueKey, got.Format(time.RFC3339Nano), died.Format(time.RFC3339Nano))
+		}
+	})
+
+	// The daemon's resend of the task a silent phase worker already holds, which is the seventh
+	// kind: a start of a phase worker that moves no issue. The silence repair (workflow's
+	// repairSilence) reads a worker that is up, between turns and holding no task, whose agent
+	// last stepped past the bound this deployment gives it, and writes again the start that sends
+	// it its phase's task, through the one function every start of a phase worker is written by
+	// (workflow.StartOrOwe). That start is the daemon re-asserting work the worker already holds,
+	// and R3 counts the daemon's own re-assertions as no movement (dispatch://INFRA-2560), as it
+	// counts the pod wake's start as none: the tree has stopped, and the resend is the daemon
+	// reacting to the stop. Marked, it would make the quiet time read the daemon's own repair as
+	// the tree moving again, and a tree whose worker the daemon kept resending to would never
+	// reach the bound the stalled-tree notice waits for. When the resend works, the worker's own
+	// steps move the tree through the quiet measure instead
+	// (TestAQuietTreeIsMeasuredFromItsFactsAndItsSteps).
+	//
+	// The fact is applied as the daemon's sweep applies it, through the engine and the admission
+	// together, and the engine's clock stands a minute past the record's own stamp, so a mark the
+	// resend wrote would be newer than the time the record carries and this case would see it:
+	// telling the resend it is news of the issue fails it at the assertion that follows the
+	// repair. The start row and the architect's `worker-silent` notice are what say the case
+	// drove the repair at all.
+	//
+	// The control is an ordinary start of the same issue a minute later: the admission's repair
+	// of a slot whose worker has no task (workflow's ResumeSlottedWorker), which goes through the
+	// same restart and the same start function as the resend and differs from it only in being
+	// news of the issue. It moves the record to its own moment, so a skip that took the mark off
+	// every start, rather than off the resend alone, fails this case there.
+	t.Run("the daemon's resend of a silent worker's task is no movement of its issue", func(t *testing.T) {
+		pool := migratedPool(t)
+		const issueKey = "LEGION-781"
+		now := fixedNow
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+			Clock: func() time.Time { return now }}, nil)
+		admission := New(record.NewStore(), engine, 1, testProject, nil)
+		admission.now = func() time.Time { return fixedNow }
+
+		// A root implementing in its own slot, whose implementer is up and between turns with no
+		// task (supervise.StateReady), which is every term of the silence but the age of the
+		// last step.
+		seedSlotted(t, pool, issueKey, "U")
+		stands := issue(t, pool, issueKey)
+		stands.Phase = phase.Implementing
+		putIssue(t, pool, stands)
+		token := putWorkerClaim(t, pool, issueKey, issueKey, claim.RoleImplementer, stands.Generation, supervise.StateReady, "")
+		before := movedAt(t, pool, issueKey)
+		if before.IsZero() {
+			t.Fatalf("the record of %s carries no movement before the resend: every row is stamped when it is written", issueKey)
+		}
+
+		// The clock stands past the row's own stamp, because a movement is only ever written
+		// forwards, and the last step stands two hours before it, past the bound.
+		resent := before.Add(time.Minute)
+		lastStep := resent.Add(-2 * time.Hour)
+		steppedAt(t, pool, token, lastStep)
+		now = resent
+		applyMovement(t, pool, admission, engine, "supervise", "worker-silent-"+issueKey, intake.WorkerSilent{Issue: issueKey,
+			Role: claim.RoleImplementer, Generation: stands.Generation, LastStep: lastStep, Bound: silenceBound})
+
+		var resend, told bool
+		for _, row := range effects(t, pool) {
+			switch payload := row.payload.(type) {
+			case record.SuperviseRequest:
+				resend = resend || (row.issue == issueKey && payload.Op == "start" && payload.Role == claim.RoleImplementer &&
+					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+			case record.Notice:
+				told = told || (row.issue == issueKey && payload.Kind == "worker-silent")
+			}
+		}
+		if !resend || !told {
+			t.Fatalf("the silence of %s's implementer left the outbox %#v, with the resend of its task %t and the architect's worker-silent notice %t: the fact must be the repair this case reads, or it proves nothing",
+				issueKey, effects(t, pool), resend, told)
+		}
+		if got := movedAt(t, pool, issueKey); !got.Equal(before) {
+			t.Fatalf("after the daemon resent its task to %s's silent implementer the record says the issue last moved at %s, want %s still: the resend is the daemon re-asserting work the worker holds, and marking it would read the repair of a stopped tree as the tree moving",
+				issueKey, got.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano))
+		}
+
+		// The control: an ordinary start of the same worker, through the same restart.
+		started := resent.Add(time.Minute)
+		now = started
+		inTx(t, pool, func(tx pgx.Tx) {
+			if err := engine.ResumeSlottedWorker(ctx, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
+				t.Fatalf("start the implementer of %s again: %v", issueKey, err)
+			}
+		})
+		if got := movedAt(t, pool, issueKey); !got.Equal(started) {
+			t.Fatalf("after an ordinary start of %s's implementer the record says the issue last moved at %s, want %s, the moment of that start: only the resend is no movement",
+				issueKey, got.Format(time.RFC3339Nano), started.Format(time.RFC3339Nano))
 		}
 	})
 
