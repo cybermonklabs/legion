@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -23,17 +24,23 @@ import (
 // holds the issue. state is the projection so far, whose `admission.active`,
 // `admission.waiting` and `admission.blocked` are all filled and whose members of the line
 // carry the sentence already rendered for them (api.WaitingLineView.Reason); own are this
-// project's own records; stranded are the claims the daemon judges nothing will wake, handed to
-// Project because this package may not read internal/workflow; rows is the Dispatch mirror this
-// pass judged the links from and childWaits the children-first judgement it made
-// (record.ChildWaitsOf).
+// project's own records; running are the roots whose trees run (record.RunningRoots), which is
+// what says the work of an issue past its review is going on; stranded are the claims the
+// daemon judges nothing will wake, handed to Project because this package may not read
+// internal/workflow; rows is the Dispatch mirror this pass judged the links from and
+// childWaits the children-first judgement it made (record.ChildWaitsOf).
 //
 // The four states are read in one order, so no issue carries two answers: claim_stopped, then
 // waiting, then blocked, then unlisted. claim_stopped is first because its fact is about the
 // issue's worker rather than its place in a queue, and an issue at work whose worker stopped is
 // the commonest question a reader brings. An issue that matches none of the four carries no
-// answer at all: an issue of `admission.active` whose worker is running, and an issue at
-// phase.Held, which holds a slot and so stands in that same list.
+// answer at all: an issue of `admission.active` whose worker is running, an issue at
+// phase.Held whose hold came from a phase that keeps a slot, which stands in that same list,
+// and an issue whose work is running past its own review, which holds no slot since
+// dispatch://INFRA-2560 and so stands in none of the three lists that place an issue, only in
+// `admission.held` (atWorkPastReview). A hold from a phase past the review keeps no slot
+// (record.KeepsSlot, which reads record.StandsAt), and no worker of such an issue runs, so it is
+// in neither of those two and is answered by the last arm.
 //
 // A blocked issue and an unlisted one may read the sentence of the held word the record carries
 // for it; heldSentences states the rule, which covers the order of the blocked arm's three
@@ -52,7 +59,9 @@ import (
 // things only it says: which issues something holds, which is the `blocked` state's own
 // membership, and what a member of the line a link holds waits on where the links half names
 // nothing for it, the one fallback in this file (the waiting arm below).
-func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim, rows map[string]blockers.Row, childWaits map[string]record.ChildWait) {
+func whyStates(state *api.State, own []record.Issue, running map[string]struct{}, stranded []supervise.Claim,
+	rows map[string]blockers.Row, childWaits map[string]record.ChildWait,
+) {
 	// The stranded claim each issue's answer names. The set reports two kinds of claim and no
 	// others (workflow.Stranded) — the worker of the issue's phase, and the tree's architect —
 	// so where one issue has both, the worker is the one named: its stop is the one that holds
@@ -162,7 +171,17 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			links := blockers.Holds(rows, issue)
 			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycle, childWaits[issue.Key], links)}
 		default:
+			// Neither the line nor `blocked` names it, so this arm reads out the two kinds
+			// that are working now before it names the rest unlisted: an issue holding one of
+			// the cap's slots, which `admission.active` names, and an issue whose work is
+			// running past its own review, which holds no slot and so stands in
+			// `admission.held` rather than in a list this pass reads (atWorkPastReview). Each
+			// carries no answer, because `why` answers for an issue that is not working now and
+			// both of these are.
 			if _, placed := active[issue.Key]; placed {
+				continue
+			}
+			if atWorkPastReview(issue, running) {
 				continue
 			}
 			reason, _ := heldWordReason(api.WhyUnlisted, causes[issue.Key])
@@ -247,6 +266,62 @@ func linkReason(waitsOn []string) string {
 	return fmt.Sprintf("It waits on %s, which are not done.", englishIssues(waitsOn))
 }
 
+// atWorkPastReview is an issue whose work is running now in a phase past its own review:
+// accepting, where the tree's architect reads the head the issue's worker built, its retro, and
+// its merge. Since dispatch://INFRA-2560 such an issue holds none of the cap's slots
+// (record.PhaseKeepsSlot), so `admission.active` does not name it and it reaches the last arm of
+// whyStates standing in none of the three lists that place an issue: the held list names it
+// instead, under the ladder's at_work where no earlier word is true of it (record.HeldAtWork).
+//
+// It is served no answer, which is the answer of every issue that is working now: holding a slot
+// and being at work were one thing until that change separated them, and the slot holder at work
+// carries none either. Served `unlisted` instead it would read a sentence of the held list about
+// an issue `why` exists to leave alone, and a reader of `why` would take an issue whose worker
+// runs for one that is not working. This arm is the one place `why` parts from the held list:
+// the list says where the issue stands, and `why` that nothing is to be answered for it.
+//
+// The phase alone cannot say it, and that is what this reads the work for. The phases past the
+// review are the ones no slot is held through, so an issue standing in one of them is an issue
+// the cap has stopped counting, not an issue a worker is running: a member of a tree that has
+// stopped stands in exactly the same phase as a member of a tree that is working. The two terms
+// of work are the tree and the claim, which is the pair the measure of a stalled tree reads
+// (admit's tellStalledTrees, over record.RunningRoots and record.TreeQuiet.AtWork), and this
+// file reads each of them where it is already answered.
+//
+// The tree is this arm's own term: running is the roots whose trees run (record.RunningRoots,
+// over record.TreeRuns), and nothing of a tree that does not run is being worked on, whatever
+// phase its members stand in. A root a person parked is the shape that proves it: its linger
+// suspends every claim of its members while their Dispatch status stands, so the record holds
+// them in the workflow (record.InWorkflow) and whyStates reads them, and nothing of them runs
+// again until the root is admitted afresh. Such a member is served `unlisted` with its held
+// word's sentence, as it was before the phases past the review stopped holding a slot: the park
+// takes the slot of every member of the tree it stops back whatever the phase
+// (record.NeedsSlot), so such a member stood in none of the three lists then either.
+//
+// The claim is the first arm's and is not read again here. A claim nothing will wake is the
+// daemon's own judgement (workflow.Stranded, which refuses a tree that does not run by this same
+// rule), and whyStates reads it before everything else as claim_stopped, so the claims left for
+// this arm are the live ones: at work, or resting between turns with the daemon to prompt them.
+// A resting claim is no work under way for the stalled-tree measure, but that measure asks it of
+// a whole tree nothing of which has moved for hours; one idle worker of one issue says nothing
+// of the sort, and an issue served `unlisted` between two turns of the worker doing its work
+// would tell a reader the work had stopped.
+//
+// A held issue answers false here whatever phase its hold came from, which is the first term of
+// the pair below and not a reading of the raw phase: record.PastReview reads the phase a hold
+// came from (record.StandsAt), so an issue held from its retro stands past its review in every
+// rule the slot is judged by, and the term beside it is what puts the record's own `held` back
+// for this one question. A hold is what stops the work: no worker of a held issue runs, so it is
+// served `unlisted` with its held word's sentence — never at_work's, which the ladder refuses a
+// held issue (record.HeldReasonOf) — and the hold is what a reader of it asks about.
+func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
+	if issue.Phase == phase.Held || !record.PastReview(issue) {
+		return false
+	}
+	_, runs := running[issue.Tree]
+	return runs
+}
+
 // heldSentences is the sentence table of `why`'s held words: for each word of record.HeldReason
 // that `why` can serve, the states it serves the word under (states) and the sentence it serves
 // (sentence), rendered over heldBy, the issues of the row record.HeldList published for the
@@ -270,8 +345,10 @@ func linkReason(waitsOn []string) string {
 // dispatch_blocker and children_first can reach that arm, and those two cannot, because every
 // issue the ladder gives either of them stands in `admission.blocked`. The state word is
 // `unlisted` and not `held`, because `held` is a phase of the workflow, whose issues hold a slot
-// and stand in `admission.active`. at_work has its entry, though no issue reads that word today
-// (record.HeldAtWork).
+// and stand in `admission.active`. at_work has its entry, and the issues that read that word
+// stand past their review and are not held (record.HeldAtWork); one whose work runs in a tree
+// that runs is served no answer at all (atWorkPastReview), so the entry is served only to a
+// member past its review of a tree that runs nothing.
 //
 // The fallback is unclassified's sentence, the ladder's own last word, which says that no rule
 // of the held list names what the issue waits for. An unlisted issue whose word the table lacks,

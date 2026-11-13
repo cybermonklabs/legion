@@ -131,6 +131,15 @@ type phaseWorkerReading struct {
 // task by the time the start runs (record.SuperviseRequest.ResumeTask). It is built through
 // Engine.started, so it waits for the issue's admission slot as the boot's level start does.
 //
+// Neither start marks a movement of the issue (startMarks.reasserts). Both are the daemon
+// re-asserting work the record already owes the worker: nothing outside the daemon happened, and
+// the repair is the daemon reacting to a tree that has stopped, so marking it would make the
+// tree's quiet time read the repair of a stop as the tree moving again and put the stalled-tree
+// notice off for as long as the daemon kept repairing (startOrOwe says why). The send of an owed
+// entry is unmarked where every such send is (sendOwedEntry); the resume task is marked so here.
+// When the repair works, the worker's own steps move the tree through the quiet measure
+// (record.QuietTrees), which is where a recovery is read.
+//
 // The log line goes through warnOnCommit, so a fact that rolls back logs no repair.
 func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root record.Issue, run record.RoleRun, row record.PhaseRow,
 	fact intake.WorkerSilent, now time.Time,
@@ -141,7 +150,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
-	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true}); err != nil {
+	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, reasserts: true}); err != nil {
 		return err
 	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))

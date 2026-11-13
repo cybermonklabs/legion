@@ -692,6 +692,9 @@ func resolveStage3(file fileConfig, configDir string, cfg *Config) error {
 	if file.PodUpdateNotice != nil {
 		cfg.PodUpdateNotice = *file.PodUpdateNotice
 	}
+	if file.StalledTreeNotice != nil {
+		cfg.StalledTreeNotice = *file.StalledTreeNotice
+	}
 	if file.WorkerSilence != nil {
 		cfg.WorkerSilence = *file.WorkerSilence
 	}

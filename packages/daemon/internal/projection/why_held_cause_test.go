@@ -43,8 +43,10 @@ type heldFixture struct {
 //
 // The walk is read off a projected state, never from the renderer alone, so the row the pass
 // publishes and the sentence it serves are proved of one state. An entry no fixture walks fails
-// the test: an entry added to the table is given a fixture here. at_work is the one exception,
-// because no issue reads that word (record.HeldAtWork), so no fixture can stand for it.
+// the test: an entry added to the table is given a fixture here. at_work is the one exception:
+// the issues that read it stand past their review and are not held (record.HeldAtWork), one
+// whose tree runs is served no answer (atWorkPastReview), and no fixture here builds the member of
+// a tree that runs nothing that the entry is served to.
 func TestEveryEntryOfTheHeldSentenceTableIsServedThroughTheWholePass(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
 	// The Dispatch link a blocked fixture adds: LEGION-101 waits on LEGION-900, which is open.

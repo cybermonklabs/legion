@@ -36,10 +36,11 @@ questions, approve the spec, and review the pull request. Everything happens in
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
 every slot is taken, the issue waits in `todo` and takes the next free slot in the board's order.
 A slot is one issue the daemon has started, a root or a child, so a tree of four started issues
-holds four of them. An issue takes its slot when the daemon starts it and keeps it
-until it is done or leaves the workflow,
-so a wait of its own — on a blocker, on its children or on you — keeps the slot, and its agents
-stay live beside it.
+holds four of them. An issue holds one of the cap's slots from the moment the daemon starts it
+until its work is past its review — `accepting`, `retro` and `merging` hold
+none — or until it is done or Dispatch takes it out of the workflow,
+so a wait of its own up to that review — on a blocker, on its children or on you — keeps the slot,
+and its agents stay live beside it.
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it or leave it for you, and parks it only when a person asked for that or
 its work is done, folded into another issue or no longer needed.
