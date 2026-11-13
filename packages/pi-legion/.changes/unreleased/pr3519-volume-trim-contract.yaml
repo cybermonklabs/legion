@@ -2,6 +2,6 @@ kind: Changed
 custom:
   Issue: pr3519
 body: |-
-  The daemon API contract this plugin declares is 95. The launcher wire gains the cache
+  The daemon API contract this plugin declares is 97. The launcher wire gains the cache
   trimmer's settings on the daemon's answer to a launcher's hello, and the trimmer's own report
   frame for a sweep that leaves an issue pod's volume above its low mark.

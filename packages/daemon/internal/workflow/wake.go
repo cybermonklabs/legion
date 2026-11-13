@@ -271,7 +271,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 // would hold a pod open for the backstop period — which role a CI settlement wakes, and which
 // live claim of a pod has a phase reminder armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
-	if role := RoleFor(p); role != claim.RoleArchitect {
+	if role := phase.RoleFor(p); role != claim.RoleArchitect {
 		return role
 	}
 	return ""

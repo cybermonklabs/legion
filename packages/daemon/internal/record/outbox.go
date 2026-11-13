@@ -129,12 +129,13 @@ type OwedStart struct {
 	CreatedAt time.Time
 	ID        int64
 	// WriteMark is the number outbox_write_mark_seq handed the write that last put this payload
-	// in the row: the insert that queued it, or the rewrite that replaced it in place and left
-	// its id and created_at where they were (Store.ReplaceOwedStart). It is the row's side of
-	// the stop rule, which weighs it against the mark a claim's retirement took (store's
-	// putClaim) to tell a start written after the stop from one the stop outlived (admit's
-	// stopOutlivedStart). The id cannot do that work: a rewrite keeps it, which is how the issue
-	// keeps its place in the line.
+	// in the row: the insert that queued it, which takes one through the column's own default,
+	// whether that insert is an issue's first start or the one written in place of the start it
+	// already owed (Store.EnqueueStart). It is the row's side of the stop rule, which weighs it
+	// against the mark a claim's retirement took (store's putClaim) to tell a start written
+	// after the stop from one the stop outlived (admit's stopOutlivedStart). The created_at
+	// cannot do that work: a start written in place of an owed one carries that row's
+	// created_at, which is how the issue keeps its place in the line.
 	WriteMark  int64
 	Role       claim.Role
 	Phase      phase.Phase
@@ -733,14 +734,36 @@ type SuperviseRequest struct {
 	// finishes without acting. It is empty for the architect, which serves every phase, and for a
 	// suspend or a tree's close, which must still act after the issue moves on.
 	Phase phase.Phase `json:"phase,omitempty"`
-	// Assignment is the task the issue's current phase hands the role, as the workflow minted it
-	// for this start (workflow.Engine.start): the same token stands on the role's phases row,
-	// written in the transition's transaction. It travels to the claim's delivery and, once a
-	// confirmed delivery is retired, onto the claim, so a completion can be held to the assignment
-	// the turn reporting it was given (api/handoff.go, HANDOFF_STALE_ASSIGNMENT) rather than to the
-	// run alone, whose value every phase entry of one run shares. Empty for a start that hands no
-	// new task — a resume, a production check's look — and for every other operation.
-	Assignment string `json:"assignment,omitempty"`
+	// Entry is the phase entry this start's task is of, as the transition raised it on the role's
+	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
+	// delivery and, once a confirmed delivery is retired, onto the claim, so a completion can be
+	// held to the entry the turn reporting it was given (api/handoff.go) rather than to the run
+	// alone, whose value every phase entry of one run shares. Two starts raise the entry they
+	// carry: a transition's start of the phase the issue has moved into, and the promotion's
+	// start of a mid-phase worker a re-admitted tree brings back (workflow's start and
+	// StartPromotedWorker). Two more carry the entry the role's row already names without raising
+	// it: the send of an owed entry (workflow's SendOwedEntry) and the held phase's retry, which
+	// marks it with ResendEntry below. It is zero for every other operation, and for every start
+	// that hands no entry's work at all. Those starts, in full, so that no other comment need
+	// list them: the tree architect's start (admit's promotion, workflow's
+	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
+	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
+	// phase's resume task a ready worker level with the entry its phases row names is given
+	// (workflow's readyWorkerTask), a production check's look (workflow's startLook), the pod
+	// wake (workflow's wakeRow) and the resume of a cancelled idle release (the daemon's
+	// outbox). Each hands its role work it was already on, or work no phase entry numbers at
+	// all.
+	Entry int64 `json:"entry,omitempty"`
+	// ResendEntry marks a start that hands the role the work of the entry its phases row already
+	// names rather than a new entry, so the claim's given entry does not decline the task
+	// (supervise.Claim.GivenEntry, the queue's entry test). The held phase's retry, by any route
+	// into it, is that start (workflow.Engine.restart): it raises no entry, and a claim whose
+	// worker confirmed that entry's last task and whose turn then ended holds it as its given one
+	// with no delivery pending, so the entry test alone would drop the retry's own task and
+	// relaunch the worker with no prompt. The outbox row-id guard still holds
+	// (supervise.Claim.DeliveredRows), so a retry of the row itself gives that task no second
+	// time.
+	ResendEntry bool `json:"resendEntry,omitempty"`
 	// ResumeTask marks Task as the phase's resume task (workflow.ResumePhaseTask), the one a
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
@@ -752,7 +775,7 @@ type SuperviseRequest struct {
 	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
 	// The cap counts the issues the daemon has started, so what it must bound is the start that
 	// puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the assignment on the role's phases row, the notices — is written in the
+	// status, the entry and its task on the role's phases row, the notices — is written in the
 	// transition's own transaction and waits for nothing. The hold is on this row's claimability
 	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
 	// of its issue's later rows is held behind it. The row carries the worker's task whether or
@@ -769,6 +792,20 @@ type SuperviseRequest struct {
 	// retries for ever. The validation rule below is kept with it, so such a row still passes
 	// the check the decode makes. The release after this one may delete both.
 	Relaunch bool `json:"relaunch,omitempty"`
+	// Assignment is written by nothing. It carried the token the release before the phase entry
+	// minted for a start and wrote on the role's phases row, which Entry above replaced
+	// (INFRA-2800); the outbox decodes it now and acts on it nowhere.
+	//
+	// It is kept for one release for the reason Relaunch above is, and for the one the
+	// migration's own header gives (migrations/20261111225552_phase_entry.up.sql): a rollback is
+	// followed by a roll-forward, and the release before this one mints that token again at each
+	// role's next start, so rows carrying assignment are written after any strip of the key has
+	// run and are read again by this release. A decoder that refuses the field leaves such a row
+	// retrying for ever and fails every admission pass of its issue besides, since
+	// record.Postgres.RoleRuns strictly decodes every supervise row of the issues it reads. No
+	// validation rule names it: the start it rides on passes the checks above as it stands. The
+	// release after this one may delete it, and the strip of the key belongs there beside it.
+	Assignment string `json:"assignment,omitempty"`
 	// FreshSession marks a start that must not resume the session its claim recorded: the
 	// operator's `legion claims retry --fresh-session` (api's retryClaim). The runner passes it
 	// to the claim's retry, which forgets the session inside that one decision (supervise's
@@ -1384,6 +1421,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.ResumeTask && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise resume task requires a start with a task and a phase")
 		}
+		if value.ResendEntry && (value.Op != "start" || value.Task == "" || value.Phase == "") {
+			return fmt.Errorf("a supervise start that resends the entry its role's row names requires a start with a task and a phase")
+		}
 		if value.NeedsSlot && (value.Op != "start" || value.Task == "" || value.Phase == "") {
 			return fmt.Errorf("a supervise start held for an admission slot requires a start with a task and a phase")
 		}
@@ -1459,7 +1499,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a phase-ended message carries the reason the architect's notice carries")
 		}
 		if value.TaskFollows && value.Role != claim.RoleImplementer {
-			return fmt.Errorf("only the implementer is told its task follows, since the phase the red opens is its own; the %s is not", value.Role)
+			return fmt.Errorf("only the implementer is told its task follows, since the phase a conflicting head opens is its own; the %s is not", value.Role)
 		}
 	case HookPrompt:
 		if value.Hook == "" {
@@ -1507,8 +1547,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // deployment sets (`worker_silence_minutes`), so nothing in the daemon and nothing in that
 // process will prompt it (workflow's SilentPhaseWorker, workerSilent). It is that worker's
 // issue's architect's to read, as `worker-stalled` is, and it says what the daemon wrote about
-// it: the start row that sends the phase's task again, under the assignment the phase row
-// names where it holds one (workflow's workerSilentDid).
+// it, by the phase entry the role's phases row names: the start row that sends that entry's own
+// work to a claim behind it, or the phase's task again to a claim level with it (workflow's
+// repairSilence, workerSilentDid).
 //
 // `worker-background-stalled` is the worker the silence repair must leave alone: its own
 // session reports background work of its own running, which no bound can tell from a job that
