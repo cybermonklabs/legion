@@ -82,6 +82,7 @@ SH
   chmod +x "$root/bin/bunx"
   cat > "$root/.github/scripts/ci_ts_programs.py" <<'PY'
 PROGRAMS = [("app", "pkg/app", "app: Typecheck the app")]
+LISTED = []
 PY
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
 name: CI
@@ -187,5 +188,93 @@ run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "holds every file of the program to the filter still" \
   "$(contains "$out" '^pkg/app: 3 files, 0 uncovered (filter app)$')"
+
+# listed <root>: the fixture turned into one with a listed block. The filter consumer gates a job
+# with no program of its own that loads what app's program compiles of pkg/lib, so LISTED takes
+# its files under pkg/lib from app's program, and pkg/lib/unused.ts, which that program does not
+# compile, must stay out of the block. The block starts empty, for the write mode to fill.
+listed() {
+  local root=$1
+  printf 'export const unused = 1;\n' > "$root/pkg/lib/unused.ts"
+  cat > "$root/.github/scripts/ci_ts_programs.py" <<'PY'
+PROGRAMS = [("app", "pkg/app", "app: Typecheck the app")]
+LISTED = [("consumer", "pkg/lib", "app", "consumer loads what app compiles")]
+PY
+  replace "$root/.github/workflows/ci.yaml" "            other:" \
+    $'            consumer:\n              - \'pkg/app/**\'\n              # BEGIN listed\n              # END listed\n            other:'
+}
+
+run_write() {
+  local root=$1
+  set +e
+  out=$(PATH="$root/bin:$PATH" "$root/.github/scripts/check-ts-filters.sh" write 2>&1)
+  status=$?
+  set -e
+}
+
+echo "case: the write mode writes a listed block of the files the source filter's programs compile"
+root=$(fixture listed-write)
+listed "$root"
+run_write "$root"
+written=$(<"$root/.github/workflows/ci.yaml")
+check "exits 0" "$(is "$status" 0)"
+check "names the command that writes the block" \
+  "$(contains "$written" '^              # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of pkg/lib filter app.s$')"
+check "lists the file the program compiles" "$(contains "$written" "^              - 'pkg/lib/lib.ts'$")"
+check "leaves out the file it does not" "$(is "$(contains "$written" 'unused')" false)"
+check "closes the block" "$(contains "$written" '^              # END listed$')"
+check "says what it wrote" "$(contains "$out" '^filter consumer: wrote 1 listed file(s) under pkg/lib, from filter app.s programs$')"
+run_check "$root"
+check "the check passes over what it wrote" "$(is "$status" 0)"
+check "says it held the block" "$(contains "$out" 'every listed block holds exactly the files its programs compile (1 blocks)')"
+
+echo "case: a listed block holding a file the programs do not compile"
+root=$(fixture listed-extra)
+listed "$root"
+run_write "$root"
+replace "$root/.github/workflows/ci.yaml" "              - 'pkg/lib/lib.ts'" $'              - \'pkg/lib/lib.ts\'\n              - \'pkg/lib/unused.ts\''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter, the extra file and the command that writes the block" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter consumer's listed block has 'pkg/lib/unused.ts', which no tsc program of filter app compiles, .*run \`.github/scripts/check-ts-filters.sh write\`")"
+
+echo "case: a listed block lacking a file the programs compile"
+root=$(fixture listed-missing)
+listed "$root"
+printf 'pkg/app/src/main.ts\npkg/lib/lib.ts\npkg/lib/more.ts\n' > "$root/pkg/app/listed"
+printf 'export const more = 1;\n' > "$root/pkg/lib/more.ts"
+run_write "$root"
+replace "$root/.github/workflows/ci.yaml" $'              - \'pkg/lib/more.ts\'\n' ''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter, the missing file and the command that writes the block" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter consumer's listed block lacks 'pkg/lib/more.ts', which the tsc programs of filter app compile (consumer loads what app compiles): .*run \`.github/scripts/check-ts-filters.sh write\`")"
+
+echo "case: a pattern outside the listed block matching a file of its tree"
+root=$(fixture listed-loose)
+listed "$root"
+run_write "$root"
+replace "$root/.github/workflows/ci.yaml" $'            consumer:\n' $'            consumer:\n              - \'pkg/lib/**\'\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter, the pattern and a file of the tree it matches" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter consumer has 'pkg/lib/\*\*' outside its listed block, and it matches pkg/lib/lib.ts under pkg/lib")"
+
+echo "case: a listed block in a filter LISTED does not name"
+root=$(fixture listed-stray)
+replace "$root/.github/workflows/ci.yaml" "              - 'other/**'" $'              - \'other/**\'\n              # BEGIN listed\n              - \'other/thing.ts\'\n              # END listed'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the filter and says nothing computes its block" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::other has a listed block, and LISTED of .github/scripts/ci_ts_programs.py names no such filter')"
+
+echo "case: a mode the script does not have"
+root=$(fixture bad-mode)
+set +e
+out=$(PATH="$root/bin:$PATH" "$root/.github/scripts/check-ts-filters.sh" rewrite 2>&1)
+status=$?
+set -e
+check "fails" "$(is "$status" 1)"
+check "names both modes" "$(contains "$out" 'takes one optional mode: `check` (the default)')"
 
 summary "check-ts-filters.sh holds each Bun gate's filter to every file its tsc program compiles"

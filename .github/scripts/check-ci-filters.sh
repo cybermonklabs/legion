@@ -36,8 +36,10 @@
 #      For a Bun gate those reads are hand-kept, and the TypeScript half of them is no longer:
 #      .github/scripts/check-ts-filters.sh lists each such job's own tsc program with
 #      `bunx tsc --listFilesOnly` and holds every file of it to that gate's filter, in ci.yaml's
-#      lint job, since this one's has no Bun. A file a test reads by relative path is part of no
-#      tsc program, so it stays hand-kept here,
+#      lint job, since this one's has no Bun. Where a filter names a tree file by file, that
+#      check writes the files in a listed block (`# BEGIN listed` ... `# END listed`) and holds
+#      the block to them, and this check declares no read of them. A file a test reads by
+#      relative path is part of no tsc program, so it stays hand-kept here,
 #   2. a gate whose filter the changes job lacks, or whose job's (or step's) if: does not test it.
 #      A job or a step of a workflow ci.yaml calls cannot test `needs.changes.outputs.<name>`:
 #      inside a reusable workflow the only context carrying a caller's value is `inputs`. Such a
@@ -114,7 +116,7 @@
 #      every time one of those files changes. The second direction is judged over the files the
 #      gate reads, the set rule 1 holds its filter to, so a filter two gates name (envoy_go_race_docs
 #      today) is judged over the union of their reads, since a pattern matching only what the
-#      second job reads does start a job that reads the change. Three exemptions, and one pattern
+#      second job reads does start a job that reads the change. Four exemptions, and one pattern
 #      judged once: a `!` pattern is exempt from both directions, since it names what to leave
 #      out and so reads no file by design; an EXCLUDED filter is exempt from the second, since
 #      this check computes no read set for one (worker_image, whose coverage
@@ -126,9 +128,12 @@
 #      main's docs build running when its own workflow changes, and rule 15 holds the filter of
 #      the job that runs a package's untagged tests to every file the tag step's filter covers,
 #      so envoy_go_race holds .github/scripts/go-tagged-tests.sh, which
-#      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; and
-#      a pattern that matches
-#      no file of the repository at all draws the first direction's refusal alone, never both.
+#      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; a
+#      pattern of a listed block check-ts-filters.sh writes (rule 1 above) is exempt from the
+#      second for the same reason, since that check holds the filter to the file, which a tsc
+#      program of the job compiles and this check, with no Bun, cannot list; and a pattern that
+#      matches no file of the repository at all draws the first direction's refusal alone, never
+#      both.
 #  10. an `if:` of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
 #      `github.event_name != 'push'`, or that compares `github.ref` with a single-quoted
 #      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the file, the

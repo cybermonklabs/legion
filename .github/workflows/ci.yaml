@@ -324,7 +324,7 @@ jobs:
       test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.conflicts_script }}
       broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.broker_client }}
-      envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_client }}
+      envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_client }}
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_envoy }}
       pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_legion }}
@@ -2241,6 +2241,45 @@ jobs:
               - '!packages/daemon/internal/workspace/**/*_test.go'
               - '!packages/envoy/**/*_test.go'
               # END generated
+            # The Envoy client's job (envoy-client). It moved here from the second step when the
+            # listed blocks of dispatch_ui and dispatch_browser grew that string past rule 18's
+            # margin: it names only groups both steps write out.
+            envoy_client:
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-client.yaml'
+              - *bun_install
+              - 'packages/envoy-client/**'
+              # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
+              # @legion/broker-client/token-client, and this job runs that package's own typecheck
+              # and tests.
+              - 'packages/broker-client/**'
+              - 'packages/contracts/src/**'
+              # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
+              - 'packages/broker-client/src/**'
+              # src/__tests__ import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
+              # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
+              - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              - 'packages/contracts/fixtures/dispatch-public-url.json'
+              # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
+              # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
+              # an edit of the list alone must start both jobs, or the side it disagrees with
+              # stays green.
+              - 'packages/contracts/fixtures/go-unicode-isspace.json'
+              # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
+              # reads the Dispatch server's decision-block table, which the Go API test reads too.
+              - 'packages/envoy/internal/dispatch/api/testdata/**'
+              # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
+              # cites to a heading of that skill's SKILL.md.
+              - 'skills/**'
+              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
+              # and its ALLOWED names lines of four of them, so rewording one of those lines
+              # fails that test and this job has to run for it.
+              - 'packages/*/AGENTS.md'
+              # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
+              # reads the Go package's own testdata by relative path, that file itself and never a
+              # copy, so a field added there must start this job.
+              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
 
       # The second of the two filter strings. Actions hands a step's input to the action as one
       # environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
@@ -2508,42 +2547,6 @@ jobs:
               - 'packages/contracts/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-            envoy_client:
-              - *ci_router
-              - '.github/workflows/ci-job-envoy-client.yaml'
-              - *bun_install
-              - 'packages/envoy-client/**'
-              # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
-              # @legion/broker-client/token-client, and this job runs that package's own typecheck
-              # and tests.
-              - 'packages/broker-client/**'
-              - 'packages/contracts/src/**'
-              # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
-              - 'packages/broker-client/src/**'
-              # src/__tests__ import @legion/test-fixtures.
-              - 'packages/test-fixtures/src/**'
-              # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
-              - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
-              - 'packages/contracts/fixtures/dispatch-public-url.json'
-              # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
-              # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
-              # an edit of the list alone must start both jobs, or the side it disagrees with
-              # stays green.
-              - 'packages/contracts/fixtures/go-unicode-isspace.json'
-              # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
-              # reads the Dispatch server's decision-block table, which the Go API test reads too.
-              - 'packages/envoy/internal/dispatch/api/testdata/**'
-              # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
-              # cites to a heading of that skill's SKILL.md.
-              - 'skills/**'
-              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
-              # and its ALLOWED names lines of four of them, so rewording one of those lines
-              # fails that test and this job has to run for it.
-              - 'packages/*/AGENTS.md'
-              # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
-              # reads the Go package's own testdata by relative path, that file itself and never a
-              # copy, so a field added there must start this job.
-              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
             # The private workspace package both Oh My Pi plugins import.
             pi_shared:
               - *ci_router
@@ -2699,9 +2702,53 @@ jobs:
               # This job's tsc program of packages/dispatch compiles the shared test fixtures its
               # web, e2e and server-side tests import.
               - 'packages/test-fixtures/src/**'
-              # packages/dispatch/web/vite.config.ts:117-126 aliases @legion/contracts, and tsc and
-              # bun read it through the workspace's "bun" export condition.
-              - 'packages/contracts/src/**'
+              # The contracts modules this job's two tsc programs compile and no other (the
+              # web/vite.config.ts:117-126 aliases point at the same sources): not legion-api.ts.
+              # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
+              # tsc programs compile. An edit by hand is refused by that check, which writes these.
+              - 'packages/contracts/src/actor-label.ts'
+              - 'packages/contracts/src/agent-stream.ts'
+              - 'packages/contracts/src/block-schema.generated.ts'
+              - 'packages/contracts/src/claim-holds.ts'
+              - 'packages/contracts/src/dispatch-api-asks.ts'
+              - 'packages/contracts/src/dispatch-api-comments.ts'
+              - 'packages/contracts/src/dispatch-api-core.ts'
+              - 'packages/contracts/src/dispatch-api-delivery.ts'
+              - 'packages/contracts/src/dispatch-api-documents.ts'
+              - 'packages/contracts/src/dispatch-api-events.ts'
+              - 'packages/contracts/src/dispatch-api-graph.ts'
+              - 'packages/contracts/src/dispatch-api-inbox.ts'
+              - 'packages/contracts/src/dispatch-api-issues.ts'
+              - 'packages/contracts/src/dispatch-api-limits.ts'
+              - 'packages/contracts/src/dispatch-api-live.ts'
+              - 'packages/contracts/src/dispatch-api-messages.ts'
+              - 'packages/contracts/src/dispatch-api-refs.ts'
+              - 'packages/contracts/src/dispatch-api-requests.ts'
+              - 'packages/contracts/src/dispatch-api-search.ts'
+              - 'packages/contracts/src/dispatch-api-sessions.ts'
+              - 'packages/contracts/src/dispatch-api-targeted.ts'
+              - 'packages/contracts/src/dispatch-api-user.ts'
+              - 'packages/contracts/src/dispatch-api.generated.ts'
+              - 'packages/contracts/src/dispatch-api.ts'
+              - 'packages/contracts/src/dispatch-block-ref.ts'
+              - 'packages/contracts/src/dispatch-href.ts'
+              - 'packages/contracts/src/dispatch-snippet.ts'
+              - 'packages/contracts/src/dispatch-text-references.ts'
+              - 'packages/contracts/src/dispatch-text-rules.ts'
+              - 'packages/contracts/src/dispatch-tools.ts'
+              - 'packages/contracts/src/envelope.ts'
+              - 'packages/contracts/src/envoy-session.ts'
+              - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/index.ts'
+              - 'packages/contracts/src/legion-roles.ts'
+              - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/repo.ts'
+              - 'packages/contracts/src/sha256.ts'
+              - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject.ts'
+              - 'packages/contracts/src/tool-schema.ts'
+              - 'packages/contracts/src/trailing-slash.ts'
+              # END listed
               # web/src/features/delivery/lib/applyDelta.test.ts:2-4,
               # e2e/__tests__/delivery-live-probe.test.ts:8-12 and
               # web/src/features/doc/decision-blocks.test.ts:10.
@@ -2764,7 +2811,54 @@ jobs:
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
-              - 'packages/contracts/src/**'
+              # dispatch_ui's set: this suite has no tsc program, and loads the SPA and the e2e
+              # helpers that filter's programs compile. Its jobs' contracts build bundles
+              # legion-api.ts too, but no row loads it (ci_ts_programs.py, LISTED, says why).
+              # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
+              # tsc programs compile. An edit by hand is refused by that check, which writes these.
+              - 'packages/contracts/src/actor-label.ts'
+              - 'packages/contracts/src/agent-stream.ts'
+              - 'packages/contracts/src/block-schema.generated.ts'
+              - 'packages/contracts/src/claim-holds.ts'
+              - 'packages/contracts/src/dispatch-api-asks.ts'
+              - 'packages/contracts/src/dispatch-api-comments.ts'
+              - 'packages/contracts/src/dispatch-api-core.ts'
+              - 'packages/contracts/src/dispatch-api-delivery.ts'
+              - 'packages/contracts/src/dispatch-api-documents.ts'
+              - 'packages/contracts/src/dispatch-api-events.ts'
+              - 'packages/contracts/src/dispatch-api-graph.ts'
+              - 'packages/contracts/src/dispatch-api-inbox.ts'
+              - 'packages/contracts/src/dispatch-api-issues.ts'
+              - 'packages/contracts/src/dispatch-api-limits.ts'
+              - 'packages/contracts/src/dispatch-api-live.ts'
+              - 'packages/contracts/src/dispatch-api-messages.ts'
+              - 'packages/contracts/src/dispatch-api-refs.ts'
+              - 'packages/contracts/src/dispatch-api-requests.ts'
+              - 'packages/contracts/src/dispatch-api-search.ts'
+              - 'packages/contracts/src/dispatch-api-sessions.ts'
+              - 'packages/contracts/src/dispatch-api-targeted.ts'
+              - 'packages/contracts/src/dispatch-api-user.ts'
+              - 'packages/contracts/src/dispatch-api.generated.ts'
+              - 'packages/contracts/src/dispatch-api.ts'
+              - 'packages/contracts/src/dispatch-block-ref.ts'
+              - 'packages/contracts/src/dispatch-href.ts'
+              - 'packages/contracts/src/dispatch-snippet.ts'
+              - 'packages/contracts/src/dispatch-text-references.ts'
+              - 'packages/contracts/src/dispatch-text-rules.ts'
+              - 'packages/contracts/src/dispatch-tools.ts'
+              - 'packages/contracts/src/envelope.ts'
+              - 'packages/contracts/src/envoy-session.ts'
+              - 'packages/contracts/src/going.ts'
+              - 'packages/contracts/src/index.ts'
+              - 'packages/contracts/src/legion-roles.ts'
+              - 'packages/contracts/src/related-forms.ts'
+              - 'packages/contracts/src/repo.ts'
+              - 'packages/contracts/src/sha256.ts'
+              - 'packages/contracts/src/slack.ts'
+              - 'packages/contracts/src/subject.ts'
+              - 'packages/contracts/src/tool-schema.ts'
+              - 'packages/contracts/src/trailing-slash.ts'
+              # END listed
               # The Dispatch server this suite runs: dispatch-browser.yaml's binaries job builds
               # it, with the real broker's three commands, for the shard and alone jobs, and the
               # two-process job builds it in a step of its own and again in e2e/run-server.sh

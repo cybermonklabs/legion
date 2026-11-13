@@ -1452,10 +1452,6 @@ BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
-# The step every job that runs the suite carries, under one name: Playwright loads the config
-# before any hook of the suite, and that config imports `@legion/contracts`, whose built dist/
-# its Node runner reads (dispatch-browser.yaml's shard job says it at length).
-BROWSER_CONTRACTS = "Build contracts for dispatch e2e"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_READ_ONE_STEP = "Reading one, the rows"
@@ -2135,7 +2131,10 @@ GATES = [
     gate("dispatch_ui", "dispatch-ui", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Typecheck dispatch dashboard')}, test, build, check:classes and check:asset-sizes in packages/dispatch"),
         ("packages/proof-editor/**", f"{at('dispatch-ui', 'Typecheck proof editor')} and test; packages/dispatch/web/vite.config.ts:127-147"),
-        (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:117-126 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
+        # packages/contracts/src is no read of this table's: which of its modules this job compiles
+        # is what its two tsc programs list, so check-ts-filters.sh writes them into the filter's
+        # listed block and holds the block to them (ci_ts_programs.py, LISTED), and rule 9's second
+        # direction passes over that block's patterns.
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:12-16"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:9-10, features/inbox/AskCard.test.tsx:455-456"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/__tests__/setup.ts:10 and features/refs/markdown-engine.test.ts:3 read blocks.json; packages/proof-editor/tests/ask-concurrent-edit.test.ts:272-275 reads block-node-types.json of the same directory"),
@@ -2212,13 +2211,10 @@ GATES = [
          f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
          f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
-        (CONTRACTS_SRC, f"{BROWSER_SUITE_STEPS} read it through Playwright's own Node "
-         f"resolution, which takes the package's built dist/, and {at_browser(BROWSER_CONTRACTS)}, "
-         f"{at_browser(BROWSER_CONTRACTS, BROWSER_ALONE)}, {at_browser(BROWSER_CONTRACTS, BROWSER_MP)}, "
-         f"{at_browser(BROWSER_CONTRACTS, BROWSER_EMBEDDER)} and "
-         f"{at_browser(BROWSER_CONTRACTS, BROWSER_VISUAL)} make that build, one per job, before "
-         "Playwright loads a config that imports the package; "
-         "packages/dispatch/web/vite.config.ts:117-126 aliases"),
+        # packages/contracts/src is no read of this table's either: the filter's listed block holds
+        # the modules dispatch_ui's tsc programs compile, which check-ts-filters.sh writes, and
+        # ci_ts_programs.py's LISTED says why this suite loads that set and no other, though each
+        # job's `Build contracts for dispatch e2e` step bundles every entry of the package.
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:326 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),

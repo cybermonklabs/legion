@@ -1614,19 +1614,26 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list)
                         f"the repository, so it holds its filter to nothing; correct the path or drop the read")
 
 
-def rule_required_files(data, filters: dict, selection: Selection) -> dict:
-    """Per filter, the files another rule of this check holds that filter to whatever its job
-    reads, which rule 9's second direction has to pass over: refusing one of those patterns
+def rule_required_files(data, filters: dict, selection: Selection, listed: dict, expander: Expander) -> dict:
+    """Per filter, the files another rule holds that filter to whatever this check computes its
+    job reads, which rule 9's second direction has to pass over: refusing one of those patterns
     would be refusing the rule that put it there.
 
-    Two rules do it. Rule 8 keeps a PUSH_WORKFLOWS workflow's on.push.paths equal to its filter,
-    and a workflow that does not name itself never runs on a change to itself: the docs filter
-    holds .github/workflows/docs-pages.yaml so that main's docs build runs when its own workflow
-    changes, which is a run of that file rather than a read by ci.yaml's docs job. Rule 15 holds
-    the filter of the job that runs a package's untagged tests to every file the tag step's
-    filter covers, so a change that starts the tagged run starts the untagged one with it:
-    envoy_go_race holds .github/scripts/go-tagged-tests.sh, which listener-server-change's soak
-    takes its -run from and no step of envoy-go-race reads.
+    Two rules of this check do it. Rule 8 keeps a PUSH_WORKFLOWS workflow's on.push.paths equal
+    to its filter, and a workflow that does not name itself never runs on a change to itself: the
+    docs filter holds .github/workflows/docs-pages.yaml so that main's docs build runs when its
+    own workflow changes, which is a run of that file rather than a read by ci.yaml's docs job.
+    Rule 15 holds the filter of the job that runs a package's untagged tests to every file the
+    tag step's filter covers, so a change that starts the tagged run starts the untagged one with
+    it: envoy_go_race holds .github/scripts/go-tagged-tests.sh, which listener-server-change's
+    soak takes its -run from and no step of envoy-go-race reads.
+
+    And .github/scripts/check-ts-filters.sh does it from outside: it writes into a filter a
+    listed block (TS_LISTED below) of the files of a tree that a job's tsc program compiles, and
+    refuses a committed block that is not exactly that, in ci.yaml's lint job, since this one has
+    no Bun to run tsc with. Those files are reads of the job this check cannot compute, so the
+    patterns of such a block, one file each, are passed over here; the filter's coverage of them
+    is that check's to prove (ci_ts_programs.py, LISTED).
 
     This widens to nothing else. A pattern is passed over only when every file it matches is in
     this set, so one that reaches a single file outside it is judged like any other."""
@@ -1637,11 +1644,15 @@ def rule_required_files(data, filters: dict, selection: Selection) -> dict:
     for entry in data.TAG_RUNS:
         if entry.filter in filters and entry.untagged_filter in filters:
             required[entry.untagged_filter].update(selection.of(entry.filter))
+    for name, block in listed.items():
+        if name in filters and block.begin >= 0:
+            for pattern in block.patterns:
+                required[name].update(expander.expand(pattern))
     return required
 
 
 def check_dead_gate_patterns(data, filters: dict, gate_files: dict, expander: Expander,
-                             selection: Selection, problems: list) -> None:
+                             selection: Selection, listed: dict, problems: list) -> None:
     """Rule 9's second direction: a pattern of a gate's filter that matches files of the
     repository but none its job reads. Such a pattern selects the job for a change no step of it
     can see, which costs a full run of that job every time one of those files changes - the fault
@@ -1662,9 +1673,10 @@ def check_dead_gate_patterns(data, filters: dict, gate_files: dict, expander: Ex
     pattern of an EXCLUDED filter, which reaches here in no gate: the check computes no read set
     for one (worker_image today), so it has nothing to judge the patterns against, and
     .github/scripts/check-image-trigger-paths.sh proves that filter's coverage instead. And a
-    pattern whose every file another rule of this check holds the filter to (rule_required_files
-    above), which is the one case where a pattern matching no read is right rather than idle."""
-    required = rule_required_files(data, filters, selection)
+    pattern whose every file another rule holds the filter to (rule_required_files above, given
+    `listed`, the changes job's listed blocks), which is the one case where a pattern matching no
+    read is right rather than idle."""
+    required = rule_required_files(data, filters, selection, listed, expander)
     for name in sorted(gate_files):
         reads, wheres = gate_files[name].reads, gate_files[name].wheres
         where = " and ".join(wheres) + (" read" if len(wheres) > 1 else " reads")
@@ -1698,6 +1710,28 @@ BLOCK_HEAD = (
     f"{BEGIN} by `{WRITE}`: a change to a Go test file the job this filter gates does not read",
     "# must not select it. An edit by hand is refused (rule 17 of that check), which writes these.",
 )
+
+
+@dataclass(frozen=True)
+class Marks:
+    """One kind of generated block: its first and last line's prefixes and the command that
+    writes it, which a refusal names."""
+
+    begin: str
+    end: str
+    write: str
+
+
+GENERATED = Marks(BEGIN, END, WRITE)
+# The other generated block a gate filter may hold: one pattern per file of a tree that the tsc
+# programs paired with a filter compile (.github/scripts/ci_ts_programs.py, LISTED), which
+# .github/scripts/check-ts-filters.sh writes in its own write mode and refuses when it differs,
+# since only that check, in ci.yaml's lint job, has the Bun to run tsc with. Its own two lines mark
+# it, so neither check takes the other's block for its own: rule 17 reads and rewrites only the
+# lines between BEGIN and END, a listed block's lines are items of the list to it, and rule 9's
+# second direction passes over a listed block's patterns (rule_required_files).
+TS_LISTED = Marks("# BEGIN listed", "# END listed", ".github/scripts/check-ts-filters.sh write")
+KINDS = (GENERATED, TS_LISTED)
 
 
 def selected(patterns: list, expander: Expander) -> set:
@@ -1781,57 +1815,64 @@ def indent_of(line: str) -> int:
     return len(line) - len(line.lstrip())
 
 
-def list_block(lines: list, body: range, block: Block) -> Block:
+def list_block(lines: list, body: range, block: Block, marks: Marks = GENERATED) -> Block:
     """`block` filled in from the lines of one pattern list: its items' indentation, its last
-    item outside a generated block, and the block's own two lines and patterns."""
+    item outside a block of `marks`' kind, and that block's own two lines and patterns. A line
+    closing a block of another kind counts as an item, so a block written where none was goes
+    after that whole block rather than inside it."""
+    others = tuple(kind.end for kind in KINDS if kind != marks)
     for i in body:
         line, text = lines[i], lines[i].strip()
         if not text:
             continue
+        inside = block.begin >= 0 and block.end < 0
         item = FILTER_ITEM.match(line)
         if item:
             block.indent = item.group(1)
-            if block.begin >= 0 and block.end < 0:
+            if inside:
                 block.patterns.append(yaml.safe_load(item.group(2)))
             else:
                 block.after = i
-        elif text.startswith(BEGIN):
+        elif text.startswith(marks.begin):
             block.begin, block.indent = i, line[: indent_of(line)]
-        elif text.startswith(END):
+        elif text.startswith(marks.end):
             block.end = i
+        elif text.startswith(others) and not inside:
+            block.after = i
     return block
 
 
-def closed(blocks: dict, path: str, problems: list) -> dict:
+def closed(blocks: dict, path: str, problems: list, marks: Marks = GENERATED) -> dict:
     """`blocks` with every list whose BEGIN line has no END line after it left as a list with no
     block: the write mode would otherwise replace lines nobody meant it to."""
     for name, block in blocks.items():
         if block.begin >= 0 and block.end < block.begin:
             problems.append(f"::error file={path}::{name} opens a generated block and never closes it with a "
-                            f"`{END}` line; run `{WRITE}`")
+                            f"`{marks.end}` line; run `{marks.write}`")
             block.begin = -1
     return blocks
 
 
-def one_filter_block(lines: list, key: int) -> dict:
+def one_filter_block(lines: list, key: int, marks: Marks = GENERATED) -> dict:
     """Per key of the one `filters: |` block whose line is `key`, where its list ends in the
-    text and which of its lines are a generated block."""
+    text and which of its lines are a generated block of `marks`' kind."""
     body = range(key + 1, len(lines))
     outer = indent_of(lines[key])
     stop = next((i for i in body if lines[i].strip() and indent_of(lines[i]) <= outer), len(lines))
     inner = min((indent_of(lines[i]) for i in range(key + 1, stop) if lines[i].strip()), default=0)
     starts = [i for i in range(key + 1, stop)
               if FILTER_KEY.match(lines[i]) and indent_of(lines[i]) == inner]
-    return {FILTER_KEY.match(lines[start]).group(2): list_block(lines, range(start + 1, end), Block())
+    return {FILTER_KEY.match(lines[start]).group(2): list_block(lines, range(start + 1, end), Block(), marks)
             for start, end in zip(starts, starts[1:] + [stop])}
 
 
-def filter_blocks(lines: list, problems: list) -> dict:
+def filter_blocks(lines: list, problems: list, marks: Marks = GENERATED) -> dict:
     """Per key of the changes job's `filters: |` blocks - every gate filter and every group an
     anchor names - where its list ends in ci.yaml's text and which of its lines are a generated
-    block. The job declares its filters in more than one such block (rule 18), so every one of
-    them is read; a group both of them write out is one key here, the first, since rule 17 gives
-    a generated block to a gate filter alone and a gate filter is in one step (rule 19)."""
+    block of `marks`' kind. The job declares its filters in more than one such block (rule 18),
+    so every one of them is read; a group both of them write out is one key here, the first,
+    since a generated block belongs to a gate filter alone and a gate filter is in one step
+    (rule 19)."""
     keys = [i for i, line in enumerate(lines) if FILTERS_KEY.match(line)]
     if not keys:
         problems.append(f"::error file={WORKFLOW}::no `filters: |` block, where this check reads the ones the "
@@ -1839,14 +1880,14 @@ def filter_blocks(lines: list, problems: list) -> dict:
         return {}
     blocks: dict = {}
     for key in keys:
-        for name, block in one_filter_block(lines, key).items():
+        for name, block in one_filter_block(lines, key, marks).items():
             if name not in blocks:
                 blocks[name] = block
             elif blocks[name].begin >= 0 or block.begin >= 0:
                 problems.append(f"::error file={WORKFLOW}::{name} is written in two `filters: |` blocks and one of "
                                 f"them holds a generated block, which belongs to the one gate filter it is computed "
                                 f"for; delete the block, or declare {name} in one step")
-    return closed(blocks, WORKFLOW, problems)
+    return closed(blocks, WORKFLOW, problems, marks)
 
 
 def push_paths_block(lines: list, name: str, path: str, problems: list) -> dict:
@@ -1925,17 +1966,19 @@ def check_negations(blocks: dict, wanted: dict, filters: dict, expander: Expande
             f"do not read"]
 
 
-def rewrite(path: str, lines: list, blocks: dict, wanted: dict) -> None:
-    """`path` written again with each list's generated block replaced by the patterns above, and
-    left alone when that changes nothing. A list with no pattern to write keeps no block, and
-    one with no block yet takes it after its last item, so the block belongs to the filter whose
-    list holds it and never to a group an anchor shares."""
+def rewrite(path: str, lines: list, blocks: dict, wanted: dict, heads=lambda name: BLOCK_HEAD,
+            marks: Marks = GENERATED) -> None:
+    """`path` written again with each list's generated block of `marks`' kind replaced by its
+    patterns in `wanted`, under the head `heads` gives for it, and left alone when that changes
+    nothing. A list with no pattern to write keeps no block, and one with no block yet takes it
+    after its last item, so the block belongs to the filter whose list holds it and never to a
+    group an anchor shares."""
     out = list(lines)
     for name in sorted(blocks, key=lambda n: -max(blocks[n].begin, blocks[n].after)):
         block, patterns = blocks[name], wanted.get(name, [])
-        written = ([block.indent + line for line in BLOCK_HEAD]
+        written = ([block.indent + line for line in heads(name)]
                    + [f"{block.indent}- '{pattern}'" for pattern in patterns]
-                   + [block.indent + END]) if patterns else []
+                   + [block.indent + marks.end]) if patterns else []
         if block.begin >= 0:
             out[block.begin : block.end + 1] = written
         elif written and block.after >= 0:
@@ -2032,13 +2075,16 @@ def main() -> int:
                             f"{g.filter} does not match")
         if held and not set(fallback).isdisjoint(uncovered):
             problems += held
-    check_dead_gate_patterns(data, filters, gate_files, expander, selection, problems)
+    # Rule 9's second direction passes over the patterns of the listed blocks check-ts-filters.sh
+    # writes; whether such a block is well formed is that check's to refuse, not this one's.
+    lines = (REPO / WORKFLOW).read_text().splitlines()
+    check_dead_gate_patterns(data, filters, gate_files, expander, selection, filter_blocks(lines, [], TS_LISTED),
+                             problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, selection, problems)
     # Rule 17, last of the rules that read a filter: it needs the files each gate reads, which
-    # the loop above has just finished, and the text of ci.yaml, which it reads itself.
-    lines = (REPO / WORKFLOW).read_text().splitlines()
+    # the loop above has just finished, and the text of ci.yaml, read above.
     blocks = filter_blocks(lines, problems)
     tests = [f for f in files if f.endswith(TEST_SUFFIX)]
     wanted = wanted_negations(filters, quantifiers, gate_files, blocks, expander, tests)
