@@ -398,7 +398,8 @@ one. Three things have to be true first; Dispatch checks the first for you.
 A second server also costs connections, and Postgres counts them per server. Each server opens up
 to 48 connections for requests, 6 for its background work, 4 for the live socket's reads, 4 for
 settling documents, 4 for loading documents, up to 8 for saving what people type in documents,
-up to 2 for compacting documents, up to 19 for the periodic work it runs once across the
+up to 2 for compacting documents, up to 2 for storing the display form of stored text, up to 19
+for the periodic work it runs once across the
 servers, one for the health check, two for publishing notifications, up to 2 for reading where
 the event log is safe to stream from (the event horizon), and one for its entry in the list of
 running servers, which it renews every five seconds. It also holds up to five more open for as

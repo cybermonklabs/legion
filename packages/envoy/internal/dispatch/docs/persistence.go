@@ -160,6 +160,16 @@ func loadTxSource(ctx context.Context, pool *store.Pool) (txSource, error) {
 	return pool.Rooms()
 }
 
+// loadPoolName names, for a log line, the pool a load on ctx reads through (loadTxSource): the rooms
+// pool, unless the caller's context names a pool of its own, which a settlement and a cold read's
+// fold do and a document socket's admission does not.
+func loadPoolName(ctx context.Context) string {
+	if _, ok := ctx.Value(queryPoolKey{}).(*store.Pool); ok {
+		return "the caller's own"
+	}
+	return store.RoomsPool
+}
+
 // txSource opens a transaction of its own, which both the pool that owns loads and the pools a
 // context names do (store.RawPool.BeginTx, store.Pool.BeginTx).
 type txSource interface {

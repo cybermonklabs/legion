@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -22,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -864,5 +866,48 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	}
 	if _, kept := service.preloads.Load(artifactID); kept {
 		t.Error("a preload offered while the room loaded is still held after that load, want none: no load of this room will ever read it")
+	}
+}
+
+// A document socket the service refuses because its document could not be admitted logs why, at
+// WARN, with the room and the pool the admission's load read through. The 503 alone names neither,
+// so without this line a refusal that reached a person could be placed only from a neighbouring
+// one. The admission's first load fails here (failingOnceVersionedStore), as a connection reset
+// in the middle of that load would.
+func TestARefusedSocketAdmissionLogsTheRoomAndThePool(t *testing.T) {
+	logs := &storetest.LockedLog{}
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service := New(Deps{
+		Store:       database,
+		Persistence: &failingOnceVersionedStore{VersionedStore: NewPgVersioned(database)},
+		Events:      events.NewBroker(),
+		Identity:    headerIdentity(database),
+	})
+	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
+	t.Cleanup(httpServer.Close)
+
+	refuseSocket(t, httpServer.URL, artifactID, "a socket whose document's first load fails")
+
+	logged := logs.String()
+	line := ""
+	for _, candidate := range strings.Split(logged, "\n") {
+		if strings.Contains(candidate, "a document socket was refused") {
+			line = candidate
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("the refused socket logged no WARN line naming why; the log was:\n%s", logged)
+	}
+	for _, want := range []string{"level=WARN", "room=" + artifactID, "pool=" + store.RoomsPool, "transient load failure"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the refused socket's line %q does not carry %q", line, want)
+		}
 	}
 }

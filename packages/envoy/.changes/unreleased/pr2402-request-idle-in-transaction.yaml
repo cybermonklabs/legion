@@ -3,7 +3,8 @@ body: |-
   Postgres now ends a request transaction left idle for 70 seconds, and only a request
   connection's: every connection of Dispatch's request pool carries
   `idle_in_transaction_session_timeout`, and the background, live, settlement, rooms,
-  room-appends, compaction, horizon, lease, outbox, registry, listen and health pools carry none,
+  room-appends, compaction, text-trees, horizon, lease, outbox, registry, listen and health pools
+  carry none,
   so work that is meant to sit in a transaction for as long as it takes still can.
   Without it an orphaned request transaction — one whose connection was abandoned and whose
   close reached Postgres late or not at all — held the rows it locked and the event horizon until
