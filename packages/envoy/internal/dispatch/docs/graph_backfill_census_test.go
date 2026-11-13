@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -92,6 +94,18 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 	if len(before) == 0 {
 		t.Fatal("the seed indexed no block, so this test would prove nothing")
 	}
+	// The seed is nested: a block whose parent is another block is the parent only the block
+	// index can state, and a run whose every block sat in its document would pass the parent
+	// check below over parents nobody had to compute.
+	nested := 0
+	for _, state := range before {
+		if state.hasParent {
+			nested++
+		}
+	}
+	if nested == 0 {
+		t.Fatalf("the seed's own indexing gave none of its %d blocks a block parent, want the callouts nested inside each other", len(before))
+	}
 	takeTheStoreOff(t, database)
 	for address, state := range blockStates(t, database) {
 		if state.nodeKind != "" || state.hasParent {
@@ -99,8 +113,8 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 				address, state.nodeKind, state.parent)
 		}
 	}
-	t.Logf("%d blocks over %d documents, written as a build before the store existed",
-		len(before), len(documents))
+	t.Logf("%d blocks, %d of them inside another block, over %d documents, written as a build before the store existed",
+		len(before), nested, len(documents))
 
 	report, err := graphcensus.Backfill(ctx, database, io.Discard)
 	if err != nil {
@@ -111,6 +125,13 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 		t.Fatalf("the backfill wrote %#v, want every one of the %d blocks, %d documents marked owed and the cutover complete",
 			blocks, len(before), len(documents))
 	}
+	// The tuples the backfill wrote: one in_document per block and the two base attributes of
+	// each node its insert made, which is what its report counts.
+	if blocks.Tuples != 3*blocks.Rows {
+		t.Errorf("the backfill reports %d tuples for %d blocks, want %d: one in_document and two base attributes a block",
+			blocks.Tuples, blocks.Rows, 3*blocks.Rows)
+	}
+	requireOneInDocumentPerBlock(t, database)
 
 	// The gate: right after the backfill no block has a parent, and the census says so rather
 	// than passing.
@@ -145,7 +166,10 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 		t.Fatalf("%d document(s) still owe a block index after %d tick(s)", owed, owedTicks)
 	}
 
-	// Every block's parent_block_id is the block its part_of tuple names now.
+	// Every block's parent_block_id is the block its part_of tuple names now, and that is the
+	// parent the seed's own indexing gave it before the store was taken off: the pass computes
+	// the nesting again from the version, so a pass that put every block in its document would
+	// agree with its own tuples and still be wrong.
 	after := blockStates(t, database)
 	if len(after) != len(before) {
 		t.Fatalf("the pass left %d blocks, want the %d it started with", len(after), len(before))
@@ -159,6 +183,10 @@ func TestTheBlockParentCensusReachesZeroAfterTheBackfill(t *testing.T) {
 		if state.hasParent != (parent != "") || state.parent != parent {
 			t.Errorf("block %s projects parent %q (set %t), want the %q its part_of tuple names",
 				address, state.parent, state.hasParent, parent)
+		}
+		if was := before[address]; state.hasParent != was.hasParent || state.parent != was.parent {
+			t.Errorf("block %s has parent %q (set %t) after the pass, want the %q (set %t) the seed's own indexing gave it",
+				address, state.parent, state.hasParent, was.parent, was.hasParent)
 		}
 	}
 
@@ -292,6 +320,40 @@ func currentBlockParent(t *testing.T, database *store.Store, address string) (st
 	}
 	t.Fatalf("the parent of %s is block %q, which holds no block id", address, held[0].ToID)
 	return "", false
+}
+
+// requireOneInDocumentPerBlock holds every document_blocks row to what the backfill states for
+// it: exactly one current in_document tuple, read as a current relation is read
+// (graphstore.CurrentOut), whose far end is the row's own document.
+func requireOneInDocumentPerBlock(t *testing.T, database *store.Store) {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select d.node_id, a.ref_key from document_blocks d join artifacts a on a.id = d.artifact_id
+		order by d.node_id
+	`)
+	if err != nil {
+		t.Fatalf("read the blocks and their documents: %v", err)
+	}
+	type member struct{ address, document string }
+	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (member, error) {
+		var held member
+		err := row.Scan(&held.address, &held.document)
+		return held, err
+	})
+	if err != nil {
+		t.Fatalf("read the blocks and their documents: %v", err)
+	}
+	for _, block := range members {
+		held, err := graphstore.CurrentOut(context.Background(), database.Pool,
+			refs.BlockNodeKind, block.address, []string{refs.TupleInDocument})
+		if err != nil {
+			t.Fatalf("read the document %s is in: %v", block.address, err)
+		}
+		if len(held) != 1 || held[0].ToKind != "artifact" || held[0].ToID != block.document {
+			t.Errorf("block %s is in %+v right after the backfill, want one in_document tuple to artifact/%s",
+				block.address, held, block.document)
+		}
+	}
 }
 
 // takeStoreCensus runs `census --store` over the test's own database, on a connection of its

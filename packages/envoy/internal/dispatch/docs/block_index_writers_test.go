@@ -6,10 +6,12 @@ import (
 	"errors"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -151,15 +153,25 @@ func waitingStatement(t *testing.T, holder pgx.Tx) string {
 // The two passes that write a block index are store writers: each writes the block's node, the
 // tuples that node's rows are the projection of, and those rows themselves, in one transaction.
 //
+// The rule that tells a writer from a repair is applied first, to every pass of the source tree
+// that writes a projected table or the store, by a statement of its own or through the store's
+// writer: each pass's input is reported, and a pass the register does not name fails, named with
+// the side of the projection it reads, before any database is touched.
+//
 // A document of more blocks than a write indexes in its own request writes no block row at all,
 // as it does today, and the block-index reconciliation then writes all three for it - proven by
 // killing the tick's transaction and finding none of them. The tick takes the document's owner
-// row and then its owed row before it writes either. The rebuild writes refs and marks work
-// owed and writes no row of document_blocks, block_refs or comments. Last, the rule that tells
-// a writer from a repair is applied to every pass of the source tree that writes a projected
-// table or the store: each pass's input is reported, and a pass whose input is one side of the
-// projection fails, named with the side it reads.
+// row and then its owed row before it writes either, in that order. The item block pass writes
+// no row of the store. The rebuild writes refs and marks work owed and writes no row of
+// document_blocks, block_refs or comments.
 func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
+	requireEveryPassReadsItsSource(t)
+	if t.Failed() {
+		// The source tree holds a pass nobody has said the input of, so whatever the
+		// database answers below would be read for a tree this test cannot vouch for.
+		t.FailNow()
+	}
+
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	document := writeDocumentThroughTheRequestPath(t, service, database, "heavy", deferredList(deferredItems))
@@ -177,17 +189,27 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	}
 
 	// Killing the tick's transaction leaves none of the three. The tick logs a document it
-	// could not index and carries on, so what it answers is that it indexed none.
+	// could not index and carries on, so what it answers is that it indexed none. The hook
+	// records the document it killed, because a tick that never reached its write would leave
+	// none of the three behind as well, and would prove nothing about the transaction.
 	before := highestTuple(t, database)
-	service.afterBlockIndexWrite = func(string) error { return errors.New("kill the tick's transaction") }
+	var killedDocuments []string
+	service.afterBlockIndexWrite = func(artifactID string) error {
+		killedDocuments = append(killedDocuments, artifactID)
+		return errors.New("kill the tick's transaction")
+	}
 	killed, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
 	if err != nil {
 		t.Fatalf("the killed tick: %v", err)
 	}
+	service.afterBlockIndexWrite = nil
+	if !slices.Equal(killedDocuments, []string{document}) {
+		t.Fatalf("the kill hook fired for %v, want once for %s: a tick that never reached its write killed nothing",
+			killedDocuments, document)
+	}
 	if killed.Documents != 0 {
 		t.Fatalf("the killed tick indexed %d documents, want none", killed.Documents)
 	}
-	service.afterBlockIndexWrite = nil
 	if rows := countRows(t, database, "document_blocks", document); rows != 0 {
 		t.Errorf("the killed tick left %d block rows behind, want none", rows)
 	}
@@ -217,31 +239,47 @@ func TestTheIndexPassesAreStoreWritersAndNoRepairExists(t *testing.T) {
 	}
 
 	requireTheTickLocksTheOwnerThenTheOwedRow(t, database, service)
+	requireTheItemBlockPassWritesNoStoreRow(t, database, service)
 	requireTheRebuildWritesNoProjectedRow(t, database)
-	requireEveryPassReadsItsSource(t)
 }
 
 // requireTheTickLocksTheOwnerThenTheOwedRow holds each of the two rows the tick takes and reads
 // where the tick stops: the owner row first, before it has written anything, and the owed row
 // next, which it only reaches once the owner row is free. Both are taken before any write, so a
 // tick that could not take them leaves the document as it found it.
+//
+// Where the tick stops says which row it waits for, not which it already holds, so each step
+// also tries the other row without waiting while the tick waits. Waiting at the owner row, the
+// tick must hold nothing yet, so the owed row is free to take; waiting at the owed row, it must
+// hold the owner row already, so the try is refused. A tick that took the two in the other order
+// passes neither try.
 func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Store, service *Service) {
 	t.Helper()
 	ctx := context.Background()
 	for _, step := range []struct {
 		name, slug, hold, wantStatement string
+		// other is the row the step does not hold, tried `nowait` while the tick waits, and
+		// otherHeld whether the tick must hold it by then.
+		otherName, other string
+		otherHeld        bool
 	}{
 		{
 			name:          "the document's owner row",
 			slug:          "owner-locked",
 			hold:          `select 1 from issues i join artifacts a on a.issue_key = i.key where a.id = $1::uuid for no key update of i`,
 			wantStatement: "from issues",
+			otherName:     "the document's owed row",
+			other:         `select 1 from document_block_versions where artifact_id = $1 for no key update nowait`,
+			otherHeld:     false,
 		},
 		{
 			name:          "the document's owed row",
 			slug:          "owed-locked",
 			hold:          `select 1 from document_block_versions where artifact_id = $1 for no key update`,
 			wantStatement: "document_block_versions",
+			otherName:     "the document's owner row",
+			other:         `select 1 from issues i join artifacts a on a.issue_key = i.key where a.id = $1::uuid for no key update of i nowait`,
+			otherHeld:     true,
 		},
 	} {
 		// A document of its own each step, since the tick indexes the one before it as soon as
@@ -273,6 +311,7 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 		if rows := countRows(t, database, "document_blocks", document); rows != 0 {
 			t.Errorf("the tick wrote %d block rows before it had taken %s, want none", rows, step.name)
 		}
+		requireTheOtherRow(t, database, document, step.name, step.otherName, step.other, step.otherHeld)
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release %s: %v", step.name, err)
 		}
@@ -281,6 +320,81 @@ func requireTheTickLocksTheOwnerThenTheOwedRow(t *testing.T, database *store.Sto
 			t.Errorf("the tick wrote no block row of %s once %s was free, so this step proves nothing",
 				step.slug, step.name)
 		}
+	}
+}
+
+// requireTheOtherRow tries, on a transaction of its own and without waiting, the row the step
+// does not hold while the tick waits at the one it does. held says whether the tick must hold
+// that row by then: the try is refused (55P03) exactly when it does. The try is rolled back at
+// once, so a row it took is never one the tick then waits for.
+func requireTheOtherRow(t *testing.T, database *store.Store, document, waitingAt, otherName, other string, held bool) {
+	t.Helper()
+	ctx := context.Background()
+	probe, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the try of %s: %v", otherName, err)
+	}
+	_, tried := probe.Exec(ctx, other, document)
+	if err := probe.Rollback(ctx); err != nil {
+		t.Fatalf("end the try of %s: %v", otherName, err)
+	}
+	var refused *pgconn.PgError
+	switch taken := !errors.As(tried, &refused) || refused.Code != "55P03"; {
+	case tried != nil && taken:
+		t.Fatalf("try %s while the tick waits at %s: %v", otherName, waitingAt, tried)
+	case held && taken:
+		t.Errorf("while the tick waited at %s, %s was free to take: the tick takes the owner row, then the owed row, so it holds %s by then",
+			waitingAt, otherName, otherName)
+	case !held && !taken:
+		t.Errorf("while the tick waited at %s, %s was already held (%v): the tick takes the owner row, then the owed row, so it holds nothing while it waits for the first",
+			waitingAt, otherName, tried)
+	}
+}
+
+// requireTheItemBlockPassWritesNoStoreRow runs the item block pass (refs.IndexOwedItemBlocks,
+// the tick's third batch) over a comment owed the index of its own blocks, and holds the pass to
+// writing no row of graph_nodes and no row of graph_tuples: this child moves no body block of a
+// comment, a message or an ask into the store. Every document is indexed first, so the tick
+// that runs the pass has no document of its own to write, and a row of either table that moved
+// is the pass's.
+func requireTheItemBlockPassWritesNoStoreRow(t *testing.T, database *store.Store, service *Service) {
+	t.Helper()
+	ctx := context.Background()
+	drainBlockIndex(t, service, "every document before the item block pass")
+	// A comment of an older build: the row alone, which migration 0143's trigger leaves owed
+	// a block index (comment_block_state.owed_at). Two paragraphs, one citing an issue, so the
+	// pass has blocks and a block reference to write.
+	var comment string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into comments (issue_key, author, body)
+		values ('CORE-1', '{"kind":"user","id":"alice"}', E'One.\n\nTwo cites dispatch://CORE-2.')
+		returning id::text
+	`).Scan(&comment); err != nil {
+		t.Fatalf("write the owed comment: %v", err)
+	}
+	nodes, tuples := tableFingerprint(t, database, "graph_nodes"), tableFingerprint(t, database, "graph_tuples")
+	tick := reconcileBlockIndex(t, service, "")
+	if tick.ItemBlocks != 1 || tick.Documents != 0 {
+		t.Fatalf("the tick indexed the blocks of %d items and %d documents, want the owed comment's alone", tick.ItemBlocks, tick.Documents)
+	}
+	var blocks int
+	if err := database.Pool.QueryRow(ctx,
+		`select count(*) from comment_blocks where comment_id = $1::uuid`, comment).Scan(&blocks); err != nil {
+		t.Fatalf("count the comment's blocks: %v", err)
+	}
+	if blocks != 2 {
+		t.Fatalf("the item block pass wrote %d blocks of the two-paragraph comment, want 2: it ran over nothing", blocks)
+	}
+	// A fingerprint is the row count, then every row's xmin: the message prints the counts,
+	// since a table of the store holds thousands of rows by now.
+	rowsOf := func(fingerprint string) string { return strings.SplitN(fingerprint, "|", 2)[0] }
+	if now := tableFingerprint(t, database, "graph_nodes"); now != nodes {
+		t.Errorf("the item block pass wrote graph_nodes: it held %s rows and left %s, or rewrote one, want no row of the store written",
+			rowsOf(nodes), rowsOf(now))
+	}
+	if now := tableFingerprint(t, database, "graph_tuples"); now != tuples {
+		t.Errorf("the item block pass wrote graph_tuples: it held %s rows and left %s, or rewrote one, want no row of the store written",
+			rowsOf(tuples), rowsOf(now))
 	}
 }
 
@@ -314,21 +428,30 @@ func requireTheRebuildWritesNoProjectedRow(t *testing.T, database *store.Store) 
 }
 
 // indexPasses is every pass that writes document_blocks, block_refs, comments, graph_nodes or
-// graph_tuples, keyed by the file and the function the statement lives in, with what that pass
-// reads to decide what it writes. A pass that reads the thing itself - a document's render, a
-// request's body, a batch of events - is a writer; one that reads a projected table or the
-// store to decide what to write into the other is a repair, and this ticket holds that no such
-// pass exists. The scan below holds the register complete: a pass added to the tree and not
-// named here fails until someone says what it reads, which is the question that tells a writer
-// from a repair.
+// graph_tuples, by a statement of its own or through the store's writer (graphstore.Write and
+// the calls beside it), keyed by the file and the function the statement or the call lives in,
+// with what that pass reads to decide what it writes. A pass that reads the thing itself - a
+// document's render, a request's body, a batch of events - is a writer; one that reads a
+// projected table or the store to decide what to write into the other is a repair, and this
+// ticket holds that no such pass exists. The scan below holds the register complete: a pass
+// added to the tree and not named here fails until someone says what it reads, which is the
+// question that tells a writer from a repair.
 var indexPasses = map[string]string{
-	"api/comment_actions.go#commentAction":           "the request naming the action and the comment it acts on",
-	"api/comment_actions.go#editComment":             "the edit request's own body",
-	"api/comment_actions.go#reopenComment":           "the reopen request",
-	"api/comment_create.go#createCommentFor":         "the create request's own body",
-	"api/comment_delivery.go#replyComment":           "the reply a delivery recorded",
-	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
-	"docs/block_index.go#stampVersionEvent":          "the event that recorded the version",
+	"api/comment_actions.go#commentAction":   "the request naming the action and the comment it acts on",
+	"api/comment_actions.go#editComment":     "the edit request's own body",
+	"api/comment_actions.go#reopenComment":   "the reopen request",
+	"api/comment_create.go#createCommentFor": "the create request's own body",
+	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
+	// the node and facts of the comment the request stores, then the same facts under the event
+	// that stored it. Neither reads a row of either side.
+	"api/comment_create.go#writeNode":      "the comment the create request stores, as its row is written",
+	"api/comment_create.go#caused":         "the facts writeNode stated and the event that stored the comment",
+	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
+	// A delivery attempt's settle states the session it reached (graphstore.Reached).
+	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
+	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
+	"cmd/dispatch-seed/write_items.go#writeComments":  "the seed's own plan",
+	"docs/block_index.go#stampVersionEvent":           "the event that recorded the version",
 	// The backfill of the rows written before the store existed. Each pass reads the rows of
 	// its own kind and nothing else: a row's own content - its time, its author, the
 	// document it is in, its own source_seq - is what it writes into the store, and the
@@ -355,7 +478,11 @@ var indexPasses = map[string]string{
 	// Caused is the second half of one write rather than a second look at it: the nodes its
 	// caller has just written take the id of the event that recorded them, which is known only
 	// once that event is appended. It reads no projection and mends nothing.
-	"graphstore/write.go#Caused":           "the nodes its caller stated and the event that recorded the write",
+	"graphstore/write.go#Caused": "the nodes its caller stated and the event that recorded the write",
+	// The publisher's record of a batch splices the store's arms into its own statement
+	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
+	"outbox/publisher.go#recordBatch":      "the batch of events the publisher sent and the destinations each reached",
+	"refs/blocks.go#Caused":                "the facts the version's index pass stated and the event that recorded the version",
 	"refs/blocks.go#IndexBlocks":           "the version's render",
 	"refs/blocks.go#reconcileBlockParents": "the version's render",
 	"refs/blocks.go#replaceBlockRefs":      "the version's render",
@@ -366,16 +493,28 @@ var indexPasses = map[string]string{
 // store.
 var projectedWrite = regexp.MustCompile(`(?is)\b(insert into|update|delete from)\s+(document_blocks|block_refs|comments|graph_nodes|graph_tuples)\b`)
 
+// storeWriterCall matches one call of the store's writer from outside its package: a pass that
+// writes the store through graphstore holds no statement of its own, and a scan of SQL alone
+// would never see it.
+var storeWriterCall = regexp.MustCompile(`\bgraphstore\.(Write|WriteStating|Caused|Authored|Reached|WriteArms)\(`)
+
+// projectionRead matches one read of either side of a projection: a projected table or the
+// store. A `delete from` is a write and no read, so the match takes the delete with it, and the
+// first group says it is one.
+var projectionRead = regexp.MustCompile(`(?is)(\bdelete\s+)?\b(?:from|join)\s+(document_blocks|block_refs|comments|graph_nodes|graph_tuples|graph_tuples_current)\b`)
+
 // goLineComment matches a whole line of Go comment, which the tree writes its reasoning in: one
 // of them spells out an update of a projected table in prose, and reading the prose as a
 // statement would hold the tree to a pass nobody wrote.
 var goLineComment = regexp.MustCompile(`(?m)^[ \t]*//.*$`)
 
 // requireEveryPassReadsItsSource reads every pass of the source tree that writes a projected
-// table or the store and reports what each one reads. The scan is what keeps the register
-// honest: a pass the register does not name fails here, so a repair added later cannot pass
-// unnoticed, and the register's own entry is where a reader sees whether the pass reads the
-// thing itself or one side of the projection.
+// table or the store, by a statement or through the store's writer, and reports what each one
+// reads: the input its register entry names, and the sides of a projection its own statements
+// read. The scan is what keeps the register honest: a pass the register does not name fails
+// here, with the sides it reads, so a repair added later cannot pass unnoticed, and the
+// register's own entry is where a reader sees whether the pass reads the thing itself or one
+// side of the projection.
 func requireEveryPassReadsItsSource(t *testing.T) {
 	t.Helper()
 	seen := map[string]bool{}
@@ -385,16 +524,18 @@ func requireEveryPassReadsItsSource(t *testing.T) {
 			t.Fatalf("read %s: %v", file, err)
 		}
 		text := goLineComment.ReplaceAllString(string(body), "")
-		for _, match := range projectedWrite.FindAllStringIndex(text, -1) {
+		writes := append(projectedWrite.FindAllStringIndex(text, -1), storeWriterCall.FindAllStringIndex(text, -1)...)
+		for _, match := range writes {
 			key := passKey(file, enclosingFunction(text, match[0]))
+			sides := projectionSides(functionBody(text, match[0]))
 			pass, declared := indexPasses[key]
 			if !declared {
-				t.Errorf("%s writes %q and is in no register of this test: say what it reads, so a reader can tell a writer from a repair",
-					key, strings.TrimSpace(text[match[0]:match[1]]))
+				t.Errorf("%s writes %q and is in no register of this test; it reads %s: say what it reads, so a reader can tell a writer from a repair",
+					key, strings.TrimSpace(text[match[0]:match[1]]), sides)
 				continue
 			}
 			if !seen[key] {
-				t.Logf("%s reads %s", key, pass)
+				t.Logf("%s reads %s; its statements read %s", key, pass, sides)
 			}
 			seen[key] = true
 		}
@@ -404,6 +545,40 @@ func requireEveryPassReadsItsSource(t *testing.T) {
 			t.Errorf("the register names %s, which writes no projected table and no store table: remove it", key)
 		}
 	}
+}
+
+// functionBody is the whole of the function a statement at offset lives in, from its `func`
+// line to its closing brace, in a gofmt-clean file.
+func functionBody(text string, offset int) string {
+	start := strings.LastIndex(text[:offset], "\nfunc ") + 1
+	end := strings.Index(text[offset:], "\n}\n")
+	if end < 0 {
+		return text[start:]
+	}
+	return text[start : offset+end]
+}
+
+// projectionSides names each side of a projection a pass's statements read: a projected table
+// (document_blocks, block_refs, comments) or the store (graph_nodes, graph_tuples), once each.
+func projectionSides(body string) string {
+	var sides []string
+	for _, read := range projectionRead.FindAllStringSubmatch(body, -1) {
+		if read[1] != "" {
+			continue
+		}
+		side := read[2] + " (the store)"
+		switch read[2] {
+		case "document_blocks", "block_refs", "comments":
+			side = read[2] + " (a projected table)"
+		}
+		if !slices.Contains(sides, side) {
+			sides = append(sides, side)
+		}
+	}
+	if len(sides) == 0 {
+		return "neither side of a projection"
+	}
+	return strings.Join(sides, ", ")
 }
 
 // passKey names one pass by the file and the function the statement lives in, with the file cut

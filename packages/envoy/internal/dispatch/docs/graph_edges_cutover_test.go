@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -21,11 +22,19 @@ import (
 // graphEdgesArm is one arm of graph_edges as this test reads it back: the relation the arm reads
 // first, and what is to become of it. The relation is enough to name an arm here because the
 // list is held in the view's own order, so two arms over one table are told apart by where they
-// stand.
+// stand. cutover is, for the four arms over a kind this change moved, the kind whose
+// graph_store_cutover row the arm tests, and empty for every other arm. text is the arm's own
+// SQL as the catalogue prints it, which only an arm read back carries.
 type graphEdgesArm struct {
 	relation string
 	fate     string
+	cutover  string
+	text     string
 }
+
+// movedArmsDeletedBy is the child that deletes the four arms over the kinds this change moved,
+// once the store answers those kinds everywhere.
+const movedArmsDeletedBy = "dispatch://INFRA-1253"
 
 // graphEdgesArms is every arm of graph_edges, in the order the view states them. An arm the view
 // gains or loses fails this test, whichever source column it reads: the store is to answer each
@@ -38,9 +47,9 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "issue_links", fate: "blocked_by; dispatch://INFRA-1156 makes an issue's relations typed edges"},
 	{relation: "artifacts", fate: "attached_to; no child has moved it"},
 	{relation: "asks", fate: "an ask's anchored_to; dispatch://INFRA-1152 writes an ask's relations"},
-	{relation: "comments", fate: "a comment's anchored_to; the store answers it while graph_store_cutover says comment"},
+	{relation: "comments", cutover: "comment", fate: "a comment's anchored_to; the store answers it while graph_store_cutover says comment, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "asks", fate: "an ask's owned_by; dispatch://INFRA-1152 writes an ask's relations"},
-	{relation: "comments", fate: "a comment's owned_by; the store answers it while graph_store_cutover says comment"},
+	{relation: "comments", cutover: "comment", fate: "a comment's owned_by; the store answers it while graph_store_cutover says comment, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "comments", fate: "a reply's replies_to its thread; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's answers; dispatch://INFRA-1152 writes it"},
 	{relation: "comments", fate: "a reply's replies_to an ask; dispatch://INFRA-1152 writes it"},
@@ -49,8 +58,8 @@ var graphEdgesArms = []graphEdgesArm{
 	{relation: "components", fate: "a component's part_of; no child has moved it"},
 	{relation: "component_depends", fate: "depends_on; no child has moved it"},
 	{relation: "issue_component_members", fate: "affects; no child has moved it"},
-	{relation: "block_refs", fate: "a block's links; the store answers them while graph_store_cutover says block_ref"},
-	{relation: "document_blocks", fate: "a block's part_of its document; the store answers it while graph_store_cutover says block"},
+	{relation: "block_refs", cutover: "block_ref", fate: "a block's links; the store answers them while graph_store_cutover says block_ref, and " + movedArmsDeletedBy + " deletes this arm"},
+	{relation: "document_blocks", cutover: "block", fate: "a block's part_of its document; the store answers it while graph_store_cutover says block, and " + movedArmsDeletedBy + " deletes this arm"},
 	{relation: "comment_blocks", fate: "a comment block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
 	{relation: "message_blocks", fate: "a message block's part_of; dispatch://INFRA-1152 writes an item's blocks"},
 	{relation: "ask_blocks", fate: "an ask part's part_of; dispatch://INFRA-1152 writes an item's blocks"},
@@ -83,14 +92,16 @@ func (r graphEdgeRow) String() string {
 
 // The view answers the same rows whichever side of the cutover it reads them from.
 //
-// Three things are held at once. The arm list is read back out of the catalogue and compared
+// Four things are held at once. The arm list is read back out of the catalogue and compared
 // with the one declared above, so no arm over a source column can be added anywhere in this
-// branch without this test naming it. Then the whole view is read with every graph_store_cutover
-// row off, which is the four arms over the projections, and again with every one on, which is
-// the one arm over the current tuples, and the two readings are compared row for row, each row's
-// time and causing write included. Then refs.BacklinkCounts is read the same two ways for every
-// node kind its arm table declares, so an inbound count that falls or rises is caught beside the
-// rows.
+// branch without this test naming it, and each of the four arms over a moved kind is read for a
+// graph_store_cutover test of its own kind, with the child that deletes it named in its fate.
+// Then the whole view is read with every graph_store_cutover row off, which is the four arms
+// over the projections, and again with every one on, which is the one arm over the current
+// tuples, and the two readings are compared row for row, each row's time and causing write
+// included; with the rows on, each of the four arms is read on its own and answers nothing.
+// Then refs.BacklinkCounts is read the same two ways for every node kind its arm table
+// declares, so an inbound count that falls or rises is caught beside the rows.
 //
 // The seed is written through the real write paths: the block-index tick, which is the one
 // writer in this package that states what a version came to in the store, and the backfill,
@@ -111,6 +122,7 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 			"write the kind's tuples and let the store's own arm answer it, or declare the new arm here with the child that takes it.",
 			armRelations(read), want)
 	}
+	moved := movedArms(t, read)
 
 	seedGraphEdgeFixture(t, database, service)
 	report, err := graphcensus.Backfill(ctx, database, io.Discard)
@@ -128,9 +140,25 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 	setGraphStoreCutover(t, database, false)
 	projected := graphEdgeRows(t, database)
 	projectedCounts := graphEdgeBacklinkCounts(t, database, projected)
+	// Each of the four answers rows of its own while its cutover row is off, so finding it
+	// empty once the row is on is the cutover test at work and not an arm with nothing to say.
+	for _, arm := range moved {
+		rows := armRows(t, database, arm)
+		t.Logf("arm %d (%s) answers %d rows with the cutover off", arm.place, arm.relation, rows)
+		if rows == 0 {
+			t.Errorf("arm %d (%s) answers no row with the cutover off, so finding it empty with the cutover on would prove nothing",
+				arm.place, arm.relation)
+		}
+	}
 	setGraphStoreCutover(t, database, true)
 	stored := graphEdgeRows(t, database)
 	storedCounts := graphEdgeBacklinkCounts(t, database, projected)
+	for _, arm := range moved {
+		if rows := armRows(t, database, arm); rows != 0 {
+			t.Errorf("arm %d (%s, %s) answers %d rows with every cutover row on, want none: the store's arm answers its kind now",
+				arm.place, arm.relation, arm.fate, rows)
+		}
+	}
 
 	if len(projected) == 0 {
 		t.Fatal("the view answers no row with the cutover off, so this test would prove nothing")
@@ -145,6 +173,68 @@ func TestGraphEdgesLosesEveryArmOverAMovedKind(t *testing.T) {
 				kind, projectedCounts[kind], storedCounts[kind])
 		}
 	}
+	// A count map that holds nothing compares equal to another that holds nothing, so the kinds
+	// the four arms point at must each be counted at all.
+	for _, kind := range []string{"artifact", "issue", refs.BlockNodeKind} {
+		if len(projectedCounts[kind]) == 0 {
+			t.Errorf("the %s backlink counts over the projections are empty, so their comparison proves nothing", kind)
+		}
+	}
+}
+
+// movedArm is one of the four arms over a kind this change moved, as read back: its place in
+// the view, counted from one, and the arm itself.
+type movedArm struct {
+	place int
+	graphEdgesArm
+}
+
+// cutoverTest matches each graph_store_cutover row an arm's text tests, by the kind it names,
+// as the catalogue prints the test.
+var cutoverTest = regexp.MustCompile(`graph_store_cutover\.kind = '([a-z_]+)'::text`)
+
+// movedArms holds each of the four arms over a moved kind to the cutover test of its own kind
+// and to the child that deletes it, and answers them with their text for reading on their own.
+// An arm that tested another kind's row would go quiet when that kind moved, not its own, and
+// answer its kind twice in between.
+func movedArms(t *testing.T, read []graphEdgesArm) []movedArm {
+	t.Helper()
+	var moved []movedArm
+	for index, declared := range graphEdgesArms {
+		if declared.cutover == "" {
+			continue
+		}
+		arm := read[index]
+		arm.fate, arm.cutover = declared.fate, declared.cutover
+		var tested []string
+		for _, found := range cutoverTest.FindAllStringSubmatch(arm.text, -1) {
+			tested = append(tested, found[1])
+		}
+		if len(tested) == 0 || slices.ContainsFunc(tested, func(kind string) bool { return kind != declared.cutover }) {
+			t.Errorf("arm %d (%s) tests the graph_store_cutover rows %v, want the %s row alone:\n%s",
+				index+1, arm.relation, tested, declared.cutover, arm.text)
+		}
+		if !strings.Contains(declared.fate, movedArmsDeletedBy) {
+			t.Errorf("arm %d (%s) over the moved kind %s is declared with the fate %q, which does not name %s, the child that deletes it",
+				index+1, arm.relation, declared.cutover, declared.fate, movedArmsDeletedBy)
+		}
+		moved = append(moved, movedArm{place: index + 1, graphEdgesArm: arm})
+	}
+	if len(moved) != 4 {
+		t.Fatalf("this test declares %d arms over a moved kind, want the four this change moved", len(moved))
+	}
+	return moved
+}
+
+// armRows is how many rows one arm of the view answers read on its own.
+func armRows(t *testing.T, database *store.Store, arm movedArm) int {
+	t.Helper()
+	var rows int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from (`+arm.text+`) arm`).Scan(&rows); err != nil {
+		t.Fatalf("read arm %d (%s) on its own: %v", arm.place, arm.relation, err)
+	}
+	return rows
 }
 
 // requireEveryMovedKind fails unless the fixture filled each of the four arms this change moves,
@@ -188,7 +278,9 @@ func edgeShapes(rows []graphEdgeRow) []string {
 }
 
 // requireSameEdges fails with every row one reading holds and the other does not, both ways, so
-// a run names each difference rather than the first.
+// a run names each difference rather than the first, and with every row one reading answers
+// more often than the other: an arm left answering beside the store's own doubles its rows,
+// which a reading that only asked whether a row is there would miss.
 func requireSameEdges(t *testing.T, projected, stored []graphEdgeRow) {
 	t.Helper()
 	left, right := edgeTexts(projected), edgeTexts(stored)
@@ -202,9 +294,24 @@ func requireSameEdges(t *testing.T, projected, stored []graphEdgeRow) {
 			t.Errorf("the view answers %q over the store and not over the projections", row)
 		}
 	}
+	leftCounts, rightCounts := edgeCounts(left), edgeCounts(right)
+	for _, row := range slices.Compact(slices.Clone(left)) {
+		if over, under := rightCounts[row], leftCounts[row]; over != 0 && over != under {
+			t.Errorf("the view answers %q %d times over the store and %d times over the projections", row, over, under)
+		}
+	}
 	if len(left) != len(right) {
 		t.Errorf("the view answers %d rows over the projections and %d over the store", len(left), len(right))
 	}
+}
+
+// edgeCounts is how many times a reading answers each row.
+func edgeCounts(texts []string) map[string]int {
+	counts := make(map[string]int, len(texts))
+	for _, text := range texts {
+		counts[text]++
+	}
+	return counts
 }
 
 func edgeTexts(rows []graphEdgeRow) []string {
@@ -239,10 +346,10 @@ func armReport(read []graphEdgesArm) []string {
 }
 
 // readGraphEdgesArms reads graph_edges out of the catalogue and answers one entry per arm, each
-// naming the relation that arm reads first. pg_get_viewdef's pretty form puts every top-level
-// UNION ALL on a line of its own and opens each arm's own FROM at three spaces; an arm whose
-// FROM opens a sub-select is named by the first relation inside it, which the store's own arm
-// reads under a `distinct on`.
+// naming the relation that arm reads first and carrying the arm's own text. pg_get_viewdef's
+// pretty form puts every top-level UNION ALL on a line of its own and opens each arm's own FROM
+// at three spaces; an arm whose FROM opens a sub-select is named by the first relation inside
+// it, which the store's own arm reads under a `distinct on`.
 func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
 	t.Helper()
 	var definition string
@@ -272,7 +379,7 @@ func readGraphEdgesArms(t *testing.T, database *store.Store) []graphEdgesArm {
 		if relation == "" {
 			t.Fatalf("arm %d of graph_edges has no FROM of its own:\n%s", index+1, text)
 		}
-		arms = append(arms, graphEdgesArm{relation: relation})
+		arms = append(arms, graphEdgesArm{relation: relation, text: text})
 	}
 	return arms
 }
