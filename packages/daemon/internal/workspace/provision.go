@@ -313,17 +313,18 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 	}, nil
 }
 
-// locationOf is the workspace Location puts at dir, read out of dir's path alone: the owner and
+// LocationOf is the workspace Location puts at dir, read out of dir's path alone: the owner and
 // the name are the two directories above dir's own, the issue is dir's own base name, and the
 // state directory is layoutDepth above it. A dir Location does not put exactly there — one too
 // shallow for the layout, one whose owner and name are no repository, one whose issue Location
 // would case differently — is in no layout this inverts, and is refused rather than guessed at.
 //
-// It reads no file and is the one inverse of Location this package keeps: located asks it whether
-// the pair it was handed is a workspace Location names, and WorkspaceOf (gitworktree.go) asks it
-// for the clone of the directory a process stands in. A caller's own refusals — the derivation's
+// It reads no file and is the one inverse of Location the daemon keeps: located asks it whether
+// the pair it was handed is a workspace Location names, WorkspaceOf (gitworktree.go) asks it for
+// the clone of the directory a process stands in, and rescue.RepositoryOf asks it for the
+// repository of a workspace a push check reports. A caller's own refusals — the derivation's
 // absolute path among them — stay with that caller.
-func locationOf(dir string) (Workspace, error) {
+func LocationOf(dir string) (Workspace, error) {
 	stateDir := dir
 	for range layoutDepth {
 		stateDir = filepath.Dir(stateDir)
@@ -346,9 +347,9 @@ func locationOf(dir string) (Workspace, error) {
 // located is whether workspace's directory and clone are the pair Location derives for the issue
 // its directory names: <state>/workspaces/<owner>/<repo>/<issue> beside
 // <state>/repos/github.com/<owner>/<repo>. The directory is a string like any other input, so
-// locationOf is asked what Location makes of it, and it answers only for a directory that is
+// LocationOf is asked what Location makes of it, and it answers only for a directory that is
 // already the one Location would name; the clone it answers is what is left to compare.
 func located(workspace Workspace) bool {
-	want, err := locationOf(workspace.Dir)
+	want, err := LocationOf(workspace.Dir)
 	return err == nil && want.Clone == workspace.Clone
 }

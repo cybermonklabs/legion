@@ -128,15 +128,15 @@ func StateDirOf(workspace string) string {
 }
 
 // RepositoryOf is the repository a workspace directory is of, `<owner>/<repo>`, read from its
-// path, which workspace.Location lays out as <state>/workspaces/<owner>/<repo>/<issue>. A
-// directory laid out otherwise stands for itself: RepositoryOf is dir.
+// path through workspace.LocationOf, the inverse of the <state>/workspaces/<owner>/<repo>/<issue>
+// layout workspace.Location puts a workspace in. A directory LocationOf refuses, one laid out
+// otherwise, stands for itself: RepositoryOf is dir.
 func RepositoryOf(dir string) string {
-	repo := filepath.Dir(dir)
-	owner := filepath.Dir(repo)
-	if filepath.Base(filepath.Dir(owner)) != "workspaces" {
+	located, err := workspace.LocationOf(dir)
+	if err != nil {
 		return dir
 	}
-	return filepath.Base(owner) + "/" + filepath.Base(repo)
+	return located.Repo.String()
 }
 
 // Report is a check's entries as the runtime boundary carries them (runtime.WorkspaceRescue).
