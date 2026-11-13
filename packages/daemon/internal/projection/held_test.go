@@ -90,8 +90,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	underQueued := treeRoot("LEGION-140", "todo", phase.Admitted)
 	underQueued.Parent, underQueued.Ancestry = record.ParentOf("LEGION-130"), []string{"LEGION-130"}
 	// A root that handed work to a person, holding the slot its wait keeps, and a member of its
-	// tree: the member starts with that root's resume. The root's gate stands open, so the word
-	// its member reads is the wait and nothing else.
+	// tree: nothing of the tree starts before that root resumes. The root's gate stands open, so
+	// the word its member reads is the wait and nothing else.
 	askingRoot := treeRoot("LEGION-150", "in_progress", phase.AwaitingPerson)
 	askingRoot.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5}}
 	askingMember := treeMember("LEGION-151", "LEGION-150", "LEGION-150", "todo", phase.Admitted)
@@ -101,8 +101,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	gatedMember := treeMember("LEGION-161", "LEGION-160", "LEGION-160", "todo", phase.Admitted)
 	// A running tree under an open gate: its root holds a slot and waits for the one open child
 	// Dispatch shows under it, and its members carry three of the words. The issue in merging is
-	// an ancestor the daemon has accepted (record.Accepted) and holds its slot, the issue under it
-	// starts at its close, the issue at work that holds no row is the one the pass names nowhere,
+	// an ancestor the daemon has accepted (record.Accepted) and holds its slot, nothing of the
+	// issue under it starts before that close, the issue at work that holds no row is the one the pass names nowhere,
 	// and the issue at work that holds one is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
 	blockedChild := treeMember("LEGION-171", "LEGION-170", "LEGION-170", "todo", phase.Admitted)

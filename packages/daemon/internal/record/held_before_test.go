@@ -5,12 +5,12 @@ import (
 	"testing"
 )
 
-// The held words that take `why`'s blocked arm are the six the ladder reads before
-// dispatch_blocker, in the ladder's order, and no other: a blocked issue whose word is one of
-// them reads that word's sentence rather than its links' (the projection's whyStates, through
-// HeldBefore). A reorder of HeldReasons changes which sentence such an issue reads, so it fails
-// here rather than passing silently. dispatch_blocker itself, the words after it and a word the
-// ladder does not name — the zero row's empty word among them — take the arm of the links.
+// HeldBefore reads six words before dispatch_blocker, in the ladder's order, and no other:
+// dispatch_blocker itself, the words after it and a word the ladder does not name — the zero
+// row's empty word among them — stand before it nowhere. A reorder of HeldReasons moves that
+// answer, so it fails here rather than passing silently. What `why` does with those six is
+// stated by its sentence table (the projection's heldSentences), whose own test holds the table
+// to this answer.
 func TestTheHeldWordsThatTakeTheBlockedArmAreTheSixTheLadderReadsBeforeTheLinks(t *testing.T) {
 	var before []HeldReason
 	for _, word := range HeldReasons {

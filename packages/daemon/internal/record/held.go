@@ -28,11 +28,11 @@ const (
 	// (Issue.HandedOver): nothing hands it to the daemon.
 	HeldLabelOff HeldReason = "label_off"
 	// HeldAncestry is a root whose Dispatch chain names a live root that is not itself: it is
-	// that tree's unreleased work, which its architect's release brings in (the ancestry hold of
-	// Waiting).
+	// that tree's unreleased work, and nothing starts it before its architect releases it (the
+	// ancestry hold of Waiting).
 	HeldAncestry HeldReason = "ancestry"
-	// HeldRootAwaitingPerson is an issue of a tree whose root handed work to a person: its
-	// members start with that root's resume.
+	// HeldRootAwaitingPerson is an issue of a tree whose root handed work to a person: nothing
+	// of that tree starts before that root resumes.
 	HeldRootAwaitingPerson HeldReason = "root_awaiting_person"
 	// HeldDesignGate is an issue of a tree whose design gate stands shut at a step the
 	// deployment gates (TreeGate.Open).
@@ -40,11 +40,11 @@ const (
 	// HeldDispatchBlocker is an issue an unfinished Dispatch issue holds where it stands
 	// (blockers.Holds, which fills LineFacts.Held).
 	HeldDispatchBlocker HeldReason = "dispatch_blocker"
-	// HeldChildrenFirst is a parent whose own Dispatch children are still open, which does its
-	// work after theirs (LineFacts.ChildWaits).
+	// HeldChildrenFirst is a parent whose own Dispatch children are still open: none of its own
+	// work starts while they stand open (LineFacts.ChildWaits).
 	HeldChildrenFirst HeldReason = "children_first"
-	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted,
-	// which waits for that ancestor to close (HeldUnderAccepted).
+	// HeldAcceptedAncestor is an issue beneath an ancestor the daemon has already accepted:
+	// nothing of it starts before that ancestor closes (HeldUnderAccepted).
 	HeldAcceptedAncestor HeldReason = "accepted_ancestor"
 	// HeldAtWork is the ladder's `!KeepsSlot(issue)`: an issue that keeps none of the cap's
 	// slots where it stands, whose workers run as they did and which no other issue holds.
@@ -60,12 +60,12 @@ const (
 // HeldReasons is the eleven words in the order HeldReasonOf reads them, named once for a reader
 // that must print or walk them in that order rather than keep an order of its own. Two read it:
 // the operator's `admission.held` line (`legion state`), which counts each word and prints the
-// counts in this order, so two readings of one state print one line; and `why` (the
-// projection's whyStates), which asks HeldBefore whether a blocked issue's word stands before
-// dispatch_blocker and so which sentence the issue reads. The order is decided in HeldReasonOf's
-// own body, and this list must follow that body's cases exactly, since a reorder here changes
-// that sentence; a word added there is added here and to `LEGION_HELD_REASONS` in
-// `packages/contracts/src/legion-api.ts`.
+// counts in this order, so two readings of one state print one line; and HeldBefore, which the
+// test of `why`'s sentence table (the projection's heldSentences) holds that table to. The table
+// states which words `why` serves under which state. The order is decided in HeldReasonOf's own
+// body, and this list must follow that body's cases exactly, since a reorder here moves the
+// words that test requires of the table; a word added there is added here and to
+// `LEGION_HELD_REASONS` in `packages/contracts/src/legion-api.ts`.
 var HeldReasons = []HeldReason{
 	HeldTreeClosed,
 	HeldTreeParked,
@@ -82,10 +82,12 @@ var HeldReasons = []HeldReason{
 
 // HeldBefore reports whether the ladder reads word before other (HeldReasons, HeldReasonOf). It
 // is false where either is not one of the eleven words, so the zero row's empty word stands
-// before nothing.
+// before nothing. The test of `why`'s sentence table (the projection's heldSentences) requires
+// the table to serve under `blocked` exactly the words HeldBefore reads before dispatch_blocker;
+// the table states the rule that serves them.
 func HeldBefore(word, other HeldReason) bool {
 	rank, otherRank := slices.Index(HeldReasons, word), slices.Index(HeldReasons, other)
-	return rank >= 0 && otherRank >= 0 && rank < otherRank
+	return rank >= 0 && rank < otherRank
 }
 
 // HeldIssue is one issue the daemon's record holds in the workflow that stands in neither the
@@ -172,8 +174,8 @@ func openChildren(wait ChildWait) []string {
 // statement of it, so that the drop sites of the waiting line (Waiting) and the backstop that
 // answers for a candidate none of them saw (HeldList) cannot give one issue two words. A reader
 // that must walk the words in this order, or ask whether one word is read before another, reads
-// HeldReasons or HeldBefore, which is this body's order written out: `why` reads it that way to
-// choose a blocked issue's sentence, so the list must follow this body.
+// HeldReasons or HeldBefore, which is this body's order written out (HeldReasons says who reads
+// it and why the list must follow this body).
 //
 // The state and the controller's tick both read it, over the same candidates and the same facts,
 // so one issue reads one word wherever it is read.
