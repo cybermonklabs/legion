@@ -677,7 +677,8 @@ type SuperviseRequest struct {
 	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
 	// boot's one-time start of a merger the `awaiting_merge` cutover left released (workflow's
 	// cutoverMergerRepair), the phase's resume task a ready worker level with the entry its
-	// phases row names is given (workflow's readyWorkerTask), a production check's look
+	// phases row names is given (workflow's readyWorkerTask), the silence repair's resume task to
+	// a silent worker level with that entry (workflow's workerSilent), a production check's look
 	// (workflow's startLook), the pod wake (workflow's wakeRow) and the resume of a cancelled
 	// idle release (the daemon's outbox). Each hands its role work it was already on, or work no
 	// phase entry numbers at all.
@@ -696,9 +697,10 @@ type SuperviseRequest struct {
 	// re-admitted tree's promotion gives a mid-phase child: a claim that already holds a task for
 	// the same generation and phase is given it once it is ready, so the start delivers none.
 	ResumeTask bool `json:"resumeTask,omitempty"`
-	// RuleResume marks the boot's resume-by-rule start. If its resumed claim spends its launch
-	// budget, the runner finishes this row rather than retrying it as RequestRetry with fresh
-	// budgets: the failed claim stays failed for the boot report to name.
+	// RuleResume marks the boot's resume-by-rule start, and the boot's one-time start of a merger
+	// the `awaiting_merge` cutover left released (workflow's cutoverMergerRepair). If its resumed
+	// claim spends its launch budget, the runner finishes this row rather than retrying it as
+	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
 	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
 	// The cap counts the issues the daemon has started, so what it must bound is the start that

@@ -81,7 +81,7 @@ var mainsOutboxKinds = []string{
 // holds the rows main's daemon left: a park queues a claim-release row and retries it for up to an
 // hour (internal/workflow's linger, internal/daemon's claim release), so one pending at the
 // upgrade is an ordinary state, and so is a merge-lane row of a release that still merged. The
-// upgrade applies every version that database has not recorded, this branch's two kind lists among
+// upgrade applies every version that database has not recorded, every kind list of this branch among
 // them, and a list that leaves a kind out is refused by the constraint over the row that carries it
 // (SQLSTATE 23514), which fails Migrate and leaves the daemon unable to boot.
 //
