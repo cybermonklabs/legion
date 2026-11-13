@@ -25,13 +25,13 @@ func lateAt(before, head, sender string, minute int) runFact {
 // order: h0..h1 by the implementer, a forced return h1..h0 by the review App, and h0..h1 by the
 // review App - its red tests pushed again. The two pushes of h0..h1 differ only in who pushed
 // them, which a rule over the pushes alone cannot order (R1); each synchronize names its sender, so
-// the second arrival of h1 takes the review App's push and plans the red, whichever push of h0..h1
-// GitHub delivers first.
+// the second arrival of h1 takes the review App's push, whichever push of h0..h1 GitHub delivers
+// first, so the head run closes on the same settlement either way.
 func TestASynchronizesSenderTellsTwoPushesOfTheSameTwoHeadsApart(t *testing.T) {
 	dev, app := record.ClassifiedPush{SHA: "h1", Before: "h0", Sender: "dev"}, record.ClassifiedPush{SHA: "h1", Before: "h0", ByReviewApp: true, Sender: "app"}
 	back := record.ClassifiedPush{SHA: "h0", Before: "h1", ByReviewApp: true, Sender: "app"}
 	heads := []runFact{syncedAt("h0", "h1", "dev", 1), settles("h1", 2, "ci"), syncedAt("h1", "h0", "app", 2), settles("h0", 3, "ci"), syncedAt("h0", "h1", "app", 3), settles("h1", 4, "ci")}
-	const want = `planned=true sendsBack=false run=false`
+	const want = `head="h1" checked="h1" failing=[ci] run=false`
 	for _, tc := range []struct {
 		name   string
 		pushes []runFact
@@ -53,16 +53,16 @@ func TestASynchronizesSenderTellsTwoPushesOfTheSameTwoHeadsApart(t *testing.T) {
 
 // A synchronize to the head the record holds is no move, as the release before read it, whatever
 // it names: the record holds c6, red; the implementer resets the branch to c5, its synchronize late,
-// and pushes c6 again. The synchronize c5>c6 counts no attempt, as on main: the branch back at the
+// and pushes c6 again. The synchronize c5>c6 moves nothing, as on main: the branch back at the
 // recorded head after a move whose synchronize was skipped is a loop in a skipped gap (the loop
 // floor), which the comparison with main on both oracles judges better read as no move.
 func TestASynchronizeBackToTheRecordedHeadIsNoMove(t *testing.T) {
-	start := record.PullRequest{HeadSHA: "c6", CheckedHead: "c6", Failing: []string{"ci"}, Required: []string{"ci"},
+	start := record.PullRequest{HeadSHA: "c6", CheckedHead: "c6", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1, HeadUpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
 	got := delivered(t, start, pushed(record.ClassifiedPush{SHA: "c5", Before: "c6", Sender: "dev"}), pushed(record.ClassifiedPush{SHA: "c6", Before: "c5", Sender: "dev"}),
 		syncedAt("c5", "c6", "dev", 2), lateAt("c6", "c5", "dev", 1))
 	if got.HeadSHA != "c6" || got.Run != nil {
-		t.Errorf("c6 pushed again: %s at %s, want no run open at c6, as the release before", judged(got, "", ""), got.HeadSHA)
+		t.Errorf("c6 pushed again: %s at %s, want c6 with no run open, as the release before", judged(got, "", ""), got.HeadSHA)
 	}
 	if MovesBy(start, "c6") || !MovesBy(start, "c7") {
 		t.Error("MovesBy: want no move to the recorded head and a move to another")
@@ -72,7 +72,7 @@ func TestASynchronizeBackToTheRecordedHeadIsNoMove(t *testing.T) {
 // An arrival whose synchronize names a head the record never held waits for the moves between,
 // which the late synchronizes name, and is judged by their pushes in the order GitHub's clock puts
 // them: h0..c1 by the implementer, c1..c2 by the review App, the first synchronize late. Delivered
-// before it or after it, the late one closes the head run with the implementer's push counted.
+// before it or after it, the late one closes the head run on the move the implementer's push made.
 func TestAnArrivalTakesTheMovesALateSynchronizeNames(t *testing.T) {
 	code, tests := record.ClassifiedPush{SHA: "c1", Before: "h0", Sender: "dev"}, record.ClassifiedPush{SHA: "c2", Before: "c1", ByReviewApp: true, Sender: "app"}
 	for _, tc := range []struct {
@@ -83,8 +83,8 @@ func TestAnArrivalTakesTheMovesALateSynchronizeNames(t *testing.T) {
 		{"pushes last", []runFact{syncedAt("c1", "c2", "app", 2), lateAt("h0", "c1", "dev", 1), pushed(tests), pushed(code)}},
 	} {
 		got := delivered(t, redAtH0(), tc.facts...)
-		if got.Run != nil || !got.PlannedRed {
-			t.Errorf("%s: run open %v, planned=%v, want closed and planned (the review App's push last)", tc.name, got.Run != nil, got.PlannedRed)
+		if got.Run != nil || got.HeadSHA != "c2" || got.CheckedHead != "h0" {
+			t.Errorf("%s: run open %v, head=%q checked=%q, want closed at c2 with h0's settlement left standing for no head", tc.name, got.Run != nil, got.HeadSHA, got.CheckedHead)
 		}
 	}
 	waiting := delivered(t, redAtH0(), pushed(code), pushed(tests), syncedAt("c1", "c2", "app", 2))
@@ -217,7 +217,7 @@ func TestAPathTakesTheFewestMovesOfItsWindowsSeconds(t *testing.T) {
 
 // A second copy of the synchronize that reached the recorded head - GitHub can send two for one
 // push - is no move, whatever its clock: h0>h1 applied, then a copy of h0>h1 a second later,
-// changes no judgement and opens no head run.
+// moves nothing and opens no head run.
 func TestACopyOfTheSynchronizeThatReachedTheHeadIsNoMove(t *testing.T) {
 	code := record.ClassifiedPush{SHA: "h1", Before: "h0", Sender: "dev"}
 	start := delivered(t, redAtH0(), pushed(code), secondAt("h0", "h1", "dev", 1, false), settles("h1", 2, "ci"))
@@ -268,10 +268,9 @@ func TestCopiesOfTwoHeadsOnTheirWayAreBounded(t *testing.T) {
 // pushes (withoutLoops): the record at h1, red; the review App's h1..c1, the implementer's code
 // c1..c2, the review App's forced return c2..c1 and its c1..c3, every synchronize but c1..c3's late,
 // the loop's first, so the path from h1 takes the loop. The loop c1>c2>c1 is erased, so the move
-// is the review App's alone and its red stays planned, as it is with no move named. Read with the
-// loop's pushes, the move would end at the implementer's code.
+// is the review App's alone, as with no move named.
 func TestALoopInASkippedGapIsReadAsTheReleaseBeforeReadsIt(t *testing.T) {
-	start := record.PullRequest{HeadSHA: "h1", CheckedHead: "h1", Failing: []string{"ci"}, Required: []string{"ci"},
+	start := record.PullRequest{HeadSHA: "h1", CheckedHead: "h1", Failing: []string{"ci"},
 		CheckRuns: []record.AttemptRun{{Name: "ci", ID: 1}}, Generation: 1, HeadUpdatedAt: time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)}
 	facts := []runFact{
 		pushed(record.ClassifiedPush{SHA: "c1", Before: "h1", ByReviewApp: true, Sender: "app"}),

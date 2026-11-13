@@ -31,11 +31,11 @@ import { staleGitLockNote } from "./git-lock";
  * completion the daemon then refuses as it does today. The implementer's implementing round holds
  * that head to its branch: the head its record names must be on `legion/<issue>@origin` in the
  * pane's jj, and a record naming no readable head, or one the branch does not carry, is refused
- * naming what to write or what to push. Every other completion — retro, the merger's READY, a
- * role reporting a phase it does not run (which the daemon refuses naming whose phase it is) —
- * reports the commit the workspace stands on, `@-`, and no record. The implementer's report on
- * its closed issue's production check resolves neither: `legion-phase-ops.ts` never asks this
- * module for one.
+ * naming what to write or what to push. Every other completion — retro, the merger's, a role
+ * reporting a phase it does not run (which the daemon refuses naming whose phase it is) — reports
+ * the commit the workspace stands on, `@-`, and no record. The implementer's report on its closed
+ * issue's production check resolves neither: `legion-phase-ops.ts` never asks this module for
+ * one.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push

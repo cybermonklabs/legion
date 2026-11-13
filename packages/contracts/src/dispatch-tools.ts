@@ -5,7 +5,7 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
-} from "./dispatch-api";
+} from "./dispatch-api-limits";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -109,7 +109,8 @@ function documentOwnerValidation(
   };
 }
 
-const ARTIFACT_SOURCE_RULE = "Exactly one of path or content is required.";
+const ARTIFACT_SOURCE_RULE =
+  "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
 const ARTIFACT_OWNER_AND_SOURCE_RULE = `${ARTIFACT_SOURCE_RULE} Exactly one of issue and project is required; with project, artifact names the document.`;
 
 /** Joins the parts of a rule a call broke, so a refusal never names a part the call kept. */
@@ -121,10 +122,13 @@ function brokenParts(parts: ReadonlyArray<readonly [boolean, string]>): string |
 const CONTENT_IS_MARKDOWN =
   "content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
 
+const DOCUMENT_IS_MARKDOWN =
+  "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
+
 export const PATH_KEEPS_BYTES =
   "path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged";
 
-const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so with content the name ends in .md or .markdown or has no extension; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
+const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
 /**
  * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
@@ -168,8 +172,10 @@ export function pathKeepsBytesOf(name: string): boolean {
 const artifactOwner = documentOwnerValidation(false);
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
- *  the rule. Inline content is always stored as Markdown, so it goes only under a name that says
- *  Markdown or says nothing: a .jsonl stored that way reads back with its lines joined. */
+ *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
+ *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
+ *  its lines joined. The name alone makes an empty document and is held to the same rule, since
+ *  what the writer types into it afterwards is Markdown too. */
 function artifactProblem(value: unknown): string | undefined {
   const input = value as {
     readonly name?: unknown;
@@ -178,16 +184,13 @@ function artifactProblem(value: unknown): string | undefined {
   };
   const ownerOrSourceProblem = brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
-    [
-      (typeof input.path === "string") !== (typeof input.content === "string"),
-      ARTIFACT_SOURCE_RULE,
-    ],
+    [typeof input.path !== "string" || typeof input.content !== "string", ARTIFACT_SOURCE_RULE],
   ]);
   if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
-  if (typeof input.content !== "string" || typeof input.name !== "string") return undefined;
+  if (typeof input.path === "string" || typeof input.name !== "string") return undefined;
   const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
   if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
-  return `${CONTENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; content takes a name ending in .md or .markdown or with no extension.`;
+  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
 }
 
 const documentEditOwner = documentOwnerValidation(true);
@@ -1651,9 +1654,11 @@ export const dispatchToolSpecs = [
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
     description:
-      "Attach a local file or inline text as an issue artifact or project document. Do not use it to edit a live document; use " +
-      "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. Exactly one of path or content is required; a markdown document is at most 1 MiB and any other file at most 25 MiB. " +
-      `${ARTIFACT_NAME_EXISTS_RULE} ` +
+      "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
+      "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
+      `${ARTIFACT_SOURCE_RULE} ` +
+      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
+      "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
       `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
@@ -1813,14 +1818,18 @@ export const dispatchToolSpecs = [
       "Run the related-item check that dispatch issue, dispatch ask and a new decision block in " +
       "dispatch doc-edit run on their own write, and write nothing: it lists the three items of " +
       "one project most like a title and a text (at most one per issue or document, open ones " +
-      "first), each ask with whether it is answered, and a past decision that already answers " +
-      "the same question. Use it to check a draft before filing it. It searches by meaning and by " +
-      "the text's rarest words, and says how it searched; when meaning search cannot run it " +
-      "searches by keywords only and says why. When it could not search at all it says why and " +
-      "names the dispatch search to run instead. exclude_issues leaves each named issue's own " +
-      "items out of the results, at most 50 of them, so a draft under a parent can leave out " +
-      "that parent and its children without changing how rare the text's words are; " +
-      "keywords_only skips meaning search.",
+      "first), each ask with whether it is answered. Use it to check a draft before filing it. " +
+      "It calls the POST form of the related route, which is the form that also lists the " +
+      "answered asks of other projects: at most two answered questions of another project, " +
+      "each naming the project it is in, its answer and who gave it, ranked by meaning alone " +
+      "and claiming nothing about whether they answer your question. The GET form of that " +
+      "route, which the dashboard's new-issue dialog calls, lists none of them. " +
+      "It searches by meaning and by the text's rarest words, and says how it searched; when " +
+      "meaning search cannot run it searches by keywords only and says why. When it could not " +
+      "search at all it says why and names the dispatch search to run instead. exclude_issues " +
+      "leaves each named issue's own items out of the results, at most 50 of them, so a draft " +
+      "under a parent can leave out that parent and its children without changing how rare the " +
+      "text's words are; keywords_only skips meaning search.",
     arguments: (z) => ({
       project: z.string().describe("Project key to search within, such as CORE."),
       title: z

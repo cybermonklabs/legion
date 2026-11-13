@@ -1,8 +1,7 @@
 # The root spec and the design gate
 
 Part of `skill://legion-architect`, section 1. Read it before you write the root spec, before any
-edit to an approved root spec, and on `design-approved`, `design-changes-requested` or
-`ready-refused`.
+edit to an approved root spec, and on `design-approved` or `design-changes-requested`.
 
 ## Writing the root spec
 
@@ -220,9 +219,13 @@ Facts about the request:
   Never open a `dispatch ask` with an `Approve` option yourself: the daemon ignores its answer.
 - Repeating the request while it waits on the human, with the same `--summary`, changes nothing and
   returns it ("already waits on the human"); a different `--summary` is refused then.
-- A newer version of the spec moves the open request to that version and leaves it waiting on you.
-  No wake tells you when the edit was yours. Once the human has agreed to every point in it, call
-  again to hand the same request back at the latest version.
+- A newer version of a document moves an open approval request of it to that version and leaves it
+  waiting on you: the human stops seeing it in their "Waiting on you" band, and nothing tells them.
+  The write itself reports it. `dispatch doc-edit` and `dispatch artifact` print the request, each
+  document that stands above the version the request asks about with both versions, and the call
+  that hands it back. Once the human has agreed to every point in that version, run that call to
+  hand the same request back. Run it whether or not your write printed the line: a pane prints it
+  only once its Dispatch client carries that report.
 - If the output reads `spec.md (document id <UUID>) is already approved at version <N>`, still call
   `register_gate` with that id and version: the daemon reads the approval from Dispatch as it
   registers, opens the gate and delivers `design-approved` at once, and only once even when the
@@ -260,11 +263,18 @@ Dispatch shows the request back on your turn. While the root waits on a question
 human's approval or changes request of the spec answers that wait too, and the task says how the
 spec stands. Your resume takes no slot, whether or not the gate opened, because the root holds
 one all along: an issue keeps its admission slot from the moment the daemon starts it
-until it is done, leaves the workflow or waits only for its merge. The answered root stands in
+until it is done or leaves the workflow. The answered root stands in
 the admission line until the pass that resumes it, and nothing is sent to you about that wait:
-your record's `waitingLine` gives the live place in the line and the line's length, your resume
-task says what answered the wait, and you act on neither, because the daemon starts you again by
-itself on that pass.
+your record's `waitingLine` gives the live place in the line and the line's length, and beside
+them the line's own fields — `part` and `kind`, `partPlace` of `partLength` inside that part,
+`holdsSlot`, true for your root, which has held its slot since its start, `since` for an issue
+whose work came back or `rootRank`, `ownRank` and `rootKey` for one that has not started, and
+`reason`, the daemon's own sentence for that place. `why` on any issue of your tree that is
+not working now says the same in one word and one sentence: `claim_stopped`, a claim nothing
+will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it;
+`unlisted`, an issue the record holds in the workflow that no admission list places. Your
+resume task says what answered the wait, and you act on neither your place nor your wait,
+because the daemon starts you again by itself on that pass.
 Release no child until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a
@@ -306,8 +316,8 @@ to the version it writes. Once they have answered:
   changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
   version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
   closes the gate until they approve. Release no further child until the `design-approved` after
-  it; work already in flight, including what the daemon started at the answer, continues. Every
-  merger's `READY` in the tree is refused until a human approves the latest version.
+  it; work already in flight, including what the daemon started at the answer, continues through
+  its merge.
 
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it

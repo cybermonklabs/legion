@@ -1,13 +1,14 @@
 import { expect, jest, test } from "bun:test"
 import { mkdir, readdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
 import type {
+  ChannelBrokerMessage,
+  ChannelConnection,
   ChannelConnectionStatus,
-  ChannelForwarderConnection,
-  ChannelInboundMessage,
   ChannelTopicSubscription,
-} from "../src/channel-forwarder"
+} from "../src/channel-topics"
 import {
   type ChannelNotification,
   type ChannelNotifier,
@@ -23,7 +24,6 @@ import {
   writeSessionHandoff,
 } from "../src/session-identity"
 import {
-  emptyReplay,
   type FakeClient,
   noInterest,
   recordingClient,
@@ -38,11 +38,11 @@ isolatePaneEnvironment()
 
 const scratchState = useScratchState()
 
-class IdleNats implements ChannelForwarderConnection {
+class IdleNats implements ChannelConnection {
   subscribe(): ChannelTopicSubscription {
     return {
       unsubscribe: () => undefined,
-      async *[Symbol.asyncIterator](): AsyncGenerator<ChannelInboundMessage> {},
+      async *[Symbol.asyncIterator](): AsyncGenerator<ChannelBrokerMessage> {},
     }
   }
 
@@ -82,9 +82,12 @@ function interest(): Interest {
   }
 }
 
-/** The listener's answer to a registration: the interest, and the core delivery mode. */
+/** The listener's answer to a registration: the interest, and this session's own consumer. */
 function registered(): SubscribeResult {
-  return { ...interest(), delivery: { mode: "core", reason: "not_answered" } }
+  return {
+    ...interest(),
+    delivery: consumerDelivery("ses_current"),
+  }
 }
 
 /** The client instance of the channel server under test: one `claude` process's. */
@@ -106,7 +109,6 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
       return { claimed: true, interest: interest() }
     },
     getRole: async () => ({ role: "reviewer", holder: "ses_lost", last_seen: 1, state: "live" }),
-    replay: emptyReplay,
   }
   let session: ChannelSession | undefined
 
@@ -152,7 +154,6 @@ test("the record a remembered role writes names this process, so another one tel
       state: "live",
       client_instance_id: INSTANCE,
     }),
-    replay: emptyReplay,
   }
   const session = await startChannelSession({
     identity: new SessionIdentity("ses_current", "/tmp"),

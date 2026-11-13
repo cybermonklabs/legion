@@ -437,7 +437,8 @@ export function fakeRecordClient(options: FakeRecordClientOptions = {}): FakeRec
       return { id: held.id };
     },
     projectArtifact: async (project, input, key) => {
-      const content = "content" in input ? input.content : "";
+      // A create with no content makes an empty document, which this fake stores as empty text.
+      const content = input.content ?? "";
       uploads.push({ project, name: input.name, content, actor: input.actor, key });
       if (answers.projectArtifact) return await answers.projectArtifact(project, input, key);
       const hold = holdCreates > 0;
