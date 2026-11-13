@@ -2119,3 +2119,5 @@ export const dispatchToolSpecs = [
     strict: true,
   },
 ] as const satisfies readonly DispatchToolSpec[];
+
+// INFRA-1413 selection probe, never merged.
