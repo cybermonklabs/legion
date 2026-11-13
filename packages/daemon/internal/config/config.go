@@ -173,6 +173,26 @@ type Config struct {
 	// round before it, and no answer holds the round past it. It is a decimal number of minutes,
 	// as `worker_silence_minutes` is, so a live proof can drive the bound inside one run.
 	PodUpdateGrace time.Duration
+	// StalledTreeNotice bounds the stalled-tree notice (`stalled_tree_notice_hours`, six hours by
+	// default, a decimal number of hours as `production_check_hours` is): when a tree this daemon
+	// runs has been quiet for longer than this, nothing of that tree is at work, and either at
+	// least one quiet issue of it waits by no rule of the daemon's own or the project's line can
+	// no longer move, the daemon tells the project's controller once for that tree. The line can
+	// still move while some issue of the project holds a slot and waits by no such rule, or some
+	// claim of the project is at work (admit's lineCanMove, dispatch://INFRA-2560 R5). The quiet
+	// time and the work are what `record.QuietTrees` measures — the tree's own now
+	// less the newest movement of its root, of the issues under it the workflow still runs and of
+	// those issues' claims' steps — and it is the one measure both the admission pass and the
+	// state read, so a notice and a reported quiet time can never disagree. The pass that sends
+	// the notice is the admission pass (admit's tellStalledTrees), which reads this key on every
+	// pass it makes and tells the controller once for each stall: the root it names carries the
+	// movement it was told for, and the tree is told again only once it moves past that mark.
+	//
+	// No value turns the notice off: readHours refuses zero here as it does for every key in
+	// hours, and a deployment told about more trees than it wants to read raises the number, to
+	// 596 hours at most. Six is the default because a tree between two turns is quiet for minutes
+	// rather than hours, so a tree still quiet after six has stopped rather than paused.
+	StalledTreeNotice time.Duration
 	// WorkerSilence is how long a phase worker's last recorded step may be in the past before the
 	// daemon reads that worker as one nothing will prompt and sends it its phase's task again
 	// (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker takes it as
@@ -410,6 +430,7 @@ type fileConfig struct {
 	Linger                 *time.Duration
 	ProductionCheckBound   *time.Duration
 	PodUpdateGrace         *time.Duration
+	StalledTreeNotice      *time.Duration
 	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
 	// pointers as every other duration key here is: a file that leaves a key out is
 	// distinguishable from one that sets it, so resolve leaves the default standing for the
@@ -569,6 +590,8 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.ProductionCheckBound, err = readHours(value, key)
 		case "pod_update_grace_minutes":
 			file.PodUpdateGrace, err = readMinutes(value, key)
+		case "stalled_tree_notice_hours":
+			file.StalledTreeNotice, err = readHours(value, key)
 		case "worker_silence_minutes":
 			file.WorkerSilence, err = readMinutes(value, key)
 		case "worker_background_hours":
@@ -959,11 +982,12 @@ func readInt(value *yaml.Node, key string) (*int, error) {
 }
 
 // readHours is a key in hours (`linger_hours`, `production_check_hours`,
-// `worker_background_hours`): a positive number of hours, a decimal
-// among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in whole
-// hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never read
-// as zero: the engine arms the deadline it is given, so a zero would close a finished tree at
-// once and take its workspace with it, or bound a check before its first look.
+// `worker_background_hours`, `stalled_tree_notice_hours`): a positive number of hours, a
+// decimal among them (0.3 is 18 minutes), bounded as the shipped key is, by the timer bound in
+// whole hours (config.ts MAX_TIMER_HOURS). A value too small to be a nanosecond is refused, never
+// read as zero: the engine arms the deadline it is given, so a zero would close a finished tree
+// at once and take its workspace with it, bound a check before its first look, or tell a
+// project's controller about every tree of it that is between two turns.
 func readHours(value *yaml.Node, key string) (*time.Duration, error) {
 	return readUnit(value, key, time.Hour, maxTimerSeconds/3600)
 }
@@ -1090,6 +1114,7 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		Linger:               72 * time.Hour,
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateGrace:       defaultPodUpdateGrace,
+		StalledTreeNotice:    6 * time.Hour,
 		WorkerSilence:        defaultWorkerSilence,
 		WorkerBackground:     defaultWorkerBackground,
 		ReviewRoundCap:       3,

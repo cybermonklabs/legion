@@ -77,18 +77,28 @@ func InWorkflow(issue Issue) bool {
 // must agree — the boot's claim release pass and the row it queues — both call it.
 func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
 
-// StandsIn says whether issue stands in one of phases, counting a hold from one of them as
-// standing there: a worker whose claim fails leaves its issue at phase.Held with Hold.From
-// naming the phase it was working (workflow's claimFailed), and the work has reached exactly
-// where it had before. It is the one shape every question about where an issue stands is
-// written over — Accepted here, and the workflow's own awaitsMerge, its close of a merged
-// issue and its open review round — so no two of those questions read a held issue differently.
-func StandsIn(issue Issue, phases ...phase.Phase) bool {
-	at := issue.Phase
-	if at == phase.Held && issue.Hold != nil {
-		at = issue.Hold.From
+// StandsAt is the phase an issue's work stands at: the issue's own phase, or, where that phase
+// is phase.Held and the record names the phase the hold came from, that phase (Hold.From). A
+// worker whose claim fails leaves its issue at phase.Held with Hold.From naming the phase it was
+// working (workflow's claimFailed), and the work has reached exactly where it had before.
+//
+// It is the one reading of where an issue stands, and the rules that must never read a held
+// issue differently all take it: the phase half of the slot rule (PhaseKeepsSlot, through
+// KeepsSlot) and the acceptance rules (StandsIn, and Accepted over it). A hold the record names
+// no phase for answers phase.Held itself, which is all the daemon knows of it.
+func StandsAt(issue Issue) phase.Phase {
+	if issue.Phase == phase.Held && issue.Hold != nil {
+		return issue.Hold.From
 	}
-	return slices.Contains(phases, at)
+	return issue.Phase
+}
+
+// StandsIn says whether issue stands in one of phases (StandsAt), counting a hold from one of
+// them as standing there. It is the one shape every question about where an issue stands is
+// written over — Accepted here, and the workflow's own awaitsMerge, its close of a merged issue
+// and its open review round — so no two of those questions read a held issue differently.
+func StandsIn(issue Issue, phases ...phase.Phase) bool {
+	return slices.Contains(phases, StandsAt(issue))
 }
 
 // Accepted says whether the daemon has already accepted issue's own reviewed head and the issue
@@ -699,8 +709,8 @@ func later(a, b time.Time) time.Time {
 //
 // Two readers are left, and each asks about a worker rather than about the cap:
 // CanWaitOnPerson, which lets a root hand work to a person only while its architect has work to
-// hand over; and admit's resumeSlottedWorkers, which starts the phase worker of a slot holder
-// that has lost its task and must pass over a holder whose phase has no worker at all.
+// hand over; and admit's resumeSlottedWorkers, which starts the phase worker of an issue that
+// has lost its task and must pass over one whose phase has no worker at all.
 //
 // Planning, implementing, testing, reviewing and retro each have a phase worker with work.
 // Merging has one too, and keeps it: its merger's own merge is what ends the phase, so there is
@@ -724,17 +734,48 @@ func AtWork(issue Issue, gate TreeGate) bool {
 	}
 }
 
-// KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
-// the moment the daemon starts it until its phase reaches done, or Dispatch takes it out of the
-// workflow (InWorkflow). Every phase between keeps the row — admitted, the worker phases
-// (planning, implementing, testing, reviewing, retro and merging), accepting, held and
-// awaiting_person — so an issue waiting for a person, for a blocker or for its review keeps its
-// place against the cap and wins none back from the line when the wait ends.
+// PhaseKeepsSlot is the one list of the phases that hold one of the cap's slots: admitted, where
+// a root's architect writes its design and a started child waits to be entered again;
+// awaiting_person; the four phases a worker works up to the review — planning, implementing,
+// testing and reviewing; and held, which is reached here only where the record names no earlier
+// phase for the hold (StandsAt). Every other phase holds none: accepting, retro and merging each
+// stand past the issue's review, and done has finished.
 //
-// No phase short of done is excepted, because this release has no phase that waits for a merge
-// somebody else makes: the merger merges the head it read, and a merged root stands in merging
-// until the rest of its tree leaves the workflow (workflow's closeMerged), which is work of its
-// own tree rather than a wait outside the cap.
+// It is written as one list so that a later change adds or removes one entry and every reader of
+// the rule moves with it. Two read it, and a phase in one and not the other would be a deadlock:
+// the cap's own half (KeepsSlot) and the mark a start of a phase worker carries for the slot it
+// waits for (workflow.StartOrOwe), whose row the outbox holds unclaimable while the issue holds
+// no slot. PastReview is the complement of the three phases this refuses, for the repair that
+// must reach an issue holding no row.
+func PhaseKeepsSlot(at phase.Phase) bool {
+	switch at {
+	case phase.Admitted, phase.AwaitingPerson, phase.Planning, phase.Implementing, phase.Testing,
+		phase.Reviewing, phase.Held:
+		return true
+	default:
+		return false
+	}
+}
+
+// KeepsSlot is the phase half of the admission rule: an issue holds one of the cap's slots from
+// the moment the daemon starts it until its work is past its review — accepting, retro and
+// merging hold none — or until it is done or Dispatch takes it out of the workflow
+// (InWorkflow). Every phase up to the review keeps the row — admitted, awaiting_person, the four
+// worker phases and a hold the record names no phase for (PhaseKeepsSlot) — so an issue waiting
+// for a person, for a blocker or for its review keeps its place against the cap and wins none
+// back from the line when the wait ends.
+//
+// The cap bounds the work in progress, and an issue whose review has passed writes no more of
+// the change: its sign-off, its retro and its merge run on no slot at all, so their starts are
+// claimable the moment they are written (workflow.StartOrOwe) and a tree's last phases count
+// against none of the issues that have a change still to write. Work the architect sends back
+// from accepting or from retro to implementing is at work again, so it takes a slot again, and
+// it waits for one among the issues whose work came back. A merged root stands in merging until
+// the rest of its tree leaves the workflow (workflow's closeMerged), and it stands there on no
+// slot, as every phase past the review does.
+//
+// Where the issue stands is StandsAt's reading and not the record's field alone, so an issue a
+// failed claim held keeps exactly the row the phase it was working keeps.
 //
 // It is the one statement of that half, and the two rules that must never disagree read it: the
 // release (NeedsSlot, which admit's releaseSlots asks of every issue holding a row) and the
@@ -746,16 +787,36 @@ func AtWork(issue Issue, gate TreeGate) bool {
 // rather than writing a second copy of: the linger InWorkflow leaves out is read by no part of
 // the slot rule either, and NeedsSlot asks the tree's own terms beside this.
 func KeepsSlot(issue Issue) bool {
-	return InWorkflow(issue)
+	return InWorkflow(issue) && PhaseKeepsSlot(StandsAt(issue))
+}
+
+// PastReview says whether issue's work stands past its own review: in accepting, in its retro
+// or in its merge, or held from one of them (StandsIn, as Accepted is written). Those are
+// exactly the three phases that hold none of the cap's slots (PhaseKeepsSlot), so this is that
+// list read the other way round.
+//
+// It exists so that the list lives in this package alone. The repair of a worker with no task
+// (admit's resumeSlottedWorkers) must reach an issue standing past its review, because such an
+// issue holds no row and the repair's own domain is the slot holders. Written there as a list of
+// its own, a phase added to or taken out of PhaseKeepsSlot would move the cap and leave the
+// repair behind, and the worker of that phase would be repaired by nothing. Read from here, the
+// two move together.
+//
+// It is not Accepted, and the two must not be merged: Accepted names the two phases whose
+// reviewed head the daemon has accepted, which is the rule the acceptance order is written over
+// (its doc names them there and nowhere else), while this one is the slot rule's complement and
+// counts accepting with them.
+func PastReview(issue Issue) bool {
+	return StandsIn(issue, phase.Accepting, phase.Retro, phase.Merging)
 }
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,
 // with a root that does not linger after its close — and the issue keeps a slot where it stands
-// (KeepsSlot). An issue keeps its admission slot from the moment the daemon starts it until it
-// is done or leaves the workflow, so the cap counts the issues the daemon has started and has
-// still to finish, rather than the ones a worker of them is running this second. Nothing of a
-// tree that has left the workflow works until its re-admission runs it again, which is why the
-// tree's own terms are here.
+// (KeepsSlot). An issue keeps its admission slot from the moment the daemon starts it until its
+// work is past its review, until it is done or until it leaves the workflow, so the cap counts
+// the issues the daemon has started whose change is still to write, rather than the ones a
+// worker of them is running this second. Nothing of a tree that has left the workflow works
+// until its re-admission runs it again, which is why the tree's own terms are here.
 //
 // The Dispatch status KeepsSlot reads is asked because a person's park, close or icebox takes
 // the issue out of the workflow before anything moves its phase: the workflow's own leave
@@ -991,17 +1052,19 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// started — a root whose architect is writing the spec, which a person set back to todo
 		// — and a second promotion would reopen an open tree and start a second architect. A
 		// root that arrived from another tree is the other half of that branch and stays: an
-		// issue keeps its row from the moment the daemon starts it until it is done or leaves
-		// the workflow (KeepsSlot), so such a root carries the row of the tree it left
-		// (HandedOverFrom, the one mark of that arrival, which ran is written over and the
-		// promotion that opens the root's own tree clears) while the tree of its
-		// own has still to be opened. Dropped from the line, nothing would promote it, the
-		// release would keep its row (NeedsSlot) and no later pass would find it again. The
-		// tree it left usually takes that row back first — its root lingers from its close, and
-		// the release reads the linger in the transaction that records the close, before the
-		// hand-over writes the root of its own — so the carried row is the case this is written
-		// against rather than the usual one. It is the one statement of that reasoning: the
-		// doc above, QueuedRoot and WaitsForSlot each point here rather than repeating it.
+		// issue keeps its row from the moment the daemon starts it until its work is past its
+		// review (KeepsSlot), so a root that arrives carrying a phase up to the review carries
+		// the row of the tree it left (HandedOverFrom, the one mark of that arrival, which ran
+		// is written over and the promotion that opens the root's own tree clears) while the
+		// tree of its own has still to be opened. Dropped from the line, nothing would promote
+		// it, the release would keep its row (NeedsSlot) and no later pass would find it again.
+		// A root that arrives past its review holds no row at all and reaches the line by the
+		// other half of the branch, as any queued root does. The tree it left usually takes a
+		// carried row back first — its root lingers from its close, and the release reads the
+		// linger in the transaction that records the close, before the hand-over writes the
+		// root of its own — so the carried row is the case this is written against rather than
+		// the usual one. It is the one statement of that reasoning: the doc above, QueuedRoot
+		// and WaitsForSlot each point here rather than repeating it.
 		_, holds := slotted[issue.Key]
 		if holds && issue.HandedOverFrom == "" {
 			hold(issue)
@@ -1158,8 +1221,8 @@ func queuedRoots(issues []Issue, facts LineFacts) []Issue {
 // (liveRoots): a lifecycle that stands open says the tree once opened, not that this generation
 // of the root is running, and a root whose tree ran and ended queues again with that row still
 // standing until its cleanup confirms. The slot does not answer it either: a root arriving from
-// another tree in accepting may carry the row it held there while the tree of its own has still
-// to be opened, which Waiting's queued-root loop states at the skip it guards.
+// another tree in a phase up to its review may carry the row it held there while the tree of
+// its own has still to be opened, which Waiting's queued-root loop states at the skip it guards.
 func QueuedRoot(issue Issue, gate TreeGate) bool {
 	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || ran(issue, gate) {
 		return false

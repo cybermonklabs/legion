@@ -80,11 +80,20 @@ type Settings struct {
 	// round before it, and no answer holds the round past it. It is a decimal so a live proof can
 	// drive the bound inside one run.
 	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
+	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the two
+	// hour keys above are: how long a tree this daemon runs may be quiet before the daemon tells the
+	// project's controller once for that tree. The daemon sends it only where nothing of the tree is
+	// at work, and either at least one quiet issue of it waits by no rule of the daemon's own or the
+	// project's line can no longer move: that line can still move while some issue of the project
+	// holds a slot and waits by no such rule, or some claim of the project is at work
+	// (dispatch://INFRA-2560 R5). No value turns that notice off, since the loader refuses zero for
+	// every key in hours; a deployment that wants fewer notices raises the number.
+	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
 	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
 	// phase worker's last recorded step may be in the past before the daemon reads that worker as
 	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
-	// two hour keys above are in hours, because the bound is tens of minutes and the file takes it
-	// that way (config's readMinutes).
+	// three hour keys above are in hours, because the bound is tens of minutes and the file takes
+	// it that way (config's readMinutes).
 	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
 	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
 	// the background work a phase worker's own session reports may stand before the daemon names
@@ -378,6 +387,7 @@ func SettingsOf(cfg config.Config) Settings {
 		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
 		PodUpdateGraceMinutes:                   cfg.PodUpdateGrace.Minutes(),
+		StalledTreeNoticeHours:                  cfg.StalledTreeNotice.Hours(),
 		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
 		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,

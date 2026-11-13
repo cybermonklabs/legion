@@ -17,11 +17,13 @@ import (
 // database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
 // after both the head-arrival column and the drop that takes it away again (20261109130413),
 // which leaves the table as main has it, and the resume's own anchor (20261111181500), which is
-// this branch's newest. The six versions of main's above the claim-death
+// this branch's newest. The nine versions of main's above the claim-death
 // charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
-// (20261109191929), the backward-move counts with the hook prompt (20261110225246), the kind of
-// the rule that wrote a release mark (20261111001612), the declined ask (20261111021610) and the
-// claim's failure cause (20261111212544), are
+// (20261109191929), the backward-move counts with the hook prompt (20261110225246), the
+// unmarked start of a phase past its review (20261110233602), the kind of the rule that wrote a
+// release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
+// (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
+// (20261111212544), are
 // main's own and are applied as main's run applied them. Every version of this branch's but one
 // stands below main's newest: a migration's version is a timestamp rather than a place in a line,
 // and the one above it is the phase entry's own (20261111225552, dispatch://INFRA-2800), which

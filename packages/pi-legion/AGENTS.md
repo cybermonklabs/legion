@@ -94,15 +94,18 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 104's claim recoveries
-(dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no process stands
-behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_session`, and no
-shape the plugin parses moves), after contract 98's held list
+number is the one `DaemonAPIVersion` declares, last bumped by contract 111 (dispatch://INFRA-2560:
+every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
+how long it has been still, which a caller below 111 is served without), after contract 104's
+claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
+process stands behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming
+`fresh_session`, and no shape the plugin parses moves), after contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
 each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
-the daemon reads in one order, of which `at_work` names no issue today (see
-`record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where no issue holds the one
+the daemon reads in one order, of which `at_work` names the issues past their review from
+contract 111 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
+no issue holds the one
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission
 block without it (`api.stateFor`,
@@ -217,7 +220,8 @@ command (`legion controller start` ends the operator's Oh My Pi command line wit
 command, never from `session_start`; "The controller's start turn" below), after contract 40's
 `awaiting_person` phase and strict `waitingOn` issue view on `GET /legion/v1/state` (a root whose
 architect waits on a person, and what it waits on; such a root holds its admission slot, as every
-issue does from the moment the daemon starts it until it is done or leaves the workflow;
+issue does from the moment the daemon starts it until its work is past its review, until it is done,
+or until Dispatch takes it out of the workflow;
 a 39 plugin rejects both), after contract 39's one-container issue pod (INFRA-208: a sandbox locator
 of an issue pod's role names container `roles`, and `settings` on `GET /legion/v1/state` gives
 `runtime.kubernetes.resources` as `{issue, controller}`), after contract 38's blocked issues on

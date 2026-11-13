@@ -10,9 +10,9 @@ architect with `envoy_publish` to its role, because it is not yours to make.
 
 For capacity, the only lever is order. You cannot change `admission.cap`: it is the operator's
 `legion.yaml` setting, and `set_status` is your only admission move. The cap counts the issues the
-daemon has started, a root or a child, not trees, and an issue keeps its slot from the moment the
-daemon starts it until it is done or leaves the workflow, so a tree's
-own children compete for it with every other
+daemon has started, a root or a child, not trees, and an issue holds one of the cap's slots from
+the moment the daemon starts it until its work is past its review, until it is done, or until
+Dispatch takes it out of the workflow, so a tree's own children compete for it with every other
 tree's. Read `admission.active`, `admission.waiting` and `admission.trees`, tell the architect
 where its tree's issues stand in the line with `envoy_publish`, and
 open a finding ask when the deployment needs a larger cap.
