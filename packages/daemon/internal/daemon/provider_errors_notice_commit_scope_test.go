@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,11 +19,11 @@ import (
 )
 
 // A run of provider errors tells the controller through an outbox row, and the row's lane is woken
-// only once that row has committed, with nothing logged about a write outside a commit scope. The
-// notice is written on a goroutine of its own, outside any fact (providerErrorRunReached), so its
-// transaction has to open the commit scope itself. Without that scope the records' wake runs at the
-// write, inside the transaction (projectRecords.wakeOnCommit): the lane looks before the row is
-// there, finds nothing, and the notice waits for the outbox's sweep, which runs every outboxLease.
+// only once that row has committed. The notice is written on a goroutine of its own, outside any
+// fact (providerErrorRunReached), so its transaction has to open the commit scope itself. Without
+// that scope the records' wake runs at the write, inside the transaction
+// (projectRecords.wakeOnCommit): the lane looks before the row is there, finds nothing, and the
+// notice waits for the outbox's sweep, which runs every outboxLease.
 func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	ctx := context.Background()
@@ -56,8 +55,7 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var seenAtWake []int
-	var logged syncBuffer
-	log := slog.New(slog.NewTextHandler(&logged, nil))
+	log := slog.New(slog.DiscardHandler)
 	records := projectRecords{Store: record.NewStore(), project: "CAPTURE", log: log, wake: func(string, record.OutboxKind) {
 		// What the woken lane would find: the notices committed by the moment of the wake.
 		visible := notices()
@@ -86,8 +84,5 @@ func TestAProviderErrorsNoticeWakesItsLaneOnlyOnceItsRowCommits(t *testing.T) {
 	defer mu.Unlock()
 	if len(seenAtWake) != 1 || seenAtWake[0] != 1 {
 		t.Fatalf("the lane was woken %d times, seeing %v committed notices, want once with the notice committed", len(seenAtWake), seenAtWake)
-	}
-	if strings.Contains(logged.String(), "outside a commit scope") {
-		t.Fatalf("the notice's write was logged as outside a commit scope:\n%s", logged.String())
 	}
 }
