@@ -878,6 +878,19 @@ func configureRepositoryCredential(ctx context.Context, run Runner, cloneDir, cr
 	return nil
 }
 
+// configureCloneReads sets core.warnAmbiguousRefs to false in the shared clone's own
+// configuration, which every workspace of the clone reads too (a git worktree reads its clone's
+// config). With the warning on, git looks up each revision argument as a ref name, to warn when
+// a ref of the same name exists. A leak check's `git rev-list` with about 4,970 `^<sha>`
+// arguments spent 13 s of a measured 78 s on those lookups. The setting turns only the warning
+// off: git resolves every revision the same way. The feed does not take it: Fetch checks the
+// feed's configuration key by key (feedConfigKeys), so an extra key there would be refused.
+func configureCloneReads(ctx context.Context, run Runner, cloneDir string) error {
+	argv := []string{"git", "--git-dir=" + cloneDir + "/.git", "config", "core.warnAmbiguousRefs", "false"}
+	_, err := RunChecked(ctx, run, argv, nil, cloneDir)
+	return err
+}
+
 // removeRepositoryIdentity ports workspace.ts's removeRepoScopedIdentity. A per-repository
 // identity would be shared by every issue workspace, while pane identity is deliberately provided
 // through the pane's env.
