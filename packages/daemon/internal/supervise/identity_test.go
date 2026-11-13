@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -66,6 +67,86 @@ func TestAPhaseTaskAdoptsTheRoleIdentityBeforeThePrompt(t *testing.T) {
 			h.wantBudgets(tc.budgets)
 			if p := h.pending(); p.Task != "implement the plan" || !p.ConfirmedAt.IsZero() {
 				t.Fatalf("pending %+v, want the task still queued for the next send", p)
+			}
+		})
+	}
+}
+
+// adoptedLine and adoptRefusedLine are the two ends an adoption the shim answers comes to, as a
+// production check reads them: whole, and not as anything the code carries, so a reword turns this
+// test red rather than leaving the check counting nothing.
+const (
+	adoptedLine      = "supervise: the working copy was adopted for the phase task"
+	adoptRefusedLine = "supervise: the shim refused to adopt the working copy; the prompt was never sent"
+)
+
+// An adoption the shim answers ok writes one Info line, because it was the one end of an adoption
+// the log kept no word of: a refusal is logged (table.go's refused) and an ok was not, so nothing
+// told which tasks adopted the working copy — which is what the production check reads to see that
+// only phase tasks adopt (dispatch://INFRA-2695). The line names the task, its phase and the App
+// by its git name, never a token, and the machine's own logger adds the claim. A task of no phase
+// adopts nothing and so writes no such line, and an adoption the shim refuses writes its refusal
+// in this line's place.
+func TestAnAdoptionTheShimAnswersOkIsLogged(t *testing.T) {
+	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
+	for _, tc := range []struct {
+		name    string
+		deliver RequestDeliver
+		// fail is what the runtime answers the adoption with.
+		fail    error
+		prompts int
+		// adopted and refused are how many times the adoption's line and the refusal's are written.
+		adopted int
+		refused int
+	}{
+		{name: "a phase task the shim adopts the working copy for",
+			deliver: RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 5},
+			prompts: 1, adopted: 1},
+		{name: "a task of no phase, which adopts nothing",
+			deliver: RequestDeliver{Claim: testToken, Task: "the tester asks how the branch builds"},
+			prompts: 1},
+		{name: "a phase task whose adoption the shim refuses",
+			deliver: RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 5},
+			fail:    adoptRefusal(staleLockRefusal), refused: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.deps.Identity = func(context.Context, claim.Role, string) (runtime.GitIdentity, error) { return bot, nil }
+			h.restart()
+			h.reach(StateReady)
+			if tc.fail != nil {
+				h.rt.FailAdoptWorkingCopy(tc.fail)
+			}
+
+			h.must(tc.deliver)
+			h.wantPrompts(tc.prompts)
+
+			if refusals := h.records.of(adoptRefusedLine); len(refusals) != tc.refused {
+				t.Fatalf("%q was written %d times, want %d", adoptRefusedLine, len(refusals), tc.refused)
+			}
+			adopted := h.records.of(adoptedLine)
+			if len(adopted) != tc.adopted {
+				t.Fatalf("%q was written %d times, want %d", adoptedLine, len(adopted), tc.adopted)
+			}
+			if tc.adopted == 0 {
+				return
+			}
+			r := adopted[0]
+			if r.level != slog.LevelInfo {
+				t.Fatalf("%q is %s, want INFO", adoptedLine, r.level)
+			}
+			for _, want := range []struct{ key, value string }{
+				{"claim", string(h.token)},
+				{"delivery", h.pending().ID},
+				{"phase", string(tc.deliver.Phase)},
+				{"identity", bot.Name},
+			} {
+				if got, ok := r.attr(want.key); !ok || got.String() != want.value {
+					t.Fatalf("%q carries %s %v (present %v), want %s", adoptedLine, want.key, got, ok, want.value)
+				}
+			}
+			if took, ok := r.attr("took"); !ok || took.Kind() != slog.KindDuration {
+				t.Fatalf("%q carries took %v (present %v), want the time the adoption took", adoptedLine, took, ok)
 			}
 		})
 	}

@@ -1842,6 +1842,22 @@ The step costs an operator one statement with the daemon stopped, and it leaves 
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
+#### Rolling back the release that names what nothing starts
+
+This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a controller notice still queued at the rollback fails on its backoff for ever and the tick reaches nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held';
+```
+
+What the strip costs is one line of one wake: the tick that row carries then names the blocked issues alone, which is what the earlier release's controller reads anyway, and the next tick of the daemon that runs is whole again.
+
+Nothing else of this release needs a rollback step.
+The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
+This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
@@ -2197,19 +2213,19 @@ Store migration 20261111045636_experiment_assignments adds the table those answe
 every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its mode, its instant and its mark verbatim and its group as the variant, but for one normalisation: a group drawn under mode `off`, which that column holds as the word `none`, becomes the empty variant.
 The four columns stay in the schema exactly as they stand, this release writes none of them, and a later release drops them.
 
-To roll this release back to contract 94, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
+To roll this release back to contract 98, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
 There is no SQL to run and no table to drop:
 the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
 A `legion` of this release kept through the rollback reads the rolled-back daemon's `memory` line as the earlier release's own `legion state` prints it: that daemon serves no `assignments`, so the line counts every issue whose `memoryGroup` is set, by that group and its `memoryDrawMode` (`experimentLines` in `packages/daemon/cmd/legion/main.go`).
 What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
-The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.8.1`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
+The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.10.0`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
 it changes arms all the same.
 That release decides a launch's memory from `issues.memory_group` alone (its `treeMemoryGroup`, `issue.MemoryGroup == "memory"`), and this release writes no `memory_*` column, so a tree drawn into the `memory` arm after the upgrade has an empty `memory_group`:
 its next role starts without the memory overlays and without the memory instructions, and the tree runs the rest of its life in the other arm than the one it was drawn into.
 The record goes with it: that tree's answer is in `experiment_assignments`, which the earlier release names nowhere, so it reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
 The trees drawn before the upgrade are untouched: their columns are the back-fill's source and still hold their draw, so they keep their arm and read exactly as they did.
 The earlier release writes `issues.memory_*` in a second place, the hand-over, and that costs the children handed over out of those trees too.
-Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v20.8.1`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
+Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v20.10.0`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
 A tree this release drew holds one and holds empty columns, so a child handed over out of it while the rollback holds is copied no group, no mode and no instant, and marked carried:
 it is settled at no group, and the earlier release never draws it, since its `DrawMemory` passes over a carried root.
 Rolling forward does not undo that for a child whose own tree the earlier release opened during the window, and does for one whose own tree no release has opened yet.

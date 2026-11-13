@@ -1196,6 +1196,7 @@ Closing the terminal leaves the project without one, and the daemon logs
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
+  admission.held: none
   memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)
   plan-length: 4 issues — 2 control (random), 2 long (random)
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
@@ -1252,10 +1253,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   The lines count issues rather than the trees a tree experiment is drawn for, because the state
   names no tree and a tree handed over as one of its own carries its old tree's draw verbatim, so
   two trees can share one draw.
-  A daemon older than contract 99, which is the daemon a rollback to contract 94 leaves, serves
+  A daemon older than contract 99, which is the daemon the documented rollback leaves, serves
   no `assignments`, so the `memory` line counts an issue that carries none from its
   `memoryGroup` and `memoryDrawMode`, wherever `memoryGroup` is set, and reads as the
-  `legion state` of contract 94 prints it.
+  earlier release's own `legion state` prints it.
 
   **The same answers in `legion state --json`.** Each issue carries `assignments`, one
   `{experiment, variant, mode, drawnAt}` per answer that applies to it, in that same declared

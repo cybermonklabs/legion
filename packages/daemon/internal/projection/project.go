@@ -323,7 +323,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
 	// the roots admission skips, the issues it holds back and the parents whose children go
 	// first.
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil)
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil, now)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -397,6 +397,13 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
+	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
+	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
+	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate
+	// no drop site saw, over the same facts and the same line these lists are built from, so one
+	// issue reads one word here and in the controller's tick.
+	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
 	// Why each issue that is not working now is not working, one rendered answer on its own view.
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the

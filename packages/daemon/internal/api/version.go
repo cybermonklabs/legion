@@ -1337,6 +1337,48 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
+// 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
+// the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
+// eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
+// `record.HeldAtWork` says) and the issues that hold it where any do (`heldBy`, absent where none
+// does — a root whose Legion label is off, an issue none of the other words is true of). The
+// three lists together are every issue of the workflow and what each is doing, which `active` and
+// `waiting` alone never were: an issue in neither was simply missing, and a reader could not tell
+// one the daemon was about to start from one nothing will start again.
+// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
+// refuses a value it does not name rather than stripping it like an unknown key, so a word added
+// to the ladder later bumps this number again. The key itself is written on every body, empty
+// rather than null, and a caller from a pod whose claims record a contract below 98 is served the
+// admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
+// issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
+// `leakCheckCause`, one below 85 every issue without its rendered answer and every member of the
+// waiting line without that contract's own fields, one below 75 the body without the nine keys
+// of the decided record and its contract mark, one below 73 without `claimsToRefresh`, one below
+// 62 the workers without their counts of the moves back and one below 51 the admission block
+// without its trees; the fifteen strips compose, and every reader from 98 on takes the key as
+// optional for exactly those stripped bodies. No other key of the wire moves: no list above it
+// changes, though `why.reason` now follows the held word for some issues in `admission.blocked`
+// and `unlisted` alike, for every caller at 85 or above (the sentence table of
+// `internal/projection/why.go` is the one statement of which), which moves no contract, since the
+// reason is free text. The rows are read from the judgement the state already made
+// (`blockers.JudgeLine`, which now answers the rows the pass left behind beside the line it
+// built), so the body costs no further read of the store.
+// (The base declares 94, main's #3677 entry right above this one, landed by
+// cybermonklabs/legion#3677 (INFRA-2800). By the rule of 2026-11-13T06:29Z this change keeps 98
+// while it stands above its base and no other open head declares it, and renumbers only when the
+// base takes 98 or a number above it. It declared 76 when this pull request opened, then 78 and
+// 86, each renumbered when another change took the number first, then 94, which it left for 98
+// because an open head declared a higher number that could land first; 86 was read at
+// 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
+// already declared it, merged at 18:19Z. A reading
+// of the open heads is of this file at refs/pull/<n>/head for every open pull request, not of a
+// file list: GitHub cuts a pull request's file list short, so one that changes more files than
+// the page holds answers without this path. Read the base's own number and every open pull
+// request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
 // 99: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
 // `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
@@ -1367,24 +1409,27 @@ package api
 // loosely, so no strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
 // `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
-// that package's own test holds it to, and 99 is later than that change, so a reader before 99
-// parses this state and sees no `assignments` at all rather than refusing it — and every
-// worker's `read_record` parses the state through that schema. The downgrade below is still
-// what serves such a reader: a caller that did not ask for the field is not given it.
+// that package's own test holds it to, and 99 is later than that change, so a reader built after
+// that change and before 99 parses this state and sees no `assignments` at all rather than
+// refusing it — and every worker's `read_record` parses the state through that schema. The
+// downgrade below is still what serves such a reader: a caller that did not ask for the field is
+// not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 99 is served the state without the field (api's stateFor,
 // withoutAssignments), as a caller below 49 is served it without the memory fields; a caller at
 // 49 through 98 is served the three memory fields and no assignments, whatever else its own
 // band gives it — one at 73 or above is served `claimsToRefresh` too, one at 75 or above the
 // record fields, one at 85 or above the `why` answer and the waiting line's own fields the 85
-// entry added, one at 87 or above the claim views' `leakCheckCause` the 87 entry added, and one
-// at 94 or above each issue's `phaseEntry` and `givenEntry` the 94 entry added, so a caller at
-// 87 to 93 is served all of those but the two entry numbers, a caller at 94 to 98 is served all
-// of them, and both still no assignments — and a caller below 49 neither. The 86 entry above
-// adds no narrowing of its own, so a caller at 86 is served what one at 85 is: the `why` answer
-// and the line's own fields, and neither `leakCheckCause`, nor the two entry numbers, nor
-// assignments. The number is held in four files that
-// move together: this one,
+// entry added, one at 87 or above the claim views' `leakCheckCause` the 87 entry added, one at
+// 94 or above each issue's `phaseEntry` and `givenEntry` the 94 entry added, and one at 98
+// `admission.held` the 98 entry added, so a caller at 87 to 93 is served all of those but the
+// two entry numbers and `admission.held`, a caller at 94 to 97 all of them but
+// `admission.held`, a caller at 98 all of them, and each still no assignments — and a caller
+// below 49 neither. The 86 entry above adds no narrowing of its own, so a caller at 86 is served
+// what one at 85 is: the `why` answer and the line's own fields, and neither `leakCheckCause`,
+// nor the two entry numbers, nor `admission.held`, nor assignments. With this entry's narrowing
+// the route's strips are sixteen, and they compose as the fifteen did. The number is held in
+// four files that move together: this one,
 // `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and
 // `packages/claude-envoy/package.json`. The answers are the rows of `experiment_assignments`,
 // which this change's one store migration, 20261111045636_experiment_assignments, creates and
@@ -1396,20 +1441,22 @@ package api
 // brought main in, 74 at the push that followed, 86 at the forward merge of 2026-11-12 that
 // brought main in at 9009dc1d, 87 at the push after it, 90 at the push after that, 93 at the
 // push after that, 95 at the push after that, 97 at the forward merge of 2026-11-13 that brought
-// main in at 12ba4e6a, and 99 here. Each of those took one above every open declaration rather
-// than the lowest free number, because three branches had each taken the lowest free number at
-// three moments and collided four ways at 65. The heads were read at this push over the
-// `const DaemonAPIVersion` of main and of every one of the 140 open pull requests of this
-// repository at refs/pull/<n>/head, rather than over the file lists GitHub gives, which it cuts
-// short for a pull request of many files: main declares 87, and the highest open declarations
-// are #3708's 98, above the 97 this change declared before this move, #2731's and #3573's 96 and
-// #3677's 94; every other open head declares less than 94. So this change takes 99, which is
-// one above every one of them. That rule, one above every open declaration, is retired here:
-// two trees both following it push each other higher at every push, and #3708 and this change
-// did, 95 to 99 against 98. This change holds 99 while main's own number is below it, and
-// renumbers only when main reaches 99 or above, once, in the forward merge that landing forces,
-// to the lowest free number above main's;
+// main in at 12ba4e6a, and 99 at the push after that. Each of those took one above every open
+// declaration rather than the lowest free number, because three branches had each taken the
+// lowest free number at three moments and collided four ways at 65. The heads were read at that
+// push over the `const DaemonAPIVersion` of main and of every one of the 140 pull requests of
+// this repository then open, at refs/pull/<n>/head, rather than over the file lists GitHub
+// gives, which it cuts short for a pull request of many files: main then declared 87, and the
+// highest open declarations were #3708's 98, above the 97 this change declared before that
+// move, #2731's and #3573's 96 and #3677's 94; every other open head declared less than 94. So
+// this change took 99, which was one above every one of them. That rule, one above every open
+// declaration, is retired here: two trees both following it push each other higher at every
+// push, and #3708 and this change did, 95 to 99 against 98. This change holds 99 while main's
+// own number is below it, and renumbers only when main reaches 99 or above, once, in the
+// forward merge that landing forces, to the lowest free number above main's;
 // .github/scripts/check-daemon-api-contract.sh refuses a number at or below the base's, which is
 // the one collision a renumber has to answer. At the forward merge that brought main in at
-// 045ee076, #3677's own, main declares 94, below 99, so the number holds.)
+// 045ee076, #3677's own, main declared 94; at the forward merge that brought main in at
+// b7a2f926, #3708's own, main declares 98, the entry right above this one, still below 99, so
+// the number holds.)
 const DaemonAPIVersion = 99

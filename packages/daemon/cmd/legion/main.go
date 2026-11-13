@@ -628,6 +628,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stdout, line)
 	}
 	fmt.Fprintln(stdout, blockedSummary(state.Admission.Blocked))
+	fmt.Fprintln(stdout, heldAdmissionSummary(state.Admission.Held))
 	for _, line := range experimentLines(state.Settings, state.Daemon.Project, state.Issues) {
 		fmt.Fprintln(stdout, line)
 	}
@@ -678,6 +679,38 @@ func blockedSummary(blocked []api.BlockedIssue) string {
 		waits[i] = issue.Issue + " waits on " + strings.Join(issue.BlockedBy, ", ")
 	}
 	return fmt.Sprintf("blocked on Dispatch links: %d — %s", len(blocked), strings.Join(waits, "; "))
+}
+
+// heldAdmissionSummary is the one line an operator reads for the issues the daemon's own record
+// holds in the workflow that stand in neither the active set nor the waiting line
+// (api.Admission.Held): how many, and how many of each word for why, in the ladder's own order
+// (record.HeldReasons), so two readings of one state print one line. A word no row carries is
+// left out.
+//
+// The prefix names the admission list because `legion state` prints a second held line below
+// this one, the lifecycle rows the daemon holds behind their issues' running ones
+// (heldSummary): these are issues nothing starts, those are outbox rows nothing has sent, and a
+// reader counting one must not read the other's number. It names no issue: a deployment holding
+// hundreds would print a line per issue, and each row with its word is in `legion state --json`.
+func heldAdmissionSummary(held []api.HeldIssue) string {
+	if len(held) == 0 {
+		return "admission.held: none"
+	}
+	counts := map[record.HeldReason]int{}
+	for _, issue := range held {
+		counts[issue.Reason]++
+	}
+	words := make([]string, 0, len(counts))
+	for _, reason := range record.HeldReasons {
+		if count := counts[reason]; count > 0 {
+			words = append(words, fmt.Sprintf("%s %d", reason, count))
+		}
+	}
+	noun := "issues"
+	if len(held) == 1 {
+		noun = "issue"
+	}
+	return fmt.Sprintf("admission.held: %d %s — %s", len(held), noun, strings.Join(words, ", "))
 }
 
 // waitingLineLines are the lines an operator reads for the issues waiting for an admission slot
@@ -786,11 +819,12 @@ const waitingLineNamedCap = 10
 // declared: its group, `memory` or `none`, is the arm and its mode the mode. Such a daemon's
 // settings carry the `memory` block and no `experiments` key, and a daemon that serves no
 // settings carries neither, so the list above declares the `memory` experiment alone and the
-// line is the one the `legion` of contract 94 prints for the same body. A daemon of this release
-// serves the memory fields only where an issue's `memory` row records a draw, and serves that row
-// in `assignments` as well to every caller but a pod below contract 99 (api's stateFor), so in the
-// body it serves `legion state` an issue with no `assignments` carries no `memoryGroup` either and
-// the fallback counts nothing; in the body it serves such a pod it counts the `memory` draws.
+// line is the one the `legion` of contract 94 or 98 prints for the same body. A daemon of this
+// release serves the memory fields only where an issue's `memory` row records a draw, and serves
+// that row in `assignments` as well to every caller but a pod below contract 99 (api's stateFor),
+// so in the body it serves `legion state` an issue with no `assignments` carries no `memoryGroup`
+// either and the fallback counts nothing; in the body it serves such a pod it counts the `memory`
+// draws.
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
 	declared := settings.Projects[project].DeclaredExperiments(project)
 	counts := make(map[string]map[armDraw]int, len(declared))
