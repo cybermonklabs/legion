@@ -1,115 +1,32 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { realClock } from "../../__tests__/fake-clock";
-import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { stopTheLateWrite } from "../../__tests__/stop-late-write";
-import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, NetworkError } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
+import {
+  answeredAsk,
+  firstAnswer,
+  installAskCardApiMocks,
+  renderCard,
+  thread,
+} from "./ask-card-fixture";
 import { ThreadBody } from "./ThreadBody";
 
-let whoAmI: Mock<typeof api.whoAmI>;
-let getReferences: Mock<typeof api.getReferences>;
-let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
-
-beforeEach(() => {
-  whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
-  getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: graphNode({ id: "ask-1", kind: "ask" }),
-  });
-  // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
-  // nobody is subscribed here, so the card lists its followers alone.
-  getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
-});
-
-afterEach(() => {
-  whoAmI.mockRestore();
-  getReferences.mockRestore();
-  getIssueSubscribers.mockRestore();
-  jest.useRealTimers();
-});
-
-const firstAnswer: AskAnswer = {
-  at: "2026-10-08T01:00:00Z",
-  selected: ["Ship"],
-  text: "First note",
-  user: "alice",
-};
-
-function answeredAsk(overrides: Partial<Ask> = {}): Ask {
-  return {
-    anchor: null,
-    answer: firstAnswer,
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: { id: "session-1", kind: "session" },
-    block_id: null,
-    created_at: "2026-10-08T00:00:00Z",
-    edited_at: null,
-    id: "ask-1",
-    issue_key: "CORE-1",
-    kind: "question",
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ label: "Ship" }, { label: "Hold" }],
-    question: "Which release path?",
-    state: "answered",
-    urgency: "med",
-    waiting_on: "human",
-    ...overrides,
-  };
-}
-
-function thread(ask: Ask, answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer]): AskRead {
-  return {
-    answers,
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-  };
-}
-
-function renderCard(node: ReactNode) {
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { queryClient, view };
-}
+installAskCardApiMocks();
 
 test("the answerer can change an answer and sees both answers immediately", async () => {
   const user = userEvent.setup();
@@ -745,148 +662,6 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     handAskTo.mockRestore();
     listMyReplies.mockRestore();
     listUsers.mockRestore();
-  }
-});
-
-// A hand-on is a `PUT` of whom the ask waits on. One the reader stopped may have been made, so
-// the card neither says it failed nor shows the stopped write's own words, which are a
-// composer's and speak of a message: it says what its Retry does with the hand-on.
-test("a hand-on the reader stopped says what Retry does, not a message's words", async () => {
-  const open = answeredAsk({ answer: null, state: "open" });
-  const handAskTo = spyOn(api, "handAskTo").mockRejectedValue(
-    new NetworkError("/api/v1/asks/ask-1/asked-of", new TypeError("Failed to fetch"))
-  );
-  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
-    { login: "alice" },
-    { login: "bob" },
-  ]);
-  // The hand-on reads the ask's thread again once it settles, stopped or not.
-  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
-  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
-  const card = within(view.container);
-  try {
-    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
-    // The people are read only once the reader reaches for the control (`AskHandOn`).
-    await userEvent.setup().click(control);
-    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
-    jest.useFakeTimers();
-    await userOnFakeClock().selectOptions(control, "bob");
-    await stopTheLateWrite(queryClient);
-
-    // The alert's paragraph, without its Retry button's name.
-    expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
-      stoppedWriteNote("the hand-on of this question", "made", {
-        again: "Retry",
-        method: "PUT",
-        stopped: new SendStoppedError(),
-      })
-    );
-  } finally {
-    realClock();
-    view.unmount();
-    handAskTo.mockRestore();
-    listUsers.mockRestore();
-    getAsk.mockRestore();
-  }
-});
-
-/** A fetch that failed, which the write is tried again after: it goes late, for the reader to
- *  stop. */
-const dropped = (path: string) => new NetworkError(path, new TypeError("Failed to fetch"));
-
-/** An open question on its card over the held clock, its answer write `answerAsk`: the reader
- *  picks Ship and presses Answer. */
-async function answerOpenQuestion(answerAsk: () => Promise<Ask>) {
-  const open = answeredAsk({ answer: null, state: "open" });
-  const rendered = renderCard(
-    <AskCard answerAsk={answerAsk} ask={open} initialThread={thread(open, [])} />
-  );
-  jest.useFakeTimers();
-  const user = userOnFakeClock();
-  const card = within(rendered.view.container);
-  await user.click(await card.findByRole("radio", { name: "Ship" }));
-  await user.click(card.getByRole("button", { name: "Answer" }));
-  return { ...rendered, card, open };
-}
-
-// An answer the reader stopped may have been saved: the card says so, and that its Retry asks
-// again under the answer's key (`retryLast`), rather than a failure it cannot know of.
-test("an answer the reader stopped says Retry asks again under its key, not that it failed", async () => {
-  const { card, queryClient, view } = await answerOpenQuestion(() =>
-    Promise.reject(dropped("/api/v1/asks/ask-1/answer"))
-  );
-  try {
-    await stopTheLateWrite(queryClient);
-    // The alert's paragraph, without its Retry button's name.
-    expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
-      stoppedWriteNote("your answer", "saved", {
-        again: "Retry",
-        method: "POST",
-        stopped: new SendStoppedError(),
-      })
-    );
-  } finally {
-    realClock();
-    view.unmount();
-  }
-});
-
-// Once the question has closed the card shows its record and no form, so no Retry either: a
-// stopped answer says what the card shows instead of promising a Retry it does not offer.
-test("an answer stopped on a question that closed promises no Retry the card does not show", async () => {
-  const { card, open, queryClient, view } = await answerOpenQuestion(() =>
-    Promise.reject(dropped("/api/v1/asks/ask-1/answer"))
-  );
-  try {
-    await stopTheLateWrite(queryClient);
-    act(() => {
-      queryClient.setQueryData<AskRead>(
-        ["ask-thread", open.id],
-        thread(answeredAsk({ answer: firstAnswer, state: "answered" }))
-      );
-    });
-    await waitFor(() =>
-      expect(card.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument()
-    );
-    expect(card.getByRole("alert").textContent).toBe(
-      stoppedWriteNote("your answer", "saved", {
-        anew: "The question has closed, and the record above shows how.",
-      })
-    );
-  } finally {
-    realClock();
-    view.unmount();
-  }
-});
-
-// A question back the reader stopped may have been sent: the card says so, and that its Retry
-// asks again under its key, rather than a failure it cannot know of.
-test("a clarification the reader stopped says Retry asks again under its key, not that it failed", async () => {
-  const createComment = spyOn(api, "createComment").mockRejectedValue(
-    dropped("/api/v1/issues/CORE-1/comments")
-  );
-  const open = answeredAsk({ answer: null, state: "open" });
-  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
-  const card = within(view.container);
-  try {
-    jest.useFakeTimers();
-    const user = userOnFakeClock();
-    const field = card.getByLabelText("Your answer");
-    await user.click(field);
-    await user.paste("Ship what, exactly?");
-    await user.click(card.getByRole("button", { name: "Ask back" }));
-    await stopTheLateWrite(queryClient);
-    expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
-      stoppedWriteNote("your clarification", "sent", {
-        again: "Retry",
-        method: "POST",
-        stopped: new SendStoppedError(),
-      })
-    );
-  } finally {
-    realClock();
-    view.unmount();
-    createComment.mockRestore();
   }
 });
 
