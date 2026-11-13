@@ -315,10 +315,16 @@ trap 'exit 143' TERM
 # instance_log_tail: the last ten lines the instance logged before its hand-over message, which a
 # failed start prints. That message is the one place the instance writes DATABASE_URL whole (the
 # console.log of packages/dispatch/e2e/local-instance.ts that opens with "Dispatch local instance is
-# up.", whose lines carry the string twice), and it writes the signed-in line in the same call, so
-# a start that fails after it is a race this run can lose: the line read missed it, then the process
-# stopped. Nothing from that message's first line on is printed, so no failure puts the string on
-# stderr however the race goes.
+# up.": its `Database` line at :155 and the harness prefix of :75, which :160 prints), and it writes
+# the signed-in line in the same call, so a start that fails after it is a race this run can lose:
+# the line read missed it, then the process stopped. Nothing from that message's first line on is
+# printed, so no failure puts the string on stderr however the race goes.
+#
+# This is safe exactly as long as nothing logs DATABASE_URL before that message. Today that holds by
+# the code of local-instance.ts: the URL is printed at :155 and through :75 and nowhere else, and
+# its one earlier refusal (databaseUrlRefusal, local-instance-support.ts) names hosts and never the
+# string. A line added to the instance that logs the URL before "Dispatch local instance is up." is
+# on the wrong side of this cut, and this run prints it.
 instance_log_tail() {
   sed '/^Dispatch local instance is up\./,$d' "$work/instance.log" | tail -n 10
 }
