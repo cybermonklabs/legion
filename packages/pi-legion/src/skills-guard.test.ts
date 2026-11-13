@@ -411,7 +411,7 @@ test("the simplify pass reads every file of its scope and reports the defects it
     "On a diff that touches no runtime code, a docs-only diff among them, the `Thermo` line still records the simplify pass and the defects it reported, and each of its two pair rows reads `not run (no runtime code)`."
   );
   expect(mergeGate).toContain(
-    "an `APPROVE` needs both halves at the reviewed head, or, on a diff that touches no runtime code, both rows reading `not run (no runtime code)`."
+    "an `APPROVE` needs both halves run at the reviewed head, or the two `not run` rows above."
   );
   expect(mergeGate).not.toContain("Skip the `Thermo` line entirely on a docs-only PR.");
 });

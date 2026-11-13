@@ -7,6 +7,7 @@ author's own inventory comes from `bash check.sh --coverage`, so one rule makes 
 deliverable and the gate's own derivation of what the deliverable must cover.
 
     python3 citations.py extract --input <file> --label <name>
+    python3 citations.py refs --input <file> [<file> ...]
     python3 citations.py --self-test
 
 `extract` prints one JSON object per line, ordered by first occurrence. Each object:
@@ -21,6 +22,10 @@ deliverable and the gate's own derivation of what the deliverable must cover.
     ref          the dispatch:// reference, for kind dispatch
     url          the https:// address, for kind web
     occurrences  every place it occurs: {"line": <n>, "section": "<heading>"}
+
+`refs` prints every dispatch:// reference of the input, one per line, in the order they
+occur, read by the same pattern and trim `extract` reads them by. It is the one definition
+of a reference: check.sh collects every reference of this directory through it.
 
 The three readings this rule settles, each of which a reader could settle another way:
 
@@ -133,7 +138,19 @@ NUMBER_STOPWORDS = {
 }
 
 CODE_SPAN = re.compile(r"`([^`]+)`")
-DISPATCH_REF = re.compile(r"dispatch://[A-Za-z0-9][A-Za-z0-9/_.#-]*")
+# A dispatch:// reference, read whole: its document, its block anchor after `#` and its
+# version after `@`, so `dispatch://INFRA-3134/spec#b-r-lands@v5` is one reference rather
+# than one cut off at the `#` or the `@`. The punctuation a sentence puts after it is no
+# part of it, and dispatch_refs takes it off.
+DISPATCH_REF = re.compile(r"dispatch://[A-Za-z0-9][A-Za-z0-9/_.#@-]*")
+TRAILING = ".,;:)"
+
+
+def dispatch_refs(text: str) -> list[tuple[str, str]]:
+    """Every dispatch:// reference of `text`, in order, as (as written, trimmed)."""
+    return [(ref, ref.rstrip(TRAILING)) for ref in DISPATCH_REF.findall(text)]
+
+
 WEB_URL = re.compile(r"https?://[^\s)`\"'>]+")
 HEADING = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
 # A path: at least one dot in its last element, or a slash, and no space. A line or a
@@ -206,8 +223,7 @@ class Extractor:
                 section = heading.group(2)
                 continue
             masked = raw
-            for ref in DISPATCH_REF.findall(raw):
-                cleaned = ref.rstrip(".,;:)")
+            for ref, cleaned in dispatch_refs(raw):
                 self.add("dispatch", cleaned, line_no, section, ref=cleaned)
                 masked = masked.replace(ref, " " * len(ref))
             for url in WEB_URL.findall(raw):
@@ -304,7 +320,8 @@ It then writes a bare range `:188-196` under that file, and names a symbol
 `record.Postgres.Enqueue`.
 
 It reports thirteen normative invariants, 85.2% of 350 runs, a score of 0.944, and
-`https://example.org/a` and dispatch://INFRA-1098/spec.
+`https://example.org/a` and dispatch://INFRA-1098/spec, and a block at a version,
+dispatch://INFRA-3134/spec#b-r-lands@v5.
 
 # Two
 
@@ -366,6 +383,12 @@ def self_test() -> int:
         any(r["ref"] == "dispatch://INFRA-1098/spec" for r in by_kind.get("dispatch", [])),
         "dispatch://INFRA-1098/spec",
     )
+    refs = sorted(r["ref"] for r in by_kind.get("dispatch", []))
+    check(
+        "a reference with a block anchor and a version is one reference",
+        refs == ["dispatch://INFRA-1098/spec", "dispatch://INFRA-3134/spec#b-r-lands@v5"],
+        f"refs={refs}",
+    )
     check(
         "a web address is a row",
         any(r["url"] == "https://example.org/a" for r in by_kind.get("web", [])),
@@ -385,8 +408,12 @@ def self_test() -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("command", nargs="?", default="extract", choices=["extract"])
-    parser.add_argument("--input", help="the record to read, or - for standard input")
+    parser.add_argument("command", nargs="?", default="extract", choices=["extract", "refs"])
+    parser.add_argument(
+        "--input",
+        nargs="+",
+        help="the record to read, or - for standard input; refs reads every file named",
+    )
     parser.add_argument("--label", default="x", help="the prefix of each citation id")
     parser.add_argument("--self-test", action="store_true", help="prove the three readings above")
     args = parser.parse_args()
@@ -394,12 +421,21 @@ def main() -> int:
         return self_test()
     if not args.input:
         parser.error("--input is required")
-    if args.input == "-":
-        text = sys.stdin.read()
-    else:
-        with open(args.input, encoding="utf-8") as handle:
-            text = handle.read()
-    for row in Extractor(args.label).extract(text):
+    if args.command == "extract" and len(args.input) != 1:
+        parser.error("extract reads one record")
+    texts = []
+    for name in args.input:
+        if name == "-":
+            texts.append(sys.stdin.read())
+        else:
+            with open(name, encoding="utf-8") as handle:
+                texts.append(handle.read())
+    if args.command == "refs":
+        for text in texts:
+            for _, cleaned in dispatch_refs(text):
+                print(cleaned)
+        return 0
+    for row in Extractor(args.label).extract(texts[0]):
         print(json.dumps(row, ensure_ascii=False, sort_keys=True))
     return 0
 

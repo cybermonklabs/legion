@@ -34,9 +34,14 @@
 #   IOC_MODEL_DIR   the pinned all-MiniLM-L6-v2 snapshot, its model.safetensors checksummed
 #   IOC_MASLAB_VENV       mas-lab runtime, ctl and library-standard installed from the clone
 #   IOC_MASLAB_WHEEL_VENV the second, empty environment the two schema rows install into
+#   IOC_MASLAB_PY IOC_MASLAB_CTL  the python and the mas-ctl of IOC_MASLAB_VENV
+#   IOC_MASLAB_WHEEL_CTL  the mas-ctl of IOC_MASLAB_WHEEL_VENV
 #   IOC_SCOPE_SHAPES      the shapes graph the ts- rows validate against
 #   IOC_SCOPE_MAS_SHAPES  where the shapes generator of the scope clone writes
 #   IOC_TC_WORK     the working directory evidence/concord-build-run.sh runs in
+#   IOC_TC_PY       the python of that directory's venv
+#   Each of IOC_PY, IOC_MASLAB_PY, IOC_MASLAB_CTL, IOC_MASLAB_WHEEL_CTL and IOC_TC_PY
+#   names one program, and they are the only variables a recorded command may run.
 #   IOC_REVIEWS     the review corpus of tc-corpus-1, fetched with gh. A review a reader
 #                   may not see is not in it: a PENDING review is visible to its author
 #                   alone, so the row this count serves is a lower bound.
@@ -211,6 +216,8 @@ print(snapshot_download('sentence-transformers/all-MiniLM-L6-v2', revision='$rev
 ioc_env_maslab() {
     export IOC_MASLAB_VENV="$IOC_CACHE/tm-venv"
     export IOC_MASLAB_WHEEL_VENV="$IOC_CACHE/tm-venv-wheel"
+    export IOC_MASLAB_PY="$IOC_MASLAB_VENV/bin/python" IOC_MASLAB_CTL="$IOC_MASLAB_VENV/bin/mas-ctl"
+    export IOC_MASLAB_WHEEL_CTL="$IOC_MASLAB_WHEEL_VENV/bin/mas-ctl"
     local clone="$IOC_CLONES/mas-lab" constraints="$IOC_EVID/tm-constraints.txt"
     [ -s "$constraints" ] ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$constraints, the pinned dependencies of mas-lab, is missing" || return 1
@@ -263,6 +270,7 @@ ioc_env_scope_shapes() {
 # once; the file is the corpus the disagreement search and the recorded script read.
 ioc_env_reviews() {
     export IOC_TC_WORK="$IOC_CACHE/tc-work"
+    export IOC_TC_PY="$IOC_TC_WORK/venv/bin/python"
     export IOC_REVIEWS="$IOC_TC_WORK/reviews.jsonl"
     local want part n
     want="$(jq -r 'select(.id=="tc-corpus-1") | .expect.at_least' "$IOC_ENV_HERE/claims.jsonl" | head -1)"
@@ -364,13 +372,14 @@ ioc_env_main() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
     ioc_env_main || exit 1
     for ioc_env_name in IOC_CACHE IOC_CLONES IOC_EVID IOC_DESIGN IOC_COMMENT IOC_VENV IOC_PY \
-        IOC_MODEL_DIR IOC_MASLAB_VENV IOC_MASLAB_WHEEL_VENV IOC_SCOPE_SHAPES IOC_SCOPE_MAS_SHAPES \
+        IOC_MODEL_DIR IOC_MASLAB_VENV IOC_MASLAB_WHEEL_VENV IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY IOC_SCOPE_SHAPES IOC_SCOPE_MAS_SHAPES \
         IOC_TC_WORK IOC_REVIEWS IOC_OUR_TREE IOC_TM_OVERLAY ACCORD_SRC UV_CACHE_DIR PIP_CACHE_DIR HF_HOME \
         XDG_CACHE_HOME; do
         printf '%s=%s\n' "$ioc_env_name" "${!ioc_env_name}"
     done
 elif [ "${IOC_ENV_FUNCTIONS_ONLY:-0}" = 1 ]; then
-    # check.sh reads the record reader this way: the functions, and nothing prepared.
+    # check.sh reads the record reader and the clone this way: the functions, and nothing
+    # prepared.
     return 0
 else
     ioc_env_main || return 1

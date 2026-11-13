@@ -288,6 +288,131 @@ for form in 'python3.12 -m pip install pkg' '\/opt\/x\/bin\/npx pkg'; do
     case_result "a runner is known by the program it names: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
 done
 
+# 22. A dispatch:// reference is read whole, its block anchor and its version included, by
+# the one definition citations.py holds. A reference to a block Dispatch holds, at a
+# version of the document that does not exist, resolves to no node; a reader that cut the
+# reference at its `@`, as citations.py's pattern did at 25c02ddfcf, would read the block
+# alone and pass it.
+dir="$(fresh dispatch-version)"
+printf '\nSee dispatch://INFRA-3134/spec#b-61117349-45b4-496f-af67-24b0d4063953@v9999.\n' \
+    >>"$dir/repo/docs/research/internet-of-cognition/tests/concord.md"
+case_result "a reference to a block at a version Dispatch does not hold is refused" citation-dispatch "$(fixture_run "$dir" --citations)"
+
+# 23. A constraints file pins what it lists and nothing beside it. At 25c02ddfcf one -c,
+# --constraint, -r or --requirement anywhere in a pip install exempted the whole command,
+# so `uv pip install -c c.txt requests` passed install-pinned with requests unpinned. The
+# honest form beside it, a local path installed under the same constraints file, passes.
+dir="$(fresh constraint-beside-package)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt requests; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF 'uv pip install -c c.txt requests' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the form uv pip install -c c.txt requests could not be planted\n'
+    exit 1
+}
+case_result "a package beside a constraints file is held to its own version" install-pinned "$(fixture_run "$dir" --replay)"
+dir="$(fresh constraint-beside-local)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt .\/local; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF 'uv pip install -c c.txt ./local' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the form uv pip install -c c.txt ./local could not be planted\n'
+    exit 1
+}
+out="$(fixture_run "$dir" --replay)"
+if printf '%s\n' "$out" | grep -q '^FAIL install-pinned'; then
+    CASES_FAILED=$((CASES_FAILED + 1))
+    printf 'FAIL %s: %s\n' "a local path beside a constraints file passes install-pinned" "$(printf '%s\n' "$out" | grep '^FAIL install-pinned' | head -1)"
+else
+    CASES_PASSED=$((CASES_PASSED + 1))
+    printf 'PASS %s\n' "a local path beside a constraints file passes install-pinned"
+fi
+
+# 24-28 plant into the fixture row f-behaviour-1, whose command is `printf 'ran once\n'`
+# and whose predicate is {"contains":"ran once"}, a command and a predicate of their own.
+# plant_behaviour <dir> <command> <predicate> rewrites both by sed, as the cases above
+# plant theirs, and stops when the planted command is not in claims.jsonl afterwards.
+BEHAVIOUR_ROW='"command":"printf '"'"'ran once\\\\n'"'"'","expect":{"contains":"ran once"}'
+plant_behaviour() {
+    local claims="$1/repo/docs/research/internet-of-cognition/claims.jsonl" planted
+    planted="$(jq -cn --arg c "$2" --argjson e "$3" '{command: $c, expect: $e}')"
+    planted="${planted#\{}"
+    planted="${planted%\}}"
+    sed -i "s#$BEHAVIOUR_ROW#$(printf '%s' "$planted" | sed 's/[\\&#]/\\&/g')#" "$claims"
+    grep -qF -- "$planted" "$claims" || {
+        printf 'FAIL the command %s could not be planted\n' "$2"
+        exit 1
+    }
+}
+
+# honest_result <name> <family> <gate output>; the honest form beside a planted fault,
+# which passes when the gate names no failure of that family.
+honest_result() {
+    local name="$1" family="$2" out="$3"
+    if printf '%s\n' "$out" | grep -qE "^FAIL ($family)"; then
+        CASES_FAILED=$((CASES_FAILED + 1))
+        printf 'FAIL %s: %s\n' "$name" "$(printf '%s\n' "$out" | grep -E "^FAIL ($family)" | head -1)"
+    else
+        CASES_PASSED=$((CASES_PASSED + 1))
+        printf 'PASS %s\n' "$name"
+    fi
+}
+
+# 24. A read that failed in a stage of the final pipeline before its last. The pipeline's
+# status is its last stage's, so `{ printf 'ran once\n'; false; } | cat` exits 0 and its
+# output still meets the predicate. At 25c02ddfcf the ERR trap inside the group saw that
+# `false`, but it does not see a command of an && list, so with `false && true` as the
+# group's last command nothing recorded the failure and the row passed; the statuses of
+# the final pipeline's stages hold it. A search that read its corpus and found nothing in
+# such a stage is no failed read, so the honest form beside it passes.
+for form in "{ printf 'ran once\\n'; false; } | cat" "{ printf 'ran once\\n'; false && true; } | cat"; do
+    dir="$(fresh "failed-stage-$(printf '%s' "$form" | cksum | cut -d' ' -f1)")"
+    plant_behaviour "$dir" "$form" '{"contains":"ran once"}'
+    case_result "a failed stage before the last of the final pipeline fails the row: $form" replay-command "$(fixture_run "$dir" --replay)"
+done
+dir="$(fresh missed-search-stage)"
+plant_behaviour "$dir" "printf 'ran once\\n'; printf 'x\\n' | grep zzz | cat" '{"contains":"ran once"}'
+honest_result "a search that found nothing in a stage before the last passes" replay-command "$(fixture_run "$dir" --replay)"
+
+# 25. A read that failed before &&. A command before && or || sets no ERR trap and no
+# PIPESTATUS of the row's last pipeline, so `ls /nonexistent-ioc && true` failed unseen;
+# the function hook that wraps ls records it. A search that missed before && passes.
+dir="$(fresh failed-before-and)"
+plant_behaviour "$dir" "ls /nonexistent-ioc && true; printf 'ran once\\n'" '{"contains":"ran once"}'
+case_result "a failed read before && fails the row" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh missed-before-and)"
+plant_behaviour "$dir" "grep -q zzz /dev/null && true; printf 'ran once\\n'" '{"contains":"ran once"}'
+honest_result "a search that found nothing before && passes" replay-command "$(fixture_run "$dir" --replay)"
+
+# 26. A bound reads one number. At 25c02ddfcf a bound over output that was not a number
+# counted its lines, so two lines of text met at_least 1.
+dir="$(fresh bound-not-a-number)"
+plant_behaviour "$dir" "printf 'ran once\\nsecond line\\n'" '{"at_least":"1"}'
+case_result "a bound over output that is not one number fails the row" replay-command "$(fixture_run "$dir" --replay)"
+# Two numbers on two lines are no one number either: a bound that took the whitespace out
+# of its output read 1 and 2 as 12 and met at_least 5.
+dir="$(fresh bound-two-numbers)"
+plant_behaviour "$dir" "printf '1\\n2\\n'" '{"at_least":"5"}'
+case_result "a bound over two numbers on two lines fails the row" replay-command "$(fixture_run "$dir" --replay)"
+
+# 27. A declared status is the one status a program may exit with. ls exits 2 on a path
+# it cannot read, so IOC_EXPECT_STATUS=1 does not cover it and the read fails the row;
+# IOC_EXPECT_STATUS=2 declares exactly that status and passes.
+dir="$(fresh declared-status-differs)"
+plant_behaviour "$dir" "IOC_EXPECT_STATUS=1 ls /nonexistent-ioc; printf 'ran once\\n'" '{"contains":"ran once"}'
+case_result "a status other than the declared one fails the row" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh declared-status-holds)"
+plant_behaviour "$dir" "IOC_EXPECT_STATUS=2 ls /nonexistent-ioc; printf 'ran once\\n'" '{"contains":"ran once"}'
+honest_result "the declared status passes" replay-command "$(fixture_run "$dir" --replay)"
+
+# 28. An exit status beside one predicate over the output: both hold or the row fails.
+# At 25c02ddfcf an expect held exactly one key, so a row could not claim a failure and the
+# message it prints together. The honest row passes; the same status with another
+# message fails under replay-command.
+dir="$(fresh exit-and-message)"
+plant_behaviour "$dir" "printf 'ran once\\n'; exit 1" '{"exit":1,"contains":"ran once"}'
+out="$(fixture_run "$dir" --replay)"
+honest_result "an exit status beside a message that both hold passes" 'replay-command|predicate-form' "$out"
+dir="$(fresh exit-other-message)"
+plant_behaviour "$dir" "printf 'other\\n'; exit 1" '{"exit":1,"contains":"ran once"}'
+case_result "an exit status beside a message the output does not carry fails the row" replay-command "$(fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

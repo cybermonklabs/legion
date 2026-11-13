@@ -4,7 +4,7 @@ body: |-
   per half, each with its own verdict at the reviewed head and how many of its findings stand,
   instead of one verdict over both. A `CHANGES` from either half is answered in the review
   body, its findings carried into a `REQUEST_CHANGES` or each one recorded with why it does
-  not stand, and an `APPROVE` needs both halves at the reviewed head, or, on a diff that
+  not stand, and an `APPROVE` needs both halves run at the reviewed head, or, on a diff that
   touches no runtime code, both rows reading `not run (no runtime code)`. This adds no
   refusal: it writes down what a reviewer already decides, and it replaces the
   `not run (docs-only)` spelling, which named only one kind of diff the pair does not run on.

@@ -128,8 +128,8 @@ front-page|shape|the front page carries the ranking, the one thing to do first, 
 question-list|shape|every page's question is on the question list, and every question is answered by a page or named on the front page|a page whose question is not on the list
 triage-named|shape|every repository the triage dropped is named on the front page with its reason|a dropped repository the front page does not name
 order-of-work|shape|the commit that adds the question list is an ancestor of every commit that adds a deep-read evidence file|a question-list commit that is not an ancestor
-citation-our-code|citations|every citation into our own repository names a path that stands at the commit it names, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words is reported as not checked|a cited symbol no file holds
-citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words is reported as not checked|a cited identifier the file does not hold
+citation-our-code|citations|every citation into our own repository names a path that stands at the commit it names, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited symbol no file holds
+citation-project-code|citations|every citation into one of the projects names a path the clone holds at the pinned commit, and every part of its symbol that is an identifier, a line, a prefixed name or a file name stands in that path; a part written in words, and every part of a citation whose file is written in words, is reported as not checked|a cited identifier the file does not hold
 citation-published|citations|every citation of a published document names a committed copy whose checksum is the one sources.json recorded and whose text holds the sentence quoted|a byte appended to a committed copy
 citation-dispatch|citations|every dispatch:// reference resolves to a node Dispatch holds|a reference that resolves to no node
 citation-kinds|citations|the extraction rule reads a citation of every kind it names, a number written in words among them|an extractor that reads digits alone
@@ -185,23 +185,17 @@ claims_file() { printf '%s/claims.jsonl' "$EVIDENCE"; }
 # Every row of claims.jsonl, as compact JSON, one per line.
 claims() { grep -v '^[[:space:]]*$' "$(claims_file)"; }
 
+# clone_root <repository>; prints the path of the clone of a repository sources.json pins,
+# at its pinned commit. The clone is made by env.sh's one rule, ioc_env_clone, under the
+# clone root this run reads, so a clone or a fetch that fails fails here rather than
+# leaving a clone without the commit.
 clone_root() {
     # A row may name a repository as `scope` or as `ioc-project/scope`; both name the
     # same row of sources.json, which pins it by its last path element.
-    local name="${1##*/}" url commit
-    url="$(jq -r --arg n "$name" '.repositories[] | select(.name==$n) | .url' "$EVIDENCE/sources.json")"
-    commit="$(jq -r --arg n "$name" '.repositories[] | select(.name==$n) | .commit' "$EVIDENCE/sources.json")"
-    [ -n "$url" ] || return 1
-    mkdir -p "$CLONES/$name"
-    # One commit deep and no tags, which is the clone the triage read; env.sh clones the
-    # same way, and the rows that read a repository's history read it from the committed
-    # answers of GitHub's own API instead.
-    if [ ! -d "$CLONES/$name/.git" ]; then
-        git -C "$CLONES/$name" init --quiet >&2 || return 1
-        git -C "$CLONES/$name" remote add origin "$url" 2>/dev/null || true
-    fi
-    git -C "$CLONES/$name" cat-file -e "$commit^{commit}" 2>/dev/null ||
-        git -C "$CLONES/$name" fetch --quiet --depth 1 --no-tags origin "$commit" >&2 || true
+    local name="${1##*/}"
+    env_functions || return 1
+    local IOC_ENV_HERE="$EVIDENCE" IOC_CLONES="$CLONES"
+    ioc_env_clone "$name" || return 1
     printf '%s/%s' "$CLONES" "$name"
 }
 
@@ -229,11 +223,11 @@ dispatch_get() {
     curl -sS -H @"$header" "${DISPATCH_URL%/}$path"
 }
 
-# record_reader makes env.sh's reader of a Dispatch record, ioc_env_read_record, a function
-# of this shell, so that check.sh and env.sh keep a record by one rule: the read exited 0
-# and what it printed is not a refusal. env.sh read this way defines its functions and
-# prepares nothing.
-record_reader() {
+# env_functions makes env.sh's functions functions of this shell, so that check.sh and
+# env.sh keep a Dispatch record by one rule (ioc_env_read_record: the read exited 0 and
+# what it printed is not a refusal) and clone a repository by one rule (ioc_env_clone).
+# env.sh read this way defines its functions and prepares nothing.
+env_functions() {
     declare -F ioc_env_read_record >/dev/null && return 0
     [ -r "$EVIDENCE/env.sh" ] || return 1
     local IOC_ENV_FUNCTIONS_ONLY=1
@@ -250,7 +244,7 @@ judgement_text() {
         return 0
     fi
     if [ ! -s "$cache" ]; then
-        { record_reader && ioc_env_read_record dispatch://INFRA-3134/artifact/judgement-md "$cache"; } 2>/dev/null || return 1
+        { env_functions && ioc_env_read_record dispatch://INFRA-3134/artifact/judgement-md "$cache"; } 2>/dev/null || return 1
     fi
     cat "$cache"
 }
@@ -278,7 +272,7 @@ record_text() {
     fi
     cache="$RUN_SCRATCH/record-$label.md"
     if [ ! -s "$cache" ]; then
-        { record_reader && ioc_env_read_record "$ref" "$cache"; } 2>/dev/null || return 1
+        { env_functions && ioc_env_read_record "$ref" "$cache"; } 2>/dev/null || return 1
     fi
     cat "$cache"
 }
@@ -317,20 +311,34 @@ pr_commits() {
 
 # bound <at_most|at_least> <value> <output file>
 #
-# A bound reads the number the output prints when the output is one number, which is how
-# a score or a count is recorded, and the number of lines otherwise.
+# A bound reads the one number the output prints, which is how a score or a count is
+# recorded; a row that counts lines says so in its command, with wc -l. Output that is not
+# exactly one number holds no bound, so a traceback's line count never meets one, and the
+# number read is named in the failure.
 bound() {
     local key="$1" value="$2" out="$3" read_value
-    read_value="$(tr -d '[:space:]' <"$out")"
-    if ! printf '%s' "$read_value" | grep -qE '^-?[0-9]+(\.[0-9]+)?$'; then
-        read_value="$(wc -l <"$out" | tr -d ' ')"
+    # Only the space around the number is taken off, so two numbers on two lines stay
+    # two and are no one number.
+    read_value="$(cat "$out")"
+    read_value="${read_value#"${read_value%%[![:space:]]*}"}"
+    read_value="${read_value%"${read_value##*[![:space:]]}"}"
+    if ! [[ "$read_value" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; then
+        IOC_BOUND_READ="output that is not one number"
+        return 1
     fi
+    IOC_BOUND_READ="$read_value"
     python3 -c 'import sys; a=float(sys.argv[1]); b=float(sys.argv[2]); sys.exit(0 if (a <= b if sys.argv[3]=="at_most" else a >= b) else 1)' "$read_value" "$value" "$key"
 }
 
 # evaluate <expect-json> <output-file>; prints nothing, returns 0 when it holds.
 evaluate() {
     local spec="$1" out="$2" key value candidate
+    # An exit status beside a predicate over the output: both hold, or the row fails.
+    if [ "$(printf '%s' "$spec" | jq 'type == "object" and has("exit") and length == 2')" = true ]; then
+        evaluate "$(printf '%s' "$spec" | jq -c '{exit}')" "$out" &&
+            evaluate "$(printf '%s' "$spec" | jq -c 'del(.exit)')" "$out"
+        return
+    fi
     key="$(printf '%s' "$spec" | jq -r 'keys[0] // empty')"
     value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
     case "$key" in
@@ -421,38 +429,108 @@ prepare_env() {
     }
 }
 
+# What the evaluator refuses, a closed list. A row's command is run once, and the row
+# fails, naming what it read, on each of these and on nothing else:
+#
+#   - a non-zero status of any program the command runs, wherever it stands: in any stage
+#     of a pipeline, in any element of an && or || list, in a group, a subshell, a loop
+#     or a substitution. Each program named in command position by a bare word is wrapped
+#     in a function of that name, and each of the five program variables points at a
+#     shim, and both record the program's own status with its own arguments;
+#   - a non-zero status of any stage but the last of the command's final pipeline, read
+#     from PIPESTATUS and matched to the stage's words by the quote-aware reader, which
+#     catches a group or subshell whose status a builtin set;
+#   - a search, grep, egrep, fgrep, rg, ag or git grep, that exits above 1. A search that
+#     exits exactly 1 found nothing, which is no failure, and that rule is applied to each
+#     program and each stage on its own;
+#   - a bound, at_least or at_most, whose output is not exactly one number; a row that
+#     counts lines says so in its command, with wc -l;
+#   - a predicate written as a sentence, a row with two predicates over its output, and
+#     a row with a command and no predicate.
+#
+# Two forms declare a failure the row claims, and each is read rather than passed: an
+# exit status beside the row's one predicate over its output, which both must hold and
+# which exempts that row from the first three rules, and IOC_EXPECT_STATUS=<n> written
+# before one command, which exempts that command's status n and nothing else.
+#
+# What the evaluator cannot see. It reads exit statuses and the output a row prints. A
+# command that exits 0 after failing, or that writes its failure only to a file the row
+# does not read, is outside what it sees; so is a builtin's status anywhere but the
+# final pipeline, and a program a script the row runs starts, whose status reaches the
+# row only through that script's own. A person reading every row at review covers that,
+# as for install-pinned.
+
+# The programs a row may name through a variable, each of which env.sh sets to one
+# executable; during a run each is pointed at a shim that runs that executable and records
+# its status, as the functions below record a program named by a bare word. It is the
+# reader's allow-list of command-word variables, and the two are one list.
+PROGRAM_VARIABLES="IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY"
+
+# Shell builtins that change the shell's own state or test a condition, and so are no
+# read whose status could be a failure; every other program name is wrapped.
+UNWRAPPED=" [ test true false read exit return export local declare typeset set unset shift eval source . exec trap command builtin wait break continue : let readonly alias unalias shopt getopts hash type ulimit umask times "
+
+program_shims() {
+    # Writes one shim per program variable env.sh set, once per run, and prints the
+    # assignments that point each variable at its shim.
+    local dir="$RUN_SCRATCH/programs" v real
+    mkdir -p "$dir"
+    for v in $PROGRAM_VARIABLES; do
+        real="${!v:-}"
+        [ -n "$real" ] && [ -x "$real" ] || continue
+        if [ ! -x "$dir/$v" ]; then
+            {
+                printf '#!/usr/bin/env bash\n'
+                printf '%q "$@"\n' "$real"
+                printf '__ioc_s=$?\n'
+                printf 'if [ "$__ioc_s" -ne 0 ] && [ "$__ioc_s" != "${IOC_EXPECT_STATUS:-}" ] && [ -n "${__IOC_FAILED:-}" ]; then\n'
+                printf '    printf "%%s\\t%%s\\n" "$__ioc_s" "$(printf "%%s " %q "$@" | tr "\\n\\t" "  ")" >>"$__IOC_FAILED"\n' "\$$v"
+                printf 'fi\n'
+                printf 'exit "$__ioc_s"\n'
+            } >"$dir/$v"
+            chmod +x "$dir/$v"
+        fi
+        printf '%s=%q\n' "$v" "$dir/$v"
+    done
+}
+
 run_recorded() {
     # run_recorded <command> <output-file>; the variables env.sh exported are already in
     # this shell's environment and reach the command through it.
     #
-    # Beside the output and the status, the status of every stage of the command's last
-    # pipeline is written to <output-file>.pipe. An absence search reads its corpus in the
-    # first stage of such a pipeline, and a read that failed prints its refusal and leaves
-    # the search with nothing to find, which is not the same fact as a search that found
-    # nothing: the stage statuses are what tell the two apart.
-    local command="$1" out="$2" script
+    # Every program the command runs records its own status when it fails, as one line of
+    # <output-file>.failed, the status first and then the program and its arguments. Each
+    # program the row names in command position by a bare word is wrapped in a shell
+    # function of that name, which runs the real command and records its status, and each
+    # program variable points at a shim that does the same. A function and a shim see their
+    # own status wherever the program stands: in any stage of a pipeline, in any element of
+    # an && or || list, in a group, a subshell, a loop or a substitution. That is what bash's
+    # ERR trap does not do, for a stage that is not a pipeline's last and for a command
+    # before && or ||, and what PIPESTATUS does not do, since it holds the statuses of one
+    # pipeline without its commands' text.
+    local command="$1" out="$2" script name
     script="$out.sh"
     : >"$out.failed"
     {
-        # Every command of the row that fails and that nothing guards writes its status and
-        # its own text here, one line each, the status first. The status of a pipeline is
-        # its last stage's, and the status of a brace group is its last command's, so
-        # neither says that a read inside it failed; the ERR trap does, wherever the read
-        # stands. The trap's first word expands "$?" before anything else runs, so the
-        # status is the failing command's, and a command written over several lines is
-        # written on one.
         printf '__ioc_failed=%q\n' "$out.failed"
-        printf '%s\n' "__ioc_nl=\$'\\n'"
-        printf '%s\n' 'set -o errtrace'
-        printf '%s\n' "trap 'printf \"%s\\t%s\\n\" \"\$?\" \"\${BASH_COMMAND//\$__ioc_nl/ }\" >>\"\$__ioc_failed\"' ERR"
+        printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; [ "$__ioc_s" = "${IOC_EXPECT_STATUS:-}" ] && return 0; printf "%s\t%s\n" "$__ioc_s" "$(printf "%s " "$@" | tr "\n\t" "  ")" >>"$__ioc_failed"; }'
+        while IFS= read -r name; do
+            [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_.+-]*$ ]] || continue
+            case "$UNWRAPPED" in *" $name "*) continue ;; esac
+            printf '%s() { command %s "$@"; local __ioc_s=$?; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" %s "$@"; return "$__ioc_s"; }\n' "$name" "$name" "$name"
+        done < <(printf '%s' "$command" | python3 -c "$(reader_py)" names)
+        program_shims
         printf '%s\n' "$command"
+        # The statuses of the final pipeline's stages, which a stage the functions do not
+        # see, such as a group whose status a builtin set, still reports.
         printf '%s\n' '__ioc_stages=("${PIPESTATUS[@]}")'
         printf '%s\n' 'printf "%s\n" "${__ioc_stages[*]}" >&9'
         printf '%s\n' 'exit "${__ioc_stages[${#__ioc_stages[@]}-1]}"'
     } >"$script"
+    printf '%s' "$command" >"$out.command"
     (
         cd "$ROOT" || exit 1
-        IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" bash "$script" 9>"$out.pipe"
+        __IOC_FAILED="$out.failed" IOC_CLONES="$CLONES" EVIDENCE="$EVIDENCE" bash "$script" 9>"$out.pipe"
     ) >"$out" 2>&1
     printf '%s' "$?" >"$out.status"
 }
@@ -488,54 +566,44 @@ search_missed() {
     esac
 }
 
-# failed_read <output-file>; true when the ERR trap of the row's run recorded a command
-# that failed and that is no search that missed, which is a read that failed wherever it
-# stood in the row. It names that command and its status in IOC_FAILED_READ.
+# failed_read <output-file>; true when a program of the row's run recorded a status that
+# is no search that missed, which is a read that failed wherever it stood in the row, and
+# the one search-miss rule is applied to each program's own status. It names that program,
+# its arguments and its status in IOC_FAILED_READ.
 failed_read() {
     local out="$1" failed_status failed_command
     IOC_FAILED_READ=""
-    [ -s "$out.failed" ] || return 1
-    while IFS=$'\t' read -r failed_status failed_command; do
-        search_missed "$failed_command" "$failed_status" && continue
-        IOC_FAILED_READ="'$failed_command' exited $failed_status"
-        return 0
-    done <"$out.failed"
-    return 1
-}
-
-# corpus_read_failed <output-file> <command>; true when a command of the row failed and
-# was no search that missed, or when a stage before the last of the command's last
-# pipeline did, which is a corpus this run never read.
-#
-# A search that finds nothing exits 1, and so does a read that could not reach what it
-# reads, so the status alone does not tell them apart: the stage's own first word does.
-# A search before the last stage may exit 1 and still have read its corpus; any other
-# reader that exits non-zero read nothing, and the search after it found nothing because
-# nothing was there to search.
-corpus_read_failed() {
-    local out="$1" command="$2" stages tail_pipeline
-    IOC_CORPUS_READ_FAILED=""
-    # Every unguarded failure the row's own commands made, whatever construct it stood in.
-    if failed_read "$out"; then
-        IOC_CORPUS_READ_FAILED="$IOC_FAILED_READ"
-        return 0
+    if [ -s "$out.failed" ]; then
+        while IFS=$'\t' read -r failed_status failed_command; do
+            search_missed "$failed_command" "$failed_status" && continue
+            IOC_FAILED_READ="'$failed_command' exited $failed_status"
+            return 0
+        done <"$out.failed"
     fi
+    # Every stage but the last of the final pipeline, by its own status and the words it
+    # starts with, as the quote-aware reader splits it; the last stage's status is the
+    # row's, which its predicate reads.
+    local stages i texts=()
     [ -s "$out.pipe" ] || return 1
     read -r -a stages <"$out.pipe" || return 1
     [ "${#stages[@]}" -gt 1 ] || return 1
-    # The command's last pipeline, which is the one PIPESTATUS reports.
-    tail_pipeline="$(printf '%s' "$command" | tr '\n' ';' | awk -F';' '{for (i = NF; i >= 1; i--) if ($i ~ /[^[:space:]]/) { print $i; exit } }')"
-    local i stage
+    mapfile -t texts < <(python3 -c "$(reader_py)" stages <"$out.command")
+    if [ "${texts[0]:-}" = UNSPLIT ] || [ "${#texts[@]}" -ne "${#stages[@]}" ]; then
+        IOC_FAILED_READ="the final pipeline of the row, whose ${#stages[@]} stages the reader does not split into as many"
+        for ((i = 0; i < ${#stages[@]} - 1; i++)); do [ "${stages[$i]}" = 0 ] || return 0; done
+        return 1
+    fi
     for ((i = 0; i < ${#stages[@]} - 1; i++)); do
         [ "${stages[$i]}" = 0 ] && continue
-        stage="$(printf '%s' "$tail_pipeline" | awk -F'[|]' -v n="$((i + 1))" '{print $n}')"
-        search_missed "$stage" "${stages[$i]}" && continue
-        IOC_CORPUS_READ_FAILED="the stage '$(printf '%s' "$stage" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')' of its last pipeline exited ${stages[$i]}"
+        if [[ "${texts[$i]}" =~ (^|\ )IOC_EXPECT_STATUS=([0-9]+)(\ |$) ]] && [ "${BASH_REMATCH[2]}" = "${stages[$i]}" ]; then
+            continue
+        fi
+        search_missed "${texts[$i]}" "${stages[$i]}" && continue
+        IOC_FAILED_READ="the stage '${texts[$i]}' of the final pipeline exited ${stages[$i]}"
         return 0
     done
     return 1
 }
-
 
 # github_budget
 #
@@ -575,8 +643,10 @@ github_budget() {
 # A wildcard, a partial version, a tag such as latest or next, a comparison (>=, ~=, ^, ~)
 # or any other spelling is no version. A local path, a variable of this deliverable that
 # names one (IOC_...), a constraints or requirements file, and env.sh's pinned list
-# IOC_ENV_PY_PINS are pinned. An option of a runner the reader does not know, a package
-# written as any other variable, and a command it cannot open are refused.
+# IOC_ENV_PY_PINS are pinned. A constraints or requirements file pins what it lists and
+# nothing more: every other package of the same pip install is held to its own version or
+# is a local path. An option of a runner the reader does not know, a package written as
+# any other variable, and a command it cannot open are refused.
 #
 # Every word in command position is read, and one this reader cannot resolve fails the
 # row and is named. Command position is the first word of a command after its assignments
@@ -585,9 +655,10 @@ github_budget() {
 # a shell as a string (sh, bash, zsh, dash or ksh with -c, and eval) and the code of every
 # substitution are read with this same reader, and the output of a substitution is no
 # command word it can resolve. A command word is a literal, or one of a closed list of
-# variables: $IOC_PY, which resolves to python, and $IOC_MASLAB_VENV,
-# $IOC_MASLAB_WHEEL_VENV and $IOC_TC_WORK, each followed by a path whose last element is
-# the program. A resolved word is held to every rule a literal is, so python code given
+# five variables, each of which env.sh sets to one program: $IOC_PY, $IOC_MASLAB_PY and
+# $IOC_TC_PY, which resolve to python, and $IOC_MASLAB_CTL and $IOC_MASLAB_WHEEL_CTL,
+# which resolve to mas-ctl; a variable with a path after it is no command word. A
+# resolved word is held to every rule a literal is, so python code given
 # to $IOC_PY -c that starts a process is refused as python -c is. Any other variable, a
 # word built of several, and a command this reader cannot split are refused.
 #
@@ -603,8 +674,14 @@ github_budget() {
 # outside what a reader of command text can see, and no further rule of this kind closes
 # that. What covers it is a person reading every row at review, and env.sh, which pins
 # the interpreters and environments the rows run.
-unpinned_installs() {
-    claims | python3 -c '
+# reader_py prints the reader of command text, one Python program that both install-pinned
+# and the evaluator below read, so a command is split into words, commands and command
+# words in one way only. Its last argument selects what it prints: "installs" reads
+# claims.jsonl on stdin and prints each refusal as <id><TAB><what it runs>; "names" reads
+# one command on stdin and prints each program name it runs in command position, one per
+# line, including those inside shell strings, eval and substitutions.
+reader_py() {
+    cat <<'PYREADER'
 import json, re, shlex, sys
 
 PY_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?==[0-9]+(\.[0-9]+)*$")
@@ -669,16 +746,17 @@ SUBSTITUTION = re.compile(r"(?<!\\)[$<>]\(((?:[^()]|\([^()]*\))*)\)|(?<!\\)`((?:
 # command word that is the output of a substitution is refused as unresolved.
 SUBST_WORD = "IOCSUBSTITUTION"
 
-# The closed allow-list of variables a command word may be written with: the
-# interpreters and environments env.sh builds and pins. Each is resolved to what env.sh
-# makes it, and the word is then held to every rule a literal word is held to. A
-# variable with no path after it resolves to the program named here; one with a path
-# resolves to the last element of that path. No other variable may stand in command position.
+# The closed allow-list of variables a command word may be written with: the programs
+# env.sh builds and pins, each naming one executable, which is the list PROGRAM_VARIABLES
+# of check.sh names too. Each resolves to the program named here, and the word is then
+# held to every rule a literal word is held to. A variable with a path after it, and any
+# other variable, may not stand in command position.
 RESOLVABLE = {
     "IOC_PY": "python",
-    "IOC_MASLAB_VENV": None,
-    "IOC_MASLAB_WHEEL_VENV": None,
-    "IOC_TC_WORK": None,
+    "IOC_MASLAB_PY": "python",
+    "IOC_MASLAB_CTL": "mas-ctl",
+    "IOC_MASLAB_WHEEL_CTL": "mas-ctl",
+    "IOC_TC_PY": "python",
 }
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time", "done", "fi", "esac"}
 CONTROL = {"for", "case", "select", "function", "in"}
@@ -695,11 +773,9 @@ def resolve(word):
         return None
     if "$" not in word:
         return word.rsplit("/", 1)[-1]
-    m = re.match(r"^\$(\{)?([A-Z_]+)(?(1)\})(/[A-Za-z0-9._/-]*[A-Za-z0-9._-])?$", word)
+    m = re.match(r"^\$(\{)?([A-Z_]+)(?(1)\})$", word)
     if not m or m.group(2) not in RESOLVABLE:
         return None
-    if m.group(3):
-        return m.group(3).rsplit("/", 1)[-1]
     return RESOLVABLE[m.group(2)]
 
 def runner_name(word):
@@ -875,30 +951,119 @@ def read_command(command, depth=0):
             elif name == "go" and nxt in ("run", "install"):
                 found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, GO_FLAG, go_ok)
             elif name == "pip" and nxt == "install":
-                rest = w[i + 2:]
-                if any(a in ("-c", "--constraint", "-r", "--requirement") or a.startswith(("--constraint=", "--requirement=")) for a in rest) or "$IOC_ENV_PY_PINS" in part:
-                    continue
-                skip = False
-                for a in rest:
-                    if skip:
-                        skip = False
-                        continue
+                # Every argument is read. A constraints or requirements file pins what it
+                # lists and nothing else, so only the file it names is exempt, and env.sh's
+                # pinned list stands for its own packages; every other package is held to
+                # its own version or is a local path.
+                rest, j = w[i + 2:], 0
+                while j < len(rest):
+                    a = rest[j]
+                    key = a.split("=", 1)[0]
                     if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
                         break
-                    if a in ("--python", "-p", "--target", "--prefix", "--index-url", "--extra-index-url"):
-                        skip = True
-                        continue
-                    if a.startswith("-"):
-                        continue
-                    if not py_ok(a):
+                    if key in ("-c", "--constraint", "-r", "--requirement", "--python", "-p",
+                               "--target", "--prefix", "--index-url", "--extra-index-url"):
+                        if option_value(a) is None:
+                            j += 1
+                    elif a.startswith("-") or a in ("$IOC_ENV_PY_PINS", "${IOC_ENV_PY_PINS}"):
+                        pass
+                    elif not py_ok(a):
                         found.append("pip install " + a)
+                    j += 1
     return found
 
-for line in sys.stdin:
-    row = json.loads(line)
-    for what in read_command(row.get("command") or ""):
-        print(row.get("id", "?") + "\t" + what)
-'
+
+def names_of(command, depth=0):
+    out = []
+    if depth > 4:
+        return out
+    for m in SUBSTITUTION.finditer(command):
+        out += names_of(m.group(1) or m.group(2) or "", depth + 1)
+    parts = commands(SUBSTITUTION.sub(SUBST_WORD, command)) or []
+    for w in parts:
+        for i in command_words(w):
+            if resolve(w[i]) is not None and "/" not in w[i] and "$" not in w[i]:
+                out.append(w[i])
+        for i, word in enumerate(w):
+            if runner_name(word) in SHELLS and i + 2 < len(w) and w[i + 1].startswith("-") and "c" in w[i + 1]:
+                out += names_of(w[i + 2], depth + 1)
+            elif word == "eval":
+                out += names_of(" ".join(w[i + 1:]), depth + 1)
+    return out
+
+def last_pipeline_stages(command):
+    # The stages of the command's last pipeline at the top level, each as the words it
+    # starts with; a group or a loop is one stage, written as its opening word. Braces,
+    # parentheses, and the do/done, then/fi and case/esac pairs open and close a level.
+    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=";&|()<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None
+    depth, last, current = 0, [], []
+    pipeline = []
+    for token in tokens:
+        if token and set(token) <= set(";&|()<>"):
+            # An operator token may join a parenthesis to a separator, as ); does; the
+            # parentheses move the level and what is left is read as one operator.
+            for c in token:
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+            token = token.replace("(", "").replace(")", "")
+            if not token:
+                continue
+        elif token in ("{", "do", "case", "if"):
+            depth += 1
+        elif token in ("}", "done", "esac", "fi"):
+            depth -= 1
+        if depth == 0 and token in (";", "&&", "||", "&", ";;"):
+            if current:
+                pipeline.append(current)
+            if pipeline:
+                last = pipeline
+            pipeline, current = [], []
+            continue
+        if depth == 0 and token == "|":
+            pipeline.append(current)
+            current = []
+            continue
+        current.append(token)
+    if current:
+        pipeline.append(current)
+    if pipeline:
+        last = pipeline
+    out = []
+    for stage in last:
+        # An assignment sets the stage's environment and is no word of its command, but a
+        # declared expected status is kept, so the stage is read against it.
+        words = [t for t in stage if not ASSIGNMENT.match(t) or t.startswith("IOC_EXPECT_STATUS=")]
+        out.append(" ".join(words[:6]) if words else "")
+    return out
+
+if sys.argv[-1] == "stages":
+    stages = last_pipeline_stages(sys.stdin.read())
+    if stages is None:
+        print("UNSPLIT")
+    else:
+        for stage in stages:
+            print(stage)
+elif sys.argv[-1] == "names":
+    for name in sorted(set(names_of(sys.stdin.read()))):
+        print(name)
+else:
+    for line in sys.stdin:
+        row = json.loads(line)
+        for what in read_command(row.get("command") or ""):
+            print(row.get("id", "?") + "\t" + what)
+PYREADER
+}
+
+unpinned_installs() {
+    claims | python3 -c "$(reader_py)" installs
 }
 
 mode_replay() {
@@ -934,9 +1099,9 @@ mode_replay() {
             ;;
         esac
         expect="$(printf '%s' "$row" | jq -c '.expect // empty')"
-        if [ -n "$expect" ] && [ "$(printf '%s' "$expect" | jq 'if type == "object" then length else 0 end')" != 1 ]; then
+        if [ -n "$expect" ] && [ "$(printf '%s' "$expect" | jq 'if type == "object" then ([keys[] | select(. != "exit")] | length) + (if has("exit") and length == 1 then 1 else 0 end) else 0 end')" != 1 ]; then
             bad_predicate=$((bad_predicate + 1))
-            fail predicate-form "$id carries $(printf '%s' "$expect" | jq -r 'if type == "object" then (keys | join(" and ")) else "no key" end') in one expect, and a row is held to exactly one predicate: $expect"
+            fail predicate-form "$id carries $(printf '%s' "$expect" | jq -r 'if type == "object" then (keys | join(" and ")) else "no key" end') in one expect, and a row is held to exactly one predicate over its output, which an exit status may stand beside: $expect"
         elif [ -n "$expect" ] && predicate_is_a_sentence "$expect"; then
             bad_predicate=$((bad_predicate + 1))
             fail predicate-form "$id carries a predicate that is not a bound, a set membership or an exit status: $expect"
@@ -961,9 +1126,9 @@ mode_replay() {
         ran=$((ran + 1))
         run_recorded "$command" "$work/$id.out"
         if [ "$kind" = absence ]; then
-            if corpus_read_failed "$work/$id.out" "$command"; then
+            if failed_read "$work/$id.out"; then
                 absence_failures="$absence_failures $id"
-                fail absence-still-empty "$id searched a corpus this run never read: $IOC_CORPUS_READ_FAILED, so the search found nothing because nothing was read"
+                fail absence-still-empty "$id searched a corpus this run never read: $IOC_FAILED_READ, so the search found nothing because nothing was read"
                 continue
             fi
             if grep -q '[^[:space:]]' "$work/$id.out"; then
@@ -979,14 +1144,15 @@ mode_replay() {
         # A read that failed anywhere in the row leaves its output no reading of what the
         # row claims, whatever that output still meets: a traceback has enough lines for a
         # bound. A row whose predicate is an exit status claims the failure itself.
-        if [ "$(printf '%s' "$expect" | jq -r 'keys[0]')" != exit ] && failed_read "$work/$id.out"; then
+        if [ "$(printf '%s' "$expect" | jq 'has("exit")')" != true ] && failed_read "$work/$id.out"; then
             command_failures="$command_failures $id"
             fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ, so its output is no reading of what the row claims"
             continue
         fi
+        IOC_BOUND_READ=""
         if ! evaluate "$expect" "$work/$id.out"; then
             command_failures="$command_failures $id"
-            fail replay-command "$id ran '$command' and its output does not meet $expect: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
+            fail replay-command "$id ran '$command' and its output does not meet $expect${IOC_BOUND_READ:+ (the bound read $IOC_BOUND_READ)}: $(head -c 160 "$work/$id.out" | tr '\n' ' ')"
         fi
     done < <(claims)
 
@@ -1022,10 +1188,12 @@ replay_citation_rows() {
     for label in $(jq -r '.records_under_check[].label' "$EVIDENCE/sources.json"); do
         if ! record_text "$label" >"$work/record-$label.md"; then
             fail citation-row "Dispatch did not answer the read of the record labelled $label"
+            rm -rf "$work"
             return
         fi
         python3 "$EVIDENCE/citations.py" extract --input "$work/record-$label.md" --label "$label" >"$work/cit-$label.jsonl" || {
             fail citation-row "citations.py could not read the record labelled $label"
+            rm -rf "$work"
             return
         }
         while IFS= read -r cid; do
@@ -1453,7 +1621,8 @@ PYTHON
 # paths the citation names: as literal text, as a line, as a file name, as a prefixed
 # name, as a path, as a regular expression where the part holds `|` or `*`, and as the
 # last element of a dotted name. A part written in words that none of those finds names a
-# part of the file a reader judges, and this gate does not read it: it is written to
+# part of the file a reader judges, and this gate does not read it; nor does it read any
+# part of a symbol whose citation writes its file in words. Each such part is written to
 # $RUN_SCRATCH/unchecked-parts, which --citations prints, one line per part with its row,
 # so that a part nothing checked is never counted as checked. Any other part that no
 # search finds fails the citation.
@@ -1489,8 +1658,15 @@ resolve_symbol() {
     done < <(printf '%s\n' "$file" | sed 's/ and /\n/g; s/,/\n/g')
     # A citation whose file is written in words, such as "15 pyproject.toml files", names
     # a set a reader reads rather than a path, and the gate holds its symbol to no file:
-    # the paths it does name were already read by paths_at.
-    [ "${#pathspec[@]}" -gt 0 ] || return 0
+    # the paths it does name were already read by paths_at. Each part of its symbol is
+    # reported as not checked.
+    if [ "${#pathspec[@]}" -eq 0 ]; then
+        while IFS= read -r part; do
+            part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+            [ -n "$part" ] && printf '%s\t%s\n' "$id" "$part" >>"$RUN_SCRATCH/unchecked-parts"
+        done < <(printf '%s\n' "$symbol" | sed 's/ and /\n/g; s/,/\n/g')
+        return 0
+    fi
     while IFS= read -r part; do
         part="$(printf '%s' "$part" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
         [ -n "$part" ] || continue
@@ -1561,20 +1737,33 @@ resolve_symbol() {
 }
 
 
+# Every dispatch:// reference is read by citations.py refs, the one definition of a
+# reference and of the punctuation after one that is no part of it: its document, its
+# block anchor after `#` and its version after `@`, so a bogus anchor or version is read
+# as part of the reference rather than cut off.
+
+# directory_references; every dispatch:// reference of this directory's pages and rows,
+# once each. It fails when citations.py could not read them.
+directory_references() {
+    local files=() list="$RUN_SCRATCH/directory-references"
+    mapfile -d '' -t files < <(find "$EVIDENCE" -type f \( -name '*.md' -o -name '*.jsonl' \) -print0)
+    [ "${#files[@]}" -gt 0 ] || return 0
+    python3 "$EVIDENCE/citations.py" refs --input "${files[@]}" >"$list" || return 1
+    sort -u "$list"
+}
+
 # false_references
 #
 # A reference a row of claims.jsonl records as false is a reference the record under check
 # wrote and Dispatch does not hold. It is that row's evidence rather than a citation of
-# this directory, so --citations reads it there and not here.
+# this directory, so --citations reads it there and not here. It fails when citations.py
+# could not read them.
 false_references() {
+    local list="$RUN_SCRATCH/false-references"
     claims | jq -r 'select(.mark=="false") | [.claim, (.evidence|tostring), (.note // "")] | join(" ")' |
-        grep -oE "$DISPATCH_REF" | sed 's/[.,;:)]*$//' | sort -u
+        python3 "$EVIDENCE/citations.py" refs --input - >"$list" || return 1
+    sort -u "$list"
 }
-
-# Every dispatch:// reference of this directory is read whole by this one pattern: its
-# document, its block anchor after `#` and its version after `@`, so a bogus anchor is
-# read as one rather than cut off at the `#`.
-DISPATCH_REF='dispatch://[A-Za-z0-9][A-Za-z0-9/_.#@-]*'
 
 # dispatch_ref_resolves <ref>; true when Dispatch holds the whole reference, its block
 # anchor and its version included. dispatch read --ref reads a block and refuses a block
@@ -1644,17 +1833,18 @@ report_live_pages() {
 
 # report_unchecked_parts
 #
-# The symbol parts resolve_symbol did not read: each is written in words, as the name of
-# a part of a file, and neither the literal search nor any other reading found it. This is
-# a report and no assertion, one line per part with the row that cites it, and a count,
-# so that a reader sees how much of the symbol column the citation assertions leave to them.
+# The symbol parts resolve_symbol did not read: a part written in words, as the name of a
+# part of a file, that neither the literal search nor any other reading found, and every
+# part of a symbol whose citation writes its file in words. This is a report and no
+# assertion, one line per part with the row that cites it, and a count, so that a reader
+# sees how much of the symbol column the citation assertions leave to them.
 report_unchecked_parts() {
     local list="$RUN_SCRATCH/unchecked-parts" id part
     if [ ! -s "$list" ]; then
         printf 'No symbol part was left unchecked: every part is an identifier, a line, a prefixed name or a file name, or its text stands in the file.\n'
         return
     fi
-    printf 'The symbol parts written in words that no search of the cited files found. These are not checked: each names a part of a file a reader judges.\n'
+    printf 'The symbol parts no search of the cited files read: a part written in words that no search found, or a part of a citation whose file is written in words. These are not checked: each names a part of a file, or of a set of files, a reader judges.\n'
     while IFS=$'\t' read -r id part; do
         printf '  not checked: %s cites the part "%s"\n' "$id" "$part"
     done <"$list"
@@ -1760,14 +1950,18 @@ mode_citations() {
     report_unchecked_parts
     report_live_pages
 
-    local ref
-    while IFS= read -r ref; do
-        dispatch_ref_resolves "$ref" || {
-            bad_dispatch=$((bad_dispatch + 1))
-            fail citation-dispatch "the reference $ref resolves to no node Dispatch holds"
-        }
-    done < <(grep -rhoE "$DISPATCH_REF" "$EVIDENCE" --include='*.md' --include='*.jsonl' |
-        sed 's/[.,;:)]*$//' | sort -u | grep -vxF -f <(false_references) 2>/dev/null)
+    local ref refs="$RUN_SCRATCH/references" falses="$RUN_SCRATCH/false-reference-list"
+    if directory_references >"$refs" && false_references >"$falses"; then
+        while IFS= read -r ref; do
+            dispatch_ref_resolves "$ref" || {
+                bad_dispatch=$((bad_dispatch + 1))
+                fail citation-dispatch "the reference $ref resolves to no node Dispatch holds"
+            }
+        done < <(grep -vxF -f "$falses" "$refs")
+    else
+        bad_dispatch=$((bad_dispatch + 1))
+        fail citation-dispatch "citations.py could not read the dispatch:// references of this directory"
+    fi
     [ "$bad_dispatch" -eq 0 ] && pass citation-dispatch "every dispatch:// reference of this directory resolves to a node Dispatch holds"
 
     if python3 "$EVIDENCE/citations.py" --self-test >/dev/null 2>&1; then
@@ -1926,34 +2120,25 @@ mode_published() {
         }
     done
     # The files each landed step changed stand there as the step left them, each read by
-    # the two sentences its own step added and not by a word the file carried before.
-    local sentence first second
-    for path in skills/legion-worker/references/pr-body.md skills/legion-worker/references/merge-gate.md; do
-        case "$path" in
-        *pr-body.md)
-            first='each pair row reads'
-            second='not run (no runtime code)'
-            ;;
-        # The answered form, which is the rule this tree landed, and the clause that reads
-        # it against the pair's own run condition. The `APPROVE` half stands in the
-        # stricter form too, so reading it would pass on either.
-        *)
-            first='is answered in the review body'
-            second='that touches no runtime code, both rows reading'
-            ;;
-        esac
+    # the sentences its own step added and not by a word the file carried before. Each
+    # landed entry of sources.json lists them as its `published` pairs, so a change to a
+    # rule edits that one list.
+    local title sentence
+    while IFS= read -r title; do
+        missing=$((missing + 1))
+        fail published-tree "the landed step '$title' lists no sentence in sources.json, so nothing of it is read on the default branch"
+    done < <(jq -r '.landed[]? | select((.published // []) | length == 0) | .title' "$EVIDENCE/sources.json")
+    while IFS=$'\t' read -r path sentence; do
         git -C "$clone" show "$head:$path" >"$work/published" 2>/dev/null || {
             missing=$((missing + 1))
             fail published-tree "the default branch at $head does not carry $path"
             continue
         }
-        for sentence in "$first" "$second"; do
-            grep -qF -- "$sentence" "$work/published" || {
-                missing=$((missing + 1))
-                fail published-tree "the published $path does not carry the landed step: '$sentence'"
-            }
-        done
-    done
+        grep -qF -- "$sentence" "$work/published" || {
+            missing=$((missing + 1))
+            fail published-tree "the published $path does not carry the landed step: '$sentence'"
+        }
+    done < <(jq -r '.landed[]? | .published[]? | [.path, .sentence] | @tsv' "$EVIDENCE/sources.json")
     [ "$missing" -eq 0 ] && pass published-tree "the default branch at $head carries the evidence, the transcript, this script and the files each landed step changed"
 
     local delivery=0
@@ -1996,6 +2181,8 @@ fixture_build() {
     mkdir -p "$dir/repo/packages/daemon/internal/api"
     cp "$EVIDENCE/citations.py" "$evidence/citations.py"
     cp "$EVIDENCE/check.sh" "$evidence/check.sh"
+    # env.sh is read for its functions alone: --citations clones a repository by its rule.
+    cp "$EVIDENCE/env.sh" "$evidence/env.sh"
 
     cat >"$dir/repo/packages/daemon/internal/api/handoff.go" <<'GO'
 package api
