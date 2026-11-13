@@ -739,8 +739,8 @@ const wholeDiskMargin = 3 * time.Minute
 // read in seconds, and its push then waits on the leak check, one run of which was measured in a
 // pod at 120 s (CheckRun), run twice there. Most of this package's tests take seconds; measured
 // on 2026-11-13, the read cut by its bound and the snapshot refused jj's lock took about 11 s
-// each, the differential test about two and a half minutes (146 s), and the matrix test 304 to
-// 310 s, so the whole package takes over ten minutes in a pod and needs `-timeout 25m` there.
+// each, the differential test 176 s and the matrix test 313 s, so the whole package took 670 s
+// in a pod and needs `-timeout 25m` there.
 //
 // A bound that fits one run of the check and not two ends inside the hook's run and loses the
 // dying pod's work to a timeout rather than refusing it; a bound that does not fit the worktree
