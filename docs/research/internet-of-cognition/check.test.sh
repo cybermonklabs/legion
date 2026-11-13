@@ -208,6 +208,20 @@ for form in 'uvx pyshacl==0.* --version' 'npx cowsay@1' 'go run golang.org\/x\/t
     case_result "a range is refused as no version: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
 done
 
+# 15. The reader fails closed: a form no case above names is refused, not passed. A
+# compatible-release clause, a comparison, an npm caret range and a dist-tag are none of
+# the versions the rule takes, and a runner inside a command substitution inside a shell
+# string is still a runner. A reader that refuses only a list of known faults passes each
+# of these; one that takes a version only when it is a full release refuses them all.
+# The last three passed the gate at 828d080931: a wildcard after a full prefix, an npm x
+# range and a string eval runs.
+for form in 'uvx pkg~=1.2' 'uvx \\"pkg>=1.2\\"' 'npx cowsay@^1.2.3' 'bunx tsx@next' "sh -c \\\\\"echo \$(npx cowsay)\\\\\"" \
+    'uvx pkg==1.2.*' 'npx cowsay@1.x' 'eval \\"uvx pyshacl\\"'; do
+    dir="$(fresh "unnamed-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || $form; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    case_result "a form no rule names is refused: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

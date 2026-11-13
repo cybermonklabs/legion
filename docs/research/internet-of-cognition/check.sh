@@ -561,38 +561,78 @@ github_budget() {
 }
 
 # unpinned_installs; prints one line per package a recorded command installs or runs with
-# no version, as <id><TAB><what it runs>, over every row of claims.jsonl. It reads each
-# runner form a recorded command may use: uv run --with, uvx and uv tool run (and uv tool
-# install), pipx run, pip install and uv pip install, bunx, npx and npm exec, and go run
-# and go install. A version is a concrete one: ==<digits> for Python, @<digits> or
-# @v<digits> for npm and Go; @latest, a branch or a bare name is none. A local path, or a
-# variable this deliverable sets that names one (IOC_…), needs none, and an install that
-# reads a constraints file, a requirements file or env.sh's pinned list is pinned by it.
-# What the reader cannot read it refuses: an option of a runner it does not know, which
-# could take the package's place, and a package written as any other variable, are
-# printed as unread, never passed, because a reader that passes what it cannot read is
-# the fault this family exists to find.
+# no version, and per form this reader cannot read, as <id><TAB><what it runs>, over every
+# row of claims.jsonl. It fails closed: what it does not recognise is refused and named,
+# never passed.
+#
+# The rule. A package is pinned when it names a full release, nothing less:
+#   - for Python (uvx, uv tool run, uv tool install, uv run --with, pipx run, pip install,
+#     uv pip install), the name, then == and dotted digits only, such as pyshacl==0.40.2;
+#   - for npm (bunx, npx, npm exec), the name, then @ and a full major.minor.patch, such
+#     as tsx@4.1.0;
+#   - for Go (go run, go install), the module, then @v and a full major.minor.patch, or a
+#     Go pseudo-version, or a commit hash.
+# A wildcard, a partial version, a tag such as latest or next, a comparison (>=, ~=, ^, ~)
+# or any other spelling is no version. A local path, a variable of this deliverable that
+# names one (IOC_...), a constraints or requirements file, and env.sh's pinned list
+# IOC_ENV_PY_PINS are pinned. An option of a runner the reader does not know, a package
+# written as any other variable, and a command it cannot open are refused.
+#
+# A command handed to a shell as a string (sh, bash, zsh, dash or ksh with -c, and eval)
+# is read with this same reader; a command xargs, env, timeout, nice or nohup runs stands
+# among the words of the row, where the reader reads it as it reads any other. Python code
+# given to python -c that starts a process is a command this reader cannot open, and is
+# refused.
 unpinned_installs() {
     claims | python3 -c '
 import json, re, shlex, sys
 
-PY_VERSION = re.compile(r"==[0-9]")
-AT_VERSION = re.compile(r".@v?[0-9]")
+PY_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9,._-]+\])?==[0-9]+(\.[0-9]+)*$")
+NPM_PIN = re.compile(r"^(@[A-Za-z0-9._-]+/)?[A-Za-z0-9][A-Za-z0-9._-]*@[0-9]+\.[0-9]+\.[0-9]+$")
+GO_PIN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._~/-]*@(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]*[0-9]{14}-[0-9a-f]{12})?|[0-9a-f]{7,40})$")
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+PROCESS = re.compile(r"subprocess|os\.system|os\.popen|os\.exec|os\.spawn|pty\.spawn")
 
 def local(arg):
     return arg.startswith((".", "/", "~")) or re.match(r"\$\{?IOC_[A-Z_]+\}?(/|$)", arg) is not None
 
-def python_ok(arg):
-    return PY_VERSION.search(arg) is not None or local(arg)
+def py_ok(arg):
+    return local(arg) or PY_PIN.match(arg) is not None
 
-def at_ok(arg):
-    return AT_VERSION.search(arg) is not None or local(arg)
+def npm_ok(arg):
+    return local(arg) or NPM_PIN.match(arg) is not None
 
-def words(text):
+def go_ok(arg):
+    return local(arg) or GO_PIN.match(arg) is not None
+
+OPERATORS = {";", "&", "&&", "|", "||", "(", ")", ";;", "|&", "&>", ">", "<", ">>", "<<", ">&", "<&", "2>", "<<<"}
+
+def commands(text):
+    # The commands of a line, split at the shell operators that end one, with quotes
+    # respected, so an operator inside a quoted string splits nothing. None when the
+    # text does not split, which the caller refuses.
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
-        return shlex.split(text, posix=True)
+        tokens = list(lexer)
     except ValueError:
-        return text.split()
+        return None
+    out, current = [], []
+    for token in tokens:
+        if token in OPERATORS or set(token) <= set(";&|()<>"):
+            if current:
+                out.append(current)
+            current = []
+        else:
+            current.append(token)
+    if current:
+        out.append(current)
+    return out
+
+# A command substitution, $(...) or a pair of backticks, that no backslash escapes; an
+# escaped backtick is a literal one, as a quoted document holds.
+SUBSTITUTION = re.compile(r"(?<!\\)\$\(((?:[^()]|\([^()]*\))*)\)|(?<!\\)`((?:[^`\\]|\\.)*)`")
 
 # The options of each runner that take a value, and those that take none; any other
 # option before the package is a form this reader does not know.
@@ -606,12 +646,12 @@ PIPX_FLAG = {"--no-cache", "-q", "--quiet", "-v", "--verbose"}
 NODE_VALUE = {"--package", "-p", "--registry", "--cache"}
 NODE_FLAG = {"-y", "--yes", "--no", "-q", "--quiet", "--silent", "--bun"}
 GO_VALUE = {"-C", "-o", "-tags", "-ldflags", "-gcflags", "-mod", "-overlay", "-modfile", "-exec"}
+GO_FLAG = {"-v", "-x", "-race", "-a", "-n", "-trimpath", "-buildvcs=false"}
 
 def option_value(word):
     return word.split("=", 1)[1] if "=" in word else None
 
 def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=()):
-    # rest: the words after the runner. Returns the problems found.
     problems, pins, i = [], {}, 0
     while i < len(rest):
         word = rest[i]
@@ -624,13 +664,12 @@ def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=()):
                 value = rest[i + 1] if i + 1 < len(rest) else ""
                 i += 1
             pins.setdefault(key, []).append(value)
-        elif key not in flag_opts:
-            problems.append(name + " " + word + " (an option this reader does not know)")
-            return problems
+        elif word not in flag_opts and key not in flag_opts:
+            return [name + " " + word + " (an option this reader does not know)"]
         i += 1
     for key in ("--with", "--with-editable"):
         for value in pins.get(key, []):
-            if not python_ok(value):
+            if not py_ok(value):
                 problems.append(name + " " + key + " " + value)
     package = rest[i] if i < len(rest) else ""
     source = None
@@ -646,25 +685,49 @@ def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=()):
         problems.append(name + " " + target)
     return problems
 
-for line in sys.stdin:
-    row = json.loads(line)
-    command = row.get("command") or ""
-    # Each command of the row, split at the shell operators that end one.
-    for part in re.split(r"&&|\|\||[;|\n(){}]", command):
-        w = words(part)
-        found = []
+def read_command(command, depth=0):
+    found = []
+    if depth > 4:
+        return ["a command nested too deep for this reader to open"]
+    # No recorded command holds a heredoc, and its body is text this reader does not
+    # split into commands, so a heredoc is refused rather than read as words.
+    if re.search(r"<<-?\s*[\x27\x22]?[A-Za-z_]", command):
+        return ["a heredoc, whose body this reader does not read"]
+    # A command substitution runs whether or not it stands inside double quotes, and a
+    # backtick pair may span two words, so it is read in the text before the split.
+    for m in SUBSTITUTION.finditer(command):
+        found += read_command(m.group(1) or m.group(2) or "", depth + 1)
+    parts = commands(command)
+    if parts is None:
+        return found + ["a command this reader cannot split into words"]
+    for w in parts:
+        part = " ".join(w)
         for i, word in enumerate(w):
             nxt = w[i + 1] if i + 1 < len(w) else ""
             after = w[i + 1:]
-            if word == "uvx":
-                found += read_runner("uvx", after, UV_TOOL_VALUE, UV_TOOL_FLAG,
-                                     lambda a: python_ok(a) or at_ok(a), ("--from",))
+            base = word.rsplit("/", 1)[-1]
+            if base in SHELLS:
+                j = i + 1
+                while j < len(w) and w[j].startswith("-") and "c" not in w[j].lstrip("-"):
+                    j += 1
+                if j < len(w) and w[j].startswith("-") and "c" in w[j].lstrip("-"):
+                    if j + 1 < len(w):
+                        found += read_command(w[j + 1], depth + 1)
+                    else:
+                        found.append(base + " -c (no command this reader can find)")
+            elif word == "eval":
+                found += read_command(" ".join(after), depth + 1)
+            elif re.match(r"python[0-9.]*$", base) and nxt == "-c" and i + 2 < len(w):
+                if PROCESS.search(w[i + 2]):
+                    found.append(base + " -c (python code that starts a process, which this reader cannot open)")
+            elif word == "uvx":
+                found += read_runner("uvx", after, UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",))
             elif word == "uv" and nxt == "tool" and i + 2 < len(w) and w[i + 2] in ("run", "install"):
-                found += read_runner("uv tool " + w[i + 2], w[i + 3:], UV_TOOL_VALUE, UV_TOOL_FLAG,
-                                     lambda a: python_ok(a) or at_ok(a), ("--from",))
+                found += read_runner("uv tool " + w[i + 2], w[i + 3:], UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",))
+            elif word == "uv" and nxt == "tool":
+                found.append("uv tool " + (w[i + 2] if i + 2 < len(w) else "") + " (a uv tool form this reader does not read)")
             elif word == "uv" and nxt == "run":
-                # uv run runs a script or a command of the environment; what it fetches is
-                # each --with, which every one of them must pin.
+                # uv run fetches each --with, which every one of them must pin.
                 rest, j = w[i + 2:], 0
                 while j < len(rest):
                     key = rest[j].split("=", 1)[0]
@@ -673,18 +736,26 @@ for line in sys.stdin:
                         if value is None:
                             value = rest[j + 1] if j + 1 < len(rest) else ""
                             j += 1
-                        if not python_ok(value):
+                        if not py_ok(value):
                             found.append("uv run " + key + " " + value)
+                    elif key == "--with-requirements":
+                        j += 1
                     elif not rest[j].startswith("-"):
                         break
                     j += 1
+            elif word == "uv" and nxt == "add":
+                found.append("uv add (a form that installs and that this reader does not read)")
             elif word == "pipx" and nxt == "run":
-                found += read_runner("pipx run", w[i + 2:], PIPX_VALUE, PIPX_FLAG, python_ok, ("--spec",))
+                found += read_runner("pipx run", w[i + 2:], PIPX_VALUE, PIPX_FLAG, py_ok, ("--spec",))
+            elif word == "pipx":
+                found.append("pipx " + nxt + " (a pipx form this reader does not read)")
             elif word in ("bunx", "npx") or (word == "npm" and nxt == "exec"):
                 name, rest = (word, after) if word != "npm" else ("npm exec", w[i + 2:])
-                found += read_runner(name, rest, NODE_VALUE, NODE_FLAG, at_ok, ("--package", "-p"))
+                found += read_runner(name, rest, NODE_VALUE, NODE_FLAG, npm_ok, ("--package", "-p"))
+            elif word in ("npm", "bun", "yarn", "pnpm") and nxt in ("install", "i", "add", "dlx", "x"):
+                found.append(word + " " + nxt + " (a form that installs and that this reader does not read)")
             elif word == "go" and nxt in ("run", "install"):
-                found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, set(), at_ok)
+                found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, GO_FLAG, go_ok)
             elif word == "install" and i > 0 and w[i - 1] in ("pip", "pip3"):
                 rest = w[i + 1:]
                 if any(a in ("-c", "--constraint", "-r", "--requirement") or a.startswith(("--constraint=", "--requirement=")) for a in rest) or "$IOC_ENV_PY_PINS" in part:
@@ -701,10 +772,14 @@ for line in sys.stdin:
                         continue
                     if a.startswith("-"):
                         continue
-                    if not python_ok(a):
+                    if not py_ok(a):
                         found.append("pip install " + a)
-        for what in found:
-            print(row.get("id", "?") + "\t" + what)
+    return found
+
+for line in sys.stdin:
+    row = json.loads(line)
+    for what in read_command(row.get("command") or ""):
+        print(row.get("id", "?") + "\t" + what)
 '
 }
 
