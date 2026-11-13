@@ -30,7 +30,7 @@ func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 	) || !s.requireGeneration(w, r, req.Generation) {
 		return
 	}
-	m, ok := s.authenticated(req.ClaimToken, req.Secret)
+	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
 		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return

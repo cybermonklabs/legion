@@ -127,7 +127,7 @@ func (s *server) claimForGrant(ctx context.Context, sessionID, secret, tree, iss
 		if current.Session != sessionID || current.Tree != tree || current.Issue != issue {
 			continue
 		}
-		m, ok := s.authenticated(current.Token, secret)
+		m, _, ok := s.authenticated(current.Token, secret)
 		return m, ok, nil
 	}
 	return nil, false, nil

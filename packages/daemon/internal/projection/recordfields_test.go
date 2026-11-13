@@ -229,7 +229,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		State:      supervise.StateFailed,
 		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
 		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
-		PendingCause: supervise.CauseDied,
+		PendingCause:   supervise.CauseDied,
+		LeakCheckCause: "the shared public leak check could not be installed: the tarball of theorem-labs/agent-infra at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
 			Generation: 3, Assignment: "assignment-8", Phase: phase.Implementing, QueuedAt: queuedAt,
@@ -327,7 +328,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 					"promptRetires":  current.Budgets.PromptRetires,
 				},
 			},
-			"pendingCause": current.PendingCause,
+			"pendingCause":   current.PendingCause,
+			"leakCheckCause": current.LeakCheckCause,
 		})
 		if got, wanted := canonical(t, document), canonical(t, want); got != wanted {
 			t.Errorf("the claim view is %s, want the record's own values, %s", got, wanted)

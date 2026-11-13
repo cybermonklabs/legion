@@ -1260,6 +1260,33 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (shaping.go's shapeState, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
 // 89: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
 // one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
@@ -1285,7 +1312,9 @@ package api
 // (`withoutStateMachineFields`). Such a caller is served no `pullRequest.checksVerdict`, the key
 // 86 removed: every reader from 46 to 85 reads it `nonEmptyString.optional()`, so none requires
 // it, and the records of those contracts leave it out, as they leave out the `note` 86 took off
-// the handoff completion's answer. A value is served down as a key is: an issue's
+// the handoff completion's answer. Contract 87 is one of the contracts served down here too: a
+// caller below 87 is served every claim view without `leakCheckCause` (`withoutLeakCheckCause`).
+// A value is served down as a key is: an issue's
 // `waitingOn.answeredBy` carries a value only to a caller whose own contract admits it, and the
 // records under `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this
 // daemon serves every contract it supports, key path by key path and value domain by value
@@ -1309,15 +1338,14 @@ package api
 // left at and what ignoring it means. `ready` is that table's first row. (This
 // entry first took 60, when the base carried 59, then 81 at the forward merge of 2026-11-12
 // that brought main in at 68, 81 again at the merge of that day that brought main in at 73, 87
-// at the merge that brought main in at 85, and 89 at the merge that brought main in at 86, the
-// entry right above this one. 87 was
+// at the merge that brought main in at 85, and 89 at the merge that brought main in at 86. 87 was
 // free when this head took it and was gone when the head was pushed: the gate holds a head
 // against main alone and sees no other head's number, so a reading of `const DaemonAPIVersion`
 // at refs/pull/<n>/head for every open pull request of this repository is what finds them. That
 // reading, made when this entry took 89, gives main 85, #3730 at 88, #3575 at 87 and five heads
-// at 86, so 89 is the lowest number above the base's that no open head declares. 89 is above
-// main's own 86, so this merge forces no renumber, and the reading is taken again before the
-// push rather than read off this line. The reading is
+// at 86, so 89 is the lowest number above the base's that no open head declares. 89 stayed above
+// main through the merges that brought it in at 86 and at 87, so neither forced a renumber, and
+// the reading is taken again before each push rather than read off this line. The reading is
 // of this file at refs/pull/<n>/head for every open pull request, not of a file list: GitHub
 // cuts a pull request's file list short, so one that changes more files than the page holds
 // answers without this path. Read the base's own number and every open pull request again at the next

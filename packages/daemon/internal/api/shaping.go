@@ -455,6 +455,7 @@ var stateNarrowings = []stateNarrowing{
 	{contract: stateMachineContract, issue: withoutStateMachineFields,
 		dropped: "the issues' pullRequest.mergeState, the workers' pass, and the claim " +
 			"views' lastTurnStart, lastTurnEnd, lastDeathCause, lastStartFailure and lastReady"},
+	{contract: leakCheckCauseContract, issue: withoutLeakCheckCause, dropped: "the claim views' leakCheckCause"},
 	{contract: shapedAnswersContract, state: withoutLowestPluginContract, issue: withoutClaimRoundReport,
 		dropped: "lowestPluginContract and the claim views' updateState, " +
 			"updateReaskedForPushCheck, unpromptedTurnTakesAnswerBack and wake"},
@@ -655,6 +656,18 @@ const whyAndLineFieldsContract = 85
 // `phases` and `workflowPhases`) — and a removed value needs no serving-down. The comment on
 // answers.go's `phases` says why.
 const stateMachineContract = 86
+
+// leakCheckCauseContract is the daemon contract that added each claim view's `leakCheckCause`,
+// the sentence the claim's latest launch try was refused with because the shared public leak
+// check could not be installed in the role's pod (version.go's 87, ClaimView.LeakCheckCause). A
+// plugin below it is served every claim view without the key: one built before
+// sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
+// key it does not name, and one built after strips the key instead, so the strip is what keeps
+// the sentence from a caller that did not ask for it rather than what keeps such a caller
+// reading at all. The contract removed no key and added no value to an enumeration: the
+// sentence is free text. It put the same key on the operator claim too, and the operator routes
+// are not served down, because their reader is the `legion` built with this daemon.
+const leakCheckCauseContract = 87
 
 // shapedAnswersContract is the daemon contract this change lands under (version.go's 89), and
 // the contract that added five keys of its own: `lowestPluginContract` on the state, the
@@ -1086,6 +1099,15 @@ func withoutLowestPluginContract(state State) State {
 func withoutClaimRoundReport(issue Issue) Issue {
 	return withEachClaimView(issue, func(view ClaimView) ClaimView {
 		view.UpdateState, view.UpdateReaskedForPushCheck, view.UnpromptedTurnTakesAnswerBack, view.Wake = "", false, false, nil
+		return view
+	})
+}
+
+// withoutLeakCheckCause is the issue with no claim view carrying `leakCheckCause`, the one key
+// leakCheckCauseContract added to this route; nothing else of that contract is on it.
+func withoutLeakCheckCause(issue Issue) Issue {
+	return withEachClaimView(issue, func(view ClaimView) ClaimView {
+		view.LeakCheckCause = ""
 		return view
 	})
 }

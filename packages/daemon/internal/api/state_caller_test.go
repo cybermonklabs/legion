@@ -273,11 +273,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
 			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
 			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
-			// the mark of that same contract gone with them, and with each issue's one rendered
+			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields). Every row that reaches here is below all of them, so
-			// those twelve keys go whatever the row is.
+			// (withoutWhyAndLineFields), and with each claim view's `leakCheckCause` gone, the
+			// sentence contract 87 added (withoutLeakCheckCause). Every row that reaches here is
+			// below all of them, so those thirteen keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -318,12 +319,14 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					// Every row that reaches here is below shapedAnswersContract and below
-					// recordFieldsContract too, so none of its callers is served the four keys
-					// contract 89 added to a claim view or the six the decided record added.
+					// Every row that reaches here is below shapedAnswersContract, below
+					// leakCheckCauseContract and below recordFieldsContract too, so none of its
+					// callers is served the four keys contract 89 added to a claim view, the
+					// `leakCheckCause` contract 87 added or the six the decided record added.
 					for _, key := range roundReportKeys {
 						delete(view, key)
 					}
+					delete(view, "leakCheckCause")
 					for _, key := range recordFieldClaimKeys {
 						delete(view, key)
 					}

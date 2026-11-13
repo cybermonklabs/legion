@@ -210,6 +210,21 @@ type BackgroundWork struct {
 	Kinds   []string `json:"kinds"`
 }
 
+// KnownKinds is w's kinds with every string that is none of the three known kinds dropped, in
+// the session's own order; nil when none is left. The session chooses every word it sends, and
+// the kinds reach the architect's worker-background-stalled notice and the daemon's log, so the
+// store keeps only these three (store's PutClaimActivity).
+func (w BackgroundWork) KnownKinds() []string {
+	var known []string
+	for _, kind := range w.Kinds {
+		switch kind {
+		case "async-job", "subagent", "claude-background-task":
+			known = append(known, kind)
+		}
+	}
+	return known
+}
+
 // PhaseActivity is when the reminder armed for the session's phase is due; NextReminderAt is null
 // when no armed reminder is still live, which a session whose phase has closed always reports.
 // Whether the phase is open is the daemon's own reading of the record (workflow's idlePhaseOpen),
