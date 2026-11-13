@@ -107,7 +107,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		State:      supervise.StateFailed,
 		Budgets:    supervise.Budgets{LaunchFailures: 4, Deaths: 1, PromptFailures: 2, PromptRetires: 3},
 		Failure:    "launch failures ran out", FailureCause: supervise.CauseDied, FailedAt: failedAt,
-		PendingCause: supervise.CauseDied,
+		PendingCause:   supervise.CauseDied,
+		LeakCheckCause: "the shared public leak check could not be installed: the tarball of theorem-labs/agent-infra at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
 			Generation: 3, Assignment: "assignment-8", Phase: phase.Implementing, QueuedAt: queuedAt,
@@ -125,11 +126,23 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		UpdateToldAt:            &answeredAt,
 		UpdateAnsweredByTurnEnd: true, UpdateReaskedForPushCheck: true, UpdateLeftRound: "pod:older",
 		ProviderErrorRun: 6,
+		LastTurnStart:    at.Add(-2 * time.Minute),
+		LastTurnEnd:      at.Add(-30 * time.Second),
+		LastReady:        at.Add(-3 * time.Minute),
+		LastDeathCause:   "the pod was evicted",
+		LastStartFailure: "the launcher refused the start",
+		TurnOutcomes: []supervise.TurnOutcome{{
+			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
+		}},
+		Abandoned:   supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it", At: at.Add(-time.Hour)},
+		SessionLost: true,
 		Step: supervise.StepRecord{
 			At: at.Add(-time.Minute), TurnStartedAt: at.Add(-2 * time.Minute),
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
 			StartedAt: at.Add(-time.Minute), EndedAt: at.Add(-30 * time.Second),
 		},
+		ActivityAt: at.Add(-3 * time.Minute), ActivityBackground: true,
+		ActivityKinds: []string{"async-job"}, ActivityNextReminderAt: at.Add(10 * time.Minute),
 	}
 	fields := reflect.ValueOf(current)
 	for i := range fields.NumField() {

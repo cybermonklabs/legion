@@ -1,8 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import {
   borderDefault,
   dangerText,
@@ -48,8 +48,9 @@ export function rowActionSelector(action: RowAction): string {
  * Both writes are the ones that tab made, unchanged: Keep is
  * `POST /artifacts/{id}/blocks/{block}/keep` carrying the sum of the text this node drew, so a
  * decision the agent changed since is refused rather than agreed with, and Change is a comment
- * anchored to the decision's first paragraph. They are read from the decisions read the tree is
- * already built from (`["decisions", <key>]`), so the node makes no read of its own.
+ * anchored to the words of the decision's first block (`anchorQuote`). They are read from the
+ * decisions read the tree is already built from (`["decisions", <key>]`), so the node makes no
+ * read of its own.
  */
 export function DecisionActions({
   document,
@@ -81,7 +82,8 @@ function DecisionControls({
 }): ReactNode {
   const queryClient = useQueryClient();
   const [changing, setChanging] = useState(false);
-  const quote = firstParagraph(decision.text);
+  // Read once per answer of the decisions read, which is when the decision is a new object.
+  const quote = useMemo(() => anchorQuote(decision), [decision]);
   const keep = useKeyedWrite({
     inline: true,
     label: () => `${CONTROL_LABELS.keep_decision} ${decision.heading}`,
@@ -257,8 +259,57 @@ function ChangeComposer({
   );
 }
 
-/** The decision's first paragraph below its heading, which is what a change is anchored to.
+/** The words of the decision's first block below its heading, which is what a change is
+ *  anchored to: the server matches an anchor quote against the document's own text
+ *  (`pmdoc.FindQuote`), never its markdown, so a list or a hard break quoted as markdown would
+ *  anchor on nothing. They are read from the tree Go read the decision's text into
+ *  (`Decision.text_tree`), whose top-level blocks are the paragraphs the markdown would have
+ *  been split into; an answer that carried no reading - a pod of the build before during a
+ *  rolling deploy - leaves the first paragraph's own markdown, which is all the browser has.
  *  Undefined for a decision whose heading is all it holds. */
+function anchorQuote(decision: Decision): string | undefined {
+  const content = decision.text_tree?.content;
+  if (!Array.isArray(content)) {
+    return firstParagraph(decision.text);
+  }
+  const first = (content as DisplayTree[]).find((node) => node.type !== "heading");
+  return first === undefined ? undefined : wordsOf(first);
+}
+
+/** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
+ *  against, since a quote names the document's text and never its markdown. The server writes
+ *  one space wherever two text runs are not adjacent in the document's own positions
+ *  (`pmdoc.buildFlattenedText`), which is wherever anything was entered, left or passed between
+ *  them: the break inside a wrapped line, or the end of one list item and the start of the
+ *  next. Two runs are adjacent only as consecutive children of one parent, so everything else
+ *  this walk crosses opens the space the server wrote. */
+function wordsOf(node: DisplayTree): string {
+  let words = "";
+  let apart = false;
+  const read = (current: DisplayTree): void => {
+    if (typeof current.text === "string") {
+      words += apart && words !== "" ? ` ${current.text}` : current.text;
+      apart = false;
+      return;
+    }
+    // The node's own open position, and its close once its children are read; a leaf that is no
+    // text, a hard break among them, takes the one position it is.
+    apart = true;
+    const content = current.content;
+    if (Array.isArray(content)) {
+      for (const child of content as DisplayTree[]) {
+        read(child);
+      }
+      apart = true;
+    }
+  };
+  read(node);
+  return words;
+}
+
+/** The decision's first paragraph below its heading, as markdown: the quote of an answer that
+ *  carried no reading of the decision's text. Undefined for a decision whose heading is all it
+ *  holds. */
 function firstParagraph(text: string): string | undefined {
   return text
     .split(/\n\s*\n/)

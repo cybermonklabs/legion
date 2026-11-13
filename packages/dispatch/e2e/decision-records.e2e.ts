@@ -1,7 +1,15 @@
 import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
-import { createIssue, createIssueArtifact, createProject, editArtifact, getArtifact } from "./api";
+import {
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  editArtifact,
+  getArtifact,
+  listComments,
+} from "./api";
 import { blockId } from "./editor";
 import { gotoIssue, nodeRows } from "./issue-page";
+import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, test } from "./test";
 
 // The decision records end to end, against the real server: an agent writes `decisions.md` with
@@ -15,6 +23,11 @@ import { expect, test } from "./test";
 const STALE_TITLE = "A decision that shaped this block changed after it.";
 const DECISION = "Store notices in a table";
 const REASON = "Chosen for the simplest storage.";
+/** The decision whose text is no plain paragraph: a list below its heading, with a reference in
+ *  one item and an issue key in the other. */
+const LISTED = "Name the notice store";
+const LISTED_OPENING = "Notices live in a table, as";
+const LISTED_CHANGE = "Measure the file store first.";
 
 // @pr: The Decisions tab's only row: a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change.
 test("a decision links the spec blocks it shaped, goes out of date with them, and takes Keep and Change @pr", async ({
@@ -100,4 +113,96 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
     page.getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision })
   ).toHaveCount(0);
   await expect(nodeRows(page).filter({ hasText: DECISION }).first()).toBeVisible();
+});
+
+// The same preset for a decision whose text the server read into a tree with more in it than
+// one paragraph: a list of two items that cites the spec and names an issue key. The quote a
+// Change anchors on has to be the words that reading flattens to - one space where one list
+// item ends and the next begins (`pmdoc.buildFlattenedText`) - or the server finds nothing to
+// anchor the Change on and refuses it. Until dispatch://INFRA-1196 this row read the Decisions
+// tab's card (`DecisionsPanel.tsx`), which drew the list as a list with its link and its code
+// span; the decision is a node of the tree now, whose body draws its text as written, so what
+// this row holds the node to is the anchor its Change writes (`DecisionActions.tsx`).
+// @pr: The Decisions preset anchors the Change of a decision written as a list on the words the server flattens that list to.
+test("a decision written as a list anchors its Change on the words that list flattens to @pr", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "Notices are lost today.\n\nStore each notice.\n",
+    title: "Decisions written as a list",
+  });
+  const reference = `dispatch://${issue.key}/spec`;
+  // The markdown an agent writes and the words the server matches a quote against differ by
+  // exactly what this row is about: the link's target and the backticks around the key are the
+  // markdown's alone, and the end of the first item is one space from the start of the second.
+  const list = [
+    `- ${LISTED_OPENING} [the spec](${reference}) asks.`,
+    `- A \`${issue.key}\`-style key names where each notice came from.`,
+  ].join("\n");
+  const words = `${LISTED_OPENING} the spec asks. A ${issue.key}-style key names where each notice came from.`;
+  const decisions = await createIssueArtifact(issue.key, {
+    content: `## ${LISTED}\n\n${list}\n\nNothing else about a notice changes.\n`,
+    name: "decisions.md",
+  });
+  const listBlock = await blockId(decisions.artifact.id, list);
+
+  await gotoIssue(page, `/issues/${issue.key}/decisions`);
+  const decision = nodeRows(page).filter({ hasText: LISTED }).first();
+  await expect(decision).toBeVisible();
+
+  // Change quotes that first block as the server flattens it, and the server finds those words
+  // in the document's own text: the comment it writes is anchored to the list block the quote
+  // names, which a quote with its items run together would never have reached.
+  await decision.focus();
+  await decision.getByRole("button", { exact: true, name: CONTROL_LABELS.change_decision }).click();
+  const composer = page.getByRole("form", { name: `Change ${LISTED}` });
+  await expect(composer.getByTestId("decision-quote")).toHaveText(words);
+  await composer.getByRole("textbox").fill(LISTED_CHANGE);
+  await composer.getByRole("button", { name: CONTROL_LABELS.send_change }).click();
+  await expect(composer).toBeHidden();
+  await expect
+    .poll(async () => {
+      const comments = await listComments(issue.key, decisions.artifact.id);
+      return comments.find((comment) => comment.body === LISTED_CHANGE)?.anchor;
+    })
+    .toMatchObject({ block_id: listBlock, orphaned: false, quote: words });
+});
+
+// The same decision from a server that answers no reading of its text, which is what a pod of
+// the build before this one serves during a rolling deploy: every `*_tree` member is taken out
+// of the answers, as `parse-count.e2e.ts`'s own control takes them out. The node still offers
+// its Change, quoting what the browser has when the server sent it no reading to flatten. Until
+// dispatch://INFRA-1196 this row also read the Decisions tab's card drawing each block once in
+// a slot of its own (`DecisionsPanel.tsx`); the node's body draws the decision's text once, as
+// written, and has no slots for a text to be repeated in.
+// @pr: The Decisions preset of an answer with no reading still anchors a Change on the decision's first block.
+test("a decision whose answer carries no reading still quotes its first block @pr", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: "Notices are lost today.\n",
+    title: "Decisions with no reading",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `## ${LISTED}\n\nNotices live in a table.\n\nUnsure: the index may be slow.\n`,
+    name: "decisions.md",
+  });
+
+  await serveWithoutDisplayTrees(page);
+
+  await gotoIssue(page, `/issues/${issue.key}/decisions`);
+  const decision = nodeRows(page).filter({ hasText: LISTED }).first();
+  await expect(decision).toBeVisible();
+
+  // The first block's own markdown, which is what the browser has when the server sent it no
+  // reading to flatten.
+  await decision.focus();
+  await decision.getByRole("button", { exact: true, name: CONTROL_LABELS.change_decision }).click();
+  await expect(
+    page.getByRole("form", { name: `Change ${LISTED}` }).getByTestId("decision-quote")
+  ).toHaveText("Notices live in a table.");
 });

@@ -538,6 +538,9 @@ export const CONTROL_LABELS = freeze({
   name: "Name",
   /** Gives the open document's current text a version of its own (R16). */
   name_version: "Name version",
+  /** Makes a document of the issue from a title typed, from the node menu (R16): the words the
+   *  Artifacts panel's own control carries (`CreateDocument.tsx`), the one way into one form. */
+  new_document: "New document",
   /** Moves to the next open question that waits on the reader (R6). */
   next_question: "Next open question",
   /** What the repository control says while neither the issue nor its project names one. */

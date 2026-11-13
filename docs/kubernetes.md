@@ -78,11 +78,24 @@ It carries:
 
 - the shared public leak check those wrappers and that hook run, which is not in the image:
   it is published by tag from a private repository, and the image carries the pin alone (`ARG LEAK_CHECK_TAG`, exported as `ENV LEGION_LEAK_CHECK_TAG`), so moving the pin is an image build and no deployment's to do.
-  Each role's `legion worker-shim` installs that tag once per pod, under a lease every role of the pod takes and before it starts anything that writes, into `/legion/scratch/leak-check/` on the issue's own disk, and every role of the pod is told that copy as `PUBLIC_LEAK_CHECK` (`leakguard.Install`, and `mainEnvironment` in `packages/daemon/internal/runtime/sandbox/manifest.go`, which name one constant between them so the path installed and the path told cannot drift).
-  Where the environment names no check of its own — a pod whose image carries this install but whose daemon predates it — the shim names what it installed for everything it starts, so such a pod's writes find the check the image installed rather than being refused for a check that is in fact there; a value the runtime set wins wherever there is one (`spawnOnce`, `packages/daemon/internal/shim/shim.go`).
-  The install records the tag it landed beside the check, and a directory that already holds this pin's check is left alone while one holding another tag's is installed over, so a directory that outlives a pin change — the controller's persistent volume, which is no pod-lived scratch — never keeps an old check.
-  A pod whose install could not be made fails that launch — the fetch refused, a member of the tarball outside the check's own directory, or an unpacked check that could not name its own shapes when it was run once with `--help` — rather than starting an agent whose every write would then be refused;
-  a tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer; the daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
+  The pod's launcher names that pin in its hello, and the daemon reads the check at that tag with a read-only token of its own, which its implement App mints for theorem-labs/agent-infra alone (`leakCheckToken`, `internal/daemon/kubernetes.go`).
+  The daemon reads each tag once and keeps that copy in its memory (`leakguard.Source`).
+  It pushes the check's directory to the launcher before it sends a saved workspace bundle or any start (`serveLeakCheck`, `internal/runtime/sandbox/launcher.go`).
+  The launcher installs it once per launcher process, before any role starts:
+  it unpacks the check into a staging directory, records the tag there, runs the check once with `--help` to see that it names its own shapes, and renames the result over `/legion/scratch/leak-check/` (`checkInstall`, `internal/launcher/leakcheck.go`).
+  Every role is told that copy as `PUBLIC_LEAK_CHECK` (`mainEnvironment`, `internal/runtime/sandbox/manifest.go`, which names the install's own constant).
+  Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent or records another tag (`spawnOnce`, `internal/shim/shim.go`).
+  Where the environment names no check, the shim names the install for everything it starts.
+  The pod holds no credential for that repository and reads no repository mapping.
+  A launcher whose process installed its pin says so in its hello and is pushed nothing, and a launcher of an older image names no tag and is pushed nothing.
+  A new launcher process installs over what the directory held, so the controller's persistent volume never keeps an old check.
+  A start whose check could not be installed is never sent, and is charged as a launch failure.
+  The claim then carries the refusal's sentence as `leakCheckCause`, which begins `the shared public leak check could not be installed:` and says what failed.
+  The daemon and the image pins move together, and a rollback of one is a rollback of the other:
+  an older daemon pushes nothing, and a new image's shim then refuses every start.
+  A tag of that repository is not protected, so a tag that is force-moved is served from the daemon's earlier copy until the daemon restarts.
+  A tmux pane installs nothing, because no pin is set there and such a machine carries the check through the check's own installer.
+  The daemon resolves that machine's check once per launch and tells the pane where it is (`docs/deployment.md`, "What a pane's `gh`, `git` and `jj` are").
   What a role sees when a write is refused is a command that wrote nothing and one of two lines on standard error:
   `LEAK CHECK: refusing <the write>`, with a line under it naming the record and the class and never the text that matched, which is a name in the write; or `LEAK CHECK SETUP ERROR: <the write>: <what could not be made to run>`, which is a broken pod and not a name in the write at all.
   `legion leak-check` exits 0 for a write the guard cleared, 3 for one it refused and 2 for a check it could not make run — the shared check's own statuses — and git stops the push on any of them but the first.
@@ -425,6 +438,8 @@ It ships this with Legion's other skills in its `dist/skills`:
 The Envoy plugin ships these skills in its `dist/skills`:
 
 - `agent-secrets`
+
+- `approval-review`
 
 - `asd-ste100`
 
@@ -1281,7 +1296,7 @@ Once the roles have stopped, the daemon sets that issue's Sandbox to `Suspended`
 Then it deletes the Sandbox, whatever the close was:
 a child set `done`, one set `backlog`, `icebox` or `triage`, and a root leaving the workflow with its tree are one case now, since a Sandbox kept behind would hold nothing (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), logging `sandbox runtime: deleted the closed issue's
 Sandbox and the role Secrets it owned` — the six role Secrets go with it by owner reference.
-An `issue_close` retires the claim and keeps its session id as volume-reap evidence, clears the resume path, and so makes a later admission fresh once cleanup succeeds.
+An `issue_close` retires the claim and keeps its whole session, the id (the volume reaping's evidence) and the resume path, so a later admission resumes each role in the session it recorded; a session its store no longer holds starts fresh and is reported (R8).
 The parent's Sandbox is another issue's and is never touched.
 A daemon restart retries the stored effect.
 Re-admission during linger makes the Sandbox, the pod and its disk afresh and resumes the recorded sessions;
@@ -1339,7 +1354,7 @@ one whose label is taken off leaves the line with no linger, so its Sandbox goes
 Taken out by its label, once it is `todo` with the label again it waits in the line and is admitted into the phase it stood in, continuing its run in a pod of its own from the issue's branch:
 its roles' sessions continue from the session table, and whatever the pod it had was working on went with that pod's disk ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 Taken out by a status, it comes back as any root does after its linger:
-a new generation at `admitted`, its design gate, handoffs and pending READY cleared (`ClearTreeGeneration`), its architect starting over from the issue's branch.
+a new generation at `admitted`, its design gate and handoffs cleared (`ClearTreeGeneration`), its architect starting over from the issue's branch.
 A hand-over fence counts only while the child's record still names the tree the fence was written for, and a hand-over Dispatch refuses permanently drops its fence with its row (`finishRefused`, `internal/daemon/outbox.go`).
 Past that the Sandbox is an orphan, which the sweep deletes, fenced and logged, taking its pod and the disk that pod owns.
 A child re-admitted after its old tree's cleanup took its Sandbox, one that had left the workflow before the close (a parked child the close does not hand over), finds no Sandbox and makes one at its next launch;
@@ -1729,7 +1744,7 @@ its step 4 is not needed, since every issue Sandbox is deleted here.
 This release's migration `20261103183833_issue_slots` gives a slot to every issue already at work, adds `design_gates.ever_opened` and `dispatch_issues.parent`, and writes the tree lifecycle row of every running tree that had none.
 Re-pinning the earlier image on that schema is not safe by itself, and the reason is the slots rather than the columns:
 the earlier release reads one slot per root and reads a root in `in_progress`, `testing`, `needs_review` or `retro` that holds none as stranded, so its first admission pass calls `LeaveUnslotted` on it and lingers its tree.
-Under this release a running root holds no slot in `accepting`, in `awaiting_merge`, at `admitted` while its children work, or while it waits in the line, so most live trees are in exactly that shape and the earlier image suspends them on its first pass.
+Under this release a running root holds no slot in `accepting`, in `merging`, at `admitted` while its children work, or while it waits in the line, so most live trees are in exactly that shape and the earlier image suspends them on its first pass.
 Its cap also counts the child slots this migration wrote, so it admits nothing until they drain.
 
 **Take a dump of the daemon's database before the upgrade** ([Rolling back the upgrade](#rolling-back-the-upgrade) says how, and says which tables a shared login cannot read), and restore that dump to roll back.
@@ -3068,7 +3083,7 @@ When `dispatch_token_file` holds one of the deployment's shared agent tokens (`D
 Whatever the bearer, the acting session is the one the request body names (`bearerSessionActor`, `packages/envoy/internal/dispatch/api/server.go`), which for the daemon's own writes is `legion-daemon:<PROJECT>` (`DaemonSession`, `packages/daemon/internal/dispatch/client.go`), so a shared agent token names nobody.
 Dispatch takes any other bearer as a service token or a personal token (`optionalActor`, `server.go`), and every role's session then carries that token's service or owner as well.
 `dispatch whoami` in a role tells the two apart:
-for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-execute.ts`).
+for a shared agent token it answers `Session <id> runs under the shared token: no owner, …` (`packages/envoy-client/src/dispatch-commands/session.ts`).
 
 The one Kubernetes service-account token this runtime projects for a role is the broker's, `agent-secrets-token` under `runtime.kubernetes.agent_secrets` (`agentSecretsVolumes`, `manifest.go`), and it reaches the secrets broker and nothing else.
 Dispatch can verify a projected token minted for its own audience (`DISPATCH_OIDC_AUDIENCE` in `packages/envoy/cmd/dispatch/settings.go`, checked by `serviceTokenActor` in `packages/envoy/internal/dispatch/api/server.go`), and the runtime projects none.
@@ -4185,7 +4200,7 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` counts the issues the daemon has started, not the pods: an issue keeps its admission slot from the moment the daemon starts it until it is done, leaves the workflow or waits only for its merge, and its pod can stand where it holds no slot — through the merge wait, after a merge wait sends it back to work until it takes a slot again, and, past the close, during each look of its production check.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue keeps its admission slot from the moment the daemon starts it until it is done or leaves the workflow, and its pod can stand where it holds no slot — through the merge wait, after a merge wait sends it back to work until it takes a slot again, and, past the close, during each look of its production check.
 So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues waiting for their merge, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
@@ -5610,14 +5625,17 @@ The reverse, a project moved from pods onto one tmux host, keeps its store:
 the Go tmux daemon takes over the Kubernetes daemon's claims once every pod of the project is gone and its `legion.yaml` sets `runtime.tmux.take_over: kubernetes` (docs/deployment.md, "Moving a project onto tmux").
 
 **`--resume` keeps the same-agent invariant, and the table is what keeps it.**
-The tmux runtime looks for the recorded session file on the daemon host, in the other folders of the same sessions directory and of the pane's own sessions directory too, and refuses to spawn when it is found nowhere (a silent fresh agent would lose the session), the launch charged and the session kept.
-The one exception holds while `take_over` is set:
-every session found nowhere starts a fresh agent that registers its own, logged and charged nothing, because neither the recorded path nor the previous incarnation tells a claim taken over from a pod, whose session may never have been carried, from a session of this host's own (docs/deployment.md, "Moving a project onto tmux", step 5, which is when to remove the key).
+The tmux runtime looks for the recorded session file on the daemon host, in the other folders of the same sessions directory and of the pane's own sessions directory too.
+A session found nowhere is a session no store holds, whether or not `take_over` is set:
+the claim starts a fresh agent, charged nothing, and the loss is posted on the issue and told to its architect, to the controller and to the new agent in its own prompt (dispatch://INFRA-714 R8), so a lost session is loud rather than silent.
 Oh My Pi itself does not refuse: verified against the pinned build (`omp --resume=<missing path> --mode rpc`), it exits 0, answers `ready`, and runs as a fresh agent, with no error frame and no mention of the file.
 Under Kubernetes there is no file to look for and no init container that looks for one:
 every session is a row in the session database, and the pod's disk, which dies with the pod, never holds a transcript.
 The role's own launcher makes the check instead, inside the pod and before it starts the child:
-it looks the recorded session up in the table through the mounted URL file and refuses the start when the table holds none (`resume session <path>: the session table holds no such session`), which the daemon counts as a launch failure, three of them retiring the claim.
+it looks the recorded session up in the table through the mounted URL file and names which of two things it met in one field of its start answer, `session`, rather than in prose.
+A table that holds no such session (`gone`) is that session gone, and the daemon starts the fresh agent above.
+A table that does not exist, or a store that does not answer (`store-unreachable`), is a deployment fault that says nothing about the session:
+the claim keeps it, nothing is charged, the start is tried again every minute, and the issue and the controller are told at once and then hourly until the store answers.
 Should a resume reach Oh My Pi with its row gone anyway, it starts a fresh session with a new id that the daemon refuses to register (`409 Worker respawn must resume the same agent session`), so the pod exits and the launch failure is counted there.
 Either way the respawn fails loudly rather than quietly starting a new agent under the old role token (see [Selecting the store](#selecting-the-store)).
 

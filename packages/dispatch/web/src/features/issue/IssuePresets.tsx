@@ -44,11 +44,12 @@ import { CONTROL_LABELS, PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-
  * nothing is ever cut.
  *
  * The node menu sits beside the row and outside it, so the one control at the zoomed width is
- * unambiguous. What it holds is `NodeMenu.tsx`'s: what no block of the tree cites, and the
- * upload.
+ * unambiguous. What it holds is `NodeMenu.tsx`'s: what no block of the tree cites, the upload,
+ * and the control that makes a document from a title.
  */
 export function IssuePresets({
   active,
+  artifacts,
   counts,
   filter,
   isClosed,
@@ -60,6 +61,9 @@ export function IssuePresets({
   uncited,
 }: {
   active: Preset;
+  /** Every artifact of the issue, which a title typed into the node menu's New document is held
+   *  against before the write. */
+  artifacts: readonly Artifact[];
   /** How many nodes each preset's query holds, by `presets.ts`. */
   counts: Readonly<Record<string, number>>;
   /** What the filter holds, which is `?q=`. */
@@ -239,6 +243,7 @@ export function IssuePresets({
       </div>
       <NodeMenu
         artifacts={uncited}
+        documents={artifacts}
         isClosed={isClosed}
         issueKey={issueKey}
         onClose={() => setOpen(undefined)}

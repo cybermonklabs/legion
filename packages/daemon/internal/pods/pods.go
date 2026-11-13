@@ -12,8 +12,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// Wake kinds, the vocabulary of a recorded resume's kind and of a wake mark's: the five ways a
-// released pod comes back. WakeDelivery is a delivery the daemon already had for a role of the
+// Wake kinds, the vocabulary of a recorded resume's kind: the five ways a released pod comes
+// back. WakeDelivery is a delivery the daemon already had for a role of the
 // pod — a phase start, a task, a backward move, a notice, a phase-ended message, a production
 // check's look, a slot resume; WakeChecks is a CI settlement on the head of the issue's pull
 // request; WakeRoleMessage and WakeAgentMessage are what only the Envoy listener sees, a message
@@ -22,7 +22,7 @@ import (
 //
 // They are records rather than the rule's own, because the rule that names a wake (workflow) and
 // the store that files it under this word are different packages, and one vocabulary is what
-// keeps a wake's mark, its resume row and the task it writes saying the same thing.
+// keeps a wake's resume row and the task it writes saying the same thing.
 const (
 	WakeDelivery     = "delivery"
 	WakeChecks       = "checks"
@@ -65,10 +65,15 @@ type IdleClaim struct {
 	// send started, zero for a claim holding no delivery. A session's report counts only when it
 	// was read after it (IdleClaim.Reported).
 	LastTurnAt time.Time
-	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are the session's
-	// last activity report (POST /legion/v1/claims/activity): when it read what it was doing,
-	// whether it found background work of its own running, what kinds it named, and when the
-	// phase reminder armed in it is due. ActivityAt is zero for a session that has reported none.
+	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are the last
+	// activity report of the process the claim runs now (POST /legion/v1/claims/activity): when
+	// it read what it was doing, whether it found background work of its own running, what kinds
+	// it named, and when the phase reminder armed in it is due. ActivityAt is zero for a session
+	// that has reported none, and for a claim whose only report an earlier process of it made:
+	// the launch that replaced that process cleared the four columns (store's putClaim clears
+	// them on every write that moves the claim's generation). So the release holds no pod on
+	// background work a pod replacement killed, or on a reminder that died with the process
+	// that armed it.
 	ActivityAt             time.Time
 	ActivityBackground     bool
 	ActivityKinds          []string

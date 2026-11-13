@@ -1,11 +1,13 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
+import { displayTree } from "../../__tests__/display-trees";
 import { api } from "../../api/client";
 import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { DecisionActions } from "./DecisionActions";
 import { CONTROL_LABELS } from "./page-words";
 
@@ -59,10 +61,10 @@ const read: IssueDecisions = {
   open_questions: [],
 };
 
-function renderActions(): { unmount: () => void } {
+function renderActions(answer: IssueDecisions = read): { unmount: () => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(["decisions", KEY], read);
-  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(read);
+  client.setQueryData(["decisions", KEY], answer);
+  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(answer);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
@@ -96,4 +98,48 @@ test("the change form opens with the caret in its field", async () => {
   } finally {
     unmount();
   }
+});
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
+/** The quote the Change form offers for the one decision `fields` describe, which waits for
+ *  review so its node draws the Change. */
+async function quoteOf(fields: Pick<Decision, "text" | "text_tree">): Promise<string> {
+  const user = userEvent.setup();
+  const { unmount } = renderActions({ ...read, decisions: [{ ...decision, ...fields }] });
+  try {
+    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.change_decision }));
+    return screen.getByTestId("decision-quote").textContent ?? "";
+  } finally {
+    unmount();
+  }
+}
+
+// A Change anchors on the words of the decision's first block, which the server finds by
+// matching them against the document's own flattened text: that text writes one space wherever
+// two text runs are not adjacent in the document's positions (`pmdoc.buildFlattenedText`). The
+// end of one list item and the start of the next are four positions apart, so the quote the
+// form sends must hold that space too, or `pmdoc.FindQuote` finds nothing to anchor on. The
+// words come from the reading the server sent (`Decision.text_tree`), which the test builds
+// with the page's own engine (`__tests__/display-trees`).
+test("the quote of a first block that is a list holds one space between its items", async () => {
+  const text = "## Name them notices\n\n- **alpha**\n- beta\n\nThat is the whole of it.";
+  expect(await quoteOf({ text, text_tree: displayTree(text) })).toBe("alpha beta");
+});
+
+// The same rule at a hard break: the break is a leaf of its own and takes a position, so the
+// two lines it divides are one space apart in the text the server matches a quote against.
+test("the quote of a first block with a hard break holds one space between its lines", async () => {
+  const text = "## Wrap the lines\n\nline one  \nline two\n\nThat is the whole of it.";
+  expect(await quoteOf({ text, text_tree: displayTree(text) })).toBe("line one line two");
+});
+
+// An answer with no reading of its text comes from a pod of the build before during a rolling
+// deploy, and the Change still has a quote there: the first paragraph's own markdown, which is
+// all the browser has.
+test("a decision whose answer carried no reading quotes its first paragraph's markdown", async () => {
+  const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
+  expect(await quoteOf({ text, text_tree: undefined })).toBe("A log is enough.");
 });

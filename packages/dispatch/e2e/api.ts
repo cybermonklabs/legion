@@ -637,6 +637,13 @@ export async function uploadIssueFile(
   return (await response.json()) as Result<"/api/v1/issues/{key}/artifacts", "post">;
 }
 
+/** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the issue page's
+ *  Artifacts panel lists them from its own `["artifacts", key]` read (`ArtifactsTab.tsx`), each
+ *  with its role and its versions. */
+export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/artifacts", { params: { key: issue } }, options);
+}
+
 export function getProjectArtifact(project: string, slug: string, options: ApiOptions = {}) {
   return get(
     "/api/v1/projects/{key}/artifacts/{slug}",

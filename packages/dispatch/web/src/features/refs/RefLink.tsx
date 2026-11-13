@@ -72,7 +72,10 @@ export function RefLink({
   const { picture, title } = useReferenceTarget(known === undefined ? route : undefined, {
     text: false,
   });
-  const headline = useMarkdownHeadline(known, TITLE_HEADLINE_MAX);
+  // The batched read answers a block's words with no reading of them (`ReferenceTarget.name`),
+  // so they are the headline's markdown fallback, the argument `useMarkdownHeadline` reads where
+  // no tree came with a text.
+  const headline = useMarkdownHeadline(undefined, TITLE_HEADLINE_MAX, known);
   const path = useReferencePath(route);
   useLayoutEffect(() => {
     if (anchor instanceof HTMLAnchorElement) {

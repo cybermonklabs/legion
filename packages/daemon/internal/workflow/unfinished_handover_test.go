@@ -87,7 +87,7 @@ func TestTheHeldGrandchildIsHandedOverWhateverBecomesOfItsAcceptedParent(t *test
 				Tree: root, Project: "LEGION", Title: "root", Phase: phase.Admitted, Generation: 7,
 				Status: "in_progress", DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1})
 			seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: root, Parent: &rootKey, Project: "LEGION", Title: "child", Phase: phase.AwaitingMerge, Generation: 7,
+				Tree: root, Parent: &rootKey, Project: "LEGION", Title: "child", Phase: phase.Merging, Generation: 7,
 				Status: "retro", DispatchStatus: "retro", Rank: "V1", LastDispatchSeq: 1})
 			seedIssue(t, pool, record.Issue{Key: held, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 				Tree: root, Parent: &childKey, Project: "LEGION", Title: "held", Phase: phase.Admitted, Generation: 7,
@@ -226,7 +226,7 @@ const (
 // again.
 //
 // A root a person or a controller parked hands over one member only: the one standing at
-// phase.AwaitingMerge whose pull request is still open. Such a root can be re-admitted, and the
+// phase.Merging whose pull request is still open. Such a root can be re-admitted, and the
 // re-admission resumes a member of any other phase where it stood (admit's startMidPhaseMembers),
 // so waiting strands nothing else. The one thing no re-admission does is arm again the merge the
 // park disarmed: the linger's start disarmed every member's open pull request (beginLinger), and
@@ -253,7 +253,7 @@ func TestLingerHandsOver(t *testing.T) {
 		// It goes as a root of its own carrying its run: the hand-over writes nothing over the
 		// phase, so its new tree resumes where it stood (record.Issue.CarriesRun).
 		carried := issueRecord(t, pool, handsOverMergeReady)
-		if carried == nil || carried.Phase != phase.AwaitingMerge || !carried.CarriesRun() {
+		if carried == nil || carried.Phase != phase.Merging || !carried.CarriesRun() {
 			t.Fatalf("the handed-over member = %+v, want it still at awaiting_merge carrying its run: its new tree resumes the phase it stood in", carried)
 		}
 		// The decisions parked on it go with it, and the close says so rather than warning that it
@@ -337,7 +337,7 @@ func TestLingerHandsOver(t *testing.T) {
 			{key: "LEGION-214", rank: "X", state: record.PullRequestClosed},
 		} {
 			seedIssue(t, pool, record.Issue{Key: member.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-				Tree: handsOverRoot, Parent: &rootKey, Project: "LEGION", Title: member.key, Phase: phase.AwaitingMerge,
+				Tree: handsOverRoot, Parent: &rootKey, Project: "LEGION", Title: member.key, Phase: phase.Merging,
 				Generation: handsOverGeneration, Status: "retro", DispatchStatus: "retro", Rank: member.rank, LastDispatchSeq: 1})
 			if member.state == "" {
 				continue
@@ -384,8 +384,8 @@ func handsOverFixture(t *testing.T) (*pgxpool.Pool, *bytes.Buffer, func(id strin
 		rank   string
 		number int
 	}{
-		{key: handsOverMergeReady, at: phase.AwaitingMerge, status: "retro", rank: "V", number: 44},
-		{key: handsOverParkedAtTheMerge, at: phase.AwaitingMerge, status: "backlog", rank: "W", number: 45},
+		{key: handsOverMergeReady, at: phase.Merging, status: "retro", rank: "V", number: 44},
+		{key: handsOverParkedAtTheMerge, at: phase.Merging, status: "backlog", rank: "W", number: 45},
 		{key: handsOverWorking, at: phase.Implementing, status: "in_progress", rank: "X"},
 	} {
 		seedIssue(t, pool, record.Issue{Key: member.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",

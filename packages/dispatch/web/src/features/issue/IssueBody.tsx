@@ -131,6 +131,7 @@ export function IssueBody({
       />
       <IssuePresets
         active={address.preset}
+        artifacts={issue.artifacts ?? []}
         counts={counts}
         filter={address.filter}
         isClosed={isClosed}
