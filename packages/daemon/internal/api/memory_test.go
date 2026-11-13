@@ -100,7 +100,7 @@ var (
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the
-// last strict reader before it knows, and the rest of the body as it is. The fifteen downgrades
+// last strict reader before it knows, and the rest of the body as it is. The sixteen downgrades
 // compose, band by band: a pod at 46 to 48 is served the update rounds it reads and none of the
 // memory draws, the trees, the wakes the pacing holds, the gated steps, the retired stranded
 // entries, the step records, the places in the admission line, the counts of the moves back, the
@@ -119,7 +119,8 @@ var (
 // line's own fields too, and still neither the cause, nor either entry number, nor the held
 // list; a pod from 87 to 93 the claim views' `leakCheckCause` too, and still neither entry
 // number nor the held list; a pod from 94 to 97 the two entry numbers too, and still no held
-// list; a pod below 46 none of the fifteen; and a pod at 98, this daemon's declared contract, a
+// list; a pod at 98 the held list too, and no `unseenTaskValues`; a pod below 46 none of the
+// sixteen; and a pod at supervise.TaskTakeContract, the contract a worker takes its task at, a
 // pod whose claims record no contract and a caller in no pod — the operator's `legion state`,
 // whose memory line reads the draws, whose queue line reads the wakes and whose tool-call line
 // reads the step records — are served all of them.
@@ -191,9 +192,13 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// the workflow that stand in neither `active` nor `waiting` (heldContract, 98), so a pod
 		// at 98 or above is served the list and every older pod is not.
 		held bool
+		// unseen is whether the caller is served `unseenTaskValues`, the claims whose task value
+		// nobody reported seeing (supervise.TaskTakeContract), so a pod at that contract or above
+		// is served the list and every older pod is not.
+		unseen bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
-		{name: "a pod below PodUpdateContract, below all fifteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "a pod below PodUpdateContract, below all sixteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
 		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
 		// is served and the two tree keys, `wakesWaiting`, the gated steps, the retired stranded
@@ -259,9 +264,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// under the declared contract: the two entry numbers are served too, and the held list
 		// is the one key held back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
-		{name: "a pod at heldContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
+		// The band from heldContract to below supervise.TaskTakeContract: the held list is served
+		// too, and `unseenTaskValues` is the one key held back.
+		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
+		{name: "a pod at TaskTakeContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(supervise.TaskTakeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, unseen: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, unseen: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, unseen: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -333,6 +341,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
+			if unseen := strings.Contains(string(body), `"unseenTaskValues"`); unseen != tc.unseen {
+				t.Errorf("the state %s carries the `unseenTaskValues` key = %v, want %v; the reader before TaskTakeContract refuses it, empty as much as filled", body, unseen, tc.unseen)
+			}
 
 			// Nothing else of the body differs: it is the full state with the stripped keys gone,
 			// `wakesWaiting` among them where the caller is below contract 53, since the reader
@@ -350,6 +361,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			if !tc.refresh {
 				delete(want, ClaimsToRefreshField)
+			}
+			if !tc.unseen {
+				delete(want, "unseenTaskValues")
 			}
 			delete(want, "contract")
 			// A pod below retiredStrandedContract is served the report of claims nothing will

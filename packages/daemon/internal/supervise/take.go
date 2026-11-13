@@ -47,6 +47,18 @@ type TaskValue struct {
 	Revision uint64
 }
 
+// TaskTakeContract is the plugin contract at which a worker takes its task rather than being
+// sent it (dispatch://INFRA-2811): the contract this change's entry in internal/api's
+// version.go declares, and the one whose state body first carries `unseenTaskValues` (R5's
+// claims whose value nobody reported seeing). internal/api serves a caller in a pod whose claims
+// record a contract below it the state without that key (stateFor, withoutUnseenTaskValues).
+//
+// It lives here rather than beside DaemonAPIVersion because internal/api imports this package,
+// as PodUpdateContract does. It is the first number above the base's 98; api.DaemonAPIVersion is
+// raised to it with the routes a worker takes through, and a merge that renumbers this change
+// moves both together.
+const TaskTakeContract = 99
+
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
 // (RequestDeliver.Origin); one that names none is read as originOf says.
 const (
@@ -535,9 +547,9 @@ func (m *Machine) refusedAdoption(ctx context.Context, request RequestTake, err 
 // workflow is told the agent took its work (Deps.TaskConfirmed).
 //
 // The prompt budgets are not cleared here: a take resets no count (R5), and they go to zero at
-// the start of this take's turn (startTakesTurn). A write that fails tells no one and is owed,
-// as the confirmation's was: the take stands in memory, and a take sent again is answered from
-// it.
+// the start of this take's turn, as at any turn's start or end (turnStarted). A write that fails
+// tells no one and is owed, as the confirmation's was: the take stands in memory, and a take
+// sent again is answered from it.
 func (m *Machine) accept(ctx context.Context, request RequestTake) error {
 	p := m.claim.Pending
 	text := p.message(m.claim)
@@ -668,7 +680,12 @@ func (m *Machine) claimHold() string {
 // A value the worker has not reported seeing at that revision is left alone: the worker has not
 // asked at it. A write the bucket refused is made here at the next chance, whatever the worker
 // asked (valueUnwritten).
-func (m *Machine) offerPending(ctx context.Context) error {
+func (m *Machine) offerPending(ctx context.Context) error { return m.offerValue(ctx, "hold-ended") }
+
+// offerValue is offerPending with the cause its write is logged under: "hold-ended" for the end
+// of a hold, and "retake" for a task taken back in this same process that can be taken again —
+// the second wait's take-back (turnStartBoundOver).
+func (m *Machine) offerValue(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	if p == nil || p.taken() {
 		return nil
@@ -683,7 +700,7 @@ func (m *Machine) offerPending(ctx context.Context) error {
 	if err != nil || dropped || hold != "" {
 		return err
 	}
-	return m.writeValue(ctx, "hold-ended")
+	return m.writeValue(ctx, cause)
 }
 
 // writeValue writes the claim's value under the pending task's number and records the write as
@@ -719,7 +736,7 @@ func (m *Machine) putValue(ctx context.Context, d Delivery, cause string) (strin
 			"task", d.Number, "origin", d.Origin, "cause", cause, "error", err)
 		return "", 0, false
 	}
-	m.valueUnwritten = false
+	m.valueUnwritten, m.valueWrittenAt = false, m.deps.Clock.Now()
 	m.log.Info("supervise: a task value was written", "task", d.Number, "origin", d.Origin, "cause", cause,
 		"epoch", epoch, "revision", revision)
 	return epoch, revision, true
@@ -784,13 +801,12 @@ func (m *Machine) takeBack(ctx context.Context, cause string) error {
 
 // startTakesTurn is the write of a turn's start that is the turn of the pending task's accepted
 // take, as confirm's was: the claim and the delivery together. The take's text goes (TakenText),
-// since a take sent again from here on is not a take whose turn has yet to start, and the claim's
-// prompt budgets go to zero, which is the reset a turn start makes (R5): the take that came
-// before it reset nothing.
+// since a take sent again from here on is not a take whose turn has yet to start. The claim it
+// writes carries the prompt budgets at zero, which is the reset every turn's start makes
+// (turnStarted, R5): the take that came before it reset nothing.
 func (m *Machine) startTakesTurn(ctx context.Context) error {
 	p := m.claim.Pending
 	p.TakenText = ""
-	m.claim.Budgets.PromptFailures, m.claim.Budgets.PromptRetires = 0, 0
 	return m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx)))
 }
 

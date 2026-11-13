@@ -83,6 +83,9 @@ const (
 	TimerBoot TimerKind = "boot"
 	// TimerRegistration is the registration deadline, which runs until the agent is ready: a live
 	// process whose agent never registered, or registered and never said it was ready, is retired.
+	// After a daemon start it is also the reconnect deadline of a claim restored ready, idle or
+	// working (NewMachine): a live process whose shim never says hello by then is retired, and the
+	// hello ends it (reconnectDeadline, reconnected).
 	TimerRegistration TimerKind = "registration"
 	// TimerFinish is the end-frame bound: a task's turn ended, and the turn-outcome report that
 	// names its number has that long to come (Timeouts.RPC) before the end of the turn finishes
@@ -104,6 +107,14 @@ const (
 	// TimerPromptRetry is the wait before a task a provider error took back is written again to
 	// the same session's value (promptRetryDelay), armed on that task's own delivery id.
 	TimerPromptRetry TimerKind = "prompt_retry"
+	// TimerTake is R5's first bound (Timeouts.Take, waits.go): a value the worker reported seeing
+	// that no take came at charges the worker when it passes, and a value nobody reported seeing
+	// is written again under its number, charging nobody. Armed on the pending task's id.
+	TimerTake TimerKind = "take"
+	// TimerTurnStart is R5's second bound (Timeouts.TurnStart, waits.go): an accepted take whose
+	// turn has not started when it passes charges the worker and is taken back under its number.
+	// Armed on the pending task's id.
+	TimerTurnStart TimerKind = "turn_start"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -608,6 +619,9 @@ const (
 	onWakeTimer     eventKind = timerPrefix + eventKind(TimerWake)
 	// The wait a turn that ended in a provider error arms (providerErrored).
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
+	// R5's two bounds (waits.go).
+	onTakeTimer      eventKind = timerPrefix + eventKind(TimerTake)
+	onTurnStartTimer eventKind = timerPrefix + eventKind(TimerTurnStart)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -911,8 +925,27 @@ func fillTable(t *builder) {
 
 	t.row(onDeadline, "the registration deadline: the agent never registered, or never said it was ready", registrationDeadline,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateLaunching, StateShimConnected, StateRegistered)
-	t.ignore(onDeadline, "the agent is ready, so the boot watch is over", StateReady, StateWorking, StateIdle)
+	// The reconnect deadline of a claim a daemon start restored with its agent ready (NewMachine):
+	// its shim's hello disarms it (reconnected, reconnectedMidTurn), so what fires is a process
+	// whose shim never came back.
+	t.row(onDeadline, "the reconnect deadline: the shim of a restored claim never said hello; probe its process, and retire and relaunch it if it lives", reconnectDeadline,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateWorking, StateIdle)
 	t.ignore(onDeadline, "no boot is being watched", processless...)
+
+	// R5's two bounds (waits.go). Each is armed at the end of a decision that leaves the claim
+	// waiting on its worker (armWaits) and disarmed there once it no longer does, so a bound that
+	// fires finds the claim as the wait it is for left it. A charge can retire the process
+	// (chargePrompt), and a held suspension ends there instead.
+	t.row(onTakeTimer, "the first bound: write again a value nobody reported seeing, or charge a worker that saw its value and asked no take", takeBoundOver,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.ignore(onTakeTimer, "the agent is not ready, so it is waited on for no take", unready...)
+	t.ignore(onTakeTimer, "no process of this claim is running, so nothing of it is waited on", gone...)
+
+	t.row(onTurnStartTimer, "the second bound: charge a worker whose accepted take started no turn, and take the task back", turnStartBoundOver,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle)
+	t.ignore(onTurnStartTimer, "the claim is in a turn, so no accepted take waits for its turn to start", StateWorking)
+	t.ignore(onTurnStartTimer, "the agent is not ready, so no take of it was accepted", unready...)
+	t.ignore(onTurnStartTimer, "no process of this claim is running, so nothing of it is waited on", gone...)
 
 	// The end-frame bound after a task's turn ended with no report naming its number. It is
 	// armed where that turn ends, and goes with the task (retireTask) and with the process
@@ -1209,8 +1242,10 @@ func enrolledOnly(m *Machine, ctx context.Context, _ Event) error { return m.ens
 
 // reconnected is the shim's hello to a ready or idle claim: an adoption a take lost to the
 // transport is one this ends, so a value whose take was refused is written again
-// (offerPending).
+// (offerPending). A claim a daemon start restored is waiting on exactly this hello (its reconnect
+// deadline, NewMachine), and the hello ends that wait.
 func reconnected(m *Machine, ctx context.Context, _ Event) error {
+	m.disarm(TimerRegistration)
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
@@ -1220,8 +1255,9 @@ func reconnected(m *Machine, ctx context.Context, _ Event) error {
 // reconnectedMidTurn is the shim's hello while the claim is working. Within one daemon's life the
 // shim's backlog replays whatever the turn did meanwhile, agent_end included; a restored claim
 // may be waiting on an agent_end an earlier daemon received and never recorded, so its first
-// hello asks.
+// hello asks. It ends the reconnect deadline a daemon start armed, as reconnected does.
 func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
+	m.disarm(TimerRegistration)
 	if err := m.ensureEnrolled(ctx); err != nil {
 		return err
 	}
@@ -1229,8 +1265,10 @@ func reconnectedMidTurn(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // unansweredAsksWarn is the count of unanswered asks in a row from which askTurnOver logs each one
-// at Warn: a restored working claim whose agent never answers stays working with no limit while
-// its process lives, and an operator should see that.
+// at Warn: a restored working claim whose shim came back but whose agent never answers stays
+// working, asked again at every sweep, until the stall backstop ends a turn that records no step
+// (backstopStall), and an operator should see that. One whose shim never comes back at all is
+// retired at its reconnect deadline instead (reconnectDeadline).
 const unansweredAsksWarn = 3
 
 // askTurnOver asks a restored working claim's agent whether the turn an earlier daemon saw start
@@ -1284,11 +1322,15 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // turnStarted is a turn starting in a ready or idle claim. The first turn that starts after a
 // take of the pending task was accepted is that task's turn (Delivery.awaitsTurn): the worker
 // starts it on the take's answer. Its start clears the take's text, so a take sent again from
-// here on is not answered it, and puts the claim's prompt budgets back to zero, the reset a turn
-// start makes (startTakesTurn); its line names the task's number. Any other turn is a foreign
-// one — an Envoy notice's, a person's steer, a background result's — and is no task's. Either way
-// the claim records when this turn began (Claim.LastTurnStart), which is persisted with it: the
-// time is a reader's only handle on how long the agent has been in the turn it is in.
+// here on is not answered it (startTakesTurn); its line names the task's number. Any other turn
+// is a foreign one — an Envoy notice's, a person's steer, a background result's — and is no
+// task's. Either way the claim records when this turn began (Claim.LastTurnStart), which is
+// persisted with it: the time is a reader's only handle on how long the agent has been in the
+// turn it is in.
+//
+// Any turn's start puts the claim's prompt budgets back to zero, in the same write (R5: a turn
+// start or a turn end resets the count, a take does not): the worker acted, so the charges R5's
+// two waits and a refused adoption made of it are over (waits.go).
 //
 // The persisted working state is reported to the daemon (Machine.OnDurableState), because a turn is
 // the one observation that a woken pod's role came back and took work, whether or not the wake
@@ -1297,6 +1339,7 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 func turnStarted(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateWorking
 	m.claim.LastTurnStart = m.deps.Clock.Now()
+	m.resetPromptBudgets()
 	p := m.claim.Pending
 	own := p != nil && p.awaitsTurn()
 	m.unseenTurn = false
@@ -1401,6 +1444,7 @@ func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 		return nil
 	}
 	m.startTurn(0)
+	m.resetPromptBudgets()
 	m.log.Info("supervise: a turn started while this claim's session is being compacted; the claim is left working for it",
 		"generation", m.claim.Generation)
 	m.compacting.inTurn, m.compacting.back = true, StateIdle
@@ -1478,6 +1522,8 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // A turn that ends is also the end of the work the deaths were charged against (chargeDeath), so
 // the count goes with it: an agent killed twice in its turns and through the third is making
 // progress, and only deaths that keep a turn from ending should ever fail its claim.
+// The prompt budgets go with it too, as they do at a turn's start (resetPromptBudgets, R5): the
+// worker acted, and R5's waits charge only a worker that does not.
 //
 // The end of a task's turn does not finish the task by itself. Oh My Pi's agent_end names no
 // task, and with background work on, a role's own background result starts turns no take
@@ -1540,6 +1586,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.claim.Budgets.Deaths = 0
+	m.resetPromptBudgets()
 	if m.compacting != nil {
 		m.log.Info("supervise: a turn ended while this claim's session is being compacted; the claim stays working until the compaction ends")
 		m.compacting.inTurn, m.compacting.back = false, StateIdle
@@ -1620,9 +1667,15 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 // blindTurnEnded is a turn ending on a claim the daemon never saw start one: it is ready or idle,
 // and what the end tells it is that the agent's own turn is over. A take that turn refused — a
 // take into the turn the claim's agent was in — is offered again now (offerPending, which still
-// holds it back from a turn on another claim of its issue, so R6's fence stands).
+// holds it back from a turn on another claim of its issue, so R6's fence stands). The end is the
+// worker's act whoever saw it begin, so it resets the prompt budgets as every turn's end does.
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.log.Info("supervise: a turn this daemon never saw begin has ended")
+	if m.resetPromptBudgets() {
+		if err := m.persist(ctx); err != nil {
+			return err
+		}
+	}
 	return m.offerPending(ctx)
 }
 

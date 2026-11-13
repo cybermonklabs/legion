@@ -114,8 +114,19 @@ type Config struct {
 	WorkerBootRegistrationDeadlineIntervals int
 	WorkerRPCTimeout                        time.Duration
 	WorkerStopTimeout                       time.Duration
-	TreeStopTimeout                         time.Duration
-	SlowCommandTimeout                      time.Duration
+	// WorkerTakeTimeout is R5's first bound (`worker_take_timeout_seconds`, five minutes by
+	// default): how long a ready, idle worker under no hold that reported its task's value seen
+	// has to ask to take it before it is charged, and how often a value nobody reported seeing
+	// is written again (supervise.Timeouts.Take). WorkerTurnStartTimeout is R5's second bound
+	// (`worker_turn_start_timeout_seconds`, twenty-five minutes by default): how long after an
+	// accepted take its turn has to start before the worker is charged and the task taken back
+	// (supervise.Timeouts.TurnStart). The second's default is twice the compaction timeout and
+	// the longest launch-to-turn the fleet measured, added (2 × (10 min + 150 s), INFRA-2811's
+	// decision 13); it is not a floor, and both are refused only when not a positive integer.
+	WorkerTakeTimeout      time.Duration
+	WorkerTurnStartTimeout time.Duration
+	TreeStopTimeout        time.Duration
+	SlowCommandTimeout     time.Duration
 	// ProbeInterval is how often the runtime sweeps every recorded process.
 	ProbeInterval time.Duration
 
@@ -311,6 +322,8 @@ var durationKeys = []struct {
 	{"worker_boot_timeout_seconds", 120, func(c *Config) *time.Duration { return &c.WorkerBootTimeout }},
 	{"worker_rpc_timeout_seconds", 5, func(c *Config) *time.Duration { return &c.WorkerRPCTimeout }},
 	{"worker_stop_timeout_seconds", 10, func(c *Config) *time.Duration { return &c.WorkerStopTimeout }},
+	{"worker_take_timeout_seconds", 300, func(c *Config) *time.Duration { return &c.WorkerTakeTimeout }},
+	{"worker_turn_start_timeout_seconds", 1500, func(c *Config) *time.Duration { return &c.WorkerTurnStartTimeout }},
 	{"tree_stop_timeout_seconds", 60, func(c *Config) *time.Duration { return &c.TreeStopTimeout }},
 	{"slow_command_timeout_seconds", 300, func(c *Config) *time.Duration { return &c.SlowCommandTimeout }},
 	{"probe_interval_seconds", 30, func(c *Config) *time.Duration { return &c.ProbeInterval }},

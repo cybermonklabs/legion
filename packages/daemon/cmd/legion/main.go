@@ -634,6 +634,7 @@ func runState(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	fmt.Fprintln(stdout, roundsSummary(state.Issues))
 	fmt.Fprintln(stdout, openCallsSummary(state.Issues))
 	fmt.Fprintln(stdout, entrySummary(state.Issues))
+	fmt.Fprintln(stdout, unseenTaskValuesSummary(state.UnseenTaskValues))
 	fmt.Fprintln(stdout, pendingSummary(state.PendingStatusWrites))
 	fmt.Fprintln(stdout, heldSummary(state.HeldOutboxRows))
 	fmt.Fprintln(stdout, strandedSummary(state.StrandedClaims, strandedSuspenders(ctx, op, state.StrandedClaims)))
@@ -1146,6 +1147,24 @@ func entrySummary(issues map[string]api.Issue) string {
 		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
 	}
 	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
+}
+
+// unseenTaskValuesSummary is the one line an operator reads for the claims whose task value
+// nobody reported seeing for a whole first bound (api.State.UnseenTaskValues): how many, and each
+// by claim with the task its value names and when the daemon last wrote it. The relay that
+// carries a value to its worker failed for each — a listener stopped, or a session no listener
+// relays to — so the daemon charges nobody and writes the value again once per bound; a claim
+// that stays on this line through several reads is one no rewrite reaches. With none the line
+// says so.
+func unseenTaskValuesSummary(unseen []api.UnseenTaskValue) string {
+	if len(unseen) == 0 {
+		return "task values nobody reported seeing: none"
+	}
+	named := make([]string, len(unseen))
+	for i, value := range unseen {
+		named[i] = fmt.Sprintf("%s task %d written %s", value.Claim, value.Task, value.WrittenAt.Format(time.RFC3339))
+	}
+	return fmt.Sprintf("task values nobody reported seeing: %d — %s", len(unseen), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding

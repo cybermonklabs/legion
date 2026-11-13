@@ -59,6 +59,8 @@ worker_boot_timeout_seconds: 180
 worker_boot_registration_deadline_intervals: 2
 worker_rpc_timeout_seconds: 8
 worker_stop_timeout_seconds: 30
+worker_take_timeout_seconds: 240
+worker_turn_start_timeout_seconds: 1800
 tree_stop_timeout_seconds: 90
 slow_command_timeout_seconds: 600
 probe_interval_seconds: 20
@@ -691,6 +693,13 @@ func populatedState(t *testing.T) State {
 		// the pacing is holding now, which is the pair a reader of a running wave needs
 		// (contract 73).
 		ClaimsToRefresh: 4,
+		// One claim whose task value went a first bound with nobody reporting it seen: the relay to
+		// LEGION-209's tester failed, so the daemon wrote task 2 again at the bound and charged
+		// nobody (R5 of dispatch://INFRA-2811).
+		UnseenTaskValues: []UnseenTaskValue{
+			{Claim: "legion-legion-legion-209-tester", Issue: "LEGION-209", Role: claim.RoleTester,
+				Task: 2, WrittenAt: time.Date(2026, 9, 22, 9, 15, 30, 0, time.UTC)},
+		},
 		ControllerLocator: &ControllerLocator{
 			Runtime:      "kubernetes",
 			External:     true,

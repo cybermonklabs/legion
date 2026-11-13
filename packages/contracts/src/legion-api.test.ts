@@ -1003,9 +1003,13 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(parsed.issues["LEGION-207"]?.lingerUntil).toBe("2026-09-22T10:10:12Z");
   expect(parsed.issues["LEGION-211"]?.ancestry).toEqual(["LEGION-209", "LEGION-208"]);
   // The pending task is the five facts and the text is not one of them, here or anywhere in the
-  // body: the operator routes are the only surface that serves it.
+  // body: the operator routes are the only surface that serves it. The one `task` key the body
+  // carries is `unseenTaskValues[].task`, a task's number and never its text, so that list is held
+  // to numbers and the rest of the body to no `task` key at all.
   expect(Object.keys(parsedWorking?.pendingTask ?? {}).sort()).toEqual(["phase", "queuedAt"]);
-  expect(JSON.stringify(parsed)).not.toContain('"task"');
+  const { unseenTaskValues, ...withoutUnseen } = parsed;
+  expect(unseenTaskValues?.every((value) => Number.isInteger(value.task))).toBe(true);
+  expect(JSON.stringify(withoutUnseen)).not.toContain('"task"');
 
   // A cause outside the seven words, a linger that is no instant and an empty key in the chain
   // are each refused rather than read.
@@ -2021,6 +2025,50 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   for (const refused of [-1, 1.5, "4", null]) {
     expect(
       LegionStateResponse.safeParse({ ...state, claimsToRefresh: refused }).success
+    ).toBeFalse();
+  }
+});
+
+// The claims whose task value nobody reported seeing for a whole first bound (R5 of
+// dispatch://INFRA-2811): the golden names the one claim the relay failed, with the number its
+// value names and when the daemon last wrote it, and a state where every value was seen carries
+// an empty list rather than no key. The key is not required for the reason `wakesWaiting` is not:
+// the daemon leaves it off the state it serves a caller whose pod's plugin is older than the
+// contract that added it (`api.stateFor`, `withoutUnseenTaskValues`). So a body without it
+// parses, and what is refused is an entry that names no task number or no moment.
+test("the state golden names the claims whose task value is unseen, and the key may be absent", () => {
+  const state = fixture("state.json") as Record<string, unknown>;
+  expect(LegionStateResponse.parse(state).unseenTaskValues).toEqual([
+    {
+      claim: "legion-legion-legion-209-tester",
+      issue: "LEGION-209",
+      role: "tester",
+      task: 2,
+      writtenAt: "2026-09-22T09:15:30Z",
+    },
+  ]);
+  expect(LegionStateResponse.parse(fixture("state-stage3.json")).unseenTaskValues).toEqual([]);
+
+  const { unseenTaskValues: _withoutTheList, ...stripped } = state;
+  const served = LegionStateResponse.safeParse(stripped);
+  expect(served.success).toBeTrue();
+  expect(served.data?.unseenTaskValues).toBeUndefined();
+
+  const entry = {
+    claim: "legion-legion-legion-209-tester",
+    issue: "LEGION-209",
+    role: "tester",
+    task: 2,
+    writtenAt: "2026-09-22T09:15:30Z",
+  };
+  for (const refused of [
+    { ...entry, task: 0 },
+    { ...entry, task: "2" },
+    { ...entry, writtenAt: "yesterday" },
+    { ...entry, role: "intern" },
+  ]) {
+    expect(
+      LegionStateResponse.safeParse({ ...state, unseenTaskValues: [refused] }).success
     ).toBeFalse();
   }
 });

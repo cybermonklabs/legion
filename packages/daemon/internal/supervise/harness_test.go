@@ -596,9 +596,12 @@ func (v *memTaskValues) deleted() []claim.Token {
 // revision, while its host is idle — the claim ready or idle, no turn of its own running. A
 // process that registers anew has asked nothing (generation). It starts no turn of its own: a
 // test posts the turn's start, as it posted it after a prompt. manual stops it, for a test that
-// drives every take itself (manualTakes).
+// drives every take itself (manualTakes). relayDown is the listener that relays its values
+// stopped: the worker is handed no value, so it reports none seen and asks nothing, until the
+// test sets it back.
 type harnessWorker struct {
 	manual     bool
+	relayDown  bool
 	generation uint64
 	seen       map[TaskValue]bool
 	asked      map[TaskValue]bool
@@ -812,7 +815,7 @@ func (h *harness) mustReport(providerError *ProviderError) {
 func (h *harness) workerAsks() {
 	h.t.Helper()
 	w := h.worker
-	if w.manual {
+	if w.manual || w.relayDown {
 		return
 	}
 	c := h.m.Claim()

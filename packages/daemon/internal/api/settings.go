@@ -49,6 +49,8 @@ type Settings struct {
 	WorkerBootTimeoutSeconds      int `json:"worker_boot_timeout_seconds"`
 	WorkerRPCTimeoutSeconds       int `json:"worker_rpc_timeout_seconds"`
 	WorkerStopTimeoutSeconds      int `json:"worker_stop_timeout_seconds"`
+	WorkerTakeTimeoutSeconds      int `json:"worker_take_timeout_seconds"`
+	WorkerTurnStartTimeoutSeconds int `json:"worker_turn_start_timeout_seconds"`
 	TreeStopTimeoutSeconds        int `json:"tree_stop_timeout_seconds"`
 	SlowCommandTimeoutSeconds     int `json:"slow_command_timeout_seconds"`
 	ProbeIntervalSeconds          int `json:"probe_interval_seconds"`
@@ -362,6 +364,8 @@ func SettingsOf(cfg config.Config) Settings {
 		WorkerBootTimeoutSeconds:                seconds(cfg.WorkerBootTimeout),
 		WorkerRPCTimeoutSeconds:                 seconds(cfg.WorkerRPCTimeout),
 		WorkerStopTimeoutSeconds:                seconds(cfg.WorkerStopTimeout),
+		WorkerTakeTimeoutSeconds:                seconds(cfg.WorkerTakeTimeout),
+		WorkerTurnStartTimeoutSeconds:           seconds(cfg.WorkerTurnStartTimeout),
 		TreeStopTimeoutSeconds:                  seconds(cfg.TreeStopTimeout),
 		SlowCommandTimeoutSeconds:               seconds(cfg.SlowCommandTimeout),
 		ProbeIntervalSeconds:                    seconds(cfg.ProbeInterval),

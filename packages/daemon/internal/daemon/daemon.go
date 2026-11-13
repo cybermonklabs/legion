@@ -1322,6 +1322,24 @@ func (s *supervision) waitingWakes() []supervise.WaitingWake {
 	return waiting
 }
 
+// unseenTaskValues is every claim of this daemon's machines whose task value nobody reported
+// seeing for a whole first bound, as each machine last published itself (api.UnseenTaskValuesOf,
+// source.unseen): read from the published view, as waitingWakes reads the wakes, so the state
+// never waits on a decision in flight, and nothing is allocated while every value was seen
+// (supervise.Machine.UnseenTaskValue). It is memory alone, as the waits that list it are.
+func (s *supervision) unseenTaskValues() []supervise.UnseenTaskValue {
+	if s.supervisor == nil {
+		return nil
+	}
+	var unseen []supervise.UnseenTaskValue
+	for _, m := range s.supervisor.supervised() {
+		if value := m.UnseenTaskValue(); value != nil {
+			unseen = append(unseen, *value)
+		}
+	}
+	return unseen
+}
+
 // pacedCatchUps is every catch-up the wake pacing is still holding, as the state names them beside
 // the machines' own wakes (api.State.WakesWaiting): the notice a start writes to an architect
 // already running in place of a launch waits on its row's next_at rather than in a machine
@@ -1460,6 +1478,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			Probe:                 cfg.ProbeInterval,
 			Stop:                  cfg.WorkerStopTimeout,
 			LaunchBackoff:         launchBackoffFirst,
+			Take:                  cfg.WorkerTakeTimeout,
+			TurnStart:             cfg.WorkerTurnStartTimeout,
 		},
 		WakePace: supervise.WakePace{
 			Reserve: reserve,
@@ -2297,6 +2317,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			deployment:   s.deployment,
 			reports:      s.capabilityReports,
 			wakes:        s.waitingWakes,
+			unseen:       s.unseenTaskValues,
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
 			gatedSteps:   cfg.Gates.Steps(),
@@ -2462,6 +2483,10 @@ type source struct {
 	// wakes is every wake the daemon's machines hold, as each machine last published it
 	// (supervision.waitingWakes); nil for a daemon that supervises nothing.
 	wakes func() []supervise.WaitingWake
+	// unseen is every claim whose task value nobody reported seeing for a whole first bound, as
+	// each machine last published it (supervision.unseenTaskValues); nil for a daemon that
+	// supervises nothing.
+	unseen func() []supervise.UnseenTaskValue
 	// repositories is the project's repository mapping as the workflow serves it, empty for a
 	// daemon with no workflow, whose state serves no repository.
 	repositories *repositories
@@ -2674,6 +2699,9 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	}
 	state.WakesWaiting = api.WakesWaitingOf(held, paced)
 	state.ClaimsToRefresh = claimsToRefresh(claims, s.noPluginInstall)
+	if s.unseen != nil {
+		state.UnseenTaskValues = api.UnseenTaskValuesOf(s.unseen())
+	}
 	state.Daemon = api.DaemonInfo{
 		Project:       s.project,
 		SchemaVersion: version,

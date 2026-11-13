@@ -181,6 +181,7 @@ export const LEGION_FAILURE_CAUSES = [
   "launch_refused",
   "died",
   "never_registered",
+  "never_reconnected",
   "stale_plugin",
   "prompt_retires_exhausted",
   "provider_error",
@@ -603,6 +604,19 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
+/** `api.UnseenTaskValue` — one claim whose task value nobody reported seeing for a whole first
+ * bound (`worker_take_timeout_seconds`): the claim, its issue and role, `task`, the number its
+ * value names, and `writtenAt`, when the daemon last wrote that value. The relay to that worker
+ * failed, so the daemon charges nobody and writes the value again once per bound, moving
+ * `writtenAt` with each write (R5 of dispatch://INFRA-2811). */
+const legionUnseenTaskValue = z.object({
+  claim: nonEmptyString,
+  issue: issueKey,
+  role: z.enum(LEGION_ROLES),
+  task: z.number().int().positive(),
+  writtenAt: timestamp,
+});
+
 /** `api.Issue` — `workers` is keyed by a plain string, not by the role names this build knows, so
  * a role a later daemon adds is read rather than refused; the key list is held by the golden test
  * in `legion-api.test.ts`, not by this schema. A phase that has not run has no entry, so the value
@@ -953,10 +967,14 @@ const legionConsumerLag = z.object({
  * key when it is 0 as surely as when it names a number (`api.stateFor`, `withoutClaimsToRefresh`).
  * A caller in a pod whose claims record no contract at all is served the count, as is a caller the
  * daemon can place in no pod. The two strips compose on one body: a caller below 53 is below 73 too
- * and is served neither key. `contract` is the mark of the narrowing, the two contract numbers
- * the daemon's own log line names (contract 75), optional for the same reason the other two are:
- * the route strips it for a caller in a pod below 75, and for that caller alone, since a reader
- * before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
+ * and is served neither key. `unseenTaskValues` is every claim whose task value nobody reported
+ * seeing for a whole first bound, in claim order, never null, empty while every owed value was
+ * seen (the contract this change takes, `supervise.TaskTakeContract`); it is optional for the
+ * same reason as the two above, since the route strips it for a caller in a pod below that
+ * contract (`api.stateFor`, `withoutUnseenTaskValues`). `contract` is the mark of the narrowing,
+ * the two contract numbers the daemon's own log line names (contract 75), optional for the same
+ * reason the others are: the route strips it for a caller in a pod below 75, and for that caller
+ * alone, since a reader before 75 refuses the key (`api.stateFor`, `withoutRecordFields`). A caller in a pod whose
  * claims record no contract and a caller the daemon can place in no pod are served the mark, and
  * the shapes `internal/projection` answers before the route marks them carry none either. */
 export const LegionStateResponse = z.object({
@@ -969,6 +987,7 @@ export const LegionStateResponse = z.object({
   strandedClaims: z.array(legionStrandedClaim),
   wakesWaiting: z.array(legionWakeWaiting).optional(),
   claimsToRefresh: z.number().int().nonnegative().optional(),
+  unseenTaskValues: z.array(legionUnseenTaskValue).optional(),
   controllerLocator: legionControllerLocator.optional(),
   agentSecretsLogin: legionAgentSecretsLoginView.optional(),
   capabilities: z.array(legionCapabilityState),

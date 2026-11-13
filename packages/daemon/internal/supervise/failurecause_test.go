@@ -123,6 +123,19 @@ func TestAFailedClaimCarriesItsCause(t *testing.T) {
 			detail:  "launch failures ran out",
 			budgets: Budgets{LaunchFailures: limit},
 		}, {
+			name: "a restored claim whose shim never reconnects, with the launch budget spent",
+			drive: func(t *testing.T) (*harness, time.Time) {
+				h := newBareHarness(t)
+				h.deps.Limits.LaunchFailures = 1
+				h.restore(fixture(StateIdle))
+				at := h.clock.Now()
+				h.advance(deadline)
+				return h, at
+			},
+			cause:   CauseNeverReconnected,
+			detail:  "launch failures ran out",
+			budgets: Budgets{LaunchFailures: 1},
+		}, {
 			name: "a relaunch onto the daemon's own plugin contract that runs out",
 			drive: func(t *testing.T) (*harness, time.Time) {
 				h := newHarness(t)

@@ -81,6 +81,13 @@ type State struct {
 	// number stands at what that lane cannot act on, beside the Error line such a daemon writes
 	// for each of those claims (supervise.NoPluginSourceMessage).
 	ClaimsToRefresh int `json:"claimsToRefresh"`
+	// UnseenTaskValues is every claim whose task value nobody reported seeing for a whole first
+	// bound (worker_take_timeout_seconds), in claim order: the relay that carries a claim's value
+	// to its worker failed, so the daemon charges nobody and writes the value again once per
+	// bound, and this is where an operator reads that it does (supervise.ClaimView.UnseenTask,
+	// UnseenTaskValuesOf). Never null; empty while every owed value was seen, which is every
+	// moment the listeners relay (contract supervise.TaskTakeContract).
+	UnseenTaskValues []UnseenTaskValue `json:"unseenTaskValues"`
 	// ControllerLocator is the project's controller, absent until a session registers as it: with
 	// the capability `legion controller start` fetched, or, under `controller: daemon`, with the boot
 	// token of the daemon's own controller launch.
@@ -122,6 +129,10 @@ type State struct {
 	// leaves it off that one body. The two flags compose on one body: a caller below
 	// wakesWaitingContract is below this contract too, and is served neither key.
 	claimsToRefreshHidden bool
+	// unseenTaskValuesHidden is the same for UnseenTaskValues, set on the copy the route serves a
+	// caller below supervise.TaskTakeContract (api's withoutUnseenTaskValues): a strict reader
+	// before that contract refuses the key empty as surely as filled.
+	unseenTaskValuesHidden bool
 }
 
 // ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the
@@ -302,27 +313,28 @@ type AgentSecretsLoginView struct {
 }
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
-// `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
-// contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
-// carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
-// its own block a downgrade hides, with `omitzero` on those fields instead.
+// `strandedClaims`, `wakesWaiting`, `unseenTaskValues`, `capabilities` and `consumers` arrays on
+// the wire: a nil Go map or slice is `null`, which the plugin's reader refuses. The exceptions
+// are the three keys a contract band hides from a caller below it, `wakesWaiting`,
+// `claimsToRefresh` and `unseenTaskValues`: such a body carries no key of that name at all, and
+// is marshaled through a value whose own field of that name shadows the embedded one.
+// Admission.MarshalJSON hides `trees` and `held`, the two keys of its own block a downgrade
+// hides, with `omitzero` on those fields instead.
 //
-// One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
-// nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
-// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane. A
-// `[]WakeWaiting` field could not write the empty array, since an empty slice is what
-// `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
-// its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
-// two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
-// (73) as well and is served neither key; a third banded key is one more field here, not four
-// more shapes.
+// One shadow type carries the three keys, and each of its fields is a pointer. `omitempty` leaves
+// out a nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the
+// empty `wakesWaiting` or `unseenTaskValues` every other body carries, `0` for the
+// `claimsToRefresh` of a drained lane. A slice field could not write the empty array, since an
+// empty slice is what `omitempty` drops, so the pointer is what lets one type serve every key —
+// each field set when its key is not hidden and left nil when it is — rather than a struct per
+// set of flags. The bands compose, so a caller below wakesWaitingContract (53) is below
+// claimsToRefreshContract (73) and supervise.TaskTakeContract as well and is served none of the
+// three.
 //
-// A body that hides neither key is marshaled through the embedded value alone. The shadow's own
+// A body that hides none of them is marshaled through the embedded value alone. The shadow's own
 // fields are declared after the embedded one, so encoding/json writes a key that comes from them
 // after every other key of the body, and the fixtures under `packages/contracts/fixtures/daemon-api`
-// pin bodies that hide nothing: marshaling those through the shadow would move both keys to the
+// pin bodies that hide nothing: marshaling those through the shadow would move those keys to the
 // end of each pinned body.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
@@ -348,19 +360,26 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden {
+	if out.UnseenTaskValues == nil {
+		out.UnseenTaskValues = []UnseenTaskValue{}
+	}
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden && !s.unseenTaskValuesHidden {
 		return json.Marshal(out)
 	}
 	shadow := struct {
 		wire
-		WakesWaiting    *[]WakeWaiting `json:"wakesWaiting,omitempty"`
-		ClaimsToRefresh *int           `json:"claimsToRefresh,omitempty"`
+		WakesWaiting     *[]WakeWaiting     `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh  *int               `json:"claimsToRefresh,omitempty"`
+		UnseenTaskValues *[]UnseenTaskValue `json:"unseenTaskValues,omitempty"`
 	}{wire: out}
 	if !s.wakesWaitingHidden {
 		shadow.WakesWaiting = &shadow.wire.WakesWaiting
 	}
 	if !s.claimsToRefreshHidden {
 		shadow.ClaimsToRefresh = &shadow.wire.ClaimsToRefresh
+	}
+	if !s.unseenTaskValuesHidden {
+		shadow.UnseenTaskValues = &shadow.wire.UnseenTaskValues
 	}
 	return json.Marshal(shadow)
 }
@@ -1393,6 +1412,33 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 	wakes = append(wakes, queued...)
 	slices.SortStableFunc(wakes, func(a, b WakeWaiting) int { return cmp.Compare(a.Claim, b.Claim) })
 	return wakes
+}
+
+// UnseenTaskValue is one claim whose task value nobody reported seeing for a whole first bound,
+// as the state names it (State.UnseenTaskValues): the claim, its issue and role, the number of
+// the task its value names, and when the daemon last wrote that value. The daemon writes it again
+// once per bound for as long as nobody reports it, so writtenAt moves with each write: an
+// operator reads the listing, not the age of one write, as what says the relay is down.
+type UnseenTaskValue struct {
+	Claim     claim.Token `json:"claim"`
+	Issue     string      `json:"issue"`
+	Role      claim.Role  `json:"role"`
+	Task      uint64      `json:"task"`
+	WrittenAt time.Time   `json:"writtenAt"`
+}
+
+// UnseenTaskValuesOf is every claim whose value is unseen, as each machine last published it
+// (supervise.Machine.UnseenTaskValue), in claim order. The machines are read as the wakes are
+// (WakesWaitingOf): from the published view, never waiting on a decision in flight. Nothing is
+// allocated while no value is unseen; the state's own marshalling keeps the empty list an array
+// on the wire (State.MarshalJSON).
+func UnseenTaskValuesOf(unseen []supervise.UnseenTaskValue) []UnseenTaskValue {
+	var values []UnseenTaskValue
+	for _, v := range unseen {
+		values = append(values, UnseenTaskValue{Claim: v.Claim, Issue: v.Issue, Role: v.Role, Task: v.Task, WrittenAt: v.WrittenAt})
+	}
+	slices.SortStableFunc(values, func(a, b UnseenTaskValue) int { return cmp.Compare(a.Claim, b.Claim) })
+	return values
 }
 
 // StateSource maps the daemon's durable and live facts through the transaction the state route

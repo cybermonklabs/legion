@@ -650,6 +650,12 @@ type ClaimView struct {
 	// decision in flight, which is the whole reason View exists. That reader takes it through
 	// Machine.WaitingWake, which copies no claim.
 	WakeWaiting *WakeWaiting
+	// UnseenTask is the claim's latest value when a whole first bound passed with nobody
+	// reporting it seen (waits.go), nil otherwise: the relay failed rather than the worker, so it
+	// charges nobody, and the state route lists the claim (api.State.UnseenTaskValues) for an
+	// operator to read. It travels on the published view for the reason WakeWaiting does, and its
+	// reader takes it through Machine.UnseenTaskValue, which copies no claim.
+	UnseenTask *UnseenTask
 }
 
 // treeRoot is whether the claim is its tree's root claim (claim.IsTreeArchitect), which ends only
@@ -741,6 +747,17 @@ type Timeouts struct {
 	// (relaunchAfterFailure) — one that died, or was retired at its registration deadline. The
 	// daemon sets it to its launchBackoffFirst.
 	LaunchBackoff time.Duration
+	// Take is R5's first bound (worker_take_timeout_seconds, waits.go): how long a worker that is
+	// ready and idle, under no hold, and reported seeing its latest value has to ask to take it
+	// before it is charged, and how often a value nobody reported seeing is written again. Zero
+	// judges no first wait: the daemon always sets it, since its configuration refuses a value
+	// that is not positive, and a Deps a test builds without it charges nothing for a silent
+	// worker and writes no unseen value again.
+	Take time.Duration
+	// TurnStart is R5's second bound (worker_turn_start_timeout_seconds, waits.go): how long after
+	// an accepted take its turn has to start before the worker is charged and the task taken back
+	// under its number. Zero judges no second wait, as Take's zero judges no first.
+	TurnStart time.Duration
 	// ClaimWrite bounds each claim and delivery write a decision makes while it holds the machine's
 	// lock, so a database that has stopped answering cannot hold that lock for as long as the
 	// connection's own patience: every other event for the claim queues behind the decision in
@@ -1086,6 +1103,28 @@ type Machine struct {
 	// the claim's next chance whatever the worker last asked (offerPending). It is memory only: a
 	// restart compares the bucket with the record at boot, which repairs it.
 	valueUnwritten bool
+	// valueWrittenAt is when this machine last wrote the claim's value (putValue), the zero time
+	// before its first write: what the state route names as an unseen value's writtenAt. It is
+	// memory only, as the listing it dates is: a value nobody reported seeing is written again a
+	// first bound after the daemon's start, which dates it then (waits.go).
+	valueWrittenAt time.Time
+	// awaitsAct is a machine whose two waits wait for the worker's next act before they are
+	// armed: every machine NewMachine builds, since a daemon start serves nothing before it and
+	// the time the daemon was not serving counts toward neither bound (departure 7 of
+	// dispatch://INFRA-2811's plan). The shim's hello, a registration, a ready, a seen report, a
+	// take and a turn frame are acts (actOf); the first of them clears it, and the waits are
+	// armed from there.
+	awaitsAct bool
+	// firstFor is what the armed first bound (TimerTake) waits on, the zero value while none is
+	// armed, and secondFor the accepted take the armed second bound (TimerTurnStart) waits on
+	// (armWaits). A decision that leaves the claim waiting on the same thing keeps the bound
+	// armed where it was; one that changes what it waits on arms it again from that decision.
+	firstFor  firstWait
+	secondFor time.Time
+	// unseenListed is whether the claim's latest value went a whole first bound unseen
+	// (takeBoundOver), which is what lists it as unseen (ClaimView.UnseenTask); a seen report of
+	// it, its take, or its end clears it (armWaits).
+	unseenListed bool
 	// unsaved is a pending delivery the store's row does not hold as memory holds it — a write of
 	// it the store did not take (saved), or a row another write left under another id
 	// (retirePending): settle writes it again, with the claim, before the next decision.
@@ -1275,6 +1314,16 @@ type armed struct {
 // saw start is over (askFirst); and one whose task's turn ran with nothing to finish it since
 // waits the end-frame bound again, as that turn's end would have (finishTask). ctx bounds the
 // machine's own work — its timers.
+//
+// A claim restored with its agent ready, idle or working is given the registration deadline's own
+// bound as a reconnect deadline (reconnectDeadline): its shim reconnects to the daemon that
+// started, and the hello ends the deadline (reconnected, reconnectedMidTurn). One whose shim
+// never comes back while its process lives would otherwise be held by nothing at all, since
+// every other watch of a ready agent is its own connection.
+//
+// R5's two waits are armed from the record, but not here: a machine built at a daemon's start
+// arms them at the worker's next act (awaitsAct, armWaits), so the time the daemon was not
+// serving counts toward neither bound.
 func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	if err := deps.check(); err != nil {
 		return nil, err
@@ -1283,12 +1332,13 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 		deps.Log = slog.Default()
 	}
 	m := &Machine{
-		ctx:    ctx,
-		deps:   deps,
-		log:    deps.Log.With("claim", string(c.Token)),
-		claim:  copyClaim(c),
-		timers: map[TimerKind]armed{},
-		stale:  map[string]bool{},
+		ctx:       ctx,
+		deps:      deps,
+		log:       deps.Log.With("claim", string(c.Token)),
+		claim:     copyClaim(c),
+		timers:    map[TimerKind]armed{},
+		stale:     map[string]bool{},
+		awaitsAct: true,
 	}
 	m.idle = sync.NewCond(&m.mu)
 	switch c.State {
@@ -1297,6 +1347,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 	case StateRegistered:
 		m.armRegistration()
 	case StateReady, StateIdle:
+		m.armRegistration()
 		// A task whose take's turn started and ended under an earlier daemon, which nothing has
 		// finished: its report may still come, and if none does the end of that turn finishes
 		// it, as it would have had this daemon never restarted.
@@ -1304,6 +1355,7 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 			m.arm(TimerFinish, deps.Timeouts.RPC, p.ID)
 		}
 	case StateWorking:
+		m.armRegistration()
 		m.askFirst = true
 	}
 	m.publish()
@@ -1352,6 +1404,9 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	}
 	if pass, err := m.fence(ctx, ev); !pass {
 		return err
+	}
+	if actOf(ev) {
+		m.awaitsAct = false
 	}
 	if hello, ok := ev.(StreamHello); ok && hello.AgentSecrets != nil && m.claim.Locator != nil && m.deps.Secrets != nil {
 		identity := *hello.AgentSecrets
@@ -1665,6 +1720,19 @@ func (m *Machine) WaitingWake() *WaitingWake {
 	return &WaitingWake{Claim: v.Token, Issue: v.Issue, Role: v.Role, Kind: v.WakeWaiting.Kind, At: v.WakeWaiting.At}
 }
 
+// UnseenTaskValue is the claim's latest value when it went a whole first bound with nobody
+// reporting it seen, nil otherwise: what the published view names (ClaimView.UnseenTask) with
+// the claim's token, issue and role beside it, for the state route (the daemon's
+// unseenTaskValues, api.UnseenTaskValuesOf). It never waits on the decision in flight and copies
+// no claim, as WaitingWake does not.
+func (m *Machine) UnseenTaskValue() *UnseenTaskValue {
+	v := m.view.Load()
+	if v.UnseenTask == nil {
+		return nil
+	}
+	return &UnseenTaskValue{Claim: v.Token, Issue: v.Issue, Role: v.Role, Task: v.UnseenTask.Task, WrittenAt: v.UnseenTask.WrittenAt}
+}
+
 // Deciding is the event the decision in flight handles (Handle), or nil when the machine decides
 // nothing. It never waits on the decision.
 func (m *Machine) Deciding() Event {
@@ -1694,12 +1762,16 @@ func (m *Machine) current() Claim {
 }
 
 // publish makes the claim as the machine holds it now the one View reports, with the wake the
-// pacing holds over it, if any: a fresh value each time, since the view is read without mu. The
-// caller holds mu.
+// pacing holds over it, if any, and its value when nobody reported seeing it for a whole first
+// bound (unseenListed): a fresh value each time, since the view is read without mu. The caller
+// holds mu.
 func (m *Machine) publish() {
 	view := &ClaimView{Claim: m.current(), Stopping: m.stopping}
 	if m.wake != nil {
 		view.WakeWaiting = &WakeWaiting{Kind: m.wake.kind, At: m.wake.at}
+	}
+	if p := m.claim.Pending; m.unseenListed && p != nil {
+		view.UnseenTask = &UnseenTask{Task: p.Number, WrittenAt: m.valueWrittenAt}
 	}
 	m.view.Store(view)
 }
@@ -1715,18 +1787,20 @@ func (m *Machine) stoppingProcess() func() {
 // unlock ends a locked section that may have changed the claim: it holds the stale-plugin lane to
 // its invariants — the credit this machine holds goes back unless a refresh wake of its own is
 // waiting, and nothing of a relaunch's intent outlives the decision that raised it
-// (endRefreshLane) — publishes the claim, says the machine decides nothing, then releases mu.
+// (endRefreshLane) — arms or disarms R5's two waits to match the claim the section left
+// (armWaits), publishes the claim, says the machine decides nothing, then releases mu.
 //
-// Every decision of a machine ends here, which is what makes it the place those two are kept:
-// every locked section that can change the wake, the credit or the intent ends in unlock, and a
-// section that takes mu without it reads the claim or counts goroutines and changes none of the
-// three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, PodUpdateTold, StartedBy and Retree; the sections that
-// take mu without it are Claim, OnDurableState, Wait, compaction and the two goroutine tails in
-// delivery.go and secrets.go. It is that rule a section added later has to keep, rather than this
-// list of the sections there are now.
+// Every decision of a machine ends here, which is what makes it the place those are kept:
+// every locked section that can change the wake, the credit, the intent or what a wait waits on
+// ends in unlock, and a section that takes mu without it reads the claim or counts goroutines
+// and changes none of them. The sections that defer it are Handle, which every event and every
+// timer of this package comes through, ReleaseUncertainLaunch, PodUpdateTold, StartedBy and
+// Retree; the sections that take mu without it are Claim, OnDurableState, Wait, compaction and
+// the two goroutine tails in delivery.go and secrets.go. It is that rule a section added later
+// has to keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
+	m.armWaits()
 	m.publish()
 	m.decide(nil)
 	m.mu.Unlock()
@@ -1916,13 +1990,13 @@ func (m *Machine) fence(_ context.Context, ev Event) (bool, error) {
 }
 
 // timesADelivery is whether a timer of kind waits on one delivery rather than on the claim or
-// its process: the end-frame bound a task's turn's end arms (finishTask), and the ladder's wait a
-// provider error arms (providererror.go). Each is fenced on the claim's pending delivery as well
-// as on the id the arming recorded, so one that fires after the task it was armed for was
-// replaced decides nothing about the task that replaced it.
+// its process: the end-frame bound a task's turn's end arms (finishTask), the ladder's wait a
+// provider error arms (providererror.go), and R5's two bounds (waits.go). Each is fenced on the
+// claim's pending delivery as well as on the id the arming recorded, so one that fires after the
+// task it was armed for was replaced decides nothing about the task that replaced it.
 func timesADelivery(kind TimerKind) bool {
 	switch kind {
-	case TimerFinish, TimerPromptRetry:
+	case TimerFinish, TimerPromptRetry, TimerTake, TimerTurnStart:
 		return true
 	default:
 		return false

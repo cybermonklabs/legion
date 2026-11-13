@@ -489,6 +489,15 @@
     }
   ],
   "claimsToRefresh": 4,
+  "unseenTaskValues": [
+    {
+      "claim": "legion-legion-legion-209-tester",
+      "issue": "LEGION-209",
+      "role": "tester",
+      "task": 2,
+      "writtenAt": "2026-09-22T09:15:30Z"
+    }
+  ],
   "controllerLocator": {
     "runtime": "kubernetes",
     "external": true,
@@ -764,6 +773,8 @@
     "worker_boot_timeout_seconds": 180,
     "worker_rpc_timeout_seconds": 8,
     "worker_stop_timeout_seconds": 30,
+    "worker_take_timeout_seconds": 240,
+    "worker_turn_start_timeout_seconds": 1800,
     "tree_stop_timeout_seconds": 90,
     "slow_command_timeout_seconds": 600,
     "probe_interval_seconds": 20,

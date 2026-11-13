@@ -21,13 +21,14 @@ import (
 //     through what it was doing. A death with no turn open and nothing pending is not counted: a
 //     parked agent — idle, holding no task — that the environment kills now and then is relaunched
 //     however often it happens. Bounded by the launch failure limit.
-//   - PromptFailures: prompts the agent refused, acknowledged prompts that started no turn, and
-//     prompts refused after their acknowledgement. A prompt lost to the transport, not sent for
-//     want of a connection, or refused because the agent is in a turn of its own (Oh My Pi's busy
-//     answer, before or after its acknowledgement), is re-queued at no charge. Reset by a started
-//     turn.
-//   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn,
-//     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
+//   - PromptFailures: the charges a worker earns where it is the one that did not act (chargePrompt):
+//     a value it reported seeing and asked no take of within R5's first bound, an accepted take
+//     whose turn did not start within the second (waits.go), and a take whose adoption of the
+//     working copy the shim refused (refusedAdoption). An adoption lost to the transport or an
+//     identity the daemon could not mint charges nothing, and neither does a value nobody reported
+//     seeing. Reset by a turn's start or end, never by a take.
+//   - PromptRetires: processes retired because PromptFailures ran out. Reset where PromptFailures
+//     is, never by the relaunch itself — a claim that keeps taking and never turning runs out.
 type Budgets struct {
 	LaunchFailures int
 	Deaths         int
@@ -62,6 +63,10 @@ const (
 	// never said it was ready, until the launch budget ran out (registrationDeadline). The one
 	// word covers both, which is what the deadline itself does.
 	CauseNeverRegistered FailureCause = "never_registered"
+	// CauseNeverReconnected: the shim of a claim a daemon start restored with its agent ready,
+	// idle or working never said hello before the reconnect deadline while its process lived, and
+	// the relaunches that followed ran the launch budget out (reconnectDeadline).
+	CauseNeverReconnected FailureCause = "never_reconnected"
 	// CauseStalePlugin: a relaunch onto the daemon's own plugin contract that ran out
 	// (staleRegistration).
 	CauseStalePlugin FailureCause = "stale_plugin"
@@ -93,6 +98,7 @@ var FailureCauses = []FailureCause{
 	CauseLaunchRefused,
 	CauseDied,
 	CauseNeverRegistered,
+	CauseNeverReconnected,
 	CauseStalePlugin,
 	CausePromptRetiresExhausted,
 	CauseProviderError,
