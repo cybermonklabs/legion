@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cireconcile"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -178,6 +179,104 @@ type legionMetricsQuery struct {
 	To string `query:"to"`
 	// Scope is which of the project's Legion issues are counted; absent it is all.
 	Scope string `query:"scope" enum:"all,roots,children"`
+}
+
+// evalListQuery is GET /api/v1/projects/{key}/evals's query: the window and the compare range,
+// which kind of eval, which repositories' day rows, and the page (parseEvalListQuery).
+type evalListQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To. The window is the
+	// UTC days [from, to) covers.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now. The window spans at most 84
+	// days.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive; the range spans at most 84 days
+	// and need not be as long as the window.
+	CompareTo string `query:"compare_to"`
+	// Kind keeps the evals of one kind.
+	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own.
+	Repo []string `query:"repo"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// evalsQuery is GET /api/v1/evals's query: the projects read, and every key the project read
+// takes.
+type evalsQuery struct {
+	// Project, repeatable, names the projects read, in the order named; absent, every project is
+	// read, by key. A key no project holds is 404 PROJECT_NOT_FOUND.
+	Project []string `query:"project"`
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Kind keeps the evals of one kind.
+	Kind string `query:"kind" enum:"delivery,legion,ci,experiment"`
+	// Repo, repeatable, folds these repositories' day rows in place of each project's own.
+	Repo []string `query:"repo"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts, counted across the projects.
+	Offset int `query:"offset"`
+}
+
+// evalDetailQuery is GET /api/v1/projects/{key}/evals/{slug}'s query: the list read's window,
+// compare range and repositories, which the newest version's values are folded over, and the
+// page of versions.
+type evalDetailQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Repo, repeatable, folds these repositories' day rows in place of the project's own.
+	Repo []string `query:"repo"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// evalItemsQuery is GET /api/v1/projects/{key}/evals/{slug}/items's query: the window and the
+// compare range, the filters, the order of pr-ci's jobs and the page (parseEvalItemsQuery).
+type evalItemsQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now.
+	To string `query:"to"`
+	// CompareFrom is the compare range's start, RFC3339, named with CompareTo or not at all.
+	CompareFrom string `query:"compare_from"`
+	// CompareTo is the compare range's end, RFC3339, exclusive.
+	CompareTo string `query:"compare_to"`
+	// Series narrows the rows to one series: a reading's or a day row's series, a Legion
+	// series' cut (`:roots`, `:children`) or `filed:<class>`, or one job's `job:<name>`.
+	Series string `query:"series"`
+	// RowKind narrows the rows to one row kind.
+	RowKind string `query:"row_kind"`
+	// Row narrows the rows to one row key.
+	Row string `query:"row"`
+	// Repo, repeatable, narrows the rows to these repositories'.
+	Repo []string `query:"repo"`
+	// Sort answers pr-ci's job rows alone: median, the jobs with their series' min_n timed
+	// results, slowest first; failures, the jobs that failed in the 24 hours before the range's
+	// end, most failures first.
+	Sort string `query:"sort" enum:"median,failures"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
 }
 
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
@@ -503,6 +602,37 @@ var routeShapes = map[string]routeShape{
 	},
 	"POST /api/v1/projects/{key}/related": {
 		Status: http.StatusOK, Response: model.Suggestions{}, Request: relatedRequest{},
+	},
+	"GET /api/v1/projects/{key}/evals": {
+		Status: http.StatusOK, Response: evalListResponse{}, Params: evalListQuery{},
+	},
+	"POST /api/v1/projects/{key}/evals": {
+		Status: http.StatusCreated, Response: evalRegisterResponse{}, Request: evalRegisterInput{},
+		// A body that changes no field of the definition answers the version that stands, 200.
+		Also: []routeAnswer{{Status: http.StatusOK, Body: evalRegisterResponse{}}},
+	},
+	"GET /api/v1/projects/{key}/evals/{slug}": {
+		Status: http.StatusOK, Response: evalDetailResponse{}, Params: evalDetailQuery{},
+	},
+	"GET /api/v1/projects/{key}/evals/{slug}/items": {
+		Status: http.StatusOK, Response: evalItemsResponse{}, Params: evalItemsQuery{},
+	},
+	"POST /api/v1/projects/{key}/evals/{slug}/readings": {
+		Status: http.StatusCreated, Response: evalReadingsResponse{}, Request: evalReadingsInput{},
+		// A refused batch names every refused row by its index beside the code of the first
+		// (evals.Error); every other refusal is errorBody's.
+		Refusals: []routeAnswer{{Status: http.StatusBadRequest, Body: evals.Error{}}},
+	},
+	// The two rows that refuse every change of a reading answer no success: 204 is the shape a
+	// success with no body would take, and the one answer either gives is the 405.
+	"PUT /api/v1/projects/{key}/evals/{slug}/readings/{id}": {
+		Status: http.StatusNoContent, Refusals: []routeAnswer{{Status: http.StatusMethodNotAllowed, Body: errorBody{}}},
+	},
+	"DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id}": {
+		Status: http.StatusNoContent, Refusals: []routeAnswer{{Status: http.StatusMethodNotAllowed, Body: errorBody{}}},
+	},
+	"GET /api/v1/evals": {
+		Status: http.StatusOK, Response: evalListResponse{}, Params: evalsQuery{},
 	},
 	"GET /api/v1/settings/repo-projects": {Status: http.StatusOK, Response: []model.RepoProject{}},
 	"PUT /api/v1/settings/repo-projects/{owner}/{repo}": {

@@ -558,6 +558,9 @@ func main() {
 		AgentStream:    agentStream,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		// The build the eval readings write records against the day rows it keeps, the one the
+		// eval day-row refresher records (evals.RefresherDeps.Build).
+		Build: processBuild(),
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.

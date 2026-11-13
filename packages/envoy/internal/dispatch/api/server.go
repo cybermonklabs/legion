@@ -180,6 +180,13 @@ type Deps struct {
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
+	// Build is the build this process runs as, which the eval day rows a readings write keeps
+	// record as the build that wrote them (eval_days.built_by): the string the eval day-row
+	// refresher records against every row it writes (cmd/dispatch's processBuild, from
+	// main.buildCommit), so the refresher never reads a row this process wrote as another
+	// build's. Empty in a process that names none, whose readings write then fails rather than
+	// write a row no build owns.
+	Build string
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -254,6 +261,8 @@ type DepsInput struct {
 	ListenerRosterUncached bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
+	// Build is the build this process runs as; see Deps.Build.
+	Build string
 }
 
 // NewDeps parses boot configuration once and returns API dependencies.
@@ -336,6 +345,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
 		DashboardEntry:         input.DashboardEntry,
+		Build:                  input.Build,
 	}, nil
 }
 

@@ -1,6 +1,8 @@
 package legionfacts
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
@@ -157,4 +159,91 @@ func barColumns(bar metrics.BarPart) map[string]float64 {
 		"_" + string(metrics.SegmentWaitingOnChildren): bar.Segments.WaitingOnChildren,
 		"_" + string(metrics.SegmentIdle):              bar.Segments.Idle,
 	}
+}
+
+// The columns an items row reads of the issue itself, which no stored row holds: its title and
+// its priority (null for an issue with none). WithIssues adds them.
+const (
+	ColumnTitle    = "title"
+	ColumnPriority = "priority"
+)
+
+// The columns of a filing's row (FilingItemRows): the issue_filings column of each name.
+const (
+	ColumnFiledAt    = "filed_at"
+	ColumnFilerRole  = "filer_role"
+	ColumnFilerIssue = "filer_issue"
+	ColumnFilerPhase = "filer_phase"
+	ColumnClass      = "class"
+)
+
+// ItemIssue is what an items row reads of its issue in issues: the title, and the priority, nil
+// where the issue has none.
+type ItemIssue struct {
+	Title    string
+	Priority *int
+}
+
+// ReadItemIssues reads the title and priority of each of keys that an issue holds, by key: the
+// join of an items page's rows with issues, one read of the primary key per page.
+func ReadItemIssues(ctx context.Context, q Querier, keys []string) (map[string]ItemIssue, error) {
+	issues := make(map[string]ItemIssue, len(keys))
+	if len(keys) == 0 {
+		return issues, nil
+	}
+	rows, err := q.Query(ctx, `select key, title, priority from issues where key = any($1)`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of the items rows: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key string
+		var issue ItemIssue
+		if err := rows.Scan(&key, &issue.Title, &issue.Priority); err != nil {
+			return nil, fmt.Errorf("read the issues of the items rows: %w", err)
+		}
+		issues[key] = issue
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the issues of the items rows: %w", err)
+	}
+	return issues, nil
+}
+
+// WithIssues is items with each row's issue's title and priority among its columns, as issues
+// (ReadItemIssues) holds them: an issue it does not hold reads an empty title and no priority, so
+// every row carries the same columns.
+func WithIssues(items []ItemRow, issues map[string]ItemIssue) []ItemRow {
+	for _, item := range items {
+		issue := issues[item.RowKey]
+		item.Columns[ColumnTitle], item.Columns[ColumnPriority] = issue.Title, issue.Priority
+	}
+	return items
+}
+
+// FilingItemRows turns stored filings into the items rows legion-splitting's filings serve: one
+// `issue` row per filed issue, in the order the filings were given, whose columns are the
+// filing's (when, by which role, issue and phase, its class and the filed issue's tree root),
+// measured when it was filed.
+func FilingItemRows(filings []Filing) []ItemRow {
+	items := make([]ItemRow, 0, len(filings))
+	for _, filing := range filings {
+		items = append(items, ItemRow{
+			Project: filing.Project,
+			RowKey:  filing.Issue,
+			RowKind: ItemRowKind,
+			Columns: map[string]any{
+				ColumnFiledAt:    filing.FiledAt,
+				ColumnFilerRole:  filing.FilerRole,
+				ColumnFilerIssue: filing.FilerIssue,
+				ColumnFilerPhase: filing.FilerPhase,
+				ColumnClass:      filing.Class,
+				ColumnRootKey:    filing.RootKey,
+			},
+			MeasuredAt: filing.FiledAt,
+			Source:     ItemSource,
+			Href:       "/issues/" + filing.Issue,
+		})
+	}
+	return items
 }

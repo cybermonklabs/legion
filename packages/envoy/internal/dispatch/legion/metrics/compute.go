@@ -340,7 +340,7 @@ func (c *computation) treeDepth(key string) int {
 }
 
 // inScope is the scope toggle itself: the finished population (finished) and the filings of the
-// splitting table (splitting) are narrowed by the rule that cuts every Legion series (inCut), so
+// splitting table (splitting) are narrowed by the rule that cuts every Legion series (InCut), so
 // a reader of any of those numbers is reading the same rule. In `roots` an issue that is a root
 // of its tree counts, in `children` one that is not, and in `all` every issue.
 //
@@ -348,7 +348,7 @@ func (c *computation) treeDepth(key string) int {
 // was filed: a filing is read by the tree the new issue is in, not by the filer's, so one filer's
 // filings can fall on either side of the toggle.
 func (c *computation) inScope(key string) bool {
-	return inCut(c.scope, c.isRoot(key))
+	return InCut(c.scope, c.isRoot(key))
 }
 
 // timelineOf is the issue's phase timeline with where it came from, computed once.

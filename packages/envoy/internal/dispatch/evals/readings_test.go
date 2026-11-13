@@ -320,7 +320,7 @@ func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
 	}))
 	evalID := written.Definition.EvalID
 	days := r.count(t, `select count(*) from eval_days where eval_id = $1`, evalID)
-	items, err := r.registry.Items(t.Context(), evalID, "", "day", "", Range{From: at(6, 0, 0), To: at(7, 0, 0)}, 10, 0)
+	items, err := r.registry.Items(t.Context(), evalID, "", "day", "", nil, Range{From: at(6, 0, 0), To: at(7, 0, 0)}, 10, 0)
 	if err != nil {
 		t.Fatalf("read the items: %v", err)
 	}

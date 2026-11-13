@@ -66,6 +66,7 @@ POST /api/v1/delivery/session-groups any
 DELETE /api/v1/delivery/session-groups/{id} any
 PATCH /api/v1/delivery/session-groups/{id} any
 GET /api/v1/delivery/timeline any
+GET /api/v1/evals any
 GET /api/v1/events/log any
 GET /api/v1/github/app-installation/{owner}/{repo} any
 GET /api/v1/going/capability any
@@ -158,6 +159,13 @@ GET /api/v1/projects/{key}/artifacts/{slug}/text any
 POST /api/v1/projects/{key}/artifacts/{slug}/versions any
 GET /api/v1/projects/{key}/artifacts/{slug}/versions/{number} any
 PUT /api/v1/projects/{key}/default-assignee any
+GET /api/v1/projects/{key}/evals any
+POST /api/v1/projects/{key}/evals any
+GET /api/v1/projects/{key}/evals/{slug} any
+GET /api/v1/projects/{key}/evals/{slug}/items any
+POST /api/v1/projects/{key}/evals/{slug}/readings any
+DELETE /api/v1/projects/{key}/evals/{slug}/readings/{id} any
+PUT /api/v1/projects/{key}/evals/{slug}/readings/{id} any
 PUT /api/v1/projects/{key}/gated-steps any
 GET /api/v1/projects/{key}/legion/board any
 GET /api/v1/projects/{key}/related any

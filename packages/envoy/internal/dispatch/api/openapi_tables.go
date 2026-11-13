@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
@@ -128,6 +129,18 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(metrics.Splitting{}):     "LegionSplitting",
 	reflect.TypeOf(metrics.SplittingWeek{}): "LegionSplittingWeek",
 	reflect.TypeOf(metrics.FiledIssue{}):    "LegionFiledIssue",
+
+	// The eval registry's shapes, whose one-word Go names (Definition, Series, Link, Reading,
+	// Error) the evals package can carry because its import path says `evals`, and whose names
+	// here carry the word for a client, which imports every schema from one module.
+	reflect.TypeOf(evals.Definition{}):  "EvalDefinition",
+	reflect.TypeOf(evals.Series{}):      "EvalSeries",
+	reflect.TypeOf(evals.Link{}):        "EvalLink",
+	reflect.TypeOf(evals.FailureMode{}): "EvalFailureMode",
+	reflect.TypeOf(evals.Reading{}):     "EvalReading",
+	reflect.TypeOf(evals.Error{}):       "EvalReadingsRefusal",
+	reflect.TypeOf(evals.RowError{}):    "EvalRowRefusal",
+	reflect.TypeOf(evals.Statistics{}):  "EvalStatistics",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an

@@ -3096,6 +3096,45 @@ Each item below names a path with its method and identity, then its purpose.
   The three facts fields together tell a project with no Legion work, which carries no Legion issues and no rows, from a project whose backfill has not run, which carries Legion issues and no rows; the cursor age alone cannot, because it is the deployment's one consumer and every project of a running deployment reads the same age.
   `404 PROJECT_NOT_FOUND` for a project that does not exist, `404 LEGION_NOT_CONFIGURED` when the project names no daemon.
 
+- `/api/v1/projects/{key}/evals?from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET, POST; cookie, trusted header, or bearer)
+
+  GET reads one page of the project's evals, `{items, total, limit, offset}` by slug, `limit` 1 to 200 (default 50).
+  Each item is an eval's current definition (every field of `eval_versions`, read through `evals_current`), its owner, each listed series with its statistics over the window and over the compare range, the change between them, `data_since`, the via-repository count and, for a headline series, a per-day array, and the verdict of its target (null where the target is off).
+  The window is `[from, to)` as the delivery routes read it (RFC3339, the last 7 days by default, at most 84 days); `compare_from` and `compare_to` come together or not at all, each range at most 84 days and the two of any length; each range is the UTC days it covers, which the answer's `window` and `compare` state.
+  Every statistic is folded from the stored day rows of those days (`eval_days`), never from the population again: a computed eval through the one fold its `source` names (`evals.FoldStatistics`, `internal/dispatch/evals/statistics.go`), which the delivery and Legion routes fold through too, a logged eval through its series' `agg`.
+  A series with no day row reads every statistic `null`, never 0, and a range that starts before a series' first day (`data_since`) reads `null` too, its per-day array still answering the days that exist.
+  `kind` keeps one kind, and `repo`, repeated, folds those repositories' rows in place of the project's own; `freshness` is the oldest `updated_at` of the rows folded and the day-row refresher's age.
+  POST registers an eval or writes the next version of its definition, `{slug, ...}` with each field it sets, every other copied forward from the newest version (`target: null` turns the target off), and `doc_text` replacing the eval's method in its section of the project's `evals-md`; it answers `201` with the version written, or `200` where the body changed nothing.
+  A link `{rel, href, label}` takes the server's `recorded_at`, and an `href` that is not an absolute URL is `400 LINK_HREF_NOT_ABSOLUTE`; the server never fetches it.
+  `400 INVALID_QUERY` names a malformed key, `404 PROJECT_NOT_FOUND` an unknown project, and a project-scoped credential of another project is `403 PROJECT_SCOPE`.
+
+- `/api/v1/projects/{key}/evals/{slug}` (GET; cookie, trusted header, or bearer)
+
+  One eval's versions, newest first, in the list read's envelope and item shape: the newest carries the window's values (the same window, compare range and `repo` keys), every older version its definition alone.
+  `doc_text` is the method the eval's section of the project's `evals-md` holds, read by the version's `doc_block`.
+  `404 EVAL_NOT_FOUND` for a slug no eval of the project holds.
+
+- `/api/v1/projects/{key}/evals/{slug}/items?from=&to=&compare_from=&compare_to=&series=&row_kind=&row=&repo=&sort=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  The rows behind an eval's numbers, `{items, total, limit, offset}`, every row `{row_key, row_kind, cols, measured_at, source, href, links, range}` whatever its kind, `range: compare` for a row of the compare range.
+  Every eval answers its readings (a reading logged under a computed eval's slug among them) and its stored day rows (`day`); a computed eval answers the rows its numbers count, as its project's day rows counted them: a Legion eval's issues closed in the range and `legion-splitting`'s filings (`issue`, with the issue's title and priority), a delivery eval's pull requests and deploy runs (`pull_request`, `deploy`), a CI eval's runs (`run`) and `pr-ci`'s jobs (`job`), and `unowned-p0`'s open P0 issues with no owner (`issue`).
+  `series` narrows to a series (a Legion series' `:roots` or `:children` cut, `filed:<class>`, `job:<name>`), `row_kind` and `row` to a row kind and a row key, `repo` to those repositories; `sort=median` answers `pr-ci`'s jobs with their series' `min_n` timed results, slowest first, and `sort=failures` the jobs that failed in the 24 hours before the range's end.
+
+- `/api/v1/projects/{key}/evals/{slug}/readings` (POST; cookie, trusted header, or bearer)
+
+  Log one batch of readings of one eval, `{readings, actor?}`, stored in one transaction or not at all; an `Idempotency-Key` is required (`400 IDEMPOTENCY_KEY_REQUIRED`), and a repeat under it is answered the first write's answer.
+  A slug no eval holds registers its eval with the caller as owner, no target and state `active`; a reading under a computed eval's slug is stored and answered by its items, and never folded into its value.
+  The server sets `recorded_by` and `recorded_at`, and a row carrying either is refused; a refused batch stores nothing and answers `400 {code, error, rows}`, each refused row named by its index with its own code.
+  A correction is a new reading naming the one it replaces in `replaces`; `PUT` and `DELETE` of `.../readings/{id}` are `405 READING_APPEND_ONLY`.
+  The write takes no query key but the global `session` parameter: any other is `400 INVALID_QUERY` naming it.
+  The day rows of a logged eval are kept in the write's own transaction, recording the server's build (`main.buildCommit`, or the process's own build name where the image build stamped none) as their writer.
+
+- `/api/v1/evals?project=&from=&to=&compare_from=&compare_to=&kind=&repo=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+
+  The project read across projects, in its envelope and item shape: `project`, repeated, names the projects read in the order named, and with none named every project the store holds is read, by key; no project is picked for the caller.
+  The page runs across the projects.
+  `404 PROJECT_NOT_FOUND` names a project no row holds.
+
 - `/api/v1/github/app-installation/{owner}/{repo}` (GET; cookie, trusted header, or bearer)
 
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:

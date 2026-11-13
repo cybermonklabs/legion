@@ -151,6 +151,10 @@ const testTakeoverWindow = 750 * time.Millisecond
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
 
+// testServerBuild is the build every test server runs as: what the day rows its eval readings
+// writes keep record as their writer (eval_days.built_by).
+const testServerBuild = "api-test-build"
+
 // testSigningKey is the one-key set the package's session cookies are signed with.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
@@ -265,6 +269,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 		LegionDaemonTokenFile:  options.legionDaemonTokenFile,
+		Build:                  testServerBuild,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

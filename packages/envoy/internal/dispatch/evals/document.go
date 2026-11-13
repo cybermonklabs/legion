@@ -214,6 +214,49 @@ func methodBlock(blockID, method string) string {
 	return fence + "callout{#" + blockID + "}\n" + strings.TrimSpace(method) + "\n" + fence + "\n"
 }
 
+// Method reads the method an eval's section of its project's `evals-md` document holds: the text
+// of the method block docBlock names, inside its fence, as the register write's doc_text gave
+// it (methodBlock). found is false where the project has no such document, its artifact of that
+// slug is no document, or the document holds no block of that id (a person deleted it).
+func (s *Store) Method(ctx context.Context, project, docBlock string) (string, bool, error) {
+	if docBlock == "" {
+		return "", false, nil
+	}
+	var id, kind string
+	err := s.database.Pool.QueryRow(ctx, `
+		select id::text, kind from artifacts
+		where project_key = $1 and issue_key is null and session_id is null and slug = $2
+	`, project, DocumentSlug).Scan(&id, &kind)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && kind != "doc") {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read the %s document of %s: %w", DocumentSlug, project, err)
+	}
+	markdown, blocks, err := s.documents.TextWithBlocks(ctx, id)
+	if err != nil {
+		return "", false, fmt.Errorf("read the %s document of %s: %w", DocumentSlug, project, err)
+	}
+	index := slices.IndexFunc(blocks, func(block model.ArtifactBlock) bool { return block.ID == docBlock })
+	if index < 0 || blocks[index].From < 0 || blocks[index].To > len(markdown) || blocks[index].From > blocks[index].To {
+		return "", false, nil
+	}
+	return methodText(markdown[blocks[index].From:blocks[index].To]), true, nil
+}
+
+// methodText is a method block's markdown without its fence: the lines between the line that
+// opens it (`:::callout{#<id>}`) and the run of colons that closes it, trimmed.
+func methodText(block string) string {
+	lines := strings.Split(strings.TrimSpace(block), "\n")
+	if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), ":::") {
+		lines = lines[1:]
+	}
+	if last := len(lines) - 1; last >= 0 && strings.Trim(strings.TrimSpace(lines[last]), ":") == "" {
+		lines = lines[:last]
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
 // fenceLength is three, the shortest fence a typed block opens with, or one more than the
 // longest run of colons that starts a line of text.
 func fenceLength(text string) int {

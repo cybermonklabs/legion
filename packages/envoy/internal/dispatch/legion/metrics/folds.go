@@ -89,10 +89,10 @@ func FilingSeries(class string) string {
 	return "filed:" + class
 }
 
-// inCut is whether an item counts in cut: every item in the all cut, a root in the roots cut and
+// InCut is whether an item counts in cut: every item in the all cut, a root in the roots cut and
 // any other item in the children cut. It is the one statement of the section's scope toggle
-// (inScope) and of the eval's cuts.
-func inCut(cut Scope, root bool) bool {
+// (inScope), of the eval's cuts and of the issues the eval items route answers for a cut.
+func InCut(cut Scope, root bool) bool {
 	switch cut {
 	case ScopeRoots:
 		return root
@@ -138,7 +138,7 @@ func perIssue(day time.Time, series string, finished []IssueFacts, value func(Is
 	for _, cut := range cuts {
 		values := make([]float64, 0, len(finished))
 		for _, facts := range finished {
-			if inCut(cut, facts.Root) {
+			if InCut(cut, facts.Root) {
 				values = append(values, value(facts))
 			}
 		}
@@ -155,7 +155,7 @@ func WorkTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 	for _, cut := range cuts {
 		hours := make([]float64, 0, len(finished))
 		for _, facts := range finished {
-			if inCut(cut, facts.Root) && facts.StartedAt != nil {
+			if InCut(cut, facts.Root) && facts.StartedAt != nil {
 				hours = append(hours, facts.WorkHours)
 			}
 		}
@@ -177,7 +177,7 @@ func PhaseTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 			var segments Segments
 			holding := 0
 			for _, facts := range finished {
-				if !inCut(cut, facts.Root) {
+				if !InCut(cut, facts.Root) {
 					continue
 				}
 				part := facts.Bars[bar.Role]
@@ -247,7 +247,7 @@ func ReworkDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 	for _, cut := range cuts {
 		sentBack, issues := 0, 0
 		for _, facts := range finished {
-			if !inCut(cut, facts.Root) {
+			if !InCut(cut, facts.Root) {
 				continue
 			}
 			issues++
@@ -270,7 +270,7 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 	for _, cut := range cuts {
 		byClass := make(map[string]int, len(classes))
 		for _, filing := range filed {
-			if inCut(cut, filing.Root == filing.Key) {
+			if InCut(cut, filing.Root == filing.Key) {
 				byClass[filing.Class]++
 			}
 		}
@@ -279,7 +279,7 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 		}
 		count := 0
 		for _, facts := range finished {
-			if inCut(cut, facts.Root) {
+			if InCut(cut, facts.Root) {
 				count++
 			}
 		}

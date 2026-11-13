@@ -111,6 +111,17 @@ var cardSlugs = map[measures.DeployJobCardID]string{
 	measures.CardStagingApply:    SlugStagingDeploy,
 }
 
+// CardOf is the deploy card the CI eval slug times (production-deploy, staging-e2e and
+// staging-deploy), found false for any other slug.
+func CardOf(slug string) (measures.DeployJobCardID, bool) {
+	for card, of := range cardSlugs {
+		if of == slug {
+			return card, true
+		}
+	}
+	return "", false
+}
+
 // The families of eval_day_members a delivery day records its items under: the delivery evals'
 // pull requests and deploy runs, and the CI evals' runs. Each is its evals' kind.
 var deliveryDayFamilies = []string{KindDelivery, KindCI}

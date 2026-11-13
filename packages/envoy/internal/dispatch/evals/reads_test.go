@@ -78,11 +78,11 @@ func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
 		"series": "lines", "row_kind": "pull_request", "row_key": "acme/web#2", "value": 250, "measured_at": at(8, 10, 0), "replaces": written.Readings[1].ID,
 	}))
 	window := Range{From: at(8, 0, 0), To: at(9, 0, 0)}
-	first, err := r.registry.Items(t.Context(), evalID, "lines", "pull_request", "", window, 2, 0)
+	first, err := r.registry.Items(t.Context(), evalID, "lines", "pull_request", "", nil, window, 2, 0)
 	if err != nil {
 		t.Fatalf("read the first page: %v", err)
 	}
-	second, err := r.registry.Items(t.Context(), evalID, "lines", "pull_request", "", window, 2, 2)
+	second, err := r.registry.Items(t.Context(), evalID, "lines", "pull_request", "", nil, window, 2, 2)
 	if err != nil {
 		t.Fatalf("read the second page: %v", err)
 	}

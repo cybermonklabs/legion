@@ -97,6 +97,9 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
+	// Build is the build this process runs as, which the eval day rows a readings write keeps
+	// record (api.Deps.Build).
+	Build          string
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -223,6 +226,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
+		Build:                  opts.Build,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)

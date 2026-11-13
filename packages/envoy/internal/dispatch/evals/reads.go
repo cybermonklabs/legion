@@ -98,6 +98,142 @@ func (s *Store) Versions(ctx context.Context, evalID string) ([]Definition, erro
 	return versions, nil
 }
 
+// Eval reads one eval as Current reads each: its newest definition, through evals_current, and
+// the newest version of each of its series, the primary series first, then by name. found is
+// false where no version holds evalID.
+func (s *Store) Eval(ctx context.Context, evalID string) (Entry, bool, error) {
+	definition, err := scanDefinition(s.database.Pool.QueryRow(ctx, `
+		select `+definitionColumns+` from evals_current where eval_id = $1
+	`, evalID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Entry{}, false, nil
+	}
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("read eval %s: %w", evalID, err)
+	}
+	rows, err := s.database.Pool.Query(ctx, `
+		select `+seriesColumns+` from eval_series_current where eval_id = $1 order by is_primary desc, series
+	`, evalID)
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("read the series of %s: %w", evalID, err)
+	}
+	series, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Series, error) { return scanSeries(row) })
+	if err != nil {
+		return Entry{}, false, fmt.Errorf("read the series of %s: %w", evalID, err)
+	}
+	return Entry{Definition: definition, Series: nonNil(series)}, true, nil
+}
+
+// FirstDays reads, for each series of evalIDs (evals of project) that holds a day row of all the
+// project's repositories (repo ”), the first day it holds one, by eval id and then by series:
+// the day its input begins. From that day on a series has a row of every day the refresher has
+// written, an explicit zero row on a day with no input, so a range that starts before it reads "no
+// data" and names it (R12). Each series is one probe of eval_days' primary key, its first day.
+func (s *Store) FirstDays(ctx context.Context, project string, evalIDs []string) (map[string]map[string]time.Time, error) {
+	firsts := map[string]map[string]time.Time{}
+	if len(evalIDs) == 0 {
+		return firsts, nil
+	}
+	rows, err := s.database.Pool.Query(ctx, `
+		select s.eval_id, s.series, first.day
+		from eval_series_current s
+		cross join lateral (
+			select d.day from eval_days d
+			where d.project_key = $1 and d.eval_id = s.eval_id and d.series = s.series and d.repo = ''
+			order by d.day
+			limit 1
+		) first
+		where s.eval_id = any($2)
+	`, project, evalIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read the first days of the evals of %s: %w", project, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var evalID, series string
+		var day time.Time
+		if err := rows.Scan(&evalID, &series, &day); err != nil {
+			return nil, fmt.Errorf("read the first days of the evals of %s: %w", project, err)
+		}
+		if firsts[evalID] == nil {
+			firsts[evalID] = map[string]time.Time{}
+		}
+		firsts[evalID][series] = day.UTC()
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the first days of the evals of %s: %w", project, err)
+	}
+	return firsts, nil
+}
+
+// EvalDays reads every day row of one eval of project on the days of window, listed or not (pr-ci's
+// per-job series are not): the rows of all the project's repositories, or those of repos where
+// repos names any, and of one series where series is not ""; newest day first, then by series
+// and repository. It is the items route's read of an eval's day rows, one range of eval_days'
+// primary key.
+func (s *Store) EvalDays(ctx context.Context, project, evalID, series string, repos []string, window Range) ([]DayRow, error) {
+	if len(repos) == 0 {
+		repos = []string{""}
+	}
+	filter := `project_key = $1 and eval_id = $2 and repo = any($3) and day >= $4::date and day < $5::date`
+	args := []any{project, evalID, repos, window.From.UTC(), window.To.UTC()}
+	if series != "" {
+		args = append(args, series)
+		filter += ` and series = $6`
+	}
+	rows, err := s.database.Pool.Query(ctx, `
+		select `+dayColumns+` from eval_days where `+filter+` order by day desc, series, repo
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the day rows of %s: %w", evalID, err)
+	}
+	days, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DayRow, error) { return scanDay(row) })
+	if err != nil {
+		return nil, fmt.Errorf("read the day rows of %s: %w", evalID, err)
+	}
+	return days, nil
+}
+
+// Counted is one item a family of a project's day rows counted (Member), with the day
+// eval_day_members says it was last counted on.
+type Counted struct {
+	Member
+	Day time.Time
+}
+
+// CountedIn reads the items family's day rows of project counted on the days of window (those of
+// repos where repos names any), by day and then by row key, through eval_day_members_day: the
+// pull requests and deploy runs the delivery evals' rows of those days count, or the runs the CI
+// evals' rows do. An items read answers them, so it lists the items the window's numbers fold.
+func (s *Store) CountedIn(ctx context.Context, project, family string, repos []string, window Range) ([]Counted, error) {
+	filter := `project_key = $1 and family = $2 and day >= $3::date and day < $4::date`
+	args := []any{project, family, window.From.UTC(), window.To.UTC()}
+	if len(repos) > 0 {
+		args = append(args, repos)
+		filter += ` and repo = any($5)`
+	}
+	rows, err := s.database.Pool.Query(ctx, `
+		select row_key, repo, shipped_by, day from eval_day_members where `+filter+` order by day, row_key
+	`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("read the %s items of %s: %w", family, project, err)
+	}
+	defer rows.Close()
+	var items []Counted
+	for rows.Next() {
+		item := Counted{Member: Member{Family: family}}
+		if err := rows.Scan(&item.RowKey, &item.Repo, &item.ShippedBy, &item.Day); err != nil {
+			return nil, fmt.Errorf("read the %s items of %s: %w", family, project, err)
+		}
+		item.Day = item.Day.UTC()
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the %s items of %s: %w", family, project, err)
+	}
+	return items, nil
+}
+
 // DayWindow reads a project's listed day rows for a window of days and, where compare is not
 // nil, for a compare range too, as one statement: the `union all` of one read of each range,
 // each an index range of eval_days_window, so the compare range is a second windowed read of the
@@ -146,10 +282,11 @@ func (s *Store) DayWindow(ctx context.Context, project string, evalIDs, repos []
 
 // Items reads one page of a logged eval's standing readings (superseded_at is null) measured in
 // window, newest first, through eval_readings_row: those of one series, row kind and row where
-// each is not "". A filter left "" is left out of the statement rather than written as a test
-// that the parameter is empty, so the plan Postgres caches for the statement keeps the row
-// index's columns that the read names.
-func (s *Store) Items(ctx context.Context, evalID, series, rowKind, row string, window Range, limit, offset int) (Page[Reading], error) {
+// each is not "", and those whose attributes.repo is one of repos where repos names any. A filter
+// left "" is left out of the statement rather than written as a test that the parameter is
+// empty, so the plan Postgres caches for the statement keeps the row index's columns that the
+// read names.
+func (s *Store) Items(ctx context.Context, evalID, series, rowKind, row string, repos []string, window Range, limit, offset int) (Page[Reading], error) {
 	if err := checkPage(limit, offset); err != nil {
 		return Page[Reading]{}, err
 	}
@@ -160,6 +297,10 @@ func (s *Store) Items(ctx context.Context, evalID, series, rowKind, row string, 
 			args = append(args, named.value)
 			filter += ` and ` + named.column + ` = $` + strconv.Itoa(len(args))
 		}
+	}
+	if len(repos) > 0 {
+		args = append(args, repos)
+		filter += ` and attributes ->> 'repo' = any($` + strconv.Itoa(len(args)) + `)`
 	}
 	var total int
 	if err := s.database.Pool.QueryRow(ctx, `select count(*) from eval_readings where `+filter, args...).Scan(&total); err != nil {
