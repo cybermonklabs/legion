@@ -255,9 +255,13 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingL
 ```
 
 `why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below),
-`waiting` for an issue of the admission line, `blocked` for one a Dispatch link or an open
-child below it holds, and `unlisted` for one the record holds in the workflow that stands in
-none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
+`waiting` for an issue of the admission line, `blocked` for an issue of `admission.blocked`,
+which a Dispatch link or an open child below it holds, and `unlisted` for one the record holds
+in the workflow that stands in none of `admission.active`, `admission.waiting` and
+`admission.blocked`, and so in `admission.held`; `why.reason` is the sentence. For an issue of
+`admission.held` the sentence is its held word's, under `blocked` as well where the word is one
+of the six the daemon reads before `dispatch_blocker`, since closing the links would not start
+it while that word stands. An issue holding an admission
 slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
 stranded claim names it: an answered root reads `waiting`, a root whose open children hold its
 own first phase reads `blocked`, and an issue at work whose worker runs, one `held` and a root

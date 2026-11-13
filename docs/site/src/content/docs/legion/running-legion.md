@@ -1214,8 +1214,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
   sentence the block above prints. Beside them, on every issue that is not working now,
   `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
-  line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
-  holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
+  line; `blocked`, an issue of `admission.blocked`, which a Dispatch link or an open child below
+  it holds; `unlisted`, an issue the record holds in the workflow that stands in none of
+  `admission.active`, `admission.waiting` and `admission.blocked`, and so in `admission.held` —
+  and a `reason` sentence, which for an issue of `admission.held` is its held word's sentence,
+  under `blocked` as well where the word is one the daemon reads before `dispatch_blocker`; an
   issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
   or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
   whose open children hold its own first phase reads `blocked`, and an issue at work whose
