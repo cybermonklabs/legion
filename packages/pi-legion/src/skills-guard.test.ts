@@ -577,14 +577,21 @@ test("each text that orders a check run or recorded leaves out a check CI proves
   ]);
 });
 
-// The same rule where a text orders a check's evidence judged or recorded: retro's trigger is met by
-// a derived result, so a CI check whose derived result is a fail or no result still sends the issue
-// back; the architect's last round records only the checks with no `ci_check`; and the tester reads
-// a `ci_check` job as that check's evidence, which its prompt's core part says too.
+// The same rule where a text orders a check's evidence judged or recorded. Retro's trigger is met
+// by a derived result and names R5's three cases: a derived fail, or a run that concluded and
+// proved nothing, goes back to implementing; a run not concluded is waited for; and a name no run
+// answers is the architect's finding. The architect's last round records only the checks with no
+// `ci_check`, and the tester reads a `ci_check` job as that check's evidence, which its prompt's
+// core part says too.
 test("a derived result satisfies the passages that judge or record a check's evidence", () => {
-  expect(collapsed(path.join(staged, "legion-retro", "SKILL.md"))).toContain(
-    "A `ci_check` check with a derived fail, or no result, at that head has no pass standing."
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    "A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`."
   );
+  expect(retro).toContain(
+    "Wait for a run that has not concluded, and read again where GitHub could not be read."
+  );
+  expect(retro).toContain("Neither wait nor that finding moves the issue back.");
   expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
     "run each check with no `ci_check` on the default branch and record each result"
   );

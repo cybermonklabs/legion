@@ -44,14 +44,15 @@ The case is one of these:
 - `neutral`, `skipped` or `cancelled`: the run concluded and proved nothing.
 
 The case `github_unreadable` means that Dispatch could not read GitHub. That read is neither a
-pass nor a fail, and the next read tries again. Each read is made at the head, so a push needs no
-write from any role.
+pass nor a fail, and the next read tries again. The tester and the reviewer treat it as a run that
+is still going (below). Each read is made at the head, so a push needs no write from any role.
 
 ## The tester
 
 Read `dispatch results --issue <issue>` first. Then run and record only the checks that carry no
 `ci_check`, and the proofs on a real surface that CI cannot make. A check with `ci_check` needs no
-pass from the implementer, so it is never an entry in `failures`.
+pass from the implementer. It is an entry in `failures` only when its derived result is a fail, or
+its run concluded `skipped`, `neutral` or `cancelled`.
 
 ## The `Checks` line
 

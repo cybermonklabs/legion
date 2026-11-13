@@ -159,8 +159,11 @@ and decides there, the only gate on such an issue.
   PR body, because the reviewer and the merger verify facts on GitHub and never from a handoff.
   The `implement` handoff carries none: Dispatch holds them, and the tester reads them with
   `dispatch results`.
-- **The tester judges the implementer's results and records its own.** It runs, judges and
-  records no check with `ci_check`, whose result `dispatch results` derives. It re-runs the
+- **The tester judges the implementer's results and records its own.** It runs and records no
+  check with `ci_check`, whose result `dispatch results` derives. A derived fail, or a run that
+  concluded `skipped`, `neutral` or `cancelled`, is a test failure. A run still going, or GitHub
+  unread, goes in `implementerProof.how` and fails no round. A name no run answers goes to the
+  architect as a finding. It re-runs the
   implementer's command or drives the same surface independently, and records the verdict in
   its `test` handoff as `implementerProof` (`{verdict, how}`). The tester runs the
   application, not CI again. Try to break the changed surface — wrong and boundary inputs, the

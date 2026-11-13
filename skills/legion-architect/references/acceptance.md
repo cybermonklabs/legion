@@ -84,8 +84,8 @@ until this round, where its head must meet it.
 Then, in one turn:
 
 1. `envoy_publish` to the tester's role topic: "The next round of <KEY> is its last round: a full
-   test round of every check of the issue, not the forward-merge re-check." The backward move's
-   reason reaches only the implementer.
+   test round of every check of the issue with no `ci_check`, not the forward-merge re-check." The
+   backward move's reason reaches only the implementer.
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move

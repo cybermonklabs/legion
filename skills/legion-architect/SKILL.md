@@ -79,7 +79,7 @@ A tree often brings its own shortfall written up; that is no permission: your jo
 Post it as a `dispatch comment` naming each check and its result, then `legion({ op: "sign_off", issue: "<KEY>" })`.
 
 - `sign_off` works only in `accepting` (`SIGNOFF_OUTSIDE_ACCEPTING`), and the daemon refuses it while an issue beneath it is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), so a parent is accepted after its children, on the head of its last round (section 4).
-- When no pass stands for a check at that head, or a result contradicts what you read: `request_backward_move` with `issue`, `to` (`implementing` or `testing`) and a `reason` naming the check by its block id. It counts a review round.
+- When no pass stands for a check at that head, or a result contradicts what you read: `request_backward_move` with `issue`, `to` (`implementing` or `testing`) and a `reason` naming the check by its block id. It counts a review round. A `ci_check` run still going, or GitHub unread, is waited for and moves nothing back. A name no run answers is yours to correct in the check's words.
 - On every end-game wake (`phase-finished`, `catch-up`, `checks-red`, `review-stuck`), read `gh pr view <n> --json mergeable,mergeStateStatus`, because a `CONFLICTING` pull request gets no CI and no wake. Then, and after acceptance, follow `skill://legion-architect/references/acceptance.md`.
 
 ## 7. Close
