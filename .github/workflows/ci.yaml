@@ -324,7 +324,7 @@ jobs:
       test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.conflicts_script }}
       broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.broker_client }}
-      envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_client }}
+      envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.envoy_client }}
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_envoy }}
       pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.pi_legion }}
@@ -1082,6 +1082,9 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261111225552_test.go'
               - '!packages/daemon/internal/store/migration_20261112180548_test.go'
               - '!packages/daemon/internal/store/migration_upgrade_from_main_test.go'
+              - '!packages/daemon/internal/store/nested_acquire_test.go'
+              - '!packages/daemon/internal/store/pool_bounds_test.go'
+              - '!packages/daemon/internal/store/refusal_through_a_shared_forwarder_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
@@ -1817,6 +1820,9 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261111225552_test.go'
               - '!packages/daemon/internal/store/migration_20261112180548_test.go'
               - '!packages/daemon/internal/store/migration_upgrade_from_main_test.go'
+              - '!packages/daemon/internal/store/nested_acquire_test.go'
+              - '!packages/daemon/internal/store/pool_bounds_test.go'
+              - '!packages/daemon/internal/store/refusal_through_a_shared_forwarder_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
@@ -2020,6 +2026,9 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261111225552_test.go'
               - '!packages/daemon/internal/store/migration_20261112180548_test.go'
               - '!packages/daemon/internal/store/migration_upgrade_from_main_test.go'
+              - '!packages/daemon/internal/store/nested_acquire_test.go'
+              - '!packages/daemon/internal/store/pool_bounds_test.go'
+              - '!packages/daemon/internal/store/refusal_through_a_shared_forwarder_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
@@ -2239,6 +2248,9 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261111225552_test.go'
               - '!packages/daemon/internal/store/migration_20261112180548_test.go'
               - '!packages/daemon/internal/store/migration_upgrade_from_main_test.go'
+              - '!packages/daemon/internal/store/nested_acquire_test.go'
+              - '!packages/daemon/internal/store/pool_bounds_test.go'
+              - '!packages/daemon/internal/store/refusal_through_a_shared_forwarder_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
               - '!packages/daemon/internal/store/suspended_by_migration_test.go'
@@ -2260,62 +2272,6 @@ jobs:
               - '!packages/daemon/internal/workspace/**/*_test.go'
               - '!packages/envoy/**/*_test.go'
               # END generated
-            # The Envoy client's job (envoy-client). It moved here from the second step when the
-            # listed blocks of dispatch_ui and dispatch_browser grew that string past rule 18's
-            # margin: it names only groups both steps write out.
-            envoy_client:
-              - *ci_router
-              - '.github/workflows/ci-job-envoy-client.yaml'
-              - *bun_install
-              - 'packages/envoy-client/**'
-              # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
-              # @legion/broker-client/token-client, and this job runs that package's own typecheck
-              # and tests.
-              - 'packages/broker-client/**'
-              - 'packages/contracts/src/**'
-              # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
-              - 'packages/broker-client/src/**'
-              # src/__tests__ import @legion/test-fixtures.
-              - 'packages/test-fixtures/src/**'
-              # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
-              - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
-              - 'packages/contracts/fixtures/dispatch-public-url.json'
-              # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
-              # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
-              # an edit of the list alone must start both jobs, or the side it disagrees with
-              # stays green.
-              - 'packages/contracts/fixtures/go-unicode-isspace.json'
-              # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
-              # reads the Dispatch server's decision-block table, which the Go API test reads too.
-              - 'packages/envoy/internal/dispatch/api/testdata/**'
-              # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
-              # cites to a heading of that skill's SKILL.md.
-              - 'skills/**'
-              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
-              # and its ALLOWED names lines of four of them, so rewording one of those lines
-              # fails that test and this job has to run for it.
-              - 'packages/*/AGENTS.md'
-              # src/__tests__/dispatch-who-waits.test.ts's `no text states the old rule` reads
-              # every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md,
-              # the root's and the nested ones among them, so a text there that states the
-              # replaced rule must start this job. The recordings under packages/dispatch/e2e
-              # start it too, though the row leaves them out: this filter takes no `!` pattern.
-              - 'packages/envoy/internal/dispatch/**'
-              - 'packages/dispatch/web/src/**'
-              - 'packages/dispatch/e2e/**'
-              - 'docs/site/src/**'
-              - '**/AGENTS.md'
-              # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
-              # an assignee move, which must name the project's default assignee.
-              - 'packages/envoy/cmd/dispatch/README.md'
-              # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
-              # reads the Go package's own testdata by relative path, that file itself and never a
-              # copy, so a field added there must start this job.
-              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
-              # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
-              # which topics reach a private stream subject, the file
-              # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
-              - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
 
       # The second of the three filter strings. Actions hands a step's input to the action as one
       # environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
@@ -3895,6 +3851,93 @@ jobs:
               - 'packages/daemon/go.sum'
               - 'packages/envoy/go.mod'
               - 'packages/envoy/go.sum'
+            # A frozen Bun install and the Bun it runs: `bun install --frozen-lockfile` reads the
+            # root manifest, the lockfile, the patches package.json:50-59 applies, the manifest of
+            # every workspace package.json:19-31 lists, and the tarball
+            # packages/proof-editor/package.json installs proof-sdk-upstream from;
+            # .github/actions/setup-bun installs the Bun .bun-version pins.
+            bun_install: &bun_install
+              - 'package.json'
+              - 'bun.lock'
+              - 'patches/**'
+              - 'packages/broker-client/package.json'
+              - 'packages/contracts/package.json'
+              - 'packages/envoy-client/package.json'
+              - 'packages/pi-envoy/package.json'
+              - 'packages/pi-legion/package.json'
+              - 'packages/pi-shared/package.json'
+              - 'packages/claude-envoy/package.json'
+              - 'packages/proof-editor/package.json'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
+              - 'packages/dispatch/package.json'
+              - 'packages/test-fixtures/package.json'
+              - 'packages/envoy/internal/dispatch/pmdoc/gen/package.json'
+              - 'docs/site/package.json'
+              - '.bun-version'
+              - '.github/actions/setup-bun/**'
+              # setup-bun's third step reads this runner's bun row through that helper and
+              # fetches the npm copy when the release asset served no Bun of the pinned version,
+              # and its last step holds the bun on PATH to that row's digest.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
+            # The Envoy client's job (envoy-client). It moved from the second step to the first
+            # when the listed blocks of dispatch_ui and dispatch_browser grew that string past
+            # rule 18's margin, and from the first to this one when main's new test files grew the
+            # first step's generated blocks past it in turn: it names only groups this step writes
+            # out.
+            envoy_client:
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-client.yaml'
+              - *bun_install
+              - 'packages/envoy-client/**'
+              # src/broker-credential.ts:21-22 imports @legion/broker-client/environment and
+              # @legion/broker-client/token-client, and this job runs that package's own typecheck
+              # and tests.
+              - 'packages/broker-client/**'
+              - 'packages/contracts/src/**'
+              # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
+              - 'packages/broker-client/src/**'
+              # src/__tests__ import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
+              # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
+              - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              - 'packages/contracts/fixtures/dispatch-public-url.json'
+              # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
+              # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
+              # an edit of the list alone must start both jobs, or the side it disagrees with
+              # stays green.
+              - 'packages/contracts/fixtures/go-unicode-isspace.json'
+              # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
+              # reads the Dispatch server's decision-block table, which the Go API test reads too.
+              - 'packages/envoy/internal/dispatch/api/testdata/**'
+              # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
+              # cites to a heading of that skill's SKILL.md.
+              - 'skills/**'
+              # src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md,
+              # and its ALLOWED names lines of four of them, so rewording one of those lines
+              # fails that test and this job has to run for it.
+              - 'packages/*/AGENTS.md'
+              # src/__tests__/dispatch-who-waits.test.ts's `no text states the old rule` reads
+              # every text file git lists under these roots (OLD_RULE_ROOTS) and every AGENTS.md,
+              # the root's and the nested ones among them, so a text there that states the
+              # replaced rule must start this job. The recordings under packages/dispatch/e2e
+              # start it too, though the row leaves them out: this filter takes no `!` pattern.
+              - 'packages/envoy/internal/dispatch/**'
+              - 'packages/dispatch/web/src/**'
+              - 'packages/dispatch/e2e/**'
+              - 'docs/site/src/**'
+              - '**/AGENTS.md'
+              # src/__tests__/dispatch-who-waits.test.ts:783,791 reads the CLI guide's sentence on
+              # an assignee move, which must name the project's default assignee.
+              - 'packages/envoy/cmd/dispatch/README.md'
+              # The one corpus both clients read: packages/broker-client/src/__tests__/wire.test.ts:23-29
+              # reads the Go package's own testdata by relative path, that file itself and never a
+              # copy, so a field added there must start this job.
+              - 'packages/envoy/internal/brokerclient/testdata/wire.json'
+              # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
+              # which topics reach a private stream subject, the file
+              # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
+              - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
             # list -deps -test -race` in packages/envoy), and every .md file under packages/envoy,
