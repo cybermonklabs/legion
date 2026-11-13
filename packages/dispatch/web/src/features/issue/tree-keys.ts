@@ -55,18 +55,35 @@ function withoutVersion(reference: string): string {
  * (`tree-drafts.ts`'s `addDecisions`), and that link is the only edge the model holds between a
  * decision and what it shaped until pull request 2797 lands its `shaped` edge; the day it does,
  * this reads that edge instead and the key does not change.
+ *
+ * A check no decision names reaches back through the chain it sits in (R10): the decision
+ * behind a requirement it is drawn under, which is the decision that informed what the check
+ * proves.
  */
 export function decisionBehind(root: TreeNode, id: string): TreeNode | undefined {
   const order = nodesInOrder(root);
   const node = order.find((one) => one.id === id);
   if (node === undefined) return undefined;
-  const addresses = new Set(
-    [node.reference, node.id].filter((one): one is string => one !== undefined).map(withoutVersion)
-  );
-  return order.find(
-    (one) =>
-      one.type === "decision" && one.chips.some((chip) => addresses.has(withoutVersion(chip.ref)))
-  );
+  const naming = (target: TreeNode): TreeNode | undefined => {
+    const addresses = new Set(
+      [target.reference, target.id]
+        .filter((one): one is string => one !== undefined)
+        .map(withoutVersion)
+    );
+    return order.find(
+      (one) =>
+        one.type === "decision" && one.chips.some((chip) => addresses.has(withoutVersion(chip.ref)))
+    );
+  };
+  const own = naming(node);
+  if (own !== undefined || node.type !== "check") return own;
+  for (const requirement of order) {
+    if (requirement.type !== "requirement") continue;
+    if (!requirement.children.some((child) => child.id === id)) continue;
+    const behind = naming(requirement);
+    if (behind !== undefined) return behind;
+  }
+  return undefined;
 }
 
 /** Every branch of `root` opened, which is the whole tree drawn: the last state of the key that

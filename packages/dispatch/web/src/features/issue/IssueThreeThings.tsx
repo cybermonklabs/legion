@@ -18,7 +18,6 @@ import {
   type CheckState,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
-  GAP_WORDS,
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
   PRESET_NAMES,
@@ -44,8 +43,9 @@ import {
  * excerpt is cut at `BlockExcerptRunes`, 480 runes (`packages/envoy/internal/dispatch/refs/excerpts.go`)
  * - ends in a fragment nobody wrote, and a fragment is not a spoken sentence, so it is left
  * undrawn rather than drawn cut off. Who wrote the bullets and when they were last read back are
- * dispatch://INFRA-1278 and the model holds neither, so the head says so in two gaps and draws
- * no author at all - it never guesses one from the version the summary last changed in.
+ * dispatch://INFRA-1278 and the model holds neither for any issue, so the head draws no author
+ * and says nothing about either: a lack every issue shares tells the reader nothing about this
+ * one - and it never guesses an author from the version the summary last changed in.
  *
  * Until the reads that carry the summary answer, the head says nothing about it: the tree is
  * drawn before the spec's blocks arrive, and its summary node before the batched reference read
@@ -116,11 +116,9 @@ export function IssueThreeThings({
               : EMPTY_STATE_LINES.spec_summary}
         </p>
       ) : null}
-      {/* The two rows and the two gaps share one wrapping line. Each keeps its own box, because
-          each names one source and no second (R5), but a line apiece cost the head 60 px before
-          the tree and R6 puts the first open question on the first screen. The gap words are
-          what the model does not hold (dispatch://INFRA-1278): the chips name it, and the
-          sentences that spelled it out are gone with the line they cost. */}
+      {/* The two rows share one wrapping line. Each keeps its own box, because each names one
+          source and no second (R5), but a line apiece cost the head 60 px before the tree and
+          R6 puts the first open question on the first screen. */}
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-4 gap-y-0.5">
         <p
           className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-sm ${textMutedOnCanvas}`}
@@ -165,19 +163,6 @@ export function IssueThreeThings({
             ))
           )}
         </p>
-        <span className="flex min-w-0 flex-wrap items-baseline gap-2 text-xs">
-          {(["no_summary_author", "no_read_back"] as const).map((gap) => (
-            <span
-              className={`rounded border px-1 ${borderDefault} ${textMutedOnCanvas}`}
-              data-gap=""
-              data-gap-kind={gap}
-              key={gap}
-              {...pageChrome}
-            >
-              {GAP_WORDS[gap]}
-            </span>
-          ))}
-        </span>
       </div>
     </section>
   );

@@ -2732,6 +2732,6 @@
     "region \"Waiting for your review\"": "region \"Decisions\"",
     "region \"Your decisions\"": "region \"Decisions\"",
     "region \"Replaced\"": "region \"Decisions\"",
-    "link \"#11 acme/issue-layout\"": "link \"#11 acme/issue-layout\" | link \"#11 acme/issue-layout (GitHub details are unavailable for this repository)\""
+    "link \"session:e2e-seed…\"": "link \"Recorder (issue layout)\""
   }
 }

@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { primarySpec } from "../../api/issue-cache";
@@ -14,7 +14,7 @@ import { pathToTarget } from "./issue-address";
 import { artifactsBySlug, uncitedArtifacts } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { pageChrome } from "./page-structure";
-import { EMPTY_STATE_LINES, PRESET_ORDER, type Preset, WAITING_LINES } from "./page-words";
+import { EMPTY_STATE_LINES, PRESET_ORDER, type Preset } from "./page-words";
 import { presetCounts, presetView } from "./presets";
 import { useIssueTree } from "./useIssueTree";
 
@@ -77,6 +77,13 @@ export function IssueBody({
     return { id: targetId, kind: targetKind } as AddressTarget;
   }, [targetDocument, targetId, targetKind]);
   const reveal = useMemo(() => pathToTarget(root, target), [root, target]);
+  // The node the address named when the page was first drawn here: a fresh load's own, which
+  // keeps the rule below, where a document the preset draws lands on its own node. A node named
+  // after that was named by a link or a chip the reader followed on this page, and a keyboard
+  // reader reaches the chain only if the focus goes where that link went (R10): its row takes
+  // the focus whatever preset draws it.
+  const landedOn = useRef(target);
+  const followed = target !== undefined && target !== landedOn.current;
   // The node the preset draws the body of without being asked: the decision waiting for the
   // reader's review, whose body holds Keep and Change, so a reader who opens the preset is in
   // front of what waits for them (R7). It opens the body and never takes the focus, which is
@@ -150,20 +157,14 @@ export function IssueBody({
         uncited={uncited}
       />
       <IssueChildren issue={issue} />
-      {/* What the Checks preset does not hold yet: the coverage read counts the checks that
-          serve each requirement and names none of them, and the chain read that would is not
-          served (R20). The counts themselves are on each requirement's own body. */}
-      {address.preset === "checks" ? (
-        <p className={`mb-1 text-xs ${textMutedOnCanvas}`} {...pageChrome}>
-          {WAITING_LINES.chain}
-        </p>
-      ) : null}
       <IssueTree
         artifacts={artifacts}
         context={view.context}
         emptyLine={EMPTY_STATE_LINES[address.preset]}
         filtering={view.filtering}
-        focusReveal={address.preset !== "spec" && targetKind !== "node" && targetKind !== "turn"}
+        focusReveal={
+          followed || (address.preset !== "spec" && targetKind !== "node" && targetKind !== "turn")
+        }
         isClosed={isClosed}
         onEditing={onEditing}
         onReport={setReport}

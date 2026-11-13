@@ -11,7 +11,11 @@ import {
   PROPERTY_LABELS,
 } from "./page-structure";
 import {
+  ANSWER_LINES,
+  ANSWER_PHRASES,
+  ANSWER_SOURCES,
   APPROVAL_STATE_WORDS,
+  AUTHOR_KIND_WORDS,
   BLOCK_ATTRIBUTE_LABELS,
   BLOCKED_BY_REFUSALS,
   blockAttributeLabel,
@@ -42,7 +46,8 @@ import {
   READING_LINES,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
-  WAITING_LINES,
+  STATE_LINES,
+  UNASKED_SOURCES,
   wordsIn,
 } from "./page-words";
 
@@ -91,14 +96,14 @@ function phrasesOf(value: unknown): readonly string[] {
   return [];
 }
 
-const WORD_SOURCES: readonly unknown[] = [
+const UNASKED: readonly unknown[] = [
   NODE_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   CONVERSATION_STATE_NAMES,
   ISSUE_STATUS_WORDS,
   EMPTY_STATE_LINES,
-  KEY_REPORTS,
+  STATE_LINES,
   GAP_LINES,
   GAP_WORDS,
   PROGRESS_NOUNS,
@@ -106,16 +111,18 @@ const WORD_SOURCES: readonly unknown[] = [
   CHECK_WHEN_WORDS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
-  WAITING_LINES,
-  BLOCKED_BY_REFUSALS,
   APPROVAL_STATE_WORDS,
   CONTROL_LABELS,
   PROPERTY_LABELS,
   MARGIN_SECTION_NAMES,
-  HELP_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   NODE_FACT_LABELS,
+  AUTHOR_KIND_WORDS,
 ];
+
+const ANSWERS: readonly unknown[] = [ANSWER_LINES, BLOCKED_BY_REFUSALS, HELP_LINES, KEY_REPORTS];
+
+const WORD_SOURCES: readonly unknown[] = [...UNASKED, ...ANSWERS];
 
 test("the conversation's four states are named in the order the panel offers them", () => {
   expect(CONVERSATION_STATE_ORDER.map((state) => CONVERSATION_STATE_NAMES[state])).toEqual([
@@ -221,7 +228,7 @@ test("no two types share a glyph token, and no two states of one surface share o
     ...askTokens,
     ...checkTokens,
     ...decisionTokens,
-    GLYPH_TOKENS.author,
+    ...Object.values(GLYPH_TOKENS.authors),
   ];
   expect(new Set(everyToken).size).toBe(everyToken.length);
 });
@@ -232,9 +239,8 @@ test("every glyph token has an accessible name", () => {
     ...Object.values(GLYPH_TOKENS.states.ask),
     ...Object.values(GLYPH_TOKENS.states.check),
     ...Object.values(GLYPH_TOKENS.states.decision),
-    // One shape for an author, whoever they are: a node carries an author's id and nothing
-    // else, so a shape per kind of author would assert a kind the model does not hold (R7).
-    GLYPH_TOKENS.author,
+    // One shape per kind of author, so a person and an agent never share one (R9).
+    ...Object.values(GLYPH_TOKENS.authors),
   ];
   for (const token of tokens) {
     expect(GLYPH_NAMES[token]).toMatch(/\S/);
@@ -243,7 +249,62 @@ test("every glyph token has an accessible name", () => {
   expect(GLYPH_NAMES["check-passed"]).toBe("Passed check");
   expect(GLYPH_NAMES["decision-waiting-review"]).toBe("Waiting for your review decision");
   expect(GLYPH_NAMES["plan-task"]).toBe("plan task");
-  expect(GLYPH_NAMES[GLYPH_TOKENS.author]).toBe(CONTROL_LABELS.written_by);
+  expect(GLYPH_NAMES[GLYPH_TOKENS.authors.person]).toBe("Written by a person");
+  expect(GLYPH_NAMES[GLYPH_TOKENS.authors.agent]).toBe("Written by an agent");
+});
+
+/** The sentences of `phrase`: each run up to a full stop, a question mark or an exclamation. */
+function sentencesIn(phrase: string): readonly string[] {
+  return phrase.split(/(?<=[.!?])\s+/u).filter((sentence) => /\p{L}/u.test(sentence));
+}
+
+// R22 and the architect's ruling on it: what the page draws unasked - a name, a state, a label,
+// an empty line - is no sentence about the page or about Dispatch. The sentences it may draw
+// unasked are the lines that say what a place, a node or the issue holds or lacks; every other
+// full stop, and any of the words a sentence about the page or Dispatch is made of, fails here.
+test("what the page draws unasked holds no sentence about the page or about Dispatch", () => {
+  expect([...UNASKED_SOURCES]).toEqual([...UNASKED]);
+  const lines = new Set([EMPTY_STATE_LINES, GAP_LINES, STATE_LINES].flatMap(phrasesOf));
+  const offenders: string[] = [];
+  for (const phrase of UNASKED.flatMap(phrasesOf)) {
+    const words = wordsIn(phrase);
+    if (words.includes("dispatch") || words.includes("press")) {
+      offenders.push(`"${phrase}" names Dispatch or a press`);
+    }
+    if (!phrase.trimEnd().endsWith(".")) continue;
+    if (!lines.has(phrase)) offenders.push(`"${phrase}" is a sentence and no empty or state line`);
+    if (/\bthe page\b/iu.test(phrase) || words.includes("row")) {
+      offenders.push(`"${phrase}" is a sentence about the page`);
+    }
+  }
+  expect(offenders).toEqual([]);
+  expect(CONTROL_LABELS.deeper_row).toBe("more row below");
+  expect(CONTROL_LABELS.deeper_rows).toBe("more rows below");
+});
+
+// What the page says in answer to the reader's own act - a refusal, a key's report, a failed
+// read, a write's line, the description of a box they opened - is its own table, which a browser
+// check reads a freshly loaded page for. Each holds at most one sentence and no schema token.
+test("every answer to the reader's own act is one sentence with no schema token", () => {
+  expect([...ANSWER_SOURCES]).toEqual([...ANSWERS]);
+  expect([...ANSWER_PHRASES]).toEqual(ANSWERS.flatMap(phrasesOf));
+  for (const answer of [ANSWER_LINES, HELP_LINES, KEY_REPORTS]) {
+    for (const line of Object.values(answer)) {
+      expect(sentencesIn(line).length, line).toBeLessThanOrEqual(1);
+      expect(line, line).not.toMatch(/_|#b-|dispatch:\/\//u);
+    }
+  }
+  // A refusal is cut where the issue it is about goes, so it is read whole, with a key in place.
+  for (const { after, before } of Object.values(BLOCKED_BY_REFUSALS)) {
+    const whole = `${before}CORE-9${after}`;
+    expect(sentencesIn(whole).length, whole).toBeLessThanOrEqual(1);
+    expect(whole, whole).not.toMatch(/_|#b-|dispatch:\/\//u);
+  }
+  // A table holds what it is for and nothing the page says unasked.
+  const unasked = new Set(UNASKED.flatMap(phrasesOf));
+  expect(
+    ANSWERS.flatMap(phrasesOf).filter((phrase) => phrase.length > 3 && unasked.has(phrase))
+  ).toEqual([]);
 });
 
 test("the five presets are named in the order the row draws them", () => {
@@ -263,7 +324,7 @@ test("every empty-state line is one sentence a person reads", () => {
   for (const line of Object.values(EMPTY_STATE_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(EMPTY_STATE_LINES.check_result).toBe("No result recorded against this check.");
+  expect(EMPTY_STATE_LINES.spec_summary).toBe("This spec has no summary.");
 });
 
 test("every key report is one sentence saying where the key could not go", () => {
@@ -277,7 +338,7 @@ test("every gap line is one sentence that says what is absent", () => {
   for (const line of Object.values(GAP_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(GAP_LINES.no_origin).toBe("This does not say where it came from.");
+  expect(GAP_LINES.no_check).toBe("No check serves this requirement.");
 });
 
 // A node is a row to the reader, the word the tree's own keys already use, and "node" is the
@@ -329,7 +390,7 @@ test("the panel draws three named sections, in the order it names them", () => {
   ]);
 });
 
-test("every help line is whole sentences, because it replaced a tooltip", () => {
+test("every help line describes its box in one sentence", () => {
   for (const line of Object.values(HELP_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
@@ -363,13 +424,10 @@ test("every fact a node's body draws has a plain label, and a block attribute ke
   expect(nodeFactLabel("owner_of_record")).toBe("owner of record");
 });
 
-test("a result's verdict reads as a word, and every waiting line is one sentence", () => {
+test("a result's verdict reads as a word", () => {
   expect(Object.keys(RESULT_VERDICT_WORDS).sort()).toEqual(["fail", "pass"]);
   for (const word of Object.values(RESULT_VERDICT_WORDS)) {
     expect(word).toMatch(/^[A-Z][^_]*$/);
-  }
-  for (const line of Object.values(WAITING_LINES)) {
-    expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
 });
 

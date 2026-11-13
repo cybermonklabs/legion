@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { openAgents, seedAgents, shownAgentRows } from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
@@ -339,7 +339,7 @@ test("a header write in flight withdraws the rows whose buttons it disables", as
     // The action answers to the words it draws, and while the write is out those words are the
     // in-flight ones: it reads "Closing…" and takes no second press. Under the name it carried
     // before the press there is now no control at all (WCAG 2.5.3, `IssueHeader.tsx`).
-    await expect(page.getByRole("button", { name: CONTROL_LABELS.saving_close })).toBeDisabled();
+    await expect(page.getByRole("button", { name: ANSWER_LINES.saving_close })).toBeDisabled();
     await expect(page.getByRole("button", { name: CONTROL_LABELS.close_issue })).toHaveCount(0);
     await page.keyboard.press("Escape");
     await expect(page.getByLabel(`Priority of ${issue.key}`)).toBeDisabled();

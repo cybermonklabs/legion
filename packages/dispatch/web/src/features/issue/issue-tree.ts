@@ -37,9 +37,10 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
  * result under its check. A decision's `shaped` edge is that decision's chip and places nothing;
  * where a requirement's `from` and a decision's `shaped` disagree the node is placed by `from`
  * and the disagreement is drawn as a gap. A node whose spine parent is absent sits under the
- * issue, with the `no_origin` gap on it and never as an error. Every edge that is not the spine
- * is a chip naming its target, and a node is drawn again only under another requirement its own
- * `serves` names.
+ * issue, as a node like any other and never as an error: no gap says so, because under today's
+ * reads every node of its kind lacks one, and a lack every sibling shares tells none of them
+ * apart (R8). Every edge that is not the spine is a chip naming its target, and a node is drawn
+ * again only under another requirement its own `serves` names.
  *
  * ## What today's reads hold, and what they do not
  *
@@ -48,8 +49,8 @@ import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
  *
  * - **No `from` on a requirement.** The `requirement` block carries no attributes at all
  *   (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05), so
- *   every requirement of the issue's spec sits under the issue with the `no_origin` gap, which
- *   is what c-home and c-spine read. A `requirement` block of any other document keeps its place
+ *   every requirement of the issue's spec sits under the issue, which is what c-home and c-spine
+ *   read. A `requirement` block of any other document keeps its place
  *   under that document: the model holds no `from` for it and no coverage row either, so it is a
  *   block of a document and nothing more.
  * - **No `shaped` on a decision.** The decisions read answers `kind` and a boolean `unsure`
@@ -160,6 +161,8 @@ export interface TreeNode {
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
   readonly type: NodeType;
+  /** Whether the model marks this decision unsure, which its row says in one word (R9). */
+  readonly unsure?: true;
   /** Whether this decision waits for the reader's review, which is where Keep and Change are
    *  drawn and what the Decisions preset opens on (R7). */
   readonly waiting: boolean;
@@ -315,6 +318,7 @@ function assemble(
       transcluded: parents.indexOf(parent) > 0,
       ...(draft.tree === undefined ? {} : { tree: draft.tree }),
       type: draft.type,
+      ...(draft.unsure === undefined ? {} : { unsure: draft.unsure }),
       waiting: draft.waiting,
     };
   };

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { borderDefault, textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
+import { useAgentText } from "../refs/AgentName";
 import type { FocusedNode } from "./focused-node";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, sentenceCase } from "./page-words";
@@ -12,6 +13,7 @@ import { CONTROL_LABELS, NODE_TYPE_NAMES, sentenceCase } from "./page-words";
  * focus is the issue, so this draws the issue's own facts rather than nothing.
  */
 export function FocusedNodeFacts({ node }: { node: FocusedNode }): ReactNode {
+  const agentText = useAgentText();
   return (
     <section
       className={`border-b pb-2 ${borderDefault}`}
@@ -27,7 +29,7 @@ export function FocusedNodeFacts({ node }: { node: FocusedNode }): ReactNode {
           <Fact chrome label={PROPERTY_LABELS.status} value={node.state} />
         )}
         {node.author === undefined ? null : (
-          <Fact label={CONTROL_LABELS.written_by} value={node.author} />
+          <Fact label={CONTROL_LABELS.written_by} value={agentText.author(node.author)} />
         )}
       </dl>
     </section>

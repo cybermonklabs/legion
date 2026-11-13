@@ -1,6 +1,6 @@
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
-import { HELP_LINES, PROPERTY_LABELS } from "../web/src/features/issue/page-structure";
+import { PROPERTY_LABELS } from "../web/src/features/issue/page-structure";
 import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
 import {
@@ -239,11 +239,12 @@ test("issue header copies its key and persists its title, status, and route", as
     // The same button copies the dispatch:// reference under Ctrl/Cmd.
     await copyKey.click({ modifiers: ["ControlOrMeta"] });
     await expect.poll(copied).toEqual([issue.key, `dispatch://${issue.key}`]);
-    // What a message route is, and what it is not, is text beside the editor now rather than a
-    // tooltip or a screen-reader-only hint (dispatch://INFRA-1196 R11), so the screenshot shows
-    // it as a reader meets it: with the editor open.
+    // The route editor is its label, its box and its two buttons: the page draws no sentence
+    // beside it explaining what a route is (dispatch://INFRA-1196, the person's ruling on helper
+    // text), so the screenshot shows the editor as a reader meets it.
     await page.getByRole("button", { name: "Messages default to no route" }).click();
-    await expect(page.getByText(HELP_LINES.route)).toBeVisible();
+    await expect(page.getByLabel(PROPERTY_LABELS.route, { exact: true })).toBeVisible();
+    await expect(page.getByText("wake this agent or role", { exact: false })).toHaveCount(0);
     await page.screenshot({
       path: testInfo.outputPath("issue-header-1280.png"),
     });
@@ -324,10 +325,11 @@ test("issue pages show subscribers, external-link fallbacks, and children", asyn
     // (dispatch://INFRA-1196 R21).
     await expect(subscribedAgents.locator("[data-agent-name='e2e-session']")).toHaveCount(1);
     // Without GitHub App credentials the link still reads as the reference, never the raw
-    // address, and says why it can say no more in words beside it rather than in a tooltip
-    // (dispatch://INFRA-1196 R21).
-    await expect(page.getByRole("link", { name: "#815 sjawhar/legion" })).toContainText(
-      "(GitHub details are unavailable for this repository)"
+    // address, and says nothing beside it about what Dispatch could not read: the page draws no
+    // sentence about what Dispatch cannot do (dispatch://INFRA-1196, the person's ruling on
+    // helper text), so the link's whole name is the reference.
+    await expect(page.getByRole("link", { exact: true, name: "#815 sjawhar/legion" })).toHaveCount(
+      1
     );
     await expect(
       page.getByRole("link", { name: "https://github.com/sjawhar/legion/issues/815" })

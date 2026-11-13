@@ -2,13 +2,16 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
-
+import type { Actor } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue/issue-address";
 import {
+  ANSWER_PHRASES,
   CHECK_WHEN_WORDS,
   CONTROL_LABELS,
   DECLARED_WORDS,
   EMPTY_STATE_LINES,
+  GAP_LINES,
+  GAP_WORDS,
   GLYPH_NAMES,
   GLYPH_TOKENS,
   NODE_STATE_WORDS,
@@ -18,9 +21,12 @@ import {
   PRESET_NAMES,
   PRESET_ORDER,
   type Preset,
+  STATE_LINES,
+  UNASKED_SOURCES,
   wordsIn,
 } from "../web/src/features/issue/page-words";
-import { blockNodeId } from "../web/src/features/issue/tree-drafts";
+import { blockNodeId, checkState } from "../web/src/features/issue/tree-drafts";
+import { REF_PREVIEW_OPEN_DELAY_MS } from "../web/src/features/refs/ref-preview-timing";
 import { getUnsubscribeCalls } from "./agents";
 import {
   answerAsk,
@@ -31,9 +37,13 @@ import {
   getAsk,
   getIssue,
   getIssueArtifactText,
+  getIssueCoverage,
   getIssueDecisions,
+  getIssueResults,
   getMyState,
   listComments,
+  listIssueAsks,
+  listIssueMessages,
   patchIssue,
   requestApproval,
 } from "./api";
@@ -53,7 +63,14 @@ import {
   UNBROKEN_PATH,
   type WholeIssueSeed,
 } from "./issue-layout-seed";
-import { asPlanner, PLANNER, WHOLE_REPO } from "./issue-layout-seed-support";
+import {
+  asPlanner,
+  PLANNER,
+  PLANNER_TITLE,
+  plannerActor,
+  recorderActor,
+  WHOLE_REPO,
+} from "./issue-layout-seed-support";
 import {
   checkBlockId,
   OPEN_QUESTION_BLOCK_ID,
@@ -90,7 +107,6 @@ import {
   focusedNodeId,
   focusThePage,
   gapKinds,
-  gaps,
   gotoIssue,
   identityBlock,
   identityBlockBottom,
@@ -162,8 +178,8 @@ import { asUser } from "./users";
  * - **c-tree** proves the fold at the depth today's data reaches (issue, document, block); the
  *   four-levels-down seed waits on dispatch://INFRA-1290.
  * - **c-three-things** proves the three sentences and the two rows; who wrote the bullets and
- *   when they were last read back wait on dispatch://INFRA-1278, so the test asserts the page
- *   names that gap and never that an author is drawn.
+ *   when they were last read back wait on dispatch://INFRA-1278, so the test asserts the head
+ *   draws neither an author nor a gap for them.
  * - **c-home** proves the Spec preset over today's documents, where every requirement sits at the
  *   issue root because `from` waits on dispatch://INFRA-1098 item 21.
  * - **c-spine** proves what a document's own `serves` gives, because the model holds no `from`
@@ -178,9 +194,6 @@ import { asUser } from "./users";
 /** The two sizes every check names. */
 const DESKTOP = { height: 900, width: 1440 } as const;
 const PHONE = { height: 844, width: 390 } as const;
-
-/** The title the fake Envoy gives the session that holds the claim and takes the route. */
-const PLANNER_TITLE = "Planner (issue layout)";
 
 /** One seeded issue, read by one signed-in page. The viewport starts at the desktop size in every
  *  project, because the `iphone` project runs each `@phone` test too and a test that asserts a
@@ -585,8 +598,12 @@ test("a one-line row cuts the node's first line at a word @phone @phone-only", a
         nodeRow(page, seeded.askId).first(),
         `the open question draws no row at ${width} px`
       ).toBeVisible();
+      // The author is drawn by the title its session stamped and the registry lists, never by
+      // the session's id (R9).
       const asked = rowOf(await drawnRows(page), seeded.askId);
-      expect(asked?.author, `the open question's row names no author at ${width} px`).toBe(PLANNER);
+      expect(asked?.author, `the open question's row names no author at ${width} px`).toBe(
+        PLANNER_TITLE
+      );
       expectCutAtAWord(asked, question, `the open question's row at ${width} px`);
 
       // The zoomed tree draws the issue's children and the trail down to its open question, so
@@ -630,6 +647,9 @@ test("a one-line row cuts the node's first line at a word @phone @phone-only", a
 
 // c-focus-opens.
 test("a body opens on focus and nothing opens on hover", async ({ browser }) => {
+  // The row rests the pointer on every reference the page draws, each for longer than a card
+  // takes to open elsewhere, which is a second or two of absences on top of the row's own walk.
+  test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}`);
 
@@ -684,6 +704,47 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       "the page carries tooltips, which a reader on a phone or on the keyboard never sees"
     ).toEqual([]);
 
+    // No link opens a card on hover either, a link in an open body included: the issue page is
+    // worked from the keyboard (R6). A decision's body names the requirements it shaped as
+    // links, so it is pinned open, and the pointer crosses every reference the page draws - the
+    // children's, the panel's and that body's - with the keyboard focus elsewhere.
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const decision = nodeRow(page, blockNodeId(decisionsSlug, seeded.decisions[0] ?? "")).first();
+    await decision.focus();
+    await page.keyboard.press("o");
+    await focusThePage(page);
+    const bodyLinks = rowBody(decision).locator("[data-dispatch-ref]");
+    await expect
+      .poll(() => bodyLinks.count(), { message: "the pinned decision's body draws no link" })
+      .toBeGreaterThan(0);
+    const references = issuePage(page).locator(
+      "[data-dispatch-ref]:visible, [data-dispatch-href]:visible"
+    );
+    const referenceCount = await references.count();
+    for (let index = 0; index < referenceCount; index += 1) {
+      await references.nth(index).hover();
+      // A pointer resting on the link past the delay a card opens after on every other page:
+      // the absence is the claim, so the wait is the span the card would have taken to open.
+      await page.waitForTimeout(REF_PREVIEW_OPEN_DELAY_MS + 200);
+      expect(
+        await page.getByRole("tooltip").count(),
+        `the pointer resting on link ${index} of the issue page opened a card`
+      ).toBe(0);
+    }
+    // The preview a link offers opens from the keyboard on the focused link.
+    await page.mouse.move(0, 0);
+    await page.keyboard.press("Tab");
+    await bodyLinks.first().focus();
+    await expect(
+      page.getByRole("tooltip"),
+      "the keyboard focus on a link of the issue page opened no card"
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("tooltip")).toHaveCount(0);
+    await decision.focus();
+    await page.keyboard.press("o");
+    await focusThePage(page);
+
     // Nothing is carried by colour: each state and type has a word and a shape no other carries,
     // and the reading holds with the colours forced. A greyscale filter is not the test - today's
     // three muted states already differ in luminance and would pass one.
@@ -706,6 +767,18 @@ test("a body opens on focus and nothing opens on hover", async ({ browser }) => 
       [...statesDrawn(forced)],
       "the states are told apart differently once the colours are forced"
     ).toEqual([...states]);
+
+    // Another page keeps its hover card: this change touches no page but the issue's, and the
+    // Inbox's owner link opens a card for a resting pointer as it always has.
+    await page.emulateMedia({ forcedColors: "none" });
+    await page.goto("/");
+    const owner = page.locator("[data-inbox-row] [data-dispatch-ref]").first();
+    await expect(owner, "the Inbox lists no row of the seeded issue's open question").toBeVisible();
+    await owner.hover();
+    await expect(
+      page.getByRole("tooltip"),
+      "the Inbox's owner link opened no card for a resting pointer"
+    ).toBeVisible();
   });
 });
 
@@ -845,22 +918,34 @@ test("the spine is the reasoning and an unexplained node sits under the issue", 
     const unexplained = blockNodeId(specSlug, SPINE_REQUIREMENTS.unexplained);
     const check = blockNodeId(verificationSlug, SPINE_CHECK_BLOCK_ID);
 
-    // A requirement whose origin is absent sits under the issue, drawn as a node nothing explains
-    // rather than as an error: the page names that gap and the gap names its kind.
+    // A requirement whose origin is absent sits under the issue, drawn as a node like any other
+    // rather than as an error. Under today's model every requirement's origin is absent, so the
+    // absence tells it apart from none of its siblings and no gap says it: the gaps it draws are
+    // the ones that do, which on this seed is that no check serves it, and each names its kind.
     expect(
       await parentOfRow(page, unexplained),
       "the requirement whose origin is absent sits under no node: the page draws no row for it"
     ).toBe(seeded.key);
     await expectIssuePageDrawn(page);
     expect(
-      await gaps(page).count(),
-      "the page names no gap at all, so nothing says the requirement is unexplained"
-    ).toBeGreaterThan(0);
-    expect(
-      await rowGaps(nodeRow(page, unexplained).first()).count(),
-      "the requirement nothing explains is drawn with no gap on it"
-    ).toBeGreaterThan(0);
+      await rowGaps(nodeRow(page, unexplained).first()).evaluateAll((drawn) =>
+        drawn.map((gap) => gap.getAttribute("data-gap-kind"))
+      ),
+      "the requirement nothing explains draws a gap other than the one that tells it apart"
+    ).toEqual(["no_check"]);
     expect(await gapKinds(page), "a gap the page draws names no kind").not.toContain("");
+
+    // No requirement is drawn under a decision: a decision's link to a requirement is the
+    // decision's chip and places nothing, and every requirement sits under the issue.
+    const spineRows = await drawnRows(page);
+    const typeOf = new Map(spineRows.map((row) => [row.id ?? "", row.type]));
+    for (const requirement of Object.values(SPINE_REQUIREMENTS)) {
+      const parent = await parentOfRow(page, blockNodeId(specSlug, requirement));
+      expect(typeOf.get(parent ?? ""), `${requirement} is drawn under a decision`).not.toBe(
+        "decision"
+      );
+      expect(parent, `${requirement} is not drawn under the issue`).toBe(seeded.key);
+    }
 
     // The check that serves two requirements is drawn under both, each row naming its other
     // parent, and both rows open the same block.
@@ -917,7 +1002,7 @@ test("the spine is the reasoning and an unexplained node sits under the issue", 
 });
 
 // c-three-things. Partial on today's data: the node that holds the bullets, its author and
-// `last_read_back_at` are dispatch://INFRA-1278, so the head names that gap and this test never
+// `last_read_back_at` are dispatch://INFRA-1278, so the head draws neither and this test never
 // asserts that an author is drawn.
 test("the three things are at the head of every preset @phone", async ({ browser }) => {
   // Ten loads of the page - the five presets at each of two widths - each read for its head,
@@ -970,16 +1055,36 @@ test("the three things are at the head of every preset @phone", async ({ browser
       }
     }
 
-    // Who wrote the bullets and when they were last read back wait on dispatch://INFRA-1278, so
-    // the head says neither is known and draws no author at all.
+    // Who wrote the bullets and when they were last read back wait on dispatch://INFRA-1278, and
+    // no issue holds either, so the head draws no author and no gap for them: a lack every
+    // issue shares tells the reader nothing about this one.
     expect(
       await rowAuthor(threeThings(page)).count(),
       "the head names an author, which the model does not hold"
     ).toBe(0);
     expect(
       await rowGaps(threeThings(page)).count(),
-      "the head says nothing about the author and the read-back it does not know"
-    ).toBeGreaterThan(0);
+      "the head draws a gap that every issue has, which tells the reader nothing about this one"
+    ).toBe(0);
+
+    // The second row draws one word and one shape per state the issue's checks are in, read
+    // with the page's own rule for a check's state over the results the seed recorded.
+    const states = [
+      ...new Set(((await getIssueResults(seeded.key)).checks ?? []).map(checkState)),
+    ].sort();
+    const checksShapes = await checksRow(page)
+      .locator("svg[data-glyph]")
+      .evaluateAll((glyphs) => glyphs.map((glyph) => glyph.getAttribute("data-glyph") ?? ""));
+    expect(
+      checksShapes.sort(),
+      "the checks row draws a shape per state other than one each"
+    ).toEqual(states.map((state) => GLYPH_TOKENS.states.check[state]).sort());
+    const checksWords = (await checksRow(page).innerText()).replace(/\s+/g, " ");
+    for (const state of states) {
+      expect(checksWords, `the checks row draws no word for ${state}`).toContain(
+        NODE_STATE_WORDS.check[state]
+      );
+    }
   });
 
   await phase(browser, seedNoSummary, async (page, seeded) => {
@@ -1002,6 +1107,11 @@ test("the three things are at the head of every preset @phone", async ({ browser
         await threeThingsSentences(page).count(),
         "a spec with no summary draws sentences all the same"
       ).toBe(0);
+      // An issue with no checks says so in one line, in the row that would name their states.
+      await expect(
+        checksRow(page),
+        "the checks row of an issue with no checks does not say so"
+      ).toContainText(EMPTY_STATE_LINES.checks);
     }
   });
 });
@@ -1795,8 +1905,299 @@ function rowsByKind(rows: readonly DrawnRow[]): Record<string, number> {
   return kinds;
 }
 
-// c-plain-words.
-test("the page draws no internal word where a name belongs @phone", async ({ browser }) => {
+/** Who the model holds as each node's author, by the id the tree draws the node under: every
+ *  document and image, every question asked, every comment and message, and every recorded
+ *  result. A node of any other kind has no author the model holds. */
+async function storedAuthors(key: string): Promise<Map<string, Actor>> {
+  const artifacts = (await getIssue(key)).artifacts ?? [];
+  const slugOf = new Map(artifacts.map((artifact) => [artifact.id, artifact.slug]));
+  const authors = new Map<string, Actor>();
+  for (const artifact of artifacts) {
+    if (artifact.created_by != null) authors.set(artifact.slug, artifact.created_by);
+  }
+  for (const ask of await listIssueAsks(key)) {
+    if (ask.kind !== "question") continue;
+    const slug = ask.block_artifact?.slug ?? slugOf.get(ask.artifact_id ?? "");
+    const id =
+      slug !== undefined && ask.block_id != null ? blockNodeId(slug, ask.block_id) : ask.id;
+    authors.set(id, ask.author);
+  }
+  for (const comment of await listComments(key)) authors.set(comment.id, comment.author);
+  for (const thread of await listIssueMessages(key)) {
+    for (const message of [thread.message, ...(thread.replies ?? [])]) {
+      authors.set(message.id, message.author);
+    }
+  }
+  for (const check of (await getIssueResults(key)).checks ?? []) {
+    for (const result of check.results ?? []) authors.set(result.id, result.actor);
+  }
+  return authors;
+}
+
+/** The name the page must draw for `actor`: a person by their login, which is their address,
+ *  and an agent by the title its session stamped on the write - the seed stamps every agent's. */
+function expectedAuthorName(actor: Actor): string {
+  return actor.kind === "user" ? actor.id : (actor.origin?.session_title ?? "");
+}
+
+/** An identifier where a name belongs: a UUID, which is what an Envoy session id is, or the
+ *  short form `session:<8>…` other pages draw an untitled session by. */
+const SESSION_ID_SHAPE = /[0-9a-f]{8}-[0-9a-f]{4}-|\bsession:/iu;
+
+/** Every way the drawn authors of `rows` differ from what the model holds: a row whose node
+ *  has an author and draws another name or an id, and a row whose node has none and draws one;
+ *  once every name is right, a row drawing the other kind's shape. The names are read first,
+ *  because a name drawn as an id is the defect this reading exists for. */
+function authorOffences(rows: readonly DrawnRow[], stored: ReadonlyMap<string, Actor>): string[] {
+  const offences: string[] = [];
+  const ids = new Set([...stored.values()].map((actor) => actor.id));
+  for (const row of rows) {
+    const actor = stored.get(row.id ?? "");
+    if (actor === undefined) {
+      if (row.author !== null || row.authorShape !== null) {
+        offences.push(`${row.id} draws "${row.author}" though the model holds no author for it`);
+      }
+      continue;
+    }
+    const name = expectedAuthorName(actor);
+    if (row.author !== name) {
+      offences.push(`${row.id} draws its ${actor.kind} author as "${row.author}", not "${name}"`);
+    }
+    if (
+      actor.kind !== "user" &&
+      (SESSION_ID_SHAPE.test(row.author ?? "") || ids.has(row.author ?? ""))
+    ) {
+      offences.push(`${row.id} draws its author by an id: "${row.author}"`);
+    }
+  }
+  if (offences.length > 0) return offences;
+  for (const row of rows) {
+    const actor = stored.get(row.id ?? "");
+    if (actor === undefined) continue;
+    const shape = actor.kind === "user" ? GLYPH_TOKENS.authors.person : GLYPH_TOKENS.authors.agent;
+    if (row.authorShape !== shape) {
+      offences.push(`${row.id} draws its ${actor.kind} author with the shape ${row.authorShape}`);
+    }
+  }
+  return offences;
+}
+
+// c-author.
+test("an author is drawn by name and shape @phone", async ({ browser }) => {
+  // The whole issue's every row, read with every branch open, beside the stored actor of each:
+  // the same unfolding c-plain-words waits out, so the same deadline.
+  test.setTimeout(180_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const stored = await storedAuthors(seeded.key);
+    // The seed holds both kinds of author, and an agent whose id is a session's UUID, so the
+    // reading below meets a person, a titled agent and an id it must not draw.
+    const kinds = new Set([...stored.values()].map((actor) => actor.kind));
+    expect([...kinds].sort(), "the seed holds no author of one of the two kinds").toEqual([
+      "session",
+      "user",
+    ]);
+    expect(
+      [...stored.values()].some((actor) => actor.id === recorderActor.id),
+      "the seed records no result under the session whose id is a UUID"
+    ).toBe(true);
+    expect(
+      [...stored.values()].some((actor) => actor.id === plannerActor.id),
+      "the seed writes nothing as the planner's session"
+    ).toBe(true);
+    expect(PLANNER).toBe(plannerActor.id);
+
+    // At 1440 px with every branch open, every node of the issue is a row: each node the model
+    // holds an author for draws that author's name and its kind's shape, and no other draws one.
+    const settling = watchApiRequests(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectLoadSettled(settling);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    await expect
+      .poll(async () => rowsByKind(await drawnRows(page)), {
+        message: "the unfolded tree does not draw a row for every node the seed wrote",
+      })
+      .toEqual(rowsOfTheWholeIssue(seeded));
+    await expect
+      .poll(async () => authorOffences(await drawnRows(page), stored), {
+        message: "a row draws its author other than by the stored actor's name and kind",
+      })
+      .toEqual([]);
+    const rows = await drawnRows(page);
+    const shapes = (kind: string) =>
+      new Set(
+        rows.filter((row) => stored.get(row.id ?? "")?.kind === kind).map((row) => row.authorShape)
+      );
+    expect([...shapes("user")], "the people's rows do not share one shape").toHaveLength(1);
+    expect([...shapes("session")], "the agents' rows do not share one shape").toHaveLength(1);
+    expect(
+      [...shapes("user")].filter((shape) => shapes("session").has(shape)),
+      "a person and an agent are drawn with the same shape"
+    ).toEqual([]);
+
+    // The decision the seed marks unsure - its section holds a paragraph opening `Unsure:` -
+    // says so in one word, and no other decision says it.
+    const unsure = rows
+      .filter((row) => row.type === "decision" && row.unsure !== null)
+      .map((row) => ({ text: row.text, word: row.unsure }));
+    expect(unsure, "the decisions marked unsure are not the one the seed marks").toHaveLength(1);
+    expect(unsure[0]?.word).toBe(CONTROL_LABELS.unsure);
+    expect(unsure[0]?.text).toContain("Fold to the frontier and not to a depth");
+
+    // At 390 px the tree is read one node at a time, and every row it draws there holds to the
+    // same reading.
+    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await expect
+      .poll(async () => (await drawnRows(page)).filter((row) => row.author !== null).length, {
+        message: "the zoomed tree draws no row with an author at 390 px",
+      })
+      .toBeGreaterThan(0);
+    await expect
+      .poll(async () => authorOffences(await drawnRows(page), stored), {
+        message: "a row at 390 px draws its author other than by the stored actor's name and kind",
+      })
+      .toEqual([]);
+  });
+});
+
+// c-chain.
+test("the chain is reachable and only gaps that tell a node apart are drawn", async ({
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await phase(browser, seedWholeIssue, async (page, seeded) => {
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    const decisionsSlug = (await getArtifact(seeded.decisionsArtifactId)).slug;
+    const verificationSlug = (await getArtifact(seeded.verificationArtifactId)).slug;
+    const planSlug = (await getArtifact(seeded.planArtifactId)).slug;
+    const informed = blockNodeId(specSlug, requirementBlockId(1));
+    const decision = blockNodeId(decisionsSlug, seeded.decisions[0] ?? "");
+    const check = blockNodeId(verificationSlug, seeded.checks.passed);
+    const results = (await getIssueResults(seeded.key)).checks ?? [];
+    const latest = results.find((one) => one.block_id === seeded.checks.passed)?.results?.[0];
+    expect(latest, "the seed recorded no result against the check that serves r1").toBeDefined();
+
+    const settling = watchApiRequests(page);
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectLoadSettled(settling);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    await expect
+      .poll(async () => rowsByKind(await drawnRows(page)), {
+        message: "the unfolded tree does not draw a row for every node the seed wrote",
+      })
+      .toEqual(rowsOfTheWholeIssue(seeded));
+
+    // From the decision to the requirement it informed: the decision's chip names it, and the
+    // keys follow it - `f` steps to the chip and Enter follows it to the requirement's own row.
+    await nodeRow(page, decision).first().focus();
+    await page.keyboard.press("f");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "following the decision's chip does not put the focus on the requirement",
+      })
+      .toBe(informed);
+
+    // From that requirement to its checks and their latest results: each is drawn under it, and
+    // the arrow keys walk down to them from the requirement's row. The chip's address opens the
+    // Spec preset, which keeps requirements alone, so the chain is read where nothing filters
+    // it: the issue's own address, with every branch open (a filter that keeps a requirement
+    // with its checks is a later item of this round).
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await expectIssuePageDrawn(page);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    expect(await parentOfRow(page, check), "the check that serves r1 is not under it").toBe(
+      informed
+    );
+    expect(
+      await parentOfRow(page, latest?.id ?? ""),
+      "the check's latest result is not under the check"
+    ).toBe(check);
+    await nodeRow(page, informed).first().focus();
+    const walked: (string | null)[] = [];
+    for (let step = 0; step < 6; step += 1) {
+      await page.keyboard.press("ArrowDown");
+      walked.push(await focusedNodeId(page));
+    }
+    expect(walked, "the arrows from the requirement do not reach its check").toContain(check);
+    expect(walked, "the arrows from the requirement do not reach the check's result").toContain(
+      latest?.id ?? ""
+    );
+
+    // From the check, `w` reaches back to the decision that informed its requirement.
+    await nodeRow(page, check).first().focus();
+    await page.keyboard.press("w");
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: "w on the check does not move the focus to the decision behind its requirement",
+      })
+      .toBe(decision);
+
+    // The gaps the page draws are those that tell a node apart and name work somebody owes:
+    // each requirement no check serves, the plan task that serves no requirement and the check
+    // whose latest result records no negative control - and no other node draws any.
+    const coverage = await getIssueCoverage(seeded.key);
+    const wanted = new Map<string, string[]>();
+    for (const requirement of coverage.requirements ?? []) {
+      if (requirement.checks === 0) {
+        wanted.set(blockNodeId(specSlug, requirement.block_id), ["no_check"]);
+      }
+    }
+    wanted.set(blockNodeId(planSlug, planTaskBlockId(seeded.planTasks.length)), ["nobody_asked"]);
+    wanted.set(blockNodeId(verificationSlug, seeded.checks.noNegativeControl), [
+      "no_negative_control",
+    ]);
+    const drawnGaps = new Map<string, string[]>();
+    for (const row of await drawnRows(page)) {
+      if (row.gapKinds.length > 0) drawnGaps.set(row.id ?? "", [...row.gapKinds]);
+    }
+    expect(
+      Object.fromEntries([...drawnGaps].sort()),
+      "the page draws a gap on a node it does not tell apart, or none on one it does"
+    ).toEqual(Object.fromEntries([...wanted].sort()));
+
+    // No gap that every node of a kind carries is drawn: no requirement, no decision and not
+    // the issue's head says anything about a source, a read-back or an author.
+    expect(
+      (await drawnRows(page))
+        .filter((row) => row.type === "requirement" || row.type === "decision")
+        .flatMap((row) => row.gapKinds)
+        .filter((kind) => kind !== "no_check"),
+      "a requirement or a decision draws a gap its whole kind carries"
+    ).toEqual([]);
+    expect(await rowGaps(threeThings(page)).count(), "the head draws a gap").toBe(0);
+    for (const words of ["No source given", "Not confirmed in Dispatch", "No author in Dispatch"]) {
+      expect(await issuePage(page).getByText(words).count(), `the page draws "${words}"`).toBe(0);
+    }
+
+    // The Spec preset's list of requirements draws the same gap and no other: no check.
+    await openPreset(page, seeded.key, "spec");
+    await expectIssuePageDrawn(page);
+    const listed = page.getByTestId("spec-requirement-gap");
+    await expect
+      .poll(() => listed.count(), { message: "the Spec preset's list draws no gap" })
+      .toBeGreaterThan(0);
+    expect(
+      [...new Set(await listed.allInnerTexts())],
+      "the Spec preset's list draws a gap other than no check"
+    ).toEqual([GAP_WORDS.no_check]);
+  });
+});
+
+/** Every string `value` holds, however deeply: a declared table's entries. */
+function phrasesOf(value: unknown): string[] {
+  if (typeof value === "string") return [value];
+  if (typeof value === "object" && value !== null) return Object.values(value).flatMap(phrasesOf);
+  return [];
+}
+
+// c-plain-words. "With each filter on" waits on the filters, a later item of this round: the
+// row walks the five presets the page draws today.
+test("the page draws no internal word and no helper text @phone", async ({ browser }) => {
   // The check reads the page's chrome in ten views and in the body of every row the seeded
   // issue draws with every branch open - 67 of them - each reading read against five patterns
   // and the declared list. One `expect` per reading was 70,000 calls at about 4 ms each - 281 s
@@ -1807,6 +2208,22 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
   // their own.
   test.setTimeout(600_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
+    // The page's one declared list of what it draws unasked holds names, states, labels and
+    // one-line lines that say what a place, a node or the issue holds or lacks; an entry that
+    // is a sentence about the page or about Dispatch is helper text, and fails here (R22).
+    const lines = new Set([EMPTY_STATE_LINES, GAP_LINES, STATE_LINES].flatMap(phrasesOf));
+    const helperText = UNASKED_SOURCES.flatMap(phrasesOf).filter((phrase) => {
+      const words = wordsIn(phrase);
+      if (words.includes("dispatch") || words.includes("press")) return true;
+      if (!phrase.trimEnd().endsWith(".")) return false;
+      return !lines.has(phrase) || /\bthe page\b/iu.test(phrase) || words.includes("row");
+    });
+    expect(helperText, "the page declares helper text among what it draws unasked").toEqual([]);
+    // What the page says only in answer to the reader's own act, read on each fresh load below.
+    const answers = ANSWER_PHRASES.map((phrase) => phrase.trim()).filter(
+      (phrase) => phrase.length > 3
+    );
+
     // An identifier, a fragment, a slug, and the schema and enumeration tokens the check names.
     const banned = [
       /[0-9a-f]{8}-[0-9a-f]{4}-/i,
@@ -1815,6 +2232,7 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
       /no-result/,
       /plan_task/,
       /\bartifact\b/i,
+      /\bblock\b/i,
     ];
 
     const readChrome = async (where: string) => {
@@ -1860,6 +2278,13 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
           })
           .toBeGreaterThan(0);
         await readChrome(`the ${PRESET_NAMES[preset]} preset at ${size.width} px`);
+        // A fresh load of the page is no act of the reader's: nothing the page says in answer
+        // to one - a refusal, a key's report, a write's line, a box's description - is drawn.
+        const loaded = await issuePage(page).innerText();
+        expect(
+          answers.filter((answer) => loaded.includes(answer)),
+          `the ${PRESET_NAMES[preset]} preset at ${size.width} px draws on load what the page says only in answer to the reader`
+        ).toEqual([]);
       }
     }
 

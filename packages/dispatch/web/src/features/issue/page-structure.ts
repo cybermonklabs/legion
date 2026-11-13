@@ -100,34 +100,31 @@ export const MARGIN_SECTION_NAMES = freeze({
 } as const satisfies Record<MarginSection, string>);
 
 /**
- * What the page says in full where a tooltip used to hold the meaning: a phone raises no
- * tooltip, so each of these is drawn as text beside the control it explains (R11).
+ * What the page says of a box once the reader opens its editor, and never on load: what the
+ * box takes, as its description and as the refusal of a draft Dispatch would not take. One
+ * sentence each. None explains what a control does or what Dispatch cannot do: the control's
+ * own label says the one, and the other is no line the page draws (R11, R22). It is one of the
+ * page's answers to the reader's own act (`ANSWER_SOURCES`, `page-words.ts`).
  */
 export const HELP_LINES = freeze({
-  /** What the blocked-by editor takes, beside the box (`BlockedByControl.tsx`): issues with a
-   *  space or a comma between them, which is what `issueKeysIn` splits on. */
+  /** What the blocked-by editor takes, as the box's description (`BlockedByControl.tsx`):
+   *  issues with a space or a comma between them, which is what `issueKeysIn` splits on. */
   blocked_by:
-    "Type the issues this one waits on, with a space or a comma between them. Save an empty box to remove them all.",
-  /** What the identity block says of a closed issue. */
-  closed: "This issue is closed.",
-  /** Why releasing is safe, beside the release control. */
-  release_claim: "Releasing hands the issue back, so another agent can take it.",
-  /** What a message route is, and is not, beside the route editor. */
-  route:
-    "New asks, comments and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.",
+    "Type the issues this one waits on, with a space or a comma between them, or save an empty box to remove them all.",
   /** What the route box takes, beside it (`IssueFieldForms.tsx`): drawn as a refusal while the
    *  box holds a route Dispatch would not take, and read as the box's description otherwise.
    *  It says in words what `useIssueDrafts.ts`'s `routePattern` accepts - `role:` and a name of
    *  lowercase letters, digits and hyphens, or `session:` and a session's id - and never draws
    *  the pattern itself (R21). */
   route_shape:
-    "Type role: and a role name, such as role:reviewer, or session: and the id of an agent's session. A role name holds only lowercase letters, digits and hyphens. An empty box removes the route.",
+    "Type role: and a role name of lowercase letters, digits and hyphens, such as role:reviewer, or session: and an agent's session id, or leave the box empty to remove the route.",
 } as const);
 
 /**
  * What the page says in its own `role="status"` when a key has nowhere to go (R9, R21). A key
  * that reports is a key that did nothing: the line says where the key could not go, so a
- * reader on the keyboard is never left wondering whether the page took the press at all.
+ * reader on the keyboard is never left wondering whether the page took the press at all. It is
+ * an answer to the reader's own press, and never drawn on load (`ANSWER_SOURCES`).
  */
 export const KEY_REPORTS = freeze({
   /** The next-question key, with no open question after the node the reader is on (R6). */

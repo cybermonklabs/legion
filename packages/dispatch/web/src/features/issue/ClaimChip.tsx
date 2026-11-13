@@ -102,8 +102,10 @@ export function claimIsTakeable(
 /**
  * "Claimed by <holder> · <age>" wherever an issue is shown: the issue header's state row, a
  * List row, a Board card. The holder is drawn by `AgentName`, as every agent is: its current
- * registry title, else the title stamped on the claim, else `session:<8>…`, with its running
- * state and a link to its live conversation. The age keeps itself current through the shared
+ * registry title, else the title stamped on the claim, else `session:<8>…` - except on the
+ * issue page (`author`), which names it by the page's one rule for who did a thing and never by
+ * an id (dispatch://INFRA-1196 R9, R22) - with its running state and a link to its live
+ * conversation. The age keeps itself current through the shared
  * `Timestamp` tick, and on a surface that raises no tooltip - the issue page
  * (dispatch://INFRA-1196 R21) - the instant itself follows it in words, because the time a
  * claim was taken is what decides whether it is stale and a tooltip saying so reaches no
@@ -148,9 +150,12 @@ export function claimIsTakeable(
  * say nothing. The name is an inline link, so it keeps the chip's line box at a phone width.
  */
 export function ClaimChip({
+  author = false,
   claim,
   liveness,
 }: {
+  /** Whether the holder is named as the issue page names an author (`AgentName`'s `author`). */
+  author?: boolean;
   claim: IssueClaim | null;
   liveness?: ClaimHolderLiveness;
 }): ReactNode {
@@ -216,7 +221,7 @@ export function ClaimChip({
       <span className="shrink-0" {...pageChrome}>
         {PROPERTY_LABELS.claim}
       </span>
-      <AgentName actor={claim.actor} className="min-w-0 truncate" inline />
+      <AgentName actor={claim.actor} author={author} className="min-w-0 truncate" inline />
       <span aria-hidden="true" className="shrink-0" {...pageChrome}>
         ·
       </span>

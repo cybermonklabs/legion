@@ -14,7 +14,7 @@ import type { DocumentToolbar } from "../doc/ProofDocument";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import type { DispatchReferenceRoute } from "../refs/routes";
 import { pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 
 /** The toolbar's button: a 44 px tap target through tablet widths, 32 px from `md`. */
 const toolbarButton = `min-h-11 shrink-0 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
@@ -96,7 +96,7 @@ export function SpecToolbar({
               role="status"
               {...pageChrome}
             >
-              {copyFeedback === "copied" ? CONTROL_LABELS.copied : CONTROL_LABELS.copy_failed_hint}
+              {copyFeedback === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed_hint}
             </span>
           )}
         </>

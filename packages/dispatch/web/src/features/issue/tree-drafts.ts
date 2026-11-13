@@ -4,7 +4,7 @@ import type { Actor, ArtifactBlock, Ask, CheckBlock, Decision, DisplayTree } fro
 import { compareTimestamps } from "../../lib/timestamps";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
-import { checkFacts, resultFacts, resultGaps } from "./check-facts";
+import { checkFacts, latestResultGaps, resultFacts } from "./check-facts";
 import type { IssueTreeReads, NodeChip, NodeCounts, NodeFact, TreeAsk } from "./issue-tree";
 import {
   type AskState,
@@ -68,6 +68,8 @@ export interface Draft {
   /** The server's reading of `text`, where the draft's read sends one (`TreeNode.tree`). */
   tree?: DisplayTree;
   type: NodeType;
+  /** Whether the model marks this decision unsure (`Decision.unsure`). */
+  unsure?: true;
   /** Whether this decision waits for the reader's review (`Decision.waiting_review`). */
   waiting: boolean;
 }
@@ -534,11 +536,11 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
  * Each decision of the issue's `decisions.md`. A decision sits under the question it settles;
  * the model holds no such edge today (`packages/contracts/src/dispatch-api.ts:2519-2534`: the
  * read answers `kind` and a boolean `unsure`, and no `shaped`), so every decision's spine parent
- * is absent and it sits under the issue with the gap that says so, as any other node whose spine
- * parent is absent does (R4) - never parked inside `decisions.md`, where the fold would close
- * the reasoning away behind a document. It names every spec block it links and every ask its
- * blocks mention as its chips, and the day the edge lands the question it settles is read from
- * the decision itself.
+ * is absent and it sits under the issue, as any other node whose spine parent is absent does
+ * (R4) - never parked inside `decisions.md`, where the fold would close the reasoning away
+ * behind a document. It carries no gap for that: a lack every decision shares tells none of them
+ * apart (R8). It names every spec block it links and every ask its blocks mention as its chips,
+ * and the day the edge lands the question it settles is read from the decision itself.
  */
 function addDecisions(
   drafts: Map<string, Draft>,
@@ -560,8 +562,6 @@ function addDecisions(
         context.chipOf(buildDispatchReference({ id: ask, key: context.key, kind: "ask" }))
       ),
     ];
-    // Under the issue: the question it settles is what would place it, and the model holds none.
-    draft.gaps = ["no_origin"];
     draft.order = ROOT_ORDER.decision + index;
     draft.parents = [];
     draft.pointers = held?.pointers ?? {};
@@ -580,6 +580,7 @@ function addDecisions(
     // What waits for the reader: its node is where Keep and Change are drawn, and the one the
     // Decisions preset opens on (R7, `DecisionActions.tsx`).
     draft.waiting = decision.waiting_review;
+    if (decision.unsure) draft.unsure = true;
   });
 }
 
@@ -603,10 +604,11 @@ function decisionState(decision: Decision): DecisionState | undefined {
  * Every requirement of the issue's spec sits under the node its `from` names. No requirement
  * carries one - the `requirement` block declares no attributes at all
  * (`packages/envoy/internal/dispatch/pmdoc/schema/blocks.json:70-75`, read 2026-11-05) - so each
- * sits under the issue with the gap that says so, beside the two counts the coverage read holds
- * for it and the gaps that read already carries. Where a decision claims to have shaped a
- * requirement whose own origin names another node, the requirement is placed by its `from` and
- * the disagreement is drawn as a gap (R4), never placed under the decision.
+ * sits under the issue, beside the two counts the coverage read holds for it and the gaps that
+ * read already carries. An absent `from` is no gap of its own: every requirement lacks one, so it
+ * tells none of them apart (R8). Where a decision claims to have shaped a requirement whose own
+ * origin names another node, the requirement is placed by its `from` and the disagreement is
+ * drawn as a gap (R4), never placed under the decision.
  */
 function addRequirements(
   drafts: Map<string, Draft>,
@@ -638,18 +640,17 @@ function addRequirements(
   });
 }
 
-/** The gaps on one requirement: its own origin, the two the coverage read already carries, and a
+/** The gaps on one requirement: the one the coverage read carries that the page draws, and a
  *  decision claiming to have shaped a requirement that came from elsewhere. */
 function requirementGaps(
   coverage: readonly string[],
   origin: string | undefined,
   shaped: number
 ): GapKind[] {
-  const gaps: GapKind[] = [];
-  if (origin === undefined) gaps.push("no_origin");
-  for (const gap of coverage) {
-    gaps.push(coverageGapKind(gap));
-  }
+  const gaps = coverage.flatMap((line): GapKind[] => {
+    const kind = coverageGapKind(line);
+    return kind === undefined ? [] : [kind];
+  });
   if (origin !== undefined && shaped > 0) gaps.push("shaped_disagreement");
   return gaps;
 }
@@ -669,6 +670,10 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
     const held = drafts.get(id);
     const draft = add(drafts, blank(id, "check", held?.order ?? 0));
     draft.facts = checkFacts(check);
+    // R10 names the check's latest result alone: an older result's empty control says nothing
+    // about the work as it stands, and the results arrive newest first (`checkState` reads the
+    // same order). The gap is the check's, since the check is what owes the work.
+    draft.gaps = latestResultGaps(check.results?.[0]);
     draft.parents = held?.parents ?? [slug];
     draft.pointers = held?.pointers ?? {};
     draft.reference = check.ref;
@@ -678,10 +683,6 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
       const row = add(drafts, blank(result.id, "result", index));
       row.author = result.actor;
       row.facts = resultFacts(result);
-      // R8 names the check's latest result alone: an older result's empty control says
-      // nothing about the work as it stands, and the results arrive newest first
-      // (`checkState` reads the same order).
-      if (index === 0) row.gaps = resultGaps(result);
       row.parents = [id];
       row.text = result.observed;
     });

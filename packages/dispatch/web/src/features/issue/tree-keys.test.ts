@@ -91,6 +91,25 @@ test("the decision behind a node is the first that names it, whatever version it
   expect(decisionBehind(root, "nothing-of-this-issue")).toBeUndefined();
 });
 
+// R10: a check reaches back through the chain it sits in. No decision names the check itself,
+// so the decision key on it moves to the decision that informed the requirement it serves; a
+// check under a requirement no decision informed, and a node of any other kind no decision
+// names, have nowhere to go.
+test("the decision behind a check is the one that informed the requirement it serves", () => {
+  const check = node("verification-md#b-c1", "check", [node("result-1", "result")]);
+  const unserved = node("verification-md#b-c2", "check");
+  const root = node("CORE-1", "issue", [
+    node("spec#b-r1", "requirement", [check], { reference: "dispatch://CORE-1/spec#b-r1" }),
+    node("spec#b-r2", "requirement", [unserved], { reference: "dispatch://CORE-1/spec#b-r2" }),
+    node("decisions-md#b-d1", "decision", [], {
+      chips: [{ answered: true, gone: false, name: "R1", ref: "dispatch://CORE-1/spec#b-r1" }],
+    }),
+  ]);
+  expect(decisionBehind(root, "verification-md#b-c1")?.id).toBe("decisions-md#b-d1");
+  expect(decisionBehind(root, "verification-md#b-c2")).toBeUndefined();
+  expect(decisionBehind(root, "result-1")).toBeUndefined();
+});
+
 test("the last state of the cycle opens every branch of the tree", () => {
   const opened = everythingOpened(issue());
   expect(opened.branches.has("spec")).toBe(true);

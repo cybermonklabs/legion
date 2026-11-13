@@ -12,7 +12,7 @@ import { DispatchPicture } from "../refs/DispatchPicture";
 import { parseNodeReference } from "../refs/routes";
 import type { NodeFact } from "./issue-tree";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, nodeFactLabel } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS, nodeFactLabel } from "./page-words";
 
 /**
  * The facts a node's body draws under its text (dispatch://INFRA-1196 R15,
@@ -120,7 +120,7 @@ function Command({ command }: { command: string }): ReactNode {
           className={`shrink-0 ${status === "copied" ? successText : dangerText}`}
           {...pageChrome}
         >
-          {status === "copied" ? CONTROL_LABELS.copied : CONTROL_LABELS.copy_failed}
+          {status === "copied" ? ANSWER_LINES.copied : ANSWER_LINES.copy_failed}
         </span>
       )}
     </span>

@@ -17,10 +17,6 @@ import { stubbed } from "./stub/stub-test";
 
 const test = stubbed(seedReference);
 
-// The reader's dwell on a turn before its read mark is written: `DWELL_MS`,
-// `web/src/features/shell/useDwell.ts`, which exports nothing a spec can import.
-const DWELL_MS = 1_000;
-
 /** Hold the page's clock still, so a check about an open or a close delay cannot race it.
  * `pauseAt` takes a time on the page's own installed clock, which the jumps above a call site
  * have already carried past the Node process's own `Date.now()`; asking it to move backwards
@@ -56,7 +52,10 @@ async function centreInBoard(page: Page, key: string): Promise<void> {
   }, key);
 }
 
-test("hovering a dispatch:// reference in a comment previews the target issue; Escape closes it @pr", async ({
+// dispatch://INFRA-1196 R6: nothing on the issue page opens on hover, a link included, because
+// its reader works it from the keyboard; the preview a link offers opens from the keyboard on
+// the focused link instead. The hover rows below read the card on pages that keep it.
+test("a dispatch:// reference in a comment on the issue page opens no card on hover, and keyboard focus previews the target issue; Escape closes it @pr", async ({
   page,
   scene,
 }, testInfo) => {
@@ -67,6 +66,16 @@ test("hovering a dispatch:// reference in a comment previews the target issue; E
   await expect(page.getByRole("tooltip")).toHaveCount(0);
 
   await link.hover();
+  // A resting pointer, held past the delay a card opens after on every other page: the
+  // absence is the claim, so the wait is the span the card would have taken to open.
+  await page.waitForTimeout(REF_PREVIEW_OPEN_DELAY_MS * 3);
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+
+  // Keyboard focus opens the card without any hover delay, and a scroll while the reference
+  // holds focus (focusing can itself scroll it into view) keeps the card rather than closing it.
+  await page.mouse.move(0, 0);
+  await page.keyboard.press("Tab");
+  await link.focus();
   const card = page.getByRole("tooltip");
   await expect(card).toBeVisible();
   await expect(card).toContainText(scene.target);
@@ -79,22 +88,19 @@ test("hovering a dispatch:// reference in a comment previews the target issue; E
   await expect(link).toHaveAttribute("aria-describedby", cardId ?? "");
   await expect(card.getByRole("link")).toHaveAttribute("href", `/issues/${scene.target}`);
   await page.screenshot({ path: testInfo.outputPath("hover-preview-comment-1280.png") });
+  await page.evaluate(() => window.scrollBy(0, 40));
+  await expect(card).toBeVisible();
+  // Leaving the reference closes its card, and coming back to it from the keyboard opens it.
+  await link.blur();
+  await expect(card).toHaveCount(0);
+  await page.keyboard.press("Tab");
+  await link.focus();
+  await expect(card).toBeVisible();
 
   await page.keyboard.press("Escape");
   await expect(card).toHaveCount(0);
   // Escape dismissed the card only: the page is unchanged and the reference still navigates.
   await expect(page).toHaveURL(new RegExp(`/issues/${scene.source}/conversation`));
-
-  // Keyboard focus opens the card without any hover delay, and a scroll while the reference
-  // holds focus (focusing can itself scroll it into view) keeps the card rather than closing it.
-  await page.mouse.move(0, 0);
-  await page.keyboard.press("Tab");
-  await link.focus();
-  await expect(card).toBeVisible();
-  await page.evaluate(() => window.scrollBy(0, 40));
-  await expect(card).toBeVisible();
-  await link.blur();
-  await expect(card).toHaveCount(0);
 });
 
 test("hovering a board card previews the issue and moving onto the card keeps it open @pr", async ({
@@ -172,35 +178,25 @@ test("a card survives a held-button drag that leaves its reference and comes bac
 }) => {
   // The gesture below takes longer than the close delay on a loaded machine, so the page's
   // clock is the test's: paused for the drag, then advanced past the delay deliberately.
-  // Wall-clock timing would race the timer this test is about.
+  // Wall-clock timing would race the timer this test is about. The reference is the project
+  // List's key link, on a page that keeps its hover card: the issue page opens none
+  // (dispatch://INFRA-1196 R6).
   await page.clock.install();
-  await page.goto(`/issues/${scene.source}/conversation`);
-  const turns = page.getByRole("list", { name: "Conversation turns" });
-  const link = turns.getByRole("link", { name: "Hover target" });
+  await page.goto("/projects/CORE/issues");
+  const link = page
+    .getByRole("table", { name: "Project issues table" })
+    .getByRole("link", { exact: true, name: scene.target });
   await expect(link).toBeVisible();
-  // The dwell's read mark drops the `New` mark and moves the reference 24 px up; settle it
-  // first. The dwell is a page timer (`DWELL_MS`), so the page's own clock spends it, and the
-  // jump repeats because the mark is written only once the observer has reported the turn.
-  await expect
-    .poll(
-      async () => {
-        await page.clock.runFor(DWELL_MS);
-        return turns.getByText("New", { exact: true }).count();
-      },
-      { intervals: [50, 50, 100, 200, 500] }
-    )
-    .toBe(0);
   await link.hover();
   const card = page.getByRole("tooltip");
   await page.clock.runFor(REF_PREVIEW_OPEN_DELAY_MS);
   await expect(card).toBeVisible();
   await pauseClock(page);
 
-  // The press lands on the text beside the reference, not on the reference: pressing the link
-  // itself starts Chromium's native link drag, which stops delivering boundary events. The
-  // press point is inside the turn's own collapsed button, so Chromium paints no selection
-  // either - what this pins is the rule the handler reads, a pointer returning to the anchor
-  // with a button held, whatever the drag means to the page.
+  // The press lands beside the reference, not on it: pressing the link itself starts
+  // Chromium's native link drag, which stops delivering boundary events. What this pins is the
+  // rule the handler reads, a pointer returning to the anchor with a button held, whatever the
+  // drag means to the page.
   const box = await link.boundingBox();
   const cardBox = await card.boundingBox();
   if (box === null || cardBox === null) {
@@ -230,23 +226,14 @@ test("a card survives a held-button move from the card back onto its reference @
   page,
   scene,
 }) => {
+  // The project List's key link, on a page that keeps its hover card: the issue page opens
+  // none (dispatch://INFRA-1196 R6).
   await page.clock.install();
-  await page.goto(`/issues/${scene.source}/conversation`);
-  const turns = page.getByRole("list", { name: "Conversation turns" });
-  const link = turns.getByRole("link", { name: "Hover target" });
+  await page.goto("/projects/CORE/issues");
+  const link = page
+    .getByRole("table", { name: "Project issues table" })
+    .getByRole("link", { exact: true, name: scene.target });
   await expect(link).toBeVisible();
-  // The dwell's read mark drops the `New` mark and moves the reference 24 px up; settle it
-  // first. The dwell is a page timer (`DWELL_MS`), so the page's own clock spends it, and the
-  // jump repeats because the mark is written only once the observer has reported the turn.
-  await expect
-    .poll(
-      async () => {
-        await page.clock.runFor(DWELL_MS);
-        return turns.getByText("New", { exact: true }).count();
-      },
-      { intervals: [50, 50, 100, 200, 500] }
-    )
-    .toBe(0);
   await link.hover();
   const card = page.getByRole("tooltip");
   await page.clock.runFor(REF_PREVIEW_OPEN_DELAY_MS);

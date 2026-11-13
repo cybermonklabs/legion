@@ -2,12 +2,13 @@ import type { ReactNode } from "react";
 
 import type { Artifact } from "../../api/types";
 import { borderDefault, borderTransparent, textMutedOnCanvas } from "../../theme/classes";
+import { useAgentText } from "../refs/AgentName";
 import { documentOfNode } from "./issue-artifacts";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow } from "./NodeRow";
 import type { OneLineBox } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { authorKind, CONTROL_LABELS } from "./page-words";
 import type { DrawnRow } from "./tree-fold";
 import { rowKeyOf } from "./tree-keys";
 
@@ -65,6 +66,9 @@ export function TreeRows({
   /** Whether the tree is read one node at a time (`ZOOMED_TREE_QUERY`). */
   zoomed: boolean;
 }): ReactNode {
+  // Each row's author by the page's one rule for naming one (`AgentText.author`), read once for
+  // every row rather than once a row.
+  const agentText = useAgentText();
   return (
     <>
       {rows.map((row) => {
@@ -84,6 +88,14 @@ export function TreeRows({
         const place = documentOfNode(row.node.id, artifacts);
         return (
           <NodeRow
+            {...(row.node.author === undefined
+              ? {}
+              : {
+                  author: {
+                    kind: authorKind(row.node.author),
+                    name: agentText.author(row.node.author),
+                  },
+                })}
             {...(place?.blockId === undefined && place !== undefined
               ? { artifact: place.artifact }
               : {})}

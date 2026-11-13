@@ -71,23 +71,27 @@ test("an uncovered requirement is flagged with what it lacks and a covered one i
   expect(covered.getAttribute("data-covered")).toBe("true");
   expect(within(covered).queryByTestId("spec-requirement-gap")).toBeNull();
   expect(uncovered.getAttribute("data-covered")).toBe("false");
-  // The page's own words for each gap, never the server's `<block id> has no check`, which
-  // names a block by its id (dispatch://INFRA-1196 R21, `page-words.ts`).
+  // The page's own words for the gap it draws, never the server's `<block id> has no check`,
+  // which names a block by its id (dispatch://INFRA-1196 R22, `page-words.ts`). Of the two the
+  // server names, the page draws the one that names work a node owes: no check serves it (R10).
   expect(
     within(uncovered)
       .getAllByTestId("spec-requirement-gap")
       .map((flag) => flag.textContent)
-  ).toEqual([GAP_WORDS.no_check, GAP_WORDS.no_plan_task]);
+  ).toEqual([GAP_WORDS.no_check]);
 });
 
-// A requirement with a check but no plan task is no gap until the issue has a plan document.
-// The server decides that; the tab draws its answer rather than judging again.
-test("a requirement with a check and no plan task carries no flag before the issue has a plan", async () => {
+// R10: a requirement no plan task serves is no gap the page draws, plan document or not: the
+// gaps it draws are a requirement no check serves, a check or a plan task whose `serves` names
+// no requirement, and a check whose latest result records no negative control.
+test("a requirement with a check and no plan task carries no flag, even once the issue has a plan", async () => {
   const { getIssueCoverage, view } = renderRequirements({
-    gaps: [],
-    has_plan: false,
+    gaps: ["r1 has no plan task"],
+    has_plan: true,
     issue: "CORE-1",
-    requirements: [requirement("r1", "Every issue page shows a Plan tab.", 1, 0)],
+    requirements: [
+      requirement("r1", "Every issue page shows a Plan tab.", 1, 0, ["has no plan task"]),
+    ],
     spec_artifact_id: "artifact-1",
   });
   restore = () => {
@@ -96,6 +100,7 @@ test("a requirement with a check and no plan task carries no flag before the iss
   };
 
   await screen.findByTestId("spec-requirements");
+  expect(screen.getByTestId("spec-requirement").getAttribute("data-covered")).toBe("true");
   expect(screen.queryByTestId("spec-requirement-gap")).toBeNull();
 });
 

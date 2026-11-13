@@ -18,8 +18,8 @@ import { IssuePropertiesRow } from "./IssuePropertiesRow";
 import { IssueTitleRow } from "./IssueTitleRow";
 import { IssueWorkRow } from "./IssueWorkRow";
 import { useIdentityBlock } from "./identity-block";
-import { HELP_LINES, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { pageChrome } from "./page-structure";
+import { ANSWER_LINES, CONTROL_LABELS, STATE_LINES } from "./page-words";
 import { statusPickOnly, useIssueHeaderWrites } from "./useIssueHeaderWrites";
 import { useIssuePalette } from "./useIssuePalette";
 import type { IssuePriorityWrite } from "./useIssuePriority";
@@ -105,13 +105,13 @@ export function IssueHeader({
           run: () => drafts.requestStatusSubmit("backlog"),
           text:
             pendingStatus === "backlog"
-              ? CONTROL_LABELS.saving_reopen
+              ? ANSWER_LINES.saving_reopen
               : CONTROL_LABELS.reopen_into_backlog,
         }
       : {
           disabled: updateIssue.isPending,
           run: () => drafts.requestStatusSubmit("done"),
-          text: pendingStatus === "done" ? CONTROL_LABELS.saving_close : CONTROL_LABELS.close_issue,
+          text: pendingStatus === "done" ? ANSWER_LINES.saving_close : CONTROL_LABELS.close_issue,
         },
     {
       disabled: isClosed,
@@ -134,7 +134,7 @@ export function IssueHeader({
             className={`rounded-lg px-3 py-1 text-sm ${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}`}
             {...pageChrome}
           >
-            {HELP_LINES.closed}
+            {STATE_LINES.closed}
           </p>
         ) : null}
         <IssueIdentityRow
@@ -176,10 +176,10 @@ export function IssueHeader({
         {writes.statusSaving ? (
           <span className={`block text-xs ${textMutedOnSurface}`} role="status" {...pageChrome}>
             {pendingStatus === "done"
-              ? CONTROL_LABELS.saving_close
+              ? ANSWER_LINES.saving_close
               : pendingStatus === "backlog" && isClosed
-                ? CONTROL_LABELS.saving_reopen
-                : CONTROL_LABELS.saving_field}
+                ? ANSWER_LINES.saving_reopen
+                : ANSWER_LINES.saving_field}
           </span>
         ) : null}
         {writes.pin.isError ? (

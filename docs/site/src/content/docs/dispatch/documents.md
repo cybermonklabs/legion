@@ -151,7 +151,9 @@ opening it opens the document.
 Anything in Dispatch can be linked with a `dispatch://` reference: `dispatch://CORE-12` for an
 issue, `dispatch://CORE-12/spec` for its spec, and similar forms for documents, asks, comments, and
 messages. In a document or a comment, a reference shows as a link titled with what it points to.
-Rest the pointer on a link, or focus it with the keyboard, to see a preview card.
+Rest the pointer on a link, or focus it with the keyboard, to see a preview card. On an issue's
+page only the keyboard opens it: focus the link, or put the caret in it in a document you are
+editing.
 
 A reference names what it points to only while the id Dispatch records the link under comes to at
 most 2048 bytes: an issue's key, a document's `<KEY>/<name>`, a block's `<KEY>/<name>#<id>`, a

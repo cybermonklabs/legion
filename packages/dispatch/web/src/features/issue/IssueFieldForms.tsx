@@ -9,7 +9,6 @@ import {
   secondaryButtonDisabledText,
   secondaryButtonText,
   textMutedHoverToSecondary,
-  textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
@@ -142,7 +141,7 @@ function RouteForm({
         {PROPERTY_LABELS.route}
       </label>
       <input
-        aria-describedby="issue-route-hint issue-route-help"
+        aria-describedby="issue-route-help"
         className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
         disabled={isClosed}
         id="issue-route"
@@ -174,13 +173,6 @@ function RouteForm({
       >
         {HELP_LINES.route_shape}
       </span>
-      <p
-        className={`basis-full text-sm ${textMutedOnSurface}`}
-        id="issue-route-hint"
-        {...pageChrome}
-      >
-        {HELP_LINES.route}
-      </p>
     </form>
   );
 }

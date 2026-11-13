@@ -21,6 +21,7 @@ import {
   unknownDotBorder,
 } from "../../theme/classes";
 import { authorText } from "../issue/page-structure";
+import { AUTHOR_KIND_WORDS, CONTROL_LABELS } from "../issue/page-words";
 import { askResolutionBadge, askResolutionReason } from "./actor";
 import { type AgentRegistry, type AgentState, useAgentRegistry } from "./agent-registry";
 import { AGENT_LIVE_PATH } from "./routes";
@@ -113,6 +114,11 @@ type AgentVariant =
 
 type AgentNameProps = AgentSubject &
   AgentVariant & {
+    /** Names the agent as the issue page names an author (`AgentText.author`): a session by
+     *  its title, else the page's word for an agent nothing names, and never by its short id;
+     *  an act made through a session names the agent by what it is. For the issue page's
+     *  authors alone (dispatch://INFRA-1196 R9, R22); every other page keeps the rule above. */
+    author?: boolean;
     className?: string;
     /** Inside a sentence: the link keeps its line box (`.dispatch-inline-link`, `styles.css`). */
     inline?: boolean;
@@ -224,6 +230,7 @@ export function AgentName(props: AgentNameProps): ReactNode {
   if (props.sessionId !== undefined) {
     return (
       <SessionAgentName
+        author={false}
         className={props.className}
         inline={props.inline}
         subject={{ sessionId: props.sessionId, storedTitle: props.storedTitle }}
@@ -235,12 +242,18 @@ export function AgentName(props: AgentNameProps): ReactNode {
   if (!isSessionActor(actor)) {
     // An act an agent made for its person is recorded as the person's, so the person's name
     // carries the agent beside it, by the one rule every reader of an act follows.
-    const text = actor.kind === "user" ? actorActText(actor.id, actor.act) : actor.id;
+    const text =
+      props.author === true
+        ? personAuthorName(actor)
+        : actor.kind === "user"
+          ? actorActText(actor.id, actor.act)
+          : actor.id;
     const named = props.kind === "control" ? props.control(text) : text;
     return props.className === undefined ? named : <span className={props.className}>{named}</span>;
   }
   return (
     <SessionAgentName
+      author={props.author === true}
       className={props.className}
       inline={props.inline}
       subject={{ actor }}
@@ -250,11 +263,13 @@ export function AgentName(props: AgentNameProps): ReactNode {
 }
 
 function SessionAgentName({
+  author,
   className,
   inline,
   subject,
   variant,
 }: {
+  author: boolean;
   className: string | undefined;
   inline: boolean | undefined;
   subject: SessionRef;
@@ -262,7 +277,9 @@ function SessionAgentName({
 }): ReactNode {
   const tooltips = useTooltips();
   const registry = useAgentRegistry(true);
-  const { attribution, name, sessionId } = resolveAgent(subject, registry);
+  const resolved = resolveAgent(subject, registry);
+  const { attribution, sessionId } = resolved;
+  const name = author && "actor" in subject ? authorName(subject.actor, registry) : resolved.name;
   const state = registry.state(sessionId);
   const to = generatePath(AGENT_LIVE_PATH, { sessionId: encodeURIComponent(sessionId) });
 
@@ -334,6 +351,12 @@ function agentInitials(name: string): string {
 }
 
 export interface AgentText {
+  /** Who wrote a node of the issue page, by name and never by an id (dispatch://INFRA-1196 R7,
+   *  R21): a session by its registry title, else the title stamped on its write, else the
+   *  page's plain word for an agent nothing names (`CONTROL_LABELS.unnamed_author`); a person
+   *  by their login, the address Dispatch knows them by. It is the one rule the page names an
+   *  author with, on a tree row and in the panel's facts of the row the reader is on. */
+  author(actor: Actor): string;
   /** The full label: name plus ` (for <owner>)` / ` (as ns/name)`. */
   label(actor: Actor): string;
   /** An `AgentPart` as text: a text part as is, an agent part by the rule `AgentParts` draws it
@@ -345,12 +368,31 @@ export interface AgentText {
   initials(actor: Actor): string;
 }
 
+/** `AgentText.author`. Unlike `resolveAgent` it has no `session:<8>…` fallback: an author is
+ *  where a reader looks for who wrote a thing, and a short id names nobody. */
+function authorName(actor: Actor, registry: AgentRegistry): string {
+  if (!isSessionActor(actor)) return personAuthorName(actor);
+  const title = registry.title(actor.id) ?? actor.origin?.session_title?.trim();
+  return title === undefined || title === "" ? CONTROL_LABELS.unnamed_author : title;
+}
+
+/** A person, or Dispatch itself, as an author: by login, with the agent an act was made
+ *  through named by what it is rather than by its session's id (`actorActText` names the id). */
+function personAuthorName(actor: Actor): string {
+  const session = actor.act?.session;
+  return session === undefined || session === ""
+    ? actorActText(actor.id, actor.act)
+    : `${actor.id}, acting through ${AUTHOR_KIND_WORDS.agent}`;
+}
+
 /**
  * An agent's name as plain text, by the same rule `AgentName` renders, for the places that can
  * hold only a string: an `aria-label` or `title`, `document.title`, a confirmation dialog's
  * sentence, the composer's `@Title` mention text and its notices, a clipboard value, the Inbox
- * empty state. Never a visible name in a byline, chip, heading or sentence: that is
- * `AgentName`. Reads the registry titles the cache already holds and fetches nothing itself.
+ * empty state, and the issue page's author (`author`), which a tree row draws as text because
+ * nothing inside a row takes the focus (R9) and a one-line row sums its width (`NodeRow.tsx`).
+ * Never any other visible name in a byline, chip, heading or sentence: that is `AgentName`.
+ * Reads the registry titles the cache already holds and fetches nothing itself.
  */
 export function useAgentText(): AgentText {
   const registry = useAgentRegistry(false);
@@ -364,6 +406,7 @@ export function useAgentText(): AgentText {
       return `${acted}${attribution}`;
     };
     return {
+      author: (actor: Actor) => authorName(actor, registry),
       initials: (actor: Actor) => agentInitials(resolveAgent({ actor }, registry).name),
       label: (actor: Actor) => label({ actor }),
       part: (part: AgentPart) => (typeof part === "string" ? part : label(part)),

@@ -20,7 +20,7 @@ import { sessionOfAddress } from "../refs/routes";
 import { ClaimChip } from "./ClaimChip";
 import type { IssueField } from "./IssueFieldForms";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
 import {
   RouteReachUnknownMarker,
   UnreachableRouteMarker,
@@ -124,7 +124,7 @@ export function IssueWorkRow({
         <>
           {/* No `Claim:` label: the chip itself reads "Claimed by <holder> · <age>", which
               says which of the two this row's halves it is. */}
-          <ClaimChip claim={issue.claim} liveness={issue} />
+          <ClaimChip author claim={issue.claim} liveness={issue} />
           <button
             aria-label={`Release the claim on ${issue.key}`}
             className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
@@ -133,7 +133,7 @@ export function IssueWorkRow({
             type="button"
             {...pageChrome}
           >
-            {releaseClaim.isPending ? "Releasing…" : CONTROL_LABELS.release_claim}
+            {releaseClaim.isPending ? ANSWER_LINES.saving_release : CONTROL_LABELS.release_claim}
           </button>
           {/* No help line under the row: the paragraph explaining Release cost the identity
               block a whole line before the tree (dispatch://INFRA-1196 R6). */}

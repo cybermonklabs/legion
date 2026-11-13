@@ -18,3 +18,13 @@ export function refPreviewCardContains(node: EventTarget | null): boolean {
 export function refPreviewOpenedIn(root: Element): boolean {
   return root.querySelector(`[aria-describedby~="${REF_PREVIEW_CARD_ID}"]`) !== null;
 }
+
+/** The attribute a surface carries whose references open no card on hover: the issue page's
+ *  frame (dispatch://INFRA-1196 R6, `features/shell/page-frame.tsx`), whose reader works it from
+ *  the keyboard. A reference there still opens its card when the keyboard focuses it. */
+export const NO_HOVER_PREVIEW_ATTRIBUTE = "data-no-hover-preview";
+
+/** Whether `trigger` sits on a surface whose references open no card on hover. */
+export function hoverPreviewsOff(trigger: Element): boolean {
+  return trigger.closest(`[${NO_HOVER_PREVIEW_ATTRIBUTE}]`) !== null;
+}

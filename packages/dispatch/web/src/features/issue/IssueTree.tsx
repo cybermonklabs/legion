@@ -65,10 +65,12 @@ export function IssueTree({
    *  while one does, every branch of the view it left is drawn open, and while nothing filters
    *  the fold is the frontier's alone. */
   filtering: boolean;
-  /** Whether the node the address names is the tree's to put the focus on. It is not when the
-   *  preset's own document is open on that node - a comment anchored in it, an ask indexed from
-   *  one of its blocks, a block named by a fragment - because the document lands on it there,
-   *  and two surfaces scrolling for the same node would each undo the other. */
+  /** Whether the node the address names is the tree's to put the focus on. It is always when a
+   *  link or a chip the reader followed on this page named it (`IssueBody.tsx`, R10). On a
+   *  fresh load it is not when the preset's own document is open on that node - a comment
+   *  anchored in it, an ask indexed from one of its blocks, a block named by a fragment -
+   *  because the document lands on it there, and two surfaces scrolling for the same node would
+   *  each undo the other. */
   focusReveal: boolean;
   /** Whether the issue is closed, which the writes a node's body offers are refused on. */
   isClosed: boolean;
@@ -173,7 +175,7 @@ export function IssueTree({
       setFocused(row);
       setStop(row);
       setFocusedNode({
-        ...(node.author === undefined ? {} : { author: node.author.id }),
+        ...(node.author === undefined ? {} : { author: node.author }),
         id: node.id,
         ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
         title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
@@ -307,7 +309,10 @@ export function IssueTree({
     );
     if (row === null || row === undefined) return;
     taken.current = targetId;
-    row.focus();
+    // A row already inside the viewport is focused where it stands, so nothing jumps twice: the
+    // row's own focus places it by the page's one rule (`bringOnScreen`) when it is not.
+    const box = row.getBoundingClientRect();
+    row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
   }, [focusReveal, rows, targetId]);
 
   // The tree is one tab stop, and it rests where the reader last stood: before they have

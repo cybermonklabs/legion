@@ -44,7 +44,6 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { IssuePage } from "./IssuePage";
-import { HELP_LINES } from "./page-structure";
 import { EMPTY_STATE_LINES } from "./page-words";
 
 /** Where this browser keeps the conversation state the file's signed-in reader last picked. */
@@ -533,6 +532,91 @@ test("IssuePage shows a human creator by login", async () => {
     expect(within(creator).queryByRole("link")).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// dispatch://INFRA-1196 R9, R22: the issue page names every author by a name and never by an
+// id, the creator included. A session nothing titles - not the registry, not the write - is
+// "An agent" there, where every other page reads its short id.
+test("IssuePage names an untitled session creator by a word, never by its id", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    created_by: { id: "019a1c01-0d7b-7a2a-8e93-4a5b6c7d8e01", kind: "session" },
+  });
+  const view = renderIssuePage();
+
+  try {
+    const creator = await expectCreator("An agent");
+    expect(creator.textContent).not.toMatch(/019a1c01/);
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
+// dispatch://INFRA-1196 R10: a keyboard reader who follows a link on the page to a node lands on
+// that node's row, or the chain is out of their reach: the address moving to the Spec preset's
+// `#b-r1` puts the focus on the requirement's row, where a fresh load of that same address
+// leaves the focus to the spec the preset draws, as it always has.
+test("IssuePage focuses the node a link on the page leads to, and a fresh load keeps its landing", async () => {
+  const restore = stubIssuePage(issue);
+  answerRequests(
+    http.get("/api/v1/issues/:key/coverage", () =>
+      Response.json({
+        gaps: ["r1 has no check"],
+        has_plan: false,
+        issue: "CORE-1",
+        requirements: [
+          {
+            block_id: "r1",
+            checks: 0,
+            gaps: ["r1 has no check"],
+            plan_tasks: 0,
+            ref: "dispatch://CORE-1/spec#b-r1",
+            text: "The page draws the whole issue in one reading.",
+          },
+        ],
+        spec_artifact_id: "artifact-1",
+      } satisfies IssueCoverage)
+    ),
+    http.get("/api/v1/artifacts/:id/blocks", () =>
+      Response.json([
+        {
+          attributes: [],
+          from: 0,
+          id: "r1",
+          references: { asks: 0, comments: 0 },
+          to: 1,
+          token: "r1",
+          type: "requirement",
+        },
+      ])
+    )
+  );
+  const row = (container: HTMLElement) =>
+    container.querySelector<HTMLElement>('[data-node-row][data-node-id="spec#b-r1"]');
+  const focusedRow = () =>
+    document.activeElement?.closest("[data-node-row]")?.getAttribute("data-node-id");
+  const user = userEvent.setup();
+  try {
+    const followed = renderIssuePage("/issues/CORE-1", "/issues/CORE-1/spec#b-r1");
+    try {
+      await waitFor(() => expect(row(followed.container)).not.toBeNull());
+      await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
+      await waitFor(() => expect(focusedRow()).toBe("spec#b-r1"));
+    } finally {
+      followed.unmount();
+    }
+
+    const loaded = renderIssuePage("/issues/CORE-1/spec#b-r1");
+    try {
+      await waitFor(() => expect(row(loaded.container)).not.toBeNull());
+      expect(focusedRow()).not.toBe("spec#b-r1");
+    } finally {
+      loaded.unmount();
+    }
+  } finally {
     restore();
   }
 });
@@ -1570,9 +1654,6 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
 
     try {
       await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
-      // What a route is, and what it is not: text beside the editor now, where the rail carried
-      // it as a tooltip no phone could raise (dispatch://INFRA-1196 R11).
-      expect(await screen.findByText(HELP_LINES.route)).toBeDefined();
       const routeInput = await screen.findByLabelText("Messages go to");
       await user.click(routeInput);
       await user.paste("role:not-saved-draft");

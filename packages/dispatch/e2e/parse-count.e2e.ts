@@ -282,7 +282,10 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "a reference preview",
       show: async (page) => {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
-        await page.getByRole("link", { name: "Reference target" }).first().hover();
+        // The issue page opens a reference's card from the keyboard alone (dispatch://INFRA-1196
+        // R6), so the reader reaches the reference by Tab and focus.
+        await page.keyboard.press("Tab");
+        await page.getByRole("link", { name: "Reference target" }).first().focus();
         await expect(page.getByRole("tooltip")).toContainText(seeded.targetKey);
       },
     },
@@ -292,7 +295,9 @@ function surfaces(seeded: Seeded): Surface[] {
         await page.goto(`/issues/${seeded.issueKey}/conversation`);
         // A reference to a block of a comment is the surface `GET /api/v1/references` draws:
         // the link's title and the card under it are both the text that read's node carries.
-        await page.getByRole("link", { name: quotedTitle }).first().hover();
+        // The card opens from the keyboard, as every card on the issue page does.
+        await page.keyboard.press("Tab");
+        await page.getByRole("link", { name: quotedTitle }).first().focus();
         const card = page.getByRole("tooltip");
         await expect(card.locator("strong").filter({ hasText: /^quoted$/ })).toBeVisible();
       },

@@ -1,5 +1,6 @@
 import { createContext, type ReactNode, useCallback, useContext, useState } from "react";
 
+import type { Actor } from "../../api/types";
 import type { NodeType } from "./page-words";
 
 /**
@@ -10,8 +11,9 @@ import type { NodeType } from "./page-words";
  * panel draws the facts of something rather than an empty box.
  */
 export interface FocusedNode {
-  /** Who made it, where the model holds an author: the author's own name. */
-  readonly author?: string;
+  /** Who made it, where the model holds an author: the panel names them by the page's one rule
+   *  for an author (`AgentText.author`), so a name the registry learns later reaches it too. */
+  readonly author?: Actor;
   /** The node's own address inside the issue (`[data-node-id]`). */
   readonly id: string;
   /** How it stands, as the page's own word for that state, where its type has one. */

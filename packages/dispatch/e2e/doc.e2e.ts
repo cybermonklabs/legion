@@ -805,10 +805,19 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
     const editor = documentEditor(page);
     // The live editor keeps the author's own link text (`@legion/proof-editor` exposes no
     // decoration hook to safely replace a live editable mark's rendered text) and surfaces the
-    // resolved target in the hover card instead.
+    // resolved target in the link's card instead. The issue page opens no card on hover
+    // (dispatch://INFRA-1196 R6), and a link inside an editor takes no focus of its own, so the
+    // keyboard reaches it the way a reader's arrows do: the caret standing in the link.
     const link = editor.getByRole("link", { name: "the other issue" });
     await expect(link).toBeVisible();
-    await link.hover();
+    await link.evaluate((anchor) => {
+      anchor.closest<HTMLElement>('[contenteditable="true"]')?.focus();
+      const range = document.createRange();
+      range.setStart(anchor.firstChild ?? anchor, 2);
+      range.collapse(true);
+      document.getSelection()?.removeAllRanges();
+      document.getSelection()?.addRange(range);
+    });
     await expect(page.getByRole("tooltip")).toContainText("Navigation target");
     await page.keyboard.press("Escape");
     await expect(page.getByRole("tooltip")).toHaveCount(0);

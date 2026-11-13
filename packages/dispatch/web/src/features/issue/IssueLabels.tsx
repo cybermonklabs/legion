@@ -12,7 +12,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES } from "./page-words";
 
 const maxLabelLength = 40;
 const maxLabels = 20;
@@ -180,7 +180,7 @@ export function IssueLabels({
         >
           <span {...pageChrome}>
             {saving
-              ? CONTROL_LABELS.saving_labels
+              ? ANSWER_LINES.saving_labels
               : displayLabels.length === 0
                 ? PROPERTY_LABELS.labels
                 : "+"}

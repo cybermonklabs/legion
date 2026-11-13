@@ -145,6 +145,7 @@ const SELECTORS = {
   nodeFirstLine: "[data-node-first-line]",
   nodeGlyph: "svg[data-glyph]",
   nodeRow: "[data-node-row]",
+  nodeUnsure: "[data-node-unsure]",
   nodeState: "[data-node-state]",
   pageChrome: "[data-page-chrome]",
   presetCount: "[data-preset-count]",
@@ -322,10 +323,6 @@ export function branchMoreRows(page: Page): Locator {
   return issuePage(page).locator(SELECTORS.branchMore);
 }
 
-export function gaps(page: Page): Locator {
-  return issuePage(page).locator(SELECTORS.gap);
-}
-
 /** The gaps drawn on one row. */
 export function rowGaps(row: Locator): Locator {
   return row.locator(SELECTORS.gap);
@@ -463,12 +460,16 @@ export interface LineBox {
 export interface DrawnRow {
   /** The author the row names, or null where the model holds none. */
   readonly author: string | null;
+  /** The `data-glyph` token of the shape drawn beside the author, or null where none is. */
+  readonly authorShape: string | null;
   /** Whether the row draws a body of its own. */
   readonly body: boolean;
   /** Where the row is, or null while it is not rendered. */
   readonly box: Box | null;
   /** The text of each chip on the row, in order. */
   readonly chips: readonly string[];
+  /** The `data-gap-kind` of each gap the row draws, in order. */
+  readonly gapKinds: readonly string[];
   /** `aria-expanded`, or null for a row that holds no children. */
   readonly expanded: string | null;
   /** `data-folded-count`, or null for a row that is not folded. */
@@ -499,6 +500,8 @@ export interface DrawnRow {
   readonly text: string;
   /** `data-node-type`, the model's own token for the kind of node. */
   readonly type: string | null;
+  /** The one word a decision the model marks unsure says of itself, or null where none. */
+  readonly unsure: string | null;
   readonly visible: boolean;
   /** The same reading of the box the row's words sit in - its twisty, type, author, first line
    *  and state - which is what hides a word beside the first line rather than in it. Null
@@ -529,9 +532,16 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       const firstLine = row.querySelector(selectors.nodeFirstLine);
       return {
         author: text(row.querySelector(selectors.nodeAuthor)),
+        authorShape:
+          row
+            .querySelector(`${selectors.nodeAuthor} ${selectors.nodeGlyph}`)
+            ?.getAttribute("data-glyph") ?? null,
         body: row.querySelector(selectors.nodeBody) !== null,
         box: box(row),
         chips: [...row.querySelectorAll(selectors.nodeChip)].map((chip) => text(chip) ?? ""),
+        gapKinds: [...row.querySelectorAll(selectors.gap)].map(
+          (gap) => gap.getAttribute("data-gap-kind") ?? ""
+        ),
         context: row.hasAttribute("data-node-context"),
         expanded: row.getAttribute("aria-expanded"),
         firstLine: text(firstLine),
@@ -554,6 +564,7 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
         tabIndex: (row as HTMLElement).tabIndex,
         text: text(row) ?? "",
         type: row.getAttribute("data-node-type"),
+        unsure: text(row.querySelector(selectors.nodeUnsure)),
         visible: row.getClientRects().length > 0,
         wordsBox: lineBox(firstLine?.parentElement),
       };

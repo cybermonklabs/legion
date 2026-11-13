@@ -29,6 +29,7 @@
 
 import { MAX_ISSUE_BLOCKERS, type ResultCommitStands } from "@legion/contracts";
 
+import type { Actor } from "../../api/types";
 import { ASK_RESOLUTION_WORDS } from "../refs/actor";
 import {
   freeze,
@@ -272,20 +273,17 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, an issue with no children, a spec with no summary, a check with no
- * result, and a folded branch that turns out to hold nothing. Each is one sentence, in the
- * simple present, saying what is absent rather than what the reader should do about it.
+ * query matches nothing, a document whose text has not arrived or could not be read, a spec
+ * with no summary, and a spec that marks no requirements. Each is one sentence, in the simple
+ * present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
-  check_result: "No result recorded against this check.",
   checks: "This issue has no checks yet.",
-  children: "This issue has no child issues.",
   decisions: "This issue has no decisions yet.",
   /** A document node whose own text has not arrived yet (R16). */
   document_reading: "This document has not arrived yet.",
   /** A document node whose own text could not be read. */
   document_unread: "This document could not be read.",
-  folded_branch: "This branch holds nothing.",
   plan: "This issue has no plan tasks yet.",
   spec: "This issue has no requirements yet.",
   /** What the requirements panel says of a spec that marks none, which is not the same as an
@@ -302,38 +300,38 @@ export const EMPTY_STATE_LINES = freeze({
 } as const);
 
 /**
- * What the page says of a gap in the reasoning, one line per kind of gap (R4). A gap is drawn on
- * the node it is about and never as an error: a node nothing explains is a node, and the line
- * says what is absent.
+ * What the page says of a gap in the reasoning, one line per kind of gap (R4, R10). A gap is
+ * drawn on the node it is about and never as an error, and only where it tells that node apart
+ * from its siblings and names work somebody owes: a requirement no check serves, a check or a
+ * plan task whose `serves` names no requirement, and a check whose latest result records no
+ * negative control. A gap every node of its kind has under today's model tells the reader
+ * nothing about the node, so the page has no line for it - none for a node that names no
+ * origin, since no requirement carries a `from` yet and no decision a question it settles, and
+ * none for a summary nobody is recorded as writing or confirming, which no issue records - and
+ * a requirement no plan task serves is no gap the page draws either.
  *
- * `no_check` and `no_plan_task` are the two gaps the coverage read already carries
- * (`RequirementCoverage.gaps`), said in the page's own words rather than in the server's
- * `<block id> has no check`, which names a block by its id. `no_origin` is a node whose spine
- * parent the model does not hold; `shaped_disagreement` is a decision claiming a node the
- * node's own origin does not name, which the page draws rather than picking one of the two.
+ * `no_check` is the gap the coverage read already carries (`RequirementCoverage.gaps`), said in
+ * the page's own words rather than in the server's `<block id> has no check`, which names a
+ * block by its id. `shaped_disagreement` is a decision claiming a node whose own origin names
+ * another, which the page draws rather than picking one of the two.
  *
- * Three of them are the chain's (R8), each read from what the page already holds
+ * Three of them are the chain's (R10), each read from what the page already holds
  * (`tree-drafts.ts`, `check-facts.ts`): `serves_not_requirement` is a citation that must name a
  * requirement and names a node of another kind, `nobody_asked` a plan task naming neither a
- * requirement it serves nor a declaration it attempts, and `no_negative_control` a check's
- * latest result recording no negative control. The last one says what the result left out and
- * no more: whether a control could have changed the verdict is not in the data, and the page
- * states no verdict of its own on it.
+ * requirement it serves nor a declaration it attempts, and `no_negative_control` a check whose
+ * latest result records no negative control, drawn on the check. The last one says what the
+ * result left out and no more: whether a control could have changed the verdict is not in the
+ * data, and the page states no verdict of its own on it.
  *
  * The lines say each of these in the reader's words rather than the model's: a node is "this",
- * because the line is drawn in the node's own body; a node's origin is where it came from; a
- * declaration is what a person asked for; a read-back is a person confirming the sentences;
+ * because the line is drawn in the node's own body; a declaration is what a person asked for;
  * and a result with no negative control is said as what that leaves out, which is a showing
  * that the check can fail. The control keeps its own name where the check's attribute is drawn
  * (`BLOCK_ATTRIBUTE_LABELS.negative_control`).
  */
 export const GAP_LINES = freeze({
   no_check: "No check serves this requirement.",
-  no_negative_control: "This result does not show that the check can fail.",
-  no_origin: "This does not say where it came from.",
-  no_plan_task: "No plan task serves this requirement.",
-  no_read_back: "Dispatch does not record who confirmed these sentences.",
-  no_summary_author: "Dispatch does not record who wrote these sentences.",
+  no_negative_control: "The latest result of this check does not show that it can fail.",
   nobody_asked: "This task names no requirement it serves and nothing a person asked for.",
   serves_not_requirement: "What this says it serves is not a requirement.",
   shaped_disagreement: "A decision says it shaped this, but this says it came from somewhere else.",
@@ -352,38 +350,26 @@ export const GAP_WORDS = freeze({
   /** What the result the check was last run for recorded under its negative control: nothing,
    *  so nothing in it shows that the check can fail. */
   no_negative_control: "No proof it can fail",
-  /** The node names nothing it came from, so a reader cannot follow it back. It says the node
-   *  gives no source, and never that it has none (R23). */
-  no_origin: "No source given",
-  no_plan_task: "No plan task",
-  /** The head of every issue draws this one, because Dispatch holds no record of a person
-   *  confirming a summary at all yet (dispatch://INFRA-1278). It names Dispatch rather than
-   *  the issue, so a reader does not take it for something their own issue is missing, and it
-   *  is short enough that the two head chips share one line at 390 px: measured there, the
-   *  chips are 141 px and 166.6 px with an 8 px gap, 315.6 px of the head's 358 (the words
-   *  before them took 310.3), and a second line there puts the first open question off the
-   *  first screen (R6, `e2e/issue-layout.e2e.ts`, c-open-questions). */
-  no_read_back: "Not confirmed in Dispatch",
-  /** The same for who wrote the sentences, which Dispatch holds of no issue either. */
-  no_summary_author: "No author in Dispatch",
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",
   /** The citation names a node, and that node is a requirement no longer. */
   serves_not_requirement: "Not a requirement",
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
-   *  two name different sources, in the word `no_origin` uses for one. */
+   *  two name different sources. */
   shaped_disagreement: "Sources disagree",
 } as const satisfies Record<GapKind, string>);
 
 /**
- * Which gap one line of the coverage read names. The server writes `<block id> has no check`
- * and `<block id> has no plan task` (`RequirementCoverage.gaps`), which name a block by its id;
- * every surface of the page reads the line through this and draws `GAP_WORDS` or `GAP_LINES`
- * instead, so no identifier and no server phrasing is drawn where a name belongs (R21).
+ * Which gap one line of the coverage read names, where it names one the page draws. The server
+ * writes `<block id> has no check` and `<block id> has no plan task`
+ * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
+ * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
+ * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
+ * gap the page draws (R10), so that line answers nothing.
  */
-export function coverageGapKind(line: string): GapKind {
-  return line.endsWith("has no check") ? "no_check" : "no_plan_task";
+export function coverageGapKind(line: string): GapKind | undefined {
+  return line.endsWith("has no check") ? "no_check" : undefined;
 }
 
 /** The noun a progress count is written with: `1/1 task`, `3/7 tasks`, `0/1 child`,
@@ -395,11 +381,42 @@ export const PROGRESS_NOUNS = freeze({
   tasks: "tasks",
 } as const);
 
-/** What a panel says while a read of its own is out, and when that read failed. Neither is an
- *  empty state - the place may hold plenty - so neither belongs in `EMPTY_STATE_LINES`. */
+/** What a panel says while a read of its own is out. It is no empty state - the place may hold
+ *  plenty - so it does not belong in `EMPTY_STATE_LINES`; the line for that read failing is an
+ *  answer (`ANSWER_LINES`). */
 export const READING_LINES = freeze({
-  coverage_failed: "Could not load the requirement coverage.",
   coverage_loading: "Loading requirements…",
+} as const);
+
+/** How the issue stands, in a line of its own where no control's word carries it: a closed
+ *  issue, whose writes the identity block refuses. One line, saying what is so. */
+export const STATE_LINES = freeze({
+  closed: "This issue is closed.",
+} as const);
+
+/**
+ * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
+ * a write of theirs still out, and a read that failed once they opened what it fills
+ * (dispatch://INFRA-1196 R22). The page's other answers are tables of their own -
+ * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
+ * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * says when asked. Each is at most one sentence and names no schema token.
+ */
+export const ANSWER_LINES = freeze({
+  /** What a copy control says once the command is on the clipboard, and when the browser
+   *  refused it; the toolbar's says what to do instead. */
+  copied: "Copied",
+  copy_failed: "Copy failed",
+  copy_failed_hint: "Copy failed - select the text",
+  /** The requirements panel's read of the coverage failed. */
+  coverage_failed: "Could not load the requirement coverage.",
+  /** What a control says while its own write is out: Dispatch has not answered, so none of
+   *  these says the thing is done. */
+  saving_close: "Closing…",
+  saving_field: "Saving…",
+  saving_labels: "Saving labels…",
+  saving_release: "Releasing…",
+  saving_reopen: "Reopening…",
 } as const);
 
 /**
@@ -437,17 +454,6 @@ export const RESULT_STANDS_WORDS = freeze({
 export const RESULT_VERDICT_WORDS = freeze({
   fail: "Fail",
   pass: "Pass",
-} as const);
-
-/**
- * One line per thing the page cannot show yet, because Dispatch does not serve it (R20). A
- * preset says what it cannot show rather than drawing a count with nothing behind it: the
- * coverage read counts the checks that serve a requirement and names none of them, and the
- * chain read that would name them (dispatch://INFRA-1098 item 14) has no route.
- */
-export const WAITING_LINES = freeze({
-  chain:
-    "Each requirement shows how many checks serve it, and Dispatch cannot yet say which checks those are.",
 } as const);
 
 /**
@@ -551,22 +557,16 @@ export const CONTROL_LABELS = freeze({
   copy: "Copy",
   /** Copies a check's `run` command, which renders as code beside it (R15). */
   copy_command: "Copy the command",
-  /** What it says once the command is on the clipboard, and when the browser refused it. */
-  copied: "Copied",
-  copy_failed: "Copy failed",
-  /** Why a copy the browser refused can still be made: the toolbar says what to do instead. */
-  copy_failed_hint: "Copy failed - select the text",
   /** Copies the address of the block the caret is in, in the open document's toolbar (R16). */
   copy_link: "Copy link",
   /** Draws a pinned version of the open document against the document as it stands (R16). */
   diff_vs_current: "Diff vs current",
   /** The one row a branch below the three drawn levels folds to, which opens it in place: the
-   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1). It says
-   *  what pressing it shows, because that row is the only way to those rows, and it agrees
-   *  with its count: "1 more row below", "3 more rows below". A node is a row to the reader,
-   *  the word the tree's own keys use (`useTreeKeymap.ts`). */
-  deeper_row: "more row below, press to show it",
-  deeper_rows: "more rows below, press to show them",
+   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1), and the
+   *  words agree with it: "1 more row below", "3 more rows below". A node is a row to the
+   *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
+  deeper_row: "more row below",
+  deeper_rows: "more rows below",
   /** Takes a version of an artifact down (R16). */
   download: "Download",
   /** Opens the editor of a property beside the value it already holds, where that value is
@@ -587,9 +587,6 @@ export const CONTROL_LABELS = freeze({
   folded_rows: "rows hidden inside",
   /** How many checks a pull request has, before the count GitHub gives. */
   github_checks: "checks",
-  /** What an external link says when Dispatch holds no token for its repository: the line is
-   *  drawn beside the link rather than kept in a tooltip (R21). */
-  github_unavailable: "GitHub details are unavailable for this repository",
   /** The head's first row: where the plan says how the issue gets done (R5). */
   how_it_gets_done: "How it gets done",
   /** The one control row one keeps the actions behind: close, reopen and setting the parent.
@@ -648,13 +645,6 @@ export const CONTROL_LABELS = freeze({
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
-  /** What a control says while its own write is out: Dispatch has not answered, so none of
-   *  these says the thing is done. */
-  saving_close: "Closing…",
-  saving_field: "Saving…",
-  saving_labels: "Saving labels…",
-  saving_release: "Releasing…",
-  saving_reopen: "Reopening…",
   /** How many checks serve a requirement, which the coverage read counts without naming them
    *  (R4, until the chain read lands). */
   serving_checks: "Checks serving it",
@@ -691,6 +681,15 @@ export const CONTROL_LABELS = freeze({
   unchecked: "running state unknown",
   /** Opens a branch of the tree (R1). */
   unfold: "Unfold",
+  /** What a decision the model marks unsure says of itself, in one word on its own row (R9):
+   *  the decisions read's `unsure`, which the server sets for a decision holding a paragraph
+   *  that opens `Unsure:`. */
+  unsure: "Unsure",
+  /** Who made a node, where the author is an agent nothing names: a session with no title in
+   *  the registry and none stamped on its write. An author is drawn by a name and never by an
+   *  identifier (R7, R21), so the page says what it is rather than which one
+   *  (`AgentText.author`, `features/refs/AgentName.tsx`). */
+  unnamed_author: "An agent",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not
    *  gone, it still holds the issue, and it may yet answer (R11, row four). */
   unresponsive: "unresponsive",
@@ -708,7 +707,7 @@ export const CONTROL_LABELS = freeze({
   /** The head's second row: where the checks say what the reader will be shown (R5). */
   what_you_will_be_shown: "What you will be shown",
   /** Names the author of a node whose author the model holds (R7); the name itself is the
-   *  author's own text. */
+   *  author's own (`AgentText.author`). */
   written_by: "Written by",
   /** The box that composer writes in: what the reader would change about the decision. */
   your_change: "Your change",
@@ -785,11 +784,31 @@ export function nodeFactLabel(name: string): string {
 }
 
 /**
+ * The two kinds of author a node of the page can have, each drawn with a shape of its own so
+ * two authors of different kinds never share one (R9): a person, writing as themselves, and an
+ * agent, writing through a session. Dispatch's own writes, which no person and no session made,
+ * are an agent's: something other than a person wrote them.
+ */
+export type AuthorKind = "agent" | "person";
+
+/** The kind of author `actor` is. */
+export function authorKind(actor: Actor): AuthorKind {
+  return actor.kind === "user" ? "person" : "agent";
+}
+
+/** What each kind of author is called, in the accessible name of its shape: "Written by a
+ *  person", "Written by an agent". */
+export const AUTHOR_KIND_WORDS = freeze({
+  agent: "an agent",
+  person: "a person",
+} as const satisfies Record<AuthorKind, string>);
+
+/**
  * The `data-glyph` token of each shape the page draws: one per node type, one per state of the
- * three types that have states, and one for an author. No two types share a token and no two
- * states of one type's surface share one, so a reader who tells shapes apart tells the nodes
- * apart; a state's token carries its type, which keeps the check's seven states distinct from
- * the ask's own as well, including the `retracted` both of them hold.
+ * three types that have states, and one per kind of author. No two types share a token and no
+ * two states of one type's surface share one, so a reader who tells shapes apart tells the
+ * nodes apart; a state's token carries its type, which keeps the check's seven states distinct
+ * from the ask's own as well, including the `retracted` both of them hold.
  *
  * The four ways an ask is closed carry four tokens drawing the one closed shape
  * (`NodeGlyph.tsx`): to a reader a declined, a retracted, a withdrawn and a plainly resolved
@@ -797,12 +816,14 @@ export function nodeFactLabel(name: string): string {
  * stay distinct because a shape carries its own accessible name, and a declined ask's shape
  * may not announce itself as a resolved one.
  *
- * `author` is one token for every author (R7), drawn beside the author's own id: a node carries
- * an author's id and nothing else, so a shape per kind of author would be the page asserting a
- * kind the model does not hold. It waits on whatever gives a node's author a kind.
+ * `authors` holds one token per kind of author (R9), drawn beside the author's name: the shape
+ * says what kind of author made the node, and the name beside it says who.
  */
 export const GLYPH_TOKENS = freeze({
-  author: "author",
+  authors: {
+    agent: "author-agent",
+    person: "author-person",
+  },
   states: {
     ask: {
       answered: "ask-answered",
@@ -844,7 +865,7 @@ export const GLYPH_TOKENS = freeze({
     result: "result",
   },
 } as const satisfies {
-  readonly author: string;
+  readonly authors: Record<AuthorKind, string>;
   readonly states: {
     readonly ask: Record<AskState, string>;
     readonly check: Record<CheckState, string>;
@@ -869,10 +890,12 @@ function glyphNames(): Readonly<Record<string, string>> {
       if (token !== undefined) names[token] = `${words[state]} ${NODE_TYPE_NAMES[type]}`;
     }
   }
-  // The author's shape says what the id beside it is, in the words the page names an author
-  // with everywhere else (`CONTROL_LABELS.written_by`), so a reader who cannot see the shape
-  // hears "Written by" and then the id.
-  names[GLYPH_TOKENS.author] = CONTROL_LABELS.written_by;
+  // An author's shape says what the name beside it is, in the words the page names an author
+  // with everywhere else (`CONTROL_LABELS.written_by`) and the kind of author it is, so a reader
+  // who cannot see the shape hears "Written by a person" and then the name.
+  for (const kind of keysOf(GLYPH_TOKENS.authors)) {
+    names[GLYPH_TOKENS.authors[kind]] = `${CONTROL_LABELS.written_by} ${AUTHOR_KIND_WORDS[kind]}`;
+  }
   return names;
 }
 
@@ -880,7 +903,7 @@ function glyphNames(): Readonly<Record<string, string>> {
  * The accessible name of each glyph, by its token: a shape carries its own name, because a
  * reader who cannot see the shape still has to hear what it says. A type's shape is named by
  * the type; a state's shape by its state word and the type it stands on, as in "Passed check";
- * the author's shape by the page's own words for who wrote a node.
+ * the author's shape by the page's own words for who wrote a node and what kind of author it is.
  */
 export const GLYPH_NAMES: Readonly<Record<string, string>> = freeze(glyphNames());
 
@@ -905,18 +928,18 @@ function phrasesIn(value: unknown): readonly string[] {
 }
 
 /**
- * Everything the page's own chrome may say, as the declarations above say it. `DECLARED_WORDS`
- * is derived from this list and from nothing else, so a word added to a name, a label or a line
- * joins the set by itself, and a word added nowhere is not in it.
+ * What the page says unasked: every name, state, label and empty line it may draw on load. None
+ * is a sentence about the page or about Dispatch; the sentences among them are the empty lines,
+ * the gap lines - what a node lacks - and the state lines.
  */
-const WORD_SOURCES: readonly unknown[] = [
+export const UNASKED_SOURCES: readonly unknown[] = freeze([
   NODE_TYPE_NAMES,
   NODE_STATE_WORDS,
   PRESET_NAMES,
   CONVERSATION_STATE_NAMES,
   ISSUE_STATUS_WORDS,
   EMPTY_STATE_LINES,
-  KEY_REPORTS,
+  STATE_LINES,
   GAP_LINES,
   GAP_WORDS,
   PROGRESS_NOUNS,
@@ -924,16 +947,34 @@ const WORD_SOURCES: readonly unknown[] = [
   CHECK_WHEN_WORDS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
-  WAITING_LINES,
-  BLOCKED_BY_REFUSALS,
   APPROVAL_STATE_WORDS,
   CONTROL_LABELS,
   PROPERTY_LABELS,
   MARGIN_SECTION_NAMES,
-  HELP_LINES,
   BLOCK_ATTRIBUTE_LABELS,
   NODE_FACT_LABELS,
-];
+  AUTHOR_KIND_WORDS,
+]);
+
+/** What the page says only in answer to the reader's own act, and never on load
+ *  (`ANSWER_LINES`). */
+export const ANSWER_SOURCES: readonly unknown[] = freeze([
+  ANSWER_LINES,
+  BLOCKED_BY_REFUSALS,
+  HELP_LINES,
+  KEY_REPORTS,
+]);
+
+/** Every string the answers above hold, in the order they hold them: a browser check reads a
+ *  freshly loaded page for each of them. */
+export const ANSWER_PHRASES: readonly string[] = freeze(ANSWER_SOURCES.flatMap(phrasesIn));
+
+/**
+ * Everything the page's own chrome may say, as the declarations above say it. `DECLARED_WORDS`
+ * is derived from this list and from nothing else, so a word added to a name, a label or a line
+ * joins the set by itself, and a word added nowhere is not in it.
+ */
+const WORD_SOURCES: readonly unknown[] = [...UNASKED_SOURCES, ...ANSWER_SOURCES];
 
 /**
  * Every word the page's own chrome may show, lowercase and sorted, with no word that appears in

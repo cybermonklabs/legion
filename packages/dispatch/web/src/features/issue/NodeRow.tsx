@@ -23,6 +23,7 @@ import { NodeGlyph } from "./NodeGlyph";
 import { type OneLineBox, oneLineCut } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import {
+  type AuthorKind,
   CONTROL_LABELS,
   GAP_LINES,
   GAP_WORDS,
@@ -57,6 +58,7 @@ import { RowText } from "./RowText";
  */
 export function NodeRow({
   artifact,
+  author,
   body,
   context,
   document,
@@ -80,6 +82,10 @@ export function NodeRow({
   /** The artifact this row's node is, for a document or an image: its body opens that
    *  artifact itself (R16). Undefined for every other kind of node. */
   artifact?: Artifact;
+  /** Who made the node: the name the page draws an author with (`AgentText.author`), never an
+   *  id (R9, R22), and the kind of author, which picks its shape. Undefined where the model
+   *  holds no author. */
+  author?: { readonly kind: AuthorKind; readonly name: string };
   /** Whether this row draws its body: it has the focus, or the reader pinned it open. */
   body: boolean;
   /** Whether the preset draws this row only as the ancestor of a match: the row is faint and
@@ -143,18 +149,19 @@ export function NodeRow({
   // The row sums those parts itself rather than reading where the browser put them, since no
   // row may read its own layout: the tree reads its own width once for every row
   // (`useOneLineBox`), each part sized by a class is that class's size in rem (`ROW_PARTS`),
-  // and each word is measured in the tree's face, so a row whose author's id is longer leaves
+  // and each word is measured in the tree's face, so a row whose author's name is longer leaves
   // its line less, the author's shape and its gap included. Where they leave it less than its
   // first word, the line goes on a line of its own under them (`oneLineCut`). Everything
   // beside the line is drawn whole (`shrink-0`): a type's word and a state's word are one word
-  // each and a session's id is one token, so a row that shrank them would cut inside a word,
-  // which is the one thing R1 bans. The line keeps `overflow-hidden` with `min-w-0`, so a box
-  // the sum was wrong about never draws past its row over whatever sits beside it
-  // (c-checks-readable); the e2e rows read that box against the text it holds, which is how a
-  // wrong sum is found. Above 1024 px the row wraps instead and nothing is cut.
+  // each and an author's name is read whole or not at all, so a row that shrank them would cut
+  // inside a word, which is the one thing R1 bans. The line keeps `overflow-hidden` with
+  // `min-w-0`, so a box the sum was wrong about never draws past its row over whatever sits
+  // beside it (c-checks-readable); the e2e rows read that box against the text it holds, which
+  // is how a wrong sum is found. Above 1024 px the row wraps instead and nothing is cut.
   const words = nodeWords(node);
   const typeWord = NODE_TYPE_NAMES[node.type];
-  const authorId = node.author?.id;
+  // A decision the model marks unsure says so in one word, beside its state (R9).
+  const unsure = node.unsure === true ? CONTROL_LABELS.unsure : undefined;
   const leaf = expanded === undefined;
   const box = oneLine ? oneLineBox : undefined;
   const first = useMemo(() => {
@@ -171,18 +178,20 @@ export function NodeRow({
           ? widthOf(state, ROW_PARTS.small)
           : shaped(state, ROW_PARTS.small);
     return oneLineCut({
-      after: state === undefined ? 0 : gap + stateWidth,
+      after:
+        (state === undefined ? 0 : gap + stateWidth) +
+        (unsure === undefined ? 0 : gap + widthOf(unsure, ROW_PARTS.small)),
       before:
         twisty +
         gap +
         shaped(typeWord, ROW_PARTS.text) +
         gap +
-        (authorId === undefined ? 0 : shaped(authorId, ROW_PARTS.text) + gap),
+        (author === undefined ? 0 : shaped(author.name, ROW_PARTS.text) + gap),
       room: box.width - indent - ROW_PARTS.border - ROW_PARTS.paddingRight * rem,
       text: words,
       widthOf: (line) => widthOf(line, ROW_PARTS.text),
     });
-  }, [authorId, box, indent, leaf, state, stateGlyph, typeWord, words]);
+  }, [author, box, indent, leaf, state, stateGlyph, typeWord, unsure, words]);
   const whole = oneLine ? "shrink-0" : "";
 
   // The focused row is brought inside the viewport and clear of the sticky identity block
@@ -258,22 +267,24 @@ export function NodeRow({
           <span className={textMutedOnCanvas}>{typeWord}</span>
         </span>
         {/* Who made it, by a word and a shape, in the form the type beside it and the state
-            after it are drawn in: one shape for an author, whoever they are, because the node
-            carries an author's id and nothing else (R7). The id itself is the author's own
-            text and the shape is the page's, so the two carry their own marks and the shape
-            adds no word to what the reader sees. On a row whose line went under its words, an
-            id longer than the whole row wraps inside itself rather than be hidden past it. */}
-        {node.author === undefined ? null : (
+            after it are drawn in: one shape per kind of author, so a person and an agent never
+            share one (R9). The name is the page's one name for an author (`AgentText.author`),
+            never an id (R22), and it is the author's own text while the shape is the page's, so
+            the two carry their own marks and the shape adds no word to what the reader sees.
+            On a row whose line went under its words, a name longer than the whole row wraps
+            inside itself rather than be hidden past it. */}
+        {author === undefined ? null : (
           <span
             className={`flex items-center gap-1 ${whole} ${first.under ? "max-w-full" : ""}`}
+            data-author-kind={author.kind}
             data-node-author=""
           >
-            <NodeGlyph token={GLYPH_TOKENS.author} />
+            <NodeGlyph token={GLYPH_TOKENS.authors[author.kind]} />
             <span
               className={`${textMutedOnCanvas} ${first.under ? "[overflow-wrap:anywhere]" : ""}`}
               {...authorText}
             >
-              {node.author.id}
+              {author.name}
             </span>
           </span>
         )}
@@ -323,8 +334,20 @@ export function NodeRow({
             <span {...authorText}>{folded}</span> {foldedWords}
           </span>
         )}
+        {unsure === undefined ? null : (
+          <span
+            className={`ml-auto text-xs ${textMutedOnCanvas} ${whole}`}
+            data-node-unsure=""
+            {...pageChrome}
+          >
+            {unsure}
+          </span>
+        )}
         {state === undefined || node.state === undefined ? null : (
-          <span className={`ml-auto flex items-center gap-1 text-xs ${whole}`} {...pageChrome}>
+          <span
+            className={`${unsure === undefined ? "ml-auto" : ""} flex items-center gap-1 text-xs ${whole}`}
+            {...pageChrome}
+          >
             {stateGlyph === undefined ? null : <NodeGlyph token={stateGlyph} />}
             <span className={textMutedOnCanvas} data-node-state={node.state}>
               {state}

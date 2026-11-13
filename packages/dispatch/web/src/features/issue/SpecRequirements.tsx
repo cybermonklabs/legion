@@ -17,18 +17,23 @@ import {
 import { BlockReferences } from "../refs/ReferencedBy";
 import { authorText, pageChrome } from "./page-structure";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   coverageGapKind,
   EMPTY_STATE_LINES,
   GAP_WORDS,
+  type GapKind,
   READING_LINES,
 } from "./page-words";
 
 function Requirement({ requirement }: { requirement: RequirementCoverage }): ReactNode {
-  // What the server says this requirement lacks, in the server's own words. The server decides
-  // which lacks count - a requirement with no plan task is no gap until the issue has a plan
-  // document - so nothing is judged again here.
-  const gaps = requirement.gaps ?? [];
+  // What the server says this requirement lacks, read as the page's own gaps. Of the two lacks
+  // the coverage read carries, only the one the page draws on a node is drawn here: that no
+  // check serves it (R10). A requirement no plan task serves is no gap the page draws.
+  const gaps = (requirement.gaps ?? []).flatMap((line): GapKind[] => {
+    const kind = coverageGapKind(line);
+    return kind === undefined ? [] : [kind];
+  });
   return (
     <li
       className={`space-y-2 rounded-lg p-3 ${card}`}
@@ -52,7 +57,7 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
             key={gap}
             {...pageChrome}
           >
-            {GAP_WORDS[coverageGapKind(gap)]}
+            {GAP_WORDS[gap]}
           </span>
         ))}
       </div>
@@ -80,7 +85,7 @@ export function SpecRequirements({ issueKey }: { issueKey: string }): ReactNode 
   if (coverage.isError) {
     return (
       <p className={dangerText} data-testid="spec-requirements-error" {...pageChrome}>
-        {READING_LINES.coverage_failed}
+        {ANSWER_LINES.coverage_failed}
       </p>
     );
   }

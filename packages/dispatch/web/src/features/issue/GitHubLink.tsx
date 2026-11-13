@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { ApiError, api } from "../../api/client";
+import { api } from "../../api/client";
 import type { ExternalLink } from "../../api/types";
 import { safeExternalHref } from "../../lib/external-href";
 import { badgeLow, linkHoverText, linkText, textMutedOnSurface } from "../../theme/classes";
@@ -176,10 +176,6 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
   // The reference (title, state) and the checks are separate lookups: a failed check-runs or
   // workflow-runs read only drops the checks pill and never the title and state already loaded.
   const reference = githubReference.isError ? undefined : githubReference.data;
-  const unavailable =
-    reference === undefined &&
-    githubReference.error instanceof ApiError &&
-    githubReference.error.code === "GITHUB_TOKEN_UNAVAILABLE";
   const state =
     reference === undefined
       ? undefined
@@ -197,11 +193,6 @@ export function GitHubLink({ link }: { link: ExternalLink }): ReactNode {
       <span className="min-w-0 break-all" {...authorText}>
         {reference === undefined ? repository : reference.title}
       </span>
-      {unavailable ? (
-        <span className="shrink-0" {...pageChrome}>
-          ({CONTROL_LABELS.github_unavailable})
-        </span>
-      ) : null}
       {state === undefined ? null : (
         <span
           className={`shrink-0 rounded-full px-2 py-0.5 text-xs ${badgeLow.bg} ${badgeLow.text}`}

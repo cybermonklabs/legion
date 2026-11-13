@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
 
+import { NO_HOVER_PREVIEW_ATTRIBUTE } from "../refs/ref-preview-card";
 import { parseIssuePath } from "../refs/routes";
 
 /**
@@ -44,8 +45,14 @@ export function PageFrameProvider({
 }
 
 /** The issue page's own root, which every browser check reads the page through
- *  (`e2e/issue-page.ts`): the shell's frame around the page's column and the margin beside it. */
-export const ISSUE_FRAME: FrameAttributes = { "data-issue-page": "" };
+ *  (`e2e/issue-page.ts`): the shell's frame around the page's column and the margin beside it.
+ *  Its references open no card on hover, column and margin alike, because its reader works the
+ *  page from the keyboard, where a focused reference still opens one (dispatch://INFRA-1196
+ *  R6, `features/refs/RefPreview.tsx`). */
+export const ISSUE_FRAME: FrameAttributes = {
+  "data-issue-page": "",
+  [NO_HOVER_PREVIEW_ATTRIBUTE]: "",
+};
 
 /**
  * Marks the shell's frame with `attributes` while the calling page is mounted. `attributes` must

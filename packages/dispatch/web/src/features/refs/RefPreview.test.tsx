@@ -17,6 +17,7 @@ import type {
   IssueDetails,
   IssueReferenceSummary,
 } from "../../api/types";
+import { ISSUE_FRAME } from "../shell/page-frame";
 import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
 import { REF_PREVIEW_CLOSE_DELAY_MS, REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
 import { shortForm } from "./routes";
@@ -281,6 +282,109 @@ test("a hover that ends before the delay, a touch pointer, or a held button neve
     fireEvent.pointerOver(first, { buttons: 1, pointerType: "mouse" });
     act(() => {
       jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS + 100);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+// dispatch://INFRA-1196 R6: the issue page opens nothing on hover, a reference included, because
+// its reader works it from the keyboard. Its frame carries the mark the host reads, so a
+// reference inside it opens no card for a resting pointer, the keyboard still opens that
+// reference's card, and a reference on any other page keeps its hover card.
+test("a reference on the issue page opens no card on hover, its keyboard focus does, and another page's hover still does", () => {
+  const getIssue = mockIssues();
+  jest.useFakeTimers();
+  const view = render(
+    <Harness>
+      <div {...ISSUE_FRAME}>
+        <Link to="/issues/CORE-2" {...referenceTriggerProps({ key: "CORE-2", kind: "issue" })}>
+          on the issue page
+        </Link>
+      </div>
+    </Harness>
+  );
+  try {
+    const inside = screen.getByRole("link", { name: "on the issue page" });
+    // A hover-intent pointer: user-event's hover names no pointerType, which this site needs.
+    fireEvent.pointerOver(inside, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS + 100);
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    // Leaving it: user-event's unhover names no pointerType either.
+    fireEvent.pointerOut(inside, { pointerType: "mouse" });
+
+    act(() => {
+      inside.focus();
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-2");
+    act(() => {
+      inside.blur();
+    });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+
+    const elsewhere = screen.getByRole("link", { name: "first" });
+    // A hover-intent pointer on a reference outside the issue page's frame.
+    fireEvent.pointerOver(elsewhere, { pointerType: "mouse" });
+    act(() => {
+      jest.advanceTimersByTime(REF_PREVIEW_OPEN_DELAY_MS);
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+  } finally {
+    view.unmount();
+    getIssue.mockRestore();
+  }
+});
+
+/** A stand-in for the issue page's live document editor: an editable root whose link mark the
+ *  caret can stand in, which takes no focus of its own. */
+function EditableBody(): ReactNode {
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = root.current;
+    if (element === null) {
+      throw new Error("missing root");
+    }
+    element.innerHTML =
+      'See <a data-dispatch-href="dispatch://CORE-1" href="">the other issue</a> for context.';
+  }, []);
+  return <div contentEditable ref={root} suppressContentEditableWarning />;
+}
+
+// dispatch://INFRA-1196 R6: a link inside the issue page's live editor takes no focus of its
+// own, so the keyboard reaches it by putting the caret in it - which opens its card, as focus
+// opens a card on any other link - and the caret leaving the link closes it again.
+test("on the issue page, the caret in an editor's link opens its card, and leaving the link closes it", () => {
+  const getIssue = mockIssues();
+  const view = render(
+    <Harness>
+      <div {...ISSUE_FRAME}>
+        <EditableBody />
+      </div>
+    </Harness>
+  );
+  try {
+    const link = view.container.querySelector<HTMLElement>("[data-dispatch-href]");
+    if (link === null) throw new Error("the editable body drew no link mark");
+    const caretAt = (node: Node, offset: number) => {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.collapse(true);
+      const selection = document.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      // user-event has no form that moves the caret inside an editable root.
+      fireEvent(document, new Event("selectionchange"));
+    };
+    act(() => {
+      caretAt(link.firstChild as Node, 3);
+    });
+    expect(screen.getByRole("tooltip")).toHaveTextContent("CORE-1");
+    act(() => {
+      caretAt(link.parentElement?.lastChild as Node, 2);
     });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   } finally {

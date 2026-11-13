@@ -6,13 +6,22 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Artifact, Decision, IssueDecisions } from "../../api/types";
+import type {
+  Artifact,
+  ArtifactBlock,
+  Decision,
+  IssueDecisions,
+  IssueDetails,
+} from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
+import { buildDispatchReference } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { IssueThreeThings, specSummary } from "./IssueThreeThings";
 import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
-import type { TreeNode } from "./issue-tree";
+import { buildIssueTree, type TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
+import { blockNodeId } from "./tree-drafts";
 
 /**
  * What a reader does to the tree with the keyboard alone (dispatch://INFRA-1196 R6, R9, R23).
@@ -476,4 +485,151 @@ test("a row keeps its key, and its pin, through a zoom in and back out", async (
   expect(
     rowsFor(view.container, "verification#b-c1")[0]?.querySelector("[data-pinned]")
   ).toBeTruthy();
+});
+
+/** The issue the drawn-gap row reads: a spec with a summary and one requirement no check
+ *  serves, and a decisions document with one decision, as the page's reads answer them. */
+function fullyReadIssue(): TreeNode {
+  const spec: Artifact = {
+    ...decisionsDocument,
+    id: "artifact-spec",
+    name: "spec.md",
+    primary: true,
+    slug: "spec",
+  };
+  const details = {
+    artifacts: [spec, decisionsDocument],
+    assignee: null,
+    blocked_by: [],
+    children: [],
+    claim: null,
+    closed_at: null,
+    components: { ids: [], inherited_from: null, mode: "inherit", reason: null, unknown: [] },
+    created_at: "2026-11-05T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    decisions_artifact_id: decisionsDocument.id,
+    design_gates: [],
+    external_links: [],
+    holder_state: null,
+    key: KEY,
+    labels: [],
+    last_seen: null,
+    last_seq: 1,
+    number: 1,
+    open_asks: [],
+    parent: null,
+    plan_artifact_id: "",
+    primary_artifact_id: spec.id,
+    priority: null,
+    progress: { children: null, tasks: null },
+    project: "CORE",
+    rank: "U",
+    referenced_by_count: 0,
+    repo: null,
+    resolved_repo: null,
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+    status: "todo",
+    takeable_at: null,
+    title: "The issue page draws one ordered body",
+    updated_at: "2026-11-05T00:00:00Z",
+    verification_artifact_id: "",
+  } satisfies IssueDetails;
+  const block = (id: string, type: string): ArtifactBlock => ({
+    attributes: [],
+    from: 0,
+    id,
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: id,
+    type,
+  });
+  return buildIssueTree({
+    coverage: {
+      gaps: ["r1 has no check"],
+      has_plan: false,
+      issue: KEY,
+      requirements: [
+        {
+          block_id: "r1",
+          checks: 0,
+          gaps: ["r1 has no check"],
+          plan_tasks: 0,
+          ref: `dispatch://${KEY}/spec#b-r1`,
+          text: "The page draws the whole issue in one reading.",
+        },
+      ],
+      spec_artifact_id: spec.id,
+    },
+    decisions: {
+      decisions: [
+        { ...decision, ref: `dispatch://${KEY}/artifact/decisions#b-d1`, waiting_review: false },
+      ],
+      document: decisionsDocument.id,
+      open_questions: [],
+    },
+    documents: [
+      { artifactId: spec.id, blocks: [block("summary", "callout"), block("r1", "requirement")] },
+    ],
+    issue: details,
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ":::callout{#summary}\nWhat this is. Why it matters. What is different when done.\n:::",
+        ref: buildDispatchReference({
+          block: { id: "summary" },
+          key: KEY,
+          kind: "artifact",
+          slug: "spec",
+        }),
+      },
+    ],
+  });
+}
+
+// R10, R22 and the person's ruling on helper text: a gap is drawn only where it tells a node
+// apart from its siblings and names work somebody owes. Under today's model every requirement
+// and every decision lacks an origin, and no issue records who wrote or confirmed its summary,
+// so on a fully read issue the requirement, the decision and the head draw none of those three -
+// while the requirement still draws the gap that does tell it apart: no check serves it.
+test("a requirement, a decision and the head of a fully read issue draw no gap their whole kind shares", async () => {
+  setViewport(1440);
+  const root = fullyReadIssue();
+  const view = renderTree(root, { artifacts: [decisionsDocument] });
+  const head = render(
+    <MemoryRouter>
+      <IssueThreeThings
+        checks={[]}
+        issueKey={KEY}
+        plan={undefined}
+        planTasks={0}
+        reading={false}
+        summary={specSummary(root, "spec")}
+      />
+    </MemoryRouter>
+  );
+  try {
+    const requirement = blockNodeId("spec", "r1");
+    const settled = blockNodeId("decisions", "d1");
+    await waitFor(() => expect(rowsFor(view.container, requirement).length).toBe(1));
+    expect(rowsFor(view.container, settled).length).toBe(1);
+    const kinds = (element: Element | undefined) =>
+      [...(element?.querySelectorAll("[data-gap]") ?? [])].map((gap) =>
+        gap.getAttribute("data-gap-kind")
+      );
+    expect(kinds(rowsFor(view.container, requirement)[0])).toEqual(["no_check"]);
+    expect(kinds(rowsFor(view.container, settled)[0])).toEqual([]);
+    expect(head.container.querySelector("li")?.textContent).toBe("What this is.");
+    expect(kinds(head.container)).toEqual([]);
+    for (const words of ["No source given", "Not confirmed in Dispatch", "No author in Dispatch"]) {
+      expect(view.container.textContent).not.toContain(words);
+      expect(head.container.textContent).not.toContain(words);
+    }
+  } finally {
+    head.unmount();
+    view.unmount();
+  }
 });

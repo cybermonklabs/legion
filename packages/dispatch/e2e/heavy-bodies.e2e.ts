@@ -380,7 +380,9 @@ test("the Inbox's ask card draws a reply of 8,000 list items without holding the
 
 // A hover card previews the target's body on one line (`MarkdownPreview`'s `paintOneLine`), so
 // the 8,000 items read as their 8,000 `x` separated by 7,999 spaces. The body still has to be
-// parsed whole, which is what froze the tab of a reader who only pointed at a reference.
+// parsed whole, which is what froze the tab of a reader who only pointed at a reference. The
+// issue page opens the card from the keyboard alone (dispatch://INFRA-1196 R6), so the reader
+// here reaches the reference by Tab and focus rather than by the pointer.
 test("a hover card of a comment of 8,000 list items draws without holding the main thread for a second", async ({
   browser,
 }) => {
@@ -405,7 +407,8 @@ test("a hover card of a comment of 8,000 list items draws without holding the ma
         await page.goto(`/issues/${issue.key}/conversation`);
         const reference = turns.locator("[data-dispatch-ref]").first();
         await expect(reference).toBeVisible();
-        await reference.hover();
+        await page.keyboard.press("Tab");
+        await reference.focus();
         await expect(page.getByRole("tooltip")).toBeVisible();
       },
       reset: new RegExp(`/api/v1/comments/${list.id}(\\?.*)?$`),

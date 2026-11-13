@@ -57,8 +57,24 @@ const PULL_NUMBER = 11;
 export const PLANNER = "issue-layout-planner";
 export const REVIEWER = "issue-layout-reviewer";
 export const TESTER = "issue-layout-tester";
-export const plannerActor: Actor = { id: PLANNER, kind: "session" };
+/** The title the planner's session stamps on what it writes, and the one the fake Envoy lists it
+ *  under, so the page names it the same whichever it reads. */
+export const PLANNER_TITLE = "Planner (issue layout)";
+export const plannerActor: Actor = {
+  id: PLANNER,
+  kind: "session",
+  origin: { session_title: PLANNER_TITLE },
+};
 export const asPlanner = { actor: plannerActor, as: "agent" as const };
+/** The agent session that records every seeded result. An Envoy session id is a UUID
+ *  (`session-ids.ts`), which is the identifier the page must never draw in an author's place
+ *  (dispatch://INFRA-1196 R9); the registry lists no such session, so the title the session
+ *  stamped on its write is the only name it has. */
+export const recorderActor: Actor = {
+  id: "019a1c0a-6d4b-7e8a-bf39-4a1b5c8d9e07",
+  kind: "session",
+  origin: { session_title: "Recorder (issue layout)" },
+};
 
 /** The component model the fake GitHub serves: two components, both attachable. */
 const ARCHITECTURE_MODEL = {
@@ -166,7 +182,7 @@ export async function seedSessions(
   subscribers: readonly string[]
 ): Promise<void> {
   await setLiveSessions([
-    { session_id: PLANNER, title: "Planner (issue layout)" },
+    { session_id: PLANNER, title: PLANNER_TITLE },
     { session_id: REVIEWER, title: "Reviewer (issue layout)" },
     { session_id: TESTER, title: "Tester (issue layout)" },
   ]);
@@ -199,17 +215,22 @@ async function recordSeededResults(
   for (let index = 1; index <= checks; index += 1) {
     const state = checkStateOf(index);
     if (state === "no-result") continue;
-    await recordCheckResult(issueKey, {
-      check: checkBlockId(index),
-      commit: state === "unmarked" ? STRAY_SHA : HEAD_SHA,
-      failed: state === "failed" ? 2 : 0,
-      negative_control: state === "no-control" ? "" : "Removed the row's state and the run failed.",
-      observed: state === "failed" ? "2 failed" : "1 passed",
-      role: "tester",
-      run: "bun run e2e -- e2e/issue-layout.e2e.ts",
-      surface: "browser",
-      verdict: state === "failed" ? "fail" : "pass",
-    });
+    await recordCheckResult(
+      issueKey,
+      {
+        check: checkBlockId(index),
+        commit: state === "unmarked" ? STRAY_SHA : HEAD_SHA,
+        failed: state === "failed" ? 2 : 0,
+        negative_control:
+          state === "no-control" ? "" : "Removed the row's state and the run failed.",
+        observed: state === "failed" ? "2 failed" : "1 passed",
+        role: "tester",
+        run: "bun run e2e -- e2e/issue-layout.e2e.ts",
+        surface: "browser",
+        verdict: state === "failed" ? "fail" : "pass",
+      },
+      { actor: recorderActor, as: "agent" }
+    );
     if (state === "older") {
       await editArtifact(verificationArtifactId, {
         ops: [{ find: checkText(index), op: "replace", with: rewordedCheckText(index) }],

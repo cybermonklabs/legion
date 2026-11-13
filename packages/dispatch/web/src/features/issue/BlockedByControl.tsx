@@ -15,7 +15,7 @@ import {
 import { buildIssuePath } from "../refs/routes";
 import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
+import { ANSWER_LINES, BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 
 /** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
@@ -138,7 +138,7 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
           />
           <FormActions
             cancel={close}
-            saveLabel={write.pending ? CONTROL_LABELS.saving_field : CONTROL_LABELS.save_blocked_by}
+            saveLabel={write.pending ? ANSWER_LINES.saving_field : CONTROL_LABELS.save_blocked_by}
             saving={write.pending}
             waiting={write.pending}
           />

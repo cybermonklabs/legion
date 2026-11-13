@@ -166,7 +166,7 @@ export function IssueMarginPanel({
         {issue.created_by == null ? null : (
           <Property label={PROPERTY_LABELS.opened_by}>
             <span {...authorText}>
-              <AgentName actor={issue.created_by} inline />
+              <AgentName actor={issue.created_by} author inline />
             </span>
           </Property>
         )}

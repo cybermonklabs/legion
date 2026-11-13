@@ -85,15 +85,15 @@ export function resultFacts(result: CheckResult): NodeFact[] {
 }
 
 /**
- * What one recorded result leaves out that the chain is read for: a result recording no
- * negative control at all (R8). The gap is drawn on the result itself, beside what it did
- * record, for the reader to weigh; the page computes nothing about whether a control could
- * have changed the verdict, because the data does not say and refusing such a pass at the
+ * What a check's latest result leaves out that the chain is read for: a result recording no
+ * negative control at all (R10). The gap is drawn on the check, which is the node a reader
+ * weighs and the one that owes the work; the page computes nothing about whether a control
+ * could have changed the verdict, because the data does not say and refusing such a pass at the
  * write is dispatch://INFRA-1278's invariant.
  *
- * Which result it is drawn on is the tree's to decide (`tree-drafts.ts`: the check's latest),
- * because one result alone does not know where it stands among the rest.
+ * Which result is the latest is the tree's to read (`tree-drafts.ts`: the results arrive newest
+ * first), because one result alone does not know where it stands among the rest.
  */
-export function resultGaps(result: CheckResult): GapKind[] {
-  return result.negative_control === "" ? ["no_negative_control"] : [];
+export function latestResultGaps(latest: CheckResult | undefined): GapKind[] {
+  return latest !== undefined && latest.negative_control === "" ? ["no_negative_control"] : [];
 }

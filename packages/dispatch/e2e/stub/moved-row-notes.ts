@@ -26,6 +26,12 @@ export const unchangedByTheMove =
 /** The rows the sentence above is false for, keyed by the spec file and the title the listing
  *  gives, joined by ` › `. */
 export const movedRowNotes: Record<string, string> = {
+  "hover-preview.stub.e2e.ts › a dispatch:// reference in a comment on the issue page opens no card on hover, and keyboard focus previews the target issue; Escape closes it @pr":
+    "renamed from \"hovering a dispatch:// reference in a comment previews the target issue; Escape closes it\": the issue page opens no card on hover (dispatch://INFRA-1196 R6), so the row asserts that a resting pointer opens none, and reads the card main's row read after the hover - its target, title, status, priority, label, link and `aria-describedby` - after keyboard focus instead; Escape, the scroll that keeps a focused card and the blur are main's",
+  "hover-preview.stub.e2e.ts › a card survives a held-button drag that leaves its reference and comes back @pr":
+    "moved off the issue page, which opens no card on hover (dispatch://INFRA-1196 R6): the reference is the project List's key link for the target, so the row waits on no conversation's read-mark dwell and its press lands beside that link rather than inside a turn's collapsed button. The gesture, the paused clock and what it asserts - the card still open after twice the close delay - are main's",
+  "hover-preview.stub.e2e.ts › a card survives a held-button move from the card back onto its reference @pr":
+    "moved off the issue page, which opens no card on hover (dispatch://INFRA-1196 R6): the reference is the project List's key link for the target, so the row waits on no conversation's read-mark dwell. The gesture from beside the link onto the card and back, the paused clock and what it asserts are main's",
   "agent-name.stub.e2e.ts › a claimed List row and Board card open their issue by keyboard, and the claim's agent link opens the agent @pr":
     'the List\'s row is read inside the issues table this branch ships (`getByRole("table", { name: "Project issues table" })`), since `[data-issue-row]` alone now also matches the Board\'s own rows; every key, link and address it asserts is main\'s',
   "keyboard-issue.stub.e2e.ts › j and k cross a collapsed band instead of dead-ending in it, and reach its rows once it opens @pr":

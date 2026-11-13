@@ -369,19 +369,42 @@ test("a check that serves two requirements is drawn under both", () => {
   expect(drawn[0]?.node.text).toBe(drawn[1]?.node.text ?? "");
 });
 
-// R4: a node whose spine parent is absent sits under the issue, drawn as a node nothing explains
-// and never as an error, and a requirement no decision shaped draws no disagreement.
+// R4, R8: a node whose spine parent is absent sits under the issue, as a node like any other and
+// never as an error. No requirement carries a `from` and no decision a question it settles under
+// today's model, so the absence tells no node apart from its siblings and no gap says it: the
+// requirement keeps the one gap that does, that no check serves it, and the decision keeps none.
 test("a requirement no decision shaped sits under the issue as a node nothing explains", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
   const root = buildIssueTree({
     coverage: coverage([requirement("r1", "Nothing explains this.", ["r1 has no check"])]),
     decisions: decisions([decision("d1", "Shapes nothing.", [])]),
     documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
-    issue: issueDetails([spec]),
+    issue: issueDetails([spec, made]),
   });
 
   expect(placementsOf(root, blockNodeId(SPEC, "r1")).map((one) => one.parent)).toEqual([KEY]);
-  expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual(["no_origin", "no_check"]);
+  expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual(["no_check"]);
+  const settled = blockNodeId("decisions-md", "d1");
+  expect(placementsOf(root, settled).map((one) => one.parent)).toEqual([KEY]);
+  expect(nodeOf(root, settled)?.gaps).toEqual([]);
+});
+
+// R9: a decision the model marks unsure carries the mark its row says in one word, and one the
+// model does not mark carries none.
+test("a decision the model marks unsure is marked so, and one it does not is not", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
+  const root = buildIssueTree({
+    decisions: decisions([
+      { ...decision("d1", "Fold to the frontier.", []), unsure: true },
+      decision("d2", "Name every state.", []),
+    ]),
+    issue: issueDetails([spec, made]),
+  });
+
+  expect(nodeOf(root, blockNodeId("decisions-md", "d1"))?.unsure).toBe(true);
+  expect(nodeOf(root, blockNodeId("decisions-md", "d2"))?.unsure).toBeUndefined();
 });
 
 // R4: where a requirement's `from` and a decision's `shaped` disagree, the page places the
@@ -816,14 +839,20 @@ test("a plan task that names no requirement and no declaration draws the gap", (
   expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual([]);
 });
 
-// R8: a check whose latest result records no negative control is drawn beside that result, for
-// the reader to weigh. An older result's empty control says nothing about the work as it
-// stands, so the gap is the latest result's alone, and the page states no verdict of its own.
-test("the latest result recording no negative control draws the gap, and an older one does not", () => {
+// R10: a check whose latest result records no negative control draws the gap, on the check: the
+// check is the node that owes the work. An older result's empty control says nothing about the
+// work as it stands, so only the latest result counts, no result carries the gap itself, and the
+// page states no verdict of its own.
+test("a check whose latest result records no negative control draws the gap, and its results do not", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
   const root = buildIssueTree({
-    documents: [{ artifactId: checks.id, blocks: [block("c1", "check"), block("c2", "check")] }],
+    documents: [
+      {
+        artifactId: checks.id,
+        blocks: [block("c1", "check"), block("c2", "check"), block("c3", "check")],
+      },
+    ],
     issue: issueDetails([spec, checks]),
     results: checkedResults([
       { blockId: "c1", results: [recorded("result-latest", ""), recorded("result-older", "")] },
@@ -831,12 +860,22 @@ test("the latest result recording no negative control draws the gap, and an olde
         blockId: "c2",
         results: [recorded("result-controlled", "Draw a row with no state and the test fails.")],
       },
+      {
+        blockId: "c3",
+        results: [
+          recorded("result-newer-controlled", "Draw a row with no state and the test fails."),
+          recorded("result-older-uncontrolled", ""),
+        ],
+      },
     ]),
   });
 
-  expect(nodeOf(root, "result-latest")?.gaps).toEqual(["no_negative_control"]);
-  expect(nodeOf(root, "result-older")?.gaps).toEqual([]);
-  expect(nodeOf(root, "result-controlled")?.gaps).toEqual([]);
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.gaps).toEqual(["no_negative_control"]);
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c2"))?.gaps).toEqual([]);
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c3"))?.gaps).toEqual([]);
+  for (const result of ["result-latest", "result-older", "result-controlled"]) {
+    expect(nodeOf(root, result)?.gaps, result).toEqual([]);
+  }
 });
 
 /** The state the page reads for the one check of a Verification document: what `payload`

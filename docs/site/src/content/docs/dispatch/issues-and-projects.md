@@ -246,9 +246,6 @@ with no sentence end at all reads **The summary has no complete sentence.** Two 
 - **What you will be shown** links the **Checks** preset and names each state its checks are
   in, such as **Passed** or **Failed**, or says **This issue has no checks yet.**
 
-Beside them, **No author in Dispatch** and **Not confirmed in Dispatch** say that Dispatch does
-not record who wrote the sentences or who confirmed them.
-
 ### Changes Dispatch has not confirmed
 
 Every change you make — a status, a priority, an assignee, labels, a pin, an answer to an ask, a
@@ -314,22 +311,34 @@ The tree holds everything the issue holds, one row per node: its documents, and 
 note, ask, requirement, plan task and check block; its decisions; the results recorded against
 each check; its comments, messages and handoffs; its images; and its child issues. A check and a
 plan task sit under each requirement they serve, and a result sits under its check. A node whose
-source Dispatch does not hold sits under the issue, marked **No source given**.
+source Dispatch does not hold sits under the issue.
 
 The tree opens folded to its frontier. The path down to each thing that is open and unanswered
 is unfolded, however deep it is: an ask nobody has answered, a check that has not passed, a
 decision that waits for your review, and a requirement no check serves. Every other branch is one
 row that says how many rows it hides, such as **3 rows hidden inside**, and a replaced decision's
 branch stays folded. A branch you fold stays folded, and a branch you unfold stays open. From the
-third level down, unfolding a branch shows one row, such as **3 more rows below, press to show
-them**, which opens the rest.
+third level down, unfolding a branch shows one row, such as **3 more rows below**, which opens the
+rest.
 
-A row is one line: what the node is, its state, its links, and what it lacks in a few words, such
-as **No check**. Focus a row, with the pointer or a key, and its body opens under it with the
-rest: its facts, and each lack as a sentence. The body closes when the focus moves on, unless you
-choose **Keep open**; **Let it close** undoes that. A faint row is there only because a row under
-it matches the preset. A decision that waits for your review has **Keep** and **Change** in its
-body: **Change** opens **Your change**, with **Send change** and **Cancel**.
+A row is one line: what the node is, who wrote it, its state, its links, and what it lacks in a
+few words. Who wrote it is a name and a shape: a person by their login, with one shape, and an
+agent by its session's title, with another, or **An agent** when the session has no title. A
+decision marked unsure says **Unsure**. A row marks what it lacks only where that sets it apart
+from rows of its kind and names work someone owes: **No check** on a requirement no check serves,
+**No reason given** on a plan task that serves no requirement, **Not a requirement** on a check or
+a plan task whose **serves** names something else, and **No proof it can fail** on a check whose
+latest result records no negative control. Focus a row, with the pointer or a key, and its body
+opens under it with the rest: its facts, and each lack as a sentence. The body closes when the
+focus moves on, unless you choose **Keep open**; **Let it close** undoes that. A faint row is
+there only because a row under it matches the preset. A decision that waits for your review has
+**Keep** and **Change** in its body: **Change** opens **Your change**, with **Send change** and
+**Cancel**.
+
+Nothing on the issue page opens when you rest the pointer on it, a link included. A link's
+preview card opens when you focus the link with the keyboard, or, in a document you are editing,
+when the caret is in the link. Following a link or a row's link to another node of the issue puts
+the focus on that node's row, in whichever preset the link opens.
 
 Press `Enter` on a row to edit its text where it stands; `Escape` takes you back to the row. `.`
 zooms into the focused row: the tree is drawn from that row down, and the path above it is a line
@@ -352,13 +361,12 @@ is how many nodes it holds.
 | **Spec** | Requirements, with the spec under the tree | `/issues/<KEY>/spec` |
 | **Plan** | Plan tasks, with the plan document under the tree | `/issues/<KEY>/plan` |
 
-Under the spec, **Requirements** lists the spec's requirements, each marked with what it lacks:
-**No check**, or **No plan task** once the issue has a plan document.
+Under the spec, **Requirements** lists the spec's requirements, and marks each one no check serves
+**No check**.
 [Documents](/legion/dispatch/documents/) covers the spec itself. The Plan preset puts the plan's
 approval chip above the plan document, and under it each plan task the document marks, with the
 requirements it **serves** and the tasks it **needs**. An issue with no plan document shows there
-the `dispatch artifact` command that makes one. The Checks preset says **Each requirement shows
-how many checks serve it, and Dispatch cannot yet say which checks those are.**
+the `dispatch artifact` command that makes one.
 
 A check reads **Passed**, **Failed**, **Out of date**, **No result**, **Retracted**, **Cannot
 tell** or **Could not read**. Its body shows its **when**, **surface**, **run** command and

@@ -1,8 +1,4 @@
 import type { ArtifactUploadResponse } from "../web/src/api/types";
-import {
-  REF_PREVIEW_CLOSE_DELAY_MS,
-  REF_PREVIEW_OPEN_DELAY_MS,
-} from "../web/src/features/refs/ref-preview-timing";
 import { agentRow, setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -447,9 +443,6 @@ test("a long-named picture in a comment draws, its link to a long-named document
       body: `![shot](dispatch://${issue.key}/artifact/${pictureSlug}@v1)\n\nSee [design](${designTarget}).\n\nBare: ${bareUrl}\n\nAngle: <${designTarget}>\n\nSelf: [${designTarget}](${designTarget})\n\nBlock: <${blockTarget}>`,
     });
 
-    // The hover card's open delay below is a page timer (`REF_PREVIEW_OPEN_DELAY_MS`), so the
-    // page's own clock is what spends it.
-    await page.clock.install();
     await page.goto(`/issues/${issue.key}/conversation`);
     const thread = page.locator(`[data-turn="comment:${comment.id}"]`);
     await thread.getByRole("button", { name: "Expand thread" }).click();
@@ -466,9 +459,8 @@ test("a long-named picture in a comment draws, its link to a long-named document
       .locator("p", { hasText: "See" })
       .locator(`a[data-dispatch-href="${designTarget}"]`);
     await expect(link).toHaveAttribute("href", path);
-    // The link's words are the document's name, which a portal fills in after the body painted.
-    // Waited for before the loop: that late growth slides the link under a pointer resting on a
-    // paragraph, which opens a card over the paragraph hovered next.
+    // The link's words are the document's name, which a portal fills in after the body painted;
+    // the click below lands on the link's last line, so it waits for those words first.
     await expect(link).toContainText("design design");
     // Asserted once the author's link is drawn, in the same pass: the bare URL's words are the URL
     // and it keeps its href, never the document's name and route a reference link would show.
@@ -477,7 +469,9 @@ test("a long-named picture in a comment draws, its link to a long-named document
     await expect(bare).toHaveText(bareUrl);
     await expect(bare).not.toHaveAttribute("data-dispatch-ref");
     // The `dispatch://` forms of text past the bounds are their words alone: no link to click,
-    // and nothing the hover card opens on (`[data-dispatch-ref]`, `[data-dispatch-href]`).
+    // and no trigger a preview card opens on (`[data-dispatch-ref]`, `[data-dispatch-href]`).
+    // The issue page opens no card on hover at all (dispatch://INFRA-1196 R6), so the absence
+    // of a trigger is the whole of the claim: there is nothing for the keyboard to focus either.
     for (const [label, words] of [
       ["Angle:", designTarget],
       ["Self:", designTarget],
@@ -487,18 +481,7 @@ test("a long-named picture in a comment draws, its link to a long-named document
       await expect(paragraph).toHaveText(`${label} ${words}`);
       await expect(paragraph.getByRole("link")).toHaveCount(0);
       await expect(paragraph.locator("[data-dispatch-href],[data-dispatch-ref]")).toHaveCount(0);
-      // `RefPreview` keeps an open card under a pointer that has not moved
-      // (`keptUnderAStillPointer`): it arms no close while the page moves beneath it, so only
-      // this park arms one, and the clock run after it is what spends the close delay. A clock
-      // run before the park spends nothing.
-      await page.mouse.move(0, 0);
-      await page.clock.runFor(2 * REF_PREVIEW_CLOSE_DELAY_MS);
-      await paragraph.hover();
-      await page.clock.runFor(2 * REF_PREVIEW_OPEN_DELAY_MS);
-      await expect(page.getByRole("tooltip")).toHaveCount(0);
     }
-    await page.mouse.move(0, 0);
-    await page.clock.runFor(2 * REF_PREVIEW_CLOSE_DELAY_MS);
     // The link reads as the document's name, so it wraps past the window's height; the click lands
     // on its last line, clear of the composer pinned above the conversation.
     const lastLine = await link.evaluate((anchor) => {
