@@ -1637,7 +1637,12 @@ test("the controller reads the state without a grant and sets an issue's status 
 // it, never the image's copy at `/opt/legion/pi-legion`, which a relaunch never updates. For this
 // case alone a read of that copy through `node:fs` `readFileSync` or `node:fs/promises`
 // `readFile` answers a manifest with a version and a contract of its own, so the answer below
-// fails wherever the build is read from that path, whatever the image holds.
+// fails wherever the build is read from that path, whatever the image holds. `tools.ts` reads
+// its build once, when it loads, and this file's own import of it loaded before the mock, so the
+// case loads it again under the mock and asks that copy: a query on the specifier makes Bun
+// evaluate the module anew rather than answer the one it cached. A read at load (in `tools.ts`
+// or in `pluginBuildOf`) and a read inside `readBuild` both meet the mock.
+const TOOLS_LOADED_UNDER_THE_IMAGE_MOCK = "./tools?read_build";
 test("read_build answers the package and version this process loaded, both contract numbers, and reads no state", async () => {
   const IMAGE_MANIFEST = "/opt/legion/pi-legion/package.json";
   const atImagePath = JSON.stringify({
@@ -1662,8 +1667,11 @@ test("read_build answers the package and version this process loaded, both contr
     ) => (String(file) === IMAGE_MANIFEST ? atImagePath : realFsPromises.readFile(file, options)),
   }));
   try {
+    const { createLegionTool: createFreshLegionTool } = (await import(
+      TOOLS_LOADED_UNDER_THE_IMAGE_MOCK
+    )) as { readonly createLegionTool: typeof createLegionTool };
     const { calls, daemon } = recordingDaemon({ daemonContract: pkg.legion.daemonApiVersion + 1 });
-    const tool = createLegionTool({
+    const tool = createFreshLegionTool({
       pi,
       daemon,
       controllerGrant: noControllerGrant,

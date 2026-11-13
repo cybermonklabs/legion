@@ -422,6 +422,12 @@ test("refuses before the claim registered, an operation a phase worker has not, 
 // For this case alone a read of that copy through `node:fs` `readFileSync` or
 // `node:fs/promises` `readFile` answers a manifest with a version and a contract of its own, so
 // the answer below fails wherever the build is read from that path, whatever the image holds.
+// `legion-tool.ts` reads its build once, when it loads, and this file's own import of it loaded
+// before the mock, so the case loads it again under the mock and asks that copy: a query on the
+// specifier makes Bun evaluate the module anew rather than answer the one it cached. A read at
+// load (in `legion-tool.ts` or in `pluginBuildOf`) and a read inside `readBuild` both meet the
+// mock.
+const LEGION_TOOL_LOADED_UNDER_THE_IMAGE_MOCK = "../src/legion-tool?read_build"
 test("read_build answers the package and version this process loaded, both contract numbers, and reads no project state", async () => {
   const IMAGE_MANIFEST = "/opt/legion/claude-envoy/package.json"
   const atImagePath = JSON.stringify({
@@ -446,6 +452,9 @@ test("read_build answers the package and version this process loaded, both contr
     ) => (String(file) === IMAGE_MANIFEST ? atImagePath : realFsPromises.readFile(file, options)),
   }))
   try {
+    const { executeLegionTool: executeFreshLegionTool } = (await import(
+      LEGION_TOOL_LOADED_UNDER_THE_IMAGE_MOCK
+    )) as { readonly executeLegionTool: typeof executeLegionTool }
     const { client, requests } = await daemon({ daemonContract: legion.daemonApiVersion + 1 })
     const runtime = {
       daemon: client,
@@ -456,7 +465,7 @@ test("read_build answers the package and version this process loaded, both contr
       branchHead: noBranchHead,
     }
 
-    await expect(executeLegionTool(runtime, { op: "read_build" })).resolves.toEqual({
+    await expect(executeFreshLegionTool(runtime, { op: "read_build" })).resolves.toEqual({
       plugin: name,
       version,
       pluginContract: legion.daemonApiVersion,
