@@ -1982,6 +1982,12 @@ The browser counts no footnote definition, which only lets it draw deeper than t
 
 Typed document blocks are declared only in `internal/dispatch/pmdoc/schema/blocks.json`.
 The embedded file is the server-owned schema, `GET /api/v1/schema/blocks` returns its exact JSON, and the fixture generator reads that checked-in file.
+The store holds each of those types as nodes: one `supertag` node per type and one `attribute` node per attribute, tied to its type by an `attribute_of` tuple (migration `20261109051232`, which seeded them from this file).
+The server installs the schema it builds from those nodes (`pmdoc/schemanodes`), so it serves the file's schema only while the store's type migrations match the file.
+A change to `blocks.json` therefore ships with a store migration that writes the node of each type or attribute the change adds or alters and moves every block type's supertag node to the file's new version;
+migration `20261113230000_graph_supertags_check_ci_check`, which added `check`'s `ci_check` at version 4, is the example.
+Without one, `TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt` fails, and a binary built for the new version installs the old one.
+That test runs every type migration a second time (`typeMigrations` in `cmd/dispatch/supertag_nodes_test.go`), so a new one joins that list.
 A typed block is CommonMark generic-directive syntax: `:::name{#block-id key="value"}` followed by block children and a closing line of colons.
 The renderer writes the id so that both parsers read it back as the tree holds it, whatever id a browser set (`pmdoc.TypedBlockIDAttribute`):
 `#block-id` when the browser editor's parser reads all of it as that shortcut and it holds no `&` - no space, tab or line ending, `#`, `.` or `}`, which end the shortcut, and no `"`, `'`, `<`, `=`, `>` or backtick, which make the editor read the line as no directive - and `id="…"` otherwise, its `&`, `"`, line feeds and carriage returns written as character references (`a b` is written `id="a b"`, `q:1` `#q:1`);

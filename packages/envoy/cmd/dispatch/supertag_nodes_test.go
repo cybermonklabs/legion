@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -75,10 +76,12 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, decodeSchema(t, pmdoc.SchemaJSON()))
 
 	file := readBlockSchemaFile(t)
+	drift := &schemaDrift{}
 
 	requireClosedSupertagList(t, ctx, pool)
-	requireAttributeNodesMatchTheFile(t, ctx, pool, file)
-	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file)
+	requireAttributeNodesMatchTheFile(t, ctx, pool, file, drift)
+	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file, drift)
+	drift.report(t)
 	requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t, ctx, pool)
 	requireNoRouteOrCommandWritesAType(t)
 	requireTheEraseRefusesATypeNode(t, ctx, pool)
@@ -155,7 +158,8 @@ func requireBaseAttributes(t *testing.T, ctx context.Context, pool *store.Pool, 
 // requireAttributeNodesMatchTheFile holds every typed block type's attribute nodes to the file,
 // field by field and in both directions: an attribute only in the file, or only in the store,
 // fails, and so does one whose kind, choices, default, server flag, targets or scope differs.
-func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema) {
+// Each type and attribute it fails on is recorded in drift.
+func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema, drift *schemaDrift) {
 	t.Helper()
 	nodes, err := graphstore.NodesOfKind(ctx, pool, schemanodes.KindAttribute)
 	if err != nil {
@@ -184,35 +188,42 @@ func requireAttributeNodesMatchTheFile(t *testing.T, ctx context.Context, pool *
 			wanted[id] = struct{}{}
 			if _, tiedToType := tied[id]; !tiedToType {
 				t.Errorf("no %s tuple ties attribute node %q to supertag %q", schemanodes.TupleAttributeOf, id, typ.Name)
+				drift.add(id)
 			}
 			node, inStore := held[id]
 			if !inStore {
 				t.Errorf("%s declares attribute %q of %q, which the store holds no node for", blockSchemaFile, declared.Name, typ.Name)
+				drift.add(id)
 				continue
 			}
-			requireAttributeNodeCarries(t, node, position, declared)
+			requireAttributeNodeCarries(t, node, position, declared, drift)
 		}
 		if len(tied) != len(typ.Attributes) {
 			t.Errorf("supertag %q is tied to %d attribute nodes, want the %d its type declares", typ.Name, len(tied), len(typ.Attributes))
+			drift.add(typ.Name)
 		}
 	}
 	for id := range held {
 		if _, declared := wanted[id]; !declared {
 			t.Errorf("the store holds attribute node %q, which %s declares nowhere", id, blockSchemaFile)
+			drift.add(id)
 		}
 	}
 }
 
 // requireAttributeNodeCarries holds one attribute node to what the file says about that
-// attribute: its name and place, and each of the six fields a BlockAttributeSchema carries.
-func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, position int, declared pmdoc.BlockAttribute) {
+// attribute: its name and place, and each of the six fields a BlockAttributeSchema carries. A
+// node that differs is recorded in drift.
+func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, position int, declared pmdoc.BlockAttribute, drift *schemaDrift) {
 	t.Helper()
 	carried := node.Attributes
 	if name, _ := carried["name"].(string); name != declared.Name {
 		t.Errorf("attribute node %q carries name %q, want %q", node.ID, name, declared.Name)
+		drift.add(node.ID)
 	}
 	if at, ok := carried["position"].(float64); !ok || int(at) != position {
 		t.Errorf("attribute node %q carries position %v, want %d", node.ID, carried["position"], position)
+		drift.add(node.ID)
 	}
 	// The six fields of BlockAttributeSchema, compared as the file writes them: the node's
 	// attributes are the attribute's own JSON with the name and the position beside it, so one
@@ -230,12 +241,13 @@ func requireAttributeNodeCarries(t *testing.T, node graphstore.Node, position in
 	}
 	if string(mustMarshal(t, stored)) != string(mustMarshal(t, wanted)) {
 		t.Errorf("attribute node %q carries %s, want the file's %s", node.ID, mustMarshal(t, stored), mustMarshal(t, wanted))
+		drift.add(node.ID)
 	}
 }
 
 // requireTheStoreBuildsTheFilesSchema reads the schema back out of the nodes and holds it to the
-// file, type for type and attribute for attribute.
-func requireTheStoreBuildsTheFilesSchema(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema) {
+// file, type for type and attribute for attribute, recording in drift what the two differ on.
+func requireTheStoreBuildsTheFilesSchema(t *testing.T, ctx context.Context, pool *store.Pool, file pmdoc.BlockSchema, drift *schemaDrift) {
 	t.Helper()
 	built, err := schemanodes.Read(ctx, pool)
 	if err != nil {
@@ -243,7 +255,92 @@ func requireTheStoreBuildsTheFilesSchema(t *testing.T, ctx context.Context, pool
 	}
 	if string(mustMarshal(t, built)) != string(mustMarshal(t, file)) {
 		t.Errorf("the schema the store's nodes build is\n%s\nwant the file's\n%s", mustMarshal(t, built), mustMarshal(t, file))
+		drift.compare(built, file)
 	}
+}
+
+// typeMigrationExample is the type migration a failing run names as the shape of the one a change
+// to blocks.json needs: it writes the node of the attribute it adds, with its tuples, and moves
+// every block type to the new version.
+const typeMigrationExample = "20261113230000_graph_supertags_check_ci_check.up.sql"
+
+// schemaDrift is every type and attribute on which blocks.json and the store's type nodes
+// disagree, and the two schema versions where those differ, gathered while the checks above
+// report each field. A failing run ends on one instruction naming them all (report), so whoever
+// changed the file reads once what the change still needs rather than once for every field.
+type schemaDrift struct {
+	// names are the types, each by its name, and the attributes, each as `<type>/<attribute>`.
+	names                     []string
+	fileVersion, storeVersion int
+}
+
+// add records one type or attribute, once.
+func (d *schemaDrift) add(name string) {
+	if !slices.Contains(d.names, name) {
+		d.names = append(d.names, name)
+	}
+}
+
+// compare records what the schema the store's nodes build and the file's differ on beyond their
+// attributes: the version, and each type only one of them declares, or whose content rule,
+// renderer or place among the types differs. The attributes are the attribute nodes' own, which
+// requireAttributeNodesMatchTheFile has recorded field by field.
+func (d *schemaDrift) compare(built, file pmdoc.BlockSchema) {
+	if built.Version != file.Version {
+		d.fileVersion, d.storeVersion = file.Version, built.Version
+	}
+	builtOrder, fileOrder := commonTypes(built, file), commonTypes(file, built)
+	for index, name := range fileOrder {
+		if builtOrder[index] != name {
+			d.add(name)
+		}
+	}
+	for _, want := range file.Types {
+		index := slices.IndexFunc(built.Types, func(typ pmdoc.BlockTypeSchema) bool { return typ.Name == want.Name })
+		if index < 0 || built.Types[index].Content != want.Content || built.Types[index].Render != want.Render {
+			d.add(want.Name)
+		}
+	}
+	for _, typ := range built.Types {
+		if !slices.ContainsFunc(file.Types, func(want pmdoc.BlockTypeSchema) bool { return want.Name == typ.Name }) {
+			d.add(typ.Name)
+		}
+	}
+}
+
+// commonTypes is the names of the types of of that in declares too, in of's order, so the order
+// of two schemas is compared over the types both hold and a type only one holds moves no other.
+func commonTypes(of, in pmdoc.BlockSchema) []string {
+	var names []string
+	for _, typ := range of.Types {
+		if slices.ContainsFunc(in.Types, func(other pmdoc.BlockTypeSchema) bool { return other.Name == typ.Name }) {
+			names = append(names, typ.Name)
+		}
+	}
+	return names
+}
+
+// report fails the run once with what a change to blocks.json needs: the types and attributes
+// the file and the store's nodes disagree on, the two versions where they differ, and the
+// migration that brings the store to the file. It says nothing where the two agree.
+func (d *schemaDrift) report(t *testing.T) {
+	t.Helper()
+	if len(d.names) == 0 && d.fileVersion == d.storeVersion {
+		return
+	}
+	what := "the block schema"
+	if len(d.names) > 0 {
+		what = strings.Join(slices.Sorted(slices.Values(d.names)), ", ")
+	}
+	versions := ""
+	if d.fileVersion != d.storeVersion {
+		versions = fmt.Sprintf(", and the file is at version %d where the store's nodes build version %d", d.fileVersion, d.storeVersion)
+	}
+	t.Errorf("pmdoc/schema/blocks.json and the store's type nodes disagree on %s%s. "+
+		"A change to pmdoc/schema/blocks.json needs a store migration of its own, like %s: "+
+		"it writes the node of each type or attribute the change adds or alters, with its tuples, and moves every block type's supertag node to the new version. "+
+		"Write one for this change and add it to typeMigrations in this file.",
+		what, versions, typeMigrationExample)
 }
 
 // requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
