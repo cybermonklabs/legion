@@ -802,4 +802,7 @@ test("no text states the old rule: a question reaches the project's default assi
     ([source, excerpt]) => `${source}: ${excerpt}`
   );
   expect(stale).toEqual([]);
-});
+  // It reads every text file of the tree, which takes more than bun's 5 s default on a loaded
+  // pod, and the check runs this file with a bare `bun test` rather than the package's
+  // `--timeout 30000`, so the row carries its own bound.
+}, 120_000);
