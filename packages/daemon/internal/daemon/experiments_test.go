@@ -108,7 +108,7 @@ func TestLaunchVariantsReadsNoRecordWhereNoDeclaredArmNamesAFile(t *testing.T) {
 	const tree, issue = "LEGION-1", "LEGION-2"
 	declared := config.Project{}.ExperimentsDeclared("projects.test")
 	if len(declared) != 1 || declared[0].Name != config.MemoryExperimentName {
-		t.Fatalf("a project that declares nothing declares %+v, want the memory experiment alone", declared)
+		t.Fatalf("a project that writes no experiment declares %+v, want the memory experiment alone", declared)
 	}
 	arms, err := launchVariants(nil, declared, "/state")(context.Background(), tree, issue)
 	if err != nil || arms.Variants != nil || arms.Instructions != nil {

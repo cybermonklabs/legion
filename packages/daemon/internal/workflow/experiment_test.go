@@ -118,7 +118,7 @@ func TestAnIssueExperimentIsDrawnForEachIssueOfATree(t *testing.T) {
 
 // An issue the daemon has already recorded is never drawn again, so an experiment declared after
 // it was recorded never reaches it: the draw is made where the daemon first records an issue and
-// nowhere else. The child here is recorded under a project that declares nothing, and the
+// nowhere else. The child here is recorded by an engine handed no experiment at all, and the
 // experiment is declared afterwards; the person then moves it back to todo, which re-enters it
 // through the same door its first record came through (ReenterChild), under a source that fails
 // the test when it is read.
@@ -130,7 +130,7 @@ func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testi
 	applyChild(t, pool, declaring, "LEGION-209", "child")
 
 	if got := answersOf(t, pool, "LEGION-209"); len(got) != 0 {
-		t.Fatalf("a child of a project that declares nothing holds %v, want none", got)
+		t.Fatalf("a child recorded by an engine handed no experiment holds %v, want none", got)
 	}
 	// The operator declares the experiment, and the person moves the recorded child back to todo.
 	declared := experimentEngine(t, []config.Experiment{planLength}, refusingSource(t))

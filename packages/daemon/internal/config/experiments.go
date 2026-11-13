@@ -46,9 +46,12 @@ const (
 var experimentUnits = []ExperimentUnit{ExperimentTree, ExperimentIssue}
 
 // experimentNamePattern is what an experiment's name and a variant's name must match: 1 to 32
-// characters of a-z, 0-9 and `-`. A draw records both names, and a record is read back by a wire
-// reader and written into a pod's environment, so the names stay short and stay in the characters
-// every such reader takes.
+// characters of a-z, 0-9 and `-`. A draw records both names, which the state's wire carries back
+// (api.Issue.Assignments), which name the directory and the file of an `experiments` arm's
+// instructions copy under the state directory (VariantInstructionsFile), and which head that copy
+// in every prompt it reaches (WriteVariantInstructions), so the names stay short and stay in
+// characters a path segment and every such reader take: neither holds `/`. No environment
+// variable carries either.
 var experimentNamePattern = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 
 // Experiment is one `projects.<KEY>.experiments.<name>` block: something the daemon decides once
@@ -245,8 +248,9 @@ func readExperiments(value *yaml.Node, key string) ([]Experiment, error) {
 	if value.Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("%s must be a mapping of an experiment's name to its block", key)
 	}
-	// An `experiments: {}` declares no experiment, as an absent key does, so the field stays nil
-	// and a reader of it needs no second shape for the empty mapping.
+	// An `experiments: {}` declares no experiment under the key, as an absent key does, so the
+	// field stays nil and a reader of it needs no second shape for the empty mapping; the memory
+	// experiment the project declares all the same is ExperimentsDeclared's.
 	if len(value.Content) == 0 {
 		return nil, nil
 	}

@@ -34,8 +34,8 @@ func memoryMount(dir string) (corev1.Volume, corev1.VolumeMount) {
 
 // memoryRuntime is the test runtime over the operator's pod, which mounts the memory ConfigMap at
 // memoryDir and names roleFiles as role_config_files, given files as the project's memory
-// overlays. A nil list is a daemon whose project names no `memory` block at all, or one at mode
-// off, which the daemon hands none.
+// overlays. A nil list is a daemon whose project names no `memory` block at all, whose arms
+// name no file (memoryVariants).
 func memoryRuntime(t *testing.T, files []string) *Runtime {
 	t.Helper()
 	return runtimeWithOptions(t, func(o *Options) {
@@ -50,8 +50,10 @@ func memoryRuntime(t *testing.T, files []string) *Runtime {
 // memoryVariants are the two arms the `memory` block declares
 // (config.Project.ExperimentsDeclared): memory, carrying the block's overlays and the key the
 // operator wrote them under, and none, carrying nothing, both marked as the block's own
-// (runtime.Variant.MemoryBlock). A nil list is a project that names no block at all, which
-// declares no experiment.
+// (runtime.Variant.MemoryBlock). A nil list stands for a project that names neither the block nor
+// `experiments.memory`: every project declares the memory experiment, and such a project declares
+// it at mode off with two arms that name no file, which add no PI_CONFIG_FILES value and no mount
+// (runtime.RoleOverlayValues), so the runtime is handed nothing it would read.
 func memoryVariants(files []string) []runtime.Variant {
 	if files == nil {
 		return nil

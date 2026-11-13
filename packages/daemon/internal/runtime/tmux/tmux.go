@@ -143,7 +143,9 @@ type Options struct {
 	// after PiConfigFiles and the role's own, so they outrank both; this list is every arm any
 	// pane could be given, which is what New holds to a path PI_CONFIG_FILES can name. The daemon
 	// hands them over whatever each experiment's mode is, since a unit already drawn into an arm
-	// names its files under any mode; a project that declares nothing names none. Nil is none.
+	// names its files under any mode. Every project declares the memory experiment, so the list
+	// always holds its two arms, and a project that writes no `memory` block and no experiment of
+	// its own names no file in any arm. Nil is none.
 	ExperimentVariants []runtime.Variant
 	// TakeOver is the operator's `runtime.tmux.take_over`: TakeOverKubernetes to take over the
 	// claims a daemon running the project under runtime kubernetes left in the store (foreign), ""

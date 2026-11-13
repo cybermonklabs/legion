@@ -165,7 +165,8 @@ func TestATreeInAControlVariantLaunchesTheBytesOfATreeInNoExperiment(t *testing.
 }
 
 // The controller's pane carries no arm under a deployment that declares two experiments, as
-// under one that declares none: an experiment's unit is a tree or an issue of one, and the
+// under one that declares none of its own and writes no `memory` block, whose memory arms name no
+// file and stand here as nil: an experiment's unit is a tree or an issue of one, and the
 // controller runs in neither. Two controller launches are read, and the test fails below two, so
 // neither deployment can quietly drop out of the comparison.
 func TestTheControllerCarriesNoVariant(t *testing.T) {
@@ -175,7 +176,7 @@ func TestTheControllerCarriesNoVariant(t *testing.T) {
 		variants []runtime.Variant
 	}{
 		{"a deployment declaring two experiments", twoExperimentVariants()},
-		{"a deployment declaring none", nil},
+		{"a deployment whose arms name no file", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {

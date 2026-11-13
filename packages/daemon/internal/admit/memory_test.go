@@ -31,7 +31,7 @@ func drawnAs(variant, mode string, at *time.Time) string {
 }
 
 // noDraw is what a unit holding no row for an experiment reads as: the state of every tree opened
-// before that experiment was declared, and of every unit of a project that declares none.
+// before that experiment was declared, and of every unit of a project that does not declare it.
 const noDraw = "no row"
 
 // settled is what a hand-over leaves for an experiment the tree the child left held no answer for:
@@ -153,7 +153,7 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 		word                config.ExperimentMode
 		memory, reviewDepth string
 	}{
-		{name: "a project that declares nothing", mode: "", word: config.ExperimentOff, memory: "", reviewDepth: noDraw},
+		{name: "a project that writes no memory block", mode: "", word: config.ExperimentOff, memory: "", reviewDepth: noDraw},
 		{name: "off", mode: config.ExperimentOff, word: config.ExperimentOff, memory: "", reviewDepth: ""},
 		{name: "on", mode: config.ExperimentOn, word: config.ExperimentOn, memory: "memory", reviewDepth: "deep"},
 		{name: "random, the source drawing the first arm", mode: config.ExperimentRandom, word: config.ExperimentRandom,

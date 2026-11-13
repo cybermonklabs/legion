@@ -110,11 +110,14 @@ func reads[T any](read func(*yaml.Node, string) (T, error), keep func(*fileConfi
 // with no upper bound, whose absent key is no limit rather than a number nobody chose.
 func roundCap(value *yaml.Node, key string) (*int, error) { return readPositiveInteger(value, key, 0) }
 
-// topLevelKeys is every top-level key of legion.yaml, in the order an operator meets them in
-// `deploy/kubernetes/daemon/legion.yaml.example`: the project and where the daemon keeps its state
-// and listens, what it runs at once, the controller, the agents' Oh My Pi and its credentials, the
-// endpoints and token files, the projects and the GitHub Apps, the runtime block, the per-role
-// overrides, the wake pacing, the workflow limits, and the supervision budgets and timers.
+// topLevelKeys is every top-level key of legion.yaml, grouped by what the keys settle, which is the
+// order `legion config-reference --json` prints them in: the project and where the daemon keeps
+// its state and listens, how many issues run at once, the controller, the deployment's
+// instructions and the agents' Oh My Pi and its credentials, the endpoints and token files, the
+// projects, the repository renames, the hooks, the design gate and the GitHub Apps, the runtime
+// block, the per-role overrides and the capability decisions, the wake pacing and the quiet-worker
+// timers, the workflow limits, and the supervision budgets and timers. It is not the order of
+// `deploy/kubernetes/daemon/legion.yaml.example`, which names fewer keys in an order of its own.
 //
 // A row that names a Positive is finished here rather than written out: its Default is that row's
 // number as an operator reads it, and its Read is that row's own reader, so a positive-integer

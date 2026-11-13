@@ -27,7 +27,10 @@ func memoryRuntime(t *testing.T, stateDir string, memory []string) *fakeServerRu
 
 // memoryVariants are the two arms the `memory` block declares
 // (config.Project.ExperimentsDeclared): memory, carrying the block's overlays, and none, carrying
-// nothing. A nil list is a project that names no block at all, which declares no experiment.
+// nothing. A nil list stands for a project that names neither the block nor `experiments.memory`:
+// every project declares the memory experiment, and such a project declares it at mode off with
+// two arms that name no file, which add nothing to PI_CONFIG_FILES (runtime.VariantOverlays), so
+// the runtime is handed nothing it would read.
 func memoryVariants(memory []string) []runtime.Variant {
 	if memory == nil {
 		return nil

@@ -65,7 +65,8 @@ func (s *Postgres) Processed(ctx context.Context, tx pgx.Tx, source, eventID str
 
 // issueColumns reads an empty ancestry as NULL, so a record with none scans as a nil Ancestry, as
 // it was written. The four issues.memory_* columns are no part of it: what a unit was drawn is an
-// assignment row of its own (AssignmentsOf, AssignmentsFor), and the columns are read by nothing.
+// assignment row of its own (AssignmentsOf, AssignmentsFor), and nothing this release's daemon
+// runs reads the columns but the back-fill of 20261111045636_experiment_assignments.
 const issueColumns = `key, tree, project, title, parent, phase, generation, status, rank, handed_over, taken_back, linger_until, held_from, last_dispatch_seq, coalesce(hold_reason, ''), dispatch_status, repo, default_branch, github_repo, awaiting_ask, awaiting_gate_version, coalesce(awaiting_artifact, ''), awaiting_answered_at, coalesce(awaiting_answered_by, ''), coalesce(awaiting_answered_detail, ''), awaiting_since_seq, awaiting_since, handout_seq, coalesce(declared_seq, 0), declared_at, nullif(ancestry, '{}'), handed_over_from, coalesce(told_parent, '')`
 
 func (s *Postgres) Issue(ctx context.Context, tx pgx.Tx, key string) (*Issue, error) {
@@ -243,9 +244,12 @@ func (s *Postgres) PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error {
 	// handout_seq, declared_seq and declared_at are StartHandout's, TakeInThrough's, Declare's and
 	// ClearDeclared's alone, so a copy of the issue read before any of them never writes them
 	// back. The four memory_* columns are named here no more than they are on Issue, which no
-	// longer carries them: nothing writes those columns any more, since what a unit was drawn is
-	// an assignment row of its own now (PutAssignments), and nothing reads them either, so a row
-	// this statement writes leaves them at whatever the draw before this release left.
+	// longer carries them: nothing writes those columns from this release on, since what a unit
+	// was drawn is an assignment row of its own now (PutAssignments), and nothing this release's
+	// daemon runs reads them but the back-fill of 20261111045636_experiment_assignments, and the
+	// copy by hand an operator runs on a roll forward (docs/kubernetes.md), so an update this
+	// statement makes leaves them at whatever the draw before this release left, and a row it
+	// inserts takes the columns' defaults.
 	// ready_pending_version and ready_pending_step are neither written nor read: READY is gone,
 	// and the columns are left as the rows hold them so a rollback to a daemon that still reads
 	// them finds its data. awaiting_slot_notice_at is named nowhere because the column is gone

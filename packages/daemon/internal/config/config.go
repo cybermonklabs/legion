@@ -567,11 +567,12 @@ func stringOf(value *yaml.Node, key string) (string, error) {
 	return *read, nil
 }
 
-// cleanAbsolutePath is a path key's value, refused when it is relative or unclean, and refused
-// the same way when the key is written with no value at all: the daemon reads such a file at
-// boot from wherever it starts, where a relative path resolves against no directory of the
-// operator's. The `memory` block's `instructions` and a variant's read through it alike, so the
-// two keys answer one refusal.
+// cleanAbsolutePath is a path key's value, refused when it is relative or unclean, the empty
+// string (`instructions: ""`) among them: the daemon reads such a file at boot from wherever it
+// starts, where a relative path resolves against no directory of the operator's. A key written
+// with no value at all never reaches it, since describedMembers leaves a null member out and the
+// key then reads as unset. The `memory` block's `instructions` and a variant's read through it
+// alike, so the two keys answer one refusal.
 func cleanAbsolutePath(value *yaml.Node, key string) (string, error) {
 	path, err := stringOf(value, key)
 	if err != nil {

@@ -188,8 +188,10 @@ func (i Issue) Repository() (ghrepo.Repository, error) {
 // Assignment is what one unit ran one experiment under: the arm drawn for it, the mode in force
 // when it was drawn and the instant, recorded once for that unit and never changed
 // (Store.PutAssignments). It is the declared experiments' record, and the only one: the four
-// issues.memory_* columns the single hard-coded experiment was kept in are written and read by
-// nothing since this release, and Issue carries none of them. A project declares as many
+// issues.memory_* columns the single hard-coded experiment was kept in are written by nothing
+// from this release on, are read by nothing this release's daemon runs but the back-fill of
+// 20261111045636_experiment_assignments, and by the copy by hand an operator runs on a roll
+// forward (docs/kubernetes.md), and Issue carries none of them. A project declares as many
 // experiments as it likes (config.Project.ExperimentsDeclared), so each answer is a row named by
 // its experiment rather than a column named after it.
 //
@@ -199,8 +201,8 @@ type Assignment struct {
 	// Experiment is the name the project declares the experiment under (config.Experiment.Name).
 	Experiment string
 	// Unit is what the draw covered, a config.ExperimentUnit word: `tree` or `issue`. It is taken
-	// as a string because internal/config reads internal/store, whose own tests read this
-	// package, so an import of config here would close a cycle.
+	// as a string because internal/config imports this package itself (the design gate's steps are
+	// record.DesignStep), so an import of config here would close a cycle.
 	Unit string
 	// Variant is the arm drawn (config.Variant.Name), "" for no variant: an experiment at mode
 	// off, which draws for no unit, and the answer a hand-over settles a child at for an

@@ -93,10 +93,11 @@ func pairValue(variables []string, name string) (string, bool) {
 	return "", false
 }
 
-// The launch bytes a deployment that declares no experiment produces today, for every role Legion
-// launches in a pane: the golden pins two values per role — the pane's PI_CONFIG_FILES, the
-// operator's own overlays first and then the role's own, and the one --append-system-prompt word
-// of the pane's command, as the pane's shell receives it, its `$(cat …)` fragments unexpanded.
+// The launch bytes a deployment with no experiment of its own and no `memory` block produces
+// today, whose memory arms name no file, for every role Legion launches in a pane: the golden
+// pins two values per role — the pane's PI_CONFIG_FILES, the operator's own overlays first and
+// then the role's own, and the one --append-system-prompt word of the pane's command, as the
+// pane's shell receives it, its `$(cat …)` fragments unexpanded.
 // Both are kept non-empty for all seven roles by the fixture (baselineOperatorOverlay and
 // baselineRoleFiles), so a later change that drops an overlay, reorders the list, or moves a
 // prompt fragment shows here as a diff to read.

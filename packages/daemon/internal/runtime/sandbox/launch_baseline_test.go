@@ -29,9 +29,11 @@ func baselineRoles() []claim.Role {
 	return slices.Concat(claim.Roles, []claim.Role{claim.RoleController})
 }
 
-// baselineRuntime is the test runtime of a deployment that declares no experiment at all —
-// memoryRuntime's shape with no declared variant — over the operator's pod, whose own
-// PI_CONFIG_FILES entry every pod carries, with baselineRoleFiles as role_config_files.
+// baselineRuntime is the test runtime of a deployment that declares no experiment of its own and
+// writes no `memory` block — memoryRuntime's shape with no declared variant, since that
+// deployment's memory experiment names no file in either arm and so adds nothing a runtime reads
+// — over the operator's pod, whose own PI_CONFIG_FILES entry every pod carries, with
+// baselineRoleFiles as role_config_files.
 func baselineRuntime(t *testing.T) *Runtime {
 	t.Helper()
 	return runtimeWithOptions(t, func(o *Options) {
@@ -43,7 +45,7 @@ func baselineRuntime(t *testing.T) *Runtime {
 // baselineSpec is role's launch under that deployment: a role of the tree's root issue, or the
 // project controller's own launch, which runs in no tree. Neither carries a variant
 // (SpawnSpec.Variants) and neither names variant instructions, so each is a launch of a
-// deployment that declares nothing beyond the roles.
+// deployment that declares no experiment of its own, whose memory arms name no file.
 func baselineSpec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 	t.Helper()
 	if role == claim.RoleController {
@@ -74,12 +76,13 @@ func appendSystemPromptOf(t *testing.T, role claim.Role, argv []string) string {
 	return argv[i+1]
 }
 
-// The launch bytes a deployment that declares no experiment produces today, for every role Legion
-// launches: the golden pins two values per role — the role's PI_CONFIG_FILES, the operator's own
-// overlays first and then the role's own, and the value of the one --append-system-prompt word its
-// Oh My Pi is started with. Both are kept non-empty for all seven roles by the fixture
-// (operatorPod's PI_CONFIG_FILES entry and baselineRoleFiles), so a later change that drops an
-// overlay, reorders the list, or moves a prompt fragment shows here as a diff to read.
+// The launch bytes a deployment with no experiment of its own and no `memory` block produces
+// today, for every role Legion launches: the golden pins two values per role — the role's
+// PI_CONFIG_FILES, the operator's own overlays first and then the role's own, and the value of
+// the one --append-system-prompt word its Oh My Pi is started with. Both are kept non-empty for
+// all seven roles by the fixture (operatorPod's PI_CONFIG_FILES entry and baselineRoleFiles), so
+// a later change that drops an overlay, reorders the list, or moves a prompt fragment shows here
+// as a diff to read.
 //
 // The two values are read off workerOf's container rather than off manifestOf's Sandbox because
 // neither rides the pod manifest: the pod template carries the operator's PI_CONFIG_FILES entry

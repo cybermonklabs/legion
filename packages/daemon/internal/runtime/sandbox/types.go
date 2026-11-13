@@ -144,7 +144,9 @@ type Options struct {
 	// pod holds (heldRoleOverlays) and the image probe, which reads one value per role per arm
 	// (probeManifest). The files are the operator's mounts', as a role's own are. The daemon
 	// hands them over whatever each experiment's mode is, since a unit already drawn into an arm
-	// names its files under any mode; a project that declares nothing names none. Nil is none.
+	// names its files under any mode. Every project declares the memory experiment, so the list
+	// always holds its two arms, and a project that writes no `memory` block and no experiment of
+	// its own names no file in any arm. Nil is none.
 	// A variant's InstructionsPath is the daemon's to inline in the prompt and is not read here.
 	ExperimentVariants []runtime.Variant
 	// ProviderKeys maps each variable Oh My Pi reads to the key of the providers Secret

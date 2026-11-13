@@ -426,9 +426,10 @@ func splitHeld(held, want []string) (kept, missing []string) {
 
 // withVariantOverlays is one PI_CONFIG_FILES list: a role's own overlays and then the variants'
 // own, which outrank them, and own itself where there is no variant overlay to add, so a
-// deployment whose project declares no experiment, and one whose variants name no overlay, hands
-// the launch the list it handed before any experiment existed (launch.overlays, its one caller;
-// the image probe's values are runtime.RoleOverlayValues').
+// deployment whose project declares no experiment of its own and writes no `memory` block, and
+// one whose variants name no overlay, hands the launch the list it handed before any experiment
+// existed (launch.overlays, its one caller; the image probe's values are
+// runtime.RoleOverlayValues').
 func withVariantOverlays(own, variants []string) []string {
 	if len(variants) == 0 {
 		return own

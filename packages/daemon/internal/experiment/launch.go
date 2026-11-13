@@ -122,9 +122,11 @@ func (l Launch) Arms(recorded map[string][]record.Assignment, tree, issue string
 // runtime is held to as a path PI_CONFIG_FILES can name, and what its readers that hold a pod or
 // the deployment and no tree take, since any unit may be drawn into any arm. They are handed over
 // whatever each experiment's mode is: the mode decides which new units are drawn, and a unit
-// already drawn into an arm names that arm's files under any mode. A project that declares
-// nothing hands over none, which is the launch every deployment built before any experiment
-// existed.
+// already drawn into an arm names that arm's files under any mode. An empty declared list hands
+// over none. No loaded project gives one, since every project declares the memory experiment
+// (config.Project.ExperimentsDeclared); a project that writes neither the `memory` block nor
+// `experiments.memory` hands over that experiment's two arms, which name no file, so a launch it
+// makes is the launch every deployment built before any experiment existed made.
 //
 // A variant's instructions reach no runtime through its options: an arm carries no such path
 // (runtime.Variant), and the daemon names its own copy of each in the launch's prompt instead

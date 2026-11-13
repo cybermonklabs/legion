@@ -347,7 +347,10 @@ type SpawnSpec struct {
 // experiment's name and the arm's, as the draw recorded them (config.Experiment.Name,
 // config.Variant.Name), the Oh My Pi settings overlays the arm names (config.Variant.ConfigFiles)
 // and the key the operator wrote those overlays under (config.Variant.ConfigFilesField). An arm
-// that names no overlay is the control the others are measured against, and a launch carrying it
+// that names no overlay adds nothing to PI_CONFIG_FILES, so a launch carrying only such arms names
+// the overlays a unit in no experiment gets; its prompt still ends with the copy of any
+// instructions those arms name (PromptParts.VariantInstructionsPaths). Only an arm that names
+// neither file is the control the others are measured against, and a launch carrying such arms
 // alone is the launch a unit in no experiment gets.
 //
 // The instructions an arm names are no field of this: no runtime reads them off an arm, and what

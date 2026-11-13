@@ -252,11 +252,11 @@ type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
 	// Experiments is `projects.<KEY>.experiments` as the file writes it, in the file's order, and
-	// `[]` for a project that declares none, as `slack_channels` is for one that names none: the
-	// key always rides the wire, so a reader tells a project that declares no experiment from a
-	// daemon too old to know the key. The `memory` block is no part of it: it stands under
-	// `memory` above, as the file writes it, and the two are mapped to one list of experiments
-	// only below the loader (config.Project.ExperimentsDeclared).
+	// `[]` for a project that declares none under that key, as `slack_channels` is for one that
+	// names none: the key always rides the wire, so a reader tells a project that declares no
+	// experiment under the key from a daemon too old to know the key. The `memory` block is no
+	// part of it: it stands under `memory` above, as the file writes it, and the two are mapped to
+	// one list of experiments only below the loader (config.Project.ExperimentsDeclared).
 	Experiments []ExperimentSettings `json:"experiments"`
 	// ProductionCheck is `production_check` as the file writes it: the role that works the
 	// production check a merge closing one of the project's issues opens, or the word `off`
@@ -630,9 +630,10 @@ func stringsOf(values []string) []string {
 	return append([]string{}, values...)
 }
 
-// experimentsOf is the project's declared experiments as the settings carry them, in the file's
-// order and `[]` on the wire for a project that declares none, each with its arms in the file's
-// order too: the order a draw reads the weights in, which is why neither is a mapping here.
+// experimentsOf is the project's `experiments` key as the settings carry it, in the file's
+// order and `[]` on the wire for a project that declares none under that key, each with its arms
+// in the file's order too: the order a draw reads the weights in, which is why neither is a
+// mapping here.
 func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 	declared := make([]ExperimentSettings, 0, len(experiments))
 	for _, experiment := range experiments {

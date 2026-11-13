@@ -1386,11 +1386,12 @@ package api
 // assignments. The number is held in four files that
 // move together: this one,
 // `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and
-// `packages/claude-envoy/package.json`. This change adds no store migration of its own: the
-// answers are the rows of `experiment_assignments`
-// (20261111045636_experiment_assignments), which this release's earlier step created and
-// back-filled from the four `issues.memory_*` columns; those columns stay in the schema, are
-// written and read by nothing, and a later release drops them.
+// `packages/claude-envoy/package.json`. The answers are the rows of `experiment_assignments`,
+// which this change's one store migration, 20261111045636_experiment_assignments, creates and
+// back-fills from the four `issues.memory_*` columns; those columns stay in the schema, are
+// written by nothing from this release on, are read by nothing this release's daemon runs but
+// that migration's back-fill, and by the copy by hand an operator runs on a roll forward
+// (`docs/kubernetes.md`), and a later release drops them.
 // (This entry took 60 when the base carried 59, 73 at the forward merge of 2026-11-11 that
 // brought main in, 74 at the push that followed, 86 at the forward merge of 2026-11-12 that
 // brought main in at 9009dc1d, 87 at the push after it, 90 at the push after that, 93 at the

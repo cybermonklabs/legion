@@ -18,7 +18,8 @@ import (
 var requiredBy = regexp.MustCompile(`^(yes|no|when .+)$`)
 
 // keyName is the shape of a key's own name, the last part of the path an operator writes it
-// under. One legacy alias of the file is camelCase, which is why a capital is accepted.
+// under. Every name the key table holds is lowercase snake_case; the pattern accepts a capital
+// as well, which no row uses, so it refuses only a name that is no key name at all.
 var keyName = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]*$`)
 
 // loaderKeys is what the loader's own source says about its keys, read from every non-test file of

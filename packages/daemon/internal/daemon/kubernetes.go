@@ -305,8 +305,9 @@ func kubeClient(k config.Kubernetes) (*rest.Config, error) {
 // the daemon-launched controller's container runtime.kubernetes.resources.controller (requirements).
 // Every arm of every experiment the project declares reaches the runtime whatever the
 // experiment's mode is (experiment.DeclaredVariants), as they reach tmuxOptions: a unit already
-// drawn into an arm names that arm's overlays under any mode, and a project that declares nothing
-// hands over none.
+// drawn into an arm names that arm's overlays under any mode. A project that declares no
+// experiment of its own still declares the memory experiment and hands over its two arms, which
+// name no file where the project writes no `memory` block and so add nothing to a launch.
 // lookup is the daemon's environment, which can name the NATS nkey seed (launchSecrets).
 func sandboxOptions(cfg config.Config, k config.Kubernetes, project, dispatchToken string, lookup func(string) (string, bool), log *slog.Logger) (sandbox.Options, error) {
 	issueVolume, err := resource.ParseQuantity(k.IssueVolume)
