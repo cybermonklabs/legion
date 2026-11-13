@@ -419,12 +419,15 @@ type PodEndReading string
 const (
 	// PodEndNotOurs: something outside the pod ended it. The cluster evicted, preempted or shut
 	// down the pod (its DisruptionTarget condition, or one of the reasons the cluster gives such
-	// an end), or the pod was deleted under a deletion timestamp that no intent of the daemon's
-	// accounts for. The process did nothing wrong, so the supervisor continues each role of that
-	// pod in its own session, charging neither a death nor a launch failure, and sends each the
-	// task it owed again (supervise's judge, displaced). It covers every claim the runtime
-	// observes, the project controller's included: the reading is of the cause of the end, not of
-	// the kind of pod.
+	// an end; the kubelet's `Evicted` counts only with the condition), or the pod was deleted
+	// under a deletion timestamp that no intent of the daemon's accounts for. The process did
+	// nothing the daemon can see wrong, so the supervisor continues each role of that pod in its
+	// own session, charging neither a death nor a launch failure, and sends each the task it owed
+	// again (supervise's judge, endedFromOutside, displaced) — until such ends come
+	// launch_failure_limit times in a row with no turn completed between, when the end is charged
+	// as the claim's own death (supervise.Budgets.PodEndsNotOurs). It covers every claim the
+	// runtime observes, the project controller's included: the reading is of the cause of the
+	// end, not of the kind of pod.
 	PodEndNotOurs PodEndReading = "pod_end_not_ours"
 	// PodEndOurs: an act of the daemon's own ended the pod — an issue's close or an idle release's
 	// teardown, a tree's cleanup or the orphan sweep, an update round's replacement or a

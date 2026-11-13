@@ -124,7 +124,11 @@ func (k issuePod) asksExtendedRunTime(r *Runtime) bool {
 // guaranteedReservation reports whether resources is the Guaranteed reservation the kubelet reads:
 // its cpu request equal to its cpu limit and its memory request equal to its memory limit. It
 // compares quantities (resource.Quantity.Cmp), so a request of 1 under a limit of 1000m is equal,
-// as config.Reservation.Burstable compares the same two pairs of the configuration's strings.
+// as config.Reservation.Burstable compares the same two pairs of the configuration's strings. The
+// two are one rule written on each side of a package boundary — this package reads no
+// configuration, and the configuration depends on no runtime implementation — and
+// TestTheSafeToEvictAnnotationsGuaranteedRuleAgreesWithTheConfigurations holds them to one answer,
+// so the pod an operator's `--check-config` calls Guaranteed is the pod that carries the annotation.
 // Ephemeral storage is not read, and never should be: every pod of this deployment requests less
 // of the node's disk than its limit allows it to write (defaultResources), so reading it would
 // make every pod Burstable here while the kubelet, which reads cpu and memory alone, calls them

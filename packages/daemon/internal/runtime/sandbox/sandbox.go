@@ -911,25 +911,34 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 }
 
 // setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first
-// operation tests the uid): a Sandbox replaced in between is never written.
-//
-// Suspending is the daemon ending the pod that Sandbox owns, so the record that the daemon means
-// to end that pod is written here, before the patch (meanToEndPod): this is the one place every
-// suspension of the daemon's goes through — an issue's close or idle release (SuspendIssue), a
-// launch that found a pod it cannot use and is not live enough to displace (relaunch), the
-// suspension of a failed launch (suspendFailedLaunch) and a repository cache's own
-// (reconcileCachePod) — and an end with no record reads as pod_end_not_ours, which continues
-// every claim of that pod uncharged. For a pod whose init container keeps failing that is the
-// relaunch-for-ever the initFailed reading exists to stop. A suspension that replaces a live pod
-// patches rather than coming through here and writes its own record with the annotation that
-// names the pod (suspendDisplacing), and the two deletes write theirs (deleteSandbox,
-// deleteFenced); a mode that is not Suspended ends nothing and records nothing.
+// operation tests the uid): a Sandbox replaced in between is never written. A mode that is not
+// Suspended ends nothing and records nothing; a suspension is written through suspending.
 func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
+	op := jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode}
 	if mode == modeSuspended {
-		r.meanToEndPodOf(s, "the daemon suspended the pod's sandbox")
+		op = r.suspending(s, "the daemon suspended the pod's sandbox")
 	}
-	_, err := r.patch(ctx, s, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: mode})
+	_, err := r.patch(ctx, s, op)
 	return err
+}
+
+// suspending is the JSON patch operation that suspends the Sandbox s, and it records first that the
+// daemon means to end the pod s owns (meanToEndPodOf), naming act as the reason. Suspending is the
+// daemon ending that pod, and an end with no record reads as pod_end_not_ours, which continues
+// every claim of that pod uncharged. For a pod whose init container keeps failing that is the
+// relaunch-for-ever the initFailed reading exists to stop.
+//
+// Every JSON patch the daemon writes to suspend a Sandbox takes its operation from here, so no such
+// patch can end a pod with no record. Those patches are setMode's, for an issue's close or idle
+// release (SuspendIssue), a launch that found a pod it cannot use and is not live enough to displace
+// (relaunch), the suspension of a failed launch (suspendFailedLaunch) and a repository cache's own
+// (reconcileCachePod), and ensureSandbox's relabel of a Sandbox its issue's old tree left Running,
+// which suspends it in the same patch. A suspension that replaces a live pod is a merge patch
+// that writes its own record beside the annotation naming the pod (suspendDisplacing), and the two
+// deletes write theirs (deleteSandbox, deleteFenced).
+func (r *Runtime) suspending(s *sandbox, act string) jsonPatchOp {
+	r.meanToEndPodOf(s, act)
+	return jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended}
 }
 
 // Release is a claim-scoped operation: it ends at most the recorded role process and forgets the

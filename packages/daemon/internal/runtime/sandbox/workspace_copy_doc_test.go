@@ -24,17 +24,19 @@ import (
 // Where a region is a list, it is read as a list: the two readings that earn an uncharged
 // continue are two bullets, and the three kinds of end are three, each held to the facts of its
 // own bullet. A fact proved from the region's flat text alone would let the deletion-timestamp
-// reading borrow the cluster's four reasons, or let the close's bullet stand on a sentence
+// reading borrow the cluster's three reasons, or let the close's bullet stand on a sentence
 // written for the release.
 //
-// The annotation keys and the four cluster reasons come from the code they document
-// (safeToEvictAnnotation, doNotDisruptAnnotation, clusterEndedReasons), never from a list written
-// beside the check: a reason added to the set is then a reason the document must name, and
-// nobody has to remember to edit this file.
+// The annotation keys, the three cluster reasons and the reason that needs the condition come
+// from the code they document (safeToEvictAnnotation, doNotDisruptAnnotation,
+// clusterEndedReasons, evictedReason), never from a list written beside the check: a reason added
+// to the set is then a reason the document must name, and nobody has to remember to edit this
+// file. The two facts of the document that are internal/daemon's constants — the running copy's
+// 5-minute period and the line a copy that was not stored writes — are checked there, against the
+// constants themselves (internal/daemon's TestKubernetesDocStatesTheRunningCopysConstants).
 //
-// What these checks cannot do: they read what the document says, never whether it is true. They
-// can say the cadence's 5 minutes are written down; they cannot say the daemon's period is 5
-// minutes. A reader is still the only check on that.
+// What these checks cannot do: they read what the document says, never whether it is true. A
+// reader is still the only check on that.
 const (
 	annotationRuleStart = "the project controller's pod additionally carries"
 	annotationRuleEnd   = "with no death charged"
@@ -82,14 +84,14 @@ func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testin
 	})
 }
 
-// The copy's cadence: both triggers, the 5-minute bound, one copy of an issue in flight, no turn
-// waiting for one, the role it is asked of, where it is stored, and what a copy that fails costs.
+// The copy's cadence: both triggers, one copy of an issue in flight, no turn waiting for one, the
+// role it is asked of, where it is stored, and what a copy that fails costs. Its 5-minute bound and
+// the line a copy that was not stored writes are internal/daemon's constants, checked there.
 func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 	const what = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
 	_, region := kubernetesDocRegion(t, what, copyCadenceStart, copyCadenceEnd)
 	requireDocFacts(t, what, region, []docFact{
 		{"the first trigger, a turn's end", "the end of each turn of the issue"},
-		{"the second trigger and its 5-minute bound", "every 5 minutes while a turn of that issue runs"},
 		{"that the period runs from the end of the copy before it", "from the end of the copy before it"},
 		{"that one copy of an issue is in flight at a time", "One copy of an issue is in flight at a time"},
 		{"that no turn waits for a copy", "No turn waits for a copy"},
@@ -97,7 +99,6 @@ func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 		{"the call it is taken through, which an idle release makes too", "`BundleWorkspace`"},
 		{"the table it is stored in", "workspace_running_copies"},
 		{"that it is never stored in the idle release's row", "never in the `workspace_bundles` row"},
-		{"the line a copy that was not stored is logged with", "running copy: no copy of the issue workspace was stored"},
 		{"that the line carries the reason by name", "with the reason by name"},
 		{"that a failed copy leaves the issue the copy it had", "the issue keeps the copy it had"},
 	})
@@ -122,8 +123,9 @@ func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 	})
 }
 
-// The two readings that earn an uncharged continue, the end reasons the second covers, and the
-// end that is still charged as a death.
+// The two readings that earn an uncharged continue, the end reasons the second covers, the reason
+// that needs the condition, the run of such ends that is charged all the same, and the ends that
+// are still charged as a death.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
 	lines, region := kubernetesDocRegion(t, what, podEndReadingsStart, podEndReadingsEnd)
@@ -132,8 +134,16 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 		{"that each role is continued in its own session", "in that role's own session"},
 		{"that neither a death nor a launch failure is charged", "charges no death and no launch failure"},
 		{"that each role is sent the task it owed again", "sends each role the task it owed again"},
+		{"that the third such end in a row is charged", "The third such end in a row is charged all the same"},
+		{"that only a completed turn between the ends keeps them apart", "with no turn of that claim completed between those ends"},
+		{"the limit the run is counted to", "`launch_failure_limit`"},
+		{"why the condition cannot answer that run", "can drive its own node into pressure"},
+		{"that a completed turn starts the count again", "A completed turn starts the count again"},
+		{"where the count is kept, so a restart keeps it", "`claims.pod_ends_not_ours`"},
 		{"the end that is still charged", "An end of neither reading is charged as a death"},
-		{"a reason outside the four, which is charged", "UnexpectedAdmissionError"},
+		{"that the kubelet's eviction with no condition is charged", "`" + evictedReason + "` with no `DisruptionTarget` condition is such an end"},
+		{"the three limits that eviction is for", "its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`"},
+		{"a reason outside the three, which is charged", "UnexpectedAdmissionError"},
 	})
 
 	bullets := regionBullets(lines)
@@ -158,6 +168,10 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 				"status is left to guess whether the roles were charged for it. The bullet is: %q", what, reason, cluster)
 		}
 	}
+	requireDocFacts(t, what+", its DisruptionTarget bullet", cluster, []docFact{
+		{"that the kubelet's eviction reason earns the continue only with the condition",
+			"`" + evictedReason + "` is such an end only with the condition"},
+	})
 }
 
 // What a pod loses and what it keeps at each kind of end, read as the three bullets it is: a
@@ -176,7 +190,6 @@ func TestKubernetesDocStatesWhatEachKindOfPodEndLosesAndKeeps(t *testing.T) {
 		{"an end the cluster made", []docFact{
 			{"that the disk goes with the pod", "The disk goes with the pod"},
 			{"that the newer saved copy comes back", "the newer of the issue's two saved copies"},
-			{"how much work the copy can be behind", "5 minutes"},
 			{"that the roles keep their sessions and are charged nothing", "charged no death"},
 			{"what no copy holds", "What no copy holds goes with the disk"},
 		}},

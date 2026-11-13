@@ -260,7 +260,7 @@ func TestARestoreWhoseBaseCommitIsGoneStartsTheRolesWithANotice(t *testing.T) {
 
 // A bundle is restored into a workspace provisioned after it was saved, and into no other. The
 // daemon holds that rule with a record of its own — one restore attempt per bundle, against the
-// pod it is sent to (store.TakeWorkspaceBundleForRestore) — and this is the workspace's own half
+// pod it is sent to (store.TakeWorkspaceCopyForRestore) — and this is the workspace's own half
 // of it, which catches what the daemon cannot see: a bundle that reached the very workspace the
 // save was taken from, whose creation record is older than the save (workspace.Created).
 // Applying it there would `jj edit` back to the saved head and move each bookmark

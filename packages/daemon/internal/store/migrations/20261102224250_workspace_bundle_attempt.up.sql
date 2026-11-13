@@ -3,7 +3,7 @@
 --
 -- attempt_pod_uid is the uid of the pod whose launcher the bundle was sent to, and attempt_at when
 -- the daemon sent it. Both are written before the first slice leaves the daemon
--- (store.TakeWorkspaceBundleForRestore), and a row that carries them is never sent again: not to
+-- (store.TakeWorkspaceCopyForRestore), and a row that carries them is never sent again: not to
 -- that pod when its roles container restarts and its launcher comes back holding no record of the
 -- restore it already ran, not to a pod that replaces it, and not to a third pod after an eviction.
 -- Without the record every start of every role re-sent the bundle, and a second apply ran

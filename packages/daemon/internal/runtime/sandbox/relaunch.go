@@ -552,10 +552,12 @@ func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s 
 // first pod brings a disk of its own and provisions the issue's workspace afresh. One its old tree
 // left Running — the old tree's close suspended every role of it, but the issue's suspension never
 // ran, since the issue had moved — is suspended in the same patch, so the relaunch waits its pod
-// out. One a claim of the old tree may still run in is a refusal, since replacing it would end that
-// claim. An issue Sandbox of the release before the pod-owned disk reaches here and is returned as
-// it is, still owning the `issue` claim template: the boot census lets that one shape through by
-// name rather than refusing the daemon (treeVolumeLayout), and the relaunch replaces it, Sandbox
+// out; that pod's end is recorded as the daemon's own before the patch (suspending), so its roles
+// are charged as any end of the daemon's is. One a claim of the old tree may still run in is a
+// refusal, since replacing it would end that claim. An issue Sandbox of the release before the
+// pod-owned disk reaches here and is returned as it is, still owning the `issue` claim template:
+// the boot census lets that one shape through by name rather than refusing the daemon
+// (treeVolumeLayout), and the relaunch replaces it, Sandbox
 // and claim together, once its pod is gone (replaceSupersededSandbox). Nothing here deletes a
 // Sandbox. One it creates carries the name of the pod a replacement whose own Create failed left
 // stranded (createSandbox), so the roles that replacement ended are read as displaced from it.
@@ -612,7 +614,7 @@ func (r *Runtime) ensureSandbox(ctx context.Context, l launch) (*sandbox, error)
 					return nil, fmt.Errorf("sandbox %s, made for tree %s, does not fit this launch of tree %s and still runs roles (%s); it is relabelled once they stop",
 						l.name, s.Labels[labelTree], tree, running)
 				}
-				ops = append(ops, jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended})
+				ops = append(ops, r.suspending(s, "the daemon suspended the pod's sandbox to relabel it for its issue's new tree"))
 			}
 			r.log.Info("sandbox runtime: relabelling a sandbox for its issue's new tree, keeping the Sandbox",
 				"sandbox", l.name, "uid", s.UID, "tree", s.Labels[labelTree], "for", tree, "operatingMode", s.mode())

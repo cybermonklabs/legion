@@ -1,6 +1,9 @@
 package runtime
 
-import "time"
+import (
+	"strconv"
+	"time"
+)
 
 // MaxWorkspaceBundleBytes is the largest bundle a release carries. A bundle above it stops the
 // release, which is recorded with its reason and leaves the pod where it is: the work a role has
@@ -134,6 +137,23 @@ const (
 	// attempt is spent sending nothing (WorkspaceBundleSuperseded).
 	WorkspaceCopySuperseded
 )
+
+// String is the act by its constant's name, so a test that finds the wrong act, and a log line
+// that writes one, prints a word a reader can find in this file rather than a number. A value
+// outside the four is printed with its number, since it is no act this file declares.
+func (a WorkspaceCopyAct) String() string {
+	switch a {
+	case WorkspaceCopyNotHeld:
+		return "WorkspaceCopyNotHeld"
+	case WorkspaceCopyOffered:
+		return "WorkspaceCopyOffered"
+	case WorkspaceCopyRefusedPushed:
+		return "WorkspaceCopyRefusedPushed"
+	case WorkspaceCopySuperseded:
+		return "WorkspaceCopySuperseded"
+	}
+	return "WorkspaceCopyAct(" + strconv.Itoa(int(a)) + ")"
+}
 
 // DecideWorkspaceRestore is the whole of the choice the restore of a new pod makes between the
 // two copies of its issue's workspace, given what each says of itself and the newest push of the

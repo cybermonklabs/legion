@@ -247,8 +247,10 @@ type Claim struct {
 	// DeathCharged is whether the death of the process this claim records has been charged, or
 	// found to have nothing to charge: the decision died makes for one dead process, and the
 	// record that keeps a second report of that same process from being charged a second death.
-	// The rule it keeps is written where it is applied (died); what leaves a claim to be
-	// reported twice is ProcessGone's two windows above.
+	// An end of that process's pod from outside it is decided once in the same way: endedFromOutside
+	// counts it (Budgets.PodEndsNotOurs) and writes this, so a second report of the one end counts
+	// nothing more. The rule it keeps is written where it is applied (died, endedFromOutside);
+	// what leaves a claim to be reported twice is ProcessGone's two windows above.
 	//
 	// It is durable, and it is the one of these marks that is: a restart restores the claim a
 	// refused or parked relaunch left standing over its dead process, and the sweep's first
@@ -2369,13 +2371,17 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// below can be one the wake pacing parks, which writes nothing of the claim and so
 		// leaves its end nothing else to read.
 		m.compactionLostProcess()
-		// An end something outside the pod made is the same recovery as the daemon's own
-		// replacement of a pod: the process did nothing wrong (runtime.PodEndNotOurs). The
-		// reading is one value read in one place, so the charging policy that later takes it as
-		// a row has one site to replace. An end the daemon itself made, and one the runtime read
-		// neither way, are charged exactly as they were before the reading existed.
-		if observation.Displaced || observation.PodEnd == runtime.PodEndNotOurs {
+		// The daemon's own replacement of a pod is no fault of the process (Displaced). An end
+		// something outside the pod made is read in one place, here, and goes to the one site
+		// that decides what it costs (endedFromOutside): uncharged, until such ends come
+		// launch_failure_limit times in a row with no turn completed between them. An end the
+		// daemon itself made, and one the runtime read neither way, are charged exactly as they
+		// were before the reading existed.
+		if observation.Displaced {
 			return m.displaced(ctx, observation)
+		}
+		if observation.PodEnd == runtime.PodEndNotOurs {
+			return m.endedFromOutside(ctx, observation)
 		}
 		return m.died(ctx, observation)
 	case runtime.StaleAddress:

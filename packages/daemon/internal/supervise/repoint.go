@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"context"
+	"errors"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -44,9 +45,10 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // fault of its own: the daemon itself replaced its pod while it ran, to launch another role there
 // (runtime.Observation.Displaced); something outside the pod ended the pod it ran in — the
 // cluster evicted, preempted or shut that pod down, or something deleted it that no act of the
-// daemon's accounts for (runtime.PodEndNotOurs, which judge routes here); or it was another
-// runtime's process — a Sandbox role process a daemon running the project under kubernetes
-// recorded — that this daemon takes over (`runtime.tmux.take_over`) and cannot see. The
+// daemon's accounts for (runtime.PodEndNotOurs, which endedFromOutside sends here until such ends
+// run out their count); or it was another runtime's process — a Sandbox role process a daemon
+// running the project under kubernetes recorded — that this daemon takes over
+// (`runtime.tmux.take_over`) and cannot see. The
 // observation's detail names which. The process did
 // nothing wrong, so it is recovered as repoint recovers a stale one: nothing is charged, neither a
 // launch failure nor a death with work outstanding, and the claim's session is relaunched at once
@@ -72,6 +74,51 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 		"podEnd", string(observation.PodEnd), "detail", observation.Detail)
 	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon, its pod ended by something outside it, or it another runtime's process this daemon takes over", observation.OutOfMemory)
 	return err
+}
+
+// endedFromOutside is the claim's process gone with a pod the runtime read as ended by something
+// outside it (runtime.PodEndNotOurs): an eviction, a preemption, a node going down, or a delete no
+// act of the daemon's accounts for. Such an end is continued uncharged (displaced) and counted
+// (Budgets.PodEndsNotOurs). At launch_failure_limit such ends in a row, with no turn of the claim
+// completed between them (turnEnded resets the count, and so does the end of the task it was
+// counted against, retirePending), the end is charged as the claim's own death (died), and so is
+// every such end after it until the run is reset: a pod that uses more
+// memory than it requested can drive its own node into pressure, and that eviction carries the
+// same DisruptionTarget condition a neighbour's does. An outcome the daemon cannot read is
+// charged, and a claim that keeps ending its own pod that way is bounded as a crash loop is,
+// rather than relaunched for ever.
+//
+// One ended process is counted once, however often the runtime reports it gone, by the record
+// died keeps for the same purpose (Claim.DeathCharged): the report that counts the end writes
+// it, and a later report of that same process — the orphan sweep's, over a claim whose relaunch
+// the lifecycle refused or the wake pacing parked — counts nothing. The count and the record are
+// written before the relaunch, as died writes its charge, because a parked relaunch writes
+// nothing until its turn; a write the store would not take is owed and the relaunch goes on under
+// it (died states why). At the limit the charge is died's whole, so a second report of the end it
+// charged is died's second report and charged nothing more.
+//
+// An end that finds the claim with no work outstanding — no task held, or an agent that never
+// became ready (workOutstanding) — is neither counted nor charged: it is displaced as it always
+// was, and the count stays where it stood. The rule is about a task that keeps ending its own
+// pod, and a death is charged only while there is work for one to be charged against
+// (chargeDeath reads the same condition). A claim idle between assignments completes no turn, so
+// a count it could still raise would only grow, and a pod the cluster repacks once a week would
+// cost that claim a launch failure and a backoff from its third repacking on, for work it was
+// not doing.
+func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
+	if !m.workOutstanding() {
+		return m.displaced(ctx, observation)
+	}
+	if !m.claim.DeathCharged {
+		m.claim.Budgets.PodEndsNotOurs++
+	}
+	if m.claim.Budgets.PodEndsNotOurs >= m.deps.Limits.LaunchFailures {
+		m.log.Warn("supervise: the claim's pod ended from outside it again with no turn completed since; charging this end as the claim's own death",
+			"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "limit", m.deps.Limits.LaunchFailures, "detail", observation.Detail)
+		return m.died(ctx, observation)
+	}
+	m.claim.DeathCharged = true
+	return errors.Join(m.persist(ctx), m.displaced(ctx, observation))
 }
 
 // ProcessEnd is what a replacement did to the claim's process (replaceProcess): the end the

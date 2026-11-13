@@ -409,6 +409,53 @@ func TestABurstableIssuePodCarriesNoSafeToEvictAnnotation(t *testing.T) {
 	}
 }
 
+// The Guaranteed rule is written twice, once on each side of the package boundary, and the two
+// must agree: guaranteedReservation decides the safe-to-evict annotation from the requirements the
+// daemon hands this runtime, and config.Reservation.Burstable decides, from the configuration's
+// strings, the `resources:` line `legion start --check-config` prints (capabilities'
+// BurstableLine). It is not one function because this package takes resolved requirements and
+// reads no configuration, and the configuration depends on no runtime implementation. So this
+// walk holds the two to one answer over each reservation: an operator who reads "Guaranteed" in
+// the check's line must find the annotation on the pod, and one who reads "Burstable" must find
+// it gone. The requirements are translated as the daemon translates them (requirementsOf), and
+// the rows are chosen where the two readings could part: one quantity spelled two ways (1 against
+// 1000m, 1Gi against 1024Mi), a request a hair below its limit, and ephemeral storage, which
+// neither reads.
+func TestTheSafeToEvictAnnotationsGuaranteedRuleAgreesWithTheConfigurations(t *testing.T) {
+	reservation := func(cpu, cpuRequest, memory, memoryRequest string) config.Reservation {
+		return config.Reservation{CPU: cpu, CPURequest: cpuRequest, Memory: memory, MemoryRequest: memoryRequest,
+			EphemeralStorage: "80Gi", EphemeralStorageRequest: "6Gi"}
+	}
+	for name, tc := range map[string]struct {
+		reservation config.Reservation
+		guaranteed  bool
+	}{
+		"equal, spelled alike":               {reservation("3", "3", "19Gi", "19Gi"), true},
+		"1 cpu against 1000m":                {reservation("1", "1000m", "4Gi", "4Gi"), true},
+		"1000m cpu against 1":                {reservation("1000m", "1", "4Gi", "4Gi"), true},
+		"1Gi memory against 1024Mi":          {reservation("1", "1", "1Gi", "1024Mi"), true},
+		"1024Mi memory against 1Gi":          {reservation("1", "1", "1024Mi", "1Gi"), true},
+		"both spelled apart":                 {reservation("3", "3000m", "19Gi", "19456Mi"), true},
+		"a cpu request below its limit":      {reservation("3", "500m", "19Gi", "19Gi"), false},
+		"a cpu request a millicore below":    {reservation("1", "999m", "4Gi", "4Gi"), false},
+		"a memory request below its limit":   {reservation("3", "3", "32Gi", "8Gi"), false},
+		"a memory request a mebibyte below":  {reservation("1", "1", "1Gi", "1023Mi"), false},
+		"both requests below their limits":   {reservation("2", "1", "8Gi", "2Gi"), false},
+		"the issue pod's default":            {config.DefaultResources().Issue, true},
+		"the controller's pod's default":     {config.DefaultResources().Controller, true},
+		"ephemeral storage alone below, too": {config.Reservation{CPU: "1", CPURequest: "1", Memory: "1Gi", MemoryRequest: "1Gi", EphemeralStorage: "10Gi", EphemeralStorageRequest: "1Gi"}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			here := guaranteedReservation(requirementsOf(tc.reservation))
+			there := !tc.reservation.Burstable()
+			if here != tc.guaranteed || there != tc.guaranteed {
+				t.Fatalf("%+v reads Guaranteed %t to the annotation's rule and %t to the configuration's, want both %t",
+					tc.reservation, here, there, tc.guaranteed)
+			}
+		})
+	}
+}
+
 // The controller's pod carries both stop-eviction annotations whatever its reservation: one pod
 // runs the project's controller, nothing else takes over the turn it is in, and no copy of its
 // work is kept outside it, so a deployment that gives it a request below its limit gets a pod that

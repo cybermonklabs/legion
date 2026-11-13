@@ -474,7 +474,7 @@ type LauncherBundleResult struct {
 // database work the pod's workspace already holds. ID is the slice sequence the bundle arrived
 // under and Release the release whose save that sequence carried. OK is the restore that put the
 // work back; a restore that failed carries the reason the launcher wrote the agent, and the
-// daemon keeps its copy, which it sends to no pod again (store.TakeWorkspaceBundleForRestore).
+// daemon keeps its copy, which it sends to no pod again (store.TakeWorkspaceCopyForRestore).
 type LauncherRestored struct {
 	ID      string `json:"id"`
 	Release int64  `json:"release,omitempty"`

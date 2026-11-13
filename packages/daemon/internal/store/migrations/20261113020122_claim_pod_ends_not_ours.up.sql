@@ -1,0 +1,22 @@
+-- 20261113020122_claim_pod_ends_not_ours.up.sql — how many ends of a claim's pod in a row the
+-- daemon read as made by something outside the pod, with no turn of the claim completed between
+-- them (INFRA-1117).
+--
+-- claims.pod_ends_not_ours is supervise.Budgets.PodEndsNotOurs. An end read pod_end_not_ours —
+-- an eviction, a preemption, a node going down, a delete no act of the daemon's accounts for —
+-- is continued uncharged until this reaches launch_failure_limit; from there each such end is
+-- charged as the claim's own death, until a turn completes and puts it back to 0. A pod that uses
+-- more memory than it requested can drive its own node into pressure, and that eviction carries
+-- the same DisruptionTarget condition a neighbour's does, so a claim whose work keeps ending its
+-- own pod that way would otherwise be relaunched for ever. It is written with the claim, as the
+-- four other budgets are, so a daemon restart between two such ends does not start the run again.
+--
+-- 0 for every row the table already holds, and nothing backfills it: the release this upgrades
+-- from counted these ends nowhere, so a claim in the middle of such a run when the image changes
+-- starts it again once, which is what that release's own restart did.
+--
+-- Rolling the image back needs no restore of the database: store's claims.go is the only reader
+-- and writer of this column, and the release before it names it in no statement, so its upserts
+-- leave whatever the column last held. A daemon of this release rolled forward again reads that
+-- back, and the next completed turn clears it.
+alter table claims add column pod_ends_not_ours integer not null default 0 check (pod_ends_not_ours >= 0);

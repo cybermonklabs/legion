@@ -127,10 +127,12 @@ func TestAPodDeletedByNoActOfTheDaemonsIsObservedAsAnEndFromOutsideIt(t *testing
 
 // The cluster says it ended a pod in one of two places, and the daemon reads both and nothing
 // else: the DisruptionTarget condition it marks such a pod with, and the pod's own status reason
-// when that reason is one of the four the cluster gives an end of its own. A reason outside those
-// four — UnexpectedAdmissionError, a node refusing a pod before it ran — is no disruption: it is
-// read as neither, which is the end the supervisor charges a death for
-// (TestAnEndOutsideTheClustersOwnReasonsIsChargedADeathAndFailsTheClaimAtTheThird).
+// when that reason is one of the three the cluster gives an end of its own. `Evicted` is read as
+// an end from outside the pod only with the condition: the kubelet gives that reason with no
+// condition to a pod over its own ephemeral-storage limit, a container's or an emptyDir's
+// (clusterEndedReasons), and such a pod is read as neither, as a reason outside the three is —
+// UnexpectedAdmissionError, a node refusing a pod before it ran. Both are the ends the supervisor
+// charges a death for (TestAnEndOutsideTheClustersOwnReasonsIsChargedADeathAndFailsTheClaimAtTheThird).
 func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -141,7 +143,10 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 	}{
 		{name: "a disruption target", conditions: []corev1.PodCondition{disruptionTarget("EvictionByEvictionAPI")},
 			want: runtime.PodEndNotOurs, wantReason: "EvictionByEvictionAPI"},
-		{name: "Evicted", reason: "Evicted", want: runtime.PodEndNotOurs, wantReason: "Evicted"},
+		{name: "Evicted under node pressure, a disruption target", reason: evictedReason,
+			conditions: []corev1.PodCondition{disruptionTarget("TerminationByKubelet")},
+			want:       runtime.PodEndNotOurs, wantReason: "TerminationByKubelet"},
+		{name: "Evicted over a limit of its own, no disruption target", reason: evictedReason},
 		{name: "Terminated", reason: "Terminated", want: runtime.PodEndNotOurs, wantReason: "Terminated"},
 		{name: "NodeShutdown", reason: "NodeShutdown", want: runtime.PodEndNotOurs, wantReason: "NodeShutdown"},
 		{name: "Preempted", reason: "Preempted", want: runtime.PodEndNotOurs, wantReason: "Preempted"},
@@ -176,14 +181,16 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 // An end the daemon itself made reads as its own and is charged exactly as it was before the
 // reading existed: the record the daemon writes before the act names the pod, and that record is
 // what tells its own ends from an eviction's, since the daemon deletes no pod itself and every one
-// of its ends reaches the pod as a deletion timestamp it did not write. Three acts are driven here
+// of its ends reaches the pod as a deletion timestamp it did not write. Four acts are driven here
 // as the daemon makes them — an issue's close or idle release through SuspendIssue, a launch
 // that cannot use the pod it found through the relaunch that replaces it, whose roles are reported
-// displaced as they always were, and the bare suspending patch every other suspension of the
-// daemon's makes (setMode): a launch whose pod is not live enough to displace, the suspension of a
-// failed launch and a repository cache's own all end their pod through that one patch, and the
-// record is written there so that none of them can end a pod without one. The record is consumed
-// by the end it was written for, so the runtime holds none afterwards.
+// displaced as they always were, the bare suspending patch every other suspension of the daemon's
+// makes (setMode), and the relabel of a Sandbox an issue's old tree left Running, which suspends
+// it in the relabel's own patch (ensureSandbox). A launch whose pod is not live enough to
+// displace, the suspension of a failed launch and a repository cache's own end their pod through
+// setMode's patch; it and the relabel take their suspending operation from one place
+// (suspending), which writes the record, so that none of them can end a pod without one. The
+// record is consumed by the end it was written for, so the runtime holds none afterwards.
 func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 	t.Run("a suspending patch of the sandbox", func(t *testing.T) {
 		g := runningIssuePod(t)
@@ -258,6 +265,63 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 			t.Errorf("the runtime holds %d records of an intended end, want none: the record goes with the pod it names", held)
 		}
 	})
+	t.Run("a relabel for the issue's new tree", func(t *testing.T) {
+		orphan := claim.Token("legion-legion-legion-209-architect")
+		name := SandboxName(orphan)
+		oldTree := map[string]string{labelProject: testProject, labelTree: labelValue(testTree), labelIssue: labelValue("LEGION-209")}
+		g := newRig(t, []k8sruntime.Object{sandboxObject(t, name, "uid-sandbox-old-tree", modeRunning, oldTree)})
+		// No claim of another tree runs in the Sandbox, so the orphan root's launch relabels it and
+		// suspends it in the same patch, ending the old tree's pod.
+		g.store.running["LEGION-209"] = runningClaim{tree: "LEGION-209", claim: "legion-legion-legion-209-planner:launching"}
+		g.eventually("the old tree's pod", func() bool { return g.pod(name) != nil })
+		old := string(g.pod(name).UID)
+		spec := testSpec(t, orphan, claim.RoleArchitect, "LEGION-209")
+		spec.Tree = "LEGION-209"
+
+		g.spawn(spec)
+
+		end := g.podEndHeld(old)
+		if end.reading != runtime.PodEndOurs || !strings.Contains(end.cause, "relabel") {
+			t.Fatalf("read %+v of the pod the relabel suspended, want %s naming the relabel: a suspension with no record reads as an end from outside the pod",
+				end, runtime.PodEndOurs)
+		}
+		if held := g.intendedEnds(); held != 0 {
+			t.Errorf("the runtime holds %d records of an intended end, want none: the record goes with the pod it names", held)
+		}
+	})
+}
+
+// A pod the kubelet evicted with no DisruptionTarget condition is read as neither reading even
+// when the first event the informer delivers of its end already carries a deletion timestamp: the
+// Agent Sandbox controller deletes a failed pod, and that delete can reach the informer with the
+// eviction. Read from the deletion timestamp alone, the end would be one no act of the daemon's
+// accounts for, and a task that fills its own disk would be continued uncharged in pod after pod.
+// The words the end was read from are kept for the pod's line, and no caller is answered with them.
+func TestAPodEvictedOverItsOwnLimitIsObservedAsNeitherReadingUnderADeletionTimestamp(t *testing.T) {
+	g := runningIssuePod(t)
+	name := SandboxName(workerToken)
+	deleted := metav1.NewTime(rigNow)
+	g.update(g.pod(name), func(p *corev1.Pod) {
+		p.Status = endedPodStatus(evictedReason)
+		p.DeletionTimestamp = &deleted
+	})
+
+	end := g.podEndHeld(recorded)
+	if end.reading != "" || end.cause != evictedForItsOwnUse || end.reason != evictedReason {
+		t.Fatalf("read %+v of the pod evicted with no disruption target, want no reading, the words %q and the reason %q",
+			end, evictedForItsOwnUse, evictedReason)
+	}
+	if _, answered := g.r.podEndOf(recorded); answered {
+		t.Fatal("an end read neither way is answered to a caller; it must read as nothing was read")
+	}
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	g.eventually("the pod store to drop the deleted pod", func() bool { return g.r.storedPod(name) == nil })
+	obs := g.observed(rolesLocator(workerToken, recorded))
+	if obs.Kind != runtime.Gone || obs.PodEnd != "" {
+		t.Fatalf("observed %s PodEnd=%q (%s), want Gone read neither way, which the supervisor charges", obs.Kind, obs.PodEnd, obs.Detail)
+	}
 }
 
 // A record of an end the daemon meant to make but never made — the Sandbox patched, the patch not
@@ -320,7 +384,9 @@ func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) 
 		t.Fatalf("the two roles run in pods %s and %s; this case is about the one pod they share",
 			tester.Sandbox.PodUID, reviewer.Sandbox.PodUID)
 	}
-	g.update(g.pod(tester.Sandbox.Name), func(p *corev1.Pod) { p.Status = endedPodStatus("Evicted") })
+	g.update(g.pod(tester.Sandbox.Name), func(p *corev1.Pod) {
+		p.Status = endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet"))
+	})
 
 	g.podEndRead(tester.Sandbox.PodUID)
 
@@ -335,7 +401,7 @@ func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) 
 	}
 	for _, want := range []string{
 		"pod=" + tester.Sandbox.Name, "uid=" + tester.Sandbox.PodUID, "reading=" + string(runtime.PodEndNotOurs),
-		"reason=Evicted", string(claim.RoleTester), string(claim.RoleReviewer),
+		"reason=TerminationByKubelet", string(claim.RoleTester), string(claim.RoleReviewer),
 	} {
 		if !strings.Contains(lines[0], want) {
 			t.Errorf("the pod's end line is %q, want %q in it", lines[0], want)
@@ -345,7 +411,7 @@ func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) 
 
 // A pod whose first end event is read neither way is remembered as such, so the next event for
 // the same pod cannot be read as something else. The end that must be charged is exactly this
-// one: a reason outside the cluster's own four — UnexpectedAdmissionError, a node refusing the
+// one: a reason outside the cluster's own three — UnexpectedAdmissionError, a node refusing the
 // pod before it ran — which the roles of the next pod would meet again, and which an uncharged
 // continue would relaunch for ever. The event after it is the deletion the controller, pod
 // garbage collection or an operator makes, and with nothing recorded that deletion timestamp
@@ -393,7 +459,9 @@ func TestNoLineIsWrittenForTheEvictedPodNoWatchedClaimRunsIn(t *testing.T) {
 	g := runningIssuePod(t, withLog(logs))
 	name := SandboxName(workerToken)
 
-	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("Evicted") })
+	g.update(g.pod(name), func(p *corev1.Pod) {
+		p.Status = endedPodStatus(evictedReason, disruptionTarget("TerminationByKubelet"))
+	})
 
 	if end := g.podEndRead(recorded); end.reading != runtime.PodEndNotOurs {
 		t.Fatalf("read %+v of the evicted pod, want %s: the reading is made whether or not a line is written", end, runtime.PodEndNotOurs)

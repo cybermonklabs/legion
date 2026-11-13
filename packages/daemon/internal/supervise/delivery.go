@@ -751,8 +751,9 @@ func (m *Machine) retirePending(ctx context.Context) error {
 		retired.ServingGeneration, retired.ServingAssignmentID, retired.ServingCheckLook =
 			m.claim.ServingRun(), m.claim.ServingAssignment(), m.claim.ServingCheck()
 	}
-	// The deaths were charged against this task, so they end with it, in the same write.
-	retired.Budgets.Deaths = 0
+	// The deaths and the run of pod ends from outside the pod were counted against this task, so
+	// they end with it, in the same write (chargeDeath, endedFromOutside, workOutstanding).
+	retired.Budgets.Deaths, retired.Budgets.PodEndsNotOurs = 0, 0
 	err := m.write(ctx, func(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)
 	})

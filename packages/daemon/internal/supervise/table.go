@@ -1739,6 +1739,12 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // return (endTurn), because the turn ended, and it closes a start line of its own: a turn that
 // starts under a compaction writes one too (turnStartedWhileBusy), so a reader counting starts
 // against ends finds the pair.
+//
+// A turn that completes ends the claim's run of pod ends from outside it (Budgets.PodEndsNotOurs,
+// endedFromOutside): the process held a pod long enough to finish work, so the next such end is
+// the first of a new run. It is cleared before either write below, so the claim leaves this turn
+// with the reset stored whichever of the two writes it. A turn a compaction aborted completed
+// nothing, and clears nothing.
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
 	if m.compacting != nil {
@@ -1748,6 +1754,10 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.answerByTurnEnd()
 	m.askFirst, m.unseenTurn = false, false
+	if run := m.claim.Budgets.PodEndsNotOurs; run != 0 {
+		m.log.Info("supervise: a turn completed; the run of pod ends from outside the pod is over", "podEndsNotOurs", run)
+		m.claim.Budgets.PodEndsNotOurs = 0
+	}
 	if m.held != nil {
 		if err := m.suspendHeld(ctx); err != nil {
 			if m.held == nil {

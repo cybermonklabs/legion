@@ -224,7 +224,7 @@ func restoreWorkspace(ctx context.Context, dir string, env []string, release int
 	// A bundle is applied to the workspace the pod that replaces the released one provisioned,
 	// and to no other. The daemon is what holds that rule: it records one restore attempt per
 	// bundle, against the pod it sends it to, and sends that bundle to no pod and no launcher
-	// again (store.TakeWorkspaceBundleForRestore), so a roles container that restarts on the
+	// again (store.TakeWorkspaceCopyForRestore), so a roles container that restarts on the
 	// pod's own disk — coming back with a launcher process that holds no record of the restore
 	// it already ran — is sent nothing to apply over the work the roles have done since.
 	//

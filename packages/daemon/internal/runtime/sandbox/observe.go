@@ -240,18 +240,45 @@ const podEndRecordLife = 10 * time.Minute
 const deletedByAnother = "the pod was being deleted with no act of the daemon's to account for it"
 
 // clusterEndedReasons are the reasons a pod's own status carries when the cluster ended it, and
-// the whole of that set: a node-pressure or API eviction (Evicted), a pod the kubelet ended
-// because its node is going down (Terminated, NodeShutdown), and one the scheduler preempted for
-// a pod of higher priority (Preempted). A reason outside the set is not one of them, however it
-// reads: UnexpectedAdmissionError is a pod a node refused before it ran, which the roles of the
-// next pod would meet again, and an end the daemon waived would be relaunched for ever.
-var clusterEndedReasons = []string{"Evicted", "Terminated", "NodeShutdown", "Preempted"}
+// the whole of that set: a pod the kubelet ended because its node is going down (Terminated,
+// NodeShutdown), and one the scheduler preempted for a pod of higher priority (Preempted). A reason
+// outside the set is not one of them, however it reads: UnexpectedAdmissionError is a pod a node
+// refused before it ran, which the roles of the next pod would meet again, and an end the daemon
+// waived would be relaunched for ever.
+//
+// Evicted (evictedReason) is not in the set, because the reason alone does not say who caused the
+// eviction. The kubelet writes it for a node under pressure, and then it also sets the
+// DisruptionTarget condition, which disruption reads first. It writes the same reason, with no
+// condition, for a pod that went over a limit of its own: the eviction manager's
+// podEphemeralStorageLimitEviction (the pod's ephemeral-storage limit),
+// containerEphemeralStorageLimitEviction (a container's) and emptyDirLimitEviction (an emptyDir's
+// sizeLimit) each call evictPod with a nil condition (kubernetes pkg/kubelet/eviction/
+// eviction_manager.go). Only the node-pressure path in synchronize passes one. Those three pods
+// are ended by what they do themselves: a task that fills its own disk gets a new pod, the same
+// task and the same eviction, and read as an end from outside the pod that would be a relaunch
+// for ever. The kubelet's admission check writes `Evicted` with no condition as well, for a pod a
+// node under pressure refuses before it runs, which is the refusal UnexpectedAdmissionError is.
+// So `Evicted` with no DisruptionTarget condition reads as neither reading and is charged a
+// death (capturePodEnd).
+var clusterEndedReasons = []string{"Terminated", "NodeShutdown", "Preempted"}
+
+// evictedReason is the status reason the kubelet gives every pod it evicts. It is an end from
+// outside the pod only when the DisruptionTarget condition comes with it (clusterEndedReasons says
+// why).
+const evictedReason = "Evicted"
+
+// evictedForItsOwnUse is the reading of a pod the kubelet evicted with no DisruptionTarget
+// condition: it went over its own ephemeral-storage limit, a container's limit or an emptyDir's
+// sizeLimit, or a node under pressure refused it at admission (clusterEndedReasons). Such an end
+// is read neither way and charged.
+const evictedForItsOwnUse = "the kubelet evicted the pod with no DisruptionTarget condition: over a limit of its own, or refused at admission"
 
 // disruption is whether the cluster says it ended pod, with the words the daemon read that from
 // and the reason the cluster gave: the DisruptionTarget condition the control plane and the
 // kubelet set on a pod they are ending — an eviction, a preemption, a node shutting down or
 // draining — and otherwise one of clusterEndedReasons on the pod's own status. Both readings live
-// here, read in this one place.
+// here, read in this one place. A pod whose status reason is evictedReason with no condition is no
+// disruption (clusterEndedReasons); selfEvicted names that end for capturePodEnd.
 //
 // kubeletFailure asks a different question of the same two facts, so neither reads the other: it
 // answers any non-empty reason, which this excludes, and it reads the image probe's pod, which
@@ -264,6 +291,13 @@ func disruption(pod *corev1.Pod) (cause, reason string, ok bool) {
 		return "the cluster ended the pod", pod.Status.Reason, true
 	}
 	return "", "", false
+}
+
+// selfEvicted is whether the kubelet evicted pod with no DisruptionTarget condition, the end
+// evictedForItsOwnUse names. It holds wherever the reason is evictedReason and disruption found no
+// condition, which is why capturePodEnd asks it only after disruption has answered no.
+func selfEvicted(pod *corev1.Pod) bool {
+	return pod.Status.Reason == evictedReason
 }
 
 // intendedEnd is one act of the daemon's own that is about to end a pod: the act, in the words the
@@ -365,7 +399,11 @@ func (r *Runtime) prunePodEnds() {
 // An end the daemon's own record names is the daemon's own (takeIntendedEnd), whatever the cluster
 // made of it; otherwise what the cluster says ended the pod (disruption), and then a deletion
 // timestamp no act of the daemon's accounts for (deletedByAnother), are each an end from outside
-// the pod.
+// the pod. A pod the kubelet evicted with no DisruptionTarget condition (selfEvicted) is read
+// neither way, before the deletion timestamp is read: the controller's delete of that failed pod
+// can reach the informer in the same event as its eviction, and read as deletedByAnother it would
+// continue a pod that fills its own disk for ever. Its words and reason are kept for the line
+// (logPodEnd), and no caller is answered with them (podEndOf).
 //
 // An end of neither reading is charged as it always was, and is recorded all the same, with an
 // empty reading: the record is what makes the first end event the one that decides. A pod whose
@@ -392,6 +430,8 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 		end.reading, end.cause, end.reason = runtime.PodEndOurs, act, pod.Status.Reason
 	case disrupted:
 		end.reading, end.cause, end.reason = runtime.PodEndNotOurs, cause, reason
+	case selfEvicted(pod):
+		end.cause, end.reason = evictedForItsOwnUse, pod.Status.Reason
 	case pod.DeletionTimestamp != nil:
 		end.reading, end.cause = runtime.PodEndNotOurs, deletedByAnother
 	}

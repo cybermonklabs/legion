@@ -24,7 +24,7 @@
 -- that only unbundles leaves every saved head out of jj's view.
 --
 -- source_pod_uid and the attempt columns are the same rule the release bundle keeps, for the same
--- reason (store.TakeRunningWorkspaceCopyForRestore). source_pod_uid is the pod the work was taken
+-- reason (store.TakeWorkspaceCopyForRestore). source_pod_uid is the pod the work was taken
 -- off: that pod's own disk still holds the work, and its roles container restarts on that disk, so
 -- a copy offered back to it would `jj edit` the workspace back to the copy's head and move each
 -- bookmark `--allow-backwards` over everything done since. attempt_pod_uid, attempt_at and

@@ -30,16 +30,30 @@ import (
 //     turn.
 //   - PromptRetires: processes retired because PromptFailures ran out. Reset by a started turn,
 //     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
+//   - PodEndsNotOurs: ends of the claim's pod in a row that the runtime read as made by something
+//     outside the pod (runtime.PodEndNotOurs), with no turn of the claim completed between them,
+//     counted only while the claim has work outstanding (workOutstanding), as Deaths is charged.
+//     Each such end is continued uncharged until this reaches the launch failure limit; from
+//     there every such end is charged as the claim's own death (died), until a turn completes
+//     (turnEnded) or the task it was counted against ends (retirePending, as Deaths does), either
+//     of which resets it. A pod that uses more memory than it requested can drive its own node
+//     into pressure, and the eviction that follows carries DisruptionTarget exactly as a
+//     neighbour's does, so the reading cannot tell the two apart; a claim whose work keeps ending
+//     its pod that way would otherwise be relaunched for ever, which is the outcome every other
+//     budget here exists to stop. It is durable, as the other four are, so a daemon restart
+//     between two such ends does not start the run again.
 type Budgets struct {
 	LaunchFailures int
 	Deaths         int
 	PromptFailures int
 	PromptRetires  int
+	PodEndsNotOurs int
 }
 
 // Limits are where each budget runs out: three launch failures, three prompt failures, and two
 // prompt retirements in the shipped daemon. The caller reads them from its configuration.
-// LaunchFailures bounds Deaths as well: both count processes that did not survive.
+// LaunchFailures bounds Deaths as well: both count processes that did not survive. It bounds
+// PodEndsNotOurs too, which counts the same thing for ends the daemon cannot pin on the process.
 type Limits struct {
 	LaunchFailures int
 	PromptFailures int
@@ -127,13 +141,21 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) 
 // chargeDeath counts a process that died after its agent was ready while it had work
 // outstanding, and reports whether those deaths have reached the limit.
 func (m *Machine) chargeDeath() bool {
-	if m.claim.Pending == nil || slices.Contains(unready, m.claim.State) {
+	if !m.workOutstanding() {
 		return false
 	}
 	m.claim.Budgets.Deaths++
 	m.log.Warn("supervise: the agent died with work outstanding", "deaths", m.claim.Budgets.Deaths,
 		"limit", m.deps.Limits.LaunchFailures)
 	return m.claim.Budgets.Deaths >= m.deps.Limits.LaunchFailures
+}
+
+// workOutstanding is whether the claim's agent was ready and holds a task: the one state a death
+// is charged in (chargeDeath) and an end from outside the pod is counted in (endedFromOutside).
+// Both budgets bound work that keeps ending its own process, and a claim with no task, or whose
+// agent never became ready, has no work for such a loop to be about.
+func (m *Machine) workOutstanding() bool {
+	return m.claim.Pending != nil && !slices.Contains(unready, m.claim.State)
 }
 
 // chargePrompt counts one prompt failure. At the limit the process is retired — suspended, the
