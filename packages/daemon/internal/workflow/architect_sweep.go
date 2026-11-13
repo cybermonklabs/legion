@@ -82,9 +82,10 @@ func ArchitectStartPending(run record.RoleRun) (string, bool) {
 
 // SendArchitectStart writes the start of root's architect again, for the entry its phases row
 // already names: the same row admission's queued-root branch writes, enqueued directly rather
-// than through StartOrOwe, so it waits for no admission slot (the root holds the row the cap
-// counts from its promotion until its work ends, record.KeepsSlot). It raises no entry, as no
-// resume of the work an entry already names does (enter, SendOwedEntry).
+// than through StartOrOwe, so it waits for no admission slot and marks no movement (the root
+// holds the row the cap counts from its promotion until its work passes its review, and holds
+// none after it, record.KeepsSlot). It raises no entry, as no resume of the work an entry already
+// names does (enter, SendOwedEntry).
 //
 // The task is derived again from the record as it stands rather than taken from the row's
 // EntryTask, which is what every other role is sent. The reason is the kept decisions a root

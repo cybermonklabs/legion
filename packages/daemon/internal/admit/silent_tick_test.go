@@ -55,15 +55,15 @@ func steppedAt(t *testing.T, pool *pgxpool.Pool, token claim.Token, at time.Time
 }
 
 // seedPhaseWorker records a running root in the phase its own worker works, holding one of the
-// cap's slots, with that worker's claim up and between turns (supervise.StateReady) holding no
-// task, and the moment its agent last stepped. That is every term of the rule but the one each
-// case varies, which is how old the step is (workflow.SilentPhaseWorker).
+// cap's slots where that phase keeps one (record.KeepsSlot, seedQuietRoot), with that worker's
+// claim up and between turns (supervise.StateReady) holding no task, and the moment its agent
+// last stepped. That is every term of the rule but the one each case varies, which is how old
+// the step is (workflow.SilentPhaseWorker). A root in merging holds no slot, as an issue past its
+// review holds none: seeded with one, the pass would free it and tell the controller so in a
+// second notice beside the tick these cases read.
 func seedPhaseWorker(t *testing.T, pool *pgxpool.Pool, key, rank string, stands phase.Phase, role claim.Role, lastStep time.Time) {
 	t.Helper()
-	seedSlotted(t, pool, key, rank)
-	working := issue(t, pool, key)
-	working.Phase = stands
-	putIssue(t, pool, working)
+	working := seedQuietRoot(t, pool, key, rank, stands)
 	token := putWorkerClaim(t, pool, key, key, role, working.Generation, supervise.StateReady, "")
 	steppedAt(t, pool, token, lastStep)
 }

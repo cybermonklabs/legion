@@ -152,7 +152,7 @@ func TestTheArchitectHandshakeTimesDowngradeBelowTheirContract(t *testing.T) {
 // entryTimesContract is the contract whose entry in version.go added the two times, and this
 // daemon's own contract is never below it: a caller at this contract is served them.
 func TestTheArchitectHandshakeTimesContractIsTheOneThatAddedThem(t *testing.T) {
-	const addedEntryTimes = 111
+	const addedEntryTimes = 117
 	if entryTimesContract != addedEntryTimes {
 		t.Fatalf("entryTimesContract = %d, want %d, the contract whose entry in version.go added the issues' entry queued and confirmed times",
 			entryTimesContract, addedEntryTimes)

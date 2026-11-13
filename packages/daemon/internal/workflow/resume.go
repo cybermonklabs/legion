@@ -152,8 +152,11 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 			continue
 		}
 		// The entry is 0: this start hands the role the work it is already on rather than a new
-		// entry, so it moves no phases row either.
-		if err := e.started(ctx, tx, issue, role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, ruleResume: true}); err != nil {
+		// entry, so it moves no phases row either. It is a re-assertion, as the send of an owed
+		// entry above is (sendOwedEntry): the boot is the daemon coming back, no fact of the issue,
+		// and the work it sends is work the record already owes the role, so it marks no movement
+		// (startMarks.reasserts).
+		if err := e.started(ctx, tx, issue, role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, ruleResume: true, reasserts: true}); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,

@@ -689,7 +689,7 @@ const legionIssue = z.object({
    * number is below the entry its row names, on every admission pass and on a sweep of its own
    * each minute, so the two are equal for a role holding its work and differ for one the daemon
    * has still to reach. A root carries them as a child does, since the architect is the role
-   * that works `admitted` (contract 111); both are absent together for a phase no role works —
+   * that works `admitted` (contract 117); both are absent together for a phase no role works —
    * `awaiting_person`, `done` and `held` — and each is absent where it is 0, which is a role no
    * entry has been raised for and one the daemon holds no claim row of; a daemon before contract
    * 94 writes neither, and a caller in a pod whose plugin declares a contract below 94 is served
@@ -697,17 +697,29 @@ const legionIssue = z.object({
    * as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
-  /** The two times of the task that entry was queued as (contract 111): when the role's claim
+  /** The two times of the task that entry was queued as (contract 117): when the role's claim
    * was first queued it, and when a turn of that claim's worker confirmed it. Both are read from
    * the task the claim holds of the entry it was given, so both are absent for a claim holding
    * none — one the daemon holds no row of, one whose turn retired the task, and a root of the
-   * release before contract 111, which carries the two numbers and no task — and
+   * release before contract 117, which carries the two numbers and no task — and
    * `entryConfirmedAt` alone is absent while the task stands queued and no turn has confirmed it.
-   * A daemon before contract 111 writes neither, and a caller in a pod whose plugin declares a
-   * contract below 111 is served the state with neither (the daemon's `withoutEntryTimes`), which
+   * A daemon before contract 117 writes neither, and a caller in a pod whose plugin declares a
+   * contract below 117 is served the state with neither (the daemon's `withoutEntryTimes`), which
    * is why a reader takes both as optional. */
   entryQueuedAt: timestamp.optional(),
   entryConfirmedAt: timestamp.optional(),
+  /** When the daemon last saw anything of this issue's tree move, and how long that tree has
+   * been still at this read, in hours (contract 111). The pair is the tree's and not the issue's,
+   * so every issue of one tree carries the same two values — an issue past its own review, which
+   * holds no admission slot, and a done child recorded under a live tree among them. Both are
+   * absent together for an issue whose tree is not live and for an issue the workflow does not
+   * record, and a daemon before contract 111 writes neither at all, which is why a reader takes
+   * them as optional. A tree the record shows no movement for is measured from the zero time,
+   * where the daemon's duration saturates, so `quietHours` reads 2562047.788 — 292 years, the
+   * largest span it holds. That is "this tree has never moved", not a fault to refuse the body
+   * over, which is why the bound here is `nonnegative` and no ceiling. */
+  treeMovedAt: timestamp.optional(),
+  quietHours: z.number().nonnegative().optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history. */
@@ -749,7 +761,8 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the eleven words of `admission.held`, in `record.HeldReasons`' order.
- * `at_work` names no issue today; `record.HeldAtWork` says why.
+ * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
+ * says which issues read it.
  */
 export const LEGION_HELD_REASONS = [
   "tree_closed",
@@ -785,16 +798,17 @@ const legionHeldIssue = z.object({
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
  * `active` is every issue holding a slot and `waiting` the admission line, children as much as
- * roots, so one tree with three started children holds three slots. An issue takes its slot when
- * the daemon starts it and keeps it until it is done or leaves the workflow, so `active` carries
- * an issue waiting on a person, one in `accepting`, one `held`, a merger at work in `merging`,
- * one in `merging` whose start a closed design gate holds, and a merged root standing in
- * `merging` while the rest of its tree runs, while an issue whose phase has left the workflow —
- * `done`, or a status Dispatch took it out of the workflow with — is in neither list. An issue
- * holding a slot is in `waiting` as well while its work comes back to it, an answered root until
- * the pass that resumes it. `trees` is the root of every live tree, sorted, which a reader needs
- * because a running tree may hold no slot at all — the controller reads it where it read
- * `active` as the running
+ * roots, so one tree with three started children holds three slots. An issue holds one of the
+ * cap's slots from the moment the daemon starts it until its work is past its review —
+ * `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out
+ * of the workflow, so `active` carries an issue at work, one `held` and one waiting on a
+ * person, while an issue past its review — a merger at work in `merging`, one in `merging`
+ * whose start a closed design gate holds, a merged root standing in `merging` while the rest
+ * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
+ * took it out of the workflow with, are in neither list. An issue holding a slot is
+ * in `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
+ * tree may hold no slot at all — the controller reads it where it read `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose

@@ -29,7 +29,7 @@ import (
 // docs/kubernetes.md, which is where an operator reads it at a rollback. The header is the
 // source — upgradeRecoveryReadsAnswer runs the block that file carries, as the one transaction
 // an operator runs — and the guide's copy is held to it by
-// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide. The way back of contract 111, which
+// TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide. The way back of contract 117, which
 // an operator runs before it, stands in the headers of its two migrations and in a fenced block of
 // the guide of its own, and TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide
 // holds those copies to one text.
@@ -41,7 +41,7 @@ const (
 	architectStalledNoticesMigrationFile = "internal/store/migrations/20261113181500_architect_stalled_notices.up.sql"
 	architectUpgradeMigrationFile        = "internal/store/migrations/20261113182000_architect_entry_upgrade.up.sql"
 	wayBackGuideFile                     = "docs/kubernetes.md"
-	// architectUpgradeMigration is the version of the second of contract 111's migrations, whose
+	// architectUpgradeMigration is the version of the second of contract 117's migrations, whose
 	// version row the first statement of that way back deletes.
 	architectUpgradeMigration = 20261113182000
 	// wayBackHeredoc opens the block in every file and wayBackTerminator closes it. What stands
@@ -225,7 +225,7 @@ func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 	assertOneWayBackText(t, phaseEntryMigrationFile, header, wayBackGuideMark(phaseEntryMigration))
 }
 
-// The way back of contract 111 is one text standing in three files: the headers of its two
+// The way back of contract 117 is one text standing in three files: the headers of its two
 // migrations, 20261113181500_architect_stalled_notices and 20261113182000_architect_entry_upgrade,
 // and the fenced block of docs/kubernetes.md that an operator runs before the phase entry's. A
 // copy that drifted is the same wrong procedure at a rollback as the phase entry's would be.

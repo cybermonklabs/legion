@@ -2,12 +2,13 @@
 -- before this one is settled at, so this release starts nothing that is already running
 -- (INFRA-2614).
 --
--- This release sends each role of a slotted issue the work of the entry its phases row names, and
--- a root's own architect is now one of those roles (admit's resumeSlottedWorkers,
--- workflow.ArchitectAtWork). The release before it raised no entry for an architect and wrote it
--- no phases row at all. Without this fill the first pass after the upgrade would read every root
--- architect as owed an entry it was never given and send each one a first task, so an architect
--- that is writing its tree's spec right now would be told to take the tree up again.
+-- This release sends each role of an issue that holds a slot or stands past its review the work
+-- of the entry its phases row names, and a root's own architect is now one of those roles
+-- (admit's resumeSlottedWorkers, workflow.ArchitectAtWork). The release before it raised no entry
+-- for an architect and wrote it no phases row at all. Without this fill the first pass after the
+-- upgrade would read every root architect as owed an entry it was never given and send each one a
+-- first task, so an architect that is writing its tree's spec right now would be told to take the
+-- tree up again.
 --
 -- The record cannot tell that architect from a stuck one. Both stand at admitted with no
 -- design-gate rows and hold no delivery, and nothing in the record says whether a task ever

@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 111,
-    "caller": 111
+    "daemon": 117,
+    "caller": 117
   },
   "admission": {
     "cap": 3,
@@ -261,7 +261,9 @@
       "phaseEntry": 4,
       "givenEntry": 4,
       "entryQueuedAt": "2026-09-22T08:58:14Z",
-      "entryConfirmedAt": "2026-09-22T08:58:51Z"
+      "entryConfirmedAt": "2026-09-22T08:58:51Z",
+      "treeMovedAt": "2026-09-22T09:17:12Z",
+      "quietHours": 0.013333333333333334
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -323,7 +325,9 @@
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
-      }
+      },
+      "treeMovedAt": "2026-09-22T06:18:00Z",
+      "quietHours": 3
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -382,7 +386,9 @@
       },
       "phaseEntry": 2,
       "givenEntry": 1,
-      "entryQueuedAt": "2026-09-21T22:40:02Z"
+      "entryQueuedAt": "2026-09-21T22:40:02Z",
+      "treeMovedAt": "2026-09-21T09:18:00Z",
+      "quietHours": 24
     },
     "LEGION-212": {
       "key": "LEGION-212",
@@ -428,7 +434,9 @@
         "since": "2026-09-22T08:05:00Z",
         "answeredAt": "2026-09-22T09:21:00Z",
         "answeredBy": "ask"
-      }
+      },
+      "treeMovedAt": "2026-09-22T09:03:00Z",
+      "quietHours": 0.25
     },
     "LEGION-214": {
       "key": "LEGION-214",
@@ -828,6 +836,7 @@
     "production_check_hours": 240,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "stalled_tree_notice_hours": 6,
     "worker_silence_minutes": 45,
     "worker_background_hours": 6,
     "pod_update_max_open_rounds": 6,
