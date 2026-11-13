@@ -206,7 +206,7 @@ function ThreadMarkCheckbox({
   thread: MyReplyRow;
 }): ReactNode {
   return (
-    <PlainText markdown={thread.subject}>
+    <PlainText markdown={thread.subject} tree={thread.subject_tree}>
       {(subject) => (
         <MarkCheckbox id={rowId(row)} marked={marked} name={subject ?? ""} onMark={onMark} />
       )}
@@ -386,6 +386,7 @@ function AskShortRow({
           lines={1}
           markdown={ask.question}
           source={textSourceOf("ask", ask.id)}
+          tree={ask.question_tree}
         />
       }
     />

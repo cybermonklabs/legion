@@ -159,6 +159,12 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	if answered.Code != http.StatusOK {
 		t.Fatalf("answer ask: status=%d body=%s", answered.Code, answered.Body.String())
 	}
+	// A thread of alice's that somebody else wrote in, so the replies read below has a row of its
+	// own. Its subject is the first line of the comment above, which the Inbox draws through the
+	// one renderer every body is drawn with (web/src/features/inbox/ThreadTitle.tsx).
+	sessionComment(t, handler, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Friday **works** for me.", "reply_to": commentID,
+	})
 
 	// Each row is read twice: the live answer carries the tree, and the OpenAPI document's own
 	// 200 schema for the route declares it there. The second reading is what holds a route row
@@ -188,6 +194,8 @@ func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 		{"one ask's answer", "/api/v1/asks/{id}", "/api/v1/asks/" + askID, "ask.answer.text", "ask.answer.text_tree"},
 		{"the caller's answer history", "/api/v1/me/answers",
 			"/api/v1/me/answers", "rows.0.question", "rows.0.question_tree"},
+		{"a thread row's subject", "/api/v1/me/replies",
+			"/api/v1/me/replies", "rows.0.subject", "rows.0.subject_tree"},
 		{"a document's text", "/api/v1/artifacts/{id}/text",
 			"/api/v1/artifacts/" + issue.PrimaryArtifactID + "/text", "markdown", "markdown_tree"},
 		{"a project's architecture", "/api/v1/projects/{key}/architecture", "", "", "components.0.prose_tree"},

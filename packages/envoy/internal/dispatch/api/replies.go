@@ -615,6 +615,16 @@ func (s *server) listMyReplies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	response.Rows = append(response.Rows, rows...)
+	// Each row's subject carries the reading of its own line, for the caller that asked for the
+	// trees. The Inbox draws that line through the one renderer every body is drawn with
+	// (web/src/features/inbox/ThreadTitle.tsx), so the reading goes out beside it and no browser
+	// parses it. It is read here, after the transaction above is committed: a reader still
+	// holding a pooled connection reads no stored tree and stores none (displayTreeReader.resolve).
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	for index := range response.Rows {
+		reader.text(&response.Rows[index].SubjectTree, response.Rows[index].Subject)
+	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, response)
 }
 

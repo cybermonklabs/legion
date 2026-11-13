@@ -33,6 +33,7 @@ function ThreadSubject({ thread }: { thread: MyReplyRow }): ReactNode {
         lines={1}
         markdown={thread.subject}
         source={textSourceOf(textSourceKind(thread.kind), thread.thread_id)}
+        tree={thread.subject_tree}
       />
     </h2>
   );

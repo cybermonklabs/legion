@@ -56,7 +56,7 @@ export function DismissControl({
   // projection of the subject, from the same reader that draws the row's own line, so what a
   // reader hears and what they see are the same words - a reference named, not its address.
   return (
-    <PlainText markdown={thread.subject}>
+    <PlainText markdown={thread.subject} tree={thread.subject_tree}>
       {(subject) => (
         <button
           aria-label={`${label}: ${subject ?? ""}`}

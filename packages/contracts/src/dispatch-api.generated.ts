@@ -5291,6 +5291,12 @@ export interface components {
       reply: components["schemas"]["MyReplyReply"];
       session?: components["schemas"]["MyReplySession"];
       subject: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      subject_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       thread_id: string;
       unread: boolean;
       unread_count: number;

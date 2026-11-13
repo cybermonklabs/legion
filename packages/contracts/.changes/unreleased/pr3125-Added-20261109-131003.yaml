@@ -1,5 +1,5 @@
 kind: Added
-body: The shared reference table holds the three party addresses — `dispatch://agent/<session id>`, `dispatch://role/<token>` and `dispatch://person/<login>` — and the component form the Go reader already took, so both readers of a text agree on all thirteen kinds Dispatch holds. `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` say which boxes a person writes in and which surfaces show a stored record, each row carrying how a test reaches it and, where it is excluded, why. `dispatch_search` takes a `kind`.
+body: The shared reference table holds the three party addresses — `dispatch://agent/<session id>`, `dispatch://role/<token>` and `dispatch://person/<login>` — and the component form the Go reader already took, so both readers of a text agree on all thirteen kinds Dispatch holds. `DISPATCH_WRITING_BOXES` and `DISPATCH_READING_SURFACES` say which boxes a person writes in and which surfaces show a stored record, each row carrying how a test reaches it and, where it is excluded, why. `dispatch_search` takes a `kind`. `MyReplyRow` carries `subject_tree`, the reading of the row's own subject line, for a caller that sent the `Dispatch-Trees` header, so the Inbox draws that line from the reading rather than parsing it.
 time: 2026-11-09T13:10:03.816733829Z
 custom:
     Issue: pr3125
