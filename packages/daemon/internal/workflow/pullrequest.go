@@ -381,6 +381,113 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		Reason: fmt.Sprintf("pull request #%d closed without merging while %s was in %s", pr.Number, issue.Key, issue.Phase)})
 }
 
+// dequeued writes the daemon's one read of a pull request that GitHub reports left the merge
+// queue (intake.PullRequestDequeued, record.MergeQueueRead), while the issue stands in merging at
+// the head the event names (LeftMergingAt). The event names no reason for the removal, since the
+// listener drops GitHub's, and GitHub's merge queue reports a removal in the same second as the
+// merge it makes, so the read decides and the event does not: a merged answer applies the merge,
+// and any other answer tells the merger (mergeQueueReadDone). The read is an outbox row, as every
+// effect of a fact is, so the event is acknowledged without waiting for GitHub and a restart
+// before the read loses nothing.
+//
+// It moves no phase, writes no slot and wakes no claim: what a removal means is the merger's to
+// decide (dispatch://INFRA-3274/spec R1). A removal at a head other than the one the record holds,
+// of an issue that has left merging, or of a pull request that is not open writes nothing and is
+// logged, as a read of GitHub's merge state for a head the record has moved past is
+// (mergeability): the record has moved on since GitHub reported it.
+func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullRequestDequeued) (intake.Result, error) {
+	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
+	if err != nil || pr == nil {
+		return intake.Result{}, err
+	}
+	issue, err := e.store.Issue(ctx, tx, pr.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if why := LeftMergingAt(*issue, lingers, pr, pr.Number, fact.HeadSHA); why != "" {
+		e.logOnCommit(ctx, "workflow: a pull request left the merge queue where its issue does not merge at that head; nothing is read",
+			"issue", issue.Key, "pullRequest", pr.Number, "head", fact.HeadSHA, "why", why)
+		return intake.Result{}, nil
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.MergeQueueRead{Number: pr.Number, Head: fact.HeadSHA}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: a pull request in merging left the merge queue; the daemon reads it from GitHub once",
+		"issue", issue.Key, "pullRequest", pr.Number, "head", fact.HeadSHA)
+	return intake.Result{}, nil
+}
+
+// mergeQueueReadDone writes the message that tells the issue's merger its pull request left the
+// merge queue (record.MergeQueueRemoval), once the daemon's read of the pull request found no
+// merge (intake.MergeQueueReadDone): GitHub answered it open or closed unmerged, or no read
+// succeeded (Unread), which the message then says. The read ran outside any transaction, for up
+// to two minutes while GitHub failed it, so the issue is judged again here by the rule the read
+// row judged it by before it read (LeftMergingAt): an issue that has left merging at that head
+// since writes nothing, and is logged. The message is a row of its own rather than a publish of
+// the read row's, because it waits until the merger's session holds its role, and a row that
+// waited there would read GitHub again at each try (record.MergeQueueRead).
+//
+// It moves no phase, writes no slot and wakes no claim: the message's own row wakes a released
+// merger when it runs (the daemon's merge-queue removal executor).
+func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.MergeQueueReadDone) (intake.Result, error) {
+	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if why := LeftMergingAt(*issue, lingers, pr, fact.Number, fact.Head); why != "" {
+		e.logOnCommit(ctx, "workflow: the merge-queue read finished after the issue left merging at that head; the merger is not told",
+			"issue", issue.Key, "pullRequest", fact.Number, "head", fact.Head, "unread", fact.Unread, "why", why)
+		return intake.Result{}, nil
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, record.MergeQueueRemoval{Number: fact.Number, Head: fact.Head, Unread: fact.Unread}); err != nil {
+		return intake.Result{}, err
+	}
+	e.logOnCommit(ctx, "workflow: the merger is owed word that its pull request left the merge queue",
+		"issue", issue.Key, "pullRequest", fact.Number, "head", fact.Head, "unread", fact.Unread)
+	return intake.Result{}, nil
+}
+
+// LeftMergingAt says why the workflow no longer works issue's merging phase at head of pull
+// request number, or "" while it does: the issue stands in merging itself, not held from it; it
+// is in the workflow; its tree does not linger (lingers, record.TreeLingers); and the pull request
+// the record holds for it (pr, nil for none) is number, open, at head. In each other state no
+// merger is told of a removal from the merge queue at head: the workflow no longer works that
+// phase at that head, and the merger of a lingering tree is suspended by its close and would
+// never hold its role to hear it. The fact that writes the merger's message (dequeued,
+// mergeQueueReadDone) and the daemon's outbox rows that read the pull request and deliver the
+// message all judge by this one rule, so no two of them disagree about an issue that left merging.
+func LeftMergingAt(issue record.Issue, lingers bool, pr *record.PullRequest, number int, head string) string {
+	switch {
+	case issue.Phase != phase.Merging:
+		return fmt.Sprintf("the issue stands in %s, not merging", issue.Phase)
+	case record.OutOfWorkflow(issue.Status):
+		return fmt.Sprintf("the issue is out of the workflow at status %s", issue.Status)
+	case lingers:
+		return "the issue's tree lingers or has closed"
+	case pr == nil:
+		return "the record holds no pull request for the issue"
+	case pr.Number != number:
+		return fmt.Sprintf("the record holds pull request #%d for the issue", pr.Number)
+	case pr.State != record.PullRequestOpen:
+		return fmt.Sprintf("the pull request is %s", pr.State)
+	case pr.HeadSHA != head:
+		return fmt.Sprintf("the record holds the pull request at %s", pr.HeadSHA)
+	}
+	return ""
+}
+
 // pullRequestMissing tells the architect that the issue's implementer completed and GitHub shows
 // no open pull request on its branch (intake.PullRequestMissing, the daemon's per-issue read of
 // GitHub): the issue waits in implementing for a pull request record (implementationReady), and

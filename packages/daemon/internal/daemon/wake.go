@@ -195,9 +195,10 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 
 // wakeForDelivery brings a released pod back for a delivery the daemon already has for one of its
 // roles and cannot hand over any other way: a notice whose owning architect is released, a
-// phase-ended message whose role is, and a hook prompt whose role is. Every other delivery is an
-// outbox `start` or a task, which the supervise machine already resumes a suspended claim for
-// (deliverResuming); these three publish to a live session instead, so the row's own retry is
+// phase-ended message whose role is, a hook prompt whose role is, and the message that tells a
+// released merger its pull request left the merge queue (mergeQueueRemoval). Every other delivery
+// is an outbox `start` or a task, which the supervise machine already resumes a suspended claim
+// for (deliverResuming); these four publish to a live session instead, so the row's own retry is
 // what waits for the pod, and this is what makes the pod come back for it to find.
 //
 // It answers whether the claim was released and a resume of it is under way. The role's one open

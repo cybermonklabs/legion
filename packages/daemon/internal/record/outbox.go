@@ -1068,6 +1068,26 @@ type MergeQueueRemoval struct {
 
 func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRemoval }
 
+// Message is what the runner publishes for issue to its merger, where repo is the repository the
+// record holds the pull request under (PullRequest.Repo): it starts with the issue key, as a
+// phase-ended message does, names the pull request as `owner/name#n` and the head, and says that
+// GitHub's event names no reason, so the merger reads the reason on GitHub as step 5 of its role
+// prompt says (internal/prompts/roles/merger.md). With Unread it also says that the daemon could
+// not read the pull request, so the merger does not take the message to mean that GitHub did not
+// merge it. The sentences are short and plain, one instruction to a sentence, because an agent
+// reads them (ASD-STE100).
+func (p MergeQueueRemoval) Message(issue, repo string) string {
+	unread := ""
+	if p.Unread {
+		unread = " The daemon could not read the pull request from GitHub. So it does not know if GitHub merged it."
+	}
+	return fmt.Sprintf("%s: pull request %s#%d left the merge queue at head %s.%s"+
+		" The event the daemon received names no reason for the removal."+
+		" Read the pull request and its removals on GitHub, as step 5 of your role says."+
+		" Then act on what you read.",
+		issue, repo, p.Number, p.Head, unread)
+}
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {

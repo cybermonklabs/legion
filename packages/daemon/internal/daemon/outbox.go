@@ -92,6 +92,15 @@ type outbox struct {
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
+	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}), and
+	// mergeStateWait is how long a merge-queue read waits after a failed read before it reads
+	// again (mergeQueueRead). Both are the workflow runtime's own (workflowRuntime.readPullRequest,
+	// workflowRuntime.mergeStateWait), set by attach after newOutbox, so the outbox reads GitHub
+	// as the per-issue read does and a whole-daemon test cuts the wait through the runtime's own
+	// field (mergeStateRetry). A test that builds the outbox by hand leaves both nil, and a
+	// merge-queue read then fails with an error that names the missing read.
+	readPullRequest func(context.Context, record.PullRequest) (githubPullRequest, error)
+	mergeStateWait  func() time.Duration
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
 	// timers — the sweep's, a lane's wait for its next due row, a running row's lease renewal.
 	// Both are the wall clock in production, and a test holds both still (heldClock). A test that
@@ -538,7 +547,12 @@ type rateLimit struct {
 
 // githubBudgets is the GitHub budgets a row of each kind spends, as the implement App: its REST
 // calls (an issue branch's create) the REST core's, and every call GitHub's secondary limit. A
-// kind it does not name calls no GitHub API.
+// row of a kind it does not name is never deferred for a limit another row met, and every such
+// kind but one calls no GitHub API. The one is the merge-queue read (record.MergeQueueRead,
+// mergeQueueRead), which reads its pull request and stays out of this map on purpose: a deferral
+// is a retry, which spends one of the read's mergeStateLadderReads attempts with no read made. A
+// read GitHub refuses for its rate limit is a failed read instead, and the next read waits for
+// the longer of the runtime's wait and GitHub's Retry-After.
 var githubBudgets = map[record.OutboxKind][]githubrest.Budget{
 	record.OutboxKindIssueBranch: {githubrest.BudgetCore, githubrest.BudgetSecondary},
 }
@@ -668,6 +682,10 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.phaseEnded(ctx, row, value)
 	case record.HookPrompt:
 		return r.hookPrompt(ctx, row, value)
+	case record.MergeQueueRead:
+		return r.mergeQueueRead(ctx, row, value)
+	case record.MergeQueueRemoval:
+		return r.mergeQueueRemoval(ctx, row, value)
 	default:
 		return fmt.Errorf("outbox row %d: no executor for %T", row.ID, payload)
 	}

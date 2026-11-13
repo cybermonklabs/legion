@@ -758,6 +758,22 @@ type PullRequestDequeued struct {
 
 func (PullRequestDequeued) isFact() {}
 
+// MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
+// merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,
+// or closed unmerged, or, with Unread, no read of it succeeded, so the daemon does not know
+// whether GitHub merged it. Head is the head that left the merge queue (PullRequestDequeued). The
+// workflow writes the message that tells the issue's merger, while the issue still stands in
+// merging at Head (workflow's mergeQueueReadDone). A merged answer applies PullRequestMerged
+// instead, as the webhook's merge would.
+type MergeQueueReadDone struct {
+	Issue  string
+	Number int
+	Head   string
+	Unread bool
+}
+
+func (MergeQueueReadDone) isFact() {}
+
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
 // is in implementing with no open or merged pull request recorded: never decoded from an event.
