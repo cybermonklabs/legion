@@ -31,21 +31,25 @@ export interface ReadersBlock {
   readonly top: number;
 }
 
-/** The top of `scroller` - the box that scrolls a document, the page itself where `null` - in
- *  the page's own coordinates: the top edge of the Inbox's reading column, or the top of the
- *  page where the page itself scrolls the document. It is the first line of the document the
- *  reader can see, and every reading below is taken from it: read against the page in a
- *  column, the block a reader is on is one that scrolled out of the column above them, and a
- *  growth inside that block moves everything they are looking at while this module answers
- *  nothing. */
+/** The top of `scroller`'s scrollport - the box that scrolls a document, the page itself where
+ *  `null` - in the page's own coordinates: the top of the Inbox's reading column's padding box,
+ *  or the top of the page where the page itself scrolls the document. A box clips what it
+ *  scrolls at its padding edge, so that is a border-width (`clientTop`) under the top its
+ *  `getBoundingClientRect` answers, and it is the first line of the document the reader can see
+ *  and the first line a scroll may land content on. Every reading below is taken from it: read
+ *  against the page in a column, the block a reader is on is one that scrolled out of the column
+ *  above them, and a growth inside that block moves everything they are looking at while this
+ *  module answers nothing. */
 export function scrollportTop(scroller: HTMLElement | null): number {
-  return scroller === null ? 0 : scroller.getBoundingClientRect().top;
+  return scroller === null ? 0 : scroller.getBoundingClientRect().top + scroller.clientTop;
 }
 
-/** How tall that scrollport is: the column's own height, or the window's where the page is the
- *  scrollport. */
+/** How tall that scrollport is: the column's padding box less a horizontal scrollbar
+ *  (`clientHeight`), or what the page's document element shows where the page is the
+ *  scrollport - `documentElement.clientHeight`, the window less a horizontal scrollbar the page
+ *  cannot draw into, which `window.innerHeight` counts. */
 export function scrollportHeight(scroller: HTMLElement | null): number {
-  return scroller === null ? window.innerHeight : scroller.clientHeight;
+  return scroller === null ? document.documentElement.clientHeight : scroller.clientHeight;
 }
 
 /**
@@ -195,22 +199,15 @@ export function putTheBoxAt(scroller: HTMLElement | null, top: number): void {
 }
 
 /** The band of the page's own coordinates `scroller` - the page where null - places an element
- *  in: the scrollport, less its `scroll-padding`, which is the part of the box a scroll is
- *  allowed to land content in (`html { scroll-padding-bottom: 5rem }` under 1280px,
- *  `styles.css`, which holds the fixed review sheet's height clear of whatever the page
- *  scrolls to).
- *
- *  The scrollport is the padding box, which is what the browser aligns and is not what
- *  `scrollportTop` reads: that one answers the border box's own top, which is the first line of
- *  the document a reader can see and is a border-width above the first line a scroll may land
- *  content on. The page's own port is `documentElement.clientHeight` rather than
- *  `window.innerHeight`, which counts a horizontal scrollbar the page cannot draw into. */
+ *  in: the scrollport (`scrollportTop`, `scrollportHeight`), less its `scroll-padding`, which is
+ *  the part of the box a scroll is allowed to land content in (`html { scroll-padding-bottom:
+ *  5rem }` under 1280px, `styles.css`, which holds the fixed review sheet's height clear of
+ *  whatever the page scrolls to). */
 function placingPort(scroller: HTMLElement | null): { bottom: number; top: number } {
   const style = window.getComputedStyle(scroller ?? document.documentElement);
-  const top = scroller === null ? 0 : scroller.getBoundingClientRect().top + scroller.clientTop;
-  const height = scroller === null ? document.documentElement.clientHeight : scroller.clientHeight;
+  const top = scrollportTop(scroller);
   return {
-    bottom: top + height - (Number.parseFloat(style.scrollPaddingBottom) || 0),
+    bottom: top + scrollportHeight(scroller) - (Number.parseFloat(style.scrollPaddingBottom) || 0),
     top: top + (Number.parseFloat(style.scrollPaddingTop) || 0),
   };
 }
@@ -262,7 +259,7 @@ function howFarIntoView(
 
 /**
  * Every box that scrolls `element`, nearest first and the page itself last: the chain the
- * browser's own `scrollIntoView` walks.
+ * browser's own `scrollIntoView` walks, read up the element's parents.
  *
  * It is a wider set than `whatScrolls` answers with, and deliberately. That one names the box
  * the READER scrolls, which is where their place is kept and which they can only be in if they
@@ -273,12 +270,14 @@ function howFarIntoView(
  * no box is recorded as moved by a write that could not move it.
  *
  * The walk ends at a `fixed` box, and the page is no part of the chain above one: a fixed box
- * stands where the window puts it whatever the page is scrolled to, so no scroll above it moves
- * anything in it. The page is left out at that point rather than asked for a delta it cannot
- * answer - which is what the search palette's list is, in a `fixed` wrapper over a page whose
- * bottom `scroll-padding` the highlighted row's resting edge falls in: every arrow press would
- * scroll the page further behind the palette and leave the row exactly where it stood
- * (`features/search/SearchPalette.tsx`).
+ * whose containing block is the window stands where the window puts it whatever the page is
+ * scrolled to, so no scroll above it moves anything in it. The page is left out at that point
+ * rather than asked for a delta it cannot answer - which is what the search palette's list is,
+ * in a `fixed` wrapper over a page whose bottom `scroll-padding` the highlighted row's resting
+ * edge falls in: every arrow press would scroll the page further behind the palette and leave
+ * the row exactly where it stood (`features/search/SearchPalette.tsx`). A fixed box whose
+ * containing block is a transformed ancestor does scroll with the page, and is one of the two
+ * differences `placeInView` names.
  */
 function boxesThatScroll(element: HTMLElement): (HTMLElement | null)[] {
   const boxes: (HTMLElement | null)[] = [];
@@ -315,16 +314,36 @@ function boxesThatScroll(element: HTMLElement): (HTMLElement | null)[] {
  *  that is outside the port to the port's own - the far edge, where the element is taller than
  *  the port (`howFarIntoView`) - rather than a delta of this module's own invention. Each box
  *  is measured after the boxes inside it have moved, as the browser measures, so an outer box
- *  is asked only for what the inner ones left to do - which is
- *  nothing, for the usual element that one box brings into view. One thing the browser's call
- *  does it does not: it leaves the inline axis alone. Every caller of it names a block
- *  alignment only, of an element drawn in the box the reader is already looking at. A scroll it
- *  writes is instant, as the browser's is: nothing in this app asks for
- *  `scroll-behavior: smooth`. */
+ *  is asked only for what the inner ones left to do - which is nothing, for the usual element
+ *  that one box brings into view. An element with no box of its own - `display: none`, or under
+ *  it, or `display: contents` - is left alone, as the browser's call leaves it (CSSOM View,
+ *  `scrollIntoView()`: an element with no associated box ends the steps), rather than measured
+ *  as the all-zero rectangle it reports. A scroll it writes is instant, as the browser's is:
+ *  nothing in this app asks for `scroll-behavior: smooth`.
+ *
+ *  Where it does not do what the browser's call does:
+ *  - It leaves the inline axis alone. Every caller of it names a block alignment only, of an
+ *    element drawn in the box the reader is already looking at.
+ *  - An out-of-flow element whose containing block stands outside a box that scrolls between it
+ *    and that block - an `absolute` element in an unpositioned list - moves that box, which the
+ *    browser leaves alone because the box does not carry the element.
+ *  - A `fixed` element, or one inside a fixed box, under an ancestor that makes itself the fixed
+ *    box's containing block - a `transform`, a `filter`, a `contain: paint` - leaves the page
+ *    where it is, which the browser scrolls, because that box scrolls with the page.
+ *  The last two are both a question of which ancestor is the element's containing block, which
+ *  the DOM does not report: the browser answers it from a list of properties (`position`,
+ *  `transform`, `perspective`, `filter`, `backdrop-filter`, `contain`, `will-change` among
+ *  them) that has grown with CSS and goes on growing, and a copy of that list here would be a
+ *  second answer that goes wrong in new cases without saying so. No caller passes either shape
+ *  today (dispatch://INFRA-341, review round 4): each places a row, card, section or message
+ *  drawn in the flow of the box that scrolls it. */
 export function placeInView(
   element: HTMLElement,
   options?: { readonly block?: ScrollLogicalPosition }
 ): void {
+  if (element.getClientRects().length === 0) {
+    return;
+  }
   const block = options?.block ?? "start";
   for (const scroller of boxesThatScroll(element)) {
     moveTheBox(scroller, howFarIntoView(element, scroller, block));

@@ -380,7 +380,28 @@ test("on a document page the same readings are the page's own, and unchanged", (
   expect(whereTheReaderIs(box)).toBe(1_250);
   expect(whereTheReaderIs(box)).toBe(window.scrollY);
   expect(scrollportTop(box)).toBe(0);
-  expect(scrollportHeight(box)).toBe(window.innerHeight);
+  expect(scrollportHeight(box)).toBe(document.documentElement.clientHeight);
+});
+
+// The scrollport is the box's padding box: a box clips what it scrolls at its padding edge, so
+// the first line of the document a reader can see in a bordered column is a border-width under
+// the column's own top, and the page's port is what its document element shows - the window
+// less a horizontal scrollbar, which `window.innerHeight` counts and the page cannot draw into.
+test("the port a bordered column shows starts under its border, and the page's above its scrollbar", () => {
+  const { box } = borderedListOf(500, 40);
+  pagePort = window.innerHeight - 15;
+
+  try {
+    expect({
+      column: { height: scrollportHeight(box), top: scrollportTop(box) },
+      page: { height: scrollportHeight(null), top: scrollportTop(null) },
+    }).toEqual({
+      column: { height: LIST_HEIGHT, top: LIST_TOP + LIST_BORDER },
+      page: { height: window.innerHeight - 15, top: 0 },
+    });
+  } finally {
+    box.remove();
+  }
 });
 
 /** Where a list that scrolls in a box of its own stands, and how tall it is. */
@@ -598,8 +619,8 @@ test("a row is placed in the port a bordered scroller shows, not in its border b
 
     try {
       // What the browser aligns is the scrollport - the padding box - and a border read as
-      // part of it places every row one border-width off (`clientTop`, `scrollportTop` reads
-      // the border box's own top).
+      // part of it places every row one border-width off (`clientTop`, which `scrollportTop`
+      // adds to the border box's own top).
       placeInView(row, { block });
 
       expect({ block, lands: box.scrollTop }).toEqual({ block, lands });
@@ -848,6 +869,80 @@ test("a row in a list a fixed box carries is placed without scrolling the page b
   } finally {
     document.documentElement.style.scrollPaddingBottom = "";
     fixed.remove();
+  }
+});
+
+test("an element with no box of its own is left where it is, as the browser leaves it", () => {
+  const placed = (["none", "contents"] as const).map((display) => {
+    const { box, row } = listOf(500, 40);
+
+    try {
+      box.scrollTop = 500;
+      // A browser draws no box for an element that is `display: none` or `display: contents`,
+      // so it reports no client rects and a bounding rect of zeros - which happy-dom, laying
+      // nothing out, is told here. Its `scrollIntoView` stops there (CSSOM View,
+      // `scrollIntoView()`: an element with no associated box is left alone); measured as the
+      // all-zero box, the row would be brought to the list's end from above it, 400 px off.
+      row.style.display = display;
+      row.getClientRects = () => [] as unknown as DOMRectList;
+      row.getBoundingClientRect = () => ({ bottom: 0, height: 0, top: 0 }) as DOMRect;
+
+      placeInView(row, { block: "end" });
+
+      return { display, recorded: thePageLeftItThere(box), scrollTop: box.scrollTop };
+    } finally {
+      box.remove();
+    }
+  });
+
+  expect(placed).toEqual([
+    { display: "none", recorded: false, scrollTop: 500 },
+    { display: "contents", recorded: false, scrollTop: 500 },
+  ]);
+});
+
+// The two places `placeInView` is known to answer otherwise than the browser, each named in its
+// docstring: both turn on which ancestor is an element's containing block, which the DOM does
+// not report. These rows hold the module to what that docstring says it does.
+test("a named difference: an out-of-flow row whose containing block is outside its list scrolls the list", () => {
+  const { box, row } = listOf(500, 40);
+
+  try {
+    // An absolutely placed row whose containing block is the page rather than the list: the
+    // list does not carry it, so its rectangle stays where it is whatever the list is scrolled
+    // to, and the browser's own call leaves the list at 0. The walk here goes up the element's
+    // parents, which the list is one of, and moves it by what the row's end hangs past it.
+    row.style.position = "absolute";
+    row.getBoundingClientRect = () => ({ bottom: 640, height: 40, top: 600 }) as DOMRect;
+
+    placeInView(row, { block: "nearest" });
+
+    expect(box.scrollTop).toBe(640 - (LIST_TOP + LIST_HEIGHT));
+  } finally {
+    box.remove();
+  }
+});
+
+test("a named difference: a fixed card under a transformed ancestor does not scroll the page", () => {
+  const page = pageOf(1, 0);
+  // A transform makes its element the containing block of a fixed box inside it, so that box
+  // scrolls with the page and the browser's own call scrolls the page to bring it in. The walk
+  // here reads a fixed box as one the window holds still, and leaves the page where it is.
+  const transformed = document.createElement("div");
+  transformed.style.transform = "translateY(0)";
+  const card = document.createElement("div");
+  card.style.position = "fixed";
+  card.getBoundingClientRect = () =>
+    ({ bottom: 1_050 - page.scrollY(), height: 50, top: 1_000 - page.scrollY() }) as DOMRect;
+  transformed.append(card);
+  document.body.append(transformed);
+
+  try {
+    placeInView(card, { block: "nearest" });
+
+    expect(page.scrollY()).toBe(0);
+  } finally {
+    transformed.remove();
   }
 });
 

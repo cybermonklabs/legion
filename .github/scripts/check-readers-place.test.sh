@@ -2,18 +2,22 @@
 # Tests for `check-readers-place.sh`: a read of the window's scroll with no comment above it
 # fails and is named with a GitHub annotation; a direct write of a scroll in the other package
 # fails too, so both roots are really scanned; a reason on the line directly above passes, and
-# one two lines up does not, which is the whole of the one-line window; the two shapes a reader
-# could satisfy the check with without writing a reason - an arithmetic `*` line and a `//`
-# inside a string - both fail, and so does the ` */` that closes a doc comment about something
-# else; a site named inside a comment is prose and is not counted; the module the rule exists
-# for, and the suite's own test files, are outside the reach; a read of a box's own `scrollTop`
-# is not a reading of a reader's place while `documentElement.scrollTop` is; every call that
-# moves a scroll counts, by each of its spellings - `scrollTo(`, `scrollBy(`, `scrollIntoView(`,
-# `scrollIntoViewIfNeeded(`, the `.scroll(` alias, any of them written as an optional call, and
-# a `.scrollTop =` whose value a formatter has put on the next line - and so does every spelling
-# of the reader's own place, `scrollY` destructured off the window and `scrollingElement`
-# included, while a bare `scroll(` counts too, since that is the window's own alias and a local
-# function of that name is renamed rather than excused;
+# one two lines up does not, which is the whole of the one-line window; the shapes a reader
+# could satisfy the check with without writing a reason - an arithmetic `*` line, a `//` inside
+# a string, a generator method's `*rows() {`, and a comment with no word in it (an empty `//` or
+# `/**/`, the ` */`, ` **/` or JSX `*/}` that closes a comment about something else) - all fail;
+# a site named inside a comment is prose and is not counted, while a site on a generator
+# method's own line is code and is; the module the rule exists for, and the suite's own test
+# files, are outside the reach; a read of a box's own `scrollTop`, or a comparison of it, is not
+# a reading of a reader's place while `documentElement.scrollTop` is, through `?.` too; every
+# write of `scrollTop` counts, by name or bracketed name and by `=` or any compound assignment;
+# every call that moves a scroll counts, by each of its spellings - `scrollTo(`, `scrollBy(`,
+# `scrollIntoView(`, `scrollIntoViewIfNeeded(`, the `.scroll(` alias, any of them written as an
+# optional call or made through `.call(` or `.apply(`, and a `.scrollTop =` whose value a
+# formatter has put on the next line - and so does every spelling of the reader's own place,
+# `scrollY` destructured off the window and `scrollingElement` included, while a bare `scroll(`
+# counts too, since that is the window's own alias and a local function of that name is renamed
+# rather than excused;
 # and the real repository passes over a count of sites it actually found, so a run that scanned
 # nothing fails rather than reporting a clean scan.
 #
@@ -143,6 +147,10 @@ echo "case: a site named inside a comment is prose, not a site"
 root=$(fixture prose)
 surface "$root" <<'EOF'
 // A surface that read window.scrollY, or wrote scrollIntoView(), would be refused here.
+/**
+ * And one that wrote window.scrollTo(0, 0), named in a doc comment's own lines.
+ *
+ */
 export function place(): number {
   return 0;
 }
@@ -320,6 +328,120 @@ EOF
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the site" "$(contains "$out" 'Surface.tsx:4')"
+
+echo "case: the document element's scrollTop counts when it is read through an optional chain"
+root=$(fixture optional_document_element)
+surface "$root" <<'EOF'
+export function place(): number {
+  return document.documentElement?.scrollTop ?? 0;
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the site" "$(contains "$out" 'Surface.tsx:2')"
+check "says what the site does" "$(contains "$out" 'reads where the reader is')"
+
+echo "case: a scrollTop written by its bracketed name counts"
+root=$(fixture bracket_write)
+surface "$root" <<'EOF'
+export function toTop(box: HTMLElement): void {
+  box["scrollTop"] = 5;
+  box['scrollTop'] += 5;
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts both" "$(contains "$out" '2 of 2 scroll sites')"
+check "names the double-quoted write" "$(contains "$out" 'Surface.tsx:2')"
+check "names the single-quoted write" "$(contains "$out" 'Surface.tsx:3')"
+check "says what the site does" "$(contains "$out" 'writes a scroll')"
+
+echo "case: every compound assignment to scrollTop counts, and a comparison does not"
+root=$(fixture compound_write)
+surface "$root" <<'EOF'
+export function move(box: HTMLElement): boolean {
+  box.scrollTop ??= 5;
+  box.scrollTop *= 2;
+  box.scrollTop /= 2;
+  box.scrollTop ||= 1;
+  box.scrollTop &&= 1;
+  box.scrollTop **= 1;
+  return box.scrollTop >= 5 || box.scrollTop <= 1 || box.scrollTop === 3 || box.scrollTop != 2;
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts the six writes and no comparison" "$(contains "$out" '6 of 6 scroll sites')"
+check "names the ??= write" "$(contains "$out" 'Surface.tsx:2')"
+check "names the *= write" "$(contains "$out" 'Surface.tsx:3')"
+check "names the /= write" "$(contains "$out" 'Surface.tsx:4')"
+check "names the ||= write" "$(contains "$out" 'Surface.tsx:5')"
+check "names the &&= write" "$(contains "$out" 'Surface.tsx:6')"
+check "names the **= write" "$(contains "$out" 'Surface.tsx:7')"
+
+echo "case: a call that moves a scroll counts when it is made through .call or .apply"
+root=$(fixture call_apply)
+surface "$root" <<'EOF'
+export function toTop(box: HTMLElement, row: HTMLElement): void {
+  window.scrollTo.call(window, 0, 0);
+  box.scrollBy.apply(box, [0, 10]);
+  row.scrollIntoView.call(row);
+  box.scroll.apply(box, [0, 0]);
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all four" "$(contains "$out" '4 of 4 scroll sites')"
+check "names the scrollTo.call" "$(contains "$out" 'Surface.tsx:2')"
+check "names the scrollBy.apply" "$(contains "$out" 'Surface.tsx:3')"
+check "names the scrollIntoView.call" "$(contains "$out" 'Surface.tsx:4')"
+check "names the scroll.apply" "$(contains "$out" 'Surface.tsx:5')"
+
+echo "case: a generator method's line is code, not a comment, on the site's line and above it"
+root=$(fixture generator_method)
+surface "$root" <<'EOF'
+export class Walker {
+  *walk() { window.scrollTo(0, 0); yield 1; }
+  *rows() {
+    yield window.scrollY;
+  }
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts both" "$(contains "$out" '2 of 2 scroll sites')"
+check "names the site on the method's own line" "$(contains "$out" 'Surface.tsx:2')"
+check "names the site under the method's line" "$(contains "$out" 'Surface.tsx:4')"
+
+echo "case: a comment with nothing in it is no reason"
+root=$(fixture empty_comments)
+surface "$root" <<'EOF'
+export function show(row: HTMLElement, box: HTMLElement): void {
+  //
+  row.scrollIntoView({ block: "start" });
+  /**/
+  box.scrollTo({ top: 0 });
+  /** What this function is for, which is no reason for the line under this comment's end.
+   **/
+  window.scrollBy(0, 1);
+}
+export function View(): JSX.Element {
+  return (
+    <div>
+      {/* What this view is for, which is no reason for the line under this comment's end.
+      */}
+      <div ref={(element) => element?.scrollIntoView()} />
+    </div>
+  );
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all four" "$(contains "$out" '4 of 4 scroll sites')"
+check "names the site under an empty //" "$(contains "$out" 'Surface.tsx:3')"
+check "names the site under an empty /**/" "$(contains "$out" 'Surface.tsx:5')"
+check "names the site under a **/ closer" "$(contains "$out" 'Surface.tsx:8')"
+check "names the site under a JSX */} closer" "$(contains "$out" 'Surface.tsx:15')"
 
 # The count matters as much as the exit status here: a script that resolved the wrong root would
 # scan nothing, find nothing bare, and print the same cheerful line.
