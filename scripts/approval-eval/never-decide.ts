@@ -427,3 +427,5 @@ export async function neverDecide(
     outputTokens: answer.outputTokens,
   };
 }
+
+// INFRA-1413 selection probe, never merged.
