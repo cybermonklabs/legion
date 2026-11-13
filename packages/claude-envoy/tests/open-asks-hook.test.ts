@@ -858,10 +858,12 @@ test("gives up on a jj that never answers, keeping the other exports and the sum
   // charged 36624.60 ms and so nowhere near this limit, because the hook's own
   // `OPEN_ASKS_TIMEOUT_MS` of 3 s (`hooks/session-hook-budgets.ts`) lost the Dispatch read on a
   // starved host. That bound reads no environment variable, so no per-test limit guards it.
-  // Row-filtered at 160 busy loops the row is 19 of 20: an independent campaign of 20 runs at
-  // that load failed run 2 at line 808 the same way, charged 39970.84 ms. So on a host starved
-  // that far this row still loses a correct run to that 3 s production budget, and the budget
-  // stays.
+  // Row-filtered at 160 busy loops the row is 19 of 20 in one campaign and 18 of 20 in another:
+  // the first failed run 2 at line 808 charged 39970.84 ms, the second runs 17 and 18 charged
+  // 119944.23 ms and 76754.74 ms, each with `Dispatch authored-ask summary unavailable: The
+  // operation timed out.` where the summary belongs, which is that 3 s read and no limit of this
+  // row's. So on a host starved that far this row still loses a correct run to that production
+  // budget, and the budget stays.
 }, 180_000)
 
 // `CLAUDE_ENV_FILE` is one file per session id

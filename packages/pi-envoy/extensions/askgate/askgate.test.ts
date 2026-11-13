@@ -3387,7 +3387,15 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     expect(result.exitCode).toBeNull();
     // The row's own bound is a hang guard, the file's convention: it spawns a real subprocess, and
     // a group the runner fails to kill holds the pipes open for 300 s. Its work is one 100 ms
-    // limit, far below this.
+    // limit. Its own cost, read from bun's junit reporter on this two-CPU pod: 143.05 / 572.13 /
+    // 1856.35 ms (min/median/max over 20 runs under 96 busy loops, 48 per CPU, this row's
+    // acceptance rung), so this 60_000 is 32 times that worst. The rung is 96 and not the 240
+    // the file's lighter rows take: at 240 busy loops the same 20 runs cost 145.03 ms to
+    // 44509.41 ms under a 300_000 provisional limit, 20 of 20 green, so the row is correct there
+    // and merely slow, and this guard is 1.35 times that worst, which is no margin at all — one
+    // run in 20 at that load spent the whole 60_000 and was cut by it. Six times the 240 worst
+    // is 267_056 ms, past the 120_000 ceiling a guard may take here, so no guard of this file
+    // covers that load and the rung moves instead, as the leading-cd row's does.
   }, 60_000);
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
@@ -4127,7 +4135,14 @@ console.log(JSON.stringify({ argv, consumed: consumeMarker([process.env.ASKGATE_
       // named instead of cancelling the job, which names nothing. The row carried no limit of
       // its own, so bun's unwritten 5 s default decided it: at that same load it failed a
       // correct run 5 times in 10, charged 5165.92 ms to 6076.99 ms, each `this test timed out
-      // after 5000ms`.
+      // after 5000ms`. The row's remaining load ceiling is the gate's own, not this guard: at
+      // 240 busy loops a real `dispatch` subprocess cannot finish inside DRY_RUN_TIMEOUT_MS, so
+      // the gate cuts it and runs it once more with what is left of the reads' half, and that
+      // second `g.dryRuns` entry carries a smaller `timeoutMs`, which fails the `every` above —
+      // 2 runs in 20 went that way, charged 43534.88 ms and 53192.69 ms against this 120_000
+      // guard, so no per-test limit guards it. So this row's acceptance rung is 96 busy loops,
+      // 48 per CPU, the rung the here-document and markdown-upload rows take for the same
+      // ceiling.
     }, 120_000);
     // The second final review of #2159: Oh My Pi at its pin takes a leading `cd X &&` into the
     // call's directory with no CDPATH (`extractLeadingCdTarget`, then `resolveToCwd`), and its
