@@ -4765,7 +4765,15 @@ A roll forward then finds running copies taken before the rollback and no record
 Deleting the rows costs no work: a running copy's work is on the disk it was taken off, and no earlier daemon restores a running copy at all.
 What the rollback does cost is the copy of a pod the cluster ends while the earlier daemon runs, which no earlier daemon has.
 The rows of `issue_pushes` need no act: they hold only times older than any push the earlier daemon saw, and a running copy the new daemon takes after the roll forward is newer than all of them.
-An earlier daemon charges a death for every pod end again, as it did before this release, and nothing in the database records a reading, so that half of the change needs no rollback act at all.
+An earlier daemon charges a death for every pod end again, as it did before this release, and records no reading.
+It also neither reads nor clears the claims' run of ends from outside the pod (`claims.pod_ends_not_ours`), so the turns it completes do not start that run again, and a roll forward would read back a run its turns had ended.
+Clear the column in the same rollback:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set pod_ends_not_ours = 0;'
+```
+
+It prints `UPDATE <n>`, and the column then holds nothing a roll forward could charge by.
 
 ### Liveness rules
 

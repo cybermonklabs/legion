@@ -15,8 +15,10 @@
 -- from counted these ends nowhere, so a claim in the middle of such a run when the image changes
 -- starts it again once, which is what that release's own restart did.
 --
--- Rolling the image back needs no restore of the database: store's claims.go is the only reader
--- and writer of this column, and the release before it names it in no statement, so its upserts
--- leave whatever the column last held. A daemon of this release rolled forward again reads that
--- back, and the next completed turn clears it.
+-- Rolling the image back restores nothing, but it clears this column (docs/kubernetes.md,
+-- "Rolling back the running copy"): store's claims.go is the only reader and writer of it, and the
+-- release before it names it in no statement, so its upserts leave whatever the column last held
+-- while the turns that release completes would have ended the run. A daemon of this release rolled
+-- forward over a column left as it was would read that run back and could charge an end the
+-- earlier daemon's turns had already put behind it.
 alter table claims add column pod_ends_not_ours integer not null default 0 check (pod_ends_not_ours >= 0);
