@@ -15,7 +15,7 @@ Dispatch is a record for the people who decide, never a log of your work.
 ## Asks and ask blocks
 
 - An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
-- An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.
+- An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.
 - A design question's ask block ends its section:
 
 ```md

@@ -167,8 +167,9 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // other skill holds, and only by what that rule costs: R11 of dispatch://INFRA-2947 puts one line
 // in `dispatch` (an issue names the priority it advances), which check `c0cd78f8` of that issue
 // reads there, so it cannot live elsewhere. The line is 14 words, the shortest that carries the
-// two strings the check reads, so the three skills stand at 2,323 + 14 = 2,337 and the bound moves
-// from 2,326 by those 14 to 2,340, keeping the margin above it the raise before set and adding none.
+// two strings the check reads, so the three skills, 2,325 words on main, stand at 2,325 + 14 =
+// 2,339 and the bound moves from 2,326 by those 14 to 2,340, keeping the margin above it the raise
+// before set and adding none.
 test("the three Dispatch skills total fewer than 2,340 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))

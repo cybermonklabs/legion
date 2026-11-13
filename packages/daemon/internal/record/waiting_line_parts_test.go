@@ -70,7 +70,7 @@ func TestWaitingLinePartAndKeyOnEveryEntry(t *testing.T) {
 		{"starting", "queued_root"}, {"starting", "first_phase"},
 	}
 
-	line := Waiting(issues, slots, facts)
+	line, _ := Waiting(issues, slots, facts)
 	if len(line) != len(want) {
 		var got []string
 		for _, entry := range line {

@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
+import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { AssigneeControl } from "./AssigneeControl";
 
@@ -235,6 +236,62 @@ test("AssigneeControl sends null for Unassigned", async () => {
     );
     await waitFor(() => expect(select().value).toBe(""));
     expect(screen.getByText("Unassigned", { selector: "span" })).toBeTruthy();
+  } finally {
+    unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A question on an issue nobody holds reaches the project's default assignee, so the unassign's
+// optimistic write must leave the issue's rows that nobody handed on waiting on that person: a
+// row that named nobody would drop out of the default person's own (`assignee=me`) list until
+// the PATCH settled. Where the client holds no defaults read, the row keeps the person it waited
+// on rather than naming nobody.
+test.each([
+  ["names the project's default where the defaults read holds it", true, "carol"],
+  ["keeps the person it waited on where the client has no defaults read", false, "alice"],
+])("AssigneeControl's unassign leaves an inbox row nobody handed on waiting on a person: it %s", async (_name, defaultsRead, person) => {
+  const save = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
+  const { queryClient, unmount, user } = renderControl();
+  const handedOn: InboxRow = {
+    ...inboxRow,
+    asked_of: "bob",
+    asked_of_at: "2026-09-09T01:00:00Z",
+    asked_of_by: "alice",
+    id: "ask-2",
+    waiting_on_person: "bob",
+  };
+  queryClient.setQueryData(inboxKey, [{ ...inboxRow, waiting_on_person: "alice" }, handedOn]);
+  if (defaultsRead) {
+    queryClient.setQueryData(projectDefaultAssigneesQuery().queryKey, [
+      { project: "OPS", assignee: "dana" },
+      { project: "CORE", assignee: "carol" },
+    ]);
+  }
+  try {
+    // A focus with no press before it: user-event has no form for a bare focus.
+    fireEvent.focus(select());
+    await waitFor(() => expect(select().options.length).toBe(3));
+    await user.selectOptions(select(), "");
+    await waitFor(() =>
+      expect(patchIssue).toHaveBeenCalledWith("CORE-1", { assignee: null }, keyedAttempt)
+    );
+
+    // The save is still in flight: what the rows hold is the optimistic write alone.
+    const rows = queryClient.getQueryData<InboxRow[]>(inboxKey) ?? [];
+    expect(rows.map((row) => [row.id, row.issue?.assignee, row.waiting_on_person])).toEqual([
+      ["ask-1", null, person],
+      ["ask-2", null, "bob"],
+    ]);
+
+    await act(async () => {
+      save.resolve({ ...issue, assignee: null });
+      await save.promise;
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryData<IssueDetails>(detailKey)?.assignee).toBeNull()
+    );
   } finally {
     unmount();
     patchIssue.mockRestore();

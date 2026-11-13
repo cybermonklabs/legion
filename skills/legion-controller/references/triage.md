@@ -72,14 +72,14 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    work is done, folded into another issue (name it) or no longer needed.
    For a root you admitted, say in that comment who will be asked: `Assigned to <login>,
    who will get this tree's questions and its design approval`, or, when `Assignee:` says
-   `unassigned`, `Unassigned — nobody's Inbox shows this tree's questions or its design approval
-   until someone takes it from the issue header (Assignee, beside Priority)`. Promise the design
-   approval only when your system prompt's `Design gate steps:` sentence names at least one step;
-   when it reads `Design gate steps: none.` nobody approves a design, so drop "and its design
-   approval" (and "or its design approval"). Take the assignee from the read, never
-   from how the issue was created, because an issue filed with no assignee still lands on the
-   project's default assignee where a person set one. An unassigned root still runs, but its
-   architect's asks reach only the Inbox's `Unassigned` filter.
+   `unassigned`, `Unassigned — this tree's questions and its design approval go to the project's
+   default assignee until someone takes it from the issue header (Assignee, beside Priority)`.
+   Promise the design approval only when your system prompt's `Design gate steps:` sentence names
+   at least one step; when it reads `Design gate steps: none.` nobody approves a design, so drop
+   "and its design approval". Take the assignee from the read, never from how the issue was
+   created: an issue filed with no assignee lands on the project's default assignee, which every
+   project names, but a person can clear an assignee later, and a root with none still has its
+   architect's asks reach the project's default assignee.
 
 ## Label an issue for a person
 

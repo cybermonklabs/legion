@@ -1891,7 +1891,7 @@ func appendEvent(t *testing.T, database *store.Store, broker *events.Broker, eve
 
 func seedIssue(t *testing.T, database *store.Store, key string, route *string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name) values ('TT', 'Test')`); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `

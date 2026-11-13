@@ -261,7 +261,6 @@ such a row loses is feedback on the pull request itself.
 | `e2e/inbox-pane-scroll.e2e.ts` | every row draws the document in its live room; another session's edit, a reply and an event committed elsewhere must reach the open page, and a resumed socket's gap must refresh the reads it holds; an approval row reads the version the server names latest against the approval it is marked against |
 | `e2e/inbox-read-state.e2e.ts` | reading writes the read mark and the row is re-read |
 | `e2e/inbox-reading-pane.e2e.ts` | the answer is a write; approval is the server's computation; the withdrawal is the server's |
-| `e2e/inbox-search.e2e.ts` | a write in flight |
 | `e2e/inbox-stability.e2e.ts` | rows move because writes land elsewhere and arrive live under the reader's hand |
 | `e2e/inbox-thread-pane.e2e.ts` | opens the document's live room; the reply is delivered and re-read; the session's turn comes from the relay |
 | `e2e/inbox-threads.e2e.ts` | the drawer's own bar is read after a navigation cancels the first agents read, which a recording answers with the cancelled entry |
@@ -314,6 +313,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/prefix-links.e2e.ts` | `sql`-forged id twins and the server's short-id resolution |
 | `e2e/priorities.e2e.ts` | every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event |
 | `e2e/progress.e2e.ts` | it asserts the progress the server computes over an issue's children before it opens a page |
+| `e2e/project-default-assignee.e2e.ts` | which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload |
 | `e2e/project.e2e.ts` | the reference closure is the server's graph walk |
 | `e2e/recipients-claim.e2e.ts` | claims and routes the server computes, with live card updates |
 | `e2e/reference-cards.e2e.ts` | opens the spec's live editor and its margin thread |
