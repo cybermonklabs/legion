@@ -474,11 +474,12 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // (record.KeepsSlot), so a start claimable at once would put a worker to work on an issue
 // holding no slot — where the cap is full that is what it would do — and a worker put to work
 // on an issue the cap has not admitted is what a start of a phase worker may never be. A
-// transition's start (Engine.started), admission's start of a mid-phase member and the boot's
-// resume by rule all come through here, so all of them wait. The mark is this function's and
-// not the caller's: it is a fact about every start of a phase worker, not about one request.
-// The row carries its task while it waits, so the delivery is made as soon as the slot comes
-// and the worker is up.
+// transition's start (Engine.started), admission's start of a mid-phase member, the boot's
+// resume by rule and the cutover's one-time start of a merger the `awaiting_merge` cutover left
+// released (cutoverMergerRepair) all come through here, so all of them wait. The mark is this
+// function's and not the caller's: it is a fact about every start of a phase worker, not about
+// one request. The row carries its task while it waits, so the delivery is made as soon as the
+// slot comes and the worker is up.
 //
 // The row is written through Store.ReplaceOwedStart first and enqueued only when that replaced
 // nothing. ReplaceOwedStart matches by issue and not by role because the row's id and created_at

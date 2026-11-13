@@ -2297,7 +2297,9 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		// process was stopped, which is the release working rather than a slot with no worker:
 		// the wake brings the pod back and gives the role the one task that says so (workflow's
 		// wakeRow), so starting its phase again here would hand the woken role a second task for
-		// work it already holds.
+		// work it already holds. The one start the boot owes a released claim is the cutover's
+		// one-time repair of a merger the `awaiting_merge` cutover left stopped (workflow's
+		// cutoverMergerRepair), and StartFor above passes that claim over while its start is queued.
 		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByReleased {
 			continue
 		}

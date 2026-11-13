@@ -454,6 +454,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			err = bootprobe.Run(ctx, "catch up the roots that run or wait on a person", readinessRetry, log,
 				readinessAttempt(workflow.catchUpAwaiting, catchUpAttemptBound, dispatch.Unreachable))
 		}
+		// The repair of the mergers the `awaiting_merge` cutover left stopped is a boot step of its
+		// own (repairCutoverMergers, dispatch://INFRA-3274/spec R2): after the listing's reconcile,
+		// which is the boot's first admission pass, and after the roots' catch-up, and before attach
+		// and the consumers, so no consumer's fact and no wake of this boot comes before it. It is
+		// one Postgres transaction, and a failure of it stops the boot as the reconcile's own
+		// transaction's does; its bound is its own, so a database that stops answering cannot hang
+		// the boot.
+		if err == nil {
+			repair, cancelRepair := context.WithTimeout(ctx, bootTimeout)
+			err = workflow.repairCutoverMergers(repair)
+			cancelRepair()
+		}
 		if err != nil {
 			s.stop()
 			listener.Close()

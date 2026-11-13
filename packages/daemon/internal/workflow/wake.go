@@ -59,6 +59,11 @@ type Pods interface {
 	ClosePodGoneResume(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (int64, error)
 	// FirePodBackstop marks the backstop fired and answers whether this call fired it.
 	FirePodBackstop(ctx context.Context, tx pgx.Tx, id int64) (bool, error)
+	// OpenPodBackstop is whether issue's role has a backstop armed and not yet fired: a release
+	// that left the role with its phase open armed it, so the backstop brings the pod back. The
+	// cutover's repair reads it to pass over a merger something will still wake
+	// (cutoverMergerRepair).
+	OpenPodBackstop(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (bool, error)
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current

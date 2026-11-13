@@ -90,9 +90,12 @@ const (
 	// SuspendedByReleased: the daemon released the claim's idle issue pod, whose disk and Sandbox
 	// went with it and whose unpushed work was saved as a git bundle. The claim keeps its phase and
 	// its pending task, and the next wake for its role resumes the same session; a daemon restart
-	// resumes no such claim, since only that wake brings the pod back (workflow's booted). It is no
-	// source ByRule names: the rules that act on a released claim name it themselves — the wake
-	// that brings its pod back, and the stranded report once a wake has run out with no turn.
+	// resumes no such claim, since only that wake brings the pod back (workflow's booted), save
+	// once: the boot's one-time cutover repair owes a start to each merger the `awaiting_merge`
+	// cutover left released with no wake to come (workflow's cutoverMergerRepair). It is no source
+	// ByRule names: the rules that act on a released claim name it themselves — the wake that
+	// brings its pod back, the stranded report once a wake has run out with no turn, and that
+	// cutover repair.
 	SuspendedByReleased SuspendSource = "released"
 )
 

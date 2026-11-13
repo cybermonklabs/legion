@@ -249,6 +249,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.lingerExpired(ctx, tx, fact)
 	case intake.DaemonBooted:
 		return e.booted(ctx, tx, fact)
+	case intake.CutoverMergerRepair:
+		return e.cutoverMergerRepair(ctx, tx, fact)
 	case intake.CheckReport:
 		return e.checkReported(ctx, tx, fact)
 	case intake.CheckLookEnded:
