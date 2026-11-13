@@ -4881,11 +4881,11 @@ jobs:
     #   call              slowest package       limit  fills    read in
     #   the package list  pmdoc 511.6 s          18m   47.4 %   run 43120324547, job 130874347417
     #   race-impossible   docs 292.1 s           10m   48.7 %   run 43519308059
-    #   pgmigrate         pgmigrate 299.3 s      10m   49.9 %   run 43129905604
-    #   shutdown          cmd/dispatch 67.3 s     3m   37.4 %   run 43021338811
-    #   routes            routes 45.3 s           2m   37.8 %   run 43129905604
+    #   pgmigrate         pgmigrate 300.2 s      11m   45.5 %   run 43208315370
+    #   shutdown          cmd/dispatch 68.7 s     3m   38.2 %   run 43208315370
+    #   routes            routes 54.5 s           2m   45.4 %   run 43519308059
     #   natslive (rig)    testnats 7.5 s          1m   12.5 %   run 43086525158
-    #   natslive (cap)    bus 9.1 s               1m   15.2 %   run 43120324547
+    #   natslive (cap)    bus 12.7 s              1m   21.2 %   run 43514262740
     #   integration       integration 9.6 s       1m   16.0 %   run 43086525158
     #
     # Each row is its package's time divided by 30 and rounded up, which is the smallest whole
@@ -5337,11 +5337,11 @@ jobs:
           # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
           # 42856652273). A call's limit is the smallest whole minute at which its slowest
           # package takes at most half of it, and this package's largest reading and the run it
-          # came from are in the table on this job: 10m. No floor stands
+          # came from are in the table on this job: 11m. No floor stands
           # above that rule here: no test of internal/pgmigrate reads the test binary's
           # deadline, so it declares no margin of its own the way the documents package's
           # roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 10m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5435/postgres?sslmode=disable go test -json -count=1 -timeout 11m ./internal/pgmigrate/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
           pgmigrate=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
@@ -5605,9 +5605,9 @@ jobs:
     # check 6224bb0e). The step's -timeout is the smallest whole minute at which its slowest
     # package takes at most half of it: internal/bus, 446.9 s, 446.9 / 30 = 14.90, so 15m,
     # which it fills to 49.7 per cent (14m it would fill to 53.2). The job's own bound follows
-    # its largest measured time, 604 s in run 43110298200 (job 130824310054), 10.07 minutes,
-    # plus that largest -timeout plus 6: 10.07 + 15 + 6 = 31.07, so 32, where 31 was right for
-    # the 572 s of the pair before it. A job of this lane varies by a minute between two
+    # its largest measured time, 615 s in run 43507133544 (job 132167720910), 10.25 minutes,
+    # plus that largest -timeout plus 6: 10.25 + 15 + 6 = 31.25, so 32, where 31 was right for
+    # the 572 s of an earlier pair. A job of this lane varies by a minute between two
     # attempts of one commit, so a bound follows the largest reading rather than the newest.
     # The limit must fire before the runner cancels the job, so a hung test prints the dump
     # that names it.

@@ -981,11 +981,11 @@ impossible=$!
 # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
 # 42856652273). A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, and this package's largest reading and the run it
-# came from are in the table on this job: 10m. No floor stands
+# came from are in the table on this job: 11m. No floor stands
 # above that rule here: no test of internal/pgmigrate reads the test binary's
 # deadline, so it declares no margin of its own the way the documents package's
 # roomWaitMargin (30 s) and pmdoc's perCallReportMargin (60 s) are theirs.
-DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 10m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
+DISPATCH_TEST_DATABASE_URL={PGMIGRATE_DSN} go test -json -count=1 -timeout 11m ./{PGMIGRATE_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/pgmigrate.json" 2> "$RUNNER_TEMP/go-test-logs/pgmigrate.log" &
 pgmigrate=$!
 # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
 # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
