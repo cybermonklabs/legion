@@ -310,3 +310,58 @@ func TestNoCandidatesMakeNoCall(t *testing.T) {
 		t.Errorf("%d requests, want none", n)
 	}
 }
+
+// NoEffort sends no reasoning_effort at all, and Observe sees each call's served model id.
+func TestNoEffortSendsNoEffortAndObserveSeesTheServedModel(t *testing.T) {
+	t.Parallel()
+	s := newStub(t, func(sent sentInput) (int, string, string, time.Duration) {
+		return http.StatusOK, bundleModel, verdictsFor(sent, false), 0
+	})
+	var calls []Call
+	r := newReader(s, Config{NoEffort: true, Observe: func(c Call) { calls = append(calls, c) }})
+	if _, outcome := r.Read(context.Background(), cands(t, twoVacuous)); outcome != OutcomeRead {
+		t.Fatalf("outcome %q, want a read", outcome)
+	}
+	got := s.requests()
+	if len(got) != 1 {
+		t.Fatalf("%d requests, want one", len(got))
+	}
+	if effort, ok := got[0].body["reasoning_effort"]; ok {
+		t.Errorf("reasoning_effort %v sent, want none", effort)
+	}
+	if len(calls) != 1 || calls[0].Model != bundleModel || calls[0].Fault != "" || calls[0].Err != nil {
+		t.Errorf("observed %+v, want one clean call served by %s", calls, bundleModel)
+	}
+}
+
+// Observe sees a refused call's fault, with no served model, and a mismatched model's id.
+func TestObserveSeesFaultsAndAMismatch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		status    int
+		model     string
+		wantModel string
+		wantFault bool
+	}{
+		{"refused", http.StatusBadRequest, bundleModel, "", true},
+		{"mismatch", http.StatusOK, "another-model", "another-model", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStub(t, func(sent sentInput) (int, string, string, time.Duration) {
+				return tc.status, tc.model, verdictsFor(sent, false), 0
+			})
+			var calls []Call
+			r := newReader(s, Config{Observe: func(c Call) { calls = append(calls, c) }})
+			r.Read(context.Background(), cands(t, twoVacuous))
+			if len(calls) != 1 {
+				t.Fatalf("%d calls observed, want one", len(calls))
+			}
+			c := calls[0]
+			if c.Model != tc.wantModel || (c.Fault != "" || c.Err != nil) != tc.wantFault {
+				t.Errorf("observed %+v, want model %q and a fault %v", c, tc.wantModel, tc.wantFault)
+			}
+		})
+	}
+}

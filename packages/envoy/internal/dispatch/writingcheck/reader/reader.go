@@ -63,8 +63,14 @@ const (
 // Config is how a Reader calls its model.
 type Config struct {
 	// Model is the model and its endpoint; AzureModel builds one for an Azure AI Foundry
-	// chat deployment. Its Effort is set to "off" for every call.
+	// chat deployment. Its Effort is set to "off" for every call, or left empty under
+	// NoEffort.
 	Model agentloop.Model
+	// NoEffort sends no reasoning effort at all, for a Chat Completions deployment that
+	// refuses the reasoning_effort parameter a call asking for effort "off" carries (a model
+	// without reasoning). On the Anthropic protocols an empty effort turns thinking on, so
+	// NoEffort is for openai-chat alone.
+	NoEffort bool
 	// BundleModelID is the model id the bundle was measured with. A reply served by another
 	// model is OutcomeModelMismatch. An empty id pins no model, and no reply is checked.
 	BundleModelID string
@@ -78,6 +84,9 @@ type Config struct {
 	// Temperature is the sampling temperature of every call; nil leaves the provider's
 	// default.
 	Temperature *float64
+	// Observe, when set, is called once after each model call, with what the provider
+	// answered: a measurement reads the served model id and the fault from it.
+	Observe func(Call)
 }
 
 // Verdict is the model's answer for one candidate: whether its verb phrase is vacuous, the
@@ -87,6 +96,16 @@ type Verdict struct {
 	Vacuous bool   `json:"vacuous"`
 	Rewrite string `json:"rewrite"`
 	Reason  string `json:"reason"`
+}
+
+// Call is what one model call answered, as Config.Observe is given it: the model id the
+// provider says served it ("" when no reply came), the run's fault and its detail, and the
+// error that ended the run, if any.
+type Call struct {
+	Model  string
+	Fault  agentloop.Fault
+	Detail string
+	Err    error
 }
 
 // Reader reads candidates with a model. It is safe for concurrent use.
@@ -106,6 +125,9 @@ func New(cfg Config) *Reader {
 		cfg.MaxOutputTokens = DefaultMaxOutputTokens
 	}
 	cfg.Model.Effort = "off"
+	if cfg.NoEffort {
+		cfg.Model.Effort = ""
+	}
 	budget := rate.NewLimiter(rate.Inf, 0)
 	if cfg.TokensPerMinute > 0 {
 		budget = rate.NewLimiter(rate.Limit(float64(cfg.TokensPerMinute)/60), cfg.TokensPerMinute)
@@ -208,6 +230,13 @@ func (r *Reader) Read(ctx context.Context, cands []candidates.Candidate) ([]Verd
 		Final:       finalSchema,
 		Temperature: r.cfg.Temperature,
 	})
+	if r.cfg.Observe != nil {
+		call := Call{Fault: result.Fault, Detail: result.Detail, Err: err}
+		if n := len(result.Steps); n > 0 {
+			call.Model = result.Steps[n-1].Model
+		}
+		r.cfg.Observe(call)
+	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return nil, OutcomeTimeout
