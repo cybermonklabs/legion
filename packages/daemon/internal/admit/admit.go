@@ -1294,6 +1294,21 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		// An old root that recorded no gate is the common case, and there the carry writes nothing:
 		// the orphan's own pairs stand as the hand-over left them, so neither the read of them nor
 		// the comparison against them is made.
+		//
+		// What the orphan's holders took of the approved design (record.DesignTold) stays with the
+		// gate it was taken from, as the copy does: the carry clears no generation, so its holder
+		// row stands as its last holder left it, at versions of the very documents the carried rows
+		// name. The phase the promotion starts again inherits it rather than taking a new baseline
+		// (workflow's Engine.enter), and is owed whatever the old root's gate approved since. Only
+		// the generation clear of a tree the orphan still belongs to takes the row away, with that
+		// tree's gate.
+		//
+		// The carried gate is the new tree's, and the new tree's architect starts from it: the carry
+		// takes its architect's baseline at the versions the carried rows stand approved at
+		// (record.Store.BaselineTold, which leaves a row already there as it stands), as a tree's
+		// first opening takes its own (workflow's putGateTold). Its architect never saw the versions
+		// the old root's gate approved before, so it is owed no summary of them, and is owed what a
+		// later approval of the carried documents changes.
 		if len(gates) > 0 {
 			// The pairs the orphan itself holds before the carry: a member of a gated tree holds
 			// the copy its hand-over carried to it, and the carry writes the old root's rows over
@@ -1307,6 +1322,9 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 				if err := a.store.PutGate(ctx, tx, gate); err != nil {
 					return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
 				}
+			}
+			if _, err := a.store.BaselineTold(ctx, tx, stored.Key, record.AudienceArchitect, stored.Key, a.now()); err != nil {
+				return fmt.Errorf("take the baseline of re-admitted orphan %s's architect: %w", stored.Key, err)
 			}
 			// The carry binds this issue's steps to the old root's documents, so it moves the pairs
 			// of an orphan that held none and leaves those of one re-admitted onto the same

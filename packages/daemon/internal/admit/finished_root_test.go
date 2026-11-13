@@ -211,6 +211,9 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 					records.PutGate(context.Background(), tx, record.DesignGate{Issue: root, ArtifactID: artifact, LatestVersion: 2, ApprovedVersion: new(2)}),
 					records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: child, Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head-42", Generation: 1, State: tc.prState}),
 					records.PutHandover(context.Background(), tx, record.Handover{Issue: child, Tree: root, Generation: 1}),
+					// What the child's holder took of the old root's gate: version 1, below the
+					// version the gate the carry copies stands approved at.
+					records.RaiseTold(context.Background(), tx, child, record.AudienceHolder, map[record.DesignStep]int{record.DesignStepSpec: 1}, fixedNow),
 				} {
 					if put != nil {
 						t.Fatalf("seed: %v", put)
@@ -240,6 +243,37 @@ func TestAHandedOverChildCarriesItsPhaseGateAndPullRequest(t *testing.T) {
 				}
 				if handedRoot, err := records.HandedOverRoot(context.Background(), tx, child); err != nil || handedRoot == nil || handedRoot.Generation != 2 || !handedRoot.GateCarried {
 					t.Fatalf("handed-over root = %#v, %v; want generation 2 with its gate carried", handedRoot, err)
+				}
+				// The child's told row stays with it, as the gate copy does: the carry clears no
+				// generation, and the phase the promotion starts again inherits what its holder took
+				// rather than taking the carried gate's version as a new baseline. The new tree's
+				// architect takes the carried gate as its own baseline, at its approved version 2.
+				told, err := records.TreeTold(context.Background(), tx, child)
+				want := []record.DesignTold{
+					{Issue: child, Audience: record.AudienceArchitect, Versions: map[record.DesignStep]int{record.DesignStepSpec: 2}},
+					{Issue: child, Audience: record.AudienceHolder, Versions: map[record.DesignStep]int{record.DesignStepSpec: 1}},
+				}
+				if err != nil || len(told) != len(want) {
+					t.Fatalf("the told rows of the handed-over child = %#v, %v; want its holder's row kept at spec 1 and its architect's at spec 2", told, err)
+				}
+				for i := range want {
+					if told[i].Issue != want[i].Issue || told[i].Audience != want[i].Audience || !reflect.DeepEqual(told[i].Versions, want[i].Versions) {
+						t.Fatalf("the told rows of the handed-over child = %#v; want its holder's row kept at spec 1 and its architect's at spec 2", told)
+					}
+				}
+				// So the new tree's architect is owed no summary of versions it never saw, and its
+				// member's holder is owed what the carried gate approved since its version 1.
+				members, err := records.TreeIssues(context.Background(), tx, child)
+				if err != nil {
+					t.Fatalf("read the handed-over tree: %v", err)
+				}
+				news := record.OwedNews(record.NewsFacts{Steps: config.DesignGateRootIssues.Steps(), Gates: gates, Members: members, Told: told})
+				if len(news.Architect) != 0 {
+					t.Fatalf("the handed-over tree's architect is owed %+v, want nothing: it starts from the carried gate", news.Architect)
+				}
+				if len(news.Members) != 1 || news.Members[0].Issue != child || !reflect.DeepEqual(news.Members[0].Items,
+					[]record.NewsItem{{Step: record.DesignStepSpec, ArtifactID: artifact, From: new(1), To: 2}}) {
+					t.Fatalf("the handed-over child is owed %+v, want the spec from 1 to 2", news.Members)
 				}
 			})
 			startsAt := tc.resumes

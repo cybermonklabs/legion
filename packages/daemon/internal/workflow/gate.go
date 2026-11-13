@@ -1049,17 +1049,31 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 //
 // version and the row's own document are what the message names, so a reader is sent to the
 // document that moved rather than to the spec.
+//
+// The write that opens the tree's gate for the first time — every step the tree is gated on
+// approved (record.TreeGate.Open), where no step had held the tree's first release before it
+// (record.TreeGate.EverOpened) — also takes the baseline of the root architect's row of what it
+// took of the design (record.Store.BaselineTold), at the versions that release approves: nothing
+// of the tree's work has started before it, so nothing of those versions is news to its architect
+// (record.OwedNews). A later opening leaves the row as it stands, so the architect is owed what
+// each later approval changed.
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
 	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
 	if err != nil {
 		return err
 	}
+	released := record.TreeGate{Steps: e.cfg.Steps, Rows: gates}.EverOpened()
 	stood := e.standingGateOpen(gates)
 	if err := e.store.PutGate(ctx, tx, gate); err != nil {
 		return err
 	}
 	gates[step] = gate
+	if !released && (record.TreeGate{Steps: e.cfg.Steps, Rows: gates}).Open() {
+		if _, err := e.store.BaselineTold(ctx, tx, gate.Issue, record.AudienceArchitect, gate.Issue, e.now()); err != nil {
+			return err
+		}
+	}
 	stands := e.standingGateOpen(gates)
 	if stands == stood {
 		return nil

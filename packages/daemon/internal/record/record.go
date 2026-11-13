@@ -1450,8 +1450,9 @@ type Store interface {
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
 	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
 	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
+	// same branch and pull request), its design gate with what its holders took of it
+	// (DesignTold), and each role's handoff, review rounds, verdict and summary. Each role keeps
+	// its claim and its last handoff, so a
 	// commit an earlier generation reported is never new again. An issue whose gate rows it
 	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
 	// Dispatch holds for that issue is the one those rows recorded.
@@ -1476,6 +1477,23 @@ type Store interface {
 	// PutGate writes one gate row, keyed by its issue and its step. A gate built with no step is
 	// written as DesignStepSpec (Postgres.PutGate).
 	PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error
+	// TreeTold is every told row of the issues of tree (DesignTold), by issue and then audience.
+	TreeTold(ctx context.Context, tx pgx.Tx, tree string) ([]DesignTold, error)
+	// BaselineTold writes issue's audience row at the approved versions root's gate rows hold in
+	// this transaction, when issue holds no such row, and reports whether it wrote one: the
+	// version work starts from (Postgres.BaselineTold).
+	BaselineTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, root string, at time.Time) (bool, error)
+	// RaiseTold raises each step of versions on issue's audience row to the greater of what the
+	// row holds and the version given, writing the row when there is none; a step versions does
+	// not name keeps what the row holds.
+	RaiseTold(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, versions map[DesignStep]int, at time.Time) error
+	// SetOpeningOwed sets or clears whether the gate's opening is owed to issue's audience.
+	SetOpeningOwed(ctx context.Context, tx pgx.Tx, issue string, audience DesignAudience, owed bool) error
+	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
+	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
+	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
+	// its row (Postgres.PutDesignChanges).
+	PutDesignChanges(ctx context.Context, tx pgx.Tx, changes DesignChanges) error
 	// RootAsk is the mirror row of ask on issue, nil when it has none.
 	RootAsk(ctx context.Context, tx pgx.Tx, issue, ask string) (*RootAsk, error)
 	// PutRootAsk writes ask's mirror row, unless any of the stored row's fences (Seq, WaitingOnSeq,

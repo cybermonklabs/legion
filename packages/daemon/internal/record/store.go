@@ -1135,8 +1135,8 @@ func (s *Postgres) ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Toke
 }
 
 // ClearGeneration empties one issue's generation-scoped facts: a merged or closed pull request,
-// the counters of one still open, its design gate and its recorded handoffs. now is when the
-// publication a cleared gate queues is due.
+// the counters of one still open, its design gate, what its holders took of the approved design
+// and its recorded handoffs. now is when the publication a cleared gate queues is due.
 func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error {
 	return s.clearGeneration(ctx, tx, "issue = $1", "key = $1", issue, fmt.Sprintf("clear the generation of %s", issue), now)
 }
@@ -1151,7 +1151,8 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 
 // clearGeneration runs each statement with key as $1: where selects the cleared issues' rows by
 // their issue column, and issues selects the same issues in the issues table. The design gates go
-// with them, in a statement of their own (clearGates).
+// with them, in a statement of their own (clearGates), and the rows of what each issue's holders
+// took of those gates go beside them.
 func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describe string, now time.Time) error {
 	for _, statement := range []string{
 		"delete from pull_requests where " + where + " and state <> 'open'",
@@ -1180,6 +1181,13 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, " +
 			"entry_task = '' where " + where,
+		// What each holder took of the approved design goes with the gate it was taken from: the
+		// next generation registers its gate again, and its work starts from what that gate
+		// approves, which its first working phase takes as its baseline (workflow's Engine.enter),
+		// and the root's architect row from its tree's first opening. A row kept across the clear
+		// would hold the new generation's work to versions of a design its architect has written
+		// again, and owe it news of changes it never stood on.
+		"delete from design_news_told where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)

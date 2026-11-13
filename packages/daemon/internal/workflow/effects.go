@@ -694,6 +694,15 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // The task it writes is the text the worker is sent, word for word, so the record holds exactly
 // what the worker is told and a claim left behind the entry can be sent that work again from the
 // record alone (SendOwedEntry).
+//
+// It also takes the baseline of what the issue's holder knows of the approved design: an issue
+// with no holder row (record.DesignTold) is starting its first working phase of its generation —
+// the row goes with the generation (record.Store.ClearGeneration), and the upgrade's seed aside,
+// this is where it is first written — so its row is written at the versions its tree's gate stands
+// approved at now (record.Store.BaselineTold). Its work starts from those versions, so nothing of
+// them is news to it, and a member released after an approval is owed nothing of it. A row
+// already there is left as it stands: a later entry's holder inherits what the issue's earlier
+// holders took, and is owed what was approved since (record.OwedNews).
 func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
@@ -702,6 +711,9 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	row.Entry++
 	row.EntryTask, row.EntryRaisedAt = task, e.now()
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
+		return 0, err
+	}
+	if _, err := e.store.BaselineTold(ctx, tx, issue.Key, record.AudienceHolder, issue.Tree, e.now()); err != nil {
 		return 0, err
 	}
 	return row.Entry, nil
