@@ -584,6 +584,35 @@ test(
   rowLimit("short")
 );
 
+// The other half of counting `--minutes` from the first open: a watch whose socket never opens
+// must still end. Measured in the testing phase of dispatch://INFRA-3082 on 2026-11-13 against a
+// server that accepts the connection and never answers the upgrade: the probe at 59a774be ended
+// a `--minutes 0.05` watch after 3 s, and the probe at a2d4a1ab was still running when `timeout`
+// stopped it at 40 s, having written nothing, because its only timer is armed by an open that
+// never comes and the silence check only redials. A Dispatch that refuses the connection already
+// ends the watch at once with exit 1, so a handshake that never completes ends it the same way:
+// on its own, and not as a clean watch.
+test(
+  "a watch whose socket never opens ends on its own, and not as a clean watch",
+  async () => {
+    const silent = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      // Accepts every connection and never answers it: an upgrade that hangs.
+      socket: { data() {}, open() {} },
+    });
+    try {
+      const argv = args(probeDispatch({ onSubscribe() {} }), TOKEN, "0.01");
+      argv[argv.indexOf("--url") + 1] = `http://127.0.0.1:${silent.port}`;
+      const run = await runProbeToEnd(argv);
+      expect(run.code).not.toBe(0);
+    } finally {
+      silent.stop(true);
+    }
+  },
+  rowLimit("short")
+);
+
 test(
   "a missing flag is a usage error, exit 2",
   async () => {
