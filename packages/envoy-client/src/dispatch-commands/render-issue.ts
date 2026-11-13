@@ -39,8 +39,13 @@ function componentsLine(components: IssueComponents): string {
 }
 
 /** The Advances line of an issue read: each priority the issue serves, marked own where the
- *  issue states it and inherited where an issue above it does. */
-function advancesLine(issue: { readonly advances: readonly IssueAdvance[] | null }): string {
+ *  issue states it and inherited where an issue above it does. A Dispatch server from before
+ *  priorities sends no `advances`, and its answer is unknown, never none: none means the issue
+ *  advances no priority. */
+function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | null }): string {
+  if (issue.advances === undefined) {
+    return "Advances: unknown (this Dispatch server predates priorities; upgrade it)";
+  }
   const advances = issue.advances ?? [];
   if (advances.length === 0) return "Advances: no priority";
   return `Advances: ${advances
@@ -256,18 +261,27 @@ function repositoryLine(issue: {
   return `Repository: ${issue.resolved_repo} (inherited or project default)`;
 }
 
-/** The warning a read from a Dispatch server without the repository fields carries: it names the
- *  refusal this client does not make, so a session's clients can update before its server does. */
-export function repositoryFieldsWarnings(issue: {
+/** The warnings a read from a Dispatch server without the repository fields or without
+ *  priorities carries, one per field it lacks: each names the refusal this client does not make,
+ *  so a session's clients can update before its server does. */
+export function olderServerWarnings(issue: {
   readonly key: string;
   readonly resolved_repo?: string | null;
+  readonly advances?: readonly IssueAdvance[] | null;
 }): { readonly warnings?: readonly string[] } {
-  if (issue.resolved_repo !== undefined) return {};
-  return {
-    warnings: [
-      `dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so ${issue.key}'s repository is unknown; upgrade the server`,
-    ],
-  };
+  const warnings = [
+    ...(issue.resolved_repo !== undefined
+      ? []
+      : [
+          `dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so ${issue.key}'s repository is unknown; upgrade the server`,
+        ]),
+    ...(issue.advances !== undefined
+      ? []
+      : [
+          `dispatch: warning: Dispatch issue is missing advances: this Dispatch server predates priorities, so the priorities ${issue.key} advances are unknown; upgrade the server`,
+        ]),
+  ];
+  return warnings.length === 0 ? {} : { warnings };
 }
 export function issueSummary(
   issue: IssueDetails,
@@ -288,7 +302,6 @@ export function issueSummary(
   if (issue.assignee === undefined) throw new Error("Dispatch issue is missing assignee");
   if (issue.components === undefined) throw new Error("Dispatch issue is missing components");
   if (issue.claim === undefined) throw new Error("Dispatch issue is missing claim");
-  if (issue.advances === undefined) throw new Error("Dispatch issue is missing advances");
   if (issue.external_links === undefined) {
     throw new Error("Dispatch issue is missing external_links");
   }

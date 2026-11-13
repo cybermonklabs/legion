@@ -239,8 +239,8 @@ const codeIssue = {
   ],
 };
 
-/** DSP-3 as a Dispatch server from before the repository fields answers it: no repo or
- *  resolved_repo at all. */
+/** DSP-3 as a Dispatch server from before the repository fields and before priorities answers
+ *  it: no repo, resolved_repo, advances or advances_revision at all. */
 const olderServerIssue = {
   key: "DSP-3",
   title: "Read from an older server",
@@ -253,8 +253,6 @@ const olderServerIssue = {
   open_asks: [],
   last_seq: 0,
   external_links: [],
-  advances: [],
-  advances_revision: 0,
   labels: [],
 };
 
@@ -1055,9 +1053,56 @@ describe("the dispatch CLI", () => {
     expect(stdout).toContain(
       "Repository: unknown (this Dispatch server predates repository fields; upgrade it)\n"
     );
-    expect(stderr).toBe(
+    expect(stderr).toContain(
       "dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so DSP-3's repository is unknown; upgrade the server\n"
     );
+  });
+
+  // The plugin and the server ship separately, so a plugin that reads priorities meets a server
+  // that answers none: its issue read prints the issue with its priorities unknown, never none,
+  // and warns, as it does for the repository fields.
+  test("a read from a Dispatch server older than priorities answers, warning on stderr", async () => {
+    const { code, stdout, stderr } = await run(["read", "--issue", "DSP-3"], omp);
+    expect(code, stderr).toBe(0);
+    expect(stdout).toContain("Title: Read from an older server\nKey: DSP-3\n");
+    expect(stdout).toContain(
+      "Advances: unknown (this Dispatch server predates priorities; upgrade it)\n"
+    );
+    expect(stderr).toBe(
+      [
+        "dispatch: warning: Dispatch issue is missing resolved_repo: this Dispatch server predates repository fields, so DSP-3's repository is unknown; upgrade the server",
+        "dispatch: warning: Dispatch issue is missing advances: this Dispatch server predates priorities, so the priorities DSP-3 advances are unknown; upgrade the server",
+        "",
+      ].join("\n")
+    );
+  });
+
+  // A server from before priorities refuses a write naming `advances`, so the update says so from
+  // its read and sends nothing: not the set, not the rest of the update, not the closing reason.
+  test("an advances write to a Dispatch server older than priorities sends nothing", async () => {
+    for (const named of [[], ["--advances-revision", "7"]]) {
+      requests.length = 0;
+      const argv = [
+        "issue-update",
+        "--issue",
+        "DSP-3",
+        "--advance",
+        "ship-the-daemon",
+        "--status",
+        "done",
+        "--reason",
+        "Shipped.",
+        ...named,
+      ];
+      const { code, stdout } = await run(argv, omp);
+      expect(code, stdout).toBe(1);
+      expect(stdout).toContain(
+        "Dispatch read DSP-3 without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server"
+      );
+      expect(requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+        "GET /api/v1/issues/DSP-3",
+      ]);
+    }
   });
 
   // An issue read lists the issue's last 10 events unless it is asked for more: --events N lists

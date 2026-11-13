@@ -44,19 +44,22 @@ function priorityLabels(rows: readonly PriorityRow[]): ReadonlyMap<string, strin
  * priority inherited from an issue above (R4) says so and carries no remove: that relation is
  * the ancestor's, and a relation on a child never places the issues above it.
  *
- * Every press writes one relation: `PATCH /api/v1/issues/{key}` carrying the whole of the
- * issue's own set, which moves one relation and so needs no `advances_revision` — the server's
- * rule is that a writer sending no revision asserts or retracts one relation at a time
- * (`api/issue_advances.go`, `refuseAdvancesRevision`). The list of priorities to choose from is
- * read only once the line has an entry to name or the control is open, as the components line
- * reads the architecture tree only while its picker is open.
+ * Every press writes the whole of the issue's own set — `PATCH /api/v1/issues/{key}` — with the
+ * `advances_revision` of the read the line drew it from. The server reads the act from the
+ * difference between the set and what it holds now, so without the revision a set another writer
+ * moved in between would read as this press's act and retract a relation the person never saw;
+ * with it, that write is refused 409 ADVANCES_REVISION (`api/issue_advances.go`,
+ * `refuseAdvancesRevision`), the line shows the server's reason as it shows every refusal, and
+ * the issue is read again so the next press carries the revision it holds now. The list of
+ * priorities to choose from is read only once the line has an entry to name or the control is
+ * open, as the components line reads the architecture tree only while its picker is open.
  */
 export function IssuePriorityLine({
   disabled,
   issue,
 }: {
   disabled: boolean;
-  issue: Pick<Issue, "advances" | "key">;
+  issue: Pick<Issue, "advances" | "advances_revision" | "key">;
 }): ReactNode {
   const advances = issue.advances ?? [];
   const own = advances.filter((entry) => !entry.inherited).map((entry) => entry.id);
@@ -76,14 +79,21 @@ export function IssuePriorityLine({
     label: () => `Advances of ${issue.key}`,
     // One write to the issue, in press order with every other (`issue:<KEY>`).
     target: () => `issue:${issue.key}`,
-    request: (ids: string[]) => issuePatchRequest(issue.key, { advances: ids }),
+    // The set and the revision of the read it was drawn from, both taken at the press: a retry
+    // sends the same pair, never a revision read after the set was chosen.
+    request: (input: { advances: string[]; advances_revision: number }) =>
+      issuePatchRequest(issue.key, input),
     onSettled: () => {
       // Every open issue, this one included: a descendant inherits the change with no event of
-      // its own. The priorities body and the rail's two counts move with the relation as well.
+      // its own, and a refused write leaves this issue's read stale, so the next press must carry
+      // the revision it holds now. The priorities body and the rail's two counts move with the
+      // relation as well.
       void queryClient.invalidateQueries({ queryKey: ["issue"] });
       void queryClient.invalidateQueries({ queryKey: ["priorities"] });
     },
   });
+  const writeOwn = (ids: string[]) =>
+    write.mutate({ advances: ids, advances_revision: issue.advances_revision });
   const busy = disabled || write.isPending;
   // A priority the issue already advances is no choice: the line names it, whether the relation
   // is the issue's own or an ancestor's.
@@ -93,7 +103,7 @@ export function IssuePriorityLine({
   const add = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (picked === "") return;
-    write.mutate([...own, picked]);
+    writeOwn([...own, picked]);
     setPicked("");
     setAdding(false);
   };
@@ -122,7 +132,7 @@ export function IssuePriorityLine({
                 aria-label={`Remove ${label} from ${issue.key}`}
                 className={`shrink-0 ${dismissButtonText}`}
                 disabled={busy}
-                onClick={() => write.mutate(own.filter((id) => id !== entry.id))}
+                onClick={() => writeOwn(own.filter((id) => id !== entry.id))}
                 type="button"
               >
                 ✕

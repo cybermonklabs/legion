@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type { Issue, Priorities, PriorityRow } from "../../api/types";
 import { IssuePriorityLine } from "./IssuePriorityLine";
 
@@ -47,6 +47,9 @@ const body: Priorities = {
   work_under_no_priority: { by_project: {}, count: 0, issues: [] },
 };
 
+/** The revision of the issue's own set the line's read answered, which each press carries. */
+const REVISION = 41;
+
 // Queries are scoped to this render's container: bun runs every test file in one document, and
 // a sibling file's un-unmounted render would otherwise leak its links into a `screen`-wide query.
 function renderLine(advances: Issue["advances"], closed = false) {
@@ -54,15 +57,20 @@ function renderLine(advances: Issue["advances"], closed = false) {
   const patchIssue = answerIssuePatches();
   patchIssue.mockResolvedValue({} as never);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidations = spyOn(queryClient, "invalidateQueries");
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
-        <IssuePriorityLine disabled={closed} issue={{ advances, key: "CORE-9" }} />
+        <IssuePriorityLine
+          disabled={closed}
+          issue={{ advances, advances_revision: REVISION, key: "CORE-9" }}
+        />
       </QueryClientProvider>
     </MemoryRouter>
   );
   return {
     ...view,
+    invalidations,
     listPriorities,
     patchIssue,
     q: within(view.container),
@@ -142,11 +150,10 @@ test("the control adds a priority, writing the issue's own set as advances", asy
     await user.selectOptions(picker, "rocq-lean");
     await user.click(view.q.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
-    // One relation asserted, so the write carries no revision: the server's rule lets a writer
-    // that sends none assert or retract one at a time.
+    // The whole own set, with the revision of the read it was drawn from.
     expect(view.patchIssue).toHaveBeenCalledWith(
       "CORE-9",
-      { advances: ["evals-now", "rocq-lean"] },
+      { advances: ["evals-now", "rocq-lean"], advances_revision: REVISION },
       keyedAttempt
     );
   } finally {
@@ -168,9 +175,39 @@ test("a remove writes the issue's own set without that priority, and leaves an i
     await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
     expect(view.patchIssue).toHaveBeenCalledWith(
       "CORE-9",
-      { advances: ["rocq-lean"] },
+      { advances: ["rocq-lean"], advances_revision: REVISION },
       keyedAttempt
     );
+  } finally {
+    view.unmountAll();
+  }
+});
+
+// The race the revision closes: this tab read {evals-now}; another writer replaced evals-now with
+// oss-verify in one whole-set write; the tab removes evals-now and sends []. Sent bare, the server
+// would read that as one act and retract oss-verify, which this reader never saw. Sent with the
+// revision this tab read, it is refused: the reader is told why, and the issue is read again so
+// the next press carries the revision it holds now.
+test("a remove carries the revision it was read at, and a stale one's refusal is shown", async () => {
+  const user = userEvent.setup();
+  const view = renderLine([{ id: "evals-now", inherited: false }]);
+  const refusal =
+    "advances revision 41 is not the revision this issue holds, 57: read the issue again and write the set you mean against 57";
+  view.patchIssue.mockRejectedValue(
+    new ApiError(409, { code: "ADVANCES_REVISION", error: refusal })
+  );
+  try {
+    await user.click(
+      await view.q.findByRole("button", { name: "Remove P1 Evals collecting data now from CORE-9" })
+    );
+    await waitFor(() => expect(view.patchIssue).toHaveBeenCalledTimes(1));
+    expect(view.patchIssue).toHaveBeenCalledWith(
+      "CORE-9",
+      { advances: [], advances_revision: REVISION },
+      keyedAttempt
+    );
+    expect((await view.q.findByRole("alert")).textContent).toBe(refusal);
+    expect(view.invalidations).toHaveBeenCalledWith({ queryKey: ["issue"] });
   } finally {
     view.unmountAll();
   }

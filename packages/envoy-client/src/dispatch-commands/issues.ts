@@ -127,14 +127,17 @@ function refuseUnsavedRepository(
   );
 }
 
-/** The revision of the `advances` set a read answered, which a whole-set write of that set
- *  carries. A read that carries no revision is as unusable as one missing any other field of
- *  the issue, so it is an error here rather than a write the server refuses. */
-function issueAdvancesRevision(issue: IssueDetails): number {
+/** The revision a whole-set write of `advances` carries: the one the caller named, which answers
+ *  a 409 ADVANCES_REVISION, else the one the read answered. A Dispatch server from before
+ *  priorities answers no revision and refuses a write naming `advances`, so whichever revision
+ *  was named the call says so and sends nothing, the closing reason included. */
+function advancesRevisionToSend(issue: IssueDetails, named: number | undefined): number {
   if (issue.advances_revision === undefined) {
-    throw new Error("Dispatch issue is missing advances_revision");
+    throw new Error(
+      `Dispatch read ${issue.key} without its advances: this Dispatch server predates priorities, so nothing was sent; upgrade the server`
+    );
   }
-  return issue.advances_revision;
+  return named ?? issue.advances_revision;
 }
 
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
@@ -266,6 +269,14 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   } catch (error) {
     throw refusalWithCode(error);
   }
+  // The command replaces the issue's own set, so the write carries a revision: with none the
+  // server takes one act alone and refuses a write that moves two relations
+  // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
+  // revision it named; with none, the read above is the read this write answers.
+  const advancesWrite =
+    advances === undefined
+      ? undefined
+      : { advances, advances_revision: advancesRevisionToSend(before, advancesRevision) };
   // The schema admits reason only beside status done. The reason is posted first, so the
   // close carries its note and an issue that cannot take the note stays open. Dispatch takes
   // messages on a closed issue (though not asks or artifacts) and answers a second close with
@@ -335,13 +346,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(route === undefined ? {} : { route }),
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
       ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
-      // The command replaces the issue's own set, so the write carries a revision: with none
-      // the server takes one act alone and refuses a write that moves two relations
-      // (409 ADVANCES_REVISION). The caller's own revision answers that refusal against the
-      // revision it named; with none, the read above is the read this write answers.
-      ...(advances === undefined
-        ? {}
-        : { advances, advances_revision: advancesRevision ?? issueAdvancesRevision(before) }),
+      ...advancesWrite,
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
       ...(sentLinks === undefined ? {} : { external_links: sentLinks }),
