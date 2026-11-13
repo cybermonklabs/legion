@@ -15,7 +15,7 @@ package rescue_test
 //     symlink, at mode 120000; an executable file, at mode 100755; a gitlink staged at another
 //     commit than HEAD, a bump `git add` staged after a commit inside the repository; and a
 //     gitlink HEAD holds that `git rm --cached` took out of the index.
-//   - The disk state at the path, 15 of them: absent; the same content as the record; new
+//   - The disk state at the path, 16 of them: absent; the same content as the record; new
 //     content of the same size, written in a later second than the record and its mtime then set
 //     back to the record's, as an archive tool or `touch -r` leaves it; new content of the same
 //     size whose mtime the write moved, the rewrite a role makes, which must be equal; new
@@ -25,8 +25,9 @@ package rescue_test
 //     record, so a record stands as it is made and the rule then covers it), which is a new
 //     untracked file the rule covers where the path has no record; a directory holding a file; a
 //     directory holding a .git with a commit; a directory holding a .git without one; a directory
-//     holding a .jj; a symlink to a file; a symlink to a directory; and the path's parent
-//     replaced by a symlink to a directory that holds the path.
+//     holding a .jj; a symlink to a file; a symlink to a directory; the path's parent replaced by
+//     a symlink to a directory that holds the path; and the record's content made unreadable
+//     (chmod 000), which today's read fails on wherever it reads the file.
 //   - The worktree's git HEAD: born or unborn.
 //   - The worktree's index file: present or missing.
 //
@@ -83,29 +84,35 @@ package rescue_test
 //   - The staged gitlink bump and the gitlink `git rm --cached` took out are index states only a
 //     born HEAD with an index file can hold: elsewhere each is the plain gitlink's cell, so they
 //     are built in that combination alone, crossed with the gitlink's disk states.
+//   - The unreadable state where there is no file of a record that jj holds to make unreadable:
+//     absent, and under an unborn HEAD the entries git alone staged, are a new file jj never
+//     recorded, which both reads fail on and jj's snapshot fails on in its own words (`Failed to
+//     open file <absolute path>: Permission denied`), naming no path as the route writes one, so
+//     those cells are not built; a symlink's chmod changes what it names, here nothing, and a
+//     gitlink's makes a directory nobody may read, which the rows cover.
 //
-// That leaves 161 cells under a born HEAD with an index file, 84 with none, 139 under an unborn
-// HEAD with an index file, and 32 with none: 416 cells.
+// That leaves 167 cells under a born HEAD with an index file, 88 with none, 141 under an unborn
+// HEAD with an index file, and 34 with none: 430 cells.
 //
 // What the matrix does not cover, and the rows do: two paths of one cell in different states,
-// such as a record under another record; git's content conversion and its configuration; sparse
-// patterns and jj's size limit; a conflicted or stale working copy; an unreadable directory;
-// names git refuses or that are not valid UTF-8. What it does not cover, and no row does either:
-// an unreadable tracked file, which today's read fails on and the route reads clean, the one
-// named exception to failing where that read fails; special files (a fifo, a socket, a device);
-// a parent replaced by a regular file; a .git that is a gitfile rather than a directory;
-// unmerged index stages; and a symlink or executable record crossed with the assume-unchanged or
-// skip-worktree mark, with intent-to-add or with the forced entry.
+// such as a record under another record; git's content conversion and its configuration, a
+// required clean filter among it; sparse patterns and jj's size limit; a conflicted or stale
+// working copy; an unreadable directory; names git refuses or that are not valid UTF-8. What it
+// does not cover, and no row does either: a new file nobody may read that jj never recorded
+// (above); special files (a fifo, a socket, a device); a parent replaced by a regular file; a
+// .git that is a gitfile rather than a directory; unmerged index stages; and a symlink or
+// executable record crossed with the assume-unchanged or skip-worktree mark, with intent-to-add
+// or with the forced entry.
 //
 // What the matrix does not prove, of the cells it builds:
 //
 //   - Under an unborn HEAD both reads start from `read-tree --empty` (rescue.snapshotTree,
 //     rescue.indexTree), so neither reads a record or a mark of the index file, nor whether there
-//     is one, and jj holds no record of a path git alone staged. So the 139 cells under an unborn
+//     is one, and jj holds no record of a path git alone staged. So the 141 cells under an unborn
 //     HEAD with an index file give both reads the input of another cell: the 102 whose record git
 //     alone staged (regular, assume-unchanged, skip-worktree, the three gitlinks, symlink and
 //     executable) that of a path with no record in their disk state's shape, which for most of
-//     them is the absent cell of that disk state, and the 37 absent, intent-to-add and forced
+//     them is the absent cell of that disk state, and the 39 absent, intent-to-add and forced
 //     cells that of the same cell with no index file, or of forced.same or absent with absent
 //     where that collapses. They pass as those cells pass, and prove nothing of a staged record
 //     or a mark that those cells do not.
@@ -227,10 +234,11 @@ const (
 	diskLinkToFile
 	diskLinkToDir
 	diskParentLink
+	diskUnreadable
 	matrixDisks
 )
 
-var matrixDiskNames = [matrixDisks]string{"absent", "same", "new-same-size", "new-same-size-fresh", "new-other-size", "chmod+x", "chmod-x", "ignored", "dir-file", "dir-git-commit", "dir-git-no-commit", "dir-jj", "link-file", "link-dir", "parent-link"}
+var matrixDiskNames = [matrixDisks]string{"absent", "same", "new-same-size", "new-same-size-fresh", "new-other-size", "chmod+x", "chmod-x", "ignored", "dir-file", "dir-git-commit", "dir-git-no-commit", "dir-jj", "link-file", "link-dir", "parent-link", "unreadable"}
 
 // matrixCell is one index state with one disk state, at the path p under a directory of the
 // cell's name.
@@ -279,6 +287,8 @@ func (w matrixWorkspace) built(c matrixCell) bool {
 	newContent := c.disk == diskNewSameSize || c.disk == diskNewSameSizeFresh || c.disk == diskNewOtherSize
 	modeAlone := c.disk == diskPlusX || c.disk == diskMinusX
 	switch {
+	case c.disk == diskUnreadable && (c.index == indexAbsent || c.index == indexSymlink || c.index.gitlink() || !w.born && c.index.staged()):
+		return false
 	case c.index == indexAbsent && (c.disk == diskAbsent || newContent || c.disk == diskMinusX):
 		return false
 	case c.index.gitlink() && (c.disk == diskNewSameSizeFresh || c.disk == diskDirWithGitCommit || modeAlone):
@@ -410,7 +420,11 @@ func (c matrixCell) declared(w matrixWorkspace) differentialRow {
 // older than the index file is racily clean, and git reads that file again whatever its stat data
 // says, so every record's mtime is set a minute back once it is written, before any index entry is
 // made of it. And git compares a file's ctime to the second, so a same-size rewrite whose mtime is
-// set back waits for the second after the record's ctime (becomes).
+// set back waits for the second after the record's ctime, and so does the unreadable state's
+// chmod, which changes nothing else git compares (becomes): measured on this build on 2026-11-13,
+// a file `git add -f` had just added, made mode 000 in the same second, read as unchanged to `git
+// add --all` over a copy of the index, which exited 0 without opening it, and made mode 000 1.1 s
+// later it failed that read, exit 128.
 func buildMatrix(t *testing.T, d *rescuetest.Disk, w matrixWorkspace, name, targets string, cells []matrixCell) *rescuetest.Disk {
 	t.Helper()
 	ws := *d
@@ -687,6 +701,12 @@ func becomes(t *testing.T, ws *rescuetest.Disk, targets, workspace string, c mat
 			t.Fatal(err)
 		}
 		symlink(t, moved, parent)
+	case diskUnreadable:
+		pastCtimeSecond(t, at)
+		if err := os.Chmod(at, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(at, 0o644) })
 	}
 }
 
