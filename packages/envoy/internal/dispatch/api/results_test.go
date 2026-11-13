@@ -3100,6 +3100,24 @@ func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
 	}
 }
 
+// A rate limit carries GitHub's whole body in its error too, and none of it reaches the detail:
+// GitHub's 429, which needs no header to be a limit, is named by its status and the `message`
+// of its JSON body alone.
+func TestCIResultDetailNamesTheStatusAndMessageOfARateLimit(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCR", "acme/widgets", "Rate limit")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	fake.failWithBody(http.StatusTooManyRequests,
+		`{"message":"API rate limit exceeded for installation ID 1.","documentation_url":"https://docs.github.com/rest/rate-limit"}`)
+
+	check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	assertUnread(t, check, "(status 429)", "(status 429), next request in 1m0s: API rate limit exceeded for installation ID 1.")
+	if strings.Contains(check.CI.Detail, "documentation_url") || strings.Contains(check.CI.Detail, "{") {
+		t.Fatalf("c1's detail %q carries GitHub's body", check.CI.Detail)
+	}
+}
+
 // A head carries every attempt of a run, and the run of the highest id decides, in whichever
 // order GitHub lists them: a failure retried to a success is a pass, and a success retried to a
 // failure is a fail. The first case lists the lower id first and the second the higher, so
@@ -3161,8 +3179,9 @@ func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T
 
 // A ci_check with spaces around it names the run without them: the read asks GitHub for that run,
 // and its success is a pass with its one derived result, naming the run unpadded in ci.run, the
-// line and the result. A ci_check of only spaces names no run: the check is an ordinary one, with
-// no ci member and no result, and GitHub is asked for nothing.
+// line and the result, while the block's own ci_check is served as written. A ci_check of only
+// spaces names no run: the check is an ordinary one, with no ci member and no result, and GitHub
+// is asked for nothing.
 func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
 	handler, database, fake := resultsGitHubCheckRuns(t)
 	issueInRepository(t, handler, "RESCT", "acme/widgets", "Trimmed")
@@ -3172,8 +3191,8 @@ func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
 	writeHead(t, database, "acme/widgets", 7, headCommit, "open", padded)
 	fake.set(headCommit, completedRun(61, ciCheckRun, "success"))
 	check := checkOf(t, readResults(t, handler, padded), "c1")
-	if check.CICheck != ciCheckRun {
-		t.Fatalf("c1 ci_check = %q, want %q", check.CICheck, ciCheckRun)
+	if check.CICheck != " "+ciCheckRun {
+		t.Fatalf("c1 ci_check = %q, want %q as written", check.CICheck, " "+ciCheckRun)
 	}
 	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit))
 	assertDerived(t, check, 61, ciCheckRun, "success", "pass", headCommit)
@@ -3184,8 +3203,8 @@ func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
 	fake.set(newHeadCommit, completedRun(62, ciCheckRun, "success"))
 	before := fake.allReads()
 	check = checkOf(t, readResults(t, handler, blank), "c1")
-	if check.CICheck != "" || check.CI != nil || len(check.Results) != 0 {
-		t.Fatalf("c1 with a blank ci_check reads ci_check %q, ci %+v and results %+v, want an ordinary check with none",
+	if check.CICheck != "   " || check.CI != nil || len(check.Results) != 0 {
+		t.Fatalf("c1 with a blank ci_check reads ci_check %q, ci %+v and results %+v, want it as written and an ordinary check with none",
 			check.CICheck, check.CI, check.Results)
 	}
 	if asked := fake.allReads() - before; asked != 0 {

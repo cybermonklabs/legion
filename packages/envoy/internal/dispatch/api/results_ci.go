@@ -2,15 +2,15 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -50,14 +50,7 @@ const ciObservedOutputRunes = 2000
 
 // ciUnreadDetailRunes is how long the detail of a check whose runs GitHub could not be read for
 // is, at most: the bound ciObservedOutputRunes puts on a run's output.
-const ciUnreadDetailRunes = 2000
-
-// githubAnswerAt finds the end of the status in the error of a read GitHub refused, where the
-// body GitHub answered begins: githubapp writes a refusal as `status <n>: <body>`
-// (githubapp.CheckResponse) and a rate limit as `(status <n>), next request in <wait>: <body>`
-// (githubapp.RateLimitError), each after the words naming the request. Neither carries the
-// status and body apart in a type that names both, so the error's words are read.
-var githubAnswerAt = regexp.MustCompile(`status \d{3}\)?(?:, next request in [^:]*)?: `)
+const ciUnreadDetailRunes = ciObservedOutputRunes
 
 // The cases that name why a check CI proves holds no derived result, beside the conclusions GitHub
 // writes. A conclusion is its own case: success is a pass; neutral, skipped and cancelled prove
@@ -98,12 +91,13 @@ type ciRun struct {
 // at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
 // case of the answer.
 func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
-	var proved []*model.CheckBlock
+	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
 		if validCICheck(checks[index], len(checks[index].Results) > 0) {
-			proved = append(proved, &checks[index])
-			names[checks[index].CICheck] = struct{}{}
+			name := docs.CheckAttributesOfBlock(checks[index]).CICheck
+			proved = append(proved, provedCI{check: &checks[index], name: name})
+			names[name] = struct{}{}
 		}
 	}
 	if len(proved) == 0 {
@@ -114,8 +108,8 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		return err
 	}
 	if !found {
-		for _, check := range proved {
-			check.CI = ciUnconcluded(*check, model.CIStateNoResult, ciCaseNoHead,
+		for _, p := range proved {
+			p.check.CI = ciUnconcluded(*p.check, p.name, model.CIStateNoResult, ciCaseNoHead,
 				fmt.Sprintf("Dispatch holds no open or merged pull request head of %s.", issueKey))
 		}
 		return nil
@@ -123,19 +117,26 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	runs, err := s.readCIRuns(ctx, head, names)
 	if err != nil {
 		detail := ciUnreadDetail(head, err)
-		for _, check := range proved {
-			check.CI = ciUnconcluded(*check, model.CIStateUnread, ciCaseUnreadable, detail)
+		for _, p := range proved {
+			p.check.CI = ciUnconcluded(*p.check, p.name, model.CIStateUnread, ciCaseUnreadable, detail)
 		}
 		return nil
 	}
-	for _, check := range proved {
+	for _, p := range proved {
 		var result *model.CheckResult
-		check.CI, result = ciAnswerOf(*check, head, runs[check.CICheck])
+		p.check.CI, result = ciAnswerOf(*p.check, p.name, head, runs[p.name])
 		if result != nil {
-			check.Results = []model.CheckResult{*result}
+			p.check.Results = []model.CheckResult{*result}
 		}
 	}
 	return nil
+}
+
+// provedCI is a check CI proves and name, the run its `ci_check` names as the rules read it,
+// trimmed (docs.CheckAttributesOfBlock): the block as served keeps `ci_check` as written.
+type provedCI struct {
+	check *model.CheckBlock
+	name  string
 }
 
 // readCIRuns reads every page of the check runs of head's commit, in head's own repository,
@@ -191,29 +192,37 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 }
 
 // ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err
-// the read's error. Where GitHub refused the read, the error carries its whole body, up to the
-// 16 MiB a page of check runs may take: the body is replaced by the `message` GitHub writes in
-// the JSON it refuses a request with, and left out where it holds none, so the status stays. The
-// sentence is then cut to ciUnreadDetailRunes.
+// the read's error. Where GitHub refused the read (githubapp.StatusError) or rate-limited it
+// (githubapp.RateLimitError), the error's text ends with GitHub's whole body, up to the 16 MiB a
+// page of check runs may take: the body is replaced by the `message` GitHub writes in the JSON it
+// refuses a request with, and left out where it holds none, so the status stays. Any other error
+// keeps its text. The sentence is then cut to ciUnreadDetailRunes.
 func ciUnreadDetail(head delivery.NewestHead, err error) string {
 	reason := err.Error()
-	if at := githubAnswerAt.FindStringIndex(reason); at != nil {
-		reason = reason[:at[1]-len(": ")] + githubMessage(reason[at[1]:])
+	var refused *githubapp.StatusError
+	if errors.As(err, &refused) {
+		reason = withGitHubMessage(reason, refused.Body, refused.Message())
+	} else if limited, ok := githubapp.AsRateLimit(err); ok {
+		reason = withGitHubMessage(reason, limited.Body, limited.Message())
 	}
 	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
 		head.Repo, head.HeadSHA, reason), ciUnreadDetailRunes)
 }
 
-// githubMessage is ": " and the `message` of body, the JSON GitHub refuses a request with, and ""
-// for a body that is not JSON or carries no message.
-func githubMessage(body string) string {
-	var answer struct {
-		Message string `json:"message"`
+// withGitHubMessage is reason, an error's text, with body, which ends it after ": ", replaced by
+// ": " and message, or by nothing where message is "". A text that does not end so is kept.
+func withGitHubMessage(reason, body, message string) string {
+	kept, ends := strings.CutSuffix(reason, body)
+	if !ends {
+		return reason
 	}
-	if json.Unmarshal([]byte(body), &answer) != nil || answer.Message == "" {
-		return ""
+	if kept, ends = strings.CutSuffix(kept, ": "); !ends {
+		return reason
 	}
-	return ": " + answer.Message
+	if message == "" {
+		return kept
+	}
+	return kept + ": " + message
 }
 
 // ciRunOf reads the check run id named name out of the object GitHub listed. A field GitHub
@@ -237,22 +246,22 @@ func ciRunOf(id int64, name string, object map[string]any) *ciRun {
 	return run
 }
 
-// ciAnswerOf decides one check CI proves from run, the run of its name at head, nil where head
+// ciAnswerOf decides one check CI proves from run, the run named name at head, nil where head
 // carries none: the `ci` member, and the derived result for a pass or a fail, nil for every other
 // case.
-func ciAnswerOf(check model.CheckBlock, head delivery.NewestHead, run *ciRun) (*model.CheckCI, *model.CheckResult) {
+func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, run *ciRun) (*model.CheckCI, *model.CheckResult) {
 	at := fmt.Sprintf("%s, the head of %s#%d", head.HeadSHA, head.Repo, head.Number)
 	switch {
 	case run == nil:
-		return ciUnconcluded(check, model.CIStateNoResult, ciCaseAbsent,
-			fmt.Sprintf("No CI run named %s is on %s.", check.CICheck, at)), nil
+		return ciUnconcluded(check, name, model.CIStateNoResult, ciCaseAbsent,
+			fmt.Sprintf("No CI run named %s is on %s.", name, at)), nil
 	case run.status != ciRunCompleted:
-		return ciUnconcluded(check, model.CIStateNoResult, ciCaseNotCompleted,
+		return ciUnconcluded(check, name, model.CIStateNoResult, ciCaseNotCompleted,
 			fmt.Sprintf("CI run %s is %s at %s, and has not concluded.", run.name, run.status, at)), nil
 	}
 	switch run.conclusion {
 	case ciConclusionNeutral, ciConclusionSkipped, ciConclusionCancelled:
-		return ciUnconcluded(check, model.CIStateNoResult, run.conclusion,
+		return ciUnconcluded(check, name, model.CIStateNoResult, run.conclusion,
 			fmt.Sprintf("CI run %s concluded %s at %s, which proves nothing.", run.name, run.conclusion, at)), nil
 	}
 	verdict := model.CIStateFail
@@ -262,7 +271,7 @@ func ciAnswerOf(check model.CheckBlock, head delivery.NewestHead, run *ciRun) (*
 	answer := &model.CheckCI{
 		Run: run.name, State: verdict, Case: run.conclusion,
 		Detail: fmt.Sprintf("CI run %s concluded %s at %s.", run.name, run.conclusion, at),
-		Line:   ciVerdictLine(check, verdict, head.HeadSHA),
+		Line:   ciVerdictLine(check, name, verdict, head.HeadSHA),
 	}
 	result := model.CheckResult{
 		ID:       ciResultIDPrefix + strconv.FormatInt(run.id, 10),
@@ -277,20 +286,21 @@ func ciAnswerOf(check model.CheckBlock, head delivery.NewestHead, run *ciRun) (*
 	return answer, &result
 }
 
-// ciUnconcluded is the `ci` member of a check its run did not decide, for the case given.
-func ciUnconcluded(check model.CheckBlock, state, ciCase, detail string) *model.CheckCI {
+// ciUnconcluded is the `ci` member of a check its run, the one named name, did not decide, for
+// the case given.
+func ciUnconcluded(check model.CheckBlock, name, state, ciCase, detail string) *model.CheckCI {
 	return &model.CheckCI{
-		Run: check.CICheck, State: state, Case: ciCase, Detail: detail,
-		Line: fmt.Sprintf("- Check %s (%s): CI run %s has no result (%s)", check.BlockID, check.When, check.CICheck, ciCase),
+		Run: name, State: state, Case: ciCase, Detail: detail,
+		Line: fmt.Sprintf("- Check %s (%s): CI run %s has no result (%s)", check.BlockID, check.When, name, ciCase),
 	}
 }
 
 // ciVerdictLine is the pull-request body line of a derived result: the recorded line's grammar,
-// with the run that proved it where a recorded line names its recorder, and the check's own
-// words where a recorded line carries the role's reading, since no role read anything. The words
-// are cut as checkResultLine cuts a reading.
-func ciVerdictLine(check model.CheckBlock, verdict, sha string) string {
-	line := fmt.Sprintf("- Check %s (%s): %s at %s, from CI run %s.", check.BlockID, check.When, verdict, sha, check.CICheck)
+// with name, the run that proved it, where a recorded line names its recorder, and the check's
+// own words where a recorded line carries the role's reading, since no role read anything. The
+// words are cut as checkResultLine cuts a reading.
+func ciVerdictLine(check model.CheckBlock, name, verdict, sha string) string {
+	line := fmt.Sprintf("- Check %s (%s): %s at %s, from CI run %s.", check.BlockID, check.When, verdict, sha, name)
 	if check.Text == "" {
 		return line
 	}

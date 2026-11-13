@@ -28,7 +28,7 @@ const CheckWhenBeforeMerge = "before_merge"
 // read and the results write path judges, read as the rules read them: `ci_check`, run and
 // negative control with the spaces around them trimmed, as the editor cannot show them, and a
 // blank `when` as the default, before_merge. A check block as the results read serves it
-// (CheckBlockOf) keeps its run and negative control as written.
+// (CheckBlockOf) keeps its `ci_check`, run and negative control as written.
 type CheckAttributes struct {
 	When            string
 	Run             string
@@ -41,14 +41,19 @@ func CheckAttributesOf(node *pmdoc.Node) CheckAttributes {
 	return CheckAttributesOfBlock(CheckBlockOf(node))
 }
 
-// CheckAttributesOfBlock is the CheckAttributes of check, a block CheckBlockOf read, which has
-// already trimmed its `ci_check` and given a blank `when` the default.
+// CheckAttributesOfBlock is the CheckAttributes of check, read as the rules read them: its
+// `ci_check`, run and negative control trimmed, and a blank `when` given the default. It is the
+// one place the rules' reading is made, so they hold for any check block, whoever built it.
 func CheckAttributesOfBlock(check model.CheckBlock) CheckAttributes {
+	when := check.When
+	if when == "" {
+		when = CheckWhenBeforeMerge
+	}
 	return CheckAttributes{
-		When:            check.When,
+		When:            when,
 		Run:             strings.TrimSpace(check.Run),
 		NegativeControl: strings.TrimSpace(check.NegativeControl),
-		CICheck:         check.CICheck,
+		CICheck:         strings.TrimSpace(check.CICheck),
 	}
 }
 
@@ -130,21 +135,20 @@ func checkBlockNodes(tree *pmdoc.Node) []*pmdoc.Node {
 	return nodes
 }
 
-// CheckBlockOf is the check block node holds, with the attributes a check block carries: its id,
-// `ci_check` (with the spaces around it trimmed, as the editor cannot show them, so it names the
-// run it reads as), run, `when` (a blank one read as the default, before_merge), negative control
-// and surface. Run, negative control and surface are kept as written. Every reader of a check
+// CheckBlockOf is the check block node holds, with the attributes a check block carries, each as
+// written: its id, `ci_check`, run, `when`, negative control and surface. Every reader of a check
 // block's attributes comes here: the four rules through CheckAttributesOf, settlement and the
-// results routes.
+// results routes, which serve the block. The rules read it through CheckAttributesOfBlock.
 func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	var check model.CheckBlock
 	check.BlockID, _ = node.Attrs[pmdoc.BlockIDAttr].(string)
-	ciCheck, _ := node.Attrs["ci_check"].(string)
-	check.CICheck = strings.TrimSpace(ciCheck)
+	check.CICheck, _ = node.Attrs["ci_check"].(string)
 	check.Run, _ = node.Attrs["run"].(string)
 	check.When, _ = node.Attrs["when"].(string)
 	check.NegativeControl, _ = node.Attrs["negative_control"].(string)
 	check.Surface, _ = node.Attrs["surface"].(string)
+	// The results read served a blank `when` as before_merge before ci_check existed, so the
+	// served block keeps that default. It is the served shape, not the rules' reading.
 	if check.When == "" {
 		check.When = CheckWhenBeforeMerge
 	}
@@ -165,27 +169,27 @@ func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree
 	// walks prior not at all.
 	var held map[string]CheckAttributes
 	for _, node := range checkBlockNodes(tree) {
-		check := CheckAttributesOf(node)
+		block := CheckBlockOf(node)
+		check := CheckAttributesOfBlock(block)
 		if !CarriesCICheck(check) {
 			continue
 		}
 		if held == nil {
 			held = map[string]CheckAttributes{}
 			for _, before := range checkBlockNodes(prior) {
-				id, _ := before.Attrs[pmdoc.BlockIDAttr].(string)
-				held[id] = CheckAttributesOf(before)
+				earlier := CheckBlockOf(before)
+				held[earlier.BlockID] = CheckAttributesOfBlock(earlier)
 			}
 		}
-		blockID, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		if before, ok := held[blockID]; ok && before == check {
+		if before, ok := held[block.BlockID]; ok && before == check {
 			continue
 		}
-		rule, err := CICheckRuleIn(ctx, tx, artifactID, blockID, check)
+		rule, err := CICheckRuleIn(ctx, tx, artifactID, block.BlockID, check)
 		if err != nil {
 			return err
 		}
 		if rule != "" {
-			return &ErrInvalidCICheck{BlockID: blockID, CICheck: check.CICheck, Rule: rule}
+			return &ErrInvalidCICheck{BlockID: block.BlockID, CICheck: check.CICheck, Rule: rule}
 		}
 	}
 	return nil
@@ -208,21 +212,21 @@ func (r *settlementReconciliation) reconcileCICheckBlocks(
 	actor model.Actor,
 ) error {
 	for _, node := range checkBlockNodes(tree) {
-		check := CheckAttributesOf(node)
+		block := CheckBlockOf(node)
+		check := CheckAttributesOfBlock(block)
 		if !CarriesCICheck(check) {
 			continue
 		}
-		blockID, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
-		rule, err := CICheckRuleIn(ctx, tx, artifactID, blockID, check)
+		rule, err := CICheckRuleIn(ctx, tx, artifactID, block.BlockID, check)
 		if err != nil {
 			return err
 		}
 		if rule == "" {
 			continue
 		}
-		if r.repair(node, blockID, deleteJudgedCICheck(check)) {
+		if r.repair(node, block.BlockID, deleteJudgedCICheck(check)) {
 			r.events = append(r.events, documentAskEvent(owner, artifactID, "block.invalid", actor, model.BlockInvalidEventPayload{
-				BlockID:     blockID,
+				BlockID:     block.BlockID,
 				Reason:      rule,
 				DisturbedBy: actor,
 				BlockType:   "check",
