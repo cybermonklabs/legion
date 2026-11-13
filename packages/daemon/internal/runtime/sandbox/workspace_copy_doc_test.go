@@ -1,10 +1,10 @@
 package sandbox
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/testdoc"
 )
 
 // What an operator does when an issue pod goes away is decided by three facts this release
@@ -57,30 +57,22 @@ const (
 	karpenterEnd   = "and no repacking of its pods."
 )
 
-// docFact is one thing a region of docs/kubernetes.md must state: the fact a reader would lose,
-// and the words that say it. The fact is what the failure reports, because a reader who meets
-// this check has to know what to write, not only which string is missing.
-type docFact struct {
-	fact   string
-	phrase string
-}
-
 // The issue pod carries cluster-autoscaler.kubernetes.io/safe-to-evict only while its reservation
 // is Guaranteed (podKind.asksExtendedRunTime), and the "Anatomy of a Sandbox pod" bullet is where
 // an operator reads that rule and what a Burstable issue pod gives up for it.
 func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testing.T) {
 	const what = `docs/kubernetes.md's annotation bullet of "Anatomy of a Sandbox pod"`
-	_, region := kubernetesDocRegion(t, what, annotationRuleStart, annotationRuleEnd)
-	requireDocFacts(t, what, region, []docFact{
-		{"the annotation the rule is about", safeToEvictAnnotation},
-		{"that the controller's pod carries it whatever its reservation", "whatever its reservation"},
-		{"the rule itself, which is the reservation", "an issue pod carries it only while its cpu request equals its cpu limit and its memory request equals its memory limit"},
-		{"the reservation that rule names", "`Guaranteed`"},
-		{"that a Burstable issue pod carries it not at all", "is `Burstable` and carries the annotation not at all"},
-		{"what such a pod asks GKE Autopilot for", "no extended run time"},
-		{"that such a pod shares a node", "shares a node"},
-		{"what such a pod gives up", "the seven-day protection"},
-		{"what such a pod keeps, and why", "copy of each issue workspace outside the pod"},
+	_, region := testdoc.Region(t, "docs/kubernetes.md", what, annotationRuleStart, annotationRuleEnd)
+	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
+		{Fact: "the annotation the rule is about", Phrase: safeToEvictAnnotation},
+		{Fact: "that the controller's pod carries it whatever its reservation", Phrase: "whatever its reservation"},
+		{Fact: "the rule itself, which is the reservation", Phrase: "an issue pod carries it only while its cpu request equals its cpu limit and its memory request equals its memory limit"},
+		{Fact: "the reservation that rule names", Phrase: "`Guaranteed`"},
+		{Fact: "that a Burstable issue pod carries it not at all", Phrase: "is `Burstable` and carries the annotation not at all"},
+		{Fact: "what such a pod asks GKE Autopilot for", Phrase: "no extended run time"},
+		{Fact: "that such a pod shares a node", Phrase: "shares a node"},
+		{Fact: "what such a pod gives up", Phrase: "the seven-day protection"},
+		{Fact: "what such a pod keeps, and why", Phrase: "copy of each issue workspace outside the pod"},
 	})
 }
 
@@ -89,18 +81,18 @@ func TestKubernetesDocStatesWhichPodsCarryTheExtendedRunTimeAnnotation(t *testin
 // the line a copy that was not stored writes are internal/daemon's constants, checked there.
 func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 	const what = `docs/kubernetes.md's cadence paragraphs of "The copy of a running pod's workspace"`
-	_, region := kubernetesDocRegion(t, what, copyCadenceStart, copyCadenceEnd)
-	requireDocFacts(t, what, region, []docFact{
-		{"the first trigger, a turn's end", "the end of each turn of the issue"},
-		{"that the period runs from the end of the copy before it", "from the end of the copy before it"},
-		{"that one copy of an issue is in flight at a time", "One copy of an issue is in flight at a time"},
-		{"that no turn waits for a copy", "No turn waits for a copy"},
-		{"the role the copy is asked of", "the first live role of the issue that has a running process"},
-		{"the call it is taken through, which an idle release makes too", "`BundleWorkspace`"},
-		{"the table it is stored in", "workspace_running_copies"},
-		{"that it is never stored in the idle release's row", "never in the `workspace_bundles` row"},
-		{"that the line carries the reason by name", "with the reason by name"},
-		{"that a failed copy leaves the issue the copy it had", "the issue keeps the copy it had"},
+	_, region := testdoc.Region(t, "docs/kubernetes.md", what, copyCadenceStart, copyCadenceEnd)
+	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
+		{Fact: "the first trigger, a turn's end", Phrase: "the end of each turn of the issue"},
+		{Fact: "that the period runs from the end of the copy before it", Phrase: "from the end of the copy before it"},
+		{Fact: "that one copy of an issue is in flight at a time", Phrase: "One copy of an issue is in flight at a time"},
+		{Fact: "that no turn waits for a copy", Phrase: "No turn waits for a copy"},
+		{Fact: "the role the copy is asked of", Phrase: "the first live role of the issue that has a running process"},
+		{Fact: "the call it is taken through, which an idle release makes too", Phrase: "`BundleWorkspace`"},
+		{Fact: "the table it is stored in", Phrase: "workspace_running_copies"},
+		{Fact: "that it is never stored in the idle release's row", Phrase: "never in the `workspace_bundles` row"},
+		{Fact: "that the line carries the reason by name", Phrase: "with the reason by name"},
+		{Fact: "that a failed copy leaves the issue the copy it had", Phrase: "the issue keeps the copy it had"},
 	})
 }
 
@@ -108,18 +100,18 @@ func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 // holds a pod, and how the operator's psql recipe reads the running copy's own table.
 func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 	const what = `docs/kubernetes.md's two-kinds paragraph of "The copy of a running pod's workspace"`
-	_, region := kubernetesDocRegion(t, what, copyKindsStart, copyKindsEnd)
-	requireDocFacts(t, what, region, []docFact{
-		{"the release bundle's table", "workspace_bundles"},
-		{"the running copy's table", "workspace_running_copies"},
-		{"which copy a new pod restores", "is sent the newer of the two"},
-		{"that the restore happens before any role starts", "before any role starts"},
-		{"what becomes of the older copy", "The older is closed unsent"},
-		{"that an unrestored release bundle holds the issue's pod", "a release bundle no pod has restored holds the issue's pod"},
-		{"that a running copy holds no pod", "a running copy holds no pod at all"},
-		{"that an issue holding a running copy is still released when it is idle", "released when it is idle"},
-		{"the psql recipe for the running copy's table", "select encode(bundle, 'base64') from workspace_running_copies"},
-		{"that the column is bundle there too", "the column is `bundle` there too"},
+	_, region := testdoc.Region(t, "docs/kubernetes.md", what, copyKindsStart, copyKindsEnd)
+	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
+		{Fact: "the release bundle's table", Phrase: "workspace_bundles"},
+		{Fact: "the running copy's table", Phrase: "workspace_running_copies"},
+		{Fact: "which copy a new pod restores", Phrase: "is sent the newer of the two"},
+		{Fact: "that the restore happens before any role starts", Phrase: "before any role starts"},
+		{Fact: "what becomes of the older copy", Phrase: "The older is closed unsent"},
+		{Fact: "that an unrestored release bundle holds the issue's pod", Phrase: "a release bundle no pod has restored holds the issue's pod"},
+		{Fact: "that a running copy holds no pod", Phrase: "a running copy holds no pod at all"},
+		{Fact: "that an issue holding a running copy is still released when it is idle", Phrase: "released when it is idle"},
+		{Fact: "the psql recipe for the running copy's table", Phrase: "select encode(bundle, 'base64') from workspace_running_copies"},
+		{Fact: "that the column is bundle there too", Phrase: "the column is `bundle` there too"},
 	})
 }
 
@@ -128,34 +120,34 @@ func TestKubernetesDocStatesTheTwoKindsOfWorkspaceCopy(t *testing.T) {
 // are still charged as a death.
 func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t *testing.T) {
 	const what = `docs/kubernetes.md's "An end from outside the pod" paragraph`
-	lines, region := kubernetesDocRegion(t, what, podEndReadingsStart, podEndReadingsEnd)
-	requireDocFacts(t, what, region, []docFact{
-		{"the line one pod end writes", podEndLine},
-		{"that each role is continued in its own session", "in that role's own session"},
-		{"that neither a death nor a launch failure is charged", "charges no death and no launch failure"},
-		{"that each role is sent the task it owed again", "sends each role the task it owed again"},
-		{"that the third such end in a row is charged", "The third such end in a row is charged all the same"},
-		{"that only a completed turn between the ends keeps them apart", "with no turn of that claim completed between those ends"},
-		{"the limit the run is counted to", "`launch_failure_limit`"},
-		{"why the condition cannot answer that run", "can drive its own node into pressure"},
-		{"that a completed turn starts the count again", "A completed turn starts the count again"},
-		{"where the count is kept, so a restart keeps it", "`claims.pod_ends_not_ours`"},
-		{"the end that is still charged", "An end of neither reading is charged as a death"},
-		{"that the kubelet's eviction with no condition is charged", "`" + evictedReason + "` with no `DisruptionTarget` condition is such an end"},
-		{"the three limits that eviction is for", "its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`"},
-		{"a reason outside the three, which is charged", "UnexpectedAdmissionError"},
+	lines, region := testdoc.Region(t, "docs/kubernetes.md", what, podEndReadingsStart, podEndReadingsEnd)
+	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
+		{Fact: "the line one pod end writes", Phrase: podEndLine},
+		{Fact: "that each role is continued in its own session", Phrase: "in that role's own session"},
+		{Fact: "that neither a death nor a launch failure is charged", Phrase: "charges no death and no launch failure"},
+		{Fact: "that each role is sent the task it owed again", Phrase: "sends each role the task it owed again"},
+		{Fact: "that the third such end in a row is charged", Phrase: "The third such end in a row is charged all the same"},
+		{Fact: "that only a completed turn between the ends keeps them apart", Phrase: "with no turn of that claim completed between those ends"},
+		{Fact: "the limit the run is counted to", Phrase: "`launch_failure_limit`"},
+		{Fact: "why the condition cannot answer that run", Phrase: "can drive its own node into pressure"},
+		{Fact: "that a completed turn starts the count again", Phrase: "A completed turn starts the count again"},
+		{Fact: "where the count is kept, so a restart keeps it", Phrase: "`claims.pod_ends_not_ours`"},
+		{Fact: "the end that is still charged", Phrase: "An end of neither reading is charged as a death"},
+		{Fact: "that the kubelet's eviction with no condition is charged", Phrase: "`" + evictedReason + "` with no `DisruptionTarget` condition is such an end"},
+		{Fact: "the three limits that eviction is for", Phrase: "its own ephemeral-storage limit, a container's ephemeral-storage limit or an `emptyDir`'s `sizeLimit`"},
+		{Fact: "a reason outside the three, which is charged", Phrase: "UnexpectedAdmissionError"},
 	})
 
-	bullets := regionBullets(lines)
+	bullets := testdoc.RegionBullets(lines)
 	if len(bullets) != 2 {
 		t.Fatalf("%s lists %d readings, want the 2 that earn an uncharged continue: %q", what, len(bullets), bullets)
 	}
-	if deletion, ok := bulletNaming(t, what, bullets, "deletion timestamp"); ok {
-		requireDocFacts(t, what+", its deletion-timestamp bullet", deletion, []docFact{
-			{"that no act of the daemon's own accounts for the deletion", "no act of the daemon's own accounts for"},
+	if deletion, ok := testdoc.BulletNaming(t, what, bullets, "deletion timestamp"); ok {
+		testdoc.RequireDocFacts(t, what+", its deletion-timestamp bullet", deletion, []testdoc.Fact{
+			{Fact: "that no act of the daemon's own accounts for the deletion", Phrase: "no act of the daemon's own accounts for"},
 		})
 	}
-	cluster, ok := bulletNaming(t, what, bullets, "DisruptionTarget")
+	cluster, ok := testdoc.BulletNaming(t, what, bullets, "DisruptionTarget")
 	if !ok {
 		return
 	}
@@ -168,9 +160,9 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 				"status is left to guess whether the roles were charged for it. The bullet is: %q", what, reason, cluster)
 		}
 	}
-	requireDocFacts(t, what+", its DisruptionTarget bullet", cluster, []docFact{
-		{"that the kubelet's eviction reason earns the continue only with the condition",
-			"`" + evictedReason + "` is such an end only with the condition"},
+	testdoc.RequireDocFacts(t, what+", its DisruptionTarget bullet", cluster, []testdoc.Fact{
+		{Fact: "that the kubelet's eviction reason earns the continue only with the condition",
+			Phrase: "`" + evictedReason + "` is such an end only with the condition"},
 	})
 }
 
@@ -178,35 +170,35 @@ func TestKubernetesDocStatesWhichPodEndsAreContinuedUnchargedAndWhichIsCharged(t
 // reader tells an end the cluster made from an idle release and from an issue's close by them.
 func TestKubernetesDocStatesWhatEachKindOfPodEndLosesAndKeeps(t *testing.T) {
 	const what = `docs/kubernetes.md's "What each kind of end loses and keeps" paragraph`
-	lines, _ := kubernetesDocRegion(t, what, endsApartStart, endsApartEnd)
-	bullets := regionBullets(lines)
+	lines, _ := testdoc.Region(t, "docs/kubernetes.md", what, endsApartStart, endsApartEnd)
+	bullets := testdoc.RegionBullets(lines)
 	if len(bullets) != 3 {
 		t.Fatalf("%s lists %d kinds of end, want the 3 a reader tells apart: %q", what, len(bullets), bullets)
 	}
 	for _, end := range []struct {
 		name  string
-		facts []docFact
+		facts []testdoc.Fact
 	}{
-		{"an end the cluster made", []docFact{
-			{"that the disk goes with the pod", "The disk goes with the pod"},
-			{"that the newer saved copy comes back", "the newer of the issue's two saved copies"},
-			{"that the roles keep their sessions and are charged nothing", "charged no death"},
-			{"what no copy holds", "What no copy holds goes with the disk"},
+		{"an end the cluster made", []testdoc.Fact{
+			{Fact: "that the disk goes with the pod", Phrase: "The disk goes with the pod"},
+			{Fact: "that the newer saved copy comes back", Phrase: "the newer of the issue's two saved copies"},
+			{Fact: "that the roles keep their sessions and are charged nothing", Phrase: "charged no death"},
+			{Fact: "what no copy holds", Phrase: "What no copy holds goes with the disk"},
 		}},
-		{"an idle release", []docFact{
-			{"that the bundle is saved before any role stops", "saves the release bundle first"},
-			{"that the workspace comes back whole", "comes back whole at the next wake"},
-			{"what each role keeps", "suspended `released` until a wake"},
-			{"that the issue keeps its slot", "The issue keeps its admission slot"},
+		{"an idle release", []testdoc.Fact{
+			{Fact: "that the bundle is saved before any role stops", Phrase: "saves the release bundle first"},
+			{Fact: "that the workspace comes back whole", Phrase: "comes back whole at the next wake"},
+			{Fact: "what each role keeps", Phrase: "suspended `released` until a wake"},
+			{Fact: "that the issue keeps its slot", Phrase: "The issue keeps its admission slot"},
 		}},
-		{"an issue's close", []docFact{
-			{"that both saved copies are deleted", "both saved copies of the workspace are deleted"},
-			{"that nothing of the disk is kept", "nothing of that disk is kept"},
-			{"what the issue keeps", "What the issue keeps is what it pushed"},
+		{"an issue's close", []testdoc.Fact{
+			{Fact: "that both saved copies are deleted", Phrase: "both saved copies of the workspace are deleted"},
+			{Fact: "that nothing of the disk is kept", Phrase: "nothing of that disk is kept"},
+			{Fact: "what the issue keeps", Phrase: "What the issue keeps is what it pushed"},
 		}},
 	} {
-		if bullet, ok := bulletNaming(t, what, bullets, end.name); ok {
-			requireDocFacts(t, what+", its bullet for "+end.name, bullet, end.facts)
+		if bullet, ok := testdoc.BulletNaming(t, what, bullets, end.name); ok {
+			testdoc.RequireDocFacts(t, what+", its bullet for "+end.name, bullet, end.facts)
 		}
 	}
 }
@@ -215,105 +207,12 @@ func TestKubernetesDocStatesWhatEachKindOfPodEndLosesAndKeeps(t *testing.T) {
 // it gains the copy and the uncharged continue and pays no repacking for them.
 func TestKubernetesDocStatesKarpentersAnnotationStaysOnEveryPod(t *testing.T) {
 	const what = `docs/kubernetes.md's AWS paragraph of "The copy of a running pod's workspace"`
-	_, region := kubernetesDocRegion(t, what, karpenterStart, karpenterEnd)
-	requireDocFacts(t, what, region, []docFact{
-		{"the annotation that stays", doNotDisruptAnnotation},
-		{"that every pod carries it whatever its reservation", "every Legion pod carries it whatever its reservation"},
-		{"that Karpenter disrupts no node a Legion pod runs on", "no node a Legion pod runs on"},
-		{"what an AWS deployment gains", "gains the copy and the uncharged resume"},
-		{"what it does not pay for", "no repacking"},
+	_, region := testdoc.Region(t, "docs/kubernetes.md", what, karpenterStart, karpenterEnd)
+	testdoc.RequireDocFacts(t, what, region, []testdoc.Fact{
+		{Fact: "the annotation that stays", Phrase: doNotDisruptAnnotation},
+		{Fact: "that every pod carries it whatever its reservation", Phrase: "every Legion pod carries it whatever its reservation"},
+		{Fact: "that Karpenter disrupts no node a Legion pod runs on", Phrase: "no node a Legion pod runs on"},
+		{Fact: "what an AWS deployment gains", Phrase: "gains the copy and the uncharged resume"},
+		{Fact: "what it does not pay for", Phrase: "no repacking"},
 	})
-}
-
-// kubernetesDocRegion is the part of docs/kubernetes.md between the first and the last words of
-// one region, as its lines and as one flattened string. Every check reads a region and never the
-// document: a phrase found anywhere in its 6000 lines would answer a check about a paragraph that
-// says the opposite, which is the miss these checks exist against.
-//
-// It fails by name rather than skipping or passing. A marker that cannot be found is a region
-// that was reworded, and a check that cannot find what it bounds is a check that stopped
-// checking, which reads exactly like a pass.
-//
-// The markers are prose and the document is hard-wrapped, so they straddle line ends: they are
-// found in a flattened copy and carried back to the lines they cover, which is what a list read
-// as a list needs (regionBullets). The last line is the one the end marker finishes on, so a
-// marker that wraps takes its whole last line with it.
-func kubernetesDocRegion(t *testing.T, what, start, end string) ([]string, string) {
-	t.Helper()
-	// The document is at the repository root, five directories above this package.
-	doc, err := os.ReadFile(filepath.Join("..", "..", "..", "..", "..", "docs", "kubernetes.md"))
-	if err != nil {
-		t.Fatalf("read docs/kubernetes.md: %v", err)
-	}
-	lines := strings.Split(string(doc), "\n")
-	flat, lineOf := flattenKeepingLines(lines)
-	startOffset := strings.Index(flat, start)
-	if startOffset < 0 {
-		t.Fatalf("docs/kubernetes.md has no %q, so %s cannot be found: the region was reworded or removed, and this "+
-			"check stops checking the moment it cannot find it", start, what)
-	}
-	if strings.Contains(flat[startOffset+len(start):], start) {
-		t.Fatalf("docs/kubernetes.md has %q more than once, so it no longer says where %s starts: the check would read "+
-			"whichever comes first and cannot tell that it read the wrong one", start, what)
-	}
-	endOffset := strings.Index(flat[startOffset:], end)
-	if endOffset < 0 {
-		t.Fatalf("docs/kubernetes.md has no %q after %q, so the end of %s moved: an unbounded search would pass on a "+
-			"sentence anywhere in the document", end, start, what)
-	}
-	last := startOffset + endOffset + len(end) - 1
-	return lines[lineOf[startOffset] : lineOf[last]+1], flat[startOffset : last+1]
-}
-
-// requireDocFacts holds text, which is one region or one bullet of it, to every fact it must
-// state. Each miss is its own failure naming the fact, since a reader who has to fix this knows
-// what to write from the fact and not from the string.
-func requireDocFacts(t *testing.T, what, text string, facts []docFact) {
-	t.Helper()
-	for _, f := range facts {
-		if !strings.Contains(text, f.phrase) {
-			t.Errorf("%s does not state %s: it carries no %q. A reader of that part of the document is left to guess, "+
-				"and a sentence elsewhere in the document is no answer, since this is the part they read", what, f.fact, f.phrase)
-		}
-	}
-}
-
-// regionBullets reads the markdown bullets of a region, each as its whole content: the `- ` line
-// and the indented lines under it, joined. A fact is then held to the bullet that carries it,
-// which is what stops the sentence written for one kind of end from standing in for another's.
-func regionBullets(region []string) []string {
-	var bullets []string
-	// The loop advances i itself over a wrapped bullet's continuation lines, so it stays explicit.
-	for i := 0; i < len(region); i++ {
-		line := strings.TrimRight(region[i], " ")
-		if !strings.HasPrefix(line, "- ") {
-			continue
-		}
-		bullet := strings.TrimSpace(strings.TrimPrefix(line, "- "))
-		for i+1 < len(region) && strings.HasPrefix(region[i+1], " ") && strings.TrimSpace(region[i+1]) != "" {
-			i++
-			bullet += " " + strings.TrimSpace(region[i])
-		}
-		bullets = append(bullets, bullet)
-	}
-	return bullets
-}
-
-// bulletNaming is the one bullet of a region that names what the check is about. Two bullets
-// naming it, or none, is a failure of its own: the facts below it would otherwise be read against
-// a bullet nobody chose.
-func bulletNaming(t *testing.T, what string, bullets []string, name string) (string, bool) {
-	t.Helper()
-	var found []string
-	for _, bullet := range bullets {
-		if strings.Contains(bullet, name) {
-			found = append(found, bullet)
-		}
-	}
-	if len(found) != 1 {
-		t.Errorf("%s has %d bullets naming %q, want exactly 1: the facts a reader takes from that bullet have no one "+
-			"bullet to be read against. The bullets are: %q", what, len(found), name, bullets)
-		return "", false
-	}
-	return found[0], true
 }
