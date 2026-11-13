@@ -8,6 +8,7 @@ package projection
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -33,6 +34,12 @@ import (
 // the commonest question a reader brings. An issue that matches none of the four carries no
 // answer at all: an issue of `admission.active` whose worker is running, and an issue at
 // phase.Held, which holds a slot and so stands in that same list.
+//
+// A blocked issue whose held row (state.Admission.Held) carries a word the ladder reads before
+// dispatch_blocker (ranksAboveLinks) reads that word's sentence (unlistedReason) under the state
+// word `blocked`, rather than the sentence of the links or children that hold it: closing those
+// would not free it, so `why` and `admission.held` name one cause. A blocked issue whose word is
+// dispatch_blocker, children_first or a later one, or that has no held row, reads blockedReason.
 //
 // The scope is this project's own records that the record holds in the workflow
 // (record.InWorkflow). An issue the record does not hold there — done, backlog, icebox,
@@ -101,7 +108,8 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 	// of, so an issue in none of them is an issue of the held list. A key the map does not hold
 	// reads the zero row all the same, whose word is no word of the ladder and whose sentence
 	// is the fallback: an answer a reader can act on beats none where a later pass publishes
-	// the two lists differently.
+	// the two lists differently. The `blocked` arm reads it too, for the word that ranks above
+	// the links (ranksAboveLinks); a blocked issue the map does not hold reads blockedReason.
 	causes := make(map[string]record.HeldIssue, len(state.Admission.Held))
 	for _, row := range state.Admission.Held {
 		causes[row.Issue] = row
@@ -142,6 +150,14 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			}
 			why = &api.WhyView{State: api.WhyWaiting, Reason: reason}
 		case held:
+			// A held word that ranks above the links is the cause the held list names for this
+			// issue, and closing the issue a link names would free nothing while it stands, so
+			// the issue reads that word's sentence and `why` and `admission.held` name one cause.
+			// The state word stays `blocked`, because the issue stands in that list.
+			if cause, known := causes[issue.Key]; known && ranksAboveLinks(cause.Reason) {
+				why = &api.WhyView{State: api.WhyBlocked, Reason: unlistedReason(cause)}
+				break
+			}
 			// The links this pass judged, read once for the two fills that name them: the
 			// children fill names them after the children it waits for, and the link fill is
 			// the whole of them.
@@ -163,6 +179,14 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 		view.Why = why
 		state.Issues[issue.Key] = view
 	}
+}
+
+// ranksAboveLinks reports whether the ladder reads word before dispatch_blocker
+// (record.HeldReasons): a hold that closing the Dispatch issues the issue waits on does not
+// end, since the ladder would still name it. A word the ladder does not name ranks above nothing.
+func ranksAboveLinks(word record.HeldReason) bool {
+	rank := slices.Index(record.HeldReasons, word)
+	return rank >= 0 && rank < slices.Index(record.HeldReasons, record.HeldDispatchBlocker)
 }
 
 // claimStoppedReason is the sentence of an issue a stranded claim names (api.WhyClaimStopped):
@@ -236,7 +260,9 @@ func linkReason(waitsOn []string) string {
 // unlistedReason is the sentence of an issue the record holds in the workflow that stands in
 // none of the three lists that place one (api.WhyUnlisted). The word is `unlisted` and not
 // `held`, because `held` is a phase of the workflow, whose issues hold a slot and stand in
-// `admission.active`.
+// `admission.active`. It is also the sentence of a blocked issue whose held word the ladder
+// reads before dispatch_blocker (ranksAboveLinks), which reads it under the state word
+// `blocked` so that `why` and `admission.held` name one cause (whyStates).
 //
 // Two fills, read in this order. First the cause the record carries: one sentence per word of
 // record.HeldReason, each true of what that word means, over the row record.HeldList published

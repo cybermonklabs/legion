@@ -78,6 +78,10 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		// phase of theirs a member of the line the children-first wait then holds back.
 		lifecycles: []string{"LEGION-300", "LEGION-600"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
+			// A root at accepting has opened its gate; without this row LEGION-110 would read
+			// design_gate's sentence.
+			"LEGION-100": {record.DesignStepSpec: {Issue: "LEGION-100", Step: record.DesignStepSpec,
+				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 6, At: opened}, EverOpened: true}},
 			"LEGION-300": {record.DesignStepSpec: {Issue: "LEGION-300", Step: record.DesignStepSpec,
 				LatestVersion: 1, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: opened}, EverOpened: true}},
 			"LEGION-600": {record.DesignStepSpec: {Issue: "LEGION-600", Step: record.DesignStepSpec,
