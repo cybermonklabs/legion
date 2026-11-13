@@ -349,7 +349,7 @@ func (r *claimCompactionLive) overrides() overrides {
 // The root architect's issue stands in accepting rather than in a worker phase, for the same
 // repair: it has an architect's claim and no phase worker's, and the repair would read the
 // planner a planning issue names, find no claim at all and start one. Accepting is the phase
-// whose role is the architect (workflow's RoleFor), where no phase worker runs, so the repair
+// whose role is the architect (phase.RoleFor), where no phase worker runs, so the repair
 // passes over it as it passes over every architect.
 func (r *claimCompactionLive) seed() {
 	t := r.t

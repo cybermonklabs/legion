@@ -60,7 +60,7 @@ func TestAnAcknowledgementThatLandsInsideItsOwnTurnStillAwaitsItsResult(t *testi
 // turn, and the background result's is the one that starts; the task's own turn is the one after
 // it, because Oh My Pi's follow-up queue dequeues one delivery group per drain (omp://rpc.md,
 // "Mode semantics"). Either way the role is prompted exactly once, works the task in a turn that
-// serves its run and its assignment, and the task is retired only when its prompt's work is over.
+// serves its run and its entry, and the task is retired only when its prompt's work is over.
 func TestABackgroundResultsTurnIsNotTheTasksTurn(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -70,13 +70,13 @@ func TestABackgroundResultsTurnIsNotTheTasksTurn(t *testing.T) {
 	}{
 		{name: "before the daemon sends the task", start: func(h *harness) int {
 			h.conns.Remove(h.token)
-			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Assignment: "A1"})
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Entry: 1})
 			h.wantPrompts(0)
 			h.conns.Register(h.token, h.conn)
 			return 0
 		}},
 		{name: "after the task's prompt was acknowledged", start: func(h *harness) int {
-			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Assignment: "A1"})
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Entry: 1})
 			h.wantPrompts(1)
 			if p := h.pending(); p.DeliveredAt.IsZero() {
 				t.Fatalf("pending %+v, want the prompt acknowledged", p)
@@ -114,8 +114,8 @@ func TestABackgroundResultsTurnIsNotTheTasksTurn(t *testing.T) {
 			if got := h.claim().ServingRun(); got != 7 {
 				t.Fatalf("during the task's turn the claim serves run %d, want the task's 7", got)
 			}
-			if got := h.claim().ServingAssignment(); got != "A1" {
-				t.Fatalf("during the task's turn the claim serves assignment %q, want the task's A1", got)
+			if got := h.claim().ServingEntry(); got != 1 {
+				t.Fatalf("during the task's turn the claim serves entry %d, want the task's 1", got)
 			}
 			delivery := h.pending().ID
 			h.mustQuiet(StreamTurnEnd{Claim: testToken})
@@ -130,9 +130,9 @@ func TestABackgroundResultsTurnIsNotTheTasksTurn(t *testing.T) {
 			if p := h.claim().Pending; p != nil {
 				t.Fatalf("pending %+v after the task's prompt ended, want it retired", *p)
 			}
-			if stored := h.store.load(testToken); stored.ServingGeneration != 7 || stored.ServingAssignmentID != "A1" {
-				t.Fatalf("the stored claim serves run %d assignment %q, want 7 and A1",
-					stored.ServingGeneration, stored.ServingAssignmentID)
+			if stored := h.store.load(testToken); stored.ServingGeneration != 7 || stored.ServedEntry != 1 {
+				t.Fatalf("the stored claim serves run %d entry %d, want 7 and 1",
+					stored.ServingGeneration, stored.ServedEntry)
 			}
 			if _, ok := h.store.delivery(testToken); ok {
 				t.Error("the store still holds the delivery whose prompt ended")
@@ -165,7 +165,7 @@ func TestATasksTurnRetiresItOnceWhicheverOfItsEndAndItsResultComesFirst(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(StateReady)
-			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Assignment: "A1"})
+			h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Entry: 1})
 			h.must(StreamTurnStart{Claim: testToken})
 			if h.pending().ConfirmedAt.IsZero() {
 				t.Fatal("the task's own turn did not confirm it")
@@ -300,7 +300,7 @@ func TestAnAgentWhoseResultsRunNoTurnAndNameNoTurnOfItsOwnIsStillRetired(t *test
 func TestATurnWhoseWorkEndedInAProviderErrorDoesNotRetireItsTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Assignment: "A1"})
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 7, Entry: 1})
 	h.must(StreamTurnStart{Claim: testToken})
 	failed := h.pending()
 	if failed.ConfirmedAt.IsZero() {

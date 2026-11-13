@@ -160,10 +160,25 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // alone: it has work, and a second task would be a second prompt for work under way. So is a role
 // a queued row already covers (queuedRowCovers).
 //
-// The task goes through the outbox's start like every other, marked as the phase's resume task, so
-// the one rule about already-delivered work stays the outbox's: it does not deliver a resume task
-// to a claim that by then holds its phase's task for this run. No slot is read: a claim whose
-// agent has just said it is ready is running, and admission has long since given its tree a slot.
+// What such a claim is sent is decided by the entry its role's phases row names
+// (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
+// owedEntryRoles): the whole row, below the skips above, so a ready this function passes over
+// costs no query and the row the rule is weighed against is the row whose work is sent. A claim
+// behind that entry — the entry it was given is under the row's and no queued start carries that
+// entry (OwedEntry) — is sent the work of that entry at that entry (SendOwedEntry), which is the
+// task the transition wrote when it raised the number. It is sent that rather than the phase's
+// resume task because the resume says to carry the existing phase work on, and the work of an
+// entry this claim was never given is work it does not have; the resume would also spend the turn
+// on the wrong prompt, since the completion it answers with is refused as behind that entry and
+// the entry's own task follows from the next admission pass or the entry sweep anyway.
+//
+// A claim level with its row is sent the phase's resume task, enqueued here and marked as a
+// resume task, so the one rule about already-delivered work stays the outbox's: it does not
+// deliver a resume task to a claim that by then holds its phase's task for this run. That row
+// reads no slot and carries no entry, the claim being on the entry its row names already; the
+// owed entry's start waits for the issue's admission slot as every start Engine.started builds
+// does (StartOrOwe). Either way the issue holds one: a claim whose agent has just said it is
+// ready is running, and admission has long since given its tree a slot.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {
@@ -197,6 +212,18 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
+		return nil
+	}
+	row, err := e.phaseRow(ctx, tx, issue.Key, role)
+	if err != nil {
+		return err
+	}
+	if OwedEntry(run, *root, row.Entry) {
+		if err := e.SendOwedEntry(ctx, tx, *issue, role, row); err != nil {
+			return err
+		}
+		e.logOnCommit(ctx, "workflow: a ready worker behind the entry its phases row names is sent that entry's work",
+			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,

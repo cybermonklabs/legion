@@ -541,6 +541,12 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // is rendered where it is sent (ResumeTask, through the daemon's rootTask), from the gate and the
 // asks as the record holds them then, because a person can review the document again between
 // this write and that send, and every send of a held task is that moment again.
+//
+// It carries no phase entry either (record.SuperviseRequest.Entry): an entry and the task it
+// carries are a phase worker's phases row, the architect has none, and a task written into an
+// entry would be the queue-time text this start exists not to hold. So no entry fence reads
+// it, the entry sweep never resends it, and its send-time render is the one statement of its
+// text.
 func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting) error {
 	if err := e.store.StartHandout(ctx, tx, root.Key); err != nil {
 		return err

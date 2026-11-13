@@ -104,10 +104,11 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 }
 
 // owedBy is what claim c owes with its issue's record standing at position, roleFor naming the
-// role that works each phase (workflow.RoleFor). Three sources can each seem to say: the claim's
+// role that works each phase (phase.RoleFor). Three sources can each seem to say: the claim's
 // pending delivery and what it was left serving (supervise.Claim.Pending, ServingCheck), the
-// issue's phase with the role's own row of it (record.PhaseRow.Completed), and the issue's
-// production check. They disagree, and the rule is this.
+// issue's phase with the role's own row of it (record.PhaseRow.Entry and Completed) against the
+// entry the claim was given (supervise.Claim.GivenEntry), and the issue's production check. They
+// disagree, and the rule is this.
 //
 // The record decides whether anything is owed. The pending delivery is a copy of the workflow's
 // decision taken when the task was queued, and the process's memory of its turn is a copy taken
@@ -115,14 +116,23 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 // completion or moves a phase. So a role whose phase has finished owes nothing whatever it was
 // handed or remembers: the issue has moved on to another role's phase (RoleFor names another
 // role), to one no role works (awaiting_person, done, held), or its tree lingers, where a
-// completion records nothing; or the phase is still the role's and its row records the
+// completion records nothing; or the phase is merging and its pull request is merged, which is
+// what finishes that phase (workflow.PhaseFinished) while a merged root stands in merging until
+// the rest of its tree leaves.
+//
+// Within the role's own open phase, the two numbers the daemon closes the difference between
+// decide, read as the daemon reads them, so this answer and the daemon's sending of the entry's
+// work cannot part. A claim behind the entry its row names — the entry it was given is below the
+// row's, the first term of workflow.OwedEntry, which admission, the entry sweep, a ready and the
+// silence repair all send that entry's work on — owes that entry's work whatever the row records,
+// because the daemon is sending it: the task arrives as the next prompt, or is already queued,
+// which is the one term of OwedEntry this does not read, since a queued start leaves the work
+// just as owed. A claim level with its row owes the phase while the row records no completion,
+// whether or not its task has reached the session yet, and nothing once it records the
 // completion the workflow took (a reviewer whose round waits for a review, a merger whose
-// completion the workflow recorded without moving the issue); or the phase is merging and its
-// pull request is merged, which is what finishes that phase (workflow.PhaseFinished) while a
-// merged root stands in merging until the rest of its tree leaves. A role whose phase is open and
-// whose row records no completion owes it, whether or not its task has reached the session yet:
-// the task arrives as its next prompt, and the work is the role's either way — a merger in
-// merging whose pull request is not merged owes the merge, since the merger merges.
+// completion the workflow recorded without moving the issue): the daemon sends a level claim no
+// entry's work, so the row is all that says the work stands. A merger in merging whose pull
+// request is not merged owes the merge, since the merger merges.
 //
 // The claim decides one thing only, which kind of work its turn is on, read exactly as the
 // completion route reads it (handoffComplete): a claim serving a look of a production check owes
@@ -146,7 +156,10 @@ func owedBy(c supervise.Claim, position completionPosition, roleFor func(phase.P
 		}
 		return OwedResponse{Owes: true, Work: "the production check of " + issue.Key}
 	}
-	if position.lingers || position.completed || roleFor(issue.Phase) != c.Role || position.merged() {
+	if position.lingers || roleFor(issue.Phase) != c.Role || position.merged() {
+		return OwedResponse{}
+	}
+	if behind := c.GivenEntry < position.entry; !behind && position.completed {
 		return OwedResponse{}
 	}
 	return OwedResponse{Owes: true, Work: fmt.Sprintf("the %s phase of %s", issue.Phase, issue.Key)}

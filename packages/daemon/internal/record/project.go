@@ -714,8 +714,9 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 //
 //   - an issue that owes its worker a start takes that row's own creation time and id
 //     (OwedStart), which is durable — the transition wrote the row in its own transaction — so a
-//     restart finds the line exactly as it was, and a second transition before the slot replaces
-//     that row's payload without moving it (Store.ReplaceOwedStart);
+//     restart finds the line exactly as it was, and a second transition before the slot writes
+//     a start of its own carrying the later task and that row's creation time, with the earlier
+//     row taken out, which leaves the issue where it stood (Store.EnqueueStart);
 //   - a root a person answered while it waited in awaiting_person takes its Awaiting.AnsweredAt;
 //   - a tree's own root standing at admitted under an open gate, whose first phase can start,
 //     takes the moment that gate opened (gateReturn). It holds its row throughout — an issue

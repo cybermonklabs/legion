@@ -23,19 +23,23 @@ import (
 // (20261111001612), the declined ask (20261111021610) and the claim's failure cause
 // (20261111212544), are main's own and are applied as main's run applied them. A migration's
 // version is a timestamp rather than a place in a line, so this branch's versions and main's
-// interleave, and no one version divides the two sets.
+// interleave, and no one version divides the two sets: the phase entry's own (20261111225552,
+// dispatch://INFRA-2800) stands above main's newest, written after main's claim-failure cause.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set by the one rule
 // that holds however the two interleave: every embedded version above main's newest is this
 // branch's and has to be named here. dispatch://INFRA-3219's claim leak-check cause
-// (20261112180548), which came after, is above main's newest too, so a database main migrated
-// takes it in the same upgrade and it is named here with the rest.
+// (20261112180548), which came after, is above main's newest too, and above the phase entry's as
+// well, so a database main migrated takes it in the same upgrade, after the phase entry, and it is
+// named here with the rest.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
+	// dispatch://INFRA-2800: the phase entry.
+	20261111225552,
 	// dispatch://INFRA-3136: the repository a correction moves an issue onto, and the resume task
 	// a held delivery renders at send. Both stand above main's newest and are applied over its rows.
 	20261112012123, 20261112215432,
@@ -47,8 +51,10 @@ var thisBranchsMigrations = []int{
 // failure. Every embedded version above it is a branch's own and is named in thisBranchsMigrations,
 // which is what the loop below checks; versions of this branch below it are named there too, since
 // no version says by itself which side it is on. main's newest came in above dispatch://INFRA-714's
-// own at the forward merge of 2026-11-12, and dispatch://INFRA-3219's one migration is above it,
-// which is why the loop below holds the list rather than counting it.
+// own at the forward merge of 2026-11-12, and the phase entry's migration, dispatch://INFRA-3136's
+// two and dispatch://INFRA-3219's one are above it, which is why the loop below holds the list
+// rather than counting it, so that a version added above any of them is named here rather than
+// read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

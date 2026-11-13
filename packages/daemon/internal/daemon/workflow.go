@@ -127,6 +127,9 @@ type workflowRuntime struct {
 	// the reading. Nil where release is off and in a test that builds the runtime by hand, which
 	// reads as no drift.
 	idleRepositoryDrifted func(ctx context.Context, issue string) bool
+	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
+	// so it waits out its own period rather than the daemon's minute.
+	entrySweep time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -1334,6 +1337,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 		return nil
 	})
 	group.Go(func() error {
+		w.tickEntrySweep(running)
+		return nil
+	})
+	group.Go(func() error {
 		// The start read is the daemon's one read of every issue in the workflow: it covers the
 		// deliveries GitHub made while the daemon was down, which nothing redelivers.
 		w.readIssuesAtStart(running)
@@ -1611,6 +1618,82 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 			w.applyControllerTick(ctx, at)
 		}
 	}
+}
+
+// entrySweepInterval is how often the daemon converges the phase entries with no fact of its
+// project arriving (tickEntrySweep). The difference a sweep closes is a role waiting for work
+// its record already names, so a minute is short enough that no worker waits long for it, and
+// each run is one admission read of the project's issues, slots and line facts, which the same
+// pass already makes on every fact.
+const entrySweepInterval = time.Minute
+
+// entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
+// that a test shortens, where one is set, and entrySweepInterval where none is, which is what
+// the shipped binary runs. It is a function of its own so a test reads the period a daemon with
+// no override sweeps at, and not the constant alone.
+func entrySweepPeriod(override time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
+	return entrySweepInterval
+}
+
+// tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
+// or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
+// row names is sent that entry's work even where nothing else happens in the project: an
+// admission pass runs on a fact, and a quiet project raises none. Each run's event id is its own
+// — the word, the project, this boot and the run's time — since processed_events is shared by
+// every project's daemon. A failed apply is logged, and the next run tries again, as
+// applyControllerTick does.
+func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
+	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case at := <-ticker.C:
+			w.applyEntrySweep(ctx, at)
+		}
+	}
+}
+
+// applyEntrySweep applies one sweep, when one is owed. The fact itself reads nothing before it:
+// every handler decides inside the fact's own transaction, and what the sweep judges is the
+// daemon's own record. What runs before it is the gate — the very selection the sweep's pass
+// makes, asked as the one question this package has of it (admit's OwesEntryWork, over the
+// selection admit's resumeSlottedWorkers sends the work of), in a read-only transaction of its
+// own and outside the fact lock, asking whether any role of this project is owed the work of
+// the entry its phases row names. The fact takes the one lock every fact takes and writes a row
+// of processed_events, which nothing prunes, so the daemon asks before it applies one; and it
+// asks the question only one piece of code answers, so no gate of its own can disagree with the
+// pass and apply a fact a minute for work that pass would never do. A read that fails applies
+// nothing and is logged: the next run asks again.
+func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
+	owed, err := w.owesEntryWork(ctx)
+	if err != nil {
+		w.log.Warn("read whether any role is owed the work of its phase entry failed", "error", err)
+		return
+	}
+	if !owed {
+		return
+	}
+	eventID := fmt.Sprintf("entry-sweep:%s:%s:%d", w.dispatchProject, w.bootID, at.UnixNano())
+	if _, err := intake.ApplyFact(ctx, w.pool, "entry-sweep", eventID, intake.EntrySweep{}, w.handlers...); err != nil {
+		w.log.Warn("apply the entry sweep failed", "error", err)
+	}
+}
+
+// owesEntryWork is the sweep's gate read, in one short read-only transaction: admission's own
+// answer to whether any role of the project is owed the work of the entry its phases row names,
+// decided over the project exactly as the pass the fact would make decides it.
+func (w *workflowRuntime) owesEntryWork(ctx context.Context) (bool, error) {
+	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return w.admission.OwesEntryWork(ctx, tx)
 }
 
 // promoteAfterHoldClears applies one synthetic DispatchConsumerPosition fact, its event id never

@@ -61,7 +61,7 @@ func (c liveClaim) owesNothing(t *testing.T) {
 // another role's phase (the implementer and the tester) or stayed in the role's own phase with the
 // completion recorded on its row (the reviewer, whose round waits for a review that decides it).
 func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
-	h, _, _ := newAssignmentHarness(t)
+	h, _, _ := newEntryHarness(t)
 	ctx := context.Background()
 	h.recordIssue(record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-208",
 		Project: testProject, Title: "LEGION-208", Phase: phase.Implementing, Generation: 1, Status: "in_progress"})
@@ -108,12 +108,48 @@ func TestClaimOwedFollowsThePhaseAsTheWorkflowMovesTheIssue(t *testing.T) {
 	reviewer.owesNothing(t)
 }
 
+// Within the role's own phase the answer is read from the two numbers the daemon closes the
+// difference between (dispatch://INFRA-2800), so it never parts from the daemon's own sending of
+// an entry's work. A reviewer level with its row whose row records its completion owes nothing:
+// its round waits for a review, and the daemon sends a level claim no entry's work. The same row
+// raised to an entry the claim was not given leaves the claim behind it, which is what admission,
+// the entry sweep, a ready and the silence repair send that entry's work on (workflow.OwedEntry),
+// so the claim owes that work though the row still records the completion. Once the entry's task
+// is queued to the claim it stands level again, and it owes nothing.
+func TestClaimOwedIsTheEntrysWorkWhileTheClaimIsBehindIt(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	ctx := context.Background()
+	seedIssueAt(t, h, "LEGION-208", phase.Reviewing)
+	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	seedEntry(t, h, "LEGION-208", claim.RoleReviewer, 1)
+	takeTask(t, h, reviewer.token, "outbox:entry-1", "review entry 1", 1, 1)
+	reviewer.owes(t, "the reviewing phase of LEGION-208")
+
+	if _, err := h.store.Pool().Exec(ctx, `update phases set handoff_commit = 'reviewed'
+		where issue = 'LEGION-208' and role = $1`, string(claim.RoleReviewer)); err != nil {
+		t.Fatalf("record the reviewer's completion: %v", err)
+	}
+	reviewer.owesNothing(t)
+
+	if _, err := h.store.Pool().Exec(ctx, `update phases set entry = 2
+		where issue = 'LEGION-208' and role = $1`, string(claim.RoleReviewer)); err != nil {
+		t.Fatalf("raise the reviewer's row to entry 2: %v", err)
+	}
+	if given := h.stored(reviewer.token).GivenEntry; given != 1 {
+		t.Fatalf("the reviewer was given entry %d, want 1: the case's own premise", given)
+	}
+	reviewer.owes(t, "the reviewing phase of LEGION-208")
+
+	queueTask(t, h, reviewer.token, "outbox:entry-2", "review entry 2", 2, 1)
+	reviewer.owesNothing(t)
+}
+
 // A claim of a role whose phase another role works, or whose issue stands where no role works,
 // owes nothing, and the answer names no work: what each role was handed is no part of it. The
 // architect works no phase of its own — accepting is its sign_off, not a phase it completes — so it
 // owes nothing even in accepting.
 func TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks(t *testing.T) {
-	h, _, _ := newAssignmentHarness(t)
+	h, _, _ := newEntryHarness(t)
 	for _, tc := range []struct {
 		issue string
 		at    phase.Phase
@@ -138,7 +174,7 @@ func TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks(t *testing.T) {
 // (workflow.PhaseFinished), and a merged root stands in merging until the rest of its tree
 // leaves, so once its pull request is merged the merger owes nothing though the phase stands.
 func TestClaimOwedIsTheMergeUntilTheMergersPullRequestIsMerged(t *testing.T) {
-	h, _, _ := newAssignmentHarness(t)
+	h, _, _ := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Merging)
 	recordPullRequest(t, h, record.PullRequestOpen)
 
@@ -156,7 +192,7 @@ func TestClaimOwedIsTheMergeUntilTheMergersPullRequestIsMerged(t *testing.T) {
 // `POST /legion/v1/claims/turn-outcome`, the run reaching the launch failure limit fails the
 // claim, and the one delayed reminder a refused turn arms asks this route before it goes.
 func TestClaimOwedIsNothingOnceTheDaemonHasFailedTheClaim(t *testing.T) {
-	h, _, _ := newAssignmentHarness(t)
+	h, _, _ := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	tester.owes(t, "the testing phase of LEGION-208")
@@ -181,7 +217,7 @@ func TestClaimOwedIsNothingOnceTheDaemonHasFailedTheClaim(t *testing.T) {
 // answer names it; once the check closes, it owes nothing. Done runs no phase, so the look is the
 // whole of what it can owe.
 func TestClaimOwedIsTheProductionCheckLookItsTesterHolds(t *testing.T) {
-	h, _, _ := newAssignmentHarness(t)
+	h, _, _ := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Done)
 	seedCheck(t, h, "LEGION-208", claim.RoleTester, false, false)
 	tester := newCheckLookClaim(t, h, "LEGION-208", claim.RoleTester, 2)
@@ -211,7 +247,7 @@ func TestClaimOwedIsNoLookItsTesterHasNotTaken(t *testing.T) {
 // claim.InvalidSecret, and a body naming no claim is a 400 naming the field. It holds the session
 // too, which activity does not read: a session the claim does not record is refused the same way.
 func TestClaimOwedRefusesACallerThatCannotProveItsClaim(t *testing.T) {
-	h, _, _ := newAssignmentHarness(t)
+	h, _, _ := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Testing)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	implementer := newLiveClaim(t, h, "LEGION-208", claim.RoleImplementer)
