@@ -119,7 +119,7 @@ as the fingerprint decides (*The reviewer*, below, and
   your own commit to fix when your prose broke it. The architect reads your prose commits at its
   acceptance (*The architect's acceptance*, below), and that read is no new round.
 
-A reviewer's phase ends with its completion, not with its review. Every round records a handoff and
+A reviewer's phase ends with its review, and the reviewer completes all the same. Every round records a handoff and
 takes this order: read CI as above; write the handoff and record it with `dispatch handoff-write`;
 submit the review of the head, by its SHA; then complete. A red at the code is a `REQUEST_CHANGES`
 naming the check, never an approval; so is an unmet goal or requirement, named: only an approved
@@ -132,11 +132,10 @@ gave it, in one message to the tree's architect, the worker of the issue's curre
 implementer, and judges none of them: a red is the implementer's to fix or re-run, the
 architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
 it approves is the only read that decides anything. A review that names an older head reviews
-code the pull request no longer has. The daemon moves the issue once all three are in — the
-decision GitHub reports, your completion, in either order, and GitHub's own answer that the
-approved head is one the issue may advance on — so a review posted without a completion leaves
-the issue in reviewing until you finish, and an approved head GitHub answers `blocked` for leaves
-it there until that answer comes clean.
+code the pull request no longer has. The daemon moves the issue on the decision GitHub reports,
+your completion or not: an approval once GitHub answers that the approved head is one the issue
+may advance on, so an approved head GitHub answers `blocked` for leaves the issue in reviewing
+until that answer comes clean.
 
 ## The architect's acceptance
 
