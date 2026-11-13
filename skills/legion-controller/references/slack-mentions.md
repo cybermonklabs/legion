@@ -116,7 +116,8 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   `issues.<KEY>.phase` and `issues.<KEY>.tree`, its pull request, `admission.trees` for the trees
   that run, and `admission.active` and `admission.waiting` for the issues holding a slot and the
   issues in the line: an issue holds its slot from the moment the daemon starts it
-  until it is done or leaves the workflow, except while it waits on another issue, so
+  until it is done or leaves the workflow, except while it waits on another issue
+  ([the rule](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) names the roots that keep it), so
   `admission.active` names a tree's waits on a person or a review as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
