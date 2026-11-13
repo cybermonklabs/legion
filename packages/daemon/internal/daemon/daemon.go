@@ -162,6 +162,10 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
+	// entrySweep is how often the daemon converges the phase entries with no fact arriving
+	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
+	// the sweep shortens it, so it waits out its own period rather than the daemon's.
+	entrySweep time.Duration
 	// gate stands in for the plugin gate when runtime is replaced: nil is none, since a replaced
 	// runtime launches no Oh My Pi to gate. With the tmux runtime, the gate is always the real one.
 	gate func(ctx context.Context) error
@@ -352,7 +356,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// mapping read nor the App mint above.
 		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
-		workflow.controllerFirstWake, workflow.idleTick = o.controllerFirstWake, o.idleTick
+		workflow.controllerFirstWake, workflow.idleTick, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.entrySweep
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -2211,11 +2215,6 @@ func (s *supervision) stop() {
 	})
 }
 
-// phaseRole is the role that works a phase (workflow.RoleFor), which the operator's retry of a
-// held phase checks (api.Options.RoleFor). It is named at package level because serve's own
-// workflow parameter hides the package there.
-var phaseRole = workflow.RoleFor
-
 // servingLatch is the one-way latch GET /readyz answers from (api.Options.Ready): false while the
 // boot runs, true from the moment the daemon serves — its pod runtime built and its launcher
 // acceptor installed (openSupervision, sandboxRuntime's SetLauncherResolver), and the goroutine
@@ -2323,7 +2322,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
-		RoleFor:            phaseRole,
+		RoleFor:            phase.RoleFor,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,
@@ -2525,6 +2524,19 @@ func (s projectRecords) own(all []record.Issue) []record.Issue {
 
 func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
 	if err := s.Store.Enqueue(ctx, tx, row); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, row)
+	return nil
+}
+
+// EnqueueStart wakes the row's lane as Enqueue does: a phase worker's start is written through
+// this statement since the start became a row of its own (workflow.StartOrOwe,
+// record.Store.EnqueueStart), so without the wake here the worker whose phase has just been
+// handed its work would wait for the lane's next sweep, up to one outbox lease after its
+// transition committed.
+func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if err := s.Store.EnqueueStart(ctx, tx, row); err != nil {
 		return err
 	}
 	s.wakeOnCommit(ctx, row)

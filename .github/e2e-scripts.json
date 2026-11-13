@@ -53,6 +53,16 @@
       "jj": true
     },
     {
+      "script": "phase-entry-converge.sh",
+      "go_version_file": "packages/daemon/go.mod",
+      "apt": [],
+      "bun": false,
+      "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
+      "timeout_minutes": 20,
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 88 seconds, most of it building the driver",
+      "jj": true
+    },
+    {
       "script": "stage1-skeleton.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": ["tmux"],

@@ -20,13 +20,16 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The issue every case of this file stands on, the role that works its phase, and the
-// assignment its phase row already names. The role is the tester of an issue in testing, which
-// is the shape the incident this work was filed for was read in (dispatch://INFRA-3163).
+// The issue every case of this file stands on, the role that works its phase, and the phase
+// entry its phase row already names with the work that entry was raised with. The role is the
+// tester of an issue in testing, which is the shape the incident this work was filed for was
+// read in (dispatch://INFRA-3163). The entry is above 1 so that a start that wrote some other
+// number than the row's reads as a failure.
 const (
-	silenceIssue      = "LEGION-209"
-	silenceAssignment = "A1"
-	silenceBound      = 30 * time.Minute
+	silenceIssue     = "LEGION-209"
+	silenceEntry     = 3
+	silenceEntryTask = "Test LEGION-209 again: the implementer pushed a fix for the round before."
+	silenceBound     = 30 * time.Minute
 	// backgroundBound is the longer bound the daemon reads a worker's own report of background
 	// work against (config.Config.WorkerBackground), which is the shipped default.
 	backgroundBound = 4 * time.Hour
@@ -42,8 +45,13 @@ type silenceRecord struct {
 	// generation is the issue's, which the fact's own generation is held against.
 	generation uint64
 	lingers    bool
-	// assignment is the phase row's, "" for the row that names none.
-	assignment string
+	// entry is the entry the phase row names (record.PhaseRow.Entry) and entryTask the work it
+	// was raised with; given is the entry the claim was last given work of (claims.given_entry,
+	// record.RoleClaim.GivenEntry). A given equal to entry is a claim level with its row, one
+	// under it a claim behind it (OwedEntry).
+	entry     int64
+	entryTask string
+	given     int64
 	// completedAt is the phase row's record of a completion the workflow accepted for this
 	// phase entry, zero for a row that carries none (record.PhaseRow.CompletedAt).
 	completedAt time.Time
@@ -68,9 +76,11 @@ type silenceRecord struct {
 
 // aSilentTester is the record of a tester nothing will prompt: an issue in testing at work, a
 // claim up and between turns holding no task, in no update round, with no supervise row of its
-// own, and a phase row naming the assignment that claim was last started under.
+// own, and a phase row naming the entry that claim was last given the work of, so the claim is
+// level with its row.
 func aSilentTester() silenceRecord {
-	return silenceRecord{phase: phase.Testing, generation: 1, assignment: silenceAssignment, state: supervise.StateReady}
+	return silenceRecord{phase: phase.Testing, generation: 1, entry: silenceEntry, entryTask: silenceEntryTask,
+		given: silenceEntry, state: supervise.StateReady}
 }
 
 // silenceToken is the claim token of silenceIssue's role under the test engine's project.
@@ -106,7 +116,7 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 	seedSlot(t, pool, record.Slot{Issue: silenceIssue, Index: 0, AdmittedAt: silenceClock()})
 	token := silenceToken(t, claim.RoleTester)
 	seedPhase(t, pool, record.PhaseRow{Issue: silenceIssue, Role: claim.RoleTester, Claim: token,
-		Assignment: rec.assignment, CompletedAt: rec.completedAt})
+		Entry: rec.entry, EntryTask: rec.entryTask, EntryRaisedAt: silenceStep(), CompletedAt: rec.completedAt})
 	stepped := rec.stepped
 	if stepped.IsZero() {
 		stepped = silenceStep()
@@ -120,11 +130,11 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 		reported = &at
 	}
 	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
-		state, update_round, step_at, activity_at, activity_background,
+		state, update_round, step_at, activity_at, activity_background, given_entry,
 		launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $2, $3, $3, 'tester', $4, 'ses', '/sessions/ses.jsonl', $5, $6, $7, $8, $9, 0, 0, 0, 0)`,
+		values ($1, $2, $3, $3, 'tester', $4, 'ses', '/sessions/ses.jsonl', $5, $6, $7, $8, $9, $10, 0, 0, 0, 0)`,
 		string(token), "legion", silenceIssue, int64(rec.generation), string(rec.state), rec.updateRound, stepped,
-		reported, rec.background); err != nil {
+		reported, rec.background, rec.given); err != nil {
 		t.Fatalf("seed the tester's claim of %s: %v", silenceIssue, err)
 	}
 	if rec.holdsTask {
@@ -138,7 +148,7 @@ func seedSilence(t *testing.T, pool *pgxpool.Pool, rec silenceRecord) record.Iss
 		seedRecord(t, pool, func(tx pgx.Tx) error {
 			return StartOrOwe(t.Context(), tx, record.NewStore(), silenceIssue, record.SuperviseRequest{Op: "start",
 				Tree: silenceIssue, Role: claim.RoleTester, Generation: rec.generation, Phase: rec.phase,
-				Task: ResumePhaseTask(issue), Assignment: rec.assignment}, silenceClock())
+				Task: ResumePhaseTask(issue), ResumeTask: true}, silenceClock())
 		})
 	}
 	return issue
@@ -204,13 +214,15 @@ func aStandingReportOf(role claim.Role, generation uint64) intake.WorkerBackgrou
 		ReportedAt: silenceReport(), Kinds: []string{"async-job"}, Bound: backgroundBound}
 }
 
-// silenceSuperviseRow is one supervise row of the issue as the outbox holds it.
+// silenceSuperviseRow is one supervise row of the issue as the outbox holds it: with the entry
+// its start is of, 0 for none, and whether it is marked the phase's resume task.
 type silenceSuperviseRow struct {
 	op         string
 	role       claim.Role
 	task       string
 	stands     phase.Phase
-	assignment string
+	entry      int64
+	resumeTask bool
 }
 
 // silenceSuperviseRows is every supervise row of silenceIssue, oldest first. It reads every
@@ -219,7 +231,8 @@ type silenceSuperviseRow struct {
 func silenceSuperviseRows(t *testing.T, pool *pgxpool.Pool) []silenceSuperviseRow {
 	t.Helper()
 	rows, err := pool.Query(t.Context(), `select coalesce(payload->>'op', ''), coalesce(payload->>'role', ''),
-		coalesce(payload->>'task', ''), coalesce(payload->>'phase', ''), coalesce(payload->>'assignment', '')
+		coalesce(payload->>'task', ''), coalesce(payload->>'phase', ''), coalesce((payload->>'entry')::bigint, 0),
+		coalesce((payload->>'resumeTask')::boolean, false)
 		from outbox where kind = 'supervise' and issue = $1 order by id`, silenceIssue)
 	if err != nil {
 		t.Fatalf("read the supervise rows of %s: %v", silenceIssue, err)
@@ -228,7 +241,7 @@ func silenceSuperviseRows(t *testing.T, pool *pgxpool.Pool) []silenceSuperviseRo
 	var read []silenceSuperviseRow
 	for rows.Next() {
 		var row silenceSuperviseRow
-		if err := rows.Scan(&row.op, &row.role, &row.task, &row.stands, &row.assignment); err != nil {
+		if err := rows.Scan(&row.op, &row.role, &row.task, &row.stands, &row.entry, &row.resumeTask); err != nil {
 			t.Fatalf("scan a supervise row of %s: %v", silenceIssue, err)
 		}
 		read = append(read, row)
@@ -255,11 +268,12 @@ func namesTheSilence(t *testing.T, reason string, outcome string, absent string)
 	}
 }
 
-// A silent phase worker whose phase row names an assignment is sent its phase's task again
-// under that same assignment, and its architect is told what the daemon read and what it did.
-// The task is ResumePhaseTask: the phase the worker is in is already under way, and no handoff
-// begins it again.
-func TestASilentWorkerIsSentItsPhasesTaskAgainUnderTheAssignmentItsRowNames(t *testing.T) {
+// A silent phase worker level with the phase entry its row names is sent its phase's task again
+// at no entry, marked the phase's resume task, and its architect is told what the daemon read
+// and what it did, naming that entry. The task is ResumePhaseTask: the phase the worker is in
+// is already under way, and no handoff begins it again. A silent worker behind that entry is
+// sent the entry's own work instead (TestASilentWorkerIsSentTheWorkOfTheEntryItIsBehind).
+func TestASilentWorkerIsSentItsPhasesTaskAgainOnTheEntryItsRowNames(t *testing.T) {
 	pool := migratedPool(t)
 	issue := seedSilence(t, pool, aSilentTester())
 	engine := testEngine(config.DesignGateRootIssues, nil)
@@ -269,9 +283,9 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainUnderTheAssignmentItsRowNames(t *t
 	}
 
 	want := []silenceSuperviseRow{{op: "start", role: claim.RoleTester, task: ResumePhaseTask(issue),
-		stands: phase.Testing, assignment: silenceAssignment}}
+		stands: phase.Testing, entry: 0, resumeTask: true}}
 	if got := silenceSuperviseRows(t, pool); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying the phase's resume task under the assignment its row already names",
+		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying the phase's resume task at no entry, the claim being on the entry its row names already",
 			silenceIssue, got, want)
 	}
 	notices := noticesOfKind(t, pool, silenceIssue, workerSilentNotice)
@@ -281,7 +295,7 @@ func TestASilentWorkerIsSentItsPhasesTaskAgainUnderTheAssignmentItsRowNames(t *t
 	if notices[0].Role != claim.RoleTester || notices[0].Phase != phase.Testing {
 		t.Errorf("the notice names role %q and phase %q, want the tester of testing", notices[0].Role, notices[0].Phase)
 	}
-	namesTheSilence(t, notices[0].Reason, "wrote the start row that sends the phase's task again, under the assignment "+silenceAssignment, "")
+	namesTheSilence(t, notices[0].Reason, fmt.Sprintf("wrote the start row that sends the phase's task again, on phase entry %d its phase row names", silenceEntry), "")
 	if rows := noticeRows(t, pool); len(rows) != 1 {
 		t.Fatalf("the notice rows = %d, want the architect's one: the project's controller is told this fact on its own periodic wake", len(rows))
 	}
@@ -412,7 +426,9 @@ var (
 )
 
 // refusingStore is the record store with the enqueue of one outbox kind refused with err. Every
-// other call is the real store's, so what the handler reads is the record the fixture seeded.
+// other call is the real store's, so what the handler reads is the record the fixture seeded. A
+// start of a phase worker is written through EnqueueStart (StartOrOwe) and every other row
+// through Enqueue, so both are refused for the kind.
 type refusingStore struct {
 	record.Store
 	kind record.OutboxKind
@@ -424,6 +440,13 @@ func (s refusingStore) Enqueue(ctx context.Context, tx pgx.Tx, row record.Outbox
 		return s.err
 	}
 	return s.Store.Enqueue(ctx, tx, row)
+}
+
+func (s refusingStore) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if row.Kind == s.kind {
+		return s.err
+	}
+	return s.Store.EnqueueStart(ctx, tx, row)
 }
 
 // A repair the store refuses writes nothing at all, and the fact is not recorded as applied.
