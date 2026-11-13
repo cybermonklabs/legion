@@ -12,9 +12,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -57,7 +59,7 @@ var authorisedSupertags = map[string]string{
 // writes the closed list as nodes, a typed block type's attributes come from blocks.json field
 // for field, the schema the server serves and validates against is built from those nodes, and
 // nothing but a migration writes one. A type that exists only in the file, or only in the
-// store, fails here.
+// store, fails here. A pointer is listed by its target's type as that type stands at each read.
 func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -73,7 +75,9 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file)
 	requireASecondSeedLeavesTheSameNodes(t, ctx, pool)
 	requireNoRouteOrCommandWritesAType(t)
+	requireTheEraseRefusesATypeNode(t, ctx, pool)
 	requireTheServedSchemaFollowsTheNodes(t, ctx, pool)
+	requireAPointerReadsItsTargetsTypeAtEachRead(t, ctx, pool)
 	requireAnUnknownKindIsSkipped(t, ctx, pool, file)
 }
 
@@ -309,9 +313,63 @@ func namesAType(name string) bool {
 	return false
 }
 
-// requireTheServedSchemaFollowsTheNodes changes a type in the database alone, starts the server's
-// install again, and holds both the schema the server serves and the refusal a write earns to
-// following the node.
+// requireTheEraseRefusesATypeNode runs `envoy-dispatch erase --node <kind>:<id> --confirm`
+// through the command table the binary dispatches on (runSubcommand), for one supertag node and
+// one attribute node, and holds each to a refusal that names the node, with the node's row, the
+// tuples out of it and into it, and the erasures recorded of it all as they were. The erase is
+// the one path in this tree that deletes a node row, and its name holds none of the words
+// namesAType reads, so the route and command list above cannot see it: only running it can.
+func requireTheEraseRefusesATypeNode(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	databaseURL := pool.Config().ConnString()
+	for _, node := range []struct{ kind, id string }{
+		{schemanodes.KindSupertag, "callout"},
+		{schemanodes.KindAttribute, "callout/kind"},
+	} {
+		address := node.kind + ":" + node.id
+		before := typeNodeHeld(t, ctx, pool, node.kind, node.id)
+		if before.row == "" || before.out+before.in == 0 {
+			t.Fatalf("the store holds %+v for %s, want its node and its tuples, so that a refusal to erase them proves something", before, address)
+		}
+		var stdout, stderr bytes.Buffer
+		code := runSubcommand(ctx, []string{"erase", "--node", address, "--confirm"},
+			envGetter(map[string]string{"DATABASE_URL": databaseURL}), &stdout, &stderr)
+		if code == 0 || !strings.Contains(stderr.String(), "refuses "+address) {
+			t.Errorf("envoy-dispatch erase --node %s --confirm exited %d with stderr %q and stdout %q, want a refusal naming the type node: no command deletes one",
+				address, code, stderr.String(), stdout.String())
+		}
+		if after := typeNodeHeld(t, ctx, pool, node.kind, node.id); after != before {
+			t.Errorf("after the erase of %s the store holds %+v, want the node as it was before: %+v", address, after, before)
+		}
+	}
+}
+
+// typeNodeState is what the store holds of one type node: its row as text, empty where there is
+// none, the tuples out of it and into it, and the erasures recorded of it.
+type typeNodeState struct {
+	row               string
+	out, in, erasures int
+}
+
+func typeNodeHeld(t *testing.T, ctx context.Context, pool *store.Pool, kind, id string) typeNodeState {
+	t.Helper()
+	var held typeNodeState
+	if err := pool.QueryRow(ctx, `
+		select coalesce((select n::text from graph_nodes n where n.kind = $1 and n.id = $2), ''),
+		       (select count(*) from graph_tuples where from_kind = $1 and from_id = $2),
+		       (select count(*) from graph_tuples where to_kind = $1 and to_id = $2),
+		       (select count(*) from graph_erasures where node_kind = $1 and node_id = $2)
+	`, kind, id).Scan(&held.row, &held.out, &held.in, &held.erasures); err != nil {
+		t.Fatalf("read the type node %s:%s: %v", kind, id, err)
+	}
+	return held
+}
+
+// requireTheServedSchemaFollowsTheNodes changes a type in the database alone - a field of the
+// attribute node callout/kind, then a field of the supertag node callout itself - starts the
+// server's install again after each (InstallFromStore, the call the server's boot makes), and
+// holds both the schema the server serves (pmdoc.SchemaJSON, the bytes GET
+// /api/v1/schema/blocks writes) and the refusal a write earns to following the node.
 func requireTheServedSchemaFollowsTheNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	const danger = ":::callout{#c1 kind=\"danger\" title=\"T\"}\nOnly.\n:::\n"
@@ -336,6 +394,178 @@ func requireTheServedSchemaFollowsTheNodes(t *testing.T, ctx context.Context, po
 	if _, err := pmdoc.ParseForWrite(danger, nil); err != nil {
 		t.Errorf("a callout of kind danger is refused after the store declares that choice: %v", err)
 	}
+
+	// The supertag node's own content rule. The file gives callout block+, so a callout that
+	// holds a list is written; the store alone moves it to paragraph+, after which the served
+	// schema says paragraph+ and the same callout is refused.
+	const listed = ":::callout{#c2 kind=\"note\" title=\"T\"}\n- one\n- two\n:::\n"
+	if _, err := pmdoc.ParseForWrite(listed, nil); err != nil {
+		t.Fatalf("a callout holding a list is refused before the store changes the callout's content rule: %v", err)
+	}
+	if content := typeContent(t, decodeSchema(t, pmdoc.SchemaJSON()), "callout"); content != pmdoc.BlockContentBlocks {
+		t.Fatalf("the served schema gives callout the content %q before the store changes it, want the file's %q", content, pmdoc.BlockContentBlocks)
+	}
+	changed, err := pool.Exec(ctx, `
+		update graph_nodes
+		set attributes = jsonb_set(attributes, '{content}', to_jsonb($2::text))
+		where kind = $1 and id = 'callout'
+	`, schemanodes.KindSupertag, string(pmdoc.BlockContentParagraphs))
+	if err != nil || changed.RowsAffected() != 1 {
+		t.Fatalf("change the content rule of the supertag node callout: %d row(s), %v", changed.RowsAffected(), err)
+	}
+	if err := schemanodes.InstallFromStore(ctx, pool); err != nil {
+		t.Fatalf("install the schema the changed supertag node builds: %v", err)
+	}
+	if content := typeContent(t, decodeSchema(t, pmdoc.SchemaJSON()), "callout"); content != pmdoc.BlockContentParagraphs {
+		t.Errorf("the schema the server serves gives callout the content %q, want the supertag node's own %q", content, pmdoc.BlockContentParagraphs)
+	}
+	if _, err := pmdoc.ParseForWrite(listed, nil); err == nil {
+		t.Errorf("a callout holding a list is accepted after the supertag node's content rule became %q", pmdoc.BlockContentParagraphs)
+	}
+}
+
+// requireAPointerReadsItsTargetsTypeAtEachRead seeds one block pointer as its rows stand: a
+// plan_task's serves at a requirement, carrying in to_types the targets the attribute node
+// plan_task/serves holds, as the index copies them. It reads the link through the three readers
+// that list or count it - the edges in at its target (graph_edges' block_refs arm), the edges out
+// of its document (refs.Edges' own block_refs arm) and the target's backlink count - and then
+// retypes the target in document_blocks alone and reads again, with no document indexed again and
+// the pointer's rows as they were. block_ref_listed reads the target's type at each read, so the
+// link is hidden while the target is a callout and listed once it is a requirement again.
+func requireAPointerReadsItsTargetsTypeAtEachRead(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	var targets []string
+	if err := pool.QueryRow(ctx, `
+		select coalesce(array(select jsonb_array_elements_text(attributes->'targets')), '{}')
+		from graph_nodes where kind = $1 and id = 'plan_task/serves'
+	`, schemanodes.KindAttribute).Scan(&targets); err != nil {
+		t.Fatalf("read the targets of the attribute node plan_task/serves: %v", err)
+	}
+	if !slices.Contains(targets, "requirement") || slices.Contains(targets, "callout") {
+		t.Fatalf("plan_task/serves points at %v, want requirement and not callout, so that the retype below moves the link", targets)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('STP', 'Supertag pointers', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('STP-1', 'STP', 1, 'Pointers', '{"kind":"user","id":"alice"}', 'U');
+	`); err != nil {
+		t.Fatalf("seed the pointer's project and issue: %v", err)
+	}
+	var document, refKey string
+	if err := pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('STP-1', 'STP', 'pointers', 'pointers.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key
+	`).Scan(&document, &refKey); err != nil {
+		t.Fatalf("seed the pointer's document: %v", err)
+	}
+	task, requirement := refKey+"#t1", refKey+"#r1"
+	if _, err := pool.Exec(ctx, `
+		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
+		values ($1::uuid, 'r1', $2, 'requirement', md5('r1'), 'The requirement the task serves.', 1, now()),
+		       ($1::uuid, 't1', $3, 'plan_task', md5('t1'), 'The task that serves it.', 1, now())
+	`, document, requirement, task); err != nil {
+		t.Fatalf("seed the pointer's two blocks: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		insert into block_refs (artifact_id, block_id, from_node, to_kind, to_id, kind, created_version, to_types)
+		values ($1::uuid, 't1', $2, 'block', $3, 'serves', 1, $4::text[])
+	`, document, task, requirement, targets); err != nil {
+		t.Fatalf("seed the pointer row: %v", err)
+	}
+	rows := pointerRows(t, ctx, pool, document)
+
+	requirePointerListed(t, ctx, pool, "the target a requirement", document, task, requirement, true)
+	retypeBlock(t, ctx, pool, requirement, "callout")
+	requirePointerListed(t, ctx, pool, "the target retyped to a callout", document, task, requirement, false)
+	retypeBlock(t, ctx, pool, requirement, "requirement")
+	requirePointerListed(t, ctx, pool, "the target a requirement again", document, task, requirement, true)
+	if after := pointerRows(t, ctx, pool, document); !slices.Equal(after, rows) {
+		t.Errorf("the retype rewrote the pointer's rows, which it must not touch:\nbefore %v\nafter  %v", rows, after)
+	}
+}
+
+// requirePointerListed holds the three readers of a pointer to listing it, or to hiding it: the
+// serves edge in at the requirement, the serves edge out of the document, and the requirement's
+// backlink count.
+func requirePointerListed(t *testing.T, ctx context.Context, pool *store.Pool, stage, document, task, requirement string, listed bool) {
+	t.Helper()
+	in, err := refs.Edges(ctx, pool, model.Actor{}, refs.Query{Direction: "in", Kind: "block", ID: requirement})
+	if err != nil {
+		t.Fatalf("%s: read the edges in at %s: %v", stage, requirement, err)
+	}
+	out, err := refs.Edges(ctx, pool, model.Actor{}, refs.Query{Direction: "out", Kind: "artifact", ID: document})
+	if err != nil {
+		t.Fatalf("%s: read the edges out of %s: %v", stage, document, err)
+	}
+	counts, err := refs.BacklinkCounts(ctx, pool, model.Actor{}, "block", []string{requirement}, nil)
+	if err != nil {
+		t.Fatalf("%s: count the backlinks of %s: %v", stage, requirement, err)
+	}
+	want := 0
+	if listed {
+		want = 1
+	}
+	if got := servesEdges(in, task); got != want {
+		t.Errorf("%s: the edges in at %s list %d serves edge(s) from %s, want %d (%+v)", stage, requirement, got, task, want, in)
+	}
+	if got := servesEdges(out, requirement); got != want {
+		t.Errorf("%s: the edges out of the document list %d serves edge(s) at %s, want %d (%+v)", stage, got, requirement, want, out)
+	}
+	if got := counts[requirement]; got != want {
+		t.Errorf("%s: %s counts %d backlink(s), want %d", stage, requirement, got, want)
+	}
+}
+
+// servesEdges counts the serves edges of a read whose far end is node.
+func servesEdges(edges []model.GraphEdge, node string) int {
+	count := 0
+	for _, edge := range edges {
+		if edge.Kind == "serves" && edge.Node.ID == node {
+			count++
+		}
+	}
+	return count
+}
+
+// retypeBlock changes the type of one current block row and nothing else, which is how the
+// pointer's target changes type here: no version is written and no document is indexed.
+func retypeBlock(t *testing.T, ctx context.Context, pool *store.Pool, node, typ string) {
+	t.Helper()
+	changed, err := pool.Exec(ctx, `update document_blocks set type = $2 where node_id = $1`, node, typ)
+	if err != nil || changed.RowsAffected() != 1 {
+		t.Fatalf("retype %s to %s: %d row(s), %v", node, typ, changed.RowsAffected(), err)
+	}
+}
+
+// pointerRows is every block_refs row of document and its citing block's row, each as text.
+func pointerRows(t *testing.T, ctx context.Context, pool *store.Pool, document string) []string {
+	t.Helper()
+	read, err := pool.Query(ctx, `
+		select r::text from block_refs r where r.artifact_id = $1::uuid
+		union all
+		select d::text from document_blocks d where d.artifact_id = $1::uuid and d.block_id = 't1'
+		order by 1
+	`, document)
+	if err != nil {
+		t.Fatalf("read the pointer's rows: %v", err)
+	}
+	defer read.Close()
+	var rows []string
+	for read.Next() {
+		var row string
+		if err := read.Scan(&row); err != nil {
+			t.Fatalf("read a pointer row: %v", err)
+		}
+		rows = append(rows, row)
+	}
+	if err := read.Err(); err != nil {
+		t.Fatalf("read the pointer's rows: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("the document holds %d pointer and citing row(s), want its one pointer and its one plan_task", len(rows))
+	}
+	return rows
 }
 
 // requireAnUnknownKindIsSkipped adds a supertag the block schema never declared and a node of a
@@ -462,6 +692,17 @@ func attributeChoices(t *testing.T, value pmdoc.BlockSchema, typeName, attribute
 	}
 	t.Fatalf("the schema declares no type %q", typeName)
 	return nil
+}
+
+func typeContent(t *testing.T, value pmdoc.BlockSchema, typeName string) pmdoc.BlockContentRule {
+	t.Helper()
+	for _, typ := range value.Types {
+		if typ.Name == typeName {
+			return typ.Content
+		}
+	}
+	t.Fatalf("the schema declares no type %q", typeName)
+	return ""
 }
 
 func mustMarshal(t *testing.T, value any) []byte {

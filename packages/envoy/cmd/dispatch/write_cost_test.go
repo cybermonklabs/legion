@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -456,6 +457,7 @@ func TestNoWritePathThisChildChangesGetsSlower(t *testing.T) {
 	}
 	costTableOf(t, ordered)
 	rewriteRows := writeCostWhereTheTimeWent(t, arms, corpora)
+	writeCostWhatTheEditWrote(t, arms, corpora)
 	// The 8,001-block path takes 20 readings, so its verdict below is read from its p50, and
 	// this line is read from the same figure: two statements about one bound that disagreed
 	// would tell a reader nothing.
@@ -623,6 +625,191 @@ func writeCostWhereTheTimeWent(t *testing.T, arms []*costArm, corpora map[*costA
 			arm.name, storeNodes, storeTuples, costMilliseconds(storeWrite), costMilliseconds(taken))
 	}
 	return storeRows
+}
+
+// writeCostWhatTheEditWrote prints, on each arm, the projection rows one edit of one block of the
+// 1,999-block document wrote, each row as it stood before the edit and as it stands after: the
+// document's rows of document_blocks and block_refs, the document_block_texts rows it appended,
+// and on this child's arm the nodes of those blocks and the tuples it appended out of them. The
+// edit is the measured path's own (writeCostVersion with one item changed), written here and not
+// timed against anything.
+//
+// The rewrite above was the document's last version, and it moved every item, so an edit written
+// straight after it would move every item back. A first edit brings the document to the edit's
+// shape - every item but one at revision 0 - and the second, which changes that one item again,
+// is the edit whose rows are printed.
+func writeCostWhatTheEditWrote(t *testing.T, arms []*costArm, corpora map[*costArm]*writeCostCorpus) {
+	t.Helper()
+	const changed = writeCostUnderBlocks / 2
+	for _, arm := range arms {
+		corpus := corpora[arm]
+		release := costHoldBlockIndex(t, arm)
+		writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+8, changed)
+		release()
+		costBlockIndexDrained(t, arm, 10*time.Minute)
+		before := readWriteCostEditRows(t, arm, corpus.under, nil)
+		release = costHoldBlockIndex(t, arm)
+		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+9, changed)
+		release()
+		costBlockIndexDrained(t, arm, 10*time.Minute)
+		after := readWriteCostEditRows(t, arm, corpus.under, &before)
+		var printed strings.Builder
+		for _, table := range before.tables {
+			writeCostRowChanges(&printed, table, before.rows[table], after.rows[table])
+		}
+		for _, table := range after.appendedTables {
+			rows := after.appended[table]
+			fmt.Fprintf(&printed, "\n  %s: %d row(s) appended", table, len(rows))
+			for index, row := range rows {
+				if index == writeCostPrintedRows {
+					fmt.Fprintf(&printed, "\n    and %d more", len(rows)-index)
+					break
+				}
+				fmt.Fprintf(&printed, "\n    %s", row)
+			}
+		}
+		t.Logf("%s: one edit of one block of the 1,999-block document took %.1f ms and wrote these rows, each before and after:%s",
+			arm.name, costMilliseconds(taken), printed.String())
+	}
+}
+
+// writeCostPrintedRows is how many rows of one table the edit's print shows. One edit writes a
+// handful; a table past this is an edit that moved more than one block, and the count printed
+// beside it says so without the run printing two thousand rows.
+const writeCostPrintedRows = 20
+
+// writeCostEditRows is what one document's version is read to have written. rows holds, by
+// table, every row of the document that a later version may change or delete, keyed by what
+// keys it in its table; appended holds the rows a table that is only appended to gained since
+// the earlier read, whose marks are textVersion and tupleSeq.
+type writeCostEditRows struct {
+	tables, appendedTables []string
+	rows                   map[string]map[string]string
+	appended               map[string][]string
+	nodeIDs                []string
+	textVersion, tupleSeq  int64
+}
+
+// readWriteCostEditRows reads the rows of document a version writes on arm, each whole as
+// to_jsonb renders it. Given the read taken before the version, it reads the rows the version
+// appended since, and the nodes of the blocks either read holds, so a block the version deleted
+// is read as its node now stands rather than missed.
+func readWriteCostEditRows(t *testing.T, arm *costArm, document string, before *writeCostEditRows) writeCostEditRows {
+	t.Helper()
+	ctx := context.Background()
+	read := writeCostEditRows{rows: map[string]map[string]string{}, appended: map[string][]string{}}
+	keyed := func(table, statement string, args ...any) {
+		rows, err := arm.pool.Query(ctx, statement, args...)
+		if err != nil {
+			t.Fatalf("%s: read the %s rows of %s: %v", arm.name, table, document, err)
+		}
+		defer rows.Close()
+		held := map[string]string{}
+		for rows.Next() {
+			var key, row string
+			if err := rows.Scan(&key, &row); err != nil {
+				t.Fatalf("%s: read a %s row of %s: %v", arm.name, table, document, err)
+			}
+			held[key] = row
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: read the %s rows of %s: %v", arm.name, table, document, err)
+		}
+		read.tables = append(read.tables, table)
+		read.rows[table] = held
+	}
+	appended := func(table, statement string, args ...any) {
+		rows, err := arm.pool.Query(ctx, statement, args...)
+		if err != nil {
+			t.Fatalf("%s: read the %s rows %s appended: %v", arm.name, table, document, err)
+		}
+		defer rows.Close()
+		held := []string{}
+		for rows.Next() {
+			var row string
+			if err := rows.Scan(&row); err != nil {
+				t.Fatalf("%s: read a %s row %s appended: %v", arm.name, table, document, err)
+			}
+			held = append(held, row)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: read the %s rows %s appended: %v", arm.name, table, document, err)
+		}
+		read.appendedTables = append(read.appendedTables, table)
+		read.appended[table] = held
+	}
+
+	keyed("document_blocks", `
+		select d.block_id, to_jsonb(d)::text from document_blocks d where d.artifact_id = $1::uuid`, document)
+	keyed("block_refs", `
+		select r.block_id || ' ' || r.kind || ' -> ' || r.to_kind || ':' || r.to_id, to_jsonb(r)::text
+		from block_refs r where r.artifact_id = $1::uuid`, document)
+	read.textVersion = arm.count(t, `
+		select coalesce(max(version), 0) from document_block_texts where artifact_id = $1::uuid`, document)
+	if before != nil {
+		appended("document_block_texts", `
+			select to_jsonb(b)::text from document_block_texts b
+			where b.artifact_id = $1::uuid and b.version > $2 order by b.version, b.block_id`, document, before.textVersion)
+	}
+	if !arm.head {
+		return read
+	}
+	for _, row := range read.rows["document_blocks"] {
+		var block struct {
+			NodeID string `json:"node_id"`
+		}
+		if err := json.Unmarshal([]byte(row), &block); err != nil {
+			t.Fatalf("%s: read a block row of %s: %v", arm.name, document, err)
+		}
+		read.nodeIDs = append(read.nodeIDs, block.NodeID)
+	}
+	nodes := read.nodeIDs
+	if before != nil {
+		nodes = append(slices.Clone(before.nodeIDs), nodes...)
+	}
+	keyed("graph_nodes", `
+		select n.id, to_jsonb(n)::text from graph_nodes n where n.kind = 'block' and n.id = any($1)`, nodes)
+	read.tupleSeq = arm.count(t, `select coalesce(max(seq), 0) from graph_tuples`)
+	if before != nil {
+		appended("graph_tuples", `
+			select to_jsonb(g)::text from graph_tuples g
+			where g.seq > $1 and g.from_kind = 'block' and g.from_id = any($2) order by g.seq`, before.tupleSeq, nodes)
+	}
+	return read
+}
+
+// writeCostRowChanges writes the rows of one table that differ between two reads of one
+// document, each as it stood before and as it stands after, with how many changed, came and
+// went.
+func writeCostRowChanges(printed *strings.Builder, table string, before, after map[string]string) {
+	keys := []string{}
+	for key, row := range after {
+		if before[key] != row {
+			keys = append(keys, key)
+		}
+	}
+	for key := range before {
+		if _, held := after[key]; !held {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	fmt.Fprintf(printed, "\n  %s: %d row(s) written of the %d the document held", table, len(keys), len(before))
+	for index, key := range keys {
+		if index == writeCostPrintedRows {
+			fmt.Fprintf(printed, "\n    and %d more", len(keys)-index)
+			break
+		}
+		was, had := before[key]
+		is, has := after[key]
+		if !had {
+			was = "(no row)"
+		}
+		if !has {
+			is = "(no row)"
+		}
+		fmt.Fprintf(printed, "\n    %s\n      before %s\n      after  %s", key, was, is)
+	}
 }
 
 // writeCostStoreWrite times one store write of nodes nodes and relations relations through

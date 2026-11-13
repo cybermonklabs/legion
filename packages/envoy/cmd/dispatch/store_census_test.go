@@ -69,7 +69,10 @@ const (
 
 // inventoryRow is one row of the inventory this run keeps: what the older build wrote, as that
 // build's own schema holds it. Identity is the row's key, Address the node the store must hold
-// for it, Author who wrote it, Digest the digest of its text and Parent what holds it.
+// for it, Author who wrote it, Digest the digest of its text and Parent what holds it. Actor is
+// the actor the row records whole, as the row's own JSON, and is empty for a row that records
+// none: Author is what the store's made_by is compared with, and Actor is what decides whether
+// the row names an author the store holds a node for (graphstore.AuthorOf).
 type inventoryRow struct {
 	Kind     string `json:"kind"`
 	Identity string `json:"identity"`
@@ -77,6 +80,7 @@ type inventoryRow struct {
 	Author   string `json:"author"`
 	Digest   string `json:"digest"`
 	Parent   string `json:"parent"`
+	Actor    string `json:"actor"`
 }
 
 // The store census reads zero differences, and the rows it reads are the rows that were there
@@ -105,13 +109,16 @@ type inventoryRow struct {
 // Only then does `envoy-dispatch census --store` run, which is the store-to-projection
 // comparison: it must read a population for every kind this child moves (a kind that checked
 // zero rows fails this run, by name) and zero differences in both directions, over a database
-// holding a deleted block, whose node is gone and whose row is not there. Every clause of the
-// run that counts differences prints what it counted over and fails where that is zero
-// (requireADenominator), because a count over an empty set reads zero and proves nothing.
+// holding a deleted block, whose node is gone and whose row is not there. It runs on a session
+// whose every transaction is read-only, so a census that wrote a row would fail rather than
+// pass. Every clause of the run that counts differences prints what it counted over and fails
+// where that is zero (requireADenominator), because a count over an empty set reads zero and
+// proves nothing.
 //
 // Last, the two builds answer the same reads over the same database, field for field, which is a
 // different question from store-to-projection equality: both sides can agree while the answer a
-// reader gets has changed.
+// reader gets has changed. Each read must answer something on the older build, since two empty
+// answers agree and prove nothing either.
 func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := censusDatabase(t)
@@ -143,11 +150,18 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	// ───── the two comparisons, apart ─────
 	store := storeAgainstInventory(t, ctx, databaseURL, inventory)
 	projection := projectionsAgainstInventory(t, ctx, databaseURL, inventory)
-	t.Logf("comparison 1, the store against the inventory: %d row(s) the inventory holds and the store lacks, of %d row(s) compared, %d author(s) and %d document(s) among them",
-		len(store.missing), store.compared, store.authors, store.parents)
+	t.Logf("comparison 1, the store against the inventory: %d row(s) the inventory holds and the store lacks, of %d row(s) compared, "+
+		"%d author(s), %d row(s) held to the authored_by tuple naming the author they record and %d to having none, "+
+		"and %d comment, %d block and %d block reference document(s) among them",
+		len(store.missing), store.compared, store.authors, store.authored, store.unauthored,
+		store.parents["comment"], store.parents["block"], store.parents["block_ref"])
 	requireADenominator(t, "comparison 1, the store against the inventory", store.compared)
 	requireADenominator(t, "comparison 1, the author of each row against its node's", store.authors)
-	requireADenominator(t, "comparison 1, the document of each row against its node's", store.parents)
+	requireADenominator(t, "comparison 1, the authored_by tuple of each row that records an author", store.authored)
+	requireADenominator(t, "comparison 1, the absent authored_by tuple of each row that records no author", store.unauthored)
+	for _, kind := range []string{"comment", "block", "block_ref"} {
+		requireADenominator(t, "comparison 1, the document of each "+kind+" row against its node's", store.parents[kind])
+	}
 	for _, missing := range store.missing {
 		t.Errorf("comparison 1: the store lacks %s %s (%s)", missing.Kind, missing.Identity, missing.Address)
 	}
@@ -165,8 +179,8 @@ func TestTheStoreCensusReadsZeroDifferences(t *testing.T) {
 	projectionRowsAgainstTheirTuples(t, ctx, databaseURL)
 
 	// ───── only then the store against its projections ─────
-	requireTheCensusWritesNothing(t, ctx, databaseURL, func() {
-		report := runStoreCensus(t, databaseURL)
+	requireTheCensusWritesNothing(t, ctx, databaseURL, func(readOnly string) {
+		report := runStoreCensus(t, readOnly)
 		requireEveryKindCarriesAPopulation(t, report)
 	})
 
@@ -325,9 +339,10 @@ type seededRows struct {
 }
 
 // seedThroughTheOlderBuild drives the older build's own API: a project, two issues whose specs
-// are documents of several blocks, a block that cites the other issue, and comments by a person
-// and by a session. No write here names a role: the older build records the delivery and writes
-// no node, so a role addressed here would be a row the backfill cannot answer for.
+// are documents of several blocks, a block that cites the other issue and one that cites its
+// document, comments by a person and by a session, an ask, and a document of the project's own
+// with a comment on it. No write here names a role: the older build records the delivery and
+// writes no node, so a role addressed here would be a row the backfill cannot answer for.
 func seedThroughTheOlderBuild(t *testing.T, server *dispatchProcess) seededRows {
 	t.Helper()
 	const project = "CENSUS"
@@ -335,9 +350,14 @@ func seedThroughTheOlderBuild(t *testing.T, server *dispatchProcess) seededRows 
 		`{"key":"`+project+`","name":"Store census"}`, http.StatusCreated)
 	mentioned, _ := createCensusIssue(t, server, project, "The issue the blocks cite",
 		"# Cited\n\nThe document every block of the other issue points at.\n")
+	// The block that cites the other issue's document is what gives the issue a reference
+	// closure (refs.Closure follows links at documents and their blocks alone, never at an
+	// issue), so the read of the issue's references answers a member on both builds.
 	issue, artifact := createCensusIssue(t, server, project, "The issue the census reads",
 		"# Spec\n\nThe first block of this document.\n\n## A nested heading\n\nA block that cites "+
-			mentioned+", so the document holds a block reference.\n\n- a list item\n- another item\n")
+			mentioned+", so the document holds a block reference.\n\nA block that cites dispatch://"+
+			mentioned+"/spec, the other issue's document, so the issue's references reach a document.\n\n"+
+			"- a list item\n- another item\n")
 
 	seeded := seededRows{project: project, issue: issue, artifact: artifact, mentioned: mentioned}
 	seeded.comments = append(seeded.comments,
@@ -345,7 +365,61 @@ func seedThroughTheOlderBuild(t *testing.T, server *dispatchProcess) seededRows 
 		server.mention(t, issue, "A second comment, which cites "+mentioned+"."))
 	seeded.comments = append(seeded.comments, censusSessionComment(t, server, issue,
 		"A comment a session wrote, so the store holds that session."))
+	// An open ask, so the reads of the issue's asks, of the project's open asks and of the inbox
+	// each answer an ask on both builds rather than two empty lists.
+	server.call(t, http.MethodPost, "/api/v1/issues/"+issue+"/asks",
+		`{"question":"Does the census read every row?","options":[{"label":"It does"},{"label":"It does not"}]}`,
+		http.StatusCreated)
+	// Every comment above hangs under the issue, so comments.artifact_id is null on each and the
+	// parent the inventory reads for it is empty. A comment on a document of the project's own,
+	// which no issue holds, is the one the older build records under that document, so the
+	// comparison of a comment's parent has a document to compare.
+	notes := censusProjectDocument(t, server, project, "census-notes.md",
+		"# Notes\n\nA document of the project's own, which no issue holds.\n")
+	seeded.comments = append(seeded.comments, censusDocumentComment(t, server, notes,
+		"A comment on the project's own document, which its row records as that document's."))
 	return seeded
+}
+
+// censusProjectDocument uploads markdown as the document name of project, a document no issue
+// holds, and answers its id.
+func censusProjectDocument(t *testing.T, server *dispatchProcess, project, name, markdown string) string {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"name": name, "content": markdown})
+	if err != nil {
+		t.Fatalf("encode the project's document: %v", err)
+	}
+	answer := server.send(t, http.MethodPost, "/api/v1/projects/"+project+"/artifacts", string(body), asUser(dispatchTestLogin))
+	if answer.status != http.StatusCreated && answer.status != http.StatusOK {
+		t.Fatalf("upload %s to project %s: %s", name, project, answer)
+	}
+	var uploaded struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}
+	if err := json.Unmarshal(answer.body, &uploaded); err != nil || uploaded.Artifact.ID == "" {
+		t.Fatalf("read the upload of %s back: %v: %s", name, err, answer.body)
+	}
+	return uploaded.Artifact.ID
+}
+
+// censusDocumentComment writes body as a comment on the document no issue holds, as the test's
+// person, and answers its id.
+func censusDocumentComment(t *testing.T, server *dispatchProcess, document, body string) string {
+	t.Helper()
+	input, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		t.Fatalf("encode the document's comment: %v", err)
+	}
+	created := server.call(t, http.MethodPost, "/api/v1/artifacts/"+document+"/comments", string(input), http.StatusCreated)
+	var comment struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(created, &comment); err != nil || comment.ID == "" {
+		t.Fatalf("read the document's comment back: %v: %s", err, created)
+	}
+	return comment.ID
 }
 
 // createCensusIssue creates one issue whose spec is markdown of several blocks and answers its
@@ -399,7 +473,9 @@ func censusSessionComment(t *testing.T, server *dispatchProcess, issue, body str
 // readInventory reads what the older build wrote out of the database, with this test's own SQL
 // over that build's own columns: no code of this branch produces it, so a row the migration or
 // the backfill loses is still held against what was there. A comment's digest is its body's, a
-// block's is the text digest its row already holds, and a block reference's is its far end.
+// block's is the text digest its row already holds, and a block reference's is its far end. A
+// comment records the actor that wrote it; document_blocks and block_refs have no column for
+// one, so neither kind records an author.
 func readInventory(t *testing.T, ctx context.Context, databaseURL string) []inventoryRow {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
@@ -407,16 +483,17 @@ func readInventory(t *testing.T, ctx context.Context, databaseURL string) []inve
 		select 'comment' as kind, c.id::text as identity, c.id::text as address,
 		       coalesce(c.author->>'kind', '') || ':' ||
 		       coalesce(c.author->>'id', c.author->>'owner', '') as author,
-		       md5(c.body) as digest, coalesce(c.artifact_id::text, '') as parent
+		       md5(c.body) as digest, coalesce(c.artifact_id::text, '') as parent,
+		       coalesce(c.author::text, '') as actor
 		from comments c
 		union all
 		select 'block', d.artifact_id::text || '#' || d.block_id, d.node_id, '',
-		       d.text_sha256, d.artifact_id::text
+		       d.text_sha256, d.artifact_id::text, ''
 		from document_blocks d
 		union all
 		select 'block_ref',
 		       r.artifact_id::text || '#' || r.block_id || ' ' || r.kind || ' -> ' || r.to_kind || ':' || r.to_id,
-		       r.from_node, '', md5(r.to_kind || ':' || r.to_id), r.artifact_id::text
+		       r.from_node, '', md5(r.to_kind || ':' || r.to_id), r.artifact_id::text, ''
 		from block_refs r
 		order by 1, 2
 	`)
@@ -427,7 +504,7 @@ func readInventory(t *testing.T, ctx context.Context, databaseURL string) []inve
 	var inventory []inventoryRow
 	for rows.Next() {
 		var row inventoryRow
-		if err := rows.Scan(&row.Kind, &row.Identity, &row.Address, &row.Author, &row.Digest, &row.Parent); err != nil {
+		if err := rows.Scan(&row.Kind, &row.Identity, &row.Address, &row.Author, &row.Digest, &row.Parent, &row.Actor); err != nil {
 			t.Fatalf("scan an inventory row: %v", err)
 		}
 		inventory = append(inventory, row)
@@ -593,9 +670,17 @@ func deleteABlockThroughThisBuild(t *testing.T, ctx context.Context, server *dis
 // the inventory holds and that side lacks. The counts are the denominators the run prints beside
 // what each comparison found, because a comparison that held no row finds no difference and
 // proves nothing.
+//
+// parents counts by kind the rows that name a document, so each kind has a document of its own
+// to compare: a kind whose rows all name none would compare an empty parent with an empty one and
+// pass. authored counts the rows that record an author the store can name and are held to the
+// authored_by tuple naming that author, and unauthored the rows that record none and are held to
+// having no authored_by tuple at all.
 type censusComparison struct {
-	compared, authors, parents int
-	missing                    []inventoryRow
+	compared, authors    int
+	parents              map[string]int
+	authored, unauthored int
+	missing              []inventoryRow
 }
 
 // requireADenominator fails the run where a clause that counts differences counted over nothing.
@@ -609,21 +694,24 @@ func requireADenominator(t *testing.T, clause string, denominator int) {
 	}
 }
 
-// storedNode is what the store says of one node, as this comparison reads it: who made it and
-// the document it is in, each read out of the store alone.
+// storedNode is what the store says of one node, as this comparison reads it: who made it, who
+// its current authored_by tuples name, and the document it is in, each read out of the store
+// alone.
 type storedNode struct {
-	state, author, parent string
+	state, author, authoredBy, parent string
 }
 
 // storeAgainstInventory holds the store to the inventory, row by row: every comment and every
 // block of the inventory has a node of its own kind, the comment's node names the author the
-// row recorded, and the node's own tuple reaches the document the row belongs to. It answers
-// what it compared and the rows the inventory holds and the store lacks, and reports a node that
-// holds a different author or a different document as a difference of its own.
+// row recorded, its authored_by tuple names that author exactly where the row records one, and
+// the node's own tuple reaches the document the row belongs to. It answers what it compared and
+// the rows the inventory holds and the store lacks, and reports a node that holds a different
+// author or a different document as a difference of its own.
 //
 // The parent is read the way a current read reads it: the newest in_document tuple of a block
 // and the newest owned_by of a comment, each kept while it asserts, resolved to the artifact the
-// address names.
+// address names. The authored_by tuples are read the same way: the newest tuple at each far end,
+// kept while it asserts.
 func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string, inventory []inventoryRow) censusComparison {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
@@ -631,6 +719,16 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 		select n.kind, n.id, n.state,
 		       coalesce(n.made_by->>'kind', '') || ':' ||
 		       coalesce(n.made_by->>'id', n.made_by->>'owner', '') as author,
+		       coalesce((
+		           select string_agg(current.to_kind || ':' || current.to_id, ',' order by current.to_kind, current.to_id)
+		           from (
+		               select distinct on (written.to_kind, written.to_id) written.to_kind, written.to_id, written.asserted
+		               from graph_tuples written
+		               where written.from_kind = n.kind and written.from_id = n.id and written.kind = $1
+		               order by written.to_kind, written.to_id, written.seq desc
+		           ) current
+		           where current.asserted
+		       ), '') as authored_by,
 		       coalesce((
 		           select a.id::text from artifacts a where a.ref_key = (
 		               select held.to_id from graph_tuples held
@@ -640,7 +738,7 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 		           )
 		       ), '') as parent
 		from graph_nodes n where n.kind in ('comment', 'block')
-	`)
+	`, graphstore.TupleAuthoredBy)
 	if err != nil {
 		t.Fatalf("read the nodes of the store: %v", err)
 	}
@@ -649,7 +747,7 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 	for rows.Next() {
 		var kind, id string
 		var node storedNode
-		if err := rows.Scan(&kind, &id, &node.state, &node.author, &node.parent); err != nil {
+		if err := rows.Scan(&kind, &id, &node.state, &node.author, &node.authoredBy, &node.parent); err != nil {
 			t.Fatalf("scan a node: %v", err)
 		}
 		held[kind+"\x00"+id] = node
@@ -657,7 +755,7 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the nodes of the store: %v", err)
 	}
-	read := censusComparison{}
+	read := censusComparison{parents: map[string]int{}}
 	for _, row := range inventory {
 		nodeKind := "comment"
 		if row.Kind != "comment" {
@@ -670,8 +768,13 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 			continue
 		}
 		read.compared++
-		// A block's node is made by the version's writer, which no row of the inventory holds,
-		// so the author is held only where the inventory recorded one.
+		// A block's row records no author: document_blocks has no column for one, and neither
+		// has block_refs. The backfill is the writer of the node and the tuples it states for
+		// such a row, recorded as the system actor in made_by and in each tuple's who, and it
+		// states no authored_by for it, since naming the system actor, or anyone, as the block's
+		// author would state a fact no row holds (graphcensus's backfillActor). So made_by is
+		// held to the row's author only where the row records one, and the authored_by tuple is
+		// held both ways: to the author a row records, and to being absent where it records none.
 		if row.Author != "" {
 			read.authors++
 			if node.author != row.Author {
@@ -679,11 +782,24 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 					row.Kind, row.Identity, node.author, row.Author)
 			}
 		}
+		if author := recordedAuthor(t, row); author != "" {
+			read.authored++
+			if node.authoredBy != author {
+				t.Errorf("comparison 1: the node of %s %s is authored_by %q, want the one author the row records, %s",
+					row.Kind, row.Identity, node.authoredBy, author)
+			}
+		} else {
+			read.unauthored++
+			if node.authoredBy != "" {
+				t.Errorf("comparison 1: the node of %s %s is authored_by %s, but the row records no author: the backfill writes that node's tuples as the system actor and names no author for it",
+					row.Kind, row.Identity, node.authoredBy)
+			}
+		}
 		// A block reference's row names its block, whose document is the one the reference's own
 		// row belongs to, so both kinds are held to the same parent. A row the older build wrote
 		// under no document states nothing to compare, so it is no denominator of this clause.
 		if row.Parent != "" {
-			read.parents++
+			read.parents[row.Kind]++
 		}
 		if node.parent != row.Parent {
 			t.Errorf("comparison 1: the node of %s %s is in document %q, want the row's own %q",
@@ -691,6 +807,26 @@ func storeAgainstInventory(t *testing.T, ctx context.Context, databaseURL string
 		}
 	}
 	return read
+}
+
+// recordedAuthor is the node the store must name as the author of an inventory row, as
+// `<kind>:<id>`: the one the row's recorded actor names (graphstore.AuthorOf, the one rule the
+// writers and the readers of this store share), and empty for a row that records no actor or
+// one that names nobody, such as the deployment's shared bearer.
+func recordedAuthor(t *testing.T, row inventoryRow) string {
+	t.Helper()
+	if row.Actor == "" {
+		return ""
+	}
+	var actor model.Actor
+	if err := json.Unmarshal([]byte(row.Actor), &actor); err != nil {
+		t.Fatalf("read the actor %s %s records: %v", row.Kind, row.Identity, err)
+	}
+	kind, id, named := graphstore.AuthorOf(actor)
+	if !named {
+		return ""
+	}
+	return kind + ":" + id
 }
 
 // projectionsAgainstInventory holds each projection to the inventory the same way: every row the
@@ -1073,9 +1209,13 @@ func requireEveryKindCarriesAPopulation(t *testing.T, report []kindCensus) {
 	}
 }
 
-// requireTheCensusWritesNothing runs the census and proves it wrote nothing: the log's highest
-// sequence and both tables' row counts are the same afterwards.
-func requireTheCensusWritesNothing(t *testing.T, ctx context.Context, databaseURL string, census func()) {
+// requireTheCensusWritesNothing runs the census on a session that cannot write and proves it
+// wrote nothing. census is given a URL every transaction of whose session is read-only
+// (readOnlySession), so a statement of the census that inserted, updated or deleted a row,
+// inside its snapshot or outside it, fails, the census exits 2, and runStoreCensus fails the
+// run. The store's marks - the log's highest sequence and both tables' row counts - are read
+// before and after it as well.
+func requireTheCensusWritesNothing(t *testing.T, ctx context.Context, databaseURL string, census func(readOnly string)) {
 	t.Helper()
 	conn := censusConnect(t, ctx, databaseURL)
 	read := func() [3]int64 {
@@ -1088,11 +1228,46 @@ func requireTheCensusWritesNothing(t *testing.T, ctx context.Context, databaseUR
 		}
 		return counted
 	}
+	readOnly := readOnlySession(t, ctx, databaseURL)
 	before := read()
-	census()
+	census(readOnly)
 	if after := read(); after != before {
 		t.Errorf("the census moved the store: highest sequence, tuples and nodes were %v and are %v", before, after)
 	}
+}
+
+// readOnlySession answers databaseURL with every transaction of the sessions it opens read-only:
+// the startup parameter `options` carries `-c default_transaction_read_only=on`, which Postgres
+// applies to the session, and pgx sends every key of the URL it does not read itself as such a
+// parameter (pgconn.ParseConfig's RuntimeParams). The URL is proved before it is answered: a
+// session opened with it must read the setting on and have an update refused as
+// read_only_sql_transaction (25006). A URL that lost the option would otherwise hand the census
+// a session that writes, and a census that wrote would pass.
+func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) string {
+	t.Helper()
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("read the census database URL: %v", err)
+	}
+	query := parsed.Query()
+	query.Set("options", "-c default_transaction_read_only=on")
+	// Encode writes a space as `+`, which pgconn hands to the server as it is, and Postgres then
+	// reads the option as one named `+default_transaction_read_only` and refuses the connection.
+	// A literal `+` is %2B once encoded, so every `+` left is a space and is spelt %20.
+	parsed.RawQuery = strings.ReplaceAll(query.Encode(), "+", "%20")
+	readOnly := parsed.String()
+	conn := censusConnect(t, ctx, readOnly)
+	var setting string
+	if err := conn.QueryRow(ctx, `show default_transaction_read_only`).Scan(&setting); err != nil || setting != "on" {
+		t.Fatalf("a session opened with the census's URL reads default_transaction_read_only %q (%v), want on", setting, err)
+	}
+	_, err = conn.Exec(ctx, `update graph_store_cutover set complete = complete`)
+	var postgres *pgconn.PgError
+	if !errors.As(err, &postgres) || postgres.Code != "25006" {
+		t.Fatalf("a session opened with the census's URL took an update (%v), want it refused as read_only_sql_transaction (25006)", err)
+	}
+	t.Logf("the census runs on a session whose every transaction is read-only: an update there is refused (%s)", postgres.Message)
+	return readOnly
 }
 
 // ───── the old read beside the new read ───────────────────────────────────
@@ -1101,6 +1276,11 @@ func requireTheCensusWritesNothing(t *testing.T, ctx context.Context, databaseUR
 // database, for each read this child touched, and compares the two field for field. Store-to-
 // projection equality says nothing about this: both sides can agree and the answer a reader gets
 // still change.
+//
+// A read counts as compared only where the older build's answer holds something
+// (answerElements): two empty lists agree field for field and prove nothing, so each read that
+// answers nothing fails the run by name, and the denominator printed is the reads that compared
+// an answer.
 //
 // The older build is started again over the migrated database. Its migration runner applies the
 // versions schema_migrations does not record, and this branch's are all recorded by now, so it
@@ -1115,36 +1295,78 @@ func compareTheOldReadWithTheNew(t *testing.T, older, databaseURL string, now *d
 	// issue and its comments, the backlinks a Referenced by panel shows, the document and its
 	// blocks, the lists a project page reads, the asks and the inbox. A read of an artifact
 	// that belongs to an issue is refused by its own route (ARTIFACT_LINKED), so the issue's
-	// own comment read is the one here.
-	reads := []string{
-		"/api/v1/issues/" + seeded.issue,
-		"/api/v1/issues/" + seeded.issue + "/comments",
-		"/api/v1/issues/" + seeded.issue + "/references",
-		"/api/v1/issues/" + seeded.issue + "/asks",
-		"/api/v1/issues?project=" + seeded.project,
-		"/api/v1/artifacts/" + seeded.artifact,
-		"/api/v1/artifacts/" + seeded.artifact + "/text",
-		"/api/v1/artifacts/" + seeded.artifact + "/blocks",
-		"/api/v1/artifacts/" + seeded.artifact + "/references",
-		"/api/v1/projects/" + seeded.project + "/artifacts",
-		"/api/v1/asks/open?project=" + seeded.project,
-		"/api/v1/inbox",
+	// own comment read is the one here. lists names the fields of an object answer that hold
+	// what the read lists; a read that names none lists its own items, or is one object.
+	reads := []struct {
+		path  string
+		lists []string
+	}{
+		{path: "/api/v1/issues/" + seeded.issue},
+		{path: "/api/v1/issues/" + seeded.issue + "/comments"},
+		{path: "/api/v1/issues/" + seeded.issue + "/references", lists: []string{"members"}},
+		{path: "/api/v1/issues/" + seeded.issue + "/asks"},
+		{path: "/api/v1/issues?project=" + seeded.project},
+		{path: "/api/v1/artifacts/" + seeded.artifact},
+		{path: "/api/v1/artifacts/" + seeded.artifact + "/text", lists: []string{"markdown"}},
+		{path: "/api/v1/artifacts/" + seeded.artifact + "/blocks"},
+		{path: "/api/v1/artifacts/" + seeded.artifact + "/references", lists: []string{"outgoing", "referenced_by"}},
+		{path: "/api/v1/projects/" + seeded.project + "/artifacts"},
+		{path: "/api/v1/asks/open?project=" + seeded.project, lists: []string{"asks"}},
+		{path: "/api/v1/inbox"},
 	}
-	differing := 0
+	compared, differing := 0, 0
 	for _, read := range reads {
-		was := decodeRead(t, before.call(t, http.MethodGet, read, "", http.StatusOK))
-		is := decodeRead(t, now.call(t, http.MethodGet, read, "", http.StatusOK))
+		was := decodeRead(t, before.call(t, http.MethodGet, read.path, "", http.StatusOK))
+		is := decodeRead(t, now.call(t, http.MethodGet, read.path, "", http.StatusOK))
+		elements := answerElements(was, read.lists)
+		if elements == 0 {
+			t.Errorf("GET %s answers nothing on the older build, so comparing it with this build's answer compares nothing: the seed must write what it lists",
+				read.path)
+		} else {
+			compared++
+		}
 		if !reflect.DeepEqual(was, is) {
 			differing++
 			t.Errorf("GET %s answers differently on the two builds:\nthe older build %s\nthis build     %s",
-				read, mustEncode(t, was), mustEncode(t, is))
+				read.path, mustEncode(t, was), mustEncode(t, is))
 			continue
 		}
-		t.Logf("GET %s answers field for field on both builds", read)
+		t.Logf("GET %s answers field for field on both builds, over %d element(s)", read.path, elements)
 	}
-	t.Logf("the old read beside the new: %d read(s) compared, %d of them answering differently",
-		len(reads), differing)
-	requireADenominator(t, "the old read beside the new read", len(reads))
+	t.Logf("the old read beside the new: %d of %d read(s) compared an answer that holds something, %d of the %d answering differently",
+		compared, len(reads), differing, len(reads))
+	requireADenominator(t, "the old read beside the new read", compared)
+}
+
+// answerElements counts what one read's answer holds: the items of a list answer, and an object
+// answer as one; where the read names the fields it lists, the items of those fields alone, a
+// text counting as one where it is not empty.
+func answerElements(answer any, lists []string) int {
+	if len(lists) == 0 {
+		return elementsOf(answer)
+	}
+	object, _ := answer.(map[string]any)
+	elements := 0
+	for _, name := range lists {
+		elements += elementsOf(object[name])
+	}
+	return elements
+}
+
+func elementsOf(value any) int {
+	switch held := value.(type) {
+	case []any:
+		return len(held)
+	case map[string]any:
+		if len(held) > 0 {
+			return 1
+		}
+	case string:
+		if held != "" {
+			return 1
+		}
+	}
+	return 0
 }
 
 func decodeRead(t *testing.T, body []byte) any {
