@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // A turn that ends in a provider error does not retire its task (dispatch://INFRA-956 R2). The
@@ -68,11 +70,11 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 	}
 	// The site names the outcome and the policy charges it nothing (Charges): what bounds a run
 	// of these turns is the claim's own count above, never the prompt budget.
-	if err := m.chargePrompt(ctx, OutcomeProviderError); err != nil {
+	if err := m.chargePrompt(ctx, runtime.OutcomeProviderError); err != nil {
 		return err
 	}
 	if holdsTheIssue(r.HTTPStatus) {
-		return m.fail(ctx, failureCause(OutcomeProviderError), "a provider error that cannot clear ended this claim's turn: "+cause)
+		return m.fail(ctx, failureCause(runtime.OutcomeProviderError), "a provider error that cannot clear ended this claim's turn: "+cause)
 	}
 	return m.providerErrorClears(ctx, cause)
 }

@@ -38,12 +38,12 @@ const (
 	// 4.1 s, which leaves 0.9 s of the 5 s the shim gives it before killing it (shim.DefaultGrace)
 	// for the process to exit on a loaded machine; its inbox is gone 0.5 s before that.
 	flushTimeout = 500 * time.Millisecond
-	// Busy is the refusal of a prompt that arrives during a turn, and the bridge refuses with
-	// exactly this constant: the daemon's stream matches it whole (stream.PromptRefusalOutcome)
-	// and mints the agent's answer that it is in a turn of its own, so the task goes back unread,
-	// uncharged, and is sent again when the turn ends. Nothing relies on its first words being Oh
-	// My Pi's; the sentence is for a person reading a log.
-	Busy = "Agent is already processing a turn; the Claude Code bridge takes a prompt only between turns"
+	// Busy is the words of the bridge's refusal of a prompt that arrives during a turn, for a
+	// person reading a log. What the daemon reads is the code the refusal carries beside them,
+	// shimwire.CodeSessionBusy, from which its stream mints the agent's answer that it is in a
+	// turn of its own, so the task goes back unread, uncharged, and is sent again when the turn
+	// ends. Nothing reads these words.
+	Busy = "The Claude Code bridge is in a turn and takes a prompt only between turns"
 )
 
 var (
@@ -428,12 +428,13 @@ func (b *bridge) fromDaemon(line []byte) {
 }
 
 // prompt is the daemon's task. Between turns it starts one; during a turn, the bridge's own or one
-// Claude Code started by itself, it is acknowledged and then refused as Oh My Pi refuses it, so the
-// daemon sends it again once the turn ends.
+// Claude Code started by itself, it is acknowledged and then refused busy, with the code Oh My Pi
+// gives that refusal, so the daemon sends it again once the turn ends.
 func (b *bridge) prompt(p shimwire.Prompt) {
 	b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: true})
 	if b.inRun {
-		b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: false, Error: Busy})
+		b.respond(shimwire.Response{ID: p.ID, Command: shimwire.TypePrompt, Success: false, Error: Busy,
+			Code: shimwire.CodeSessionBusy})
 		return
 	}
 	b.startRun(p.Message, nil, p.ID)

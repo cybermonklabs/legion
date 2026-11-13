@@ -13,7 +13,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // agentEndFrame is the frame that arrives chunked: the only worker frame whose size grows with
@@ -160,8 +159,8 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 		// another.
 		isCase func(error) bool
 		// sentinel is the one error of sentinels this failure is, nil for a failure that is none
-		// of them, and reason the words the far side refused with — read by the supervisor (Oh
-		// My Pi's busy answer) or carried into its log (the shim's).
+		// of them, and reason the words the far side refused with — carried to the supervisor's
+		// log (Oh My Pi's, the shim's), never read to decide.
 		sentinel error
 		reason   string
 	}{
@@ -278,9 +277,9 @@ func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
 					t.Fatalf("errors.Is(%v, %s) = %v, want %v", err, sentinel.name, got, want)
 				}
 			}
-			// The far side's own words reach the supervisor: Oh My Pi's, to tell its busy answer
-			// — a turn of its own, charged nothing — from a refusal of the work, and the shim's,
-			// which name the stale lock the adoption failed on, to carry into the log.
+			// The far side's own words reach the supervisor for its log: Oh My Pi's, beside the
+			// outcome minted from the refusal's code, and the shim's, which name the stale lock the
+			// adoption failed on.
 			if test.reason != "" {
 				if reason := runtime.RefusalReason(err); reason != test.reason {
 					t.Fatalf("runtime.RefusalReason(%v) = %q, want the far side's words %q", err, reason, test.reason)
@@ -421,7 +420,7 @@ func TestAPromptResultNamesTheDeliveryItsRequestIDCarries(t *testing.T) {
 	want := []Event{
 		TurnEnd{Claim: testClaim},
 		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", AgentInvoked: true},
-		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model", Outcome: supervise.OutcomeNoTurnRun},
+		PromptResult{Claim: testClaim, DeliveryID: "delivery-1", Error: "no model", Outcome: runtime.OutcomeNoTurnRun},
 	}
 	for _, want := range want {
 		if got := h.next(); got != want {
@@ -505,7 +504,7 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 	p.conn.Close()
 	want := []Event{
 		TurnStart{Claim: testClaim},
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: supervise.OutcomePromptRefused,
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: runtime.OutcomeUnrecognised,
 			ConnSequence: conn.Sequence()},
 		Closed{Claim: testClaim},
 	}
@@ -520,11 +519,12 @@ func TestALateRefusalIsOneEventCarryingTheDeliveryID(t *testing.T) {
 		t.Fatalf("further events = %#v, want none", rest)
 	}
 	logs := h.logs.Lines()
-	if len(logs) != 2 ||
+	if len(logs) != 3 ||
 		!strings.HasPrefix(logs[0], "worker-stream: prompt refused after its acknowledgement") ||
 		!strings.Contains(logs[0], "deliveryId=delivery-1") ||
-		!strings.HasPrefix(logs[1], "worker-stream: refusal for a prompt request this connection is not waiting on") {
-		t.Fatalf("logs = %q, want the late refusal and then the unattributable repeat", logs)
+		!strings.HasPrefix(logs[1], "worker-stream: the agent refused a prompt with no machine-readable code") ||
+		!strings.HasPrefix(logs[2], "worker-stream: refusal for a prompt request this connection is not waiting on") {
+		t.Fatalf("logs = %q, want the late refusal, that it carried no code, and then the unattributable repeat", logs)
 	}
 }
 
@@ -604,7 +604,7 @@ func TestARefusalReplayedOnAReplacementConnectionNamesItsDelivery(t *testing.T) 
 	replacement.send(shimwire.Response{ID: frame.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is busy"})
 	replacement.conn.Close()
 	want := []Event{
-		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: supervise.OutcomePromptRefused,
+		LateRefusal{Claim: testClaim, DeliveryID: "delivery-1", Error: "Agent is busy", Outcome: runtime.OutcomeUnrecognised,
 			Replayed: true, ConnSequence: replaced.Sequence()},
 		Closed{Claim: testClaim},
 	}

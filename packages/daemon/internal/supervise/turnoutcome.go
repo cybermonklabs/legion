@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // TurnOutcome is one turn of a claim's agent as the backend's producer reported it when that turn
@@ -116,7 +118,7 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	if run < m.deps.Limits.LaunchFailures {
 		return m.persist(ctx)
 	}
-	return m.fail(ctx, failureCause(OutcomeProviderError), refusalCause(run, m.claim.LastRefusal()))
+	return m.fail(ctx, failureCause(runtime.OutcomeProviderError), refusalCause(run, m.claim.LastRefusal()))
 }
 
 // refusalCause is the failure a spent run of refused turns names: what refused the claim, how many

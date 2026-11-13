@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // PodUpdateContract is the daemon contract that introduced ready_for_update (api/version.go's
@@ -496,7 +497,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	// that will move it — and is the lane's uncharged relaunch (relaunchStale).
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, OutcomeStalePlugin)
+		err = m.relaunchAfterFailure(ctx, runtime.OutcomeStalePlugin)
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

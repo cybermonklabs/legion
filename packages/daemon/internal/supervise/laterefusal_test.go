@@ -115,7 +115,7 @@ func TestAReplayedRefusalOnlyClearsTheMarkItsPromptSet(t *testing.T) {
 	waitFor(t, "the re-send", gated.entered)
 	// The backlog is read before the re-send is answered.
 	if err := h.m.Handle(h.ctx, StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID,
-		Error: busyWords, Outcome: OutcomeAgentBusy, Replayed: true,
+		Error: busyWords, Outcome: runtime.OutcomeAgentBusy, Replayed: true,
 		ConnSequence: gated.Sequence()}); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestAReplayedRefusalTakesBackATaskAForeignTurnConfirmed(t *testing.T) {
 			charged := h.claim().Budgets
 			sent := len(conn.Prompts())
 
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busy, Outcome: OutcomeAgentBusy, Replayed: true, ConnSequence: conn.Sequence()})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: conn.Sequence()})
 			if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
 				t.Fatalf("pending after the replayed refusal = %+v, want it taken back unread", p)
 			}
@@ -434,7 +434,7 @@ func TestAReplayedRefusalLeavesATaskThisConnectionReSent(t *testing.T) {
 			if ack == "after another connection's hello and the refusal" {
 				replay(StreamHello{Claim: testToken, Generation: h.generation()})
 			}
-			replay(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: OutcomeAgentBusy, Replayed: true, ConnSequence: gated.Sequence()})
+			replay(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: gated.Sequence()})
 			if strings.HasPrefix(ack, "after") {
 				acknowledge()
 			}
@@ -517,11 +517,11 @@ func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		refusal string
-		outcome Outcome
+		outcome runtime.Outcome
 		charged int
 	}{
-		{name: "the agent refused the work", refusal: "the model provider refused the request", outcome: OutcomePromptRefused, charged: 1},
-		{name: "the agent is in a turn of its own", refusal: busyWords, outcome: OutcomeAgentBusy, charged: 0},
+		{name: "the agent refused the work", refusal: "the model provider refused the request", outcome: runtime.OutcomePromptRefused, charged: 1},
+		{name: "the agent is in a turn of its own", refusal: busyWords, outcome: runtime.OutcomeAgentBusy, charged: 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
@@ -611,7 +611,7 @@ func TestAReplayedRefusalLeavesATaskItsConnectionSentBeforeItsHello(t *testing.T
 			handle(StreamTurnStart{Claim: testToken}) // the agent's own turn, replayed
 			replacement.release <- struct{}{}
 			h.m.Wait()
-			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
+			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 
 			replacement.Conn.FailPrompt(busyRefusal())
 			go func() {
@@ -661,7 +661,7 @@ func TestARefusalWhoseWriteFailedIsWrittenBeforeARestartReadsIt(t *testing.T) {
 		h.must(StreamTurnStart{Claim: testToken})
 		replacement := reconnect(h, true)
 		h.store.fail("PutDelivery", errBoom)
-		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
+		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 		h.store.fail("PutDelivery", nil)
 		h.observe(runtime.Alive)
 
@@ -678,7 +678,7 @@ func TestARefusalWhoseWriteFailedIsWrittenBeforeARestartReadsIt(t *testing.T) {
 		d := h.wantPrompts(1)[0].DeliveryID
 		replacement := reconnect(h, false)
 		h.store.fail("PutDelivery", errBoom)
-		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
+		_ = h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 		h.store.fail("PutDelivery", nil)
 		h.observe(runtime.Alive)
 
@@ -742,7 +742,7 @@ func TestAReplayedRefusalLeavesATaskANewerConnectionReSent(t *testing.T) {
 			if ack == "between the start and the refusal" {
 				acknowledge()
 			}
-			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: OutcomeAgentBusy, Replayed: true, ConnSequence: backlog.Sequence()})
+			handle(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: backlog.Sequence()})
 			if ack == "after the refusal" {
 				acknowledge()
 			}
@@ -798,7 +798,7 @@ func TestAFailedConfirmIsWrittenAgainWholeBeforeARestartReadsIt(t *testing.T) {
 			if !foreign {
 				return
 			}
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
+			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: d, Error: busy, Outcome: runtime.OutcomeAgentBusy, Replayed: true, ConnSequence: replacement.Sequence()})
 			if p := h.pending(); !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
 				t.Fatalf("pending after the replayed refusal = %+v, want it taken back unread", p)
 			}

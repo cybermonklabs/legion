@@ -4,7 +4,7 @@ import (
 	"sync"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Event is one agent fact the stream observed. The set is sealed: a connection arriving
@@ -92,9 +92,10 @@ type ToolStep struct {
 // read from HTTPStatus alone (supervise's providerErrored); the message is never parsed, since
 // it is a provider's own prose and changes without notice.
 //
-// Outcome is minted here for a prompt that ran no turn, from the result's own words
-// (PromptRefusalOutcome): supervise.OutcomeAgentBusy where the agent says it is in a turn of its
-// own, else supervise.OutcomeNoTurnRun. A result whose prompt ran a turn carries none.
+// Outcome is minted here for a prompt that ran no turn, from the result's machine-readable code
+// (PromptRefusalOutcome), never its words: runtime.OutcomeAgentBusy where the code says the agent
+// is in a turn of its own, else runtime.OutcomeNoTurnRun. A result whose prompt ran a turn carries
+// none.
 type PromptResult struct {
 	Claim        claim.Token
 	DeliveryID   string
@@ -104,7 +105,7 @@ type PromptResult struct {
 	HTTPStatus   int
 	Provider     string
 	Model        string
-	Outcome      supervise.Outcome
+	Outcome      runtime.Outcome
 }
 
 // LateRefusal is OMP answering `{success:false}` for a prompt it had already answered
@@ -113,13 +114,13 @@ type PromptResult struct {
 // prompt carried, so a delivery the supervisor counted as started by a turn that was never its own
 // can be taken back. A refusal OMP gave while no daemon was connected reaches the next connection
 // from the shim's backlog; the prompt's request id names its delivery, so it is a LateRefusal
-// there too. Error is OMP's reason, verbatim, and Outcome the member minted from it here
-// (PromptRefusalOutcome), which is what the supervisor decides on.
+// there too. Error is OMP's reason, verbatim, for the log, and Outcome the member minted here from
+// the code beside it (PromptRefusalOutcome), which is what the supervisor decides on.
 type LateRefusal struct {
 	Claim      claim.Token
 	DeliveryID string
 	Error      string
-	Outcome    supervise.Outcome
+	Outcome    runtime.Outcome
 	// Replayed is a refusal for a prompt this connection did not send, read from the shim's
 	// backlog: it answers a prompt an earlier connection sent.
 	Replayed bool

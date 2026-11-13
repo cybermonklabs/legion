@@ -33,14 +33,14 @@ func TestOnlyTheTurnBoundLeavesTheTaskMarkedAsRead(t *testing.T) {
 		{
 			name: "refused in a turn of the agent's own",
 			refuse: func(h *harness, delivery string) {
-				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: delivery, Error: busyWords, Outcome: OutcomeAgentBusy})
+				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: delivery, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 			},
 		},
 		{
 			name: "refused with no turn running",
 			refuse: func(h *harness, delivery string) {
 				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: delivery, Error: "No API key found for provider anthropic",
-					Outcome: OutcomePromptRefused})
+					Outcome: runtime.OutcomePromptRefused})
 			},
 		},
 	} {
@@ -464,7 +464,7 @@ func TestABusyRefusalWhoseWriteFailsLeavesTheTaskToBeSentAgain(t *testing.T) {
 	h.must(StreamTurnStart{Claim: testToken})
 
 	h.store.fail("PutDelivery", errBoom)
-	if err := h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: OutcomeAgentBusy}); err == nil {
+	if err := h.handle(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy}); err == nil {
 		t.Fatal("the refusal reported success with the delivery write failing")
 	}
 	h.store.fail("PutDelivery", nil)

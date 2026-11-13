@@ -13,9 +13,9 @@ import (
 // that refuses prompts spends its prompt budget (a worker that refused every prompt would
 // otherwise be retried forever), while a prompt lost to the transport was never the agent's
 // answer and is sent again at no charge. A refusal also carries the words Oh My Pi gave
-// (RefusalReason), and the stream's refusal carries the outcome it minted from them
-// (stream.RefusedError), since one of them — a turn already running — is no refusal of the work.
-// Which outcomes charge is supervise.Charges's alone.
+// (RefusalReason), for the log, and the stream's refusal carries the outcome it minted from the
+// code beside them (RefusalOutcome, stream.RefusedError), since one of them — a turn already
+// running — is no refusal of the work. Which outcomes charge is supervise.Charges's alone.
 var ErrPromptRefused = errors.New("runtime: the agent refused the prompt")
 
 // ErrAdoptRefused is the agent's shim answering AdoptWorkingCopy with `ok: false`: the working

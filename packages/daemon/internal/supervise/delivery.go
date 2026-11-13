@@ -1141,7 +1141,7 @@ func (m *Machine) settle(ctx context.Context) error {
 // relaunch and the retirement. read says whether the agent may have read it, and is the caller's
 // to answer, not the policy's: a turn that has not started may still be this task's, and a prompt
 // the agent answered a failure, or answered that it is in a turn of its own, never ran.
-func (m *Machine) promptFailed(ctx context.Context, o Outcome, read bool) error {
+func (m *Machine) promptFailed(ctx context.Context, o runtime.Outcome, read bool) error {
 	if err := m.takeBackPending(ctx, read); err != nil {
 		return err
 	}

@@ -2175,7 +2175,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			return m.startWaitsForStore(starting, err, charged, exempt)
 		}
 		err = errors.Join(err, m.stopPrevious(starting))
-		spent := m.chargeLaunch(OutcomeLaunchFailed)
+		spent := m.chargeLaunch(runtime.OutcomeLaunchFailed)
 		m.log.Warn("supervise: launch failed", "generation", m.claim.Generation, "error", err,
 			"launchFailures", m.claim.Budgets.LaunchFailures, "limit", m.deps.Limits.LaunchFailures)
 		if spent {
@@ -2184,7 +2184,7 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			// reads died (Claim.PendingCause).
 			cause := m.claim.PendingCause
 			if cause == "" {
-				cause = failureCause(OutcomeLaunchFailed)
+				cause = failureCause(runtime.OutcomeLaunchFailed)
 			}
 			return errors.Join(err, m.fail(ctx, cause, fmt.Sprintf("launch failures ran out: %v", err)))
 		}
@@ -2496,11 +2496,11 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 		return m.endHeld(ctx)
 	}
 	if m.claim.DeathCharged {
-		return m.relaunchAfterFailure(ctx, OutcomeProcessDied)
+		return m.relaunchAfterFailure(ctx, runtime.OutcomeProcessDied)
 	}
 	m.claim.DeathCharged = true
-	if m.chargeDeath(OutcomeProcessDied) {
-		return m.fail(ctx, failureCause(OutcomeProcessDied), "deaths with work outstanding ran out")
+	if m.chargeDeath(runtime.OutcomeProcessDied) {
+		return m.fail(ctx, failureCause(runtime.OutcomeProcessDied), "deaths with work outstanding ran out")
 	}
 	// The decision and the count it charged are written here, before the relaunch, because
 	// every window that leaves this claim to be reported again writes nothing of it: the
@@ -2511,7 +2511,7 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	// a death that left the claim standing for want of a write would be a worse answer to an
 	// outage than a charge written late — and a launch that does run clears the charge with
 	// the process it replaces anyway (letGo).
-	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, OutcomeProcessDied))
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx, runtime.OutcomeProcessDied))
 }
 
 // deathCause is what the claim records of a death: the runtime's own account of it, behind the

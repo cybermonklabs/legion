@@ -196,7 +196,7 @@ func TestAPromptThatRanNoTurnIsChargedWhenItsResultSaysSo(t *testing.T) {
 	first := h.wantPrompts(1)[0].DeliveryID
 
 	h.must(StreamPromptResult{Claim: testToken, DeliveryID: first, AgentInvoked: false, Error: "the command ran locally",
-		Outcome: OutcomeNoTurnRun})
+		Outcome: runtime.OutcomeNoTurnRun})
 
 	h.wantBudgets(Budgets{PromptFailures: 1})
 	p := h.pending()
@@ -212,7 +212,7 @@ func TestAPromptThatRanNoTurnIsChargedWhenItsResultSaysSo(t *testing.T) {
 }
 
 // Oh My Pi answers a prompt it acknowledged with a result that ran no turn and names a turn of
-// its own: "Agent is already processing", which the stream mints as OutcomeAgentBusy. That is the
+// its own, by the busy code, which the stream mints as OutcomeAgentBusy. That is the
 // busy answer `refused` and `lateRefused` already read, arriving on the third path a prompt can
 // fail on, and it says the agent is working rather than refusing the work. Charged, it drove a
 // loop in production: a relaunch resumes the session, the resume starts a turn, the next task
@@ -229,7 +229,7 @@ func TestABusyResultOfAnAcknowledgedPromptIsChargedNothingAndItsTurnsEndSendsThe
 		prompt := h.wantPrompts(base + sent)[base+sent-1]
 
 		h.must(StreamPromptResult{Claim: testToken, DeliveryID: prompt.DeliveryID, AgentInvoked: false, Error: busyWords,
-			Outcome: OutcomeAgentBusy})
+			Outcome: runtime.OutcomeAgentBusy})
 
 		h.wantBudgets(Budgets{})
 		h.wantCalls("Suspend", 0)
@@ -274,7 +274,7 @@ func TestAnAgentWhoseResultsRunNoTurnAndNameNoTurnOfItsOwnIsStillRetired(t *test
 	for sent := 1; sent <= 3; sent++ {
 		prompt := h.wantPrompts(base + sent)[base+sent-1]
 		h.must(StreamPromptResult{Claim: testToken, DeliveryID: prompt.DeliveryID, AgentInvoked: false,
-			Error: "No API key found for provider anthropic", Outcome: OutcomeNoTurnRun})
+			Error: "No API key found for provider anthropic", Outcome: runtime.OutcomeNoTurnRun})
 		if sent < 3 {
 			h.wantBudgets(Budgets{PromptFailures: sent})
 			h.wantCalls("Suspend", 0)

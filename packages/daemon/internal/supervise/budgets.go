@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // Budgets are a claim's retry counters, each a separate policy with its own reset point.
@@ -111,8 +113,8 @@ var FailureCauses = []FailureCause{
 // relaunchAfterFailure charges one launch failure for a process that did not survive, and
 // relaunches the same session after it, once the backoff for the failures charged so far has
 // passed (backOff) and its turn in the wake pacing has come (reserveWake) — or fails the claim
-// when the budget is spent. Whether o charges is the policy's (Charges, through chargeLaunch); an
-// outcome it waives relaunches with no charge and no backoff.
+// when the budget is spent. Whether o charges is the policy's, which chargeLaunch asks (Charges);
+// every caller names an outcome it charges.
 //
 // A relaunch the tree lifecycle refuses (its cleanup reserved) is checked before the charge, so
 // it costs none; one whose process is already stopped is relaunchRefused's. That check is a guard
@@ -125,7 +127,7 @@ var FailureCauses = []FailureCause{
 // under too (launchNow, Claim.PendingCause). The retry of a relaunch the lifecycle check refused
 // carries the same outcome, which is why it is handed over in a closure rather than as the method
 // value.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, o Outcome) error {
+func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
 			return m.relaunchAfterFailure(ctx, o)
@@ -133,10 +135,6 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o Outcome) error {
 	}
 	cause := failureCause(o)
 	m.claim.PendingCause = cause
-	if !Charges(o) {
-		m.log.Info("supervise: relaunching after an outcome the policy charges nothing", "outcome", string(o))
-		return m.launchAfter(ctx, false, false)
-	}
 	if m.chargeLaunch(o) {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
@@ -147,7 +145,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o Outcome) error {
 // the launch budget is spent. It is the count both launch-budget sites make: a process that did not
 // survive (relaunchAfterFailure) and a launch the runtime refused (launchNow, which retries in its
 // own loop rather than relaunching).
-func (m *Machine) chargeLaunch(o Outcome) bool {
+func (m *Machine) chargeLaunch(o runtime.Outcome) bool {
 	if !Charges(o) {
 		return false
 	}
@@ -171,7 +169,7 @@ func (m *Machine) chargeLaunch(o Outcome) bool {
 // open for ever and every later death of the relaunched agent — idle, with nothing pending —
 // would be charged against it, failing a claim that is doing nothing wrong. Each death after
 // this one is judged on the turn it finds, as the first was.
-func (m *Machine) chargeDeath(o Outcome) bool {
+func (m *Machine) chargeDeath(o runtime.Outcome) bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false
 	}
@@ -179,6 +177,10 @@ func (m *Machine) chargeDeath(o Outcome) bool {
 	if m.claim.Pending == nil && !open {
 		return false
 	}
+	// Every caller today passes an outcome the policy charges, but this is the death budget's only
+	// question of the policy: without it a change to Charges would charge every death regardless,
+	// and the policy would decide every budget but this one.
+	// TestTheDeathBudgetChargesWhatTheOutcomePolicySays holds it.
 	if !Charges(o) {
 		return false
 	}
@@ -210,7 +212,7 @@ func (m *Machine) turnOpen() bool {
 // operator decided what becomes of the process. And the last retirement fails the claim (fail)
 // rather than relaunching it, which is the budget running out, not an event's charge. A suspension
 // that fails charges nothing: the next failure reaches the limit again and retries the retirement.
-func (m *Machine) chargePrompt(ctx context.Context, o Outcome) error {
+func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 	if !Charges(o) {
 		m.log.Info("supervise: the prompt's outcome charges nothing", "outcome", string(o))
 		return nil

@@ -43,6 +43,13 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			Response{ID: "r2", Command: TypePrompt, Success: false, Error: "busy"},
 		},
 		{
+			// The machine-readable reason Oh My Pi gives beside a refusal's words, which the
+			// daemon decides on (CodeSessionBusy).
+			"refusal response with a code",
+			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"Agent is busy","code":"session_busy"}`,
+			Response{ID: "r2", Command: TypePrompt, Success: false, Error: "Agent is busy", Code: CodeSessionBusy},
+		},
+		{
 			"get_state response",
 			`{"type":"response","id":"r3","command":"get_state","success":true,"data":{"isStreaming":true}}`,
 			Response{
@@ -106,6 +113,11 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			"prompt_result of a prompt that ran no turn",
 			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"error":{"message":"no model","retryable":false}}`,
 			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
+		},
+		{
+			"prompt_result of a prompt that failed with a code",
+			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"error":{"message":"Agent is busy","retryable":false,"code":"session_busy"}}`,
+			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "Agent is busy", Code: CodeSessionBusy}},
 		},
 		{"shutdown", `{"type":"shutdown"}`, Shutdown{}},
 		{

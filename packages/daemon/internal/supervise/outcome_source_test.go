@@ -3,44 +3,48 @@ package supervise
 import (
 	"fmt"
 	"go/ast"
+	gobuild "go/build"
 	"go/constant"
 	"go/importer"
 	"go/parser"
 	gotoken "go/token"
 	"go/types"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
 
 // The policy that decides whether a claim's failure charges a budget (Charges) has a chokepoint:
-// the four charge functions — chargePrompt, chargeDeath, relaunchAfterFailure and chargeLaunch —
-// each ask it, so no site that reaches one can charge what the policy waives. But the Go type
-// system cannot require that a failing path call one of them at all, and a busy path that
-// decides the busy answer itself, from the agent's words, never reaches a charge function. Nor
-// can a type keep a site from reading those words: they reach the package as an error and as
-// strings, which it must hold to log a failure and to keep a delivery's last send error, and the
-// text of either is open to any function that holds it. So this test reads the package's own
-// source and holds the four things the compiler cannot: every member has a row in the policy, no
-// site in the package reads a refusal's words to decide — outcome.go no more than any other file,
-// since the outcome is minted in internal/stream where the frame is read — every charge names a
-// member the package declares, and no function but a charge function writes a budget counter
+// the charge functions — chargePrompt, chargeDeath and chargeLaunch, through which
+// relaunchAfterFailure counts — each ask it, so no site that reaches one can charge what the
+// policy waives. But the Go type system cannot require that a failing path call one of them at
+// all, and a busy path that decides the busy answer itself, from the agent's words, never reaches
+// a charge function. Nor can a type keep a site from reading those words: they reach the daemon as
+// an error and as strings, which it must hold to log a failure and to keep a delivery's last send
+// error, and the text of either is open to any function that holds it. So this test reads the
+// source and holds the four things the compiler cannot: every member of the set
+// (runtime.Outcome, declared in internal/runtime) has a row in the policy; no site reads a
+// refusal's words to decide — not in this package, and not in internal/stream, which mints the
+// outcome where the frame is read, or internal/claudebridge, which writes the busy refusal; every
+// charge names a declared member; and no function but a charge function writes a budget counter
 // except to reset it to zero (budgetResets names each that may). Delete this test when a
 // chokepoint for that becomes possible.
 //
-// It type-checks the package's non-test source against the compiler's export data for its
+// It type-checks each package's non-test source against the compiler's export data for its
 // dependencies (compiledDependencies, as TestProcessEndsListsEveryEndDeclared does), so it reads
 // what the compiler resolved — which constant, which field, which function — rather than how a
 // line spells it.
 func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
-	src := checkSupervise(t)
+	sources := checkOutcomeSources(t)
+	src, set := sources[supervisePath], sources[runtimePath]
 
 	t.Run("every declared outcome has a row in Charges", func(t *testing.T) {
-		declared := src.declaredOutcomes(t)
+		declared := set.declaredOutcomes(t)
 		rows := map[string]bool{}
 		charges := src.funcDecl(t, "outcome.go", "Charges")
-		switches := 0
+		switches, defaults := 0, 0
 		ast.Inspect(charges.Body, func(node ast.Node) bool {
 			sw, ok := node.(*ast.SwitchStmt)
 			if !ok {
@@ -48,9 +52,13 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 			}
 			switches++
 			for _, stmt := range sw.Body.List {
-				for _, expr := range stmt.(*ast.CaseClause).List {
+				clause := stmt.(*ast.CaseClause)
+				if clause.List == nil {
+					defaults++
+				}
+				for _, expr := range clause.List {
 					value := src.info.Types[expr].Value
-					if value == nil || !src.isOutcome(src.info.Types[expr].Type) {
+					if value == nil || !isOutcome(src.info.Types[expr].Type) {
 						t.Errorf("Charges has a row %s that is no constant Outcome", src.pos(expr))
 						continue
 					}
@@ -62,45 +70,45 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 		if switches != 1 {
 			t.Fatalf("Charges holds %d switch statements, want the one switch over the set", switches)
 		}
+		// The zero value's row is the default, which is also the row of every value the set does
+		// not hold; every other member has a case of its own, so a member added with none fails
+		// here by name rather than falling into the default unseen.
+		zero := constant.MakeString("").ExactString()
+		if defaults != 1 {
+			t.Errorf("Charges has %d default clauses, want one: the default is the row of OutcomeUnrecognised and of every value the set does not hold", defaults)
+		}
+		if rows[zero] {
+			t.Errorf("Charges has a case for OutcomeUnrecognised beside its default, which is that row: delete the case")
+		}
 		for _, member := range declared {
-			if !rows[member.value] {
+			if member.value != zero && !rows[member.value] {
 				t.Errorf("the outcome %s (%s, %s) has no row in Charges: decide whether it charges", member.name, member.value, member.pos)
 			}
 		}
 	})
 
-	t.Run("no site in the package reads a refusal's words", func(t *testing.T) {
-		taint := src.refusalWords(t)
-		for _, file := range src.files {
-			for _, decl := range file.Decls {
-				in := "a package-level declaration"
-				if fn, ok := decl.(*ast.FuncDecl); ok {
-					in = fn.Name.Name
+	t.Run("no site reads a refusal's words", func(t *testing.T) {
+		for _, path := range []string{supervisePath, streamPath, claudebridgePath} {
+			pkg := sources[path]
+			taint := pkg.refusalWords(t)
+			for _, file := range pkg.files {
+				for _, decl := range file.Decls {
+					in := "a package-level declaration"
+					if fn, ok := decl.(*ast.FuncDecl); ok {
+						in = fn.Name.Name
+					}
+					for _, match := range taint.matches(decl) {
+						t.Errorf("%s, in %s.%s, %s on a refusal's words: the outcome is minted from the frame's code where the frame is read (stream.PromptRefusalOutcome), never from its words",
+							pkg.pos(match.at), pkg.pkg.Name(), in, match.what)
+					}
 				}
-				ast.Inspect(decl, func(node ast.Node) bool {
-					call, ok := node.(*ast.CallExpr)
-					if !ok {
-						return true
-					}
-					fn := src.callee(call)
-					if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "strings" ||
-						!slices.Contains([]string{"HasPrefix", "Contains", "EqualFold"}, fn.Name()) {
-						return true
-					}
-					for _, arg := range call.Args {
-						if taint.reaches(arg) {
-							t.Errorf("%s, in %s, calls strings.%s on a refusal's words: the outcome is minted where the frame is read (stream.PromptRefusalOutcome), never derived in this package", src.pos(call), in, fn.Name())
-						}
-					}
-					return true
-				})
 			}
 		}
 	})
 
 	t.Run("every charge names a declared outcome", func(t *testing.T) {
 		members := map[string]bool{}
-		for _, member := range src.declaredOutcomes(t) {
+		for _, member := range set.declaredOutcomes(t) {
 			members[member.value] = true
 		}
 		judge := &outcomeJudge{src: src, members: members, judged: map[types.Object]string{}}
@@ -117,11 +125,11 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 				}
 				calls[fn.Name()]++
 				for i, arg := range call.Args {
-					if !src.isOutcome(src.info.Types[arg].Type) {
+					if !isOutcome(src.info.Types[arg].Type) {
 						continue
 					}
 					if why := judge.expr(arg); why != "" {
-						t.Errorf("%s calls %s with argument %d, which is no outcome the package declares: %s", src.pos(call), fn.Name(), i, why)
+						t.Errorf("%s calls %s with argument %d, which is no outcome the set declares: %s", src.pos(call), fn.Name(), i, why)
 					}
 				}
 				return true
@@ -171,8 +179,8 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 	})
 }
 
-// chargeFunctions are the functions that charge a budget, each of which asks Charges itself.
-// relaunchAfterFailure counts through chargeLaunch and writes no counter of its own.
+// chargeFunctions are the functions that charge a budget. Each asks Charges itself but
+// relaunchAfterFailure, which counts through chargeLaunch and writes no counter of its own.
 var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFailure", "chargeLaunch"}
 
 // budgetResets are the functions besides the charge functions that may write a budget counter, and
@@ -186,8 +194,17 @@ var budgetResets = map[string]string{
 	"retry":         "an operator's retry of a failed claim starts every budget again from nothing (RequestRetry)",
 }
 
+// The packages this test reads, by import path.
+const (
+	internalPath     = "github.com/sjawhar/legion/daemon/internal/"
+	supervisePath    = internalPath + "supervise"
+	runtimePath      = internalPath + "runtime"
+	streamPath       = internalPath + "stream"
+	claudebridgePath = internalPath + "claudebridge"
+)
+
 // budgetCounters is the fields of Budgets, as the type checker holds them.
-func (s *superviseSource) budgetCounters(t *testing.T) map[types.Object]bool {
+func (s *goSource) budgetCounters(t *testing.T) map[types.Object]bool {
 	t.Helper()
 	named, _ := s.pkg.Scope().Lookup("Budgets").(*types.TypeName)
 	if named == nil {
@@ -211,7 +228,7 @@ type budgetWrite struct {
 // budgetWrites is every write in body, function literals included, of a budget counter: an
 // assignment, an op-assignment or an increment or decrement whose target is a field of Budgets
 // through any selector chain or pointer, or a whole value of type Budgets.
-func (s *superviseSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]bool) []budgetWrite {
+func (s *goSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]bool) []budgetWrite {
 	writes := func(target ast.Expr) bool {
 		target = ast.Unparen(target)
 		if selector, ok := target.(*ast.SelectorExpr); ok {
@@ -247,7 +264,7 @@ func (s *superviseSource) budgetWrites(body *ast.BlockStmt, counters map[types.O
 }
 
 // isZero is whether expr is the constant zero or a composite literal with no elements.
-func (s *superviseSource) isZero(expr ast.Expr) bool {
+func (s *goSource) isZero(expr ast.Expr) bool {
 	expr = ast.Unparen(expr)
 	if value := s.info.Types[expr].Value; value != nil {
 		return value.ExactString() == "0"
@@ -256,74 +273,93 @@ func (s *superviseSource) isZero(expr ast.Expr) bool {
 	return ok && len(literal.Elts) == 0
 }
 
-// superviseSource is the package's non-test source, type-checked.
-type superviseSource struct {
+// goSource is one package's non-test source, type-checked.
+type goSource struct {
 	fileset *gotoken.FileSet
 	files   map[string]*ast.File
 	pkg     *types.Package
 	info    *types.Info
 }
 
-func checkSupervise(t *testing.T) *superviseSource {
+// checkOutcomeSources type-checks the packages this test reads — this one, the runtime that
+// declares the set, the stream that mints its members and the Claude Code bridge — by import path.
+func checkOutcomeSources(t *testing.T) map[string]*goSource {
 	t.Helper()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatalf("read this package's source: %v", err)
+	dirs := map[string]string{supervisePath: ".", runtimePath: "../runtime", streamPath: "../stream", claudebridgePath: "../claudebridge"}
+	fileset := gotoken.NewFileSet()
+	imports := importer.ForCompiler(fileset, "gc", compiledDependencies(t, "../stream", "../claudebridge"))
+	sources := map[string]*goSource{}
+	for path, dir := range dirs {
+		sources[path] = checkPackage(t, fileset, imports, path, dir)
 	}
-	src := &superviseSource{fileset: gotoken.NewFileSet(), files: map[string]*ast.File{}, info: &types.Info{
+	return sources
+}
+
+// checkPackage type-checks the non-test source in dir as the package path.
+func checkPackage(t *testing.T, fileset *gotoken.FileSet, imports types.Importer, path, dir string) *goSource {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read the source of %s: %v", path, err)
+	}
+	src := &goSource{fileset: fileset, files: map[string]*ast.File{}, info: &types.Info{
 		Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{},
 		Types: map[ast.Expr]types.TypeAndValue{}, Selections: map[*ast.SelectorExpr]*types.Selection{},
 	}}
 	var parsed []*ast.File
 	for _, entry := range entries {
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(src.fileset, name, nil, 0)
+		// The files this build compiles, as the compiler chose them by their build constraints.
+		if built, err := gobuild.Default.MatchFile(dir, name); err != nil || !built {
+			continue
+		}
+		file, err := parser.ParseFile(fileset, filepath.Join(dir, name), nil, 0)
 		if err != nil {
 			t.Fatalf("parse %s: %v", name, err)
 		}
 		src.files[name] = file
 		parsed = append(parsed, file)
 	}
-	config := types.Config{Importer: importer.ForCompiler(src.fileset, "gc", compiledDependencies(t))}
-	src.pkg, err = config.Check("github.com/sjawhar/legion/daemon/internal/supervise", src.fileset, parsed, src.info)
+	config := types.Config{Importer: imports}
+	src.pkg, err = config.Check(path, fileset, parsed, src.info)
 	if err != nil {
-		t.Fatalf("type-check this package: %v", err)
+		t.Fatalf("type-check %s: %v", path, err)
 	}
 	return src
 }
 
-func (s *superviseSource) pos(node ast.Node) string { return s.fileset.Position(node.Pos()).String() }
+func (s *goSource) pos(node ast.Node) string { return s.fileset.Position(node.Pos()).String() }
 
-// isOutcome is whether typ is this package's Outcome.
-func (s *superviseSource) isOutcome(typ types.Type) bool {
+// isOutcome is whether typ is runtime.Outcome, read from its source or from its export data.
+func isOutcome(typ types.Type) bool {
 	named, ok := typ.(*types.Named)
-	return ok && named.Obj().Pkg() == s.pkg && named.Obj().Name() == "Outcome"
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == runtimePath && named.Obj().Name() == "Outcome"
 }
 
 type declaredOutcome struct{ name, value, pos string }
 
 // declaredOutcomes is every constant of type Outcome the package's source declares, however it is
 // spelled.
-func (s *superviseSource) declaredOutcomes(t *testing.T) []declaredOutcome {
+func (s *goSource) declaredOutcomes(t *testing.T) []declaredOutcome {
 	t.Helper()
 	var declared []declaredOutcome
 	for ident, object := range s.info.Defs {
-		if c, ok := object.(*types.Const); ok && s.isOutcome(c.Type()) {
+		if c, ok := object.(*types.Const); ok && isOutcome(c.Type()) {
 			declared = append(declared, declaredOutcome{name: ident.Name, value: c.Val().ExactString(), pos: s.pos(ident)})
 		}
 	}
 	if len(declared) == 0 {
-		t.Fatal("found no constant of type Outcome in the package's source; this test reads the source of the directory it runs in")
+		t.Fatalf("found no constant of type Outcome in the source of %s, which this test reads as the set", s.pkg.Path())
 	}
 	slices.SortFunc(declared, func(a, b declaredOutcome) int { return strings.Compare(a.name, b.name) })
 	return declared
 }
 
 // funcDecl is the declaration of the package-level function name in file.
-func (s *superviseSource) funcDecl(t *testing.T, file, name string) *ast.FuncDecl {
+func (s *goSource) funcDecl(t *testing.T, file, name string) *ast.FuncDecl {
 	t.Helper()
 	for _, decl := range s.files[file].Decls {
 		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
@@ -336,7 +372,7 @@ func (s *superviseSource) funcDecl(t *testing.T, file, name string) *ast.FuncDec
 
 // callee is the function or method a call resolves to, or nil for a conversion, a builtin or a
 // call of a function value.
-func (s *superviseSource) callee(call *ast.CallExpr) *types.Func {
+func (s *goSource) callee(call *ast.CallExpr) *types.Func {
 	var ident *ast.Ident
 	switch fun := ast.Unparen(call.Fun).(type) {
 	case *ast.Ident:
@@ -351,7 +387,7 @@ func (s *superviseSource) callee(call *ast.CallExpr) *types.Func {
 }
 
 // funcs is every function and method the package declares, by its object, with its declaration.
-func (s *superviseSource) funcs() map[*types.Func]*ast.FuncDecl {
+func (s *goSource) funcs() map[*types.Func]*ast.FuncDecl {
 	decls := map[*types.Func]*ast.FuncDecl{}
 	for _, file := range s.files {
 		for _, decl := range file.Decls {
@@ -364,7 +400,7 @@ func (s *superviseSource) funcs() map[*types.Func]*ast.FuncDecl {
 }
 
 // params is the objects of a declaration's parameters, in order.
-func (s *superviseSource) params(decl *ast.FuncDecl) []types.Object {
+func (s *goSource) params(decl *ast.FuncDecl) []types.Object {
 	var objects []types.Object
 	for _, field := range decl.Type.Params.List {
 		if len(field.Names) == 0 {
@@ -380,7 +416,7 @@ func (s *superviseSource) params(decl *ast.FuncDecl) []types.Object {
 // assignments is every expression the package's source gives each variable: by := and =, by a
 // var declaration, and, for a parameter, by each call of its function. A value no expression
 // stands for alone — one of several results of one call — is recorded as that call.
-func (s *superviseSource) assignments() map[types.Object][]ast.Expr {
+func (s *goSource) assignments() map[types.Object][]ast.Expr {
 	given := map[types.Object][]ast.Expr{}
 	object := func(expr ast.Expr) types.Object {
 		ident, ok := ast.Unparen(expr).(*ast.Ident)
@@ -439,29 +475,47 @@ func (s *superviseSource) assignments() map[types.Object][]ast.Expr {
 // through the parameters of the package's own functions, since a helper can take the words as
 // its parameter.
 type refusalTaint struct {
-	src     *superviseSource
-	fields  map[types.Object]bool
+	src *goSource
+	// fields is each field that holds a refusal's words, and methods the names of the methods and
+	// functions that return them.
+	fields  func(field *types.Var) bool
+	methods []string
 	tainted map[types.Object]bool
 }
 
-// refusalWords is the taint of the words a refusal carries: the Error of a late refusal and of a
-// prompt result, the Err of a refused send, the send error a delivery records, and whatever
-// runtime.RefusalReason or a RefusalReason method returns.
-func (s *superviseSource) refusalWords(t *testing.T) *refusalTaint {
+// refusalWords is the taint of the words a refusal carries in the package. In this package they
+// are the Error of a late refusal and of a prompt result, the Err of a refused send, the send
+// error a delivery records, and whatever runtime.RefusalReason or a RefusalReason method returns.
+// In the stream and the bridge, which handle the frames themselves, they are every string field
+// named Error, Reason or Message — the words of Oh My Pi's response and of its prompt_result's
+// error, of a shim's own answer, and of the stream's events — and whatever a Reason or
+// RefusalReason method returns.
+func (s *goSource) refusalWords(t *testing.T) *refusalTaint {
 	t.Helper()
-	taint := &refusalTaint{src: s, fields: map[types.Object]bool{}, tainted: map[types.Object]bool{}}
-	for _, field := range []struct{ typ, field string }{
-		{"StreamLateRefusal", "Error"}, {"StreamPromptResult", "Error"}, {"PromptRefused", "Err"}, {"Delivery", "LastSendError"},
-	} {
-		named, _ := s.pkg.Scope().Lookup(field.typ).(*types.TypeName)
-		if named == nil {
-			t.Fatalf("the package declares no type %s, whose %s this test reads as a refusal's words", field.typ, field.field)
+	taint := &refusalTaint{src: s, tainted: map[types.Object]bool{}}
+	if s.pkg.Path() == supervisePath {
+		fields := map[types.Object]bool{}
+		for _, field := range []struct{ typ, field string }{
+			{"StreamLateRefusal", "Error"}, {"StreamPromptResult", "Error"}, {"PromptRefused", "Err"}, {"Delivery", "LastSendError"},
+		} {
+			named, _ := s.pkg.Scope().Lookup(field.typ).(*types.TypeName)
+			if named == nil {
+				t.Fatalf("the package declares no type %s, whose %s this test reads as a refusal's words", field.typ, field.field)
+			}
+			object, _, _ := types.LookupFieldOrMethod(named.Type(), false, s.pkg, field.field)
+			if object == nil {
+				t.Fatalf("%s has no field %s, which this test reads as a refusal's words", field.typ, field.field)
+			}
+			fields[object] = true
 		}
-		object, _, _ := types.LookupFieldOrMethod(named.Type(), false, s.pkg, field.field)
-		if object == nil {
-			t.Fatalf("%s has no field %s, which this test reads as a refusal's words", field.typ, field.field)
+		taint.fields = func(field *types.Var) bool { return fields[field] }
+		taint.methods = []string{"RefusalReason"}
+	} else {
+		taint.fields = func(field *types.Var) bool {
+			basic, ok := field.Type().Underlying().(*types.Basic)
+			return ok && basic.Kind() == types.String && slices.Contains([]string{"Error", "Reason", "Message"}, field.Name())
 		}
-		taint.fields[object] = true
+		taint.methods = []string{"Reason", "RefusalReason"}
 	}
 	given := s.assignments()
 	for changed := true; changed; {
@@ -487,15 +541,17 @@ func (r *refusalTaint) reaches(expr ast.Expr) bool {
 	ast.Inspect(expr, func(node ast.Node) bool {
 		switch node := node.(type) {
 		case *ast.SelectorExpr:
-			if selection := r.src.info.Selections[node]; selection != nil && r.fields[selection.Obj()] {
-				found = true
+			if selection := r.src.info.Selections[node]; selection != nil && selection.Kind() == types.FieldVal {
+				if field, ok := selection.Obj().(*types.Var); ok && r.fields(field) {
+					found = true
+				}
 			}
 		case *ast.Ident:
 			if r.tainted[r.src.info.Uses[node]] {
 				found = true
 			}
 		case *ast.CallExpr:
-			if fn := r.src.callee(node); fn != nil && fn.Name() == "RefusalReason" {
+			if fn := r.src.callee(node); fn != nil && slices.Contains(r.methods, fn.Name()) {
 				found = true
 			}
 		}
@@ -504,15 +560,73 @@ func (r *refusalTaint) reaches(expr ast.Expr) bool {
 	return found
 }
 
-// outcomeJudge says whether an expression of type Outcome is a member the package declares: a
+// wordMatch is one place a refusal's words are matched: at, and what the match is.
+type wordMatch struct {
+	at   ast.Node
+	what string
+}
+
+// stringMatchers are the functions of package strings that match one text against another.
+var stringMatchers = []string{"HasPrefix", "HasSuffix", "Contains", "ContainsAny", "EqualFold", "Index", "Cut", "CutPrefix", "CutSuffix"}
+
+// matches is every place in node that matches a refusal's words: a call of a matcher of package
+// strings on them, an == or != between them and a string constant other than "", and a switch on
+// them with such a constant for a case. Words are a plain string: a value of a named type — an
+// Outcome a call minted from a tainted error — is a member, which is compared by design.
+func (r *refusalTaint) matches(node ast.Node) []wordMatch {
+	words := func(expr ast.Expr) bool {
+		value := r.src.info.Types[expr].Value
+		return value != nil && value.Kind() == constant.String && constant.StringVal(value) != ""
+	}
+	text := func(expr ast.Expr) bool {
+		basic, ok := r.src.info.Types[expr].Type.(*types.Basic)
+		return ok && basic.Info()&types.IsString != 0 && r.reaches(expr)
+	}
+	var found []wordMatch
+	ast.Inspect(node, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.CallExpr:
+			fn := r.src.callee(node)
+			if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != "strings" || !slices.Contains(stringMatchers, fn.Name()) {
+				return true
+			}
+			for _, arg := range node.Args {
+				if r.reaches(arg) {
+					found = append(found, wordMatch{at: node, what: "calls strings." + fn.Name()})
+					break
+				}
+			}
+		case *ast.BinaryExpr:
+			if node.Op != gotoken.EQL && node.Op != gotoken.NEQ {
+				return true
+			}
+			if (text(node.X) && words(node.Y)) || (text(node.Y) && words(node.X)) {
+				found = append(found, wordMatch{at: node, what: "compares with " + node.Op.String()})
+			}
+		case *ast.SwitchStmt:
+			if node.Tag == nil || !text(node.Tag) {
+				return true
+			}
+			for _, stmt := range node.Body.List {
+				if slices.ContainsFunc(stmt.(*ast.CaseClause).List, words) {
+					found = append(found, wordMatch{at: node, what: "switches"})
+					break
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// outcomeJudge says whether an expression of type Outcome is a member the set declares: a
 // constant whose value a declared member holds; a field of type Outcome, which the stream filled
-// with the member it minted where it read the frame (StreamLateRefusal.Outcome); the member an
-// interface's method answers, which is the minter's (stream.RefusedError.RefusalOutcome, read by
-// sendOutcome); a variable every expression given it is one of these; or a call of the
-// package's own function every return of which is. A conversion to Outcome of anything but a
-// member's constant is none of them.
+// with the member it minted where it read the frame (StreamLateRefusal.Outcome); the member a
+// refusal carries, which is the minter's (runtime.RefusalOutcome, read by sendOutcome); a variable
+// every expression given it is one of these; or a call of the package's own function every return
+// of which is. A conversion to Outcome of anything but a member's constant is none of them.
 type outcomeJudge struct {
-	src     *superviseSource
+	src     *goSource
 	members map[string]bool
 	given   map[types.Object][]ast.Expr
 	decls   map[*types.Func]*ast.FuncDecl
@@ -559,7 +673,7 @@ func (j *outcomeJudge) expr(expr ast.Expr) string {
 		if fn == nil {
 			return fmt.Sprintf("%s calls a function value whose answer this test cannot read", j.src.pos(expr))
 		}
-		if signature := fn.Type().(*types.Signature); signature.Recv() != nil && types.IsInterface(signature.Recv().Type()) {
+		if fn.Pkg() != nil && fn.Pkg().Path() == runtimePath && fn.Name() == "RefusalOutcome" {
 			return ""
 		}
 		decl, declared := j.decls[fn]
@@ -603,7 +717,7 @@ func (j *outcomeJudge) function(fn *types.Func, decl *ast.FuncDecl) string {
 		}
 		if ret, ok := node.(*ast.ReturnStmt); ok {
 			for _, result := range ret.Results {
-				if j.src.isOutcome(j.src.info.Types[result].Type) {
+				if isOutcome(j.src.info.Types[result].Type) {
 					if reason := j.expr(result); reason != "" {
 						why = fmt.Sprintf("%s returns %s", fn.Name(), reason)
 					}
