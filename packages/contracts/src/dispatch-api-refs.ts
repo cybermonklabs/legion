@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ActorSchema } from "./dispatch-api-core";
+import { ActorOriginSchema, ActorSchema } from "./dispatch-api-core";
 
 /**
  * The shapes several payload families share: what a write moved in the reference graph, whose
@@ -104,8 +104,28 @@ export const replyBlockFields = {
   text: z.string(),
   removed: z.boolean(),
   deleted_at: z.string().optional(),
-  deleted_by: ActorSchema.optional(),
 };
+
+/** An actor as the OpenAPI document reads it (`Actor`): a `kind` that is any string and one
+ *  object for every kind. The plain `ReplyBlock` reading carries this one, because the split owns
+ *  that name and holds it to the document's shape (`dispatch-api-owned.ts`), which the written
+ *  reading's `ActorSchema` is not (`dispatch-api-core.ts`, above `WrittenActor`). */
+const DocumentActorSchema = z.object({
+  kind: z.string(),
+  id: z.string(),
+  act: z
+    .object({
+      session: z.string().optional(),
+      token_id: z.string().optional(),
+      token_name: z.string().optional(),
+      scopes: z.array(z.string()).optional(),
+    })
+    .optional(),
+  origin: ActorOriginSchema.optional(),
+  owner: z.string().optional(),
+  service: z.string().optional(),
+  project: z.string().optional(),
+});
 
 /** The block a reply answers: its node id (`comment/<uuid>#b2`, or `ask/<uuid>#b2` for a part of
  *  the ask the reply names), its reference (absent for a block of a direct message, which has no
@@ -114,15 +134,21 @@ export const replyBlockFields = {
  *  mark of the quoted comment or message once its author deleted it: the block then reads removed
  *  with no text, and the mark says the post itself is gone. Absent while the post stands, on a
  *  part of an ask, and from a Dispatch older than the fields. */
-export const WrittenReplyBlockSchema = z.strictObject(replyBlockFields).readonly();
+export const WrittenReplyBlockSchema = z
+  .strictObject({ ...replyBlockFields, deleted_by: ActorSchema.optional() })
+  .readonly();
 
 /** The block a reply answers, as a comment or message event payload carries it (`ReplyBlock`).
  *  An event recorded before the field, or by a Dispatch older than it, carries none. A bus frame
  *  may carry a field this release does not know, so the inbound reading strips rather than
  *  refuses. */
-export const ReplyBlockSchema = z.object(replyBlockFields);
+export const ReplyBlockSchema = z.object({
+  ...replyBlockFields,
+  deleted_by: DocumentActorSchema.optional(),
+});
 
 /** The exported type is this plain reading's, not the `Written` one's: `ReplyBlock` is the name a
- *  payload carries, so the type is what a reader of the bus makes of that field. Both readings
- *  are mutually assignable with the shape the document declares. */
+ *  payload carries, so the type is what a reader of the bus makes of that field. This reading is
+ *  mutually assignable with the shape the document declares (`dispatch-api-owned.ts`); the
+ *  written one is too, but for `deleted_by`, which it reads as the actor Dispatch writes. */
 export type ReplyBlock = z.output<typeof ReplyBlockSchema>;
