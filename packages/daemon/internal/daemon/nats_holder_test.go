@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -268,12 +270,82 @@ func TestANatsRebuildHearsTheRepositoriesMappedSinceBoot(t *testing.T) {
 	}
 }
 
-// That read and the swap onto the new consumers run under one hold of the lock every fact
-// applies under (intake.SerializeFacts): a mapping read holds that lock across its own
-// SetRepositories (refreshMapping), so one that landed between the read and the swap would set
-// its repositories on the consumers the rebuild is replacing, and the repository it mapped
-// would go unheard with them until something else moved the mapping again.
-func TestANatsRebuildWaitsForAMappingReadHoldingTheFactLock(t *testing.T) {
+// A NATS rebuild whose new consumers read the daemon's pool as they are handed what to hear
+// completes on a pool of one connection. The handover's SetRepositories is a stream call, and a
+// GitHub durable that has gone missing has it create the durable again at the position the pool
+// keeps for it (intake's storedStreamTime), which takes a connection of that same pool. Made
+// inside a transaction of the handover's, that is a second connection asked for while holding
+// one (INFRA-3169): on a pool of one the rebuild waits for the connection its own transaction
+// holds until natsRebuildBound ends it, and under the rebuild's hold mark
+// (store.WithTransactionTracking) the pool refuses it at once (store.ErrNestedAcquire). Either
+// way the operator is answered that the rebuild failed and the daemon stays on the connection it
+// had.
+//
+// The durable is deleted between the open and the handover, the one window in which only the
+// handover's own stream call can find it missing.
+func TestANatsRebuildWhoseConsumersReadThePoolCompletesOnOneConnection(t *testing.T) {
+	url := testnats.URL(t)
+	_, stream := notificationsStreamOn(t, url)
+	w := grantWorkflow(t, &syncBuffer{})
+	// The daemon's store opened on the workflow's database with one connection (daemonDSN), so
+	// a second connection asked for under a held one waits for ever rather than being handed a
+	// spare.
+	st, err := store.Open(context.Background(), daemonDSN(t, w.pool, "legion-nats-rebuild-"+strings.ToLower(randomSuffix(t))))
+	if err != nil {
+		t.Fatalf("open the daemon's store on one connection: %v", err)
+	}
+	t.Cleanup(st.Close)
+	w.pool = st.Pool()
+	cfg := daemonGrantConfig(url)
+	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
+		t.Fatalf("connect the workflow's NATS: %v", err)
+	}
+	t.Cleanup(w.stop)
+	before := w.nats.connection()
+	github := "legion-go-" + cfg.Project + "-github"
+	open := w.nats.open
+	w.nats.open = func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
+		conn, consumers, err := open(ctx, c)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := stream.DeleteConsumer(ctx, github); err != nil {
+			conn.Close()
+			return nil, nil, fmt.Errorf("delete the GitHub durable before the handover: %w", err)
+		}
+		return conn, consumers, nil
+	}
+
+	rebuilt := make(chan error, 1)
+	go func() { rebuilt <- w.nats.rebuild(&cfg) }()
+	select {
+	case err := <-rebuilt:
+		if err != nil {
+			t.Fatalf("a rebuild whose new consumers read the pool failed: %v (a refused connection or a deadline here is the handover's stream call made inside a transaction of its own)", err)
+		}
+	case <-time.After(natsRebuildBound + 10*time.Second):
+		t.Fatalf("the rebuild did not return within its own bound (%s)", natsRebuildBound)
+	}
+
+	if w.nats.connection() == before {
+		t.Fatal("the rebuild left the daemon on the connection it had, want the new one")
+	}
+	if filters := githubFiltersOf(t, stream, cfg.Project); !slices.Contains(filters, "notifications.github.sjawhar.legion.>") {
+		t.Fatalf("the GitHub durable the handover created again filters on %v, want the served repository's subject among them", filters)
+	}
+}
+
+// A NATS rebuild takes no hold of the lock every fact applies under (intake.SerializeFacts): it
+// completes while another transaction holds that lock, as a fact being applied does. Its handover
+// hands the new consumers their repositories with a stream call, which waits on JetStream and, for
+// a durable that is missing, on the pool (TestANatsRebuildWhoseConsumersReadThePoolCompletesOnOneConnection),
+// so a handover that held the fact lock across it would stop every fact of the project for as
+// long as NATS took to answer (INFRA-3169). No fact needs it held either: what the handover reads
+// stands still under the mapping lock the rebuild holds
+// (TestANatsRebuildOpensNoConsumerWhileAMappingReadHoldsTheMappingLock), and
+// workflowRuntime.natsHandover says why the swap moves nothing a fact reads. A handover that
+// took the lock again waits here on the held transaction and fails at the test's deadline.
+func TestANatsRebuildCompletesWhileATransactionHoldsTheFactSerializer(t *testing.T) {
 	url := testnats.URL(t)
 	notificationsStreamOn(t, url)
 	w := grantWorkflow(t, &syncBuffer{})
@@ -282,56 +354,49 @@ func TestANatsRebuildWaitsForAMappingReadHoldingTheFactLock(t *testing.T) {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
+	before := w.nats.connection()
 
-	// A mapping read in flight: its transaction holds the fact lock from its record snapshot
-	// through its SetRepositories.
-	mapping, err := w.pool.Begin(t.Context())
+	// A fact in flight: its transaction holds the fact lock until it commits.
+	fact, err := w.pool.Begin(t.Context())
 	if err != nil {
-		t.Fatalf("begin the mapping read's transaction: %v", err)
+		t.Fatalf("begin the fact's transaction: %v", err)
 	}
-	defer func() { _ = mapping.Rollback(t.Context()) }()
-	if err := intake.SerializeFacts(t.Context(), mapping); err != nil {
-		t.Fatalf("take the fact lock as a mapping read does: %v", err)
+	defer func() { _ = fact.Rollback(t.Context()) }()
+	if err := intake.SerializeFacts(t.Context(), fact); err != nil {
+		t.Fatalf("take the fact lock as a fact does: %v", err)
 	}
 
 	rebuilt := make(chan error, 1)
 	go func() { rebuilt <- w.nats.rebuild(&cfg) }()
 	select {
 	case err := <-rebuilt:
-		t.Fatalf("the rebuild read what the consumers hear while a mapping read held the fact lock: %v", err)
-	case <-time.After(250 * time.Millisecond):
-	}
-
-	// The mapping read maps a repository and commits; the rebuild then reads the set it left.
-	mapped := ghrepo.MustParse("acme/widgets")
-	if err := w.nats.intake().SetRepositories(t.Context(), append(w.nats.intake().Repositories(), mapped)); err != nil {
-		t.Fatalf("hear the repository the mapping read mapped: %v", err)
-	}
-	if err := mapping.Commit(t.Context()); err != nil {
-		t.Fatalf("commit the mapping read: %v", err)
-	}
-	select {
-	case err := <-rebuilt:
 		if err != nil {
-			t.Fatalf("rebuild the NATS holder: %v", err)
+			t.Fatalf("rebuild the NATS holder while a fact held the fact lock: %v", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the rebuild did not return once the mapping read had committed")
+	case <-time.After(10 * time.Second):
+		// The fact lets the lock go and the rebuild is waited out (natsRebuildBound bounds it),
+		// so the connection it swaps in is the one the cleanup closes.
+		_ = fact.Rollback(t.Context())
+		<-rebuilt
+		t.Fatal("the rebuild did not complete while a fact held the fact lock: its handover waits on that lock")
 	}
 
-	if heard := w.nats.intake().Repositories(); !slices.Contains(heard, mapped) {
-		t.Fatalf("after the rebuild GitHub intake hears %v, want the repository the mapping read mapped while the rebuild waited among them", heard)
+	if w.nats.connection() == before {
+		t.Fatal("the rebuild left the daemon on the connection it had, want the new one")
+	}
+	if err := fact.Commit(t.Context()); err != nil {
+		t.Fatalf("commit the fact that held the lock across the rebuild: %v", err)
 	}
 }
 
-// The fact lock alone does not close the window, because opening the new consumers is itself an
-// UpdateConsumer on the very GitHub durable the old intake is still pulling from, and that open
-// runs outside the fact lock. So: the rebuild reads set A; a mapping read then widens the
-// durable to B and serves the new mapping; the rebuild's open writes A back over B; and until
-// the swap sets B again the old intake pulls under A. The pinned nats-server keeps a consumer's
-// position across a filter update and steps past what the filter does not match, so a GitHub
-// event of a repository in B and not in A that lands in that window is delivered to nothing,
-// ever.
+// A mapping read is kept out of the rebuild by the lock it is made under, and from before the
+// open, because opening the new consumers is itself an UpdateConsumer on the very GitHub durable
+// the old intake is still pulling from. Without that hold: the rebuild reads set A; a mapping
+// read then widens the durable to B and serves the new mapping; the rebuild's open writes A back
+// over B; and until the handover sets B again the old intake pulls under A. The pinned
+// nats-server keeps a consumer's position across a filter update and steps past what the filter
+// does not match, so a GitHub event of a repository in B and not in A that lands in that window
+// is delivered to nothing, ever.
 //
 // The rebuild therefore holds the lock a mapping read is made under (mappingMu) from before it
 // reads that set to after the swap: while a mapping read holds it the rebuild has not opened

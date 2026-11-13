@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // natsHolder is the NATS connection and its durable consumers (config.HolderNATS). A rebuild
@@ -35,15 +36,15 @@ type natsHolder struct {
 	// and what that hold costs every other settings change.
 	holdMapping sync.Locker
 	// handover hands the consumers this rebuild opened the repositories they are to hear and
-	// swaps them in, under one hold of the lock every fact applies under
-	// (workflowRuntime.natsHandover, intake.SerializeFacts): it works out what those consumers
-	// are to hear under the mapping's own renames — the equivalence this rebuild is building
-	// from, which the mapping holder, rebuilt before this one, already answers
-	// (workflowRuntime.natsHearing) — hands it to them, and calls swap, this holder's own swap
-	// of its connection, its consumers and its generation, before the hold is let go. A mapping
-	// read holds that same lock across its own SetRepositories (refreshMapping); rebuild says
-	// why the three are one hold. A handover that returns an error has not called swap, so
-	// nothing was swapped. Its context is the rebuild's, for the reason open's is.
+	// swaps them in (workflowRuntime.natsHandover): it works out what those consumers are to hear
+	// under the mapping's own renames — the equivalence this rebuild is building from, which the
+	// mapping holder, rebuilt before this one, already answers (workflowRuntime.natsHearing) — on
+	// a transaction that has ended before it hands the set to them, and then calls swap, this
+	// holder's own swap of its connection, its consumers and its generation. It runs under the
+	// mapping lock this rebuild holds (holdMapping) and takes no lock of the fact path; rebuild
+	// says why the one is held, and natsHandover why the other is not. A handover that returns
+	// an error has not called swap, so nothing was swapped. Its context is the rebuild's, for the
+	// reason open's is.
 	handover func(ctx context.Context, consumers *intake.Consumers, swap func()) error
 	log      *slog.Logger
 
@@ -118,16 +119,18 @@ func (h *natsHolder) rebuilt(generation uint64) bool {
 // to a closed one, and a fact the handler had not finished is redelivered by the durable
 // consumer the new connection holds. No consumer is deleted and no position is lost.
 //
-// The connection and its consumers are opened under no fact lock (open), because that is the
-// network work: a dial, a reconnect and four consumer opens, which every fact would wait behind
-// were they held under it. What is held under the fact lock is the handover alone (handover,
-// workflowRuntime.natsHandover): the repositories the new consumers are to hear are worked out
-// there and set on them there, and the swap this rebuild hands it runs before the hold is let
-// go, so a mapping read that lands between the two waits and then sets its repositories on the
-// consumers this rebuild swapped in (refreshMapping's SetRepositories). Nothing after the swap
-// can fail, so a rebuild that swapped never reports a failure the rebuilder would log as "the
-// daemon keeps the one it has" — which would leave the holder's digest unrecorded and rebuild
-// NATS again at the next reread.
+// The connection and its consumers are opened, and the new consumers handed the repositories
+// they are to hear, under no lock of the fact path (open, handover, workflowRuntime.natsHandover),
+// because that is the network work: a dial, a reconnect, four consumer opens and the GitHub
+// durable's filter update, which every fact would wait behind were they held under the fact
+// lock. The handover works that set out on a transaction of its own and lets the transaction end
+// before the stream call, which can read the pool itself; natsHandover says why that call must
+// not run inside one, and why no fact needs the fact lock held over the swap. A mapping read
+// that lands while this rebuild runs waits on the mapping lock (below) and, once let through,
+// sets its repositories on the consumers this rebuild swapped in (refreshMapping's
+// SetRepositories). Nothing after the swap can fail, so a rebuild that swapped never reports a
+// failure the rebuilder would log as "the daemon keeps the one it has" — which would leave the
+// holder's digest unrecorded and rebuild NATS again at the next reread.
 //
 // What those consumers hear is worked out again from the daemon's state and from the
 // equivalence the mapping holds, which this rebuild is building from (handover,
@@ -137,8 +140,8 @@ func (h *natsHolder) rebuilt(generation uint64) bool {
 // pair's partner off the GitHub durable's FilterSubjects: the merges, check runs and reviews
 // GitHub publishes under the name the repository moved to would reach nothing, and nothing
 // redelivers them, until some unrelated thing read the mapping again. Working it out here costs
-// one read of the project's records in the hold the handover already has, and no read of
-// Dispatch or GitHub: the renames are the mapping's own, as is what it serves, both in memory.
+// one read of the project's records, on the handover's own transaction, and no read of Dispatch
+// or GitHub: the renames are the mapping's own, as is what it serves, both in memory.
 //
 // The open and the handover are held under the mapping's own lock (holdMapping), from before the
 // consumers are opened to after the swap. Opening them is an UpdateConsumer on the very GitHub
@@ -149,8 +152,9 @@ func (h *natsHolder) rebuilt(generation uint64) bool {
 // messages a filter does not match rather than holding them, so a GitHub event of a repository
 // mapped in that window is delivered to nothing, ever. It is this lock and not the fact lock
 // because the dial must stay out of the fact lock, and because a mapping read is the one writer
-// of that filter beside this rebuild; the read takes this lock before the fact lock, so the
-// rebuild taking them in that same order adds no cycle.
+// of that filter beside this rebuild. A mapping read takes the fact lock inside this one, for its
+// record snapshot alone (refreshMapping), and this rebuild never takes the fact lock, so the hold
+// adds no cycle.
 //
 // That hold costs no fact a wait, since nothing but a mapping read takes the mapping lock, and
 // it is let go before the old generation is cancelled and drained. It does cost the daemon's
@@ -172,11 +176,18 @@ func (h *natsHolder) rebuilt(generation uint64) bool {
 // and a `repository_renames` change would never widen the GitHub durable's filter — while the
 // settings route answered the caller `rebuilt`. The context is therefore made here, at the
 // rebuild, for that rebuild alone, and ended with it.
+//
+// That context carries the pool's hold mark for a sequential flow (store.WithTransactionTracking),
+// since the open and the handover run one after another on this goroutine: the pool then refuses
+// this rebuild a second connection while it holds one (store.ErrNestedAcquire), at the call that
+// asked. On a context nothing marked the pool refuses nothing: such a call takes a second
+// connection while its own transaction holds one, and on a pool with none left it waits until
+// this rebuild's bound runs out.
 func (h *natsHolder) rebuild(cfg *config.Config) error {
 	h.holdMapping.Lock()
 	// The clock starts once the mapping lock is held, so a mapping read this rebuild waits
 	// behind spends none of this rebuild's own budget.
-	ctx, cancel := context.WithTimeout(context.Background(), natsRebuildBound)
+	ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), natsRebuildBound)
 	defer cancel()
 	conn, consumers, err := h.open(ctx, *cfg)
 	if err != nil {

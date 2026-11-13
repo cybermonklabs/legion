@@ -1532,9 +1532,10 @@ func (w *workflowRuntime) heardAtBoot(ctx context.Context) ([]ghrepo.Repository,
 // natsHearing is what GitHub intake is to hear once a rebuild of the NATS holder has swapped its
 // consumers in (natsHolder.rebuild): everything the consumers hear now, everything the mapping
 // serves and the project's records name, and every partner renames pairs those with. It is read
-// on the transaction the handover is serialized on, as a mapping read reads it on its own
-// (refreshMapping), so a record an admission commits is either read here or committed after the
-// swap and heard by the read that follows it.
+// on the handover's own transaction, which takes no fact lock and has ended before the set is
+// handed over (workflowRuntime.natsHandover), as a mapping read's superset is read on its own
+// (refreshMapping): a record an admission commits after the read is on a repository the mapping
+// serves, which the set carries, since the rebuild holds the mapping still until the swap.
 //
 // The renames are the mapping's own (repositories.Renames), the copy every other read of what
 // intake hears takes (heardAtBoot, refreshMapping), and they are the equivalence the holder is

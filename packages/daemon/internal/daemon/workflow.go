@@ -690,11 +690,11 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 		return err
 	}
 	// A rebuild's connection is opened with the set the consumers hear as it starts, and the
-	// consumers it opened are handed, at the swap, the set the daemon is to hear then: worked
+	// consumers it opened are handed, before the swap, the set the daemon is to hear then: worked
 	// out again from the mapping, the records and the mapping's own renames (natsHandover,
-	// natsHearing), under one hold of the lock every fact applies under
-	// (serializeFacts, intake.SerializeFacts) and under the lock a mapping read is made under
-	// (mappingMu). natsHolder.rebuild is where both holds are explained, and what they cost.
+	// natsHearing), under the lock a mapping read is made under (mappingMu) and under no lock of
+	// the fact path. natsHolder.rebuild explains that hold and what it costs, and natsHandover
+	// why the fact lock is not taken.
 	rebuildOpen := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
 		return open(ctx, c, w.nats.intake().Repositories())
 	}
@@ -718,47 +718,53 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, rebuil
 	return nil
 }
 
-// natsHandover is the handover of a NATS rebuild (natsHolder.rebuild): under one hold of the
-// lock every fact applies under (serializeFacts, intake.SerializeFacts) it works out, on that
-// hold's own transaction and under the mapping's own renames (natsHearing), what the consumers
-// that rebuild opened are to hear, hands it to them, and calls swap, the holder's own swap of
-// its connection, its consumers and its generation. Holding all three is what keeps a mapping
-// read, which takes that same lock across its own SetRepositories (refreshMapping), from
-// setting its repositories on the consumers the rebuild is replacing; natsHolder.rebuild says
-// what that hold costs. Nothing after the set can fail, so a handover that returns an error
-// never reached swap and the holder serves what it served before.
+// natsHandover is the handover of a NATS rebuild (natsHolder.rebuild): it works out what the
+// consumers that rebuild opened are to hear (natsHearing), on a transaction of its own that only
+// reads, lets that transaction end, hands the set to them, and calls swap, the holder's own swap
+// of its connection, its consumers and its generation. A handover that returns an error never
+// reached swap, so the holder serves what it served before.
+//
+// The set is handed over outside any transaction of the pool. SetRepositories is a stream call,
+// and a GitHub durable that has gone missing has it create the durable again at the position the
+// pool keeps for it (intake's storedStreamTime), which takes a connection of that same pool: a
+// transaction waiting on the call would ask the pool for a second connection while holding one,
+// the cycle that left every connection of the production pool idle in transaction (INFRA-3169),
+// which a mapping read's stream calls stay out of for the same reason (refreshMapping).
+//
+// Neither the snapshot nor the swap takes the lock every fact applies under
+// (intake.SerializeFacts), because no fact moves what the handover reads and the swap moves
+// nothing a fact reads. The handover reads the mapping, the set the replaced consumers hear and
+// the project's records. The first two stand still from before the open to after the swap: the
+// rebuild holds the mapping's own lock (mappingMu) that whole time, and a mapping read, the one
+// writer of either once the boot is over, is made under it (refreshMapping). A record a fact
+// commits after the snapshot is an admission's, on a repository the mapping serves and so in the
+// set, or a re-entered or adopted record's, on the repository that record already kept, which the
+// snapshot read. A message delivered before the swap reaches the replaced consumers, whose intake
+// runs until the rebuild ends it, and is acked on the connection it came on or redelivered by its
+// durable once that intake is ended (natsHolder.rebuild); the set handed here only widens the
+// GitHub durable's filter (natsHearing), so nothing that intake was delivered stops being
+// delivered. Held across the stream call, the lock would stop every fact of the project for as
+// long as JetStream took to answer.
+//
+// One window is left that no hold of the fact lock would close. On one server the old and new
+// consumers share their durables, so from SetRepositories until the replaced intake ends, that
+// intake is delivered the subjects the handed set added — a `repository_renames` partner — and
+// decodes each against its own older set, which does not hear it: the message is acknowledged
+// unapplied, outside any transaction (intake's consumeMessage), and nothing redelivers it.
 func (w *workflowRuntime) natsHandover(ctx context.Context, consumers *intake.Consumers, swap func()) error {
-	return w.serializeFacts(ctx, func(ctx context.Context, tx pgx.Tx) error {
-		heard, err := w.natsHearing(ctx, tx)
-		if err != nil {
-			return fmt.Errorf("work out the repositories the rebuilt consumers are to hear: %w", err)
-		}
-		if err := consumers.SetRepositories(ctx, heard); err != nil {
-			return fmt.Errorf("hand the rebuilt consumers the repositories this daemon hears: %w", err)
-		}
-		swap()
-		return nil
-	})
-}
-
-// serializeFacts runs held under one hold of the lock every fact applies under
-// (intake.SerializeFacts), in a transaction of its own that writes nothing and is rolled back:
-// pg_advisory_xact_lock is held for the transaction's life and let go by a rollback as by a
-// commit, so what held did has no commit behind it that could fail once it has happened. held is
-// handed that transaction, so what it reads of the record it reads under the hold: a NATS
-// rebuild's handover works out there what its consumers are to hear, hands it to them and swaps
-// (natsHandover), and a swap reported as a failure would leave the rebuilder logging a
-// rebuild that happened as one that did not.
-func (w *workflowRuntime) serializeFacts(ctx context.Context, held func(ctx context.Context, tx pgx.Tx) error) error {
-	tx, err := w.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("serialize with every fact: %w", err)
+	var heard []ghrepo.Repository
+	if err := pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error {
+		var err error
+		heard, err = w.natsHearing(ctx, tx)
+		return err
+	}); err != nil {
+		return fmt.Errorf("work out the repositories the rebuilt consumers are to hear: %w", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := intake.SerializeFacts(ctx, tx); err != nil {
-		return fmt.Errorf("serialize with every fact: %w", err)
+	if err := consumers.SetRepositories(ctx, heard); err != nil {
+		return fmt.Errorf("hand the rebuilt consumers the repositories this daemon hears: %w", err)
 	}
-	return held(ctx, tx)
+	swap()
+	return nil
 }
 
 // phaseHolds answers supervise's Deps.PhaseHolds from the issue record: a task carries the phase

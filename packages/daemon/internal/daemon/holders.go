@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -452,7 +453,10 @@ func (h *mappingHolder) rebuild(cfg *config.Config) error {
 // (workflowRuntime.queueGatedStepsPublish): the row is the outbox's to send, so a Dispatch that
 // is down or has not got the route costs the settings change nothing but a retry on the lane,
 // and the enqueue replaces a publish of an earlier list still waiting there rather than
-// queueing beside it.
+// queueing beside it. It runs on a context of the rebuild's own (gatedStepsQueueBound), marked as
+// a sequential flow of the pool's (store.WithTransactionTracking), so the pool's guard sees the
+// one transaction the enqueue holds and refuses anything under it a second connection
+// (store.ErrNestedAcquire).
 //
 // Only a daemon with a workflow registers it (openWorkflow): one with no Dispatch has no
 // project row to write, and a change of the gate there names a holder this daemon did not
@@ -466,7 +470,7 @@ func newGatedStepsHolder(workflow *workflowRuntime) *gatedStepsHolder {
 func (h *gatedStepsHolder) holder() string { return config.HolderGatedSteps }
 
 func (h *gatedStepsHolder) rebuild(cfg *config.Config) error {
-	ctx, cancel := context.WithTimeout(context.Background(), gatedStepsQueueBound)
+	ctx, cancel := context.WithTimeout(store.WithTransactionTracking(context.Background()), gatedStepsQueueBound)
 	defer cancel()
 	return h.workflow.queueGatedStepsPublish(ctx, cfg.Gates.Steps())
 }

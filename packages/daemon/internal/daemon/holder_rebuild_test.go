@@ -94,8 +94,9 @@ func TestANatsRebuildUnderAProductionContext(t *testing.T) {
 // connection in the same breath, and whatever the handlers were holding was acked into nothing.
 //
 // The holder is the daemon's own (workflowRuntime.connect), so the wait is the one production
-// runs: the connection and its consumers are opened outside every lock, the handover runs under
-// the fact lock, and only then is the intake this rebuild replaced ended and drained.
+// runs: the connection and its consumers are opened outside every lock of the fact path, the
+// handover runs under the mapping lock alone, and only then is the intake this rebuild replaced
+// ended and drained.
 func TestANatsRebuildWaitsForTheIntakeItEndedToSettle(t *testing.T) {
 	url := testnats.URL(t)
 	notificationsStreamOn(t, url)
