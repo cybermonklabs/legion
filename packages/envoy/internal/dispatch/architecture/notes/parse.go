@@ -1,8 +1,8 @@
-// Package architecture parses, validates, and projects a project's
-// architecture model: every *.md file in .dispatch/architecture/ at one commit
-// of the configured source repository. Parse is pure — no database, no
-// network; the importer owns fetching and projection.
-package architecture
+// Package notes holds the rules of one architecture note set: every *.md
+// file of .dispatch/architecture/ at one commit. Parse validates the set and
+// returns its model. The package is pure, with no database and no network;
+// the architecture package's importer owns fetching and projection.
+package notes
 
 import (
 	"errors"
