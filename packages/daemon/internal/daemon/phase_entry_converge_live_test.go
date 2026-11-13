@@ -49,9 +49,9 @@
 // numbers on the wire, which is R6 on a booted daemon.
 //
 // What stands in lies outside the rule. The broker is a native nats-server the script starts and
-// names in LEGION_E2E_NATS_URL. GitHub is convergeGitHub, the harness's REST stand-in for the one
-// pull request the proof drives (liveGitHub, in live_proof_test.go) with a pause of that pull
-// request's read added, which serves that pull request's state, head, base and mergeable — the
+// names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the one pull request the
+// proof drives (liveGitHub, in live_issue_proof_test.go) with a pause of that pull request's read
+// added (convergeGitHub), which serves that pull request's state, head, base and mergeable — the
 // answer the driver arms to drive a conflict — and no branch rule of any kind. Dispatch is
 // the board the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go).
 // The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is
@@ -119,11 +119,12 @@ const convergeEntrySweep = 2 * time.Second
 const convergeOwedBound = 2 * time.Minute
 
 // phaseEntryConvergeLive is one run of the proof: the booted daemon, the one issue it drives, the
-// GitHub stand-in its facts are read against, and the two roles the driver acts as over the worker
-// stream.
+// GitHub stand-in its facts are read against with the pause this proof adds to it, and the two
+// roles the driver acts as over the worker stream.
 type phaseEntryConvergeLive struct {
 	liveIssueProof
-	github *convergeGitHub
+	// reads is the pause of the stand-in's read of the pull request (convergeGitHub.pause).
+	reads *convergeGitHub
 	// imp, test and rev are the implementer, the tester and the reviewer as their agents reach
 	// the daemon.
 	imp, test, rev *convergeClaimant
@@ -152,7 +153,7 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	t.Helper()
 	r := &phaseEntryConvergeLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/phase-entry-converge.sh",
 		convergeBase, "the issue whose phase entries converge")}
-	r.github = r.newConvergeGitHub()
+	r.reads = r.newConvergeGitHub()
 	r.seed()
 	r.cfg.WorkerWakesPerMinute, r.cfg.WorkerWakeBurst = convergeWakeRate, convergeWakeBurst
 	r.boot(r.github.url, func(o *overrides) {
@@ -246,10 +247,10 @@ type convergeClaimant struct {
 	prompts chan shimwire.Prompt
 }
 
-// claimant brings the launched claim of role to ready, as its pane's shim and its agent do: it
-// waits for the launch, dials the worker stream with the launch's boot token, registers the
+// servedClaimant brings the launched claim of role to ready, as its pane's shim and its agent do:
+// it waits for the launch, dials the worker stream with the launch's boot token, registers the
 // session, serves the connection and reports the claim ready.
-func (r *phaseEntryConvergeLive) claimant(role claim.Role, session string) *convergeClaimant {
+func (r *phaseEntryConvergeLive) servedClaimant(role claim.Role, session string) *convergeClaimant {
 	r.t.Helper()
 	c := &convergeClaimant{liveSession: r.register(role, session), prompts: make(chan shimwire.Prompt, 8)}
 	go c.serve()
@@ -381,14 +382,14 @@ func (c *convergeClaimant) drainPrompts() []shimwire.Prompt {
 func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	t := r.t
 	tester := r.token(claim.RoleTester)
-	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
+	r.imp = r.servedClaimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch; that launch spent the burst of %d wake(s) a minute in bursts of %d",
 		convergeWakeRate, convergeWakeBurst)
 	// The conflict is armed before this completion, and the read that completion queues is held
 	// at the stand-in while this check reads the state the completion left (armConflict,
 	// convergeGitHub.pause): the read is where an issue in testing learns its head conflicts,
 	// and held, it cannot land between the completion and the reads below it.
-	releaseRead := r.github.pause()
+	releaseRead := r.reads.pause()
 	defer releaseRead()
 	r.armConflict()
 	r.imp.startOwnTurn()
@@ -443,12 +444,7 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	// which raises the tester's row to entry 2 and writes that entry's own task. GitHub answers
 	// the new head mergeable, as it does once the base is merged forward into it.
 	r.github.conflicts(false)
-	r.github.head(convergeSecondHead)
-	r.publishPush(convergeFirstHead, convergeSecondHead, "fix the red")
-	r.publishSynchronize(convergeSecondHead)
-	r.waitFor("the pull request at the pushed head", func(got api.Issue) bool {
-		return got.PullRequest != nil && got.PullRequest.Head == convergeSecondHead
-	})
+	r.push(convergeFirstHead, convergeSecondHead, "fix the red")
 	if status, failure := r.imp.complete("merged the base forward", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -489,7 +485,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 	}
 	r.awaitLaunch(tester)
 	r.note("the pace let the tester's launch run: the fake runtime started its process")
-	r.test = r.claimant(claim.RoleTester, "ses_tester")
+	r.test = r.servedClaimant(claim.RoleTester, "ses_tester")
 	first := r.test.awaitPrompt("the tester's first task", convergeOwedBound)
 	if first.DeliveryID != stale.ID {
 		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry 1 its claim held while the phase changed", first.DeliveryID, stale.ID)
@@ -569,7 +565,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 
 	// The reviewer, on the start the move to reviewing wrote. Its completion is what asks the
 	// daemon to read the pull request, and that read is what carries the conflicting head.
-	r.rev = r.claimant(claim.RoleReviewer, "ses_reviewer")
+	r.rev = r.servedClaimant(claim.RoleReviewer, "ses_reviewer")
 	r.rev.awaitPrompt("the reviewer's task", convergeOwedBound)
 	r.note("the reviewer came up on the start the move to reviewing wrote, before the lock below")
 
@@ -708,13 +704,12 @@ func (r *phaseEntryConvergeLive) armConflict() {
 	r.publishBasePush()
 }
 
-// convergeGitHub is the harness's GitHub stand-in (liveGitHub) as this proof's daemon reads it,
-// with the one thing this proof adds: a pause of the read of the pull request itself. It serves no
+// convergeGitHub is the one thing this proof adds to the harness's GitHub stand-in (liveGitHub,
+// the proof's github): a pause of the read of the pull request itself. The stand-in serves no
 // branch rule, and what it does not serve it answers 404, which the daemon's own reads take as
 // GitHub being unreadable — the implementer's completion is applied unread on that answer
 // (api/handoff.go's implementationPullRequest) — so no read of this proof reaches github.com.
 type convergeGitHub struct {
-	*liveGitHub
 	// mu guards held apart from the stand-in's own lock, which a held read waits outside of.
 	mu sync.Mutex
 	// held holds every read of the pull request while a check means that read to land later
@@ -722,16 +717,17 @@ type convergeGitHub struct {
 	held chan struct{}
 }
 
-// newConvergeGitHub starts the stand-in for the proof's pull request at its first head, with
-// waitForRelease run before each read of the pull request.
+// newConvergeGitHub starts the stand-in for the proof's pull request at its first head
+// (serveGitHub), with the pause's waitForRelease run before each read of the pull request, and
+// returns the pause.
 func (r *phaseEntryConvergeLive) newConvergeGitHub() *convergeGitHub {
 	r.t.Helper()
 	g := &convergeGitHub{}
-	g.liveGitHub = r.serveGitHub(&liveGitHub{sha: convergeFirstHead, hold: g.waitForRelease})
+	r.serveGitHub(&liveGitHub{sha: convergeFirstHead, hold: g.waitForRelease})
 	return g
 }
 
-// pause holds every read of the pull request itself at this stand-in until the function it
+// pause holds every read of the pull request itself at the stand-in until the function it
 // answers with is called, which is how a check reads the state a completion left before the read
 // that completion queued lands: the read is the one place an issue short of reviewing learns its
 // head conflicts (armConflict), so the proof arms the answer, drives the completion, reads, and

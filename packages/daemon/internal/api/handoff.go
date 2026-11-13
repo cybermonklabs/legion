@@ -224,29 +224,33 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusConflict, "HANDOFF_STALE_GENERATION", staleCompletion(grant.Issue, issue.Generation, serving, c.Pending))
 		return
 	}
-	// Which phase this completion is of is read here, above the entry fence, because that fence
-	// asks the same question: a completion behind its entry goes on only for a phase that ends
-	// with a Dispatch handoff record this role writes (behindEntryClause).
-	word, writer, handoffPhase := phase.Handoff(issue.Phase)
-	recordBacked := handoffPhase && writer == grant.Role
 	// The entry fence holds the completion to the phase entry its claim serves (entryFence).
-	if refusal := entryFence(grant, position, entry, recordBacked, req.Commit, c.Pending); refusal != nil {
+	if refusal := entryFence(grant, position, entry, req.Commit, c.Pending); refusal != nil {
 		writeFailure(w, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
-	// The record a phase with a handoff ends with is read back and held to the completion before
-	// anything is recorded; a phase that writes none takes no record, and a completion of such a
-	// phase that names one is refused. A completion of a phase with a handoff by a role other
-	// than its writer, which the entry fence above has not answered, is the engine's to decide
-	// (HANDOFF_NOT_CURRENT_PHASE), so no record of its is read here.
+	// The phase this completion is of is the issue's when the role works it, and otherwise the one
+	// the role left (phase.LeftBy), where the engine records a completion that arrives after the
+	// daemon moved the issue on (workflow's leftItsPhase). The record a phase with a handoff ends
+	// with is read back and held to the completion before anything is recorded; a phase that
+	// writes none takes no record, and a completion of such a phase that names one is refused. The
+	// architect leaves no phase, so its completion is held to the issue's phase as before.
+	of := issue.Phase
+	if phase.RoleFor(of) != grant.Role {
+		if left := phase.LeftBy(grant.Role, of); left != "" {
+			of = left
+		}
+	}
+	word, writer, handoffPhase := phase.Handoff(of)
+	recordBacked := handoffPhase && writer == grant.Role
 	switch {
 	case recordBacked:
-		if !s.handoffRecord(w, r, c.Session, issue, word, req) {
+		if !s.handoffRecord(w, r, c.Session, issue, of, word, req) {
 			return
 		}
 	case !handoffPhase && (req.HandoffID != "" || req.HandoffVersion != 0):
 		writeFailure(w, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
-			"phase %s of %s ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing", issue.Phase, issue.Key))
+			"phase %s of %s ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing", of, issue.Key))
 		return
 	}
 	treeGeneration, pass := position.treeGeneration, position.pass
@@ -313,11 +317,11 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HandoffCompleteResponse{})
 }
 
-// handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase, whose
-// handoff word is word, names, and holds it to the completion: the record must be the issue's, of
-// the phase's word, at the version reported, and written by session, the session the claim
-// registered. Every refusal is written before the fact is applied, so nothing is recorded and the
-// corrected or retried call is applied:
+// handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
+// whose handoff word is word, names, and holds it to the completion: the record must be the
+// issue's, of the phase's word, at the version reported, and written by session, the session the
+// claim registered. Every refusal is written before the fact is applied, so nothing is recorded
+// and the corrected or retried call is applied:
 //
 //   - HANDOFF_RECORD_REQUIRED: the completion names no record (handoffId) or no positive version.
 //   - HANDOFF_RECORD_NOT_FOUND: Dispatch has no such record (its 404, or another refusal of the id).
@@ -329,13 +333,13 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 //     from before handoffs moved to the Dispatch issue is under the daemon's own session
 //     (dispatch.DaemonSession), so it is refused this way too, and the refusal says to read it
 //     and write it again from the worker's session.
-func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session string, issue *record.Issue, word string, req HandoffCompleteRequest) bool {
+func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session string, issue *record.Issue, of phase.Phase, word string, req HandoffCompleteRequest) bool {
 	write := fmt.Sprintf("`dispatch handoff-write --issue %s --phase %s --body-file <file>`", issue.Key, word)
 	read := fmt.Sprintf("`dispatch handoff-read --issue %s --phase %s`", issue.Key, word)
 	if req.HandoffID == "" || req.HandoffVersion < 1 {
 		writeFailure(w, http.StatusBadRequest, "HANDOFF_RECORD_REQUIRED", fmt.Sprintf(
 			"phase %s of %s ends with its %s handoff recorded on the Dispatch issue, and this completion names no record (handoffId and a positive handoffVersion): write it with %s, then complete again; this completion changed nothing",
-			issue.Phase, issue.Key, word, write))
+			of, issue.Key, word, write))
 		return false
 	}
 	if s.dispatch == nil {
@@ -470,15 +474,8 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // should never produce it: the transition raises the row's entry in the transaction that composes
 // that entry's task, so no delivery can carry an entry the row does not already name.
 //
-// An entry behind the row's is refused (staleEntry), and the completion the current entry's task
-// reports is applied — the new one it writes for the work that task names, since a phase entered
-// again is work of its own, not this completion's commit sent a second time. One behind
-// completion goes on all the same, and it is the one this fence would otherwise send back over
-// work already done: the verdict on the head the record holds for the issue, where no move back
-// raised the entry it is behind. behindEntryClause decides it, from recordBacked (the phase ends
-// with a Dispatch handoff record this role writes) and commit (the one the completion names), and
-// words what decided the refusal otherwise.
-func entryFence(grant credential.Grant, position completionPosition, entry int64, recordBacked bool, commit string, pending *supervise.Delivery) *intake.Refusal {
+// An entry behind the row's is refused (staleEntry) unless behindEntryClause takes it.
+func entryFence(grant credential.Grant, position completionPosition, entry int64, commit string, pending *supervise.Delivery) *intake.Refusal {
 	if entry == 0 || position.entry == 0 || entry == position.entry {
 		return nil
 	}
@@ -490,6 +487,8 @@ func entryFence(grant credential.Grant, position completionPosition, entry int64
 		return &intake.Refusal{Status: http.StatusConflict, Code: staleEntryCode,
 			Message: unraisedEntry(grant.Issue, grant.Role, p, position.entry, entry)}
 	}
+	// The role works p, so the record p ends with, if any, is this role's (phase.Handoff).
+	_, _, recordBacked := phase.Handoff(p)
 	if clause := behindEntryClause(recordBacked, commit, position.pullRequest, position.entryMovedBack); clause != "" {
 		return &intake.Refusal{Status: http.StatusConflict, Code: staleEntryCode,
 			Message: staleEntry(grant.Issue, grant.Role, p, position.entry, entry, pending, clause)}
@@ -585,11 +584,8 @@ func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 // staleCompletion does for a run. Either way that entry's task is owed to this claim and comes by
 // itself: the claim is behind the entry its phases row names, which is what the admission pass
 // sends the row's own work for (record.PhaseRow.EntryTask, workflow's SendOwedEntry), so the
-// worker waits for that task rather than asking anyone for it. That holds because the role works
-// the phase the issue stands in, and the entry fence writes this refusal for no other: a task is
-// queued for the phase it hands out and dropped rather than sent once the issue has left that
-// phase (supervise's phaseHolds), so a role the issue has moved on from is owed nothing, and the
-// fence answers its completion HANDOFF_NOT_CURRENT_PHASE first (entryFence).
+// worker waits for that task rather than asking anyone for it. The entry fence writes this
+// refusal only for a role that works the phase the issue stands in (entryFence).
 //
 // Where staleCompletion sends the same completion again — a run's completion is the right work,
 // arrived early — this one does not, and that is the whole difference between the two: an entry
@@ -599,13 +595,7 @@ func behindEntryClause(recordBacked bool, commit string, pr *record.PullRequest,
 // reported for the head before it would stand as that new head's. The worker does the new
 // task's work and writes a handoff of its own for it, which staleEntryInstruction says.
 //
-// Which is why it carries the clause of what decided it, as one parameter: a behind completion is
-// taken rather than refused where the phase ends with a handoff record this role writes, the
-// commit it names is the head the record holds, and no move back raised the entry it is behind
-// (behindEntryClause). So the clause says which of those readings refused this completion — the
-// commit it gave against the head the record holds, that the phase ends with no such record at
-// all, or that the entry the phase stands on was raised by a move back, which outranks both
-// heads — and the wording of all of them lives in that one function.
+// clause says what refused this completion (behindEntryClause).
 func staleEntry(issue string, role claim.Role, p phase.Phase, current, serving int64, pending *supervise.Delivery, clause string) string {
 	stale := fmt.Sprintf("%s handed the %s phase %s again: this completion is of entry %d, which is %d behind the entry %d the phase is on, and %s; nothing was recorded",
 		issue, role, p, serving, current-serving, current, clause)

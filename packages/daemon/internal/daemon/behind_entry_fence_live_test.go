@@ -61,7 +61,7 @@
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
-// one pull request the proof drives (liveGitHub, in live_proof_test.go), at the head the
+// one pull request the proof drives (liveGitHub, in live_issue_proof_test.go), at the head the
 // implementer last pushed. Dispatch is the board the package's whole-daemon live proofs share
 // (liveDispatch, in live_proof_test.go), which holds the handoff record each completion names, and
 // Envoy's listener is that harness's noticeListener. The two Apps' tokens are
@@ -109,7 +109,6 @@ const behindFenceTakenSummary = "tested it at " + behindFenceSecondHead
 // worker stream.
 type behindEntryFenceLive struct {
 	liveIssueProof
-	github *liveGitHub
 	// imp, test and review are the implementer, the tester and the reviewer as their agents reach
 	// the daemon. The reviewer is registered and holds a grant, because the move back is its own.
 	imp, test, review *liveClaimant
@@ -152,7 +151,7 @@ func newBehindEntryFenceLive(t *testing.T) *behindEntryFenceLive {
 	t.Helper()
 	r := &behindEntryFenceLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/behind-entry-fence.sh",
 		behindFenceBase, "the issue whose tester reports behind its entry")}
-	r.github = r.serveGitHub(&liveGitHub{sha: behindFenceFirstHead})
+	r.serveGitHub(&liveGitHub{sha: behindFenceFirstHead})
 	r.seed()
 	r.boot(r.github.url, nil)
 	return r
@@ -237,7 +236,8 @@ func (r *behindEntryFenceLive) testingIsEnteredAgain() {
 	r.note("read back: the implementer was prompted its implementing task once the tester's turn ended (%s)", firstLine(fix.Message))
 	r.test.startTurn("")
 	r.note("the tester began a turn of its own while the implementer works")
-	r.pushes(behindFenceFirstHead, behindFenceSecondHead)
+	r.push(behindFenceFirstHead, behindFenceSecondHead, "fix the fault the tests showed")
+	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", behindFenceSecondHead, behindFenceFirstHead, r.number)
 	if status, failure := r.imp.complete("fixed the fault the tests showed", behindFenceSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -479,18 +479,4 @@ func (r *behindEntryFenceLive) heldOn() {
 	}
 	r.note("read back: the tester is %s in a turn of its own holding %s while its row stands on entry %d; the last task it took is %s, of entry %d",
 		held.State, waiting, r.entry, r.delivery, r.served)
-}
-
-// pushes is the implementer's push of to onto from: GitHub's own copy of the pull request moves
-// first, as it does on github.com, then the push and the synchronize Envoy relays, and it returns
-// once the head the daemon's record holds is the pushed one.
-func (r *behindEntryFenceLive) pushes(from, to string) {
-	r.t.Helper()
-	r.github.head(to)
-	r.publishPush(from, to, "fix the fault the tests showed")
-	r.publishSynchronize(to)
-	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", to, from, r.number)
-	r.waitFor("the pull request at the pushed head "+to, func(got api.Issue) bool {
-		return got.PullRequest != nil && got.PullRequest.Head == to
-	})
 }

@@ -175,3 +175,29 @@ func RoleFor(p Phase) claim.Role {
 		return ""
 	}
 }
+
+// LeftBy is the phase role has left when the issue, standing at at, no longer stands in a phase
+// that role works: RoleFor read the other way round, the one phase each role works, and, for the
+// implementer, which works two, implementing while the issue stands before retro and retro once
+// it stands past it. A completion that arrives after the issue moved on without its role is of
+// this phase, which the workflow records it on (workflow's leftItsPhase) and whose handoff record
+// the completion route reads it against (api's handoffComplete). The architect works accepting
+// with its sign-off and completes nothing, so it leaves no phase here.
+func LeftBy(role claim.Role, at Phase) Phase {
+	switch role {
+	case claim.RolePlanner:
+		return Planning
+	case claim.RoleTester:
+		return Testing
+	case claim.RoleReviewer:
+		return Reviewing
+	case claim.RoleMerger:
+		return Merging
+	case claim.RoleImplementer:
+		if MovesBack(at, Retro) {
+			return Retro
+		}
+		return Implementing
+	}
+	return ""
+}

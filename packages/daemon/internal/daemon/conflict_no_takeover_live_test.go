@@ -30,7 +30,7 @@
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
-// one pull request the proof drives (liveGitHub, in live_proof_test.go), whose base branch
+// one pull request the proof drives (liveGitHub, in live_issue_proof_test.go), whose base branch
 // requires the check `ci` (conflictBranchRules). Dispatch is the board the package's whole-daemon
 // live proofs share (liveDispatch, in live_proof_test.go). Envoy's listener is
 // conflictListener, the package's noticeListener with the listener's own "no live session holds the
@@ -102,7 +102,6 @@ const (
 // as over the worker stream.
 type conflictNoTakeoverLive struct {
 	liveIssueProof
-	github   *liveGitHub
 	listener *conflictListener
 	// imp and test are the implementer and the tester as their agents reach the daemon; reviewer
 	// is the claim the tester's pass starts, which nothing registers, so its role topic is the one
@@ -135,7 +134,7 @@ func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	t.Helper()
 	r := &conflictNoTakeoverLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/conflict-no-takeover.sh",
 		conflictBase, "the issue whose CI goes red")}
-	r.github = r.serveGitHub(&liveGitHub{sha: conflictFirstHead, also: conflictBranchRules()})
+	r.serveGitHub(&liveGitHub{sha: conflictFirstHead, also: conflictBranchRules()})
 	r.listener = newConflictListener(t, &r.liveProof)
 	r.reviewer = r.token(claim.RoleReviewer)
 	r.seed()
@@ -289,13 +288,8 @@ func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 // task's turn writes, at a commit of its own, is taken.
 func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	t := r.t
-	r.github.head(conflictSecondHead)
-	r.publishPush(conflictFirstHead, conflictSecondHead, "fix the red")
-	r.publishSynchronize(conflictSecondHead)
+	r.push(conflictFirstHead, conflictSecondHead, "fix the red")
 	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", conflictSecondHead, conflictFirstHead, r.number)
-	r.waitFor("the pull request at the pushed head", func(got api.Issue) bool {
-		return got.PullRequest != nil && got.PullRequest.Head == conflictSecondHead
-	})
 	if status, failure := r.imp.complete("fixed the red", conflictSecondHead, "", ""); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -347,12 +341,7 @@ func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	r.awaitLaunch(r.reviewer)
 	r.note("the reviewer's claim was launched by the tester's pass and never registered; its topic %s now answers 404 unclaimed, as the listener answers for a role no live session holds", topic)
 
-	r.github.head(conflictThirdHead)
-	r.publishPush(conflictSecondHead, conflictThirdHead, "fix the red")
-	r.publishSynchronize(conflictThirdHead)
-	r.waitFor("the pull request at the third head", func(got api.Issue) bool {
-		return got.PullRequest != nil && got.PullRequest.Head == conflictThirdHead
-	})
+	r.push(conflictSecondHead, conflictThirdHead, "fix the red")
 	r.driveConflict()
 	r.note("drove the base of %s past %s, so GitHub answers its head conflicting, while the issue is in reviewing", r.key, conflictThirdHead)
 

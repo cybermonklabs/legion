@@ -624,6 +624,77 @@ func TestHandoffCompleteHoldsTheCompletionToTheRecordItNames(t *testing.T) {
 	}
 }
 
+// A completion that arrives after the issue has left its role's phase - the reviewer's, once its
+// own request for changes moved the issue to implementing - is of the phase the role left, and the
+// engine records it there for the next phase to read (workflow's leftItsPhase). So the route reads
+// its record back against that phase's word and the claim's session, as it reads a current
+// completion's: a record of another issue or of another phase is refused before the fact and
+// nothing is recorded, and the reviewer's own new review record is recorded on its row.
+func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// record is the record the late completion names, written under the reviewer's session.
+		record func(h *harness, reviewer liveClaim) string
+		// code is the refusal, "" for a completion recorded; says is a part of its sentence.
+		code, says string
+	}{
+		{
+			name: "another issue's review record", code: "HANDOFF_RECORD_MISMATCH", says: "version 1 of LEGION-209's review handoff",
+			record: func(h *harness, reviewer liveClaim) string {
+				return h.writeHandoffAs("LEGION-209", "review", 1, reviewer.session)
+			},
+		},
+		{
+			name: "a record of another phase", code: "HANDOFF_RECORD_MISMATCH", says: "LEGION-208's implement handoff",
+			record: func(_ *harness, reviewer liveClaim) string { return reviewer.writeHandoff("implement", 1) },
+		},
+		{
+			name:   "its own new review record",
+			record: func(_ *harness, reviewer liveClaim) string { return reviewer.writeHandoff("review", 1) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+			seedIssueAt(t, h, "LEGION-208", phase.Implementing)
+			reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+			named := tc.record(h, reviewer)
+			recorder := h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "reviewed", HandoffID: named, HandoffVersion: 1})
+			if tc.code == "" {
+				completion(t, recorder)
+				if row := reviewerRow(t, h, "LEGION-208"); row == nil || row.HandoffRecord != named || row.HandoffVersion != 1 {
+					t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, named)
+				}
+			} else {
+				if message := refused(t, recorder, http.StatusConflict, tc.code); !strings.Contains(message, tc.says) {
+					t.Fatalf("refusal %q does not say %q", message, tc.says)
+				}
+				if row := reviewerRow(t, h, "LEGION-208"); row != nil && row.Completed() {
+					t.Fatalf("the reviewer's row after the refusal = %+v, want nothing recorded", row)
+				}
+			}
+			assertIssuePhase(t, h, phase.Implementing)
+		})
+	}
+}
+
+// reviewerRow is key's reviewer's phases row, nil while none is recorded.
+func reviewerRow(t *testing.T, h *harness, key string) *record.PhaseRow {
+	t.Helper()
+	var reviewer *record.PhaseRow
+	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		rows, err := record.NewStore().Phases(context.Background(), tx, key)
+		for _, row := range rows {
+			if row.Role == claim.RoleReviewer {
+				reviewer = &row
+			}
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("read the phases of %s: %v", key, err)
+	}
+	return reviewer
+}
+
 func TestHandoffCompleteEnforcesRoleSpecificFieldsAndDeduplicatesTheRecord(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)

@@ -49,9 +49,16 @@
 --
 -- Rolling the image back needs nothing: the release before this one neither selects nor writes
 -- this column, and the column is not null with a default, so its own insert into phases still
--- succeeds, and the row it inserts reads false, as a forward move's. A row it raises an entry on
--- keeps what the column held, since its write names no such column. This directory keeps no
--- down migrations, and dropping the column by hand is
+-- succeeds. Rolling forward again after it does. That release raises entries without writing the
+-- column: its upsert names no such column, so a row it raises an entry on keeps what the column
+-- held, and its insert takes the default, false. Store.Migrate does not run an applied migration
+-- again, so after the roll forward an entry that release raised by a move back can read false,
+-- and a behind completion at the head the move back left unmoved is then taken (INFRA-3146's R4,
+-- the case this column exists to refuse). So before the roll forward, with the older daemon
+-- stopped and this release not yet serving (the column is already there: this migration ran when
+-- this release first booted), run `update phases set entry_moved_back = true;`. Every row then
+-- refuses a behind completion until its next entry, as the rows this migration finds do. This
+-- directory keeps no down migrations, and dropping the column by hand is
 -- `alter table phases drop column entry_moved_back;` with the daemon stopped.
 alter table phases add column entry_moved_back boolean not null default true;
 alter table phases alter column entry_moved_back set default false;
