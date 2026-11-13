@@ -203,10 +203,13 @@ bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
 
 It subscribes under the token in the file, writes one JSON line per frame (`at`, `type`, `bytes`,
 and the pull requests, runs, map keys, counts and `set` fields the frame carries), applies each
-frame as the page does, and reconnects and resumes as the page does. When the time is up,
-`--compare` reads the GET routes for the last window it applied and writes, for each, whether the
-pull request ids, run ids and every measure equal what it holds; it exits 1 when one does not.
-`--body-file <file>` writes the body it holds.
+frame as the page does, and reconnects and resumes as the page does. `--minutes` counts from the
+moment its socket first opens. Before that, the first connection has `--open-within <seconds>` to
+open, 45 s unless given (the page's silence rule); a connection that does not open by then, or is
+refused, ends the probe with exit 1. When the time is up, `--compare` reads the GET routes for the
+last window it applied and writes, for each, whether the pull request ids, run ids and every
+measure equal what it holds; it exits 1 when one does not. `--body-file <file>` writes the body it
+holds.
 
 A session group's Parent agent value is `group:<id>`, so a rename keeps every filter and link that
 names it; the timeline's `session_groups` lists every group with its name and sessions, beside

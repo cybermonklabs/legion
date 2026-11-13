@@ -604,8 +604,9 @@ test(
     try {
       const argv = args(probeDispatch({ onSubscribe() {} }), TOKEN, "0.01");
       argv[argv.indexOf("--url") + 1] = `http://127.0.0.1:${silent.port}`;
+      argv.push("--open-within", "1");
       const run = await runProbeToEnd(argv);
-      expect(run.code).not.toBe(0);
+      expect(run.code).toBe(1);
     } finally {
       silent.stop(true);
     }

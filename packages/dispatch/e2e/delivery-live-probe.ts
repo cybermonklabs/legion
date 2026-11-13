@@ -1,12 +1,22 @@
 /** `bun e2e/delivery-live-probe.ts`: an agent's client for `GET /ws/live`, the websocket the
  * Delivery and Pipeline pages keep themselves current over. It subscribes one view under a bearer
  * token and writes one JSON line per frame Dispatch sends, applying each to the body it holds with
- * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does: at once after
- * Dispatch's rotation (4001), within the first attempt's spread (up to 2 s) after Dispatch's
- * restart close (1012), with backoff after any other close, and by replacing a socket that has
- * carried no frame for three heartbeats; each new connection resumes from the last change it
- * applied. The watch lasts `--minutes` from the moment its socket first opens, and ends then, on
- * Ctrl-C, or when Dispatch refuses the view.
+ * the page's own `applyDelta` and `applyRevs`. It reconnects as the page does, and each new
+ * connection resumes from the last change it applied. What bounds each part of the watch:
+ *
+ *  - Before the first open, `--open-within` seconds from the first dial, 45 s unless given: the
+ *    page's silence rule (`LIVE_SOCKET_SILENT_MS`, three heartbeats). A dial that has not opened
+ *    by then fails the watch, and a first connection that is refused or closed fails it at once.
+ *  - After the first open, `--minutes` counted from that open, which ends the watch cleanly. A
+ *    reconnect's open does not count it again.
+ *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
+ *    (4001), up to 2 s after Dispatch's restart close (1012), and up to 30 s with backoff after
+ *    any other close. `--minutes` ends the watch during that delay as well.
+ *  - A silent socket, after the first open: one that has carried no frame for 45 s, a
+ *    reconnect's dial that never opens included, is replaced by a new dial, and `--minutes` still
+ *    ends the watch.
+ *
+ *  Ctrl-C or SIGTERM ends the watch at any time, and Dispatch refusing the view ends it at once.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
  *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
  *  measure are equal.
@@ -15,8 +25,8 @@
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
- *  fails, the first connection is refused, Dispatch refuses the view, or a frame breaks the
- *  contract; 2 on a usage error. */
+ *  fails, the first connection is refused or does not open within `--open-within`, Dispatch
+ *  refuses the view, or a frame breaks the contract; 2 on a usage error. */
 import { writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
@@ -123,7 +133,7 @@ export interface ProbeHeld {
 }
 
 const USAGE =
-  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--compare] [--body-file <file>]";
+  "usage: bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> --view <json> --minutes <n> [--open-within <seconds>] [--compare] [--body-file <file>]";
 
 /** The probe's one subscription. */
 const SUB = "probe";
@@ -191,6 +201,8 @@ interface Options {
   readonly tokenFile: string;
   readonly view: DeliveryLiveView;
   readonly minutes: number;
+  /** How long the first dial has to open, in milliseconds. */
+  readonly openWithinMs: number;
   readonly compare: boolean;
   readonly bodyFile: string | undefined;
 }
@@ -232,6 +244,7 @@ function readArgs(argv: readonly string[]) {
         "body-file": { type: "string" },
         compare: { type: "boolean" },
         minutes: { type: "string" },
+        "open-within": { type: "string" },
         "token-file": { type: "string" },
         url: { type: "string" },
         view: { type: "string" },
@@ -303,10 +316,17 @@ function parseOptions(argv: readonly string[]): Options {
   if (!Number.isFinite(minutes) || minutes <= 0) {
     throw new UsageError(`--minutes is a number of minutes above 0, not ${rawMinutes}`);
   }
+  const rawOpenWithin = values["open-within"];
+  const openWithinMs =
+    rawOpenWithin === undefined ? LIVE_SOCKET_SILENT_MS : Number(rawOpenWithin) * 1000;
+  if (!Number.isFinite(openWithinMs) || openWithinMs <= 0) {
+    throw new UsageError(`--open-within is a number of seconds above 0, not ${rawOpenWithin}`);
+  }
   return {
     bodyFile: values["body-file"],
     compare: values.compare === true,
     minutes,
+    openWithinMs,
     tokenFile: required(values["token-file"], "--token-file"),
     url,
     view: parseView(required(values.view, "--view")),
@@ -398,10 +418,10 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
   }
 }
 
-/** Watches `options.view` until `--minutes` pass from its socket's first open, a Ctrl-C, or
- *  Dispatch refuses the view, and resolves with the body the probe holds then, or null when no
- *  snapshot arrived. Rejects when the first connection is refused, the view is refused, or a frame
- *  breaks the contract. */
+/** Watches `options.view` until `--minutes` pass from its socket's first open, a Ctrl-C or
+ *  SIGTERM, or Dispatch refuses the view, and resolves with the body the probe holds then, or null
+ *  when no snapshot arrived. Rejects when the first connection is refused or does not open within
+ *  `--open-within`, the view is refused, or a frame breaks the contract. */
 async function watch(options: Options, token: string): Promise<ProbeHeld | null> {
   const liveUrl = new URL("/ws/live", options.url);
   liveUrl.protocol = options.url.protocol === "https:" ? "wss:" : "ws:";
@@ -411,7 +431,8 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   let attempt = 0;
   let lastFrameAt = 0;
   let cancelReconnect: (() => void) | undefined;
-  // Armed by the first open, so `--minutes` counts from the subscribe, not from the dial.
+  // Armed at the first dial for `--open-within`, which fails the watch; the first open arms it
+  // again for `--minutes` from then, which ends the watch cleanly.
   let timer: Timer | undefined;
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
@@ -486,7 +507,10 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     // Each listener ignores a socket the probe has already let go, whose events still arrive.
     next.addEventListener("open", () => {
       if (socket !== next) return;
-      if (!opened) timer = setTimeout(stop, options.minutes * 60_000);
+      if (!opened) {
+        clearTimeout(timer);
+        timer = setTimeout(stop, options.minutes * 60_000);
+      }
       opened = true;
       lastFrameAt = Date.now();
       write({ at: now(), resume: held?.seq ?? null, type: "open" });
@@ -519,9 +543,10 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     cancelReconnect = () => clearTimeout(handle);
   };
 
-  // A socket that carried no frame for three heartbeats is dead without knowing it: replace it.
+  // After the first open, a socket that carried no frame for three heartbeats is dead without
+  // knowing it: replace it. Before the first open, `--open-within` judges the dial.
   const silence = setInterval(() => {
-    if (socket === null || Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS) return;
+    if (!opened || socket === null || Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS) return;
     const silent = socket;
     socket = null;
     const reason = `no frame for ${LIVE_SOCKET_SILENT_MS / 1000} s`;
@@ -542,6 +567,13 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     closing?.close(1000);
   };
 
+  timer = setTimeout(
+    () =>
+      fail(
+        `the socket to ${liveUrl.href} did not open within ${options.openWithinMs / 1000} s (--open-within)`
+      ),
+    options.openWithinMs
+  );
   open();
   const failure = await ended.promise;
   shutDown();

@@ -2682,8 +2682,10 @@ of the reset.
 
 `e2e/delivery-live-probe.ts` is an agent's client for a delivery subscription on `GET /ws/live`,
 run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--view <json>`,
-`--minutes`): it writes one JSON line per frame, applies each with the page's own `applyDelta` and
-`applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
+`--minutes`, counted from the first open; `--open-within <seconds>` bounds the first connection's
+wait to open, `LIVE_SOCKET_SILENT_MS` unless given, and a connection that does not open by then
+ends the probe with exit 1): it writes one JSON line per frame, applies each with the page's own
+`applyDelta` and `applyRevs`, and reconnects and resumes as `api/live-socket.ts` does. `POST
 /api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
 /api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
 routes for the last window it applied and writes whether the pull request ids, run ids and every
