@@ -396,13 +396,16 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	if err != nil {
 		return nil, err
 	}
-	// A lease is keyed by the repository it is minted for, so the boot proves each App's key on
-	// every repository the mapping serves rather than once per owner: an App not installed on a
-	// repository's owner, or an installation granted none of the permissions a role's write token
-	// asks for, stops the boot naming the repository (mintAtBoot), where it would otherwise leave a
-	// role with no gh files at its launch. An installation granted some of the set mints with
-	// what it is granted, and the mint says the rest on stderr (appauth's exchangeGranted), so
-	// one permission awaiting an account's approval costs the role no gh files at all.
+	// A lease is keyed by the repository it is minted for, so the boot mints each App's write
+	// lease for every repository the mapping serves rather than once per owner. No mint names its
+	// repository to GitHub (INFRA-2543), so each App's mints for one owner's repositories all send
+	// that owner's installation the same request, and what stops the boot is about the owner: an
+	// App not installed on it, or an installation granted none of the permissions a role's write
+	// token asks for, stops the boot naming the repository it was minting for (mintAtBoot), where
+	// it would otherwise leave a role with no gh files at its launch. An installation granted some
+	// of the set mints with what it is granted, and the mint says the rest on stderr (appauth's
+	// exchangeGranted), so one permission awaiting an account's approval costs the role no gh
+	// files at all.
 	for _, repo := range w.repositories.Accepted() {
 		if err := mintAtBoot(ctx, tokens, repo, log); err != nil {
 			return nil, err
