@@ -150,16 +150,17 @@ func (s *Store) MarkPodResumeStuck(ctx context.Context, id int64) error {
 
 // StuckPodResumes are the resumes whose wake is at or before the bound with no first turn and no
 // stuck mark yet: the ones the daemon warns about and counts, read once per pass so each warns
-// once. The stranded report reads UnfinishedPodResumes instead, which keeps a marked row.
+// once. The stranded report reads UnfinishedPodResumesTx instead, which keeps a marked row.
 func (s *Store) StuckPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
-	return s.podResumesWithoutAFirstTurn(ctx, project, before, true)
+	return podResumesWithoutAFirstTurn(ctx, s.pool, project, before, true)
 }
 
-// UnfinishedPodResumes are the resumes of project the stranded report judges R6 on: those of
-// each pod's newest release that suspended a role, whose wake is at or before the bound and
-// whose woken role has not taken its first turn, the ones a stuck pass has already marked
-// included — a resume marked stuck is exactly a pod a wake never brought back, so dropping it
-// would take the claim out of the report the moment the warning was written.
+// UnfinishedPodResumesTx are the resumes of project the stranded report judges R6 on, read
+// through tx's snapshot: those of each pod's newest release that suspended a role, whose wake is
+// at or before the bound and whose woken role has not taken its first turn, the ones a stuck
+// pass has already marked included — a resume marked stuck is exactly a pod a wake never brought
+// back, so dropping it would take the claim out of the report the moment the warning was
+// written.
 //
 // A resume of an older release that suspended a role is left out, whatever became of it: the
 // claim it was for has been released again since, which is a pod the daemon has just let go
@@ -175,15 +176,22 @@ func (s *Store) StuckPodResumes(ctx context.Context, project string, before time
 // turn, which is the stranded claim this read is for, and counting either as the pod's newest
 // release would drop exactly those rows from the report's released-claim arm. So the filter is
 // of what a release did and never of which rule wrote it.
-func (s *Store) UnfinishedPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
-	return s.podResumesWithoutAFirstTurn(ctx, project, before, false)
+//
+// The stranded report and the state route both read it beside the claims they judge it against,
+// in the transaction they have already begun, so the wakes and the released claims they belong
+// to come from one moment. There is no form of this read on the pool: every caller of it is
+// already inside a transaction of this pool, and asking the pool for a second connection while
+// holding one of its own is how a pool of a busy deployment deadlocks (INFRA-3169).
+func (s *Store) UnfinishedPodResumesTx(ctx context.Context, tx pgx.Tx, project string, before time.Time) ([]PodResume, error) {
+	return podResumesWithoutAFirstTurn(ctx, tx, project, before, false)
 }
 
-// podResumesWithoutAFirstTurn is both reads above. A resume a release closed (closed_at) is left
-// out of each: it is a wake of a pod that is gone, which no warning and no stranded report has
-// anything to say about, and before closing had a column of its own such a row was indeed gone
-// from here, because closing wrote first_turn_at.
-func (s *Store) podResumesWithoutAFirstTurn(ctx context.Context, project string, before time.Time, unmarked bool) ([]PodResume, error) {
+// podResumesWithoutAFirstTurn is the pool read and the transaction read above, on whichever
+// querier the caller runs it on: the pool, or the caller's own transaction. A resume a release
+// closed (closed_at) is left out of each: it is a wake of a pod that is gone, which no warning
+// and no stranded report has anything to say about, and before closing had a column of its own
+// such a row was indeed gone from here, because closing wrote first_turn_at.
+func podResumesWithoutAFirstTurn(ctx context.Context, q rowsQuerier, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, stuck
 		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and at <= $2`
 	if unmarked {
@@ -192,7 +200,7 @@ func (s *Store) podResumesWithoutAFirstTurn(ctx context.Context, project string,
 		query += ` and release_id = (select max(id) from pod_releases
 			where project = r.project and issue = r.issue and roles <> '')`
 	}
-	rows, err := s.pool.Query(ctx, query+` order by id`, project, before)
+	rows, err := q.Query(ctx, query+` order by id`, project, before)
 	if err != nil {
 		return nil, fmt.Errorf("read the unfinished resumes of %s: %w", project, err)
 	}

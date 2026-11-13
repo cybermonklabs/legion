@@ -141,7 +141,8 @@ type controllerDaemonOptions struct {
 }
 
 // fakeTx is the no-op pgx.Tx the controller test daemon's state route opens: fixedStateSource
-// never reads from it, and the route's own deferred Rollback is the only call it sees.
+// never reads from it, so the only calls it sees are the route's own — the bound it puts on its
+// statements, and its Commit and deferred Rollback.
 type fakeTx struct{}
 
 func (fakeTx) Begin(context.Context) (pgx.Tx, error) { return fakeTx{}, nil }
@@ -155,8 +156,15 @@ func (fakeTx) LargeObjects() pgx.LargeObjects                         { return p
 func (fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
 	return nil, errors.New("unexpected prepare")
 }
-func (fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, errors.New("unexpected exec")
+
+// Exec takes the one statement the state route runs of its own on this transaction, the bound on
+// its statements, and refuses anything else by name: every other statement would be a state
+// source's, and this daemon's source runs none.
+func (fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.HasPrefix(sql, "set local statement_timeout = ") {
+		return pgconn.CommandTag{}, nil
+	}
+	return pgconn.CommandTag{}, errors.New("unexpected exec: " + sql)
 }
 func (fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, errors.New("unexpected query")
