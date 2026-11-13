@@ -352,7 +352,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 // waitingForTree is what a root's architect is told when the merge of its pull request finds the
 // rest of the tree still running: the close is waiting, and for whom.
 func waitingForTree(issue string, number int, waiting []string) string {
-	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow; %s closes once the last of them leaves, or take one out of the workflow with park_child",
+	return fmt.Sprintf("pull request #%d merged, and %s's close is waiting for %s, still in the workflow; %s closes once the last of them leaves. Park one with park_child "+parkRule+", and say in a comment which of those it is",
 		number, issue, strings.Join(waiting, ", "), issue)
 }
 

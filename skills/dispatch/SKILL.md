@@ -10,13 +10,13 @@ Dispatch is a record for the people who decide, never a log of your work.
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`); give object and list fields as JSON.
 - Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
-- A command hard to use, or storing or losing something wrongly, is a defect to report, not work around: open an issue in the owning project's code and tell its controller; a Legion role tells its architect (`skill://legion-worker/references/findings.md`).
+- Never work around a hard-to-use command, or one storing or losing something wrongly: open an issue in the owning project and tell its controller. A Legion role tells its architect (`skill://legion-worker/references/findings.md`).
 
 ## Asks and ask blocks
 
 - An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.
 - An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.
-- A design question a document records is an ask block ending its section:
+- A design question's ask block ends its section:
 
 ```md
 :::ask{urgency="med"}
@@ -29,22 +29,23 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 
 - A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
-- Change an open ask's block with `dispatch edit-ask` (its ask id), or `doc-edit`'s `replace` or `move` (its block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
+- Change an open ask's block with `dispatch edit-ask` (ask id) or `doc-edit`'s `replace` or `move` (block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
 - Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
 - When an answer's option and text disagree, the text wins.
 
 ## Choosing what to work on
 
-- Finishing an issue, take the top `todo` one by priority then board rank, per project.
-- `todo` means specced and waiting on nothing; one that waits goes in `backlog`, saying on what.
-- Hold at most three issues in flight; move the rest to `backlog`, saying where each is.
+- When you finish an issue, take the next one per project: the top `todo` issue by priority, then board rank. Pass over one that waits on an unfinished `blocked_by` link or an open ask.
+- Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
+- Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
+- When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
+- Record each wait in that comment. A wait on a same-project issue also goes in a `blocked_by` link, and one on a person in a `dispatch ask`.
+- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. Dispatch refuses a link to another project's issue (`BLOCKED_BY_OUTSIDE_PROJECT`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
 
 ## Issue status is yours to move
 
-Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of an issue with the `legion` label or under one, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
-
-`unresponsive` holders keep their claims 20 minutes (`skill://envoy`).
+Outside Legion, claim your issue (`dispatch claim`) and move it and your children: `in_progress` at implementation, `testing` on a production-like surface, `needs_review` while its PR waits, `done` with `--reason` once driven in production. Never write or route the status of a `legion`-labelled issue or one under it, and claim one only as a role of its tree: an outside claim can take the tree out of the workflow. A status write is set back or stands.
 
 A claim (or `dispatch issue-update --route session:<your id>`, `--route ''` to release) brings a person's answers, comments and messages; `envoy_subscribe notifications.dispatch.issue.<KEY>.>` adds agents' activity, no quiet event.
 
