@@ -674,16 +674,20 @@ const readsBeforeThePush = 90 * time.Second
 // indexTree), whose index git itself wrote with stat data it can use. A worktree jj holds takes
 // jj's own snapshot here in its place, and one `git ls-files --others --exclude-standard` over
 // the worktree, which walks its directories and hashes no file (snapshotTree). Measured on
-// 2026-11-13 in this change's round 12 (the c5 run at 6ab55389), on a fixture of over 290,000
-// tracked files and 3.6 GB whose index carries no stat data, the snapshot took 22.4 to 26.3 s and
-// that read 1.7 to 1.8 s, and every read before the push 29.3 s on the clean tree and 30.2 s with
-// 200 new files of 1 MB, where `git add --all` over a copy of the index took 118.4 s and 246.9 s.
+// 2026-11-13 in this change's round 13 (the c5 run at 9ce7edc3), on a fixture of over 290,000
+// tracked files and 3.6 GB whose index carries no stat data, the snapshot took 23.3 to 26.4 s and
+// that read 1.9 to 2.0 s, and every read before the push 50.9 s on the clean tree and 54.1 s with
+// 200 new files of 1 MB, where `git add --all` over a copy of the index took 198.5 s and 265.7 s.
+// The clean-tree reads took 21.6 s more than round 12's 29.3 s on the same fixture, and the one
+// read added between them is the re-read of the 1,800 files of 1 MB earlier runs had left new in
+// @, which the copy holds as intent-to-add and jj's tree at their content: that re-read of what
+// jj's tree and the copy disagree on costs the size of the role's own uncommitted diff.
 // The first snapshot after a colocated `jj git init` took 62.5 s on that fixture on 2026-11-12,
 // because it also imports the git repository (it prints `Done importing changes from the
 // underlying Git repo.`); the live check imports wherever a git ref moved behind jj's back, HEAD,
-// a branch or a remote-tracking ref (the package doc), and in the same round-12 run a snapshot
-// after a branch moved with HEAD unchanged took 24.2 s, and after a new remote-tracking ref
-// 23.8 s.
+// a branch or a remote-tracking ref (the package doc), and in the same round-13 run a snapshot
+// after a branch moved with HEAD unchanged took 24.5 s, and after a new remote-tracking ref
+// 23.9 s.
 const worktreeRead = 30 * time.Minute
 
 // pushReserve is what a workspace's bound keeps back from the read of its files: the guard's own
@@ -712,7 +716,7 @@ const wholeDiskMargin = 3 * time.Minute
 // from measurements; GuardReserve is CheckRun and pushAlone, the 30 s the push had before the
 // hook was known to run the check again, which is a reserve kept as it was and no measurement;
 // and readsBeforeThePush is the share an earlier bound left those reads, which were measured on
-// 2026-11-13 at 29.3 s on a fixture of the production shape. 90 + 1800 + 120 + 150 is 2160 s, so
+// 2026-11-13 at 50.9 s on a fixture of the production shape. 90 + 1800 + 120 + 150 is 2160 s, so
 // a workspace's bound is 36 minutes and the whole disk's, keeping wholeDiskMargin over it, 39.
 // Each is a ceiling and not a wait: a workspace whose files git can answer for at once has them
 // read in seconds, and its push then waits on the leak check, one run of which was measured in a
