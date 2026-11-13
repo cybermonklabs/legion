@@ -1935,6 +1935,33 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# Rule 8's `<=`, at the job ceiling against a step's arithmetic: a job whose budget EQUALS that
+# arithmetic is refused. Every other fixture of this clause leaves a gap of seconds between the
+# two, where `<` and `<=` answer alike, so this one is what refuses a revert of the comparison
+# (dispatch://INFRA-1545, round 31). 5 x 90 + 150 = 600 s, which is 10 minutes exactly.
+echo "case: a job whose budget equals one of its steps' retries to the second is refused"
+root=$(fixture job-budget-equal)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install changie
+        timeout-minutes: 11
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 90 -- \
+            curl -fsSL --max-time 90 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job at 600 s against a step whose retries take 600 s" \
+  "$(contains "$out" "job .build. carries .timeout-minutes: 10., 600 s, and its step .Install changie. holds retries taking 600 s to exhaust, which that budget does not strictly exceed")"
+check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 11. or more on this job')"
+
 # The job half of the same rule, which the clause above cannot reach: a step whose retries fit
 # inside its own budget is still cut by a job ceiling that is not above that budget, because the
 # job holds the step AND everything else it runs. Twenty-two job keys of this repository stood
@@ -2055,6 +2082,64 @@ check "exits 1" "$(is "$status" 1)"
 check "names the sum and says the key does not strictly exceed it" \
   "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
 check "says what to write" "$(contains "$out" 'timeout-minutes: 38. or more')"
+
+# Rule 8's `<=` at the derivation clause's two halves: a key EXACTLY at the sum its comment
+# states, and a key exactly at the sum this check recomputes. The fixtures above use
+# 1200 + 1050 = 2250 s, which is 37.5 minutes, where `<` and `<=` answer alike, so a revert of
+# either comparison left every case green (dispatch://INFRA-1545, round 31). 1350 + 1050 =
+# 2400 s is 40 minutes exactly, the shape of the eleven keys round 29 raised.
+echo "case: a job whose key equals the whole-minute sum its own comment states is refused"
+root=$(fixture job-derivation-equal)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1350 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1350 + 1050 = 2400 s -> 40 min.
+    timeout-minutes: 40
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the sum and says the key does not strictly exceed it" \
+  "$(contains "$out" "its own comment derives 1350 + 1050 = 2400 s, which that key does not strictly exceed")"
+check "says what to write" "$(contains "$out" 'timeout-minutes: 41. or more')"
+
+echo "case: a job whose key equals the whole-minute sum this check recomputes is refused"
+root=$(fixture job-derivation-recomputed-equal)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1350 s measured, plus its slowest retried step alone — the small fetch,
+    # 450 s. 1350 + 450 = 1800 s -> 40 min.
+    timeout-minutes: 40
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the recomputed sum and says the key does not strictly exceed it" \
+  "$(contains "$out" "1350 + 1050 = 2400 s, which this key does not strictly exceed")"
+check "says what the key must be" "$(contains "$out" 'timeout-minutes: 41. or more')"
 
 # The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
 # `114 is the 104 this construction gives with ten minutes added`, which .github/ci-budgets.md
