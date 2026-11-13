@@ -3058,6 +3058,44 @@ func TestCIResultIsTheRunOfTheHighestID(t *testing.T) {
 	assertDerived(t, check, 34, ciCheckRun, "failure", "fail", headCommit)
 }
 
+// A ci_check name written with spaces around it is either refused at the write or answered by
+// the run it names without them, never stored as a name no run carries: the spaces cannot be
+// seen in the editor, and docs.CarriesCICheck already trims the value, so the write path and the
+// read must agree on which run the block names (dispatch://INFRA-3204, tester round 1).
+func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	keys := []string{issueInRepository(t, handler, "RESCP", "acme/widgets", "Padded 0").Key}
+	for index, padded := range []string{" " + ciCheckRun, ciCheckRun + " ", "\t" + ciCheckRun + " "} {
+		if index > 0 {
+			created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+				map[string]any{"project": "RESCP", "title": fmt.Sprintf("Padded %d", index), "spec": "A spec\n"}, "alice")
+			if created.Code != http.StatusCreated {
+				t.Fatalf("create issue %d: status=%d body=%s", index, created.Code, created.Body.String())
+			}
+			keys = append(keys, decodeBody[model.Issue](t, created).Key)
+		}
+		issue := model.Issue{Key: keys[index]}
+		attributes := `negative_control="` + ciCheckNegativeControl + `" ci_check="` + padded + `"`
+		written := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+			"name": "verification.md", "content": ciCheckBlock("c1", attributes),
+		}, "alice")
+		if written.Code == http.StatusBadRequest && strings.Contains(written.Body.String(), "INVALID_CI_CHECK") {
+			continue
+		}
+		if written.Code != http.StatusCreated {
+			t.Fatalf("ci_check %q: write status=%d body=%s, want 201 or 400 INVALID_CI_CHECK", padded, written.Code, written.Body.String())
+		}
+		head := fmt.Sprintf("%040x", 0xa0d0+index)
+		writeHead(t, database, "acme/widgets", 500+index, head, "open", issue.Key)
+		fake.set(head, completedRun(int64(600+index), ciCheckRun, "success"))
+		check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+		if check.CI == nil || check.CI.State != model.CIStatePass || len(check.Results) != 1 {
+			t.Fatalf("ci_check %q was stored and reads %+v with results %+v, want the pass of run %q at %s",
+				padded, check.CI, check.Results, ciCheckRun, head)
+		}
+	}
+}
+
 // The open pull request's head is read over an older merged one's, and once the open one merges
 // the merged pull request of the highest number is read: the answer keeps speaking after the
 // merge, current at that merged head. The older merged head is never read.
