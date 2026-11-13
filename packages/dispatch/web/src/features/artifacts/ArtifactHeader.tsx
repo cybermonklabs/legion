@@ -31,6 +31,7 @@ import {
   documentRoute,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { useContentDrawn } from "../shell/content-drawn";
 import {
   CLOSED_ISSUE_REMOVE_REFUSAL,
   CLOSED_ISSUE_RENAME_REFUSAL,
@@ -88,6 +89,7 @@ export function ArtifactHeader({
   version: number | undefined;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
+  const contentDrawn = useContentDrawn();
   const navigate = useNavigate();
   const versions = versionsNewestFirst(toolbar?.versions ?? artifact.versions);
   // An artifact of an agent's conversation (a picture sent in a direct message) belongs to no
@@ -99,15 +101,20 @@ export function ArtifactHeader({
   // the callback below.
   const issueKey = artifact.issue_key;
 
+  // The ring shows the reader which artifact the address named, for two seconds. On a cold
+  // landing the shell holds the margin until the document draws (`features/shell/
+  // content-drawn.ts`), and the margin then comes in beside this header. If the two seconds
+  // started when this header mounted, the ring could go before the page stops changing. So the
+  // two seconds start when the landed page's content has drawn. Where nothing is held, which is
+  // every page after the first, they start at once, as before.
   useEffect(() => {
-    if (!highlight) {
-      setHighlighted(false);
+    setHighlighted(highlight);
+    if (!highlight || !contentDrawn) {
       return;
     }
-    setHighlighted(true);
     const timeout = window.setTimeout(() => setHighlighted(false), 2000);
     return () => window.clearTimeout(timeout);
-  }, [highlight]);
+  }, [contentDrawn, highlight]);
 
   // One button, placed by the branch below: it leads the row's non-wrapping box where there is
   // no version to diff, and sits before that box where there is one.

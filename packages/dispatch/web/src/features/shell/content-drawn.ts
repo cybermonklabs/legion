@@ -3,7 +3,10 @@ import { useSyncExternalStore } from "react";
 /**
  * Whether the page a cold landing opened has drawn its own content yet, for the shell's code
  * that draws no part of that content: the margin, the reference-preview layer and the map from a
- * live event to the reads it refreshes.
+ * live event to the reads it refreshes. One more reader waits for the same moment for another
+ * reason: the ring on a landed artifact's header (`features/artifacts/ArtifactHeader.tsx`)
+ * counts its two seconds from it, because the margin comes in after it and the page is still
+ * changing until then.
  *
  * WHY "AFTER THE FIRST PAINT" WAS NOT ENOUGH. Each of those starts its download after the
  * shell's first paint (an effect, or a render that follows one). The shell paints as soon as the
@@ -71,8 +74,8 @@ function release(): void {
   releasing = false;
   window.clearTimeout(limit);
   limit = undefined;
-  window.removeEventListener("pointerdown", contentDrawn, { capture: true });
-  window.removeEventListener("keydown", contentDrawn, { capture: true });
+  window.removeEventListener("pointerdown", contentDrawn, true);
+  window.removeEventListener("keydown", contentDrawn, true);
   for (const listener of [...listeners]) listener();
 }
 
@@ -83,9 +86,11 @@ export function holdUntilContentDraws(): void {
     return;
   }
   held = true;
-  // Captured on the window, so a handler that stops a press from propagating cannot hide it.
-  window.addEventListener("pointerdown", contentDrawn, { capture: true });
-  window.addEventListener("keydown", contentDrawn, { capture: true });
+  // Captured on the window (the `true`), so a handler that stops a press from propagating cannot
+  // hide it. The short form of `{ capture: true }` is the one used, because this module is in the
+  // entry and so in what every landing loads before its first block.
+  window.addEventListener("pointerdown", contentDrawn, true);
+  window.addEventListener("keydown", contentDrawn, true);
   limit = window.setTimeout(release, HOLD_LIMIT_MS);
 }
 

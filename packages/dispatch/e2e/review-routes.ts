@@ -86,6 +86,15 @@ function wideLayout(page: Page): boolean {
   return (page.viewportSize()?.width ?? 0) >= WIDE_LAYOUT_MIN_PX;
 }
 
+/** The margin's card for the open ask of the issue the review corpus opens, where the margin is
+ *  a column beside the page; nothing where it is a sheet that stays shut until a button opens
+ *  it. The card is the margin's last part to draw: it waits on the margin's own reads. */
+function heldMargin(page: Page): Locator[] {
+  return wideLayout(page)
+    ? [page.locator("[data-margin-item]").getByText("Which sign-in path?")]
+    : [];
+}
+
 export const reviewRoutes: readonly ReviewRoute[] = [
   {
     kind: "reviewed",
@@ -242,8 +251,15 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // tab's own test id is drawn before that answer, which is why the probe read the chip in
     // one run and the title in the other. The words are the plan task `e2e/review-seed.ts`
     // writes, so a change to that corpus fails this row rather than a baseline.
+    //
+    // And the margin's card for the issue's open ask, at the width where the margin is a
+    // column. The shell holds the margin until the tab's own content has drawn
+    // (`web/src/features/shell/content-drawn.ts`), so the margin comes in after the plan's
+    // document, and the pointer above can be drawn before either. Without this wait the shot
+    // was once taken of the page with no margin at all (run 43367787934).
     ready: (page) => [
       page.getByTestId("plan-task-needs").getByRole("link", { name: "Write the route table." }),
+      ...heldMargin(page),
     ],
   },
   {
@@ -294,7 +310,12 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // The document's connection dot, as the issue-spec row reads it and for the same reason:
     // `artifact-header` is drawn while the editor still says "Connecting to the document…",
     // and `ArtifactHeader.tsx` draws the dot inside that header.
-    ready: (page) => [page.getByRole("status", { name: "connected" })],
+    //
+    // And the margin's card for the issue's open ask, for the reason the issue-plan row gives:
+    // the margin comes in after the document, and the dot is drawn before it. The header's
+    // ring is in the baseline too; it lasts two seconds from the moment the content drew
+    // (`ArtifactHeader.tsx`), which is before the margin is in.
+    ready: (page) => [page.getByRole("status", { name: "connected" }), ...heldMargin(page)],
   },
   {
     kind: "reviewed",

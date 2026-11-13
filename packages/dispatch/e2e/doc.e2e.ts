@@ -6,9 +6,11 @@ import { HOLD_LIMIT_MS } from "../web/src/features/shell/content-drawn";
 import {
   createComment,
   createIssue,
+  createIssueArtifact,
   createMessage,
   createNamedVersion,
   createProject,
+  createProjectDocument,
   editArtifact,
   getArtifact,
   getArtifactText,
@@ -29,7 +31,7 @@ import {
   typeAtEnd,
 } from "./editor";
 import { engineParagraphs } from "./read-back";
-import { type BrowserContext, expect, test } from "./test";
+import { type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 const session = {
@@ -768,6 +770,127 @@ test("a document that never connects still gets the page its margin and its live
       pastTheLimit
     );
     await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): eleven cold landings, each read for its own content and then for the margin.
+test("every issue tab and a project's document get the margin once their own content has drawn", async ({
+  browser,
+}) => {
+  await createProject({ key: "TABS", name: "Tabs" });
+  const issue = await createIssue({
+    project: "TABS",
+    spec: ":::requirement{#r1}\nEach tab draws its margin.\n:::\n",
+    title: "Every tab",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `:::check{#c1 serves="dispatch://${issue.key}/spec#b-r1" surface="browser" run="bun run e2e"}\nEach tab draws its margin.\n:::\n`,
+    name: "verification.md",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is built.\n\n:::plan_task{#t1 serves="dispatch://${issue.key}/spec#b-r1"}\nDraw the margin.\n:::\n`,
+    name: "plan.md",
+  });
+  await createIssueArtifact(issue.key, {
+    content: "# Notes\n\nA second document.\n",
+    name: "notes.md",
+  });
+  await createProjectDocument("TABS", {
+    content: "# Runbook\n\nA project document.\n",
+    name: "runbook.md",
+  });
+
+  // The first block of a document is that page's content. The other tabs draw no document, so
+  // their content is their panel once it holds more than the skeleton of its chunk.
+  const block = (scope: string) => (page: Page) => page.locator(`${scope} [data-block-id]`).first();
+  const panel = (tab: string) => async (page: Page) => {
+    const element = page.locator(`#issue-${tab}-panel`);
+    await expect(element.locator('[aria-busy="true"]')).toHaveCount(0);
+    return element;
+  };
+  const landings: readonly {
+    path: string;
+    content: (page: Page) => Locator | Promise<Locator>;
+    /** What the visual baseline of the page holds beside the margin, read when the margin is in. */
+    withMargin?: (page: Page) => Locator;
+  }[] = [
+    { content: block("#issue-spec-panel"), path: `/issues/${issue.key}` },
+    { content: block("#issue-verification-panel"), path: `/issues/${issue.key}/verification` },
+    { content: block("#issue-plan-panel"), path: `/issues/${issue.key}/plan` },
+    { content: panel("conversation"), path: `/issues/${issue.key}/conversation` },
+    { content: panel("children"), path: `/issues/${issue.key}/children` },
+    { content: panel("artifacts"), path: `/issues/${issue.key}/artifacts` },
+    {
+      content: block("#issue-artifacts-panel"),
+      path: `/issues/${issue.key}/artifacts/notes-md`,
+      // The ring that marks the artifact the address named is still on its header.
+      withMargin: (page) => page.locator('[data-testid="artifact-header"].ring-2'),
+    },
+    { content: panel("activity"), path: `/issues/${issue.key}/activity` },
+    { content: panel("decisions"), path: `/issues/${issue.key}/decisions` },
+    { content: panel("collaborators"), path: `/issues/${issue.key}/collaborators` },
+    {
+      content: block('article[aria-label="Document"]'),
+      path: "/projects/TABS/documents/runbook-md",
+    },
+  ];
+
+  const alice = await asUser(browser, "alice");
+  try {
+    for (const { content, path, withMargin } of landings) {
+      // A page of its own, with no key and no click: either would end the shell's hold by
+      // itself (`web/src/features/shell/content-drawn.ts`), and the row is about what ends it
+      // without the reader.
+      const page = await alice.newPage();
+      await page.goto(path);
+      await expect(await content(page), path).toBeVisible();
+      // Well under `HOLD_LIMIT_MS`: a landing whose own content never ends the hold gets its
+      // margin only at that limit, and fails here.
+      await expect(page.getByRole("tab", { name: "Comments" }), path).toBeVisible({
+        timeout: 2_000,
+      });
+      if (withMargin !== undefined) await expect(withMargin(page), path).toBeVisible();
+      await page.close();
+    }
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): the row waits out the shell's hold, as the row about a document that never
+// connects does, so that it reads the ring over the whole hold and not for two seconds of it.
+test("the ring on a landed artifact's header lasts two seconds from the moment its content draws", async ({
+  browser,
+}) => {
+  await createProject({ key: "RING", name: "Ring" });
+  const issue = await createIssue({ project: "RING", spec: "# Ring\n", title: "Ringed" });
+  await createIssueArtifact(issue.key, {
+    content: "# Notes\n\nNever connects.\n",
+    name: "notes.md",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // Holding every document socket: the document never draws, so only `HOLD_LIMIT_MS` ends
+    // the shell's hold (`web/src/features/shell/content-drawn.ts`).
+    await documentTransport(page, { holding: true });
+    await page.goto(`/issues/${issue.key}/artifacts/notes-md`);
+    const header = page.getByTestId("artifact-header");
+    const ringed = page.locator('[data-testid="artifact-header"].ring-2');
+    await expect(ringed).toBeVisible();
+    // Longer than two seconds from the header's mount: a ring counted from there is gone now.
+    await sleep(3_000);
+    await expect(ringed).toBeVisible();
+
+    // The hold ends at its limit, and the margin comes in; the two seconds start then.
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({
+      timeout: HOLD_LIMIT_MS + 10_000,
+    });
+    await expect(header).toBeVisible();
+    await expect(ringed).toHaveCount(0, { timeout: 5_000 });
   } finally {
     await alice.close();
   }
