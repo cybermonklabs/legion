@@ -312,8 +312,10 @@ export const repoProjectsQuery = () =>
     queryFn: () => api.listRepoProjects(),
   });
 
-/** Every project that names a default assignee, read by the Settings page's Projects table and
- *  refreshed by the event a write appends. A project absent from the answer names nobody. */
+/** Every project with the person it defaults to, one row per project: every project names one,
+ *  and this read is the one place the page learns who, since the project list carries no default.
+ *  Read by the Settings page's Projects table, and refreshed by the event a default write appends
+ *  and by a project's creation. A project absent from the answer is one created since the read. */
 export const projectDefaultAssigneesQuery = () =>
   queryOptions({
     queryKey: ["project-default-assignees"],

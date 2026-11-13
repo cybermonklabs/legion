@@ -47,7 +47,8 @@ func TestAnIssueBeneathAnAcceptedAncestorIsHeldThoughTheParentBetweenThemIsDone(
 		},
 	}
 
-	for _, entry := range record.Waiting(issues, nil, facts) {
+	line, _ := record.Waiting(issues, nil, facts)
+	for _, entry := range line {
 		if entry.Issue.Key == grandchild {
 			t.Fatalf("%s stands in the waiting line beneath %s, which awaits its merge: a done issue between them is a gap in the chain, not the end of it", grandchild, root)
 		}
