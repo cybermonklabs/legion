@@ -3263,6 +3263,11 @@ func keptRefs(decisions []record.ParkedDecision) string {
 // under an id the machine minted when it took a task back is a telling of its own, and the task
 // of the row that queued it (keptRun.resent): the shim has no record of that id, so the agent is
 // prompted again, which is the one extra telling the invariant accepts (held).
+//
+// One prompt comes from no row at all: the daemon's own delivery of what a relaunch ended, which a
+// claim holding no task is given at its ready (supervise's queueRelaunch, dispatch://INFRA-3276
+// R3). Its text is the relaunch's sentence alone, so it tells no decision, and the invariant holds
+// it to that: a reference in it is a telling no row accounts for.
 func (r *keptRun) observe() {
 	for _, tree := range r.roots {
 		generation := r.storedGeneration(tree.key)
@@ -3273,6 +3278,13 @@ func (r *keptRun) observe() {
 				continue
 			}
 			r.sent[prompt.DeliveryID] = true
+			if strings.HasPrefix(prompt.DeliveryID, relaunchDeliveryPrefix) {
+				if refs := r.refsIn(prompt.Message); len(refs) != 0 {
+					r.fatalf("the architect of %s was told %v by the daemon's own delivery %q of a relaunch's sentence, which names no decision",
+						tree.key, refs, prompt.DeliveryID)
+				}
+				continue
+			}
 			row, retold := keptRowOfDelivery(prompt.DeliveryID), false
 			if origin, minted := r.resent[prompt.DeliveryID]; minted {
 				row, retold = origin, true
