@@ -1,3 +1,15 @@
+//go:build basebuild
+
+// The three tests of this tag are dispatch://INFRA-1149's acceptance runs:
+// TestTheStoreCensusReadsZeroDifferences in this file, and TestNoWritePathThisChildChangesGetsSlower
+// (write_cost_test.go) and TestNoReadThisChildChangesGetsSlowerAndNoEventOutrunsItsNode
+// (read_cost_test.go), which share graph_cost_test.go. Each builds the server at the commit this
+// branch forked from (baseBuild) and compares it with this build, so each needs a checkout that
+// holds origin/main, and each takes from 2 to 45 minutes on an issue pod. They carry a build tag
+// of their own and no CI job runs it: they are run on the pod, one at a time and by name, as
+//
+//	go test -tags basebuild ./cmd/dispatch/ -run '^TestTheStoreCensusReadsZeroDifferences$' -count=1 -v
+
 package main
 
 // The store census end to end, from before the migration that made the store
@@ -32,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testtmp"
 )
 
 // censusSigningKey is the one DISPATCH_SIGNING_KEY every process of this run carries: the older
@@ -190,7 +203,7 @@ func censusDatabase(t *testing.T) string {
 		t.Fatalf("connect to the test server: %v", err)
 	}
 	defer conn.Close(ctx)
-	if _, err := conn.Exec(ctx, "create database "+name); err != nil {
+	if _, err := conn.Exec(ctx, "create database "+name+" strategy file_copy"); err != nil {
 		t.Fatalf("create the census database: %v", err)
 	}
 	t.Cleanup(func() { dropCensusDatabase(t, admin.String(), name) })
@@ -242,10 +255,9 @@ func censusConnect(t *testing.T, ctx context.Context, databaseURL string) *pgx.C
 
 // baseBuild builds `./cmd/dispatch` at the commit this branch forked from and answers the binary.
 // The commit is `git merge-base origin/main HEAD` and the source is that commit's own tree, taken
-// out of the repository with `git archive`, so the build is the fork point's and not this working
-// copy's. Both live under the temporary directory, keyed by the commit, and a run that finds them
-// there builds nothing: the extraction and the build are about a minute, and every run of this
-// test would otherwise pay it.
+// out of the repository with `git archive` into a directory of this test's own, so the build is
+// the fork point's and not this working copy's. The directory and the binary go when the test
+// ends, so every run extracts and builds again, which is about a minute.
 func baseBuild(t *testing.T) string {
 	t.Helper()
 	root := gitOutput(t, ".", "rev-parse", "--show-toplevel")
@@ -253,20 +265,9 @@ func baseBuild(t *testing.T) string {
 	if len(commit) < 12 {
 		t.Fatalf("git merge-base origin/main HEAD answered %q", commit)
 	}
-	held := filepath.Join(os.TempDir(), "dispatch-census-base-"+commit[:12])
-	binary := filepath.Join(held, "envoy-dispatch")
-	if _, err := os.Stat(binary); err == nil {
-		t.Logf("the older build is %s, from %s", binary, commit)
-		return binary
-	}
-	building := held + ".building"
-	if err := os.RemoveAll(building); err != nil {
-		t.Fatalf("clear %s: %v", building, err)
-	}
-	source := filepath.Join(building, "src")
-	if err := os.MkdirAll(source, 0o755); err != nil {
-		t.Fatalf("make %s: %v", source, err)
-	}
+	// No socket is bound anywhere under the tree, so the room asked for is the directory the
+	// build runs in rather than the longest path of the archive.
+	source := testtmp.Dir(t, filepath.Join("packages", "envoy"))
 	archive := exec.Command("git", "-C", root, "archive", commit)
 	extract := exec.Command("tar", "-x", "-C", source)
 	pipe, err := archive.StdoutPipe()
@@ -275,8 +276,7 @@ func baseBuild(t *testing.T) string {
 	}
 	// The archive's stdout is the pipe tar reads, so its own failure is read from its stderr
 	// alone: asking for both, as CombinedOutput does, is `exec: Stdout already set` and the
-	// build never runs. It surfaces only on the first build of a fork point, since a later run
-	// finds the binary this one keeps.
+	// build never runs.
 	var problems strings.Builder
 	archive.Stderr = &problems
 	extract.Stdin = pipe
@@ -292,25 +292,12 @@ func baseBuild(t *testing.T) string {
 	if err := extract.Wait(); err != nil {
 		t.Fatalf("extract the tree of %s: %v", commit, err)
 	}
-	built := cmdtest.BuildCommand(t, cmdtest.Command{
+	binary := cmdtest.BuildCommand(t, cmdtest.Command{
 		Name:   "envoy-dispatch-base",
 		Dir:    filepath.Join(source, "packages", "envoy"),
 		Target: "./cmd/dispatch",
 		Env:    os.Environ(),
 	})
-	moved, err := os.ReadFile(built)
-	if err != nil {
-		t.Fatalf("read the older build: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(building, "envoy-dispatch"), moved, 0o755); err != nil {
-		t.Fatalf("keep the older build: %v", err)
-	}
-	if err := os.Rename(building, held); err != nil {
-		// Another run of this test built it first, which is the binary this one takes.
-		if _, stat := os.Stat(binary); stat != nil {
-			t.Fatalf("keep the older build at %s: %v", held, err)
-		}
-	}
 	t.Logf("the older build is %s, from %s", binary, commit)
 	return binary
 }
@@ -451,19 +438,25 @@ func readInventory(t *testing.T, ctx context.Context, databaseURL string) []inve
 	return inventory
 }
 
-// keepInventory writes the inventory to a file of this run's own, under the temporary directory,
-// and says where it is: the file is what the comparisons below are read against, and a failing
-// run leaves it to be read by a person.
+// keepInventory writes the inventory to a file in a directory of this test's own and says where
+// it is. The directory goes when the test ends, so a run that fails prints the inventory too, for
+// a person to read it against the comparisons below.
 func keepInventory(t *testing.T, inventory []inventoryRow) {
 	t.Helper()
 	encoded, err := json.MarshalIndent(inventory, "", "  ")
 	if err != nil {
 		t.Fatalf("encode the inventory: %v", err)
 	}
-	file := filepath.Join(os.TempDir(), "store-census-inventory.json")
+	const name = "store-census-inventory.json"
+	file := filepath.Join(testtmp.Dir(t, name), name)
 	if err := os.WriteFile(file, append(encoded, '\n'), 0o644); err != nil {
 		t.Fatalf("keep the inventory: %v", err)
 	}
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("the inventory of what the older build wrote:\n%s", encoded)
+		}
+	})
 	t.Logf("the inventory of what the older build wrote is %s: %d row(s)", file, len(inventory))
 	for _, kind := range []string{"comment", "block", "block_ref"} {
 		t.Logf("the inventory holds %d %s row(s)", countInventory(inventory, kind), kind)

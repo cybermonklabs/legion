@@ -537,8 +537,13 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	}
 }
 
-// graphArmCount guards that the census reads every arm, including the comment answers arm.
-const graphArmCount = 27
+// graphArmCount guards that the census reads every arm. It is the arm list of
+// 20261109215947_graph_edges_tuples, the last migration to restate graph_edges: the 27 arms
+// 20261105014808 restated it with, the comment answers arm among them, and the one arm over the
+// store's current tuples that migration adds. That arm answers a kind only once its
+// graph_store_cutover row reads true, which none of the seed's does, so it holds its rows only
+// with those rows on (countArmCutOver).
+const graphArmCount = 28
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
@@ -549,7 +554,8 @@ var (
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
 // count in the view itself. The arms come from pg_get_viewdef, the view's own text, not from a
 // list in this test and not from the seed's fixture: an arm a later migration adds is covered the
-// day it lands.
+// day it lands. An arm that holds no row as the seed leaves the cutover rows is counted again
+// with every one of them on, which is the state the tuple arm answers in.
 func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
@@ -559,7 +565,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261105014808 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migration 20261109215947 restates it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
@@ -570,7 +576,10 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 			t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)
 		}
 		if rows == 0 {
-			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)
+			rows = countArmCutOver(t, database, index, arm)
+		}
+		if rows == 0 {
+			t.Errorf("arm %d of graph_edges holds no row, with the cutover rows off or on:\n%s", index+1, arm)
 		}
 		kind := armKindLiteral.FindStringSubmatch(arm)
 		toKind := armToKindLiteral.FindStringSubmatch(arm)
@@ -612,6 +621,30 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 			t.Errorf("no mention names a %s, so the backlink count of that kind reads nothing", kind)
 		}
 	}
+}
+
+// countArmCutOver counts the rows arm answers with every graph_store_cutover row on, in a
+// transaction it rolls back, so the seeded database is left as the seed wrote it. The view answers
+// each kind the store took over from one place at every instant: its old arm while the kind's row
+// reads false, as the seed leaves all three, and the tuple arm once it reads true, as a completed
+// backfill leaves it. The seed writes the tuples that arm reads - a comment's anchored_to and
+// owned_by, a block's in_document and mentions - so it holds rows here.
+func countArmCutOver(t *testing.T, database *store.Store, index int, arm string) int {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the count of arm %d with the cutover rows on: %v", index+1, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `update graph_store_cutover set complete = true`); err != nil {
+		t.Fatalf("turn the cutover rows on to count arm %d: %v", index+1, err)
+	}
+	var rows int
+	if err := tx.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
+		t.Fatalf("count arm %d of graph_edges with the cutover rows on: %v\n%s", index+1, err, arm)
+	}
+	return rows
 }
 
 // assertRareWordFindsItsDocuments is the draft's A3, run as SQL rather than through a server: a

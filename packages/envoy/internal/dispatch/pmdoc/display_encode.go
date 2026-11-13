@@ -24,8 +24,15 @@ import (
 // `alignment`, whose default is "left" where both readers write null for a column the markdown
 // does not align.
 //
-// A typed block's defaults are not here. They are its own schema's (schema/blocks.json), read
-// through typedDefaults, so a block type added there needs no change to this file.
+// A typed block is not in this table, and the encoding writes every attribute such a block holds.
+// Its defaults are its own schema's, which the store can install over the built one while the
+// process runs (Install), and a stored tree is keyed by its text, its mode and DisplayTreeVersion,
+// never by a schema (texttrees): a default left out under one schema would be filled back under
+// whichever schema the reader holds when that tree is served. Written whole, a typed block reads
+// the same under every schema, and FromJSON, which refuses a typed block missing any attribute
+// its schema declares a default for, reads the encoding back as it is. Leaving those defaults out
+// would change every tree that holds a typed block, testdata/display.json's among them, and so
+// raise DisplayTreeVersion.
 var displayNodeDefaults = map[string]Attrs{
 	// heading: `id` is the slug milkdown's own generator would write and both readers leave
 	// empty; `level` is 1 for a heading nothing says the level of.
@@ -52,38 +59,12 @@ var displayMarkDefaults = map[string]Attrs{
 	"link": {"title": nil},
 }
 
-// typedDisplayDefaults is every typed block's declared attribute defaults, read from value once.
-// An attribute the schema gives no default is left out of it: the browser declares such an
-// attribute `{ default: undefined }`, which fills nothing in. Each install builds this table and
-// hangs it on the schema it installs (installedSchema.typedDefaults), so a document written
-// under a schema the store handed this process is encoded against that schema's blocks.
-func typedDisplayDefaults(value BlockSchema) map[string]Attrs {
-	out := make(map[string]Attrs, len(value.Types))
-	for _, typ := range value.Types {
-		defaults := make(Attrs, len(typ.Attributes))
-		for _, attr := range typ.Attributes {
-			if attr.Default != nil {
-				defaults[attr.Name] = attr.Default
-			}
-		}
-		out[typ.Name] = defaults
-	}
-	return out
-}
-
-// toDisplayJSON is node as a reader is sent it: its own JSON shape with every attribute the
-// browser's schema would supply left out, and nothing written where that leaves an empty object
-// or an empty array (jsonNode's omitempty). The children are sized once rather than appended to,
-// since a display tree is encoded whole and often.
+// toDisplayJSON is node as a reader is sent it: its own JSON shape with every attribute that
+// stands at the default the two tables above declare for it left out, and nothing written where
+// that leaves an empty object or an empty array (jsonNode's omitempty). The children are sized
+// once rather than appended to, since a display tree is encoded whole and often.
 func (n *Node) toDisplayJSON() *jsonNode {
-	return n.displayJSON(installed.Load().typedDefaults)
-}
-
-// displayJSON encodes n and its children against one typed-block table, which toDisplayJSON
-// takes from the installed schema once per tree: a reinstall that lands part-way through an
-// encoding then leaves every node of that tree written against the schema it opened on.
-func (n *Node) displayJSON(typedDefaults map[string]Attrs) *jsonNode {
-	j := &jsonNode{Type: n.Type, Attrs: displayNodeAttrs(typedDefaults, n.Type, n.Attrs), Text: n.Text}
+	j := &jsonNode{Type: n.Type, Attrs: withoutDefaults(n.Attrs, displayNodeDefaults[n.Type]), Text: n.Text}
 	if len(n.Marks) > 0 {
 		j.Marks = make([]jsonMark, len(n.Marks))
 		for index, mark := range n.Marks {
@@ -93,19 +74,10 @@ func (n *Node) displayJSON(typedDefaults map[string]Attrs) *jsonNode {
 	if len(n.Children) > 0 {
 		j.Content = make([]*jsonNode, len(n.Children))
 		for index, child := range n.Children {
-			j.Content[index] = child.displayJSON(typedDefaults)
+			j.Content[index] = child.toDisplayJSON()
 		}
 	}
 	return j
-}
-
-// displayNodeAttrs is attrs as the display encoding writes them for a node of this type: a typed
-// block's defaults are its own schema's, every other node's are displayNodeDefaults'.
-func displayNodeAttrs(typedDefaults map[string]Attrs, nodeType string, attrs Attrs) Attrs {
-	if defaults, typed := typedDefaults[nodeType]; typed {
-		return withoutDefaults(attrs, defaults)
-	}
-	return withoutDefaults(attrs, displayNodeDefaults[nodeType])
 }
 
 // withoutDefaults is attrs with every attribute standing at its declared default left out, or
@@ -142,8 +114,8 @@ func withoutDefaults(attrs, defaults Attrs) Attrs {
 
 // atDisplayDefault reports whether value is the attribute default def. A number is compared as a
 // number, since one attribute reaches this both as the int a parse wrote and as the float64 a
-// JSON round trip left; anything that is neither string, bool nor number is compared by its
-// encoding, so a `string[]` default written `[]` matches an empty list of either Go type.
+// JSON round trip left. The two tables declare no default that is not null, a string, a bool or a
+// number, so any other default matches nothing and its attribute is written.
 func atDisplayDefault(value, def any) bool {
 	switch want := def.(type) {
 	case nil:
@@ -158,15 +130,7 @@ func atDisplayDefault(value, def any) bool {
 		got, ok := displayNumber(value)
 		return ok && got == want
 	}
-	if value == nil {
-		return false
-	}
-	gotJSON, err := json.Marshal(value)
-	if err != nil {
-		return false
-	}
-	wantJSON, err := json.Marshal(def)
-	return err == nil && string(gotJSON) == string(wantJSON)
+	return false
 }
 
 // displayNumber is value as a number, and whether it is one: an attribute reaches the encoding

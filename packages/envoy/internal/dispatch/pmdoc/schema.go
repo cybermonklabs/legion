@@ -39,11 +39,6 @@ type installedSchema struct {
 	// json is the value as GET /api/v1/schema/blocks serves it, encoded at install so a reader
 	// takes the whole schema in one load rather than encoding it again per request.
 	json []byte
-	// typedDefaults is each typed block's attribute defaults, which the display encoding leaves
-	// out of what it writes (display_encode.go). It is built here rather than once at init
-	// because a reinstall brings other types, and a table built at init would be the types the
-	// build embedded for the rest of the process.
-	typedDefaults map[string]Attrs
 }
 
 // installed holds the one installed schema. Every reader loads it once and takes no lock.
@@ -88,7 +83,6 @@ func installSchema(value BlockSchema) error {
 		types:             make(map[string]BlockTypeSchema, len(value.Types)),
 		pointerAttributes: map[string][]string{},
 		json:              encoded,
-		typedDefaults:     typedDisplayDefaults(value),
 	}
 	kinds := map[string]struct{}{}
 	for _, typ := range value.Types {

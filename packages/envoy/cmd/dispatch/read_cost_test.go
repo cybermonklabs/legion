@@ -1,3 +1,7 @@
+//go:build basebuild
+
+// The basebuild tag, and how a test of it is run: store_census_test.go.
+
 package main
 
 // dispatch://INFRA-1149's c-read-cost: no read this child changes gets slower, and no event

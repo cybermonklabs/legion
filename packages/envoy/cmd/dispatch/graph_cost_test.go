@@ -1,3 +1,7 @@
+//go:build basebuild
+
+// The basebuild tag, and how a test of it is run: store_census_test.go.
+
 package main
 
 // The two cost measurements of dispatch://INFRA-1149 share this file. c-write-cost is
