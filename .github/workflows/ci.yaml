@@ -1469,7 +1469,8 @@ jobs:
               - '.github/go-release-targets.json'
               # The step "Check this repository's architecture notes with the composite action"
               # runs the action from this checkout: its action.yml and the check.sh beside it.
-              - '.github/actions/architecture-check/**'
+              - '.github/actions/architecture-check/action.yml'
+              - '.github/actions/architecture-check/check.sh'
               # That same step judges the notes at the action's default path.
               - '.dispatch/architecture/**'
             # The envoy-infra module's own workspace (packages/envoy/infra/go.work binds it and

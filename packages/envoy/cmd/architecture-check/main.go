@@ -107,13 +107,6 @@ type rejected struct {
 // errNoDirectory is the set builder's answer for a directory that does not exist.
 var errNoDirectory = errors.New("does not exist")
 
-// unreadable is the set builder's answer for a directory or a note it could not read: exit 2,
-// "cannot be read".
-type unreadable struct{ err error }
-
-func (u *unreadable) Error() string { return "cannot be read: " + u.err.Error() }
-func (u *unreadable) Unwrap() error { return u.err }
-
 // sizeRefusal is the bound's refusal of a set: one notes.CheckSize error for each note above
 // notes.MaxFileSize, each naming the note's absolute path. It is exit 1, a refused set, as a
 // notes.Parse problem is; held is the number of notes the set holds, for the count line, and no
@@ -132,7 +125,7 @@ func (r *sizeRefusal) Unwrap() []error { return r.problems }
 // server's GitHub reader refuses a listing before any blob read, and the length of each note it
 // read again, as that reader checks each blob; either refusal is a *sizeRefusal and answers no
 // files. A directory that does not exist is errNoDirectory, and any other failure to read it or a
-// note an *unreadable.
+// note is cannotRead's "cannot be read" error.
 func buildSet(fsys fs.FS, dir string) (map[string][]byte, []rejected, error) {
 	entries, err := fs.ReadDir(fsys, ".")
 	if errors.Is(err, fs.ErrNotExist) {
@@ -179,14 +172,15 @@ func buildSet(fsys fs.FS, dir string) (map[string][]byte, []rejected, error) {
 	return files, rejects, nil
 }
 
-// cannotRead is the set builder's *unreadable for err. os.DirFS names a path in its error
-// relative to the directory, so cannotRead makes it absolute, as every path the command prints is.
+// cannotRead is the set builder's answer for a directory or a note it could not read, exit 2: err
+// wrapped as "cannot be read". os.DirFS names a path in its error relative to the directory, so
+// cannotRead first makes it absolute, as every path the command prints is.
 func cannotRead(dir string, err error) error {
 	var pathErr *fs.PathError
 	if errors.As(err, &pathErr) && !filepath.IsAbs(pathErr.Path) {
 		pathErr.Path = filepath.Join(dir, filepath.FromSlash(pathErr.Path))
 	}
-	return &unreadable{err: err}
+	return fmt.Errorf("cannot be read: %w", err)
 }
 
 // problems splits notes.Parse's refusal into its problems: the errors.Join it answers holds one

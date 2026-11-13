@@ -67,7 +67,7 @@ runs:
         path: |
           ${{ runner.temp }}/architecture-check/mod
           ${{ runner.temp }}/architecture-check/build
-        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        key: ${{ steps.cache.outputs.cache-primary-key }}
 
     # The inputs reach the script as environment variables and never as text of `run:`, so no
     # input can become shell code. Their names leave out the INPUT prefix, which this

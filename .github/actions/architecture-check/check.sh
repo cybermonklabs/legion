@@ -42,13 +42,8 @@ require() {
   done
 }
 
-if [ "$#" -ne 1 ]; then
-  echo "$usage" >&2
-  exit 2
-fi
-mode=$1
-case "$mode" in
-  build | run) ;;
+case "$#:${1:-}" in
+  1:build | 1:run) mode=$1 ;;
   *)
     echo "$usage" >&2
     exit 2

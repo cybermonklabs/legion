@@ -8,9 +8,7 @@ import (
 )
 
 // Kind is what one directory entry is, read from a GitHub tree listing
-// (GitKind) or from a checkout (FileKind). IsNote takes it, so the Dispatch
-// server's GitHub reader (githubapp's Dir) and the architecture-check command
-// (cmd/architecture-check) decide what a note is with one implementation.
+// (GitKind) or from a checkout (FileKind); IsNote takes it.
 type Kind int
 
 const (
@@ -51,9 +49,7 @@ func (k Kind) String() string {
 // GitKind decides the kind of one GitHub tree entry from its object type and
 // mode: a blob of mode 100644 or 100755 is a file, a blob of mode 120000 a
 // symbolic link, a tree a directory, a commit a submodule, and anything else,
-// a blob of any other mode included, other. The Dispatch server's GitHub
-// reader (githubapp's Dir) calls it on each entry of a listing, and IsNote
-// then decides the entry with the rule the architecture-check command uses.
+// a blob of any other mode included, other.
 func GitKind(objectType, mode string) Kind {
 	switch objectType {
 	case "blob":
@@ -75,9 +71,7 @@ func GitKind(objectType, mode string) Kind {
 // FileKind decides the kind of one checkout entry from its mode, as
 // fs.DirEntry.Type or fs.FileInfo.Mode gives it: a regular file of any
 // permission bits is a file, then a symbolic link, a directory, and anything
-// else other. The architecture-check command calls it on each entry of the
-// directory it reads, and IsNote then decides the entry with the rule the
-// Dispatch server's GitHub reader (githubapp's Dir) uses.
+// else other.
 func FileKind(mode fs.FileMode) Kind {
 	switch {
 	case mode.IsRegular():
@@ -92,32 +86,21 @@ func FileKind(mode fs.FileMode) Kind {
 
 // IsNote decides whether one entry of the architecture directory is a note:
 // a file (kind KindFile) whose name has no "/" and ends in ".md". name is the
-// entry's name inside the directory. The Dispatch server's GitHub reader
-// (githubapp's Dir) and the architecture-check command both call it, so one
-// implementation decides what a note is; every other entry is passed over.
+// entry's name inside the directory; every other entry is passed over.
 func IsNote(name string, kind Kind) bool {
 	return kind == KindFile && !strings.Contains(name, "/") && strings.HasSuffix(name, ".md")
 }
 
 // MaxFileSize is the largest note, in bytes, that a note set may hold.
-// CheckSize applies it for the Dispatch server's GitHub reader (githubapp's
-// DirFiles, on each listed size and on each decoded blob) and for the
-// architecture-check command, so both refuse the same note.
 const MaxFileSize = 1 << 20
 
-// ErrFileTooLarge is the refusal of a note larger than MaxFileSize. CheckSize
-// answers it for the Dispatch server's GitHub reader (githubapp's DirFiles)
-// and for the architecture-check command, so a caller of either tells it
-// from another failure with errors.Is.
+// ErrFileTooLarge is CheckSize's refusal of a note larger than MaxFileSize,
+// which a caller tells from another failure with errors.Is.
 var ErrFileTooLarge = errors.New("file too large")
 
 // CheckSize decides whether a note of size bytes at path is within
 // MaxFileSize: nil when it is, else ErrFileTooLarge wrapped with the path, the
-// size and the limit. The Dispatch server's GitHub reader (githubapp's
-// DirFiles) calls it on each listed size before any blob read and on each
-// decoded blob, and the architecture-check command calls it on each note
-// before it reads any and on each note it read, so one implementation bounds
-// a note.
+// size and the limit.
 func CheckSize(path string, size int64) error {
 	if size > MaxFileSize {
 		return fmt.Errorf("%w: %s is %d bytes (limit %d)", ErrFileTooLarge, path, size, MaxFileSize)

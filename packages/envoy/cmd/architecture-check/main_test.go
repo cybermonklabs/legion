@@ -151,9 +151,9 @@ func TestBuildSetOverMemory(t *testing.T) {
 			switch {
 			case row.problem == "" && err != nil:
 				t.Errorf("notes.Parse: %v, want a valid set", err)
-			case row.problem != "" && !slices.ContainsFunc(problems(err), func(problem error) bool {
+			case row.problem != "" && (err == nil || !slices.ContainsFunc(problems(err), func(problem error) bool {
 				return strings.Contains(oneLine(problem.Error()), row.problem)
-			}):
+			})):
 				t.Errorf("notes.Parse: %v, want a problem holding %q", err, row.problem)
 			}
 		})
@@ -217,9 +217,8 @@ func TestBuildSetNamesANoteItCannotReadByItsAbsolutePath(t *testing.T) {
 	t.Parallel()
 	const dir = "/checkout/.dispatch/architecture"
 	files, _, err := buildSet(deniedFS{fstest.MapFS{"api.md": {Data: []byte("A note.\n")}}}, dir)
-	var failed *unreadable
-	if !errors.As(err, &failed) || !errors.Is(err, fs.ErrPermission) || files != nil {
-		t.Fatalf("buildSet: files %q, err %v; want no files and an *unreadable of fs.ErrPermission", names(files), err)
+	if !errors.Is(err, fs.ErrPermission) || files != nil {
+		t.Fatalf("buildSet: files %q, err %v; want no files and an error of fs.ErrPermission", names(files), err)
 	}
 	if want := "cannot be read: open " + dir + "/api.md: permission denied"; err.Error() != want {
 		t.Errorf("buildSet: %q, want %q", err, want)

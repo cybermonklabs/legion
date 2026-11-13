@@ -32,10 +32,7 @@ import (
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
-// configuring a source; anything else is a genuine upstream failure. A file
-// larger than notes.MaxFileSize is DirFiles' notes.ErrFileTooLarge, which is
-// the notes package's: the bound, like the rule of which entries are notes,
-// is decided there.
+// configuring a source; anything else is a genuine upstream failure.
 var (
 	// ErrNoAppKey is the "no app credentials yet" boot state: the server has no
 	// GitHub App private key, so no installation call can be signed.

@@ -1293,12 +1293,15 @@ GATES = [
         # The action builds cmd/architecture-check with GOWORK=off, so it reads packages/envoy's
         # go.mod and go.sum and the command's packages, all under the packages/envoy/** read; what
         # is outside packages/envoy is the action itself and the notes it judges.
-        (".github/actions/architecture-check/**",
-         f"{at('envoy-go-checks', './.github/actions/architecture-check')}: its action.yml and the check.sh it runs"),
+        (".github/actions/architecture-check/action.yml",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')} runs the action it defines"),
+        (".github/actions/architecture-check/check.sh",
+         f"{at('envoy-go-checks', './.github/actions/architecture-check')}: "
+         ".github/actions/architecture-check/action.yml:57 and :81 run it"),
         (".dispatch/architecture/**",
          f"{at('envoy-go-checks', './.github/actions/architecture-check')} judges the action's default path "
-         "(.github/actions/architecture-check/action.yml:16), which check.sh:87 resolves against GITHUB_WORKSPACE "
-         "and the command it runs at check.sh:97 reads"),
+         "(.github/actions/architecture-check/action.yml:16), which check.sh:82 resolves against GITHUB_WORKSPACE "
+         "and the command it runs at check.sh:92 reads"),
     ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks") + CI_SELF),
 
 
