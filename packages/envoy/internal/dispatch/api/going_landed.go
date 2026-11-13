@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"sync/atomic"
 
@@ -101,14 +102,22 @@ func (l *goingLandings) landed(ctx context.Context, index int) (bool, error) {
 	return landed, nil
 }
 
+// goingPaddedRequests is the requests of the claim's element e padded with nulls up to index $7,
+// so a landing at $7 is set at that index whatever the element held: jsonb_set past the end of an
+// array appends rather than leaving a gap, which would put a landing at the wrong index.
+const goingPaddedRequests = `(coalesce(e->'requests', '[]'::jsonb) || coalesce((
+	select jsonb_agg('null'::jsonb) from generate_series(jsonb_array_length(coalesce(e->'requests', '[]'::jsonb)), $7::int)), '[]'::jsonb))`
+
 // step is the commit step a route's transaction takes while the request runs (running): a
 // transaction that wrote - it holds the ROW EXCLUSIVE lock an INSERT, UPDATE, DELETE or MERGE
 // takes, as markRequestKeyCommitted reads it, on any table but request_keys and going_runs, which
 // this statement's own update takes - records the request landed on the claim's element of the
-// run, in that same transaction. A transaction that only read records nothing. One whose record
-// finds no such claim - the run is gone, or the claim was taken off - is refused and rolls back,
-// so no change commits without the record of its landing. A route that commits several
-// transactions records the same landing with each.
+// run, at the request's own index (goingPaddedRequests), in that same transaction. A transaction
+// that only read records nothing. One whose record finds no such claim - the run is gone, or the
+// claim was taken off - is refused and rolls back, so no change commits without the record of its
+// landing. A route that commits several transactions records the same landing with each. The
+// status its answer will carry and the item it makes are not known before the commit; the caller
+// adds them once it reads the answer (goingLandings.answered).
 func (landing goingLanding) step(running *atomic.Bool) store.BeforeCommit {
 	return func(ctx context.Context, tx pgx.Tx) error {
 		if !running.Load() {
@@ -130,20 +139,45 @@ func (landing goingLanding) step(running *atomic.Bool) store.BeforeCommit {
 			), recorded as (
 				update going_runs r set %[1]s = (
 				  select jsonb_agg(case when %[2]s then jsonb_set(e, '{requests}',
-				    jsonb_set(coalesce(e->'requests', '[]'::jsonb), array[$5::text], $6::jsonb, true)) else e end order by n)
+				    jsonb_set(%[3]s, array[$5::text], $6::jsonb, true)) else e end order by n)
 				  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n))
 				where r.id = $1::uuid and r.author_login = $2 and (select yes from wrote)
 				  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s)
 				returning 1
 			)
-			select (select yes from wrote), exists (select 1 from recorded)`, column, condition),
+			select (select yes from wrote), exists (select 1 from recorded)`, column, condition, goingPaddedRequests),
 			landing.landings.run, landing.landings.login, landing.landings.write, landing.landings.undo,
-			strconv.Itoa(landing.index), string(encoded)).Scan(&wrote, &recorded); err != nil {
+			strconv.Itoa(landing.index), string(encoded), landing.index).Scan(&wrote, &recorded); err != nil {
 			return fmt.Errorf("record a going request landed: %w", err)
 		}
 		if wrote && !recorded {
 			return fmt.Errorf("record a going request landed: the run holds no claim of write %s", landing.landings.write)
 		}
 		return nil
+	}
+}
+
+// answered adds to the landing of the request at index, where the claim's record holds one, the
+// status its answer carried and the item it made (record), so a write taken over after its
+// process ended (adoptGoingRunWrite) names them as the request's own answer did. It is the
+// writes route's bookkeeping, outside every commit step (store.WithoutBeforeCommit), and best
+// effort: a landing it cannot amend still stands, without them.
+func (l *goingLandings) answered(ctx context.Context, index int, record goingWriteRequest) {
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return
+	}
+	column, condition := l.element()
+	landed := `coalesce((e->'requests'->$7::int->'outcome'->>'ok')::boolean, false)`
+	bookkeeping, cancel := goingBookkeeping(ctx)
+	defer cancel()
+	if err := goingReleased(l.s.appendToGoingRun(store.WithoutBeforeCommit(bookkeeping), fmt.Sprintf(`
+		update going_runs r set %[1]s = (
+		  select jsonb_agg(case when %[2]s and %[3]s then jsonb_set(e, array['requests', $5::text], $6::jsonb) else e end order by n)
+		  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n))
+		where r.id = $1::uuid and r.author_login = $2
+		  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s and %[3]s)`, column, condition, landed),
+		l.run, l.login, l.write, l.undo, strconv.Itoa(index), string(encoded), index)); err != nil {
+		slog.Warn("dispatch: add a going request's answer to its landing", "error", err)
 	}
 }

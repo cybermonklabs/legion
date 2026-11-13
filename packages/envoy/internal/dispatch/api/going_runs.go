@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -443,11 +444,15 @@ func goingRunUndoPendingAt(at int) string {
 // claimed again. Each refusal, like a run that is not the author's, that the record does not hold
 // or that is older than goingRunsKept, is pgx.ErrNoRows, which the caller tells apart by reading
 // the run again. The claim marks no Idempotency-Key committed (store.WithoutBeforeCommit), since
-// it writes nothing a repeat must not make again.
-func (s *server) claimGoingRunUndos(ctx context.Context, id, authorLogin string, writes []string, at time.Time, read int) error {
+// it writes nothing a repeat must not make again. Each pending undo holds, as its requests, those
+// an earlier undo of its write landed (landed, by write id; goingUndoLandedBefore), as a write's
+// claim holds those of its invocation, so the requests the undo goes on to send record their
+// landings at their own indexes.
+func (s *server) claimGoingRunUndos(ctx context.Context, id, authorLogin string, writes []string, landed map[string][]goingWriteRequest, at time.Time, read int) error {
 	pending := make([]goingRunUndo, 0, len(writes))
 	for _, write := range writes {
-		pending = append(pending, goingRunUndo{WriteID: write, Pending: true, Fields: []goingUndoField{}, At: at})
+		pending = append(pending, goingRunUndo{WriteID: write, Pending: true, Fields: []goingUndoField{}, At: at,
+			Requests: slices.Clone(landed[write])})
 	}
 	encoded, err := json.Marshal(pending)
 	if err != nil {

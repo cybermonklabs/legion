@@ -782,7 +782,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
-	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
+	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}, Request: reopenCommentInput{}, OptionalRequest: true},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/comments/{id}/deliveries": {

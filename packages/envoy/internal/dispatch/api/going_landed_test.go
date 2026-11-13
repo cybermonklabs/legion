@@ -225,6 +225,28 @@ func TestGoingWriteWhoseRequestCommittedAndAnswered5xxIsNeverSentAgain(t *testin
 				t.Fatalf("the write answered %+v with %s sent %d times, want it landed once", line, own, sent[own])
 			}
 		})
+		// The row's own request, the last the write sends, commits and then answers 503: the write
+		// went through, so neither the write store's retry under its key nor a new press sends it
+		// again, and the issue is done with its reason posted once.
+		t.Run(row.action+" its own request", func(t *testing.T) {
+			issue := rig.issue(t, "Closed, then 503")
+			arguments, first, own := row.on(t, rig, issue)
+			run := rig.proposed(t, "alice", false, row.action, arguments)
+			sent := map[string]int{}
+			rig.served.inProcess = goingCommittedThenRefused(inner, own, sent)
+			write := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			first1 := rig.keyedWrite(t, run, "press-own-"+row.action, write)
+			retry := rig.keyedWrite(t, run, "press-own-"+row.action, write)
+			again := rig.keyedWrite(t, run, "press-own-"+row.action+"-again", write)
+			if sent[first] != 1 || sent[own] != 1 || rig.issueRead(t, issue).Status != "done" {
+				t.Fatalf("%s was sent %d times and %s %d, want each once and the issue done", first, sent[first], own, sent[own])
+			}
+			for _, answer := range []*httptest.ResponseRecorder{first1, retry, again} {
+				if !goingLineOf(t, answer).Outcome.OK {
+					t.Fatalf("a press answered %s, want the write's line, landed", answer.Body.String())
+				}
+			}
+		})
 	}
 }
 
@@ -347,6 +369,66 @@ func TestGoingWriteWhoseProcessEndedAfterARequestLandedResumes(t *testing.T) {
 			if !line.Outcome.OK || sent[first] != 0 || sent[own] != 1 || rig.issueRead(t, issue).Status != "done" {
 				t.Fatalf("the press after the process ended answered %+v with %s sent %d times and %s %d, want it resumed at %s and landed",
 					line, first, sent[first], own, sent[own], own)
+			}
+		})
+	}
+}
+
+// goingDiesBefore is a route table that ends the request making `dying`, the first time it is
+// sent, before its route sees it: the process ends after every earlier request of the write was
+// answered and before the write's record.
+func goingDiesBefore(inner http.Handler, dying string) http.Handler {
+	died := false
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path == dying && !died {
+			died = true
+			panic(http.ErrAbortHandler)
+		}
+		inner.ServeHTTP(w, r)
+	})
+}
+
+// TestGoingWriteTakenOverAnswersAStatusAndWhatItsLandingsMade (review round 5, finding 4): a
+// write taken over after its process ended is answered with a status, never ok with status 0,
+// and a request of it that was answered before the process ended keeps, in the record of its
+// landing, the status it was answered and the item it made, so the taken-over write names them.
+func TestGoingWriteTakenOverAnswersAStatusAndWhatItsLandingsMade(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+
+	t.Run("every request landed before the process ended", func(t *testing.T) {
+		issue := rig.issue(t, "Commented, then ended unanswered")
+		run := rig.proposed(t, "alice", false, "dispatch_comment", map[string]any{"issue": issue, "body": "Landed unanswered."})
+		write := map[string]any{"offer": "dispatch_comment", "invocation": 0, "approved": goingApprovedPerson}
+		rig.served.inProcess = goingDiesAfter(inner, http.MethodPost+" /api/v1/issues/"+issue+"/comments")
+		rig.dieWriting(t, run, write)
+		rig.served.inProcess = inner
+		rig.ageGoingWrites(t, run)
+		line := goingLineOf(t, rig.write(t, "alice", run, write))
+		if !line.Outcome.OK || line.Outcome.Status == 0 {
+			t.Fatalf("the taken-over write answered %+v, want it landed with a status", line.Outcome)
+		}
+	})
+
+	for _, row := range rows {
+		t.Run(row.action, func(t *testing.T) {
+			issue := rig.issue(t, "Reason answered, then ended")
+			arguments, first, own := row.on(t, rig, issue)
+			run := rig.proposed(t, "alice", false, row.action, arguments)
+			write := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			rig.served.inProcess = goingDiesBefore(inner, own)
+			rig.dieWriting(t, run, write)
+			rig.served.inProcess = inner
+			rig.ageGoingWrites(t, run)
+			goingLineOf(t, rig.write(t, "alice", run, write))
+			recorded := rig.requestsRecorded(t, run)
+			if len(recorded) != 1 || len(recorded[0].Requests) != 2 {
+				t.Fatalf("the run keeps %+v, want the one write with its two requests", recorded)
+			}
+			if landed := recorded[0].Requests[0]; landed.Method+" "+landed.Path != first || landed.Outcome.Status != http.StatusCreated || landed.Made == "" {
+				t.Fatalf("the taken-over write records %s as %+v, want it landed 201 naming the message it made", first, landed)
 			}
 		})
 	}

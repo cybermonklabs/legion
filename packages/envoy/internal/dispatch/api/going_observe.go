@@ -623,13 +623,14 @@ func (o goingObserver) askState(ctx context.Context, id string) (goingObservatio
 	return observed, nil
 }
 
-// commentResolved is whether the comment's thread is resolved.
+// commentResolved is the comment's thread's resolution (goingCommentResolution): whether it is
+// resolved, by whom and when.
 func (o goingObserver) commentResolved(ctx context.Context, id string) (goingObservation, error) {
 	var read struct {
 		Comment struct {
 			ID       string  `json:"id"`
 			IssueKey *string `json:"issue_key"`
-			Resolved bool    `json:"resolved"`
+			goingCommentResolution
 		} `json:"comment"`
 	}
 	err := o.read.get(ctx, goingCommentPath(id), &read)
@@ -637,7 +638,11 @@ func (o goingObserver) commentResolved(ctx context.Context, id string) (goingObs
 	if err != nil {
 		return observed, err
 	}
-	observed.value = read.Comment.Resolved
+	resolution := read.Comment.goingCommentResolution
+	if len(resolution.ResolvedBy) == 0 {
+		resolution.ResolvedBy = json.RawMessage("null")
+	}
+	observed.value = resolution
 	return observed, nil
 }
 

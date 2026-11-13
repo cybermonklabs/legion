@@ -255,6 +255,36 @@ func TestGoingUndoWritesBackOnlyWhatTheTurnLeftAsTheWriteLands(t *testing.T) {
 			t.Fatalf("the document reads %q after the undo answered %+v, want the later edit kept", text, line.Outcome)
 		}
 	})
+
+	t.Run("a created issue's close", func(t *testing.T) {
+		run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, then started by bob", "force": true}, nil)
+		rig.served.inProcess = goingBefore(inner, http.MethodPatch+" /api/v1/issues/"+made.Item, func() {
+			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+made.Item, map[string]any{"status": "in_progress"})
+		})
+		line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+		rig.served.inProcess = inner
+		if status := rig.issueRead(t, made.Item).Status; status != "in_progress" {
+			t.Fatalf("the created issue is %s after the undo answered %+v, want bob's in_progress kept", status, line.Outcome)
+		}
+		if posted := "POST /api/v1/issues/" + made.Item + "/messages"; line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, posted) {
+			t.Fatalf("the undo answered %+v, want it refused %s naming %s, the reason it left posted", line.Outcome, codeGoingUndoChanged, posted)
+		}
+	})
+
+	t.Run("a resolved thread", func(t *testing.T) {
+		comment := decodeBody[model.Comment](t, rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/comments", map[string]any{"body": "A thread bob settles again."})).ID
+		run, _ := rig.runOne(t, "dispatch_resolve_comment", map[string]any{"comment": comment}, nil)
+		rig.served.inProcess = goingBefore(inner, http.MethodPost+" /api/v1/comments/"+comment+"/reopen", func() {
+			rig.fixture(t, "bob", http.MethodPost, "/api/v1/comments/"+comment+"/reopen", nil)
+			rig.fixture(t, "bob", http.MethodPost, "/api/v1/comments/"+comment+"/resolve", nil)
+		})
+		line := oneLine(t, rig.undo(t, "alice", run, nil), false)
+		rig.served.inProcess = inner
+		read := decodeBody[commentRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/comments/"+comment, nil))
+		if !read.Comment.Resolved || read.Comment.ResolvedBy == nil || model.CanonicalLogin(read.Comment.ResolvedBy.ID) != "bob" {
+			t.Fatalf("the thread reads resolved %v by %+v after the undo answered %+v, want bob's resolution kept", read.Comment.Resolved, read.Comment.ResolvedBy, line.Outcome)
+		}
+	})
 }
 
 // TestGoingUndoOfAWriteClaimedAfterAnotherUndoRecordedResumesFromThatRecord (review round 4,
@@ -289,6 +319,46 @@ func TestGoingUndoOfAWriteClaimedAfterAnotherUndoRecordedResumesFromThatRecord(t
 	if sent[messages] != 0 || rig.issueRead(t, line.Item).Status != "done" {
 		t.Fatalf("the undo claimed after the other recorded sent %s %d times and left the issue %s, want it resumed at the close",
 			messages, sent[messages], rig.issueRead(t, line.Item).Status)
+	}
+}
+
+// TestGoingUndoOfACreatedIssueWhoseResumedCloseCommittedIsRecordedDone (review round 5, finding
+// 1; check c21): an undo posts the created issue's reason and its close is refused 503 before it
+// commits; the next undo resumes at the close, which commits and then answers 503. That close
+// landed, so the undo is recorded done, the write is no longer undoable, and a third undo finds
+// nothing to undo rather than calling the turn's own close another writer's.
+func TestGoingUndoOfACreatedIssueWhoseResumedCloseCommittedIsRecordedDone(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Closed on the second undo", "force": true}, nil)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	closes := 0
+	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && r.URL.Path == "/api/v1/issues/"+made.Item {
+			closes++
+			if closes == 2 {
+				inner.ServeHTTP(httptest.NewRecorder(), r)
+			}
+			if closes <= 2 {
+				writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "the close was refused")
+				return
+			}
+		}
+		inner.ServeHTTP(w, r)
+	})
+	if first := oneLine(t, rig.undo(t, "alice", run, nil), false); first.Outcome.Status != http.StatusServiceUnavailable {
+		t.Fatalf("the first undo answered %+v, want the close's 503", first.Outcome)
+	}
+	second := oneLine(t, rig.undo(t, "alice", run, nil), true)
+	if status := rig.issueRead(t, made.Item).Status; status != "done" {
+		t.Fatalf("the created issue is %s after the second undo answered %+v, want done", status, second.Outcome)
+	}
+	if third := rig.undo(t, "alice", run, nil); len(third.Lines) != 0 {
+		t.Fatalf("a third undo answered %+v, want nothing left to undo", third.Lines)
+	}
+	if closes != 2 {
+		t.Fatalf("the close was sent %d times, want twice: refused, then committed", closes)
 	}
 }
 

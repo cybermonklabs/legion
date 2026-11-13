@@ -160,7 +160,11 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		if len(ids) == 0 {
 			break
 		}
-		err := s.claimGoingRunUndos(ctx, run.ID, caller.ID, ids, claimedAt, len(run.Undos))
+		landed := make(map[string][]goingWriteRequest, len(ids))
+		for _, id := range ids {
+			landed[id] = goingUndoLandedBefore(run, id)
+		}
+		err := s.claimGoingRunUndos(ctx, run.ID, caller.ID, ids, landed, claimedAt, len(run.Undos))
 		if err == nil {
 			break
 		}
@@ -855,9 +859,20 @@ func (u goingUndoer) follow(ctx context.Context, write goingRunWrite) (any, goin
 	return now, outcome
 }
 
-// comment undoes a resolve by reopening the thread, while it is still resolved.
+// goingCommentResolution is a resolve's value: whether the thread is resolved, and the resolution
+// as the comment's read answers it, who resolved it and when, null for an open thread.
+type goingCommentResolution struct {
+	Resolved   bool            `json:"resolved"`
+	ResolvedBy json.RawMessage `json:"resolved_by"`
+	ResolvedAt *string         `json:"resolved_at"`
+}
+
+// comment undoes a resolve by reopening the thread, while it still holds the resolution the turn
+// left: the reopen expects that resolution's moment (reopenCommentInput.ExpectResolvedAt), decided
+// under the comment's lock, so a thread another writer reopened and resolved again after the
+// undo's read keeps their resolution, the route's 409 COMMENT_CHANGED being the thread changed.
 func (u goingUndoer) comment(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
-	var before, after bool
+	var before, after goingCommentResolution
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
 		return nil, goingFailed(fmt.Errorf("the write's record holds no resolve to undo"))
 	}
@@ -865,18 +880,23 @@ func (u goingUndoer) comment(ctx context.Context, write goingRunWrite) (any, goi
 	if err != nil {
 		return nil, goingFailed(err)
 	}
-	resolved, _ := current.value.(bool)
+	now, _ := current.value.(goingCommentResolution)
 	switch {
-	case resolved != after:
-		return resolved, goingChanged([]string{"the thread is open now, reopened by another write"}, nil)
-	case before == after:
-		return resolved, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the thread was resolved before this write, so there is nothing to reopen"}
+	case before.Resolved || !after.Resolved:
+		return now, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the thread was resolved before this write, so there is nothing to reopen"}
+	case !now.Resolved:
+		return now, goingChanged([]string{"the thread is open now, reopened by another write"}, nil)
+	case after.ResolvedAt == nil || now.ResolvedAt == nil || *now.ResolvedAt != *after.ResolvedAt:
+		return now, goingChanged([]string{"the thread was resolved again since this write, by another write"}, nil)
 	}
-	outcome := u.send(ctx, 0, goingCommentReopenRoute, map[string]string{"id": write.Target}, nil)
-	if outcome.OK {
-		return false, outcome
+	outcome := u.send(ctx, 0, goingCommentReopenRoute, map[string]string{"id": write.Target}, map[string]any{"expect_resolved_at": *after.ResolvedAt})
+	if read, err := u.observer.commentResolved(ctx, write.Target); err == nil {
+		now, _ = read.value.(goingCommentResolution)
 	}
-	return resolved, outcome
+	if outcome.Code == codeCommentChanged {
+		return now, goingChanged([]string{outcome.Message}, nil)
+	}
+	return now, outcome
 }
 
 // retract undoes an ask the turn opened, an approval request's among them, by retracting it while
@@ -923,12 +943,15 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 }
 
 // closeCreated closes an issue the turn created: the undo's reason posted on it as a message,
-// then its status set done, while it is still open, answering how each request went. Where an
-// earlier undo of the write posted the reason (landed) and its close was refused, the reason is
-// not posted again: the undo resumes at the close. A close refused after the reason landed is
-// answered as the route refused it, naming the reason that stands (goingRefusal.after), as a
-// write's refused line names what of it landed. It is the one undo that sends more than one
-// request; every other kind sends one, so a retry of it has nothing landed to skip.
+// then its status set done, while it is still open, answering how each request went. The close
+// expects the status the undo read (updateIssueInput.Expect), decided under the issue's lock, so
+// a status another writer set after that read is never closed over: that refusal, 409
+// ISSUE_CHANGED, is the issue changed, and settles. Where an earlier undo of the write posted the
+// reason (landed) and its close was refused, the reason is not posted again: the undo resumes at
+// the close. A close refused after the reason landed is answered naming the reason that stands
+// (goingRefusal.after), as a write's refused line names what of it landed. It is the one undo that
+// sends more than one request; every other kind sends one, so a retry of it has nothing landed to
+// skip.
 func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) (any, goingWriteOutcome, []goingWriteRequest) {
 	var issue struct {
 		Status   string  `json:"status"`
@@ -952,7 +975,9 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 		return issue.Status, reason.Outcome, requests
 	}
 	closing := goingUndoRequest(goingIssuePatchRoute, values)
-	closing.Outcome = u.send(ctx, 1, goingIssuePatchRoute, values, map[string]any{"status": "done"})
+	closing.Outcome = u.send(ctx, 1, goingIssuePatchRoute, values, map[string]any{
+		"status": "done", "expect": map[string]any{"status": issue.Status},
+	})
 	requests = append(requests, closing)
 	if closing.Outcome.OK {
 		return "done", closing.Outcome, requests
@@ -960,8 +985,11 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 	if closing.Outcome.Code == codeGoingLandingUnread {
 		return issue.Status, closing.Outcome, requests
 	}
-	refused := goingRefusal{Status: closing.Outcome.Status, Code: closing.Outcome.Code, Message: closing.Outcome.Message}
-	return issue.Status, refused.after(requests[:1]).outcome(), requests
+	refused := goingRefusal{Status: closing.Outcome.Status, Code: closing.Outcome.Code, Message: closing.Outcome.Message}.after(requests[:1])
+	if closing.Outcome.Code == "ISSUE_CHANGED" {
+		return issue.Status, goingChanged([]string{refused.Message}, nil), requests
+	}
+	return issue.Status, refused.outcome(), requests
 }
 
 // goingUndoRequest is a request an undo sends through route, its placeholders filled from values,

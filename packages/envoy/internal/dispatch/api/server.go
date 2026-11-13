@@ -1316,8 +1316,8 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
-// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk and
-// the follower routes. A
+// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk,
+// reopenComment and the follower routes. A
 // credential that proved no session of its own - a personal token - names its agent nowhere
 // else on a route whose body is already read, so the body's actor is taken for it, exactly as
 // `?session=` is taken on every other route (actingPerson). A credential that did prove one - a

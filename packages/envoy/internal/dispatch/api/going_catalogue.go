@@ -787,6 +787,11 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 		if response.StatusCode < http.StatusMultipleChoices {
 			record.Made = goingMadeID(answer)
 		}
+		if c.landings != nil {
+			// A later attempt resumes after this request: its landing names what it was
+			// answered, should this attempt end before the write is recorded.
+			c.landings.answered(ctx, index, record)
+		}
 		sent = append(sent, record)
 	}
 	return nil, sent, nil

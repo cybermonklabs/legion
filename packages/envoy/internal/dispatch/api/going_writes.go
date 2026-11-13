@@ -385,7 +385,10 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case response == nil:
 		// Every request landed in an earlier attempt of the write, whose process ended before it
-		// recorded the write: what it left was never read.
+		// recorded the write: what it left was never read, and where that attempt ended before
+		// its last request was answered, the status that answer would have carried is unknown,
+		// so the line carries the writes route's own 200.
+		claim.write.Outcome.Status = cmp.Or(last.Outcome.Status, http.StatusOK)
 		claim.write.Outcome.Message = "the write landed in an earlier attempt that ended before recording it, so the value after it was not read"
 		claim.write.AfterUnread = true
 	case response.StatusCode >= http.StatusMultipleChoices:
