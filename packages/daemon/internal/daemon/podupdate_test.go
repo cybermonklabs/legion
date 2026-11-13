@@ -1511,8 +1511,9 @@ func TestPodUpdateDoesNotCallALaunchingClaimUnableToAnswer(t *testing.T) {
 // A suspended claim is not revived for the round, whoever suspended it and whatever contract it
 // last recorded: the round's ask is a message on the role's own topic, which a role with no live
 // session does not hold, and the round ends at its bound whether or not that role answers
-// (dispatch://INFRA-2981 R1). The claim is in the round and is asked like any other: its row is
-// enqueued and marked, and the claim stays suspended.
+// (dispatch://INFRA-2981 R1). The claim is in the round, and it is not asked while it has no
+// live session: no row is enqueued for it and no mark is written on it, so the first sweep after
+// its agent says it is ready asks it (supervision.askRound). The claim stays suspended.
 func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),
@@ -1522,10 +1523,23 @@ func TestPodUpdateRevivesNoSuspendedClaimForTheRound(t *testing.T) {
 	rig.drifts(podUpdateDrift)
 
 	rig.tick()
+	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	for range 3 {
+		rig.tick()
+	}
 
-	asked := rig.awaitAsked(claim.RoleTester, podUpdateRound)
-	if asked.State != supervise.StateSuspended {
-		t.Fatalf("the suspended claim is %s after the round asked it, want it still suspended", asked.State)
+	c := rig.claimOf(claim.RoleTester)
+	if c.State != supervise.StateSuspended {
+		t.Fatalf("the suspended claim is %s after the round's sweeps, want it still suspended", c.State)
+	}
+	if c.UpdateTaskedAt != nil {
+		t.Fatalf("the suspended claim records an ask at %v, want none while no live session holds its role", c.UpdateTaskedAt)
+	}
+	for _, ask := range rig.asks() {
+		if ask.Role == claim.RoleTester {
+			t.Fatalf("the round published %+v to the suspended claim's role, want nothing while no live session holds it", ask)
+		}
 	}
 	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
 		t.Fatalf("the round resumed %d processes, want none: a suspended role is asked on its topic and woken for nothing", len(resumes))

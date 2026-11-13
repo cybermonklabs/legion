@@ -1866,6 +1866,11 @@ So that daemon reads each answer that an open round holds as an answer of the ca
 A turn that daemon did not prompt then takes such an answer back, and that daemon asks the role again, as it does for every answer of the call.
 A rollback to a release before `legion-v19.16.0` needs no statement: `legion-v19.15.0` names neither column in `packages/daemon/internal/store/claims.go`.
 An earlier release reads no `pod_update_grace_minutes` and refuses it as `unknown key pod_update_grace_minutes`, so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
+The reset of the open pod rounds that this migration made needs no step.
+The earlier release queues its task at once for a claim with no ask mark, and it reads the mark that this release wrote as its own task, so it asks that role again at its re-ask bound after the mark (`pod_update_retask_hours`).
+A queued `update_ask` outbox row needs no step either.
+The earlier release puts that kind in no outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs the row, and the row holds back no other row.
+A later roll forward runs the row, and the row publishes nothing for a round that its claim no longer records (`updateAsk`).
 
 #### Rolling back the release that names what nothing starts
 
@@ -4420,12 +4425,15 @@ nothing recorded what that pod was built from, and a guess would replace pods th
 What the sweep then opens is one round per issue, since every role of an issue shares its one pod (`reconcilePodUpdates`, `packages/daemon/internal/daemon/podupdate.go`).
 Every claim of the issue that has a session and has not retired is asked, since its agent has run and may hold unpushed work.
 The daemon publishes one message to each such role's own Envoy topic, the architect's included (`askRound`, `record.UpdateAsk`):
-it names the drift, the round's own id and the moment the round ends, and it asks the role to push its work to the issue branch and answer `ready_for_update` with that id.
+it names the drift, the round's own id, the moment the round ends and the prefix of the rescue branches the push check pushes to (below), and it asks the role to push its work to the issue branch and answer `ready_for_update` with that id.
 The text is the one `supervise.UpdateTask` builds from the reasons and the opening the round recorded, so every role of one round reads one text.
 Each role is asked once per round, which its claim records (the `update_tasked_at` column), and nothing asks it again.
+The daemon asks a role only once its agent has said it is ready (`supervise.SaidReady`).
+A claim that is queued, launching, registered but not ready, or suspended has no live session on its role's topic, so the sweep asks it nothing and writes no mark on it.
+The first sweep after its agent is ready asks it.
 The message can reach a role in the middle of a turn, and it tells the role to act at once.
-A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it:
-the message finishes undelivered, and the round does not wait for that role past its bound.
+A role that no live session holds — one whose pod an idle release took, or one a suspension let go — is not revived to read it, and the round does not wait for that role past its bound.
+A ready session claims its role's topic inside its first turn or at the first-turn bound, so a message published inside that window finishes undelivered.
 A `failed` claim is the exception: it runs no turn on the pod, so the round asks it nothing and does not wait for it (`askedClaims`); what it left unpushed is carried off the disk by the push check before the replacement (below), and a retry brings it back into the round as any other claim.
 No claim is left out of a round for the contract its plugin records:
 a role whose `legion` tool has no `ready_for_update` operation is told to push its work and end its turn, since its round ends at the bound whatever it does.
@@ -4489,6 +4497,14 @@ every role in it has already been told to push its work and to start no new work
 A role that has answered waits for that replacement.
 It comes back on the new pod in its own session, through the displaced path, with its workspace provisioned afresh from the issue's pushed branch and the task the round held back still waiting for it
 — which is why it is asked to push before it answers.
+
+A round open when the release that brought the bound is deployed starts its bound and its ask at the deploy.
+That release's migration `20261113110610_drop_claim_update_answer_marks` sets the opening of every claim in a pod round to the moment of the migration, and clears the claim's ask mark (`update_tasked_at`) and its notice mark (`update_told_at`).
+The earlier release wrote the ask mark when it queued its task, and this release reads it as the mark of its own Envoy message, so without the reset a tasked role would never get the message.
+A round open longer than `pod_update_grace_minutes` would also be past its bound at the first sweep, which would replace the pod before any role was asked.
+So each role of such a round is asked once by this release, at the first sweep that finds it ready, and the round ends `pod_update_grace_minutes` after the deploy at the latest, an operator's suspension excepted.
+The notice mark goes too, because the earlier release set it for another notice under the old clock.
+If the mark stayed, it would stop the one `update-stalled` notice that this release gives past the new bound.
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).

@@ -249,12 +249,13 @@ type PodUpdateOpen struct {
 }
 
 // UpdateTask is the text a pod's update round asks each role with. round is the round, which the
-// role answers with, reasons is what the daemon found, as Claim.UpdateReasons holds it, and
-// endsAt is the moment the round ends at the latest: the round's recorded opening
-// (Claim.UpdateOpenedAt) plus pod_update_grace_minutes. The sweep (internal/daemon) builds it
-// from the round's record, so the text names one moment for every role of the round, and the
-// text rides record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle
-// of a turn, so the text tells the role to act now rather than after the turn.
+// role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it. endsAt is
+// the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
+// plus pod_update_grace_minutes. rescue is the prefix of every rescue branch of the pod's
+// replacement (internal/daemon's rescueBranch). The sweep (internal/daemon) builds the text from
+// the round's record, so the text names one moment for every role of the round, and the text
+// rides record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of
+// a turn, so the text tells the role to act now rather than after the turn.
 //
 // The text names the round's own id, and the role passes it back in its answer
 // (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
@@ -271,23 +272,24 @@ type PodUpdateOpen struct {
 // endsAt whatever it does.
 //
 // The text also says what the daemon's push check saves before the pod goes, and to which
-// rescue branch (rescue.Request.Branch, the daemon's rescueBranch), and that a pod whose shim
-// predates the check is not checked. A rescue branch is named for the pod rather than for a
-// session, so it can hold another session's commits: the text tells the role to read a branch's
-// commits before it takes any, and names the daemon's own commit ("Edits left in the
-// workspace", internal/rescue), whose files say whose work it holds and whose author does not
-// (RescueBranchWarning, which the daemon's rescueMessage gives the issue too).
+// rescue branch: the name starts with rescue, which is the prefix the push check is given
+// (rescue.Request.Branch), so the name the text gives is the name the check pushes to. It says
+// too that a pod whose shim predates the check is not checked. A rescue branch is named for the
+// pod rather than for a session, so it can hold another session's commits: the text tells the
+// role to read a branch's commits before it takes any, and names the daemon's own commit ("Edits
+// left in the workspace", internal/rescue), whose files say whose work it holds and whose author
+// does not (RescueBranchWarning, which the daemon's rescueMessage gives the issue too).
 //
-// The text is built in pieces, and reasons goes in a piece of its own. A reason is the JSON
-// the daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
-// character. A value put between two constant pieces that both hold that same quote reads as the
-// end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The sentence that holds
-// reasons has no quote character in it, and the sentences on each side of it are pieces of their
-// own.
+// The text is built in pieces, and reasons and rescue each go in a piece of their own. A reason
+// is the JSON the daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can
+// hold a quote character. A value put between two constant pieces that both hold that same quote
+// reads as the end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The
+// sentence that holds reasons and the sentence that holds rescue have no quote character in
+// them, and the sentences on each side of each are pieces of their own.
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
-func UpdateTask(round, reasons string, endsAt time.Time) string {
+func UpdateTask(round, reasons string, endsAt time.Time, rescue string) string {
 	ends := endsAt.UTC().Format(time.RFC3339)
 	return "The daemon must replace the pod that runs this issue's roles. " +
 		fmt.Sprintf("The reasons are: %s.", reasons) +
@@ -319,13 +321,14 @@ When the round ends, the daemon runs a push check on each workspace of the pod. 
 - Each commit that the workspace holds and the remote does not have.
 - One commit of the workspace's files as they are at that moment. This commit does not hold the files that .gitignore ignores.
 
-The push check pushes them to a rescue branch. The name of a rescue branch is this issue's branch name, then "-rescue-", then the first 8 characters of the pod's ID. Then "-" and a number end the name. After the replacement, the daemon writes the name of each rescue branch on this issue.
+The push check pushes them to a rescue branch. `,
+			round, ends, ends, round, ends) +
+		fmt.Sprintf("The name of each rescue branch starts with %s.", rescue) +
+		` Then "-" and a number end the name. After the replacement, the daemon writes the name of each rescue branch on this issue.
 
 The daemon does not run the push check on a pod whose shim is older than the push check. On such a pod, work that you do not push is lost.
 
-`,
-			round, ends, ends, round, ends) +
-		RescueBranchWarning + `
+` + RescueBranchWarning + `
 
 The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`
 }

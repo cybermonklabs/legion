@@ -412,10 +412,13 @@ func (c Claim) answeredOpenRound() bool {
 }
 
 // openRoundHoldsTask is whether the claim's open round holds the task the claim has pending: the
-// hold above, over a task that is not an ask of the round itself (updatesRound), which the round
-// never holds back from the worker it is asking. It is built from sendPending's own hold rather
-// than written out again, so the restore that reads it (NewMachine) can never judge a task held
-// that sendPending would send, or the other way about.
+// hold above, over a task that is not an ask of the round itself (updatesRound). This daemon
+// queues no ask of a round as a task: it publishes the ask to the role's Envoy topic
+// (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one an older
+// daemon queued and left in the store, and the round does not hold that task back from the
+// worker it asks. It is built from sendPending's own hold rather than written out again, so the
+// restore that reads it (NewMachine) can never judge a task held that sendPending would send, or
+// the other way about.
 func (c Claim) openRoundHoldsTask() bool {
 	return c.answeredOpenRound() && !updatesRound(c.Pending, c.UpdateRound)
 }
@@ -474,17 +477,18 @@ func (c Claim) openRoundHoldsTask() bool {
 // could be worked with. So such a task waits for the credit and then for the replacement
 // process's ready, which is the same wait every other task of that claim is already in.
 //
-// An ask the claim can no longer answer is dropped here rather than sent, and there are two of
-// them: an ask of a round another round has replaced, and an ask of a round whose pod the
-// claim's process no longer runs in (Claim.LeftPodRound). The worker that read either would be
-// asked to push its work for a pod replacement this daemon has already made, and it would
-// refuse the answer the ask asks for. An ask names the round it asked in its own delivery id,
-// and keeps it across every take-back (rotateTaskID), so the ask of a round a turn had
-// confirmed comes back under that round when the turn ends in a death or a provider error,
-// with the claim already in the round that replaced it. Sending it again would cost a model turn
-// for a question nobody wants. That drop and the phase check's are one shape below, and both
-// leave through the answer every drop of a delivery gives the mark armed for it
-// (answerAskFirstAfterDrop).
+// This daemon queues no ask of an update round as a task. A task under an `update:` delivery id
+// (updateTaskPrefix) is one an older daemon queued, and a claim restored from the store can hold
+// one. Such a task is dropped here rather than sent when the claim can no longer answer it, and
+// there are two such cases: an ask of a round another round has replaced, and an ask of a round
+// whose pod the claim's process no longer runs in (Claim.LeftPodRound). The worker that read
+// either would be asked to push its work for a pod replacement this daemon has already made, and
+// it would refuse the answer the ask asks for. The delivery id names the round, and keeps it
+// across every take-back (rotateTaskID), so the ask of a round a turn had confirmed comes back
+// under that round when the turn ends in a death or a provider error, with the claim already in
+// the round that replaced it. Sending it again costs a model turn for a question nobody wants.
+// That drop and the phase check's are one shape below, and both leave through the answer every
+// drop of a delivery gives the mark armed for it (answerAskFirstAfterDrop).
 func (m *Machine) sendPending(ctx context.Context) error {
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
 	// paced launch is about to replace the process a send would reach (launchWaits).

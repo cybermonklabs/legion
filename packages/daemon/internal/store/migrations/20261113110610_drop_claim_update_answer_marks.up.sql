@@ -1,9 +1,11 @@
 -- 20261113110610_drop_claim_update_answer_marks.up.sql -- the two marks of how a claim answered
--- its update round go, with the rules that read them (dispatch://INFRA-2981 R7, R9).
+-- its update round go, with the rules that read them (dispatch://INFRA-2981 R7, R9), and every
+-- pod round open at the deploy starts its clock and its ask again.
 --
 -- What this takes out: the columns claims.update_answered_by_turn_end and
 -- claims.update_reasked_for_push_check, which 20261105022045_claim_update_answer_marks.up.sql
--- added. Nothing else of the table changes, and every row keeps all its other columns.
+-- added. The one other change is the reset of the open pod rounds below, and every row keeps all
+-- its other columns.
 --
 -- Why nothing writes them: the first said whether a claim's standing answer came from the end of
 -- the turn an update task started, and the second whether the round had already asked that claim
@@ -23,5 +25,29 @@
 -- fails every claim read and every claim write until the columns are back. The two statements
 -- that bring them back, and why nothing else need come with them, are in docs/kubernetes.md under
 -- their own heading.
+--
+-- What the reset changes: for every claim whose update_round starts with 'pod:', it sets
+-- update_opened_at to the moment of this migration, and it clears update_tasked_at and
+-- update_told_at. A claim in no round, and a claim in a plugin round, keep all three.
+--
+-- Why the reset: the earlier release kept a round open with no bound and asked its roles with a
+-- task, and this release ends a round pod_update_grace_minutes after the earliest
+-- update_opened_at of its claims, and asks each role once, on its Envoy topic. For the earlier
+-- release, update_tasked_at said that a task was queued. This release reads it as the mark that
+-- the Envoy ask was published, so a claim the earlier release tasked would never be asked. A
+-- round open longer than the bound would also be replaced at the first sweep, before any ask.
+-- So a round open at the deploy starts its bound at the deploy, and every member of the round is
+-- reset, because the bound runs from the earliest opening of the round's claims. Each claim of
+-- the round is then asked once, at the first sweep that finds its session ready.
+--
+-- update_told_at goes too. This release tells the controller of a round once, when something
+-- holds the round past its bound, and it reads a mark on any claim of the round as that notice
+-- told. The earlier release set the mark for another notice, about a round that waited too long
+-- for its roles, under the old clock. Kept, that mark would stop this release's one notice of an
+-- operator's suspension or a failed push check past the new bound, so nobody would be told.
+-- Clearing it costs at most one more notice of a round the earlier release told.
 alter table claims drop column update_answered_by_turn_end;
 alter table claims drop column update_reasked_for_push_check;
+update claims
+set update_opened_at = now(), update_tasked_at = null, update_told_at = null
+where update_round like 'pod:%';

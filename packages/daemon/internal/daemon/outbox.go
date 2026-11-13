@@ -1427,9 +1427,9 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	if r.notices == nil {
 		return errors.New("phase-ended executor has no Envoy publisher")
 	}
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	token, err := roleToken(r.project, row, payload.Role)
 	if err != nil {
-		return fmt.Errorf("the %s of %s: %w", payload.Role, row.Issue, err)
+		return err
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
@@ -1440,15 +1440,10 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	} else if woken {
 		return wait.Errorf("the end of %s's %s phase waits for its %s's released pod to come back", row.Issue, payload.From, payload.Role)
 	}
-	message := payload.Message(row.Issue)
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
-	if errors.Is(published, notify.ErrNoHolder) {
-		r.log.Info("outbox phase-ended message finished undelivered: no live session holds the role",
-			"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To)
-		return nil
-	}
-	if published != nil {
-		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, published)
+	if _, err := r.publishToRole(ctx, row, token, payload.Message(row.Issue),
+		"outbox phase-ended message finished undelivered: no live session holds the role",
+		"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To); err != nil {
+		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, err)
 	}
 	return nil
 }
@@ -1480,9 +1475,9 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	if r.notices == nil {
 		return errors.New("hook prompt executor has no Envoy publisher")
 	}
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	token, err := roleToken(r.project, row, payload.Role)
 	if err != nil {
-		return fmt.Errorf("the %s of %s: %w", payload.Role, row.Issue, err)
+		return err
 	}
 	// A role whose pod was released is not "no live session holds the role": its session is
 	// intact and its pod is one wake away, so the row wakes it and waits on its backoff rather
@@ -1493,15 +1488,10 @@ func (r *outbox) hookPrompt(ctx context.Context, row record.OutboxRow, payload r
 	} else if woken {
 		return wait.Errorf("the %s hook's prompt for %s waits for its %s's released pod to come back", payload.Hook, row.Issue, payload.Role)
 	}
-	message := payload.Message(row.Issue)
-	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
-	if errors.Is(published, notify.ErrNoHolder) {
-		r.log.Info("outbox hook prompt finished undelivered: no live session holds the role",
-			"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count)
-		return nil
-	}
-	if published != nil {
-		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, published)
+	if _, err := r.publishToRole(ctx, row, token, payload.Message(row.Issue),
+		"outbox hook prompt finished undelivered: no live session holds the role",
+		"row", row.ID, "issue", row.Issue, "hook", payload.Hook, "role", payload.Role, "count", payload.Count); err != nil {
+		return fmt.Errorf("publish the %s hook's prompt for %s to its %s: %w", payload.Hook, row.Issue, payload.Role, err)
 	}
 	return nil
 }
@@ -1534,9 +1524,9 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	if r.supervisor == nil {
 		return errors.New("update ask executor has no claim supervisor")
 	}
-	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
+	token, err := roleToken(r.project, row, payload.Role)
 	if err != nil {
-		return fmt.Errorf("the %s of %s: %w", payload.Role, row.Issue, err)
+		return err
 	}
 	if current := r.supervisedClaim(token).UpdateRound; current != payload.Round {
 		r.log.Info("outbox update ask finished without a publish: the claim no longer records its round",
@@ -1544,19 +1534,45 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		return nil
 	}
 	topic := notify.RoleTopicPrefix + string(token)
-	message := payload.Message(row.Issue)
-	published := r.notices.Publish(ctx, topic, message, message, record.OutboxKey(row.ID))
-	if errors.Is(published, notify.ErrNoHolder) {
-		r.log.Info("outbox update ask finished undelivered: no live session holds the role",
-			"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic)
-		return nil
-	}
-	if published != nil {
-		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, published)
-	}
-	r.log.Info("outbox update ask published to the role topic",
+	published, err := r.publishToRole(ctx, row, token, payload.Message(row.Issue),
+		"outbox update ask finished undelivered: no live session holds the role",
 		"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic)
+	if err != nil {
+		return fmt.Errorf("publish the ask of round %s for %s to its %s: %w", payload.Round, row.Issue, payload.Role, err)
+	}
+	if published {
+		r.log.Info("outbox update ask published to the role topic",
+			"row", row.ID, "issue", row.Issue, "round", payload.Round, "pod", payload.Pod, "claim", string(token), "role", payload.Role, "topic", topic)
+	}
 	return nil
+}
+
+// roleToken is the claim of role on the row's issue in project, whose Envoy topic a role message
+// of the row is published to (publishToRole).
+func roleToken(project string, row record.OutboxRow, role claim.Role) (claim.Token, error) {
+	token, err := claim.NewToken(project, row.Issue, role)
+	if err != nil {
+		return "", fmt.Errorf("the %s of %s: %w", role, row.Issue, err)
+	}
+	return token, nil
+}
+
+// publishToRole publishes message to the Envoy topic of token's role, under the row's own key, so
+// a retried row is one delivery. It is the one publish of the three executors that write to a
+// role's topic (phaseEnded, hookPrompt, updateAsk). Each of them decides what comes before the
+// publish, and each wraps the error it returns.
+//
+// A topic with no live holder (notify.ErrNoHolder) ends the row: noHolder is logged at Info with
+// fields, and the answer is false with no error. Every other failure is returned as the
+// publisher gave it, and the row keeps its retry. The answer is true when the publisher took the
+// message.
+func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, token claim.Token, message, noHolder string, fields ...any) (bool, error) {
+	err := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
+	if errors.Is(err, notify.ErrNoHolder) {
+		r.log.Info(noHolder, fields...)
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own

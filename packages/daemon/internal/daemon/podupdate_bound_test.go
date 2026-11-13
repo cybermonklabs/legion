@@ -733,3 +733,166 @@ func TestPodUpdateBoundToldOnceOfARoundWithNoProcessInItsPod(t *testing.T) {
 		t.Fatalf("the controller had been told %d times, want once per round", len(notices))
 	}
 }
+
+// podUpdateDeployReset is the data step of migration 20261113110610, with the migration's
+// moment given as $1 so the rig's held clock can name it: every claim in a pod round opens that
+// round at the deploy, and loses its ask mark and its notice mark.
+const podUpdateDeployReset = `update claims
+	set update_opened_at = $1, update_tasked_at = null, update_told_at = null
+	where update_round like 'pod:%'`
+
+// The earlier release left a pod round open with no bound, its claims opened at the rig's start
+// and each marked tasked, because that release queued a task. This release deploys three hours
+// later, which is far past the round's bound, and its daemon starts from the store.
+//
+// With the migration's reset, the round starts its bound at the deploy: the first sweeps publish
+// the ask to each role, once, naming the deploy plus pod_update_grace_minutes as the end, and
+// replace nothing. The control keeps the clock the earlier release left: the first sweep finds
+// the round past its bound and replaces the pod, and no role is ever asked, because each claim
+// already holds the mark this release reads as its ask.
+func TestPodUpdateRoundOpenAtTheDeployStartsItsBoundAndItsAskAgain(t *testing.T) {
+	deploy := podUpdateStart.Add(3 * time.Hour)
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	leftByTheEarlierRelease := func(role claim.Role) podUpdateRole {
+		r := readyWorker(role)
+		r.round, r.reasons = podUpdateRound, podUpdateDrift
+		return r
+	}
+	for _, tc := range []struct {
+		name  string
+		reset bool
+	}{
+		{name: "the migration resets the round", reset: true},
+		{name: "the round keeps the clock the earlier release left", reset: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newPodUpdateRig(t, leftByTheEarlierRelease(claim.RoleImplementer), leftByTheEarlierRelease(claim.RoleTester))
+			rig.clockAt(deploy)
+			if tc.reset {
+				if _, err := rig.pool.Exec(rig.ctx, podUpdateDeployReset, deploy); err != nil {
+					t.Fatalf("reset the open pod round as the migration does: %v", err)
+				}
+			}
+			next := rig.restart()
+			for _, role := range roles {
+				c := next.claimOf(role)
+				if c.UpdateRound != podUpdateRound || c.UpdateOpenedAt == nil {
+					t.Fatalf("the %s after the deploy = %+v, want the open round read back from the store", role, c)
+				}
+				if tc.reset && (!c.UpdateOpenedAt.Equal(deploy) || c.UpdateTaskedAt != nil) {
+					t.Fatalf("the %s after the reset opened at %v and asked at %v, want opened at the deploy %s and not asked", role, c.UpdateOpenedAt, c.UpdateTaskedAt, deploy)
+				}
+			}
+			next.drifts(podUpdateDrift)
+
+			if !tc.reset {
+				next.awaitReplacement(1, "at the first sweep, over the clock the earlier release left")
+				if asks := next.asks(); len(asks) != 0 {
+					t.Fatalf("the sweep asked %+v, want no ask: each claim holds the earlier release's task mark", asks)
+				}
+				return
+			}
+			next.tick()
+			for _, role := range roles {
+				next.awaitAsked(role, podUpdateRound)
+			}
+			for range 3 {
+				next.tick()
+			}
+			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, deploy.Add(podUpdateGrace), podUpdateRescue)
+			asked := map[claim.Role]int{}
+			for _, ask := range next.asks() {
+				asked[ask.Role]++
+				if ask.Text != text {
+					t.Errorf("the ask to the %s says:\n%s\nwant the end at the deploy plus the grace:\n%s", ask.Role, ask.Text, text)
+				}
+			}
+			for _, role := range roles {
+				if asked[role] != 1 {
+					t.Errorf("the %s was asked %d times after the deploy, want once", role, asked[role])
+				}
+			}
+			if calls := next.replacements(); len(calls) != 0 {
+				t.Fatalf("the pod was replaced %d times after the deploy, want none before the new bound %s", len(calls), deploy.Add(podUpdateGrace))
+			}
+		})
+	}
+}
+
+// The bound has come and no claim has answered, so the walk lets the replacement through. The
+// runtime then finds no pod to replace — the Sandbox is absent or suspended, or its pod is not
+// the locator's — and returns nil without asking the last word. Nothing was replaced, so the
+// bound replaced nothing either: the line of a bounded end is not written, and the line of the
+// round's end says no bound made it.
+func TestPodUpdateBoundLineIsNotWrittenWhenTheRuntimeFindsNoPodToReplace(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.clockAt(podUpdateBound)
+	rig.rt.FindNoPodToReplace(true)
+
+	testwait.Eventually(t, "the replacement to reach a runtime that finds no pod", func() bool {
+		if len(rig.rt.CallsOf("ReplacePodNoPod")) > 0 {
+			return true
+		}
+		rig.tick()
+		return len(rig.rt.CallsOf("ReplacePodNoPod")) > 0
+	})
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times by a runtime that found no pod, want none", len(calls))
+	}
+	if lines := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(lines) != 0 {
+		t.Fatalf("the sweep logged a bounded end %+v, want none: the runtime found no pod and replaced nothing", lines)
+	}
+	if ended := loggedLines(t, rig.logs.String(), podUpdateReplacedLine); len(ended) != 1 || ended[0]["atTheBound"] != false {
+		t.Fatalf("the round's end was logged %+v, want one line that no bound made", ended)
+	}
+}
+
+// A claim whose agent has not said it is ready holds no live session on its role's topic, so the
+// round does not ask it, and does not mark it asked: an operator's suspension holds it here. Once
+// the operator resumes it and its agent is ready in the round's pod, the next sweep asks it, and
+// it is asked exactly once however many sweeps follow. The other role is asked once all along.
+func TestPodUpdateAsksAClaimOnceItsAgentIsReady(t *testing.T) {
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer),
+		podUpdateRole{role: claim.RoleTester, state: supervise.StateSuspended, session: true,
+			contract: readyWorker(claim.RoleTester).contract, suspendedBy: supervise.SuspendedByOperator},
+	)
+	rig.drifts(podUpdateDrift)
+	asksOf := func() map[claim.Role]int {
+		asked := map[claim.Role]int{}
+		for _, ask := range rig.asks() {
+			asked[ask.Role]++
+		}
+		return asked
+	}
+
+	rig.tick()
+	rig.awaitAsked(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	for range 3 {
+		rig.tick()
+	}
+	if n := asksOf()[claim.RoleTester]; n != 0 {
+		t.Fatalf("the suspended tester was asked %d times, want never while it has no live session", n)
+	}
+	if c := rig.claimOf(claim.RoleTester); c.UpdateTaskedAt != nil {
+		t.Fatalf("the suspended tester records an ask at %v, want no mark: a mark here is an ask it never gets", c.UpdateTaskedAt)
+	}
+
+	rig.resumeInPod(claim.RoleTester)
+	rig.awaitAsked(claim.RoleTester, podUpdateRound)
+	for range 3 {
+		rig.tick()
+	}
+	asked := asksOf()
+	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester} {
+		if asked[role] != 1 {
+			t.Errorf("the %s was asked %d times, want once", role, asked[role])
+		}
+	}
+}
