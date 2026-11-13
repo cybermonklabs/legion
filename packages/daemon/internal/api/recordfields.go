@@ -130,7 +130,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "UpdateToldAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateAnsweredByTurnEnd", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateReaskedForPushCheck", Column: ColumnAgents, Keys: []string{"updateReaskedForPushCheck"},
-		Reason: "whether the open round has already asked this worker a second time for the daemon's push check, which stands beside whatever state the claim has reached (contract 99)"},
+		Reason: "whether the open round has already asked this worker a second time for the daemon's push check, which stands beside whatever state the claim has reached (contract 105)"},
 	{Field: "UpdateLeftRound", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ProviderErrorRun", Column: ColumnAgents, Keys: []string{"providerErrorRun"},
 		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},

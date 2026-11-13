@@ -118,7 +118,7 @@ type State struct {
 	// read before the floor this daemon shapes an answer from (ServingFloor) is raised: no claim
 	// holding a process reads below it. A claim that is suspended, failed or retired gave its
 	// locator up with its process and lowers it by nothing, however old the plugin it last
-	// recorded (contract 99).
+	// recorded (contract 105).
 	LowestPluginContract *int `json:"lowestPluginContract,omitempty"`
 	// wakesWaitingHidden is set on the copy the state route serves a caller whose plugin is older
 	// than the contract that added WakesWaiting (api's withoutWakesWaiting, below shaping.go's
@@ -695,7 +695,7 @@ type ClaimView struct {
 	UpdateReasons string `json:"updateReasons,omitempty"`
 	// UpdateState is where the round above stands on this claim, as UpdateStateOf reads the
 	// claim's own update columns: `none`, `open`, `asked`, `push-check-reask` or `answered`
-	// (contract 99). A reader takes it rather than spelling the same reading out of
+	// (contract 105). A reader takes it rather than spelling the same reading out of
 	// `updateRound` and `updateHead`, which tell a worker that answered with no head from one
 	// nobody asked.
 	UpdateState UpdateState `json:"updateState,omitempty"`

@@ -1195,7 +1195,7 @@ package api
 // `mergeState`, `pass`, `lastTurnStart` and `lastTurnEnd` are keys a plugin of an older contract
 // does not name, which one built before sjawhar/legion#2788 refuses the body for and one built
 // after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
-// (The entry at 99 below serves this contract's own shape down, so none of the keys above
+// (The entry at 105 below serves this contract's own shape down, so none of the keys above
 // reaches a caller under 86. Three claim-view keys ride with the four this entry names and are
 // served down with them: `lastDeathCause`, `lastStartFailure` and `lastReady`. Two more keys go
 // at 86 beside `checksVerdict`. `checksVerdict` and `HandoffCompleteResponse.note` are written
@@ -1206,7 +1206,7 @@ package api
 // `merge_queue_role` — leave those records for the same reason read a second way:
 // `legionSettings` types two keys and passes the rest loosely, and `projects` is typed by
 // nothing, so no reader names those keys at all. The `ready` this contract takes out of the
-// request is read by name again for the plugins below 86 that still send it, which entry 99
+// request is read by name again for the plugins below 86 that still send it, which entry 105
 // says.)
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
@@ -1395,7 +1395,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 99: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
+// 105: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
 // one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
 // request carries the caller's contract in the
@@ -1450,7 +1450,8 @@ package api
 // entry first took 60, when the base carried 59, then 81 at the forward merge of 2026-11-12
 // that brought main in at 68, 81 again at the merge of that day that brought main in at 73, 87
 // at the merge that brought main in at 85, 89 at the merge that brought main in at 86, 95 at
-// the merge that brought main in at 94, and 99 at the merge that brought main in at 98. 87 was
+// the merge that brought main in at 94, 99 at the merge that brought main in at 98, and 105
+// before the push of that merge. 87 was
 // free when this head took it and was gone when the
 // head was pushed: the gate holds a head against main alone and sees no other head's number, so
 // a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
@@ -1460,7 +1461,11 @@ package api
 // and at 87, so neither forced a renumber. main's #3677 (INFRA-2800) then declared 94, so the
 // merge that brought main in at 94 took this entry to 95, the number above it. main's #3708
 // (INFRA-3107) then declared 98, so the merge that brought main in at 98 took this entry to 99,
-// the number above it. The reading is
+// the number above it. 99 was free when this head took it, and #3575 held it before the push;
+// the reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request
+// then gave 99 (#3575), 100 (#3573, #3715), 101 (#3712), 102 (#3730), 103 (#3519) and 104
+// (#3830, #3937) above main's 98, so this entry took 105, the lowest number above main's 98
+// that no open head holds. The reading is
 // taken again before each push rather than read off this line. The reading is
 // of this file at refs/pull/<n>/head for every open pull request, not of a file list: GitHub
 // cuts a pull request's file list short, so one that changes more files than the page holds
@@ -1472,4 +1477,4 @@ package api
 // answers.go gives the two answers this change adds as their arrival, and it is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)
-const DaemonAPIVersion = 99
+const DaemonAPIVersion = 105

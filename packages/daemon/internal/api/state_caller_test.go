@@ -338,7 +338,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					}
 					// Every row that reaches here is below shapedAnswersContract, below
 					// leakCheckCauseContract and below recordFieldsContract too, so none of its
-					// callers is served the four keys contract 99 added to a claim view, the
+					// callers is served the four keys contract 105 added to a claim view, the
 					// `leakCheckCause` contract 87 added or the six the decided record added.
 					for _, key := range roundReportKeys {
 						delete(view, key)

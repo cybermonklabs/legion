@@ -1081,7 +1081,7 @@ func TestTheRecordSetIsOneRecordPerAnswerPerContract(t *testing.T) {
 	// The table itself: every row names an answer of Answers, so a row no answer carries is red
 	// rather than a domain nothing records, and every arrival is a contract this daemon serves a
 	// shape for. A value older than the field's own answer is no error — the record answer
-	// arrived at 99 and carries all nine values of `answeredBy` from its first record — since a
+	// arrived at 105 and carries all nine values of `answeredBy` from its first record — since a
 	// domain is every value whose arrival is at or below the contract (domainsOf).
 	for _, field := range EnumeratedFields {
 		if !slices.ContainsFunc(Answers, func(answer Answer) bool { return answer.ID == field.Answer }) {

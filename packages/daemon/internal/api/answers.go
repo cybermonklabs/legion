@@ -87,11 +87,11 @@ type Answer struct {
 var Answers = []Answer{
 	// Older than the floor: `GET /legion/v1/state` predates every numbered entry of version.go.
 	{ID: AnswerState, Routes: []string{"GET /legion/v1/state"}, Since: ServingFloor},
-	// version.go's 99: the per-issue record route a role reads in place of the whole state.
-	// This change adds the route, so no contract below 99 records it.
+	// version.go's 105: the per-issue record route a role reads in place of the whole state.
+	// This change adds the route, so no contract below 105 records it.
 	{ID: AnswerIssueRecord, Routes: []string{"GET /legion/v1/issues/{key}/record"}, Since: shapedAnswersContract},
-	// version.go's 99: the typed health body (`api.Health`), which this change puts in place of
-	// the one untyped key the route answered, so the typed body has no record below 99 either.
+	// version.go's 105: the typed health body (`api.Health`), which this change puts in place of
+	// the one untyped key the route answered, so the typed body has no record below 105 either.
 	{ID: AnswerHealth, Routes: []string{"GET /healthz"}, Since: shapedAnswersContract},
 	// Older than the floor: a role's registration answer (`claim.RegisterResponse`).
 	{ID: AnswerRegister, Routes: []string{"POST /legion/v1/claims/register"}, Since: ServingFloor},
