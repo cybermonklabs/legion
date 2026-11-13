@@ -17,7 +17,7 @@ import (
 func seedActivityFixture(t *testing.T, database *store.Store) {
 	t.Helper()
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('DEMO', 'Demo'), ('OTHER', 'Other')`,
+		`insert into projects (key, name, default_assignee) values ('DEMO', 'Demo', 'alice'), ('OTHER', 'Other', 'alice')`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank) values
 			('DEMO-1', 'DEMO', 1, 'Ship the read', 'todo', '{"kind":"system","id":"test"}', 'U'),
 			('DEMO-2', 'DEMO', 2, 'Draw the chart', 'done', '{"kind":"system","id":"test"}', 'V'),

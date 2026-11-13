@@ -59,10 +59,11 @@ var goingItemArguments = func() map[string]string {
 	return named
 }()
 
-// goingHeldArguments are the arguments that hand an issue's work on, to a session (route) or to a
-// person (assignee): each runs at once only where the words name its value or the issue already
-// holds it (goingHeld).
-var goingHeldArguments = map[string]bool{"route": true, "assignee": true}
+// goingHeldArguments are the arguments that hand work on, to a session (route) or to a person: an
+// issue's (assignee) or a project's unowned work (default_assignee). Each runs at once only where
+// the words name its value or the invocation's issue already holds it (goingHeld); a project's
+// default names no issue, so it runs at once only where the words name the person.
+var goingHeldArguments = map[string]bool{"route": true, "assignee": true, "default_assignee": true}
 
 // goingContentArguments are the arguments that name no item of Dispatch's: what a write says or
 // sets on the item its other arguments name - a title, a status, a body, a document's content and
