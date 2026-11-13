@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -30,6 +29,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -318,7 +318,7 @@ type dequeueRig struct {
 	cfg      config.Config
 	o        overrides
 	project  string
-	pool     *pgxpool.Pool
+	pool     *store.Pool
 	records  *record.Postgres
 	js       jetstream.JetStream
 	github   *dequeueGitHub

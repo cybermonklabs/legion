@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // mergeStateLadderReads is how many times one ladder reads GitHub's merge state for a head GitHub
@@ -78,7 +79,7 @@ func (w *workflowRuntime) readMergeStates(ctx context.Context) {
 		}
 		w.mergeStateMu.Unlock()
 		for _, issue := range started {
-			go w.mergeStateLadder(ctx, issue)
+			go w.mergeStateLadder(store.ForConcurrentWorker(ctx), issue)
 		}
 	}
 }

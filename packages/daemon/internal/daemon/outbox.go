@@ -13,7 +13,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -69,7 +68,11 @@ const (
 // work (outbox_lanes.go). Claiming and finishing have separate transactions so a slow external
 // service never holds an issue transition lock.
 type outbox struct {
-	pool       *pgxpool.Pool
+	// pool is the daemon's guarded pool (store.Pool): each lane opens its transactions on it
+	// under a hold mark of the lane's own (runLane), so a row's work that asks for a second
+	// connection while its transaction holds one is refused at that call
+	// (store.ErrNestedAcquire).
+	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
 	notices    notify.Publisher
@@ -174,7 +177,7 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}

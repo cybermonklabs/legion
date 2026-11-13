@@ -168,7 +168,9 @@ func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimStat
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), readyReleaseTimeout)
+		// This goroutine runs beside the machine that started it and every other, so it takes a
+		// hold mark of its own (store.ForConcurrentWorker).
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		w.stampPodResume(ctx, c.Issue, c.Role, mark, what)
 	}()

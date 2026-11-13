@@ -20,8 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -394,7 +392,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 type cutoverRig struct {
 	cfg     config.Config
 	project string
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	records *record.Postgres
 	rt      *releaseRuntime
 	built   *built
