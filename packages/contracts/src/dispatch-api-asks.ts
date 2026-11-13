@@ -199,12 +199,15 @@ export const askFields = {
   /** The three stored fields of a hand-on, carried by every ask read and by every ask payload as
    *  the row carries them: whom the ask waits on, who handed it there and when. `asked_of` is
    *  null until somebody hands the ask on, and a null one waits on the assignee of its issue,
-   *  which is where every ask starts; a hand-on back to that assignee nulls it again and still
-   *  writes `asked_of_by` and `asked_of_at`, so an ask card can say who gave it back.
+   *  else, while the issue holds nobody or the ask stands on a project document, on the default
+   *  assignee of its project, which every project names; a hand-on back to the issue's assignee
+   *  nulls it again and still writes `asked_of_by` and `asked_of_at`, so an ask card can say who
+   *  gave it back.
    *
-   *  `waiting_on_person` - the person the server resolved the ask to, `asked_of` or the issue's
-   *  assignee - is deliberately absent: it is read-time only, as `waiting_on` is, and this object
-   *  is the base of the strict payload schema, which Dispatch never writes it on. */
+   *  `waiting_on_person` - the person the server resolved the ask to, `asked_of`, else the
+   *  issue's assignee, else the project's default assignee - is deliberately absent: it is
+   *  read-time only, as `waiting_on` is, and this object is the base of the strict payload
+   *  schema, which Dispatch never writes it on. */
   asked_of: z.string().nullable(),
   asked_of_by: z.string().nullable(),
   asked_of_at: z.string().nullable(),

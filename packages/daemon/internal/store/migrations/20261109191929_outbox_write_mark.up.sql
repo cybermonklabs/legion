@@ -4,28 +4,33 @@
 --
 -- Why the rule needs a number per write and not a row id. A row's id is the moment the row
 -- entered the outbox, not the moment its payload was written, and the two part company on the
--- very path this rule exists for: record.Store.ReplaceOwedStart rewrites an issue's unleased
--- needsSlot start in place, keeping its id and created_at, so that an issue that already owes a
--- start keeps its place in the waiting line while carrying the later task, and
--- workflow.StartOrOwe writes through it first. So an issue waits for a slot and owes row R;
+-- very path this rule exists for: an issue that already owes a start keeps its place in the
+-- waiting line while carrying the later task. record.Store.EnqueueStart holds that place by
+-- taking the issue's unleased needsSlot start out and writing the later task as a row of its
+-- own under that row's created_at — when this migration was written the same path rewrote the
+-- row in place, under its own id, and the rule below reads the same on either shape — and
+-- workflow.StartOrOwe writes through it. So an issue waits for a slot and owes row R;
 -- `legion claims stop` hands the machine RequestStop and applies no fact, so no admission pass
--- runs between the stop and what follows; `legion claims retry` rewrites R with the retry's
--- task, still under R's id; and the admission pass of that same fact meets a retired claim and
--- no pending task. Weighed by its id, R stands at or below where the outbox stood when the stop
--- was recorded and the pass ends it: the retry answers 202, the issue leaves the waiting line —
--- its first part is the unslotted issues that owe a start (record.Waiting) — and nothing starts
--- the phase, the repair of a slot passing over a retired claim on purpose (admit's
--- resumeSlottedWorkers). Weighed by the mark the rewrite took, R stands above the stop and is
--- kept, which is what it is: the start the retry has just written.
+-- runs between the stop and what follows; `legion claims retry` writes the retry's task in R's
+-- place, carrying R's created_at; and the admission pass of that same fact meets a retired
+-- claim and no pending task. Weighed by when the row it stands in came to wait, that start is
+-- at or below where the outbox stood when the stop was recorded and the pass ends it: the
+-- retry answers 202, the issue leaves the waiting line — its first part is the unslotted
+-- issues that owe a start (record.Waiting) — and nothing starts the phase, the repair of a
+-- slot passing over a retired claim on purpose (admit's resumeSlottedWorkers). Weighed by the
+-- mark that write took, it stands above the stop and is kept, which is what it is: the start
+-- the retry has just written.
 --
 -- outbox_write_mark_seq numbers writes rather than rows, and both sides draw from it: an insert
--- of an outbox row takes a number through the column's own default, and ReplaceOwedStart takes
--- one explicitly on every rewrite, so a start row's write_mark is the moment its payload was last
--- written and not the moment the row was first queued. Beside it, claims.retired_at_write_mark
--- takes a number from that same sequence, in the write that records a retirement and on the
--- transition into retired alone (store's putClaim), and stopOutlivedStart ends an owed row whose
--- write mark is at or below the claim's. What a sequence does and does not say about two writes
--- is worked out once, where the mark is taken: putClaim's doc.
+-- of an outbox row takes a number through the column's own default, the start written in place
+-- of an owed one among them (record.Store.EnqueueStart), which deletes the owed row and inserts
+-- the later task under that row's created_at, so the insert's own fresh number is the moment
+-- its payload was written while created_at stays the moment its issue came to wait. Beside it,
+-- claims.retired_at_write_mark takes a number from that same sequence, in the write that
+-- records a retirement and on the transition into retired alone (store's putClaim), and
+-- stopOutlivedStart ends an owed row whose write mark is at or below the claim's. What a
+-- sequence does and does not say about two writes is worked out once, where the mark is taken:
+-- putClaim's doc.
 --
 -- The sequence is owned by no column. `owned by` would drop it with that one column, and two
 -- tables draw from it: the ordering is worth something only while both still do.
@@ -40,8 +45,8 @@
 -- carries 0, which is below every write mark the sequence hands out, so no claim retired before
 -- the deploy ever ends a row. That is the safe direction of the two: ending a row the workflow
 -- still means to run strands its issue with nothing left to start its phase, while keeping one
--- leaves at most a start that reaches a stopped worker, which the operator's retry replaces in
--- place rather than adding to.
+-- leaves at most a start that reaches a stopped worker, which the operator's retry takes out
+-- and writes its own start in place of, rather than adding to.
 --
 -- There is no down file: migrations here are forward-only. Nothing of this migration need come
 -- off to roll the image back either: a release that names neither the sequence nor either column
