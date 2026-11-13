@@ -54,7 +54,7 @@ Apply the structural rules with confidence. Apply the lexical rules as a directi
 | One word, one meaning | Pick one verb for one action and reuse it every time (e.g. always "check", never mix "check"/"verify"/"confirm" for the same action) | Rotate synonyms for the same idea across a document | Consistency within a document is checkable. Which word is the *approved* one is not, without the dictionary. |
 | One part of speech per word | "Apply oil to the valve" (oil = noun) | "Oil the valve" (oil = verb) | Whether "oil" is approved as a noun only is a dictionary fact. Prefer the noun form when both read equally well. Do not claim compliance. |
 | Verb, not noun (Rule 3.7) | "Analyze the log." | "Perform an analysis of the log." — a noun form of an action makes the sentence longer and hides who acts | Rule 3.7 says "use an **approved** verb to describe an action." Preferring the verb form is safe to apply anywhere. Knowing which verb is the approved one needs the dictionary. |
-| Domain terms | Keep necessary technical nouns/verbs, but define them once if not common English (STE allows a project-specific glossary beyond its base dictionary) | Use jargon without ever defining it | The glossary allowance is real STE, but the base dictionary it extends is absent. |
+| Domain terms | Keep a technical noun or verb the reader uses; where the reader has no word for a thing, write the thing in words the reader uses | Use a word the reader does not use, or define a word to keep it | STE allows a project glossary, but a reader of this text does not have it. |
 
 ### Simple tenses — apply with one exception
 
@@ -110,7 +110,7 @@ Follow the table with a one-line note on anything you deliberately did **not** s
 - Return the rewritten text alone by default, and name the rules it applied when the user asks.
 - Preserve every fact, condition, and scope qualifier in the original.
 - Preserve the strength of every hedge, and add no claim the source did not make.
-- Suggest a one-line glossary entry for domain terms that must stay.
+- Where a domain term is not a word the reader uses, write the thing in words the reader uses.
 
 **Will not:**
 - Reproduce ASD's official ~900-word dictionary as if it were memorized verbatim — always treat the official download as the source of truth for exact approved wording.
