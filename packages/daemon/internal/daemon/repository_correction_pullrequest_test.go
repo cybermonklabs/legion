@@ -22,13 +22,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -63,7 +63,7 @@ const leftPullRequestSentences = "The pull request acme/widgets#1251 is open on 
 // own, and the specs that build a launch from them, which is the pair a task is rendered by.
 type leftPullRequestRig struct {
 	t       *testing.T
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	records record.Store
 	specs   specs
 	token   claim.Token

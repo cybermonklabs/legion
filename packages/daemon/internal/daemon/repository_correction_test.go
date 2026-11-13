@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -61,7 +61,7 @@ func (r correctionRepositories) ResolveRepository(resolved string) (workflow.Res
 // visible: nothing in a correction may start, stop or re-run anything.
 type correctionRig struct {
 	t          *testing.T
-	pool       *pgxpool.Pool
+	pool       *store.Pool
 	repos      correctionRepositories
 	records    record.Store
 	engine     *workflow.Engine
@@ -90,7 +90,7 @@ func newCorrectionRig(t *testing.T) *correctionRig {
 
 // recordCorrectionRoot records the issue the tests here move: the running root of a live tree, on
 // acme/widgets at main, at the generation and in the phase a correction may not move.
-func recordCorrectionRoot(t *testing.T, pool *pgxpool.Pool, records record.Store) {
+func recordCorrectionRoot(t *testing.T, pool *store.Pool, records record.Store) {
 	t.Helper()
 	ctx := context.Background()
 	root := record.Issue{Key: correctionKey, Tree: correctionKey, Project: correctionProject, Title: "root", Phase: phase.Implementing,
@@ -170,7 +170,7 @@ func (r *correctionRig) messages() []string {
 
 // dispatchMessages is the body of every Dispatch message queued in pool's outbox, in the order
 // they were queued.
-func dispatchMessages(t *testing.T, pool *pgxpool.Pool) []string {
+func dispatchMessages(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), "select payload->>'body' from outbox where kind = $1 order by id",
 		string(record.OutboxKindDispatchMessage))
@@ -227,7 +227,7 @@ func (r *correctionRig) corrected(issue record.Issue, repo, branch, github, befo
 // correctRecord moves key's record onto repo at branch, stamped at, as the workflow's own pass
 // does when Dispatch names another repository for the issue
 // (workflow.(*Engine).ApplyRepositoryChange), and fails t unless the record moved.
-func correctRecord(t *testing.T, pool *pgxpool.Pool, records record.Store, key, repo, branch string, at time.Time) {
+func correctRecord(t *testing.T, pool *store.Pool, records record.Store, key, repo, branch string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -486,7 +486,7 @@ func newRuntimeCorrectionRig(t *testing.T) (*correctionRig, *workflowRuntime, *d
 
 // correctionConsumers opens this test's own durable consumers, which the listing reconcile reads
 // the notification stream's target and the Dispatch consumer's position from.
-func correctionConsumers(t *testing.T, pool *pgxpool.Pool) *intake.Consumers {
+func correctionConsumers(t *testing.T, pool *store.Pool) *intake.Consumers {
 	t.Helper()
 	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)

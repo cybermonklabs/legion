@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -696,7 +695,7 @@ type keptRun struct {
 	step  int
 	trace []string
 
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   *keptForgetStore
 	engine    *workflow.Engine
 	admission *admit.Admission

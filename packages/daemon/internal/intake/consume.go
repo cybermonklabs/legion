@@ -10,12 +10,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 const notificationStream = "ENVOY_NOTIFICATIONS"
@@ -229,7 +229,7 @@ func (r *RetryLater) Unwrap() error { return r.Err }
 // when it last handled a message (Lag).
 type Consumers struct {
 	spec     ConsumerSpec
-	pool     *pgxpool.Pool
+	pool     Pool
 	stream   jetstream.Stream
 	dispatch jetstream.Consumer
 	github   jetstream.Consumer
@@ -256,7 +256,7 @@ type Consumers struct {
 // it, and takes the rest of this boot's configuration. A consumer that applied messages before and
 // is now missing starts at the last one it applied (openConsumer). pool is required: it is where
 // facts are applied and positions kept.
-func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool *pgxpool.Pool, spec ConsumerSpec) (*Consumers, error) {
+func OpenConsumers(ctx context.Context, js jetstream.JetStream, pool Pool, spec ConsumerSpec) (*Consumers, error) {
 	if pool == nil {
 		return nil, errors.New("intake consumers need the Postgres pool facts are applied on")
 	}
@@ -348,7 +348,7 @@ func (c *Consumers) repositories() []ghrepo.Repository {
 // may have been handled by the consumer before it went missing, or may have been missed. The
 // daemon applied none of them, and nothing replays them. A consumer with no position starts at the
 // next message.
-func openConsumer(ctx context.Context, stream jetstream.Stream, pool *pgxpool.Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func openConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	existing, err := stream.Consumer(ctx, config.Durable)
 	if errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return createConsumer(ctx, stream, pool, logger, config)
@@ -363,7 +363,7 @@ func openConsumer(ctx context.Context, stream jetstream.Stream, pool *pgxpool.Po
 
 // createConsumer creates the missing durable consumer config names, at its stored position when
 // pool keeps one and at the next message otherwise (openConsumer).
-func createConsumer(ctx context.Context, stream jetstream.Stream, pool *pgxpool.Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
+func createConsumer(ctx context.Context, stream jetstream.Stream, pool Pool, logger *slog.Logger, config jetstream.ConsumerConfig) (jetstream.Consumer, error) {
 	start, stored, err := storedStreamTime(ctx, pool, config.Durable)
 	if err != nil {
 		return nil, err
@@ -704,7 +704,7 @@ func (l *lagWatch) observe(message jetstream.Msg) {
 // long as it hangs (the delivery mechanism: ConsumerSpec.HandlerLimit's comment). The handler is
 // cut at that limit instead, its message naked and delivered again rather than held for the
 // length of the hang.
-func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool *pgxpool.Pool, handlers []Handler) bool {
+func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpec, repositories []ghrepo.Repository, pool Pool, handlers []Handler) bool {
 	decoded, err := decodeMessage(message.Subject(), spec.Project, repositories, message.Data())
 	if err != nil {
 		logMessage(spec.Logger, slog.LevelError, "poison JetStream message", message, "error", err)
@@ -728,7 +728,13 @@ func consumeMessage(ctx context.Context, message jetstream.Msg, spec ConsumerSpe
 		return ackMessage(spec.Logger, message)
 	}
 
-	work, cancel := context.WithTimeout(ctx, spec.HandlerLimit)
+	// One message's work is one entry point of the daemon's pool, and it takes a hold mark of its
+	// own (store.ForConcurrentWorker): the three durable consumers run beside each other on one
+	// context, so a mark they shared would have one consumer's open transaction refuse the other
+	// two their first connection, while a mark per message refuses only the handling that already
+	// holds one (store.ErrNestedAcquire). A consumer delivers its messages one at a time, so this
+	// mark covers one handling and is gone with it.
+	work, cancel := context.WithTimeout(store.ForConcurrentWorker(ctx), spec.HandlerLimit)
 	defer cancel()
 	stop := keepInProgress(work, message, spec.AckWait/3, spec.Logger)
 	started := time.Now()
@@ -805,7 +811,7 @@ func nakOutcome(what, nakWhat string, err error) messageOutcome {
 // should become of the message. It acknowledges, naks and terminates nothing. Each read keeps its
 // own AckWait bound, nested under work, so one dependency that is slow to answer is cut while the
 // handling as a whole runs to HandlerLimit.
-func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool *pgxpool.Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
+func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpec, pool Pool, decoded decodedMessage, handlers []Handler) messageOutcome {
 	// decoded.Fact is never nil here: consumeMessage acknowledges a message that decodes to none
 	// before it starts the keeper this work runs under.
 	if _, ok := decoded.Fact.(RepoMappingChanged); ok {
@@ -911,7 +917,7 @@ func handleMessage(work context.Context, message jetstream.Msg, spec ConsumerSpe
 // under the fact lock (ApplyFact) and no GitHub read, whatever the number of other pull requests
 // a mapped repository reviews and checks. A pull request recorded after this read, by a later
 // opened, gets its checks and reviews from their next event.
-func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool *pgxpool.Pool, fact Fact) (bool, error) {
+func recordedPullRequest(ctx context.Context, spec ConsumerSpec, pool Pool, fact Fact) (bool, error) {
 	var repo string
 	var number int
 	switch fact := fact.(type) {

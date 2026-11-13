@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -21,7 +21,7 @@ import (
 // notice tree of LEGION-1, its architect working, and the runner that delivers the row, which
 // states the design gate the shipped deployment gates (the single step spec).
 type catchUpDelivery struct {
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	publisher *hookPublisher
 	runner    *outbox

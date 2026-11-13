@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -14,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -41,7 +41,7 @@ var handOverCorrectionRepositories = servedRepositories{"acme/widgets": "main", 
 // runs through, and the outbox row that completes the hand-over, over a database of its own.
 type handOverCorrectionRig struct {
 	t         *testing.T
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	engine    *workflow.Engine
 	admission *admit.Admission

@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -29,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -51,7 +51,7 @@ var (
 // reconcile over them, with a clock that answers a new moment at every read.
 type defaultChangeRig struct {
 	t         *testing.T
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	admission *admit.Admission
 	// read is every moment the engine's clock has answered, in order, which is what says a

@@ -977,12 +977,15 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	}
 	m.goroutines++
 	go func() {
+		// The send runs on a goroutine of its own, so its adoption, its prompt and its outcome's
+		// decision share one fresh context, one after another.
+		working := m.worker()
 		var err error
 		if adopting {
-			err = m.adopt(role, loc, &d)
+			err = m.adopt(working, role, loc, &d)
 		}
 		if err == nil {
-			sending, cancel := context.WithTimeout(m.ctx, m.deps.Timeouts.RPC)
+			sending, cancel := context.WithTimeout(working, m.deps.Timeouts.RPC)
 			err = conn.Prompt(sending, d.ID, prompt)
 			cancel()
 		}
@@ -990,7 +993,7 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 		if err != nil {
 			ev = PromptRefused{Claim: token, Generation: generation, DeliveryID: d.ID, Err: err}
 		}
-		if err := m.Handle(m.ctx, ev); err != nil {
+		if err := m.Handle(working, ev); err != nil {
 			m.log.Error("supervise: prompt outcome", "delivery", d.ID, "error", err)
 		}
 		m.mu.Lock()
@@ -1038,16 +1041,16 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 // name — never a token — and how long the shim took. The refusals are logged where the send's
 // outcome is (refused); without this line nothing in the log tells which tasks adopted the working
 // copy, which is what a production check reads to see the rule held (dispatch://INFRA-2695).
-func (m *Machine) adopt(role claim.Role, loc *runtime.Locator, d *Delivery) error {
+func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locator, d *Delivery) error {
 	if loc == nil {
 		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
 	}
-	id, err := m.deps.Identity(m.ctx, role, m.claim.Issue)
+	id, err := m.deps.Identity(ctx, role, m.claim.Issue)
 	if err != nil {
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
 	started := m.deps.Clock.Now()
-	if err := m.deps.Runtime.AdoptWorkingCopy(m.ctx, *loc, id); err != nil {
+	if err := m.deps.Runtime.AdoptWorkingCopy(ctx, *loc, id); err != nil {
 		return err
 	}
 	m.log.Info("supervise: the working copy was adopted for the phase task",

@@ -22,8 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -120,7 +118,7 @@ type podUpdateRig struct {
 	s       *supervision
 	sup     *supervisor
 	rt      *fake.Runtime
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	records record.Store
 	clock   *heldClock
 	conns   *fake.Conns
@@ -234,6 +232,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		PodUpdateRetask:    podUpdateRetask,
 		RefreshGate:        supervise.NewRefreshGate(0),
+		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
+		// sets for the daemon, so the guard sees the machines as it does in production.
+		Worker: store.ForConcurrentWorker,
 	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
@@ -243,7 +244,12 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	if _, err := sup.restore(ctx, stored); err != nil {
 		t.Fatalf("restore the seeded claims: %v", err)
 	}
-	rig := &podUpdateRig{t: t, ctx: ctx, s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
+	// The rig's own calls — its sweeps, ticks and reads — run on a hold mark of their own, as the
+	// orphan sweep's goroutine does in production (store.ForConcurrentWorker(s.supervisor.ctx)),
+	// while the supervisor keeps the unmarked base context production gives it. On an unmarked
+	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
+	// held one would pass every test of this rig (INFRA-3169).
+	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log}
 	for _, role := range roles {
 		if !role.session {
@@ -271,7 +277,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 // runs on the rig's clock, so the record it writes measures a silence from the moment the test
 // moved the clock to, and on the rig's logger, so the line it writes beside the notice is in
 // the buffer the test reads.
-func podUpdateWorkflow(pool *pgxpool.Pool, records record.Store, clock *heldClock, log *slog.Logger) *workflowRuntime {
+func podUpdateWorkflow(pool *store.Pool, records record.Store, clock *heldClock, log *slog.Logger) *workflowRuntime {
 	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Clock: clock.Now}, log)
 	return &workflowRuntime{pool: pool, records: records, log: log, handlers: []intake.Handler{engine}}
