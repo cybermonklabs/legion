@@ -108,9 +108,13 @@ test("Retry after two stopped saves of the same default assignee goes under the 
     expect(secondKey).not.toBe(firstKey);
     await stopTheLateWrite(queryClient);
 
+    // The Retry is a write of its own: the last call is otherwise the stopped save's own attempt,
+    // which carries the newer key too, so a Retry that sent nothing would read as one that did.
+    const sentBeforeRetry = putDefault.mock.calls.length;
     putDefault.mockResolvedValueOnce({ assignee: "alice@example.com", project: "CORE" });
     await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(0);
+    expect(putDefault).toHaveBeenCalledTimes(sentBeforeRetry + 1);
     expect(putDefault.mock.calls.at(-1)?.[2]?.key).toBe(secondKey);
   } finally {
     realClock();
