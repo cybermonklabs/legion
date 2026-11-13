@@ -35,6 +35,7 @@ const (
 	OutboxKindRoleMessage      OutboxKind = "role_message"
 	OutboxKindPhaseEnded       OutboxKind = "phase_ended"
 	OutboxKindHookPrompt       OutboxKind = "hook_prompt"
+	OutboxKindUpdateAsk        OutboxKind = "update_ask"
 	OutboxKindIssueBundle      OutboxKind = "issue_bundle"
 	OutboxKindIssueRelease     OutboxKind = "issue_release"
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
@@ -58,12 +59,15 @@ const (
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
-// none of them back. The role-message lane runs the two kinds the daemon addresses to a role of
-// the issue that is not its architect (phase_ended, hook_prompt), on a lane of its own because
-// the board lane's architect notices are ordered among themselves and one of them waits
+// none of them back. The role-message lane runs the three kinds the daemon addresses to one role of
+// the issue on that role's own topic: the end of a phase and a hook's words, which go to a phase
+// worker (phase_ended, hook_prompt), and an update round's ask, which goes to any role whose
+// process runs in the issue's pod, its architect included (update_ask). It is a lane of its own
+// because the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
-// phase ended, or given the words a hook fired on a move back, must hear it while that is news,
-// not after whatever its tree's architect is owed.
+// phase ended, given the words a hook fired on a move back, or asked to get ready for the
+// replacement of its pod must hear it while that is news, not after whatever its tree's architect
+// is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -82,7 +86,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
 
@@ -1054,6 +1058,35 @@ func (p HookPrompt) Message(issue string) string {
 		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
 }
 
+// UpdateAsk is an update round's ask to one role of the issue, on that role's own Envoy topic:
+// the daemon opened Round over Pod and will replace that pod, and Text is the whole ask, as the
+// sweep built it with supervise.UpdateTask from the round's recorded reasons and its recorded
+// opening. Role is the recipient: a phase worker or the issue's architect, since every role whose
+// process runs in the pod loses that process at the replacement. Pod is empty for a round that
+// records no pod.
+//
+// The row carries the finished text rather than the facts to build it from, for two reasons.
+// record does not import supervise, which owns the words. And the round's terms are fixed when
+// it opens, so a text built from what a later tick read would name drift the round was not
+// opened for.
+//
+// The ask is best effort: the round ends at its bound whether or not the role reads it. So a
+// row whose role no live session holds finishes undelivered, and a row whose round the claim no
+// longer records finishes without a publish (the daemon's updateAsk).
+type UpdateAsk struct {
+	Role  claim.Role `json:"role"`
+	Round string     `json:"round"`
+	Pod   string     `json:"pod,omitempty"`
+	Text  string     `json:"text"`
+}
+
+func (UpdateAsk) OutboxKind() OutboxKind { return OutboxKindUpdateAsk }
+
+// Message is what the runner publishes for issue: the text the sweep built, unchanged. Nothing is
+// put in front of it, since the text names the round and the topic it goes to is the role's own
+// claim on issue.
+func (p UpdateAsk) Message(string) string { return p.Text }
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {
@@ -1202,6 +1235,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindUpdateAsk:
+		value := UpdateAsk{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1428,6 +1467,16 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Prompt == "" {
 			return fmt.Errorf("a hook prompt carries the hook's own words, which the daemon puts in front of the role")
+		}
+	case UpdateAsk:
+		if !claim.IsRole(value.Role) {
+			return fmt.Errorf("an update ask goes to a role whose process runs in the issue's pod, the architect among them; %q is no role", value.Role)
+		}
+		if value.Round == "" {
+			return fmt.Errorf("an update ask names the round it asks for")
+		}
+		if value.Text == "" {
+			return fmt.Errorf("an update ask carries the text the sweep built for its round")
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
