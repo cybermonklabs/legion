@@ -15,7 +15,9 @@ label, and on each later change while it stays in `triage`, the change that adds
 included. Triage the root as `skill://legion-controller/references/triage.md` says. A person's
 label on a `triage` root wakes nobody: the root is queued by the daemon (its own `todo` write). A
 person's approval of a parked (`backlog` or `icebox`) labelled root's spec is queued by the daemon
-the same way and wakes nobody.
+the same way and wakes nobody, except a carried approval and one on a root that keeps a Dispatch
+parent, which come as notices
+(`skill://legion-controller/references/parked-decisions.md#the-notice`).
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
@@ -32,7 +34,7 @@ child, so the issue it names may be either. Name the free slots; take nothing.
 daemon waits half a minute and folds that window's events into one wake. Take nothing: it is not
 Legion's.
 
-## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?, silent?}`)
+## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?, held?, silent?}`)
 
 The daemon's periodic wake, a minute after it starts and then every
 `controller_wake_interval_seconds` (an hour by default), whatever the slots. Run the skill's every-turn
@@ -57,6 +59,18 @@ link is taken off (by a person or the tree's architect), and a children-first wa
 last open child leaves the workflow: name the waits in the day's report and
 take nothing for them.
 
+`held`, when present, is `[{issue, reason, heldBy?}, …]`: every issue the daemon's record holds
+in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one
+word for why nothing of it runs and the issues that hold it. `heldBy` is absent where no issue
+holds the one that waits. The field is absent where the project holds nothing, as `blocked` is.
+`read_state` shows the same rows under `admission.held`, with the same word for each issue, and
+`legion state` prints their counts as `admission.held:`. The word for each row, and what ends
+each hold, is the table in `skill://legion-controller/references/admission.md`. The rows name the
+blocked issues again, under whichever word the daemon's order gives them, so an issue can stand
+in `blocked` and in `held` at once: `blocked` is what readers use for a link or a children-first
+wait, and `held` says of every held issue what it waits for. Name them in the day's report and
+take nothing for them.
+
 `silent`, when present, is `[{issue, role, lastStep, silent, backgroundSince?}, …]`: every issue whose phase worker
 nothing will prompt, with the role whose claim is silent, the moment that claim's agent last
 stepped, and how long it has been quiet.
@@ -78,9 +92,13 @@ handler refuses a fact of another generation.
 So read the issue's record for every entry rather than taking its architect as told:
 `read_state`'s `issues.<KEY>` gives its phase and each role's claim, and says whether the worker
 has moved since the tick was queued.
-Where the architect of that issue is itself a claim that is not answering — its claim reads
-`failed`, or the Envoy registry shows its session gone — `fresh_session` on that architect, because
-a notice sent to a claim that reads nothing reaches nobody and the work stands still.
+Where the architect of that issue is itself a claim that is not answering, a notice sent to it
+reaches nobody and the work stands still. When the tree's architect claim reads `failed`
+(`issues.<ROOT>.architect.state`, `<ROOT>` being the silent issue's `tree`), act as the
+`worker-died` section below says, with `<ROOT>` as its `<KEY>`: restart the tree when you find no
+cause or its cause is gone, and otherwise ask the person whether to park it, with no relaunch
+while the cause stays. When its claim does not read `failed` and the Envoy registry shows its
+session gone, `fresh_session` on that architect.
 Name each silent issue in the day's report, with its role and the length of its silence.
 
 ## `unslotted on <KEY>` (`{kind: "unslotted", reason}`)
@@ -162,16 +180,120 @@ releases the hold only on a root standing at `phase: held`: a root whose tree li
 `phase: done` is re-admitted by the same `todo` at a new generation, and a held child comes back
 at `admitted` with a new generation of its own.
 
-When an escalated hold's cause is not gone, park the tree: `set_status` the root to `backlog`,
-then, in the same turn, post one comment on the root (`dispatch comment --issue <root>
---body-file -`) whose first line is `Parked by Legion while it waits on: <the hold's cause>`, the
-cause being what you found the held phase waits on (the payload's `phase` and `role`, and the held
-issue's `dispatch read`). That mark is what makes the park Legion's own hold
-(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the root back to
-`todo` only when you checked that the hold's cause is gone, a person asks, or a person's decision
-after the park gives its work a next step (that reference's step 4), because the park took the tree
-out of the workflow: the `todo` after it starts a new generation of the tree, from its architect,
-and releases no hold.
+When an escalated hold's cause is not gone, do not park the tree. The tree stays admitted and
+keeps its slot. Ask the person whether to park it, as
+[Ask whether to park a tree](#ask-whether-to-park-a-tree) says. Its `<cause>` is what the held
+phase waits on: the payload's `phase` and `role`, and the held issue's `dispatch read`. Its
+`<key>` is `held <ISSUE> in <heldFrom> (<role>) at <failure.at>`: `<ISSUE>` is the held issue's
+key, `<heldFrom>` is `issues.<ISSUE>.heldFrom`, `<role>` is the role of that phase, whose claim
+failed, and `<failure.at>` is that claim's `issues.<ISSUE>.workers.<role>.claim.failure.at`,
+exactly as `read_state` gives it. Where `failure.at` is absent, the key ends `generation <n>` in
+place of `at <failure.at>`. `<n>` is `issues.<ISSUE>.generation` in `read_state`. The next
+failure gets a new key, so a `Left admitted` answers only the failure it was given for.
+Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+A person's `Park it` answer to that ask is such a request. Only a park on that answer carries the
+mark. Cite the ask's answer in the comment you post with the park, and make that comment's first
+line `Parked by Legion while it waits on: <the hold's cause>`, because that mark is what makes the
+park Legion's own hold (`skill://legion-controller/references/parked-decisions.md#deciding`,
+step 2). Set the root of a park with that mark back to `todo` only when you checked that the
+hold's cause is gone, a person asks, or a person's decision after the park gives its work a next
+step (that reference's step 4), because the park took the tree out of the workflow: the `todo`
+after it starts a new generation of the tree, from its architect, and releases no hold. For a
+`todo` after your check, post one comment on the root
+(`dispatch comment --issue <root> --body-file -`) that cites the park's
+`Parked by Legion while it waits on:` mark and says what you checked.
+
+## Ask whether to park a tree
+
+The `held` wake's escalated hold, a tree that waits on an event outside Legion, and the
+`worker-died` wake send you here when a tree's wait has a cause that stays, with that cause as
+`<cause>`. Each of those sections also gives the cause a fixed key, `<key>`: its text is the same
+at every run, while the text of `<cause>` can change from one run to the next. The tree stays
+admitted and keeps its slot while you ask. A comment or a reply from any session counts as yours
+here, because the controller's session id changes when it restarts or is taken over.
+
+1. Look for the ask you opened for this key already. List the root's comments that name an ask:
+
+   ```text
+   notes=$(curl -sS --fail-with-body -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" "$DISPATCH_URL/api/v1/issues/<root>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
+   printf '%s' "$notes" | jq -cn 'input | if type == "array" then [.[] | select(.author.kind == "session" and (.body | startswith("Asked whether to park: "))) | {id, created_at, body}] else error("Dispatch did not answer the list") end'
+   ```
+
+   Take the newest of them whose second line is exactly `<key>`. Compare that line alone, and not
+   the `<cause>` text under it. Read the ask its first line names
+   (`dispatch read --ref '<that reference>'`):
+   - It is open: open nothing and post nothing.
+   - It is resolved with no answer: open nothing and post nothing for this key. The day's report
+     names the tree and that ask, as `skill://legion-controller/references/daily-report.md` says.
+   - It is answered, and no reply of yours under it starts `Parked dispatch://`,
+     `Not parked dispatch://` or `Left admitted dispatch://`: act on its answer now (step 4).
+   - Your reply under it starts `Left admitted dispatch://`: the person chose to leave the tree
+     admitted for this key. Open nothing and post nothing.
+   - Your reply under it starts `Parked dispatch://`: the tree runs again after that park, so its
+     wait now is a new one. Go on to step 2.
+   - Your reply under it starts `Not parked dispatch://`: that ask is spent, because its `Park it`
+     came when the root was `done` or the tree no longer had the wait that `<key>` names. Go on
+     to step 2: a new wait asks again.
+
+   With no such comment, go on to step 2.
+2. Open a `dispatch ask` on the report issue that names the root and `<cause>` and asks the person
+   whether to park the tree, with the options `Park it` and `Leave it admitted`. The ask also says
+   that, after a park on `Park it`, Legion sets the root back to `todo` when the wait that
+   `<cause>` names ends (the cause is gone, or the event happens). Follow it
+   (`dispatch follow --ask '<ref>' --action follow`), as
+   `skill://legion-controller/references/finding-asks.md#follow-it` says, so that its answer
+   reaches you. Post one comment on the root (`dispatch comment --issue <root> --body-file -`).
+   Make its first line `Asked whether to park: dispatch://<REPORT KEY>/ask/<id>`. Make its second
+   line `<key>`, exactly as the section of the cause gives it. Write `<cause>` on the lines under
+   the key.
+3. Name the tree and the ask's reference in the day's report while the ask is open.
+4. Act on the ask's newest answer. The start procedure's catch-up sends every answer that has no
+   reply here, so an answer can come after the root is `done` or after its cause is gone.
+   - `Park it`, when the root's `phase` is not `done` and the tree still has the wait that `<key>`
+     names: park the tree. Post the park's comment as the section of its cause says: the
+     `held` wake's escalated hold, a tree that waits on an event outside Legion, or the
+     `worker-died` wake. That comment cites the answer, and its first line is the mark
+     `Parked by Legion while it waits on: <cause>`.
+   - `Park it` in any other case: move nothing, and say in your reply what you checked.
+   - `Leave it admitted`: move nothing.
+
+   That `<key>` is the second line of the root's comment that names this ask. The tree still has
+   the wait that `<key>` names when the section of its cause, applied to `read_state` now, builds
+   that same `<key>`. Compare the two keys exactly, as step 1 compares the second line. A cause
+   that is gone, an issue no longer at `phase: held`, or an architect no longer `failed` builds no
+   key. For an `event:` key, that is when the tree still waits on that event.
+
+   In each case, reply under the ask with what you did, its first line exactly
+   `Parked dispatch://<root>`, `Not parked dispatch://<root>` or `Left admitted dispatch://<root>`:
+   `dispatch comment --issue <REPORT KEY> --reply-to-ask '<ask id>' --body-file -`. Dispatch
+   refuses to resolve an answered ask, so that reply is the ask's record: step 1 and the start
+   procedure's catch-up
+   (`skill://legion-controller/references/finding-asks.md#catch-up-at-every-start`, step 3) read
+   it.
+
+## A tree that waits on an event outside Legion
+
+A running tree can hold a slot while it waits on an event outside Legion: a deploy, another
+project's release, a vendor, or a person outside the company. Do not park it: the tree stays
+admitted and keeps its slot. Ask the person whether to park it, as
+[Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the event as `<cause>`. Its
+`<key>` is `event: <the event>`. `<the event>` is the one thing the tree waits on, named by a
+fixed reference: an issue's `dispatch://` reference, a pull request's or a release's URL, or the
+deploy's run URL. For a vendor or a person outside the company, it is the `dispatch://`
+reference of the message or comment that names what the tree waits on. Choose that reference at
+the first ask. After that, copy it exactly from the second line of that ask's comment on the
+root. A tree in which an issue stands at `phase: held` with `holdReason: escalated` takes the
+`held` key above for that issue, and a tree whose root's `architect.state` is `failed` takes the
+`architect failed:` key below. Neither takes the `event:` key, whichever wake or pass brought the
+tree to you.
+Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+A person's `Park it` answer to that ask is such a request. Only a park on that answer carries the
+mark: cite the ask's answer in the park's comment, whose first line is
+`Parked by Legion while it waits on: <the event>`, the mark that makes the park Legion's own hold
+(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
+Set the root of a park with that mark back to `todo` once you checked that the event has
+happened, a person asks, or a person's decision after the park gives its work a next step, as the
+escalated hold above says.
 
 ## `worker-died on <KEY>` (`role: "architect"`)
 
@@ -181,10 +303,25 @@ notice of the tree goes to that architect, so nobody inside the tree can act. Ch
 parked: do nothing (a failed architect reads `failed` until the tree closes). Otherwise look for
 the cause. `issues.<KEY>.architect.failure` holds the record the `held` wake above describes. Read
 after it an open `capabilities` row whose `detail` names the architect's session, or the
-architect's last message on the root issue. When you find none, or it is gone, re-admit the tree
-(`set_status` the root to `backlog`, then to `todo`: a new generation whose architect starts with
-fresh budgets). When it stays, park the tree (`set_status` the root to `backlog`) and say why on
-the issue, because a relaunch would fail the same way.
+architect's last message on the root issue. When you find none, or it is gone, restart the tree
+(`set_status` the root to `backlog`, then, in the same turn, to `todo`: a new generation whose
+architect starts with fresh budgets). That pair is a restart and not a park: the daemon re-admits
+only a root whose tree lingers or is done, so the `backlog` write is how a restart reaches `todo`.
+When the cause stays, the tree stays admitted and keeps its slot, because a relaunch would fail
+the same way. Ask the person whether to park it, as
+[Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the architect's cause as
+`<cause>`. Its `<key>` is `architect failed: <cause word> at <failure.at>`, where `<cause word>`
+is the `cause` of `issues.<KEY>.architect.failure` and `<failure.at>` is its `at`, exactly as
+`read_state` gives it. Where `failure.at` is absent, the key ends `generation <n>` in place of
+`at <failure.at>`. `<n>` is `issues.<KEY>.generation` in `read_state`.
+Park the tree only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+A person's `Park it` answer to that ask is such a request. Only a park on that answer carries the
+mark. Cite the ask's answer in the park's comment, whose first line is
+`Parked by Legion while it waits on: <the cause>`, the mark that makes the park Legion's own hold
+(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the root of a
+park with that mark back to `todo` once you checked that the architect's cause is gone, a person
+asks, or a person's decision after the park gives its work a next step, as the escalated hold
+above says.
 
 This re-admission is not the hold release of the `held` wake above. The `backlog` takes the tree
 out of the workflow, so the `todo` after it starts a new generation whatever phase the root stood
@@ -263,15 +400,30 @@ chain refuses the same work. Either way, `envoy_publish` the key, the role and t
 issue's architect, which is who can narrow the work. Re-admit nothing and park nothing, because
 the task is not lost and the session still runs.
 
-One claim that stays stuck after that is yours to act on, and `compact` is the first thing you
-reach for: it has the daemon shorten that claim's Oh My Pi session to a text summary and send it
+One claim that stays stuck after that is yours to act on, and which door you use depends on what
+the claim is doing. `compact` is the first thing for a claim whose session the provider keeps
+refusing: it has the daemon shorten that claim's Oh My Pi session to a text summary and send it
 whatever task it owed again, and the claim keeps its session, its workspace and everything it
 knows of its issue. The answer says whether the session was compacted and, when it was not, why;
-the claim is back either way, and whatever task it owed has gone again. Use `fresh_session` only
-when the claim is still refused after a compaction, because a new session loses everything the old
+the claim is back either way, and whatever task it owed has gone again. Use `fresh_session` once
+the claim is still refused after a compaction, because a new session loses everything the old
 one held — what the worker learned of its issue, and what it had not yet pushed or written down —
 and cures nothing in a provider outage, where the next session's turns are refused as the last
 one's were.
+
+`compact` is the wrong door for a claim no process stands behind, which is a role that died: it
+refuses such a claim `CLAIM_NOT_RUNNING` and names `fresh_session`, because it has no agent to
+ask. Ask for `fresh_session` there. It is the one way back for a dead role, a dead architect of
+your project included: it suspends the claim where your request arrives, leaves the session that
+claim recorded behind, and starts the claim again with the task its dead turn held. Both doors
+read the claim's process at the moment you ask, not the daemon's memory of an older report,
+which a daemon restart forgets. A refusal of `CLAIM_IN_A_TURN` is a claim whose process that
+read found running, or one whose session is being compacted. A claim whose process the runtime
+would not answer for, one that records no process to read, and one that moved under your
+request and that a second read finds no longer working or gone once more are refused
+`CLAIM_UNSETTLED`, each left exactly as your request found it, so ask again once the runtime
+answers; a claim that moved is otherwise answered as that second read finds it. A claim under a relaunch the wake pacing parks is refused
+`CLAIM_UNSETTLED` too.
 
 ## GitHub mentions
 

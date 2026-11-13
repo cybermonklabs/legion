@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 const testTimeout = 30 * time.Second
@@ -55,15 +56,34 @@ func runUnderAHomeOfThePackagesOwn(m *testing.M) int {
 			return 1
 		}
 	}
+	check, err := leakguardtest.WriteFile(home, leakguardtest.Passes)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "TestMain:", err)
+		return 1
+	}
+	leakCheckStandIn = check
 	return m.Run()
 }
+
+// leakCheckStandIn is the stand-in shared public leak check every fixture command of this package
+// runs under, written once by TestMain into the package's own home. The fixtures push: the seed
+// push every local bare remote is made with (seedRemote), and the pushes the tests make into one.
+// Those run under whatever git is first on PATH, and in an issue pod that is Legion's wrapper
+// (/opt/legion/bin/git), which points a push at a hook running the leak guard; the guard refuses a
+// push it can resolve no shared check for (leakguard's Resolve), and fixtureenv.Isolated drops
+// PUBLIC_LEAK_CHECK along with everything else of the process that reaches past the test. So
+// without a check of this package's own every fixture that pushes stops with LEAK CHECK SETUP
+// ERROR in a pod, while passing on a runner that has no such git — the stand-in, which clears
+// every write, is what makes the two the same run.
+var leakCheckStandIn string
 
 // setupEnvironment is the environment of a fixture command: fixtureenv.Isolated under the home
 // the test's provisioning reads too (TestMain's, or newLocalRunner's), so a fixture and a
 // provision read the same jj repository configuration, and no fixture reads the workspace,
-// configuration, provisioning token or credential of the process that runs the tests.
+// configuration, provisioning token or credential of the process that runs the tests. The
+// stand-in leak check is named for the pushes among those commands.
 func setupEnvironment() []string {
-	return fixtureenv.Isolated(os.Getenv("HOME"))
+	return append(fixtureenv.Isolated(os.Getenv("HOME")), "PUBLIC_LEAK_CHECK="+leakCheckStandIn)
 }
 
 // recordingRunner runs every command through the production runner, NewRunner, with the real jj
@@ -1475,9 +1495,9 @@ func TestGitWorktreeEntriesResolveACloneSymlinkOutsideTheWorkspace(t *testing.T)
 		t.Fatal(err)
 	}
 
-	got, err := gitWorktreeEntries(logicalClone, workspace)
-	if err != nil {
-		t.Fatalf("gitWorktreeEntries(%s, %s): %v", logicalClone, workspace, err)
+	got, unread, err := gitWorktreeEntries(logicalClone, workspace)
+	if err != nil || unread != nil {
+		t.Fatalf("gitWorktreeEntries(%s, %s): %v (unread: %v)", logicalClone, workspace, err, unread)
 	}
 	if !slices.Equal(got, []string{entry}) {
 		t.Errorf("gitWorktreeEntries(%s, %s) = %q, want %q", logicalClone, workspace, got, []string{entry})

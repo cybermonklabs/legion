@@ -182,10 +182,11 @@ func unmarked(t *testing.T, body []byte) string {
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
 // pacing holds, the count of claims the refresh lane has left, the gated steps, the claim views'
-// step record, the places in the admission line and the workers' counts of the moves back among
-// the keys it is served without, since such a pod is below treeContract, wakesWaitingContract,
-// claimsToRefreshContract, gatedStepsContract, stallRecordContract, waitingLineContract and
-// backwardMovesContract too. A pod at this contract, and a caller in no
+// step record, the places in the admission line, the workers' counts of the moves back, each
+// issue's two entry numbers and the issues the record holds in the workflow among the keys it is
+// served without, since such a pod
+// is below every row of stateNarrowings. A pod at the newest contract the route narrows by, and
+// a caller in no
 // pod — the operator's `legion state`, whose open-rounds line reads both fields, whose queue
 // line reads those wakes and whose tool-call line reads the step records — are served
 // everything. The claims are the state snapshot's own,
@@ -212,18 +213,24 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract fourteen below this daemon's own.
+		// claimsToRefreshContract added at 73, so a pod at 73 or above is served the count and a
+		// pod still running an older plugin is not.
 		refresh bool
+		// held is whether the caller is served `admission.held`, the issues the record holds in
+		// the workflow that stand in neither `active` nor `waiting`, the list heldContract added
+		// at 98, so a pod at 98 or above is served the key and a pod still running an older
+		// plugin is not.
+		held bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		// The newest contract the route narrows by, which is what a pod must record to be served
 		// every key. What the caller is served is decided by its own recorded claim contract
 		// (podContract) and never by the declared constant, which is why this row names
-		// leakCheckCauseContract rather than the declaration.
-		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), rounds: true, wakes: true, stall: true, refresh: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true},
+		// heldContract rather than the declaration.
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(heldContract), rounds: true, wakes: true, stall: true, refresh: true, held: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true, held: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true, held: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -280,9 +287,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields), and with each claim view's `leakCheckCause` gone, the
-			// sentence contract 87 added (withoutLeakCheckCause). Every row that reaches here is
-			// below all of them, so those thirteen keys go whatever the row is.
+			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
+			// sentence contract 87 added (withoutLeakCheckCause), with each issue's `phaseEntry`
+			// and `givenEntry` gone, the two keys contract 94 added (withoutPhaseEntries), and
+			// with `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go
+			// holds that half). Every row that reaches here is below all of them, so those
+			// fifteen strips take their keys whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -298,11 +308,18 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(want["admission"].(map[string]any), "trees")
 				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
 			}
+			if !tc.held {
+				delete(want["admission"].(map[string]any), "held")
+			}
 			for _, issue := range want["issues"].(map[string]any) {
 				issue := issue.(map[string]any)
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
+				// Every row that reaches here is below phaseEntriesContract too, so the two
+				// entry numbers go whatever the row is, as the decided record's keys above do.
+				delete(issue, "phaseEntry")
+				delete(issue, "givenEntry")
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)

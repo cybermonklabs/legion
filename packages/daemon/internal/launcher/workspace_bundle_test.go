@@ -18,6 +18,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -391,7 +393,14 @@ func TestARestoreSkipsABookmarkNameJJWillNotTakeAndRestoresTheRest(t *testing.T)
 	}
 }
 
-const bundleIssue = "INFRA-945"
+// bundleIssue is the issue the fixture's workspaces belong to, and bundleOwner and bundleRepo
+// the repository: the three name the directories a pod that replaces the released one is laid
+// out in (secondPod, workspace.Location).
+const (
+	bundleIssue = "INFRA-945"
+	bundleOwner = "acme"
+	bundleRepo  = "widgets"
+)
 
 // bundleFixture is one remote, the pod that is released and the workspace it worked in, and the
 // pods that replace it: real git and real jj throughout, every command naming the directory it
@@ -419,6 +428,14 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 	// a home of this test's own, which holds none of the host's jj and git configuration — its
 	// user, its trailers, its filters — and the identity below is the fixture's own
 	// (docs/testing.md).
+	//
+	// The seed pushes run under whatever git is first on PATH, and in an issue pod that is
+	// Legion's wrapper (/opt/legion/bin/git), which points a push at a hook running the leak
+	// guard. The guard refuses a push it can resolve no shared public leak check for (leakguard's
+	// Resolve), and Isolated drops PUBLIC_LEAK_CHECK with the rest of what reaches past the test,
+	// so the fixture carries a stand-in of its own that clears every write — as every other
+	// fixture that pushes does (rescuetest's disk) — and the pushes below behave here as they do
+	// on a runner whose git is the real one.
 	home := filepath.Join(root, "home")
 	f := &bundleFixture{
 		t: t, root: root, remote: filepath.Join(root, "remote"), clone: filepath.Join(root, "clone"), ws: filepath.Join(root, "ws"),
@@ -426,7 +443,8 @@ func newBundleFixture(t *testing.T) *bundleFixture {
 		env: append(fixtureenv.Isolated(home),
 			"JJ_USER=tester", "JJ_EMAIL=tester@example.test",
 			"GIT_AUTHOR_NAME=tester", "GIT_AUTHOR_EMAIL=tester@example.test",
-			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test"),
+			"GIT_COMMITTER_NAME=tester", "GIT_COMMITTER_EMAIL=tester@example.test",
+			"PUBLIC_LEAK_CHECK="+leakguardtest.Write(t, root, leakguardtest.Passes)),
 	}
 	seed := filepath.Join(root, "seed")
 	for _, dir := range []string{f.remote, seed, home} {
@@ -469,12 +487,25 @@ func (f *bundleFixture) pod(clone, ws string) {
 }
 
 // secondPod is the pod that replaces the released one: its own clone of the remote as it stands
-// now, and its own workspace, holding only what was pushed.
+// now, and its own workspace, holding only what was pushed. name is the state directory the pair
+// is laid out under, each pod having one of its own; the clone and the workspace sit where
+// provisioning puts them below it, which is where a launcher started in that workspace derives
+// the clone from (workspace.Location, workspace.WorkspaceOf).
 func (f *bundleFixture) secondPod(name string) string {
 	f.t.Helper()
-	clone, workspace := filepath.Join(f.root, name+"-clone"), filepath.Join(f.root, name)
-	f.pod(clone, workspace)
-	return workspace
+	state := filepath.Join(f.root, name)
+	located, err := workspace.Location(state, ghrepo.MustParse(bundleOwner+"/"+bundleRepo), bundleIssue)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	clone, ws := located.Clone, located.Dir
+	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	f.pod(clone, ws)
+	return ws
 }
 
 // workOne leaves in the released pod's workspace the four kinds of unpushed work a release has to

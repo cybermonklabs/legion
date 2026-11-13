@@ -90,3 +90,7 @@ the previous round's tests could not see.
    (the refusal alert on return). The tester then drove the built page: a refusal still shown
    after 320 s away, past the default `gcTime`; 40 picks against 30 ms saves stored and showed the
    last pick, with one entry left in the project's mutation cache.
+
+Since INFRA-3090 the worked example's route takes no null.
+Every project names a default assignee, so the picker moves one person to another and clears none.
+The rules above still hold for the queue.

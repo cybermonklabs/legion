@@ -126,6 +126,16 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.RolesDir == "" {
 		return managers[0].serveUntil(ctx, address)
 	}
+	// The clone's stale git locks, swept for the life of the pod (gitLockSweep). This is an
+	// issue pod's roles container: the single-role form returned above is the project
+	// controller's pod, whose working directory is no jj workspace and whose generations carry
+	// no workspace at all. The first pass is this call's, before serveTestPG, which starts a
+	// PostgreSQL: the first pass's rule is that no process of the container holds a lock yet.
+	sweep := newGitLockSweep(managers[0].log.linef)
+	for _, m := range managers {
+		m.gitLocks = sweep
+	}
+	locks := sweep.serve(ctx)
 	// The pod's own test database, before any role starts: a role that starts at once finds the
 	// server serving its DSN (serveTestPG). Its ticker is waited on with the roles below, so Run
 	// returns with nothing of the launcher's still running.
@@ -145,6 +155,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if testPG != nil {
 		<-testPG
 	}
+	<-locks
 	return ctx.Err()
 }
 
@@ -437,6 +448,10 @@ type manager struct {
 	// container shares: the bundle a released pod's work was saved as arrives on one role's
 	// connection and is applied once, before the first role of the pod starts.
 	restore *bundleRestore
+	// gitLocks is the pod's one sweep of the clone's stale git locks, which every role manager
+	// of the container shares: the first role start that carries a workspace tells it which
+	// clone to sweep, when the container's working directory did not (gitLockSweep.learn).
+	gitLocks *gitLockSweep
 	// check is the launcher process's one install of the shared public leak check, which every
 	// role manager of the container shares as it shares restore.
 	check *checkInstall
@@ -559,6 +574,10 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	if err := keeper.open(ctx, sessions); err != nil {
 		return abandon(err)
 	}
+	// The clone's stale git locks: this start names the workspace the sweep works, and a sweep
+	// that had none sweeps it here, before the restore below runs real git and jj against that
+	// clone, where a stale lock would fail it (gitLockSweep.learn).
+	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
 	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
 	// clears the role's private directory, and before any role of the pod runs, so no role works
 	// a workspace that is half restored. Every other role's start waits here for this one. A

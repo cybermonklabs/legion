@@ -19,7 +19,7 @@ func seedSearchDocument(t *testing.T, ctx context.Context, store *Store) string 
 	t.Helper()
 	var artifactID string
 	if err := store.Pool.QueryRow(ctx, `
-		with p as (insert into projects (key, name) values ('CORE', 'Core') returning key),
+		with p as (insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example') returning key),
 		i as (insert into issues (key, project_key, number, title, created_by, rank) values ('CORE-1', 'CORE', 1, 'Search', '{"kind":"user","id":"alice"}', 'A') returning key),
 		a as (insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by) select 'CORE-1', 'CORE', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}' from i returning id)
 		select id::text from a

@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -2474,7 +2473,7 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 	}
 }
 
-func putOutboxIssue(t *testing.T, pool *pgxpool.Pool, records record.Store, issue record.Issue) {
+func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return records.PutIssue(context.Background(), tx, issue)
@@ -2489,7 +2488,7 @@ func putOutboxIssue(t *testing.T, pool *pgxpool.Pool, records record.Store, issu
 // fixture whose issue has a worker at work grants it the slot that worker's task is delivered
 // under. Each slot takes the next free index, as the promotion does: the column is unique across
 // every project's slots.
-func holdSlot(t *testing.T, pool *pgxpool.Pool, issues ...string) {
+func holdSlot(t *testing.T, pool *store.Pool, issues ...string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -2515,7 +2514,7 @@ func holdSlot(t *testing.T, pool *pgxpool.Pool, issues ...string) {
 // fixture that seeds a running tree opens it as well as granting whatever slots its issues hold.
 // project is the Dispatch project key its issues are recorded under; the lifecycle is keyed by
 // the claim token of it, as every claim and runtime key is.
-func openTree(t *testing.T, pool *pgxpool.Pool, project, tree string) {
+func openTree(t *testing.T, pool *store.Pool, project, tree string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
 		return openTreeTx(context.Background(), tx, project, tree)
@@ -2538,7 +2537,7 @@ func openTreeTx(ctx context.Context, tx pgx.Tx, project, tree string) error {
 // outboxTreeStore is the daemon's store on pool, the outbox's tree barrier as production wires it
 // (newOutbox's trees), with each root's tree lifecycle opened as admission opens it: every workflow
 // tree the daemon runs was admitted.
-func outboxTreeStore(t *testing.T, pool *pgxpool.Pool, roots ...string) *store.Store {
+func outboxTreeStore(t *testing.T, pool *store.Pool, roots ...string) *store.Store {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(ctx, pool.Config().ConnString())
@@ -2943,7 +2942,7 @@ func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testin
 	}
 }
 
-func workspaceRemovals(t *testing.T, pool *pgxpool.Pool) int {
+func workspaceRemovals(t *testing.T, pool *store.Pool) int {
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'workspace_remove'`).Scan(&count); err != nil {
@@ -3248,7 +3247,7 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 
 // openOutboxStore is a store on the test database pool answers, for a rig whose supervisor reads
 // a claim through the store itself rather than through its machines (supervisor.Step).
-func openOutboxStore(t *testing.T, pool *pgxpool.Pool) *store.Store {
+func openOutboxStore(t *testing.T, pool *store.Pool) *store.Store {
 	t.Helper()
 	st, err := store.Open(context.Background(), pool.Config().ConnString())
 	if err != nil {

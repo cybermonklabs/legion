@@ -22,7 +22,7 @@ func TestRepairIssueAsksAtBootWithdrawsAndLogsItsCounts(t *testing.T) {
 	ctx := store.WithTransactionTracking(context.Background())
 	database := storetest.Open(t)
 	for _, query := range []string{
-		`insert into projects (key, name) values ('TEST', 'Test')`,
+		`insert into projects (key, name, default_assignee) values ('TEST', 'Test', 'alice')`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank, closed_at) values ('TEST-1', 'TEST', 1, 'Closed issue', 'done', '{"kind":"user","id":"alice"}', 'U', now() - interval '1 hour')`,
 	} {
 		if _, err := database.Pool.Exec(ctx, query); err != nil {
