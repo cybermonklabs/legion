@@ -1074,7 +1074,8 @@ How long the proxy outlives the moment the generation is told to end, in a pod, 
   The stop's SIGTERM and, at the grace, its SIGKILL reach every process in the namespace, the child and whatever it left behind alike, so the leftovers' cleanup ends inside the same grace, and no process is left to hold a connection open.
 
 - **A child that exits on its own** and leaves processes behind:
-  the leftovers get up to `--stop-grace` more, SIGTERM then SIGKILL (`cleanExitedGeneration`), with the proxy still serving them, so at most one grace after the child's exit.
+  in the controller's pod, where the launcher is not namespaced, the leftovers get up to `--stop-grace` more, SIGTERM then SIGKILL (`cleanExitedGeneration`, `internal/launcher/process.go`), with the proxy still serving them, so at most one grace after the child's exit.
+  In an issue pod the role's own init is what signals them: SIGTERM over the role's namespace, then `roleNamespaceDrain`, two seconds, for them to go before the SIGKILL that ends the namespace (`runRoleShim`, `internal/launcher/roleinit_linux.go`), so at most two seconds after the child's exit.
 
 When the proxy is closed, it lets connections still open finish for up to one second (`sessionDrain`, `launcher.go`;
 `Config.Drain`, `sessionproxy.go`), then closes both ends of those left.
@@ -1133,24 +1134,35 @@ It has the claim's Oh My Pi session write a summary of itself and then sends the
 The summary is text, because the daemon asks with instructions of its own: Oh My Pi runs its image-based snapcompact method only for a compaction that carries none, and a worker resumed on those images would need a vision model to read its own past (`compactInstructions`, `packages/daemon/internal/api/compact.go`).
 The answer says whether the session was compacted and, when it was not, why — Oh My Pi's own words for a compaction it refused or skipped, `Already compacted` or `Nothing to compact (session too small)`, and the daemon's for a wait that ran out or a transport that failed — and whatever task the claim owed has gone again either way.
 The command carries no deadline of its own, as no `legion claims` command does, and the daemon bounds that model call over the whole transcript at ten minutes (`runtime.CompactTimeout`).
-While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's re-send and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused because the claim is stored working.
+While it runs the claim reads `working`, the daemon's one word for a busy agent, so the ladder's re-send and any newer task wait for its end, a second compaction is refused in its own words, and a fresh session is refused `CLAIM_IN_A_TURN`, since a claim whose session is being compacted is read before its process and the compaction in flight owns what becomes of its agent.
 
-A session the compaction left refused is the fresh session's, which is the last resort here:
+A session the compaction left refused is the fresh session's, and so is a claim stored working that no process stands behind, which the compaction refuses by name:
 
 ```sh
 legion claims retry --claim <token> --operator-token-file <file> --fresh-session
 ```
 
-It reaches a claim whose agent is registered, ready or idle and one that is suspended, failed or retired, with no suspension held over it — one idle between the ladder's sends, a suspended one, one an operator stopped (`legion claims stop` retires the claim it stops), a failed one, and a root architect as much as a phase worker — suspending it where it is live, forgetting the session it recorded, and starting it again (`freshSession`, `packages/daemon/internal/api/freshsession.go`).
+It reaches a claim whose agent is registered, ready or idle, one that is suspended, failed or retired, and one stored working that no process stands behind, with no suspension held over it — one idle between the ladder's sends, a suspended one, one an operator stopped (`legion claims stop` retires the claim it stops), a failed one, a dead architect its project's controller has no other way back from, and a root architect as much as a phase worker (`freshSession`, `packages/daemon/internal/api/freshsession.go`).
+It suspends the claim where the request arrives — a live agent and the claim no process stands behind alike — forgets the session that claim recorded, and starts it again.
 A phase worker comes back with the task of the phase its issue stands in now, and a root architect with its tree's catch-up.
+A claim no process stands behind comes back with the task its dead turn held, which its suspension takes back and its start sends again.
+A forget or a start the machine refuses after this request stopped the claim is answered 200, with that refusal and the state it left the claim in named in `phaseNotRestarted` and printed under the claim's own line, because the request changed the claim: a suspended claim is started by asking for a fresh session again, and a claim the refused step left in another state, such as `launching` with its launch tried again at the probe interval, is read in `legion claims list` before anything more is asked of it.
 No `forget-session` comes before it, and no recovery here needs an edit of the daemon's store.
 
-Both refuse a claim the daemon records as working, since compacting or suspending a claim in a turn would cut that turn off and that turn may be the one that ends the run of refusals, and both refuse a claim between states, queued or with a launch in flight.
-Both refuse a claim a suspension is held over as well, in whatever state the hold found it, since what such a claim waits for is that hold's end rather than anything either recovery would do, and a claim left working under a relaunch the daemon's wake pacing parked.
-Both refuse a claim left working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of that claim is running, and neither sends the operator back for a turn's end.
+Both read the claim's process at the runtime, at the moment of the request, rather than the daemon's memory of an older report, which a daemon restart forgets, so what that read found is what answers a claim the daemon records as working.
+That read records what it finds as the sweep's own report of the process would, so a read that finds the process running and clears a death charge writes the claim as the daemon holds it, in the same write that report makes; a refusal it answers stops, suspends, forgets, takes back and starts nothing.
+Both refuse such a claim `CLAIM_IN_A_TURN` where the read finds the process running, since compacting or suspending a claim in a turn would cut that turn off and that turn may be the one that ends the run of refusals.
+A claim whose session is being compacted takes that code too: it is answered before any process is read, because the compaction in flight owns what becomes of its agent.
+A claim whose process the runtime would not answer for is refused `CLAIM_UNSETTLED`, and the refusal says the read was not answered: an unread process may be a running one, and it may be a dead one, so the claim is left exactly as the request found it, with nothing suspended, nothing forgotten and nothing started.
+A claim stored working that records no process to read takes that code too, and its refusal says no process is recorded.
+So does a claim that moved under the request where the daemon finds it no longer working or its process gone once more: the fresh session reads its process again when the machine refuses its suspension and otherwise answers what that second read finds, and the compaction gives that code where the machine refused it as working and the claim is no longer stored working; either says the claim moved and changes nothing of it.
+Both refuse a claim between states, queued or with a launch in flight, and a claim left working under a relaunch the daemon's wake pacing parked, which has a launch in flight as much as those two (`CLAIM_UNSETTLED`).
+Both refuse a claim a suspension is held over as well, in whatever state the hold found it, since what such a claim waits for is that hold's end rather than anything either recovery would do.
+Where the read finds no process behind a claim stored working the two part: the fresh session reaches that claim, and the compaction refuses it `CLAIM_NOT_RUNNING`, naming `fresh_session` (`legion claims retry --fresh-session`) as what starts it again, because it has no agent to ask and no session to compact.
+The project's own controller claim is the one exception: the fresh session refuses it in every state, and the daemon's controller keeper does nothing for a controller stored working, so the compaction names the operator's `legion claims suspend --claim <token>` and then `legion claims resume --claim <token>` instead.
 Each refusal says what the claim is doing when it is given, and which operation reaches each state `legion claims list` shows: it names no report, turn, hold or relaunch to come, and ends by telling the caller to ask again later and read the claim's state in that list.
 The compaction refuses three more: a claim that is suspended, failed or retired, which runs no session to ask and whose refusal names what starts it again, the fresh session for a workflow role and the daemon's controller keeper for the project's own controller claim, a claim whose agent has registered and is not ready yet, which has no session to ask either and which the fresh session reaches, and a claim whose role runs on the Claude Code harness, which has no Oh My Pi session to compact at all.
-The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the claim by its issue and role rather than by a token the controller never sees: the effect, the refusals and the answer are the operator's own and only the authentication differs, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first and a fresh session only when the claim is still refused after it (`skills/legion-controller`).
+The project's controller holds both as tools of its own, `compact (issue, role)` and `fresh_session (issue, role)`, which name the claim by its issue and role rather than by a token the controller never sees: the effect, the refusals and the answer are the operator's own and only the authentication differs, and a `provider-errors on <KEY>` notice is where the controller reaches for them, the compaction first for a claim whose session the provider keeps refusing and a fresh session when the claim is still refused after it, and the fresh session alone for a claim no process stands behind, which the compaction refuses by name (`skills/legion-controller`).
 The controller's own claim is the one asymmetry: a fresh session of it is refused whatever state it is in, because the daemon's controller keeper is what starts the controller — it launches a queued one, resumes one the daemon suspended (its resume is the rule's, which an operator's suspension holds against, so a controller an operator suspended stands until that operator resumes it) and retries one that failed or retired — where a compaction of it is not refused, since the session, its process and everything the controller holds stay and only the transcript gets shorter.
 The controller cannot name itself through its own door either way, since `controller` is no role a claim token is built from, so the operator's `--claim` is the one way onto that claim.
 
@@ -1857,6 +1869,42 @@ What the strip costs is one line of one wake: the tick that row carries then nam
 Nothing else of this release needs a rollback step.
 The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
 This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
+#### Rolling back the release that frees the slot past review
+
+This release adds two columns to `issues`: `moved_at` (`20261111010031_issue_moved_at`), when the daemon last saw that issue move, and `tree_stalled_told_at` (`20261111041503_tree_stalled_told_at`), the movement a tree's stalled notice was told at.
+A rollback needs no statement for either one.
+An earlier image names neither column anywhere — it neither selects it nor inserts it — so a column it never reads costs it nothing, and only a column a release drops needs a statement to put it back.
+`moved_at` keeps its `not null default now()` under that daemon's writes, since the default fills it for every insert that names it nowhere, and a marked row keeps its `tree_stalled_told_at` for the roll forward.
+A third migration, `20261110233602_past_review_starts_unmarked`, takes the admission-slot mark off every queued start of `accepting`, `retro` and `merging`, and a rollback needs no statement for that either: the earlier release reads a start with no mark as one claimable at once, which is what it does with every start that carries none.
+
+**A queued `tree-stalled` notice must go before the earlier image is pinned.**
+The payload carries only fields an earlier release's `record.ControllerNotice` already names, so the strict decode (`DisallowUnknownFields` in `record/outbox.go`) passes it.
+What refuses it is the kind check that `DecodeOutboxPayload` runs after that decode: `validateOutboxPayload` asks a controller notice's kind of `controllerOnlyNoticeKind` and `validNoticeKind`, and neither of them knows `tree-stalled` on the earlier release.
+Its `execute` returns that error, which is a permanent refusal for no row, so a row still queued fails and is retried on its backoff for ever and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'tree-stalled';
+```
+
+The row's `kind` is `controller_notice`, not `notice`: a controller notice is an outbox kind of its own (`record.ControllerNotice.OutboxKind` answers `controller_notice`), where the statements of the two sections above name `notice` for rows that were architect notices.
+A statement naming `notice` here deletes nothing and leaves the row standing.
+
+**`stalled_tree_notice_hours` must come out of `legion.yaml` in the same change.**
+The loader refuses a key it does not know, naming it (`unknown key stalled_tree_notice_hours`), and the earlier release's loader knows nothing of this key, so that daemon refuses to start while the line stands in the file.
+Take the line out, and `legion start --check-config` on the earlier image reads the file clean.
+
+What the rollback brings back is the earlier release's slot rule: an issue holds one of the cap's slots through every phase up to its merge, so an issue in `accepting`, `retro` or `merging` counts against the cap again.
+That release's first admission pass gives each of them a row again out of its cap, and its `legion state` counts them among the slot holders.
+A cap sized for this release's issues at work holds fewer trees in progress once those three count again.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issues` is one table for all of them, so this release's backfill stamps every project's rows with the moment its migration ran, not only the rows of the daemon that ran it.
+A daemon left on the earlier image records no movement of an issue it already holds, because it names `moved_at` nowhere, so those rows keep that one time until that daemon rolls onto this release; a row it inserts takes the column's default, the time of its own write.
+Read against that time, its trees are quiet for the whole of the gap, and the first passes after it rolls can tell that project's controller a `tree-stalled` notice for each tree of it that is quiet past `stalled_tree_notice_hours`.
+The cost is one notice per tree, cleared by that tree's next movement, which stamps `moved_at` again and lets the measure start from a time the daemon watched.
+Upgrade, and roll back, every daemon of one database in the same change.
 
 ### Pinning a release that drops what a running pod still uses
 
@@ -3035,10 +3083,12 @@ architect, planner, implementer, tester, reviewer, merger):
    — when the retry runs before the daemon replaces the pod, which it does within seconds of reading the failure (see `workspace-fetch` above).
    No process can hold one when the retry runs, since the pod's `roles` container has not started and no other pod mounts the disk.
    Another worktree entry of the clone keeps its locks;
+   when a clone it finds has no entry whose `gitdir` names the workspace (its own entry unreadable among the reasons), it writes one line saying why and fails nothing for it,
+   unless the workspace has no directory yet (a first attempt killed before it added the workspace);
    a lock it cannot remove, and a clone whose `.git` or `.git/worktrees` is a symlink (git never makes either one, and it would take the removal outside the clone), fail the container naming the path.
    jj's own locks are `flock(2)` locks, which end with their holder, so it leaves them.
-   Under a running pod nothing removes a lock, since another role's git, which a role's namespace cannot see, may hold it:
-   the `jj` the shim's working-copy adoption and a `handoff_complete` run name each lock still on disk that they failed on, with its age, in their error, say not to remove it while the pod runs, and that replacing the issue's pod removes it.
+   The `roles` container's launcher sweeps the same files for the life of the pod.
+   A lock made while the pod runs is removed there, under rules of its own (item 5 below).
 
 4. The `roles` container's PID 1 is one `legion launcher` in multi-role mode:
    `/opt/legion/bin/legion launcher --connect tcp://<advertise_host, or bind with none
@@ -3057,6 +3107,30 @@ architect, planner, implementer, tester, reviewer, merger):
    A generation whose role-init fails before it starts the shim, setting up the role's namespaces, exits 71 (`launcher.RoleInitSetupFailedExit`, a status role-init uses for nothing else) and is reported with the exit code `-2` (`shimwire.LauncherExitSetupFailed`), which no shim exits with, and the daemon's detail for it quotes the role's last lines, role-init's reason among them;
    a role-init that ends any other way without reporting its shim's status (a panic's
    2) is reported with that exit as it is.
+
+5. As well as the roles, the launcher sweeps the issue clone's stale git lock files (`<file>.lock`) for the life of the pod (`internal/launcher/gitlocks.go`).
+   The clone it sweeps is derived from the workspace's own path, through the layout provisioning laid that workspace out in (`workspace.WorkspaceOf`), and is never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write:
+   the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
+   A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
+   A layout directory below the state directory that is a symlink — the workspace, the clone, or a directory above either up to the state directory — is a line naming that directory (`refuseSymlinkedLayout`).
+   A derived clone with no git directory is a line naming the missing `.git` and the read's error.
+   Where no entry's `gitdir` names the workspace, a `.git` that cannot be read or names no entry is a line naming its error, and one naming another workspace's entry, a line naming that entry.
+   Each of the five is no sweep at all.
+   A workspace whose `.git` names an entry whose `gitdir` cannot be read (a fifo, a symlink, a socket, a device, a directory, larger than 4096 bytes, missing, or the error) is swept, the clone's `.git` alone, with a line naming the entry and the cause.
+   What the derivation settles is the text of a path, which no role can write; the directories that text names are on the issue's disk, which the `roles` container mounts read-write and where every role writes as the pod's uid.
+   So every pass holds that path to the layout again before it walks it, through the check the init container's sweep runs too (`workspace.GitLocksOf`, `refuseSymlinkedLayout` in `internal/workspace/config.go`):
+   a role that renames the clone away and leaves a symlink to a directory of its own where it stood is refused in one line, that pass removes nothing, and the launcher goes on serving its roles.
+   While the pod runs, a line for a workspace no entry's `gitdir` names is written once, not once a minute, and its `.git` chooses only the line, never what is removed;
+   an unreadable `gitdir` of another entry is skipped without a line.
+   What is left open runs from that check through the whole walk to each lock's first read (`read`): `WalkDir` goes down by path, so a directory inside `.git` swapped for a link during the walk is followed, and the recheck, the second read below, only ties the removal to what that first read found.
+   That gap is a known limit of the sweep: closing it takes `openat` and `unlinkat` down every component of every path the sweep touches.
+   The first pass runs when the launcher starts, before it serves any role start and so before the pod's one bundle restore, and no age bound applies to it.
+   A pass then runs every minute, whether or not a role process is running.
+   A clock pass removes a lock only when no process of the container holds it open and it was last written more than 15 minutes ago.
+   It reads the lock again two seconds later, and removes it only when that read finds the same file with no holder.
+   It writes one line for each lock it removes and one for each it keeps, with the path, the size, when the file was last written, and for a kept lock the condition that kept it.
+   A role whose git or jj fails on a lock reads a note that says the same and tells the role to run the command again in about 16 minutes (`StaleGitLockNote`, `internal/workspace/jjgit.go`).
+   The note's last sentence tells the role to tell the issue's architect if the lock is still there.
 
 The pod's disk is declared in the pod template itself, as a generic ephemeral volume (`issuePod.disk`, `podkind.go`):
 `ReadWriteOnce`, of `runtime.kubernetes.issue_volume` (50Gi by default) and `storage_class`.
@@ -4308,8 +4382,8 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` counts the issues the daemon has started, not the pods: an issue keeps its admission slot from the moment the daemon starts it until it is done or leaves the workflow, and its pod can stand where it holds no slot — through the merge wait, after a merge wait sends it back to work until it takes a slot again, and, past the close, during each look of its production check.
-So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues waiting for their merge, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow, and its pod can stand where it holds no slot — through its acceptance, its retro and its merge, after a merge sends it back to work until it takes a slot again, and, past the close, during each look of its production check.
+So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing past their review, in `accepting`, `retro` or `merging`, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
@@ -4319,7 +4393,7 @@ once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 250m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods a merge wait and a production check keep.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods an issue past its review and a production check keep.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;
@@ -4934,7 +5008,7 @@ jj 0.38 and later keep a repository's and a workspace's configuration in the con
 Every jj command run in a workspace names it with `-R`, so jj never walks up to an ancestor's `.jj`, and a jj command is refused when the `.jj` it would open, or the clone's `.jj` or `.jj/repo`, is a symlink or anything but a real directory;
 when any directory of the layout between the root (`/legion` in a pod, the state directory under tmux, which itself may be one) and a workspace or the clone (`repos/<host>/<owner>/<name>`, `workspaces/<owner>/<name>/<issue>`) is a symlink, which the refusal names;
 when it runs in a workspace that has no `.jj`;
-and when the workspace's `.jj/repo` names any other directory, followed through symlinks and `..` as jj itself follows it, or is neither a directory nor a regular file (`guardWorkspace`, the same file).
+and when the workspace's `.jj/repo` names any other directory, followed through symlinks and `..` as jj itself follows it, is neither a directory nor a regular file, is a symlink to a regular file, or is a file larger than 4,096 bytes (`guardWorkspace`, the same file).
 The worker image's jj is 0.45; on the tmux runtime, which runs the host's jj through the same code, the daemon refuses to start with a jj older than 0.38 (`resolveTools`, naming `LEGION_JJ_PATH`), since before 0.38 `.jj/repo/config.toml` is the repository's live configuration.
 
 The boundary above protects the provisioning token alone.

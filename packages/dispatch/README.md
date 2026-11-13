@@ -465,6 +465,56 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
   bash packages/dispatch/e2e/acceptance/verification.sh
 ```
 
+`e2e/acceptance/ci-check.sh` drives a check that CI proves the same way, through the HTTP API and
+the same real CLI: a `check` block carrying `ci_check`, which names the GitHub check run that
+proves it. It has one section for each of the checks `k1` to `k5` of dispatch://INFRA-3204's
+Verification document, and each runs that check's `run` and asserts its `negative_control`:
+
+- `k1`: a check with `ci_check` is stored and `dispatch doc-read` reads it back; the documents API
+  refuses `400 INVALID_CI_CHECK` each of the four writes that break a rule, naming the block and
+  the rule, and stores nothing of them: `ci_check` beside a `run`, `ci_check` with a `when` of
+  `after_merge`, `ci_check` with no `negative_control`, and `ci_check` added to a check that
+  holds a recorded result. A `ci_check` on a fresh block id is stored, and a new block under the
+  old id is refused again. A check carrying neither `ci_check` nor `run` is stored as before. A
+  document socket that declares schema version 3 is admitted with the scope `readonly`, and one
+  that declares version 4 with `read-write` (`e2e/acceptance/socket-scope.ts`, the Hocuspocus
+  frames the browser sends). The live editor's half of `k1` is the browser row of
+  `e2e/verification.e2e.ts`.
+- `k2`: `dispatch results` answers the check with the result of the named run at the issue's open
+  pull request head: the run's name, conclusion, output and URL, and a pull-request body line that
+  names the run and no recorder. A failed run prints `fail`, and `check_results` holds no row for
+  either block. The head of the merged pull request still answers. Three such checks at one head
+  cost one check-runs read (`GET /__fixture/requests`), an open head is read before an older
+  merged one, an issue with no such check reads no check runs, and a summary of 2,500 runes is cut
+  to 2,000.
+- `k3`: the eleven outcomes of the run, among them the fake GitHub's `500` and a read the fake
+  holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
+  of one name are decided by the higher id, in both orders of their conclusions.
+- `k4`: a tester's and an implementer's result for a check CI proves are refused `409
+  CHECK_PROVED_BY_CI`, naming the block and the run; the same call against an ordinary check is
+  recorded and `dispatch results` shows it.
+- `k5`: the whole line the reviewer's gate reads (verdict, commit, role and where the commit
+  stands), then a failed run, a head moved to a commit the run does not cover, and a head the fake
+  GitHub serves that Dispatch's own head record does not hold yet.
+
+Its inputs are all required: `DISPATCH_URL`, the bearer, `PROJECT`, `FAKE_GITHUB_PORT` (the fake
+GitHub the server reads), `DATABASE_URL` (the server's own database) and `DEV_SIGNIN_LOGIN` (a
+document socket admits a person alone, so the sockets of `k1` sign that person in). The harness
+runs with NATS disabled, so no `pull_request` event stores a pull request head: the script stages
+each head with `psql` as one `pull_request_heads` row attributed to its issue, and gives the fake
+one repository holding the same pull requests and each head's check runs, replacing every
+repository the fake served. That repository is `PROJECT`'s default where it maps one, and
+otherwise one of the run's own, which nothing maps. It writes nine issues in `PROJECT` and closes
+every one of them, also when a check fails; on exit it deletes the rows it staged and empties the
+fake. Against `bun run dispatch:local`, with the URL, the fake GitHub's port and the database it
+prints:
+
+```bash
+DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
+  FAKE_GITHUB_PORT=9022 DATABASE_URL=<the database it prints> DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/ci-check.sh
+```
+
 `e2e/acceptance/block-coverage.sh` takes the first three inputs, with `PROJECT` optional (unset,
 every project), and only reads. For every document it can list (each project's documents and each
 issue's documents), it counts the document as not indexed when `GET /api/v1/artifacts/{id}/blocks`
@@ -555,7 +605,7 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All seven drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
+All eight drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
 share: it refuses an unset input or a missing command with exit 2, reads the bearer from
 `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
 script starts inherits it, and holds the `pass`, `fail`, `want_status`, `expect` and `query` every

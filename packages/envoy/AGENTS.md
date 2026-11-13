@@ -337,7 +337,7 @@ Each item below names a task and where its code is, then notes on it.
   A write is keyed: a repeat under the same `Idempotency-Key` is answered the first call's `201` and records no second version.
   Shapes: `Handoff`, `HandoffSummary`, `HandoffRecordedPayload` in `packages/contracts/src/dispatch-api.ts`
 
-- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
+- **Recorded results of an issue's checks**: `internal/dispatch/api/results.go`, `internal/dispatch/api/results_ci.go`, `internal/dispatch/api/coverage.go`, `internal/dispatch/delivery/pull_request_heads.go`, `store/migrations/20261102122200_check_results.up.sql`
 
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
@@ -359,6 +359,14 @@ Each item below names a task and where its code is, then notes on it.
     a commit no stored row places there answers `unknown` for `repository_unreadable`, as it does for `read_failed` wherever a read failed instead, and a branch check of a repository Dispatch can name no branch of compares with nothing.
     A read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
+  - a check CI proves - its `ci_check` names a GitHub check run, its `when` is `before_merge`, it carries no `run`, it names a `negative_control` and no result is recorded against it (`validCICheck`, `docs.CICheckRuleIn`) - takes no recorded result:
+    `POST` refuses one with `409 CHECK_PROVED_BY_CI` for every role, right after `resolveCheck` and again inside its transaction (`refuseCheckProvedByCI`).
+    `GET` reads its one result on every read instead, and stores nothing (`api/results_ci.go`, `deriveCIResults`):
+    at the head of the issue's open pull request of the highest number, else of its merged one of the highest number (`delivery.NewestPullRequestHead`), one paged read of that commit's check runs under one 10-second deadline (`ciReadDeadline`), made only when the issue holds such a check, decides each such check by the run of its name with the highest id.
+    The check carries `ci`, `{run, state, case, detail, line}` (`model.CheckCI`), and for a pass or a fail one derived result, `ci-run:<run id>` by role `ci` and actor kind `github_app`, which `comparisonReader` judges as it judges a recorded result.
+    `?at=` leaves that read in place, so a derived result stands at the named commit only where that commit is the head.
+    A check carrying a `ci_check` that breaks a rule, or one that holds a recorded result, reads as an ordinary check.
+
   A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
   The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;
@@ -369,7 +377,7 @@ Each item below names a task and where its code is, then notes on it.
   a `before_merge` result whose commit heads no attributed row sends one `GET /repos/{owner}/{repo}/commits/{sha}/pulls` of its own and writes the heads GitHub names (`delivery.ReadThroughCommitPulls`, `comparisonReader.readThroughHead`), at most once per repository and commit every `delivery.CommitPullReadStaleAfter` (five minutes), so a result recorded before its own pull request opened stands at that head once the pull request opens at its commit.
   `GET /api/v1/issues/{key}/coverage` answers what each `requirement` block of the issue's spec lacks, counting the `check` and `plan_task` blocks of the issue and of its descendants;
   the same lines end `dispatch read --issue` and the answer to an approval request.
-  Shapes: `IssueCheckResults`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
+  Shapes: `IssueCheckResults`, `CheckCI`, `RecordCheckResultInput`, `IssueCoverage` in `packages/contracts/src/dispatch-api.ts`
 
 - **Load test**: `loadtest/`
 
@@ -2232,11 +2240,13 @@ Parsing mints an omitted id, while live document reads and writes validate each 
 Schema changes are additive: add a type, add a defaulted attribute, add an enum choice, or widen a content rule.
 Tightening content, removing or renaming a type or attribute, or requiring a new attribute requires a document migration and version bump.
 
-The shipped types are `callout`, `ask`, and the three this release adds (`pmdoc/schema/blocks.json`, version 3), each holding `paragraph+`:
+The shipped types are `callout`, `ask`, `requirement`, `plan_task` and `check` (`pmdoc/schema/blocks.json`, version 4, which added `ci_check` to `check`), the last three each holding `paragraph+`:
 `requirement`, one requirement of an issue's spec, with no attribute of its own;
 `plan_task`, one task of a plan, with the `block[]` attributes `serves` (the requirements it serves) and `needs` (the tasks of the same plan it needs first);
-and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run` and `negative_control`, and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
+and `check`, one thing that must be proved, with `serves`, the enum `surface` (`browser`, `cli`, `api`), the strings `run`, `negative_control` and `ci_check` (the GitHub check run that proves the check), and the enum `when` (`before_merge`, `after_merge`, `default_branch`, defaulted `before_merge`).
 A document holding them is an ordinary document: the role its name gave it (`verification`, `plan`) says which blocks a reader expects, and nothing refuses a `check` block in another document.
+A check whose `ci_check` names a run carries no `run`, keeps `when` `before_merge`, names its `negative_control` and holds no recorded result (`docs.CICheckRuleIn`), and no rule of `blocks.json` can say so, since an attribute there declares only itself:
+an API write that adds a check block, or changes a check's `ci_check`, `run`, `when` or `negative_control`, so that it breaks one is `400 INVALID_CI_CHECK` (`refuseCICheckBlocks`), and settlement repairs what a browser writes (below).
 
 A `block[]` attribute points at blocks; the shipped ones are a plan task's `serves` and `needs` and a check's `serves`.
 Its value is the empty string (no pointers) or canonical block references joined by exactly one space, none leading or trailing, no other whitespace and none repeated (`pmdoc.ParseBlockPointerValue`, and the renderer joins them with one space);
@@ -2392,6 +2402,7 @@ An open ask's indexed row stays open and unchanged; an answered or resolved ask 
 Repairing its body clears `invalid` before updating the ask row, and writes a decided ask's decided wording back into the block.
 An emptied question is repaired by an ask edit carrying one, the route's own path above;
 every other reading failure is repaired where a person writes it, or by the document edit the refusal names.
+A browser-written check block carrying a `ci_check` that breaks one of its four rules (`docs.CICheckRuleIn`: no `run`, `when` of `before_merge`, a `negative_control`, no recorded result against the block, read in the settlement's transaction) loses that `ci_check` at settlement (`reconcileCICheckBlocks`), and one `block.invalid` names the block, the rule as `reason` and `block_type: "check"`; a block it repaired carries no `ci_check`, so no later settlement repairs it again.
 Markdown that becomes a whole document - a spec at issue creation, an uploaded document or version - is refused with `400 INVALID_ASK_BLOCK` when an ask's body breaks its content rule, `paragraph+ bullet_list?` - one or more paragraphs, then at most one bullet list, last (`pmdoc.AskContentError`) - as the browser editor's parser refuses to build such a block.
 A new document is held to it for every ask, and so are a version that repairs a stored tree outside the schema, which has no readable asks to compare with, and a rebuild from supplied markdown;
 any other new version only for each ask it writes or changes (`refuseChangedAsks`), comparing the ask's rendering with the current one (`newAskMarkdown`, the asks of one check sharing one budget of span cells, spent in document order as the document's own render spent it, so a live ask over a table with colspans or rowspans matches the cells its stored markdown wrote them out as while that budget lasts), since a version is markdown and cannot carry a comment's anchor mark or the id a reader's browser derives for a heading;
