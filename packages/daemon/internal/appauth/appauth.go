@@ -141,13 +141,14 @@ type Tokens interface {
 	// before anything is minted, since there is no account to mint on.
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests, Actions and metadata read. A pane holds one for every owner its App is
-	// installed on but the one its issue's repository is under (a configured rename's two
-	// owners count as that one, GitHubCredential), a controller holds one for every owner its
-	// App is installed on, and the Kubernetes runtime's provisioning token is one of the
-	// implement App for the issue's own owner, which
-	// every issue pod's workspace-fetch and every repository cache clones with
-	// (implementTokens, internal/daemon). An App on token_command gets what its command's
+	// requests, Actions and metadata read. Two callers ask for it and no role's bundle does:
+	// a controller, which works no repository and holds one for every owner its App is
+	// installed on (ControllerCredential), and the Kubernetes runtime's provisioning token,
+	// one of the implement App for the issue's own owner, which every issue pod's
+	// workspace-fetch and every repository cache clones with (implementTokens,
+	// internal/daemon). A workflow role's directories hold that owner's own lease at the
+	// role's permissions instead (Token, GitHubCredential, INFRA-2543).
+	// An App on token_command gets what its command's
 	// read-only release holds instead, which the command decides: the secrets broker's is the
 	// same four (its readOnlyPermissions). With a key of its own the mint asks for what the
 	// installation is granted of those four and leaves the rest out (exchangeGranted), so an

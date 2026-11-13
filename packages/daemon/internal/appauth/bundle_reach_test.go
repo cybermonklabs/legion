@@ -12,14 +12,14 @@ import (
 
 // A bundle holds a lease minted on every owner the role's App is installed on, whatever a
 // configured pair moved away from one of them. The pair moves one repository, not the account,
-// so the owner's other repositories are reached by that owner's own installation token — a
-// token reaches every repository its installation holds (INFRA-2543) — and the repository the
-// pair moved is reached by the write lease the recorded owner's directory holds.
+// so the owner's repositories are reached by that owner's own installation token — a token
+// reaches every repository its installation holds (INFRA-2543) — and the repository the pair
+// moved is reached by the token of the owner GitHub holds it under.
 //
 // The case: the project serves cybermonklabs/legion, sjawhar/oh-my-pi and sjawhar/tools, the pair
 // sjawhar/legion -> cybermonklabs/legion resolves, the App is installed on both accounts, and the
-// issue is recorded on sjawhar/oh-my-pi. The sjawhar directory then holds the write lease, minted
-// on sjawhar, which reaches sjawhar/tools too. The fault this test caught: the bundle's leases
+// issue is recorded on sjawhar/oh-my-pi. The sjawhar directory then holds sjawhar's own lease,
+// which reaches sjawhar/tools too. The fault this test caught: the bundle's leases
 // were cut for the owner mintOwner answered for the owner serving the role's repository, which
 // for an owner a pair moved a repository away from was the owner it moved to even where that
 // account had an installation of its own, so `legion gh` on sjawhar/tools picked the sjawhar

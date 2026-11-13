@@ -3,17 +3,17 @@
 //
 // The files are gh's `hosts.yml`, which holds the token for github.com, and its `config.yml`, in
 // one directory per entry of the role's bundle under its bundle root (Bundle, WriteBundle): one
-// per GitHub owner of the project, the issue's owner's holding its role's App token, which
-// GH_CONFIG_DIR names, and every other owner's a token of the same App narrowed to reading, and
-// one more under an owner's directory for each of that owner's repositories the role writes to
-// none of, `<owner>/<repo>`, holding a token narrowed to that one repository. gh reads both files
+// per owner account the role's GitHub App is installed on, each holding that account's
+// installation lease at the role's own permissions, with the issue's own owner's directory the
+// one GH_CONFIG_DIR names (INFRA-2543). gh reads both files
 // on every invocation and holds nothing between invocations, so the daemon rewriting hosts.yml
 // from a fresh lease is what the next `gh` runs with. `legion gh`, the `gh` first on a pane's
 // PATH, and `legion git-credential`, the helper every shared clone's `credential.helper` names
-// (workspace.GitHubCredentialHelper), both pick the directory of the repository the command or
-// git's request names, `<owner>/<repo>`, where the bundle holds it, and that owner's own
-// directory otherwise; the helper answers git from that directory's hosts.yml and treats git's
-// `store` and `erase` as no-ops. In a pod the root is a read-only
+// (workspace.GitHubCredentialHelper), both pick the directory of the owner of the repository the
+// command or git's request names; a pod launched before that ruling may still hold an
+// `<owner>/<repo>` directory of its own, which the helper prefers while it is there and the
+// Sandbox drift check reports. The helper answers git from that directory's hosts.yml and
+// treats git's `store` and `erase` as no-ops. In a pod the root is a read-only
 // Secret volume, which gh never needs to write: it writes under GH_CONFIG_DIR only when told to
 // (`gh auth login`, `gh config set`) or when migrating a pre-2.40 hosts.yml into its
 // multi-account shape. A `config.yml` carrying `version: "1"` is what tells gh that migration has

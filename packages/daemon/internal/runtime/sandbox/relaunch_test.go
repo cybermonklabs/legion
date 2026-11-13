@@ -103,7 +103,7 @@ func TestSpawnCreatesTheIssueSandboxAndRoleLocator(t *testing.T) {
 		string(secret.Data[GitHubConfigKey("sjawhar")]) != ghconfig.Config || string(secret.Data[GitHubDefaultKey]) != "sjawhar" {
 		t.Fatalf("role secret keys %v, want the launcher token, the default owner sjawhar and each owner's two gh files %v", keys, wantKeys)
 	}
-	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(spec.Role), "acme": staticReadToken(spec.Role, "acme")} {
+	for owner, want := range map[string]string{"sjawhar": staticCredentialToken(spec.Role), "acme": staticOwnerToken(spec.Role, "acme")} {
 		if token, err := ghconfig.TokenFromHosts(secret.Data[GitHubHostsKey(owner)]); err != nil || token != want {
 			t.Fatalf("the tester's %s hosts.yml holds token %q (%v), want %q", owner, token, err, want)
 		}

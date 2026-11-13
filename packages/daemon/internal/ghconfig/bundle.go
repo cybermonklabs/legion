@@ -14,11 +14,13 @@ import (
 // Bundle is one role's gh directories: Default, the lowercased owner whose directory GH_CONFIG_DIR
 // names (the issue's owner; the controller's first owner), and Dirs, each directory's Rendered
 // files keyed by the directory's name under the bundle root. A name is a lowercased owner login,
-// whose token reaches what the role may do across that owner, or `<owner>/<repo>`, both
-// lowercased, a directory under the owner's own whose token reaches that one repository and no
-// other. Dirs[Default] is the write token's where the role writes to one; every other entry is
-// read-only. The name authorises nothing — the token in the directory does — so a reader that
-// wants the narrowest token for a repository reads `<owner>/<repo>` where the bundle holds it.
+// whose token is that account's installation lease and reaches every repository it holds. A
+// workflow role's every directory carries that lease at the role's own permissions and none is
+// read-only; a controller's bundle is the one made of reading leases (appauth's
+// GitHubCredential and ControllerCredential, INFRA-2543). The name authorises nothing — the
+// token in the directory does. A pod launched before that ruling also holds `<owner>/<repo>`
+// directories, whose token reaches that one repository, which is why this package still answers
+// for that shape (IsDirName) though no bundle built now holds one.
 type Bundle struct {
 	Default string
 	Dirs    map[string]Rendered

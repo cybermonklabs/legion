@@ -447,7 +447,7 @@ func projectingARepositoryDirectory(o *Options) {
 		if err != nil {
 			return bundle, err
 		}
-		bundle.Dirs[repositoryDirectory] = ghconfig.Render(staticReadToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
+		bundle.Dirs[repositoryDirectory] = ghconfig.Render(staticOwnerToken(role, "acme"), string(appauth.AppRoleFor(role)), staticCredentialExpiry)
 		return bundle, nil
 	}
 }

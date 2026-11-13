@@ -260,8 +260,8 @@ func realGHForCapture(t *testing.T) string {
 // explicit endpoint, -R under GH_REPO, --help=false, a name in --repos under --org, -R after an
 // optional-value shorthand, every argument of a plural slot, a placeholder gh fills from GH_REPO,
 // the working directory's own repository as gh reads its remotes whatever their scheme — the issue
-// owner's write token only for the issue owner's repository and for a command naming none run
-// where only that owner's remotes are, another owner's read-only token for that owner's, and the
+// owner's token only for the issue owner's repository and for a command naming none run
+// where only that owner's remotes are, each other owner's own token for that owner's, and the
 // git gh runs itself asking the wrapper for the owner in its path. A command the wrapper cannot
 // read for certain (a gh alias or an extension, run, as `gh help`'s target or after --version, a
 // command gh's own help does not list, `gh extension exec`, a search qualifier it cannot read,
@@ -279,7 +279,7 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	proxy := startCaptureProxy(t)
 	root := filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
-	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_read"}
+	tokens := map[string]string{"acme": "ghs_acme_write", "sjawhar": "ghs_sjawhar_write"}
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
 		"acme":    ghconfig.Render(tokens["acme"], "implement", expires),
 		"sjawhar": ghconfig.Render(tokens["sjawhar"], "implement", expires),

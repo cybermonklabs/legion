@@ -80,8 +80,8 @@ func TestTheRefresherRewritesOnlyTheOwnersWhoseGhFilesAreStale(t *testing.T) {
 		t.Fatalf("the refresher updated %v, want %s alone", updated, stale)
 	}
 	after := g.secret(stale)
-	if token, err := ghconfig.TokenFromHosts(after.Data[GitHubHostsKey("acme")]); err != nil || token != staticReadToken(claim.RoleTester, "acme") {
-		t.Errorf("the tester's acme hosts.yml holds %q (%v), want %q", token, err, staticReadToken(claim.RoleTester, "acme"))
+	if token, err := ghconfig.TokenFromHosts(after.Data[GitHubHostsKey("acme")]); err != nil || token != staticOwnerToken(claim.RoleTester, "acme") {
+		t.Errorf("the tester's acme hosts.yml holds %q (%v), want %q", token, err, staticOwnerToken(claim.RoleTester, "acme"))
 	}
 	if string(after.Data[GitHubConfigKey("acme")]) != ghconfig.Config {
 		t.Errorf("the tester's acme config.yml is %q, want %q", after.Data[GitHubConfigKey("acme")], ghconfig.Config)

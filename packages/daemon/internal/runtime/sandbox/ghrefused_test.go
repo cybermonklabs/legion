@@ -17,7 +17,7 @@ import (
 
 // refusedProjectRepos is the project's mapping for the tests below: the repository every test
 // spec works, under the owner its roles write to, and one repository of a second owner, which a
-// bundle holds one read-only directory for.
+// bundle holds that owner's own directory for.
 func refusedProjectRepos() []ghrepo.Repository {
 	return []ghrepo.Repository{ghrepo.MustParse("sjawhar/legion-smoke"), ghrepo.MustParse("acme/widgets")}
 }

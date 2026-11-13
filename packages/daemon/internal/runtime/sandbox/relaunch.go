@@ -915,8 +915,10 @@ func (r *Runtime) writeLauncherSecrets(ctx context.Context, s *sandbox, l *launc
 // bundles' default, an empty set included — GH_CONFIG_DIR would then name a directory the pod
 // does not carry — and where a role's own default is not the pod's, which would leave that
 // role's Secret recording a directory its container never reads from (refreshGitHubCredential).
-// A refused write lease still fails its own bundle (appauth's mintBundle), so every role that
-// reaches here holds the directory it writes to.
+// A lease GitHub refuses costs that owner's directory alone (appauth's mintBundle). The bundle
+// fails only where the directory left out is the one it was asked for, the default that
+// GH_CONFIG_DIR names (appauth's bundleDefault). Every role that reaches here therefore holds
+// the directory it works its issue's repository in.
 //
 // The controller's bundle is asked for by owner (Options.ControllerCredential), the one function
 // a controller's bundle is made from here, by this launch and by the refresh of the pod it makes

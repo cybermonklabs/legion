@@ -18,23 +18,24 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// gitCredentialBundle writes a gh bundle of a role whose issue is acme's: acme's write token,
-// the read token of the other owner sjawhar, the read token of theorem-labs, an owner the App
-// is installed on and the project maps no repository of, and, under sjawhar, the narrower read
-// token of the one repository sjawhar/legion, which a bundle built now holds for no repository
-// at all — a lease reaches every repository its installation holds (appauth.GitHubCredential,
-// INFRA-2543) — and which a pod launched before that change projects, since its gh is the
-// Secret projection of its own creation. It returns the bundle's root and acme's directory,
-// which GH_CONFIG_DIR names.
+// gitCredentialBundle writes a gh bundle of a role whose issue is acme's: one directory per
+// owner the role's App is installed on, each holding that owner's own write token — acme's,
+// sjawhar's and theorem-labs', the last an owner the App is installed on and the project maps
+// no repository of, since a lease reaches every repository its installation holds and the
+// installation is the whole of a role's reach (appauth.GitHubCredential, INFRA-2543) — and,
+// under sjawhar, the narrower read token of the one repository sjawhar/legion, which a bundle
+// built now holds for no repository at all and which a pod launched before that change
+// projects, since its gh is the Secret projection of its own creation. It returns the bundle's
+// root and acme's directory, which GH_CONFIG_DIR names.
 func gitCredentialBundle(t *testing.T) (root, defaultDir string) {
 	t.Helper()
 	root = filepath.Join(t.TempDir(), "gh")
 	expires := time.Now().Add(time.Hour)
 	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{Default: "acme", Dirs: map[string]ghconfig.Rendered{
 		"acme":           ghconfig.Render("ghs_acme_write", "implement", expires),
-		"sjawhar":        ghconfig.Render("ghs_sjawhar_read", "implement", expires),
+		"sjawhar":        ghconfig.Render("ghs_sjawhar_write", "implement", expires),
 		"sjawhar/legion": ghconfig.Render("ghs_sjawhar_legion_read", "implement", expires),
-		"theorem-labs":   ghconfig.Render("ghs_theorem_labs_read", "implement", expires),
+		"theorem-labs":   ghconfig.Render("ghs_theorem_labs_write", "implement", expires),
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -99,21 +100,21 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 			env:    both,
 			args:   []string{"get"},
 			stdin:  "protocol=https\nhost=github.com\npath=sjawhar/..\n\n",
-			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_read", 1),
+			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_write", 1),
 		},
 		{
 			name:   "another owner's directory",
 			env:    both,
 			args:   []string{"get"},
 			stdin:  "protocol=https\nhost=github.com\npath=sjawhar/legion-smoke.git\n\n",
-			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_read", 1),
+			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_write", 1),
 		},
 		{
 			name:   "an owner named in another case",
 			env:    both,
 			args:   []string{"get"},
 			stdin:  "protocol=https\nhost=github.com\npath=SJawhar/legion-smoke\n",
-			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_read", 1),
+			stdout: strings.Replace(answer, "%s", "ghs_sjawhar_write", 1),
 		},
 		{
 			// A repository of an owner the project maps nothing of: the bundle holds that
@@ -123,7 +124,7 @@ func TestGitCredentialAnswersFromTheOwnersDirectory(t *testing.T) {
 			env:    both,
 			args:   []string{"get"},
 			stdin:  "protocol=https\nhost=github.com\npath=theorem-labs/agent-infra.git\n\n",
-			stdout: strings.Replace(answer, "%s", "ghs_theorem_labs_read", 1),
+			stdout: strings.Replace(answer, "%s", "ghs_theorem_labs_write", 1),
 		},
 		{
 			name:   "the issue owner's directory",

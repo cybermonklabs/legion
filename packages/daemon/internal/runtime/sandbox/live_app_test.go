@@ -43,8 +43,8 @@ func (t implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (str
 
 // Credential is the harness's GitHubCredential: the daemon's own bundle
 // (appauth.GitHubCredential) over the owners the implement App is installed on, with every
-// lease minted as that App, the one the harness holds — its write lease on the owner of the
-// repository the role works, and a read-only lease per other owner it is installed on. Every
+// lease minted as that App, the one the harness holds — one directory per owner, each holding
+// that owner's own installation lease at the App's permissions (INFRA-2543). Every
 // role is rendered as the
 // implementer's, so Stage 4a proves the files reach each role, follow the lease and pick the
 // directory a command names, not which App a role writes as; Stage 4b's daemon hands each role

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1008,6 +1009,14 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 // whether a request named a repository must read. answer decides each exchange from the body it
 // carried and how many came before it, and granted, when it is set, answers the permissions
 // read of an installation instead of its grants.
+//
+// refuses, when it is set, is the owners whose every token exchange is answered 422 before
+// answer is asked, as an installation that is granted none of what the request asks for is: a
+// bundle holds one lease per owner and asks each installation for the same permissions
+// (appauth's bundleDirs), so which owner the exchange was addressed to is the whole of what a
+// refusal now turns on, and a stand-in that read the permissions asked for instead could not
+// tell one owner's refusal from another's. The exchange is recorded before it is refused, as
+// GitHub's own refusal of one is a request it answered.
 type keyModeGitHub struct {
 	mu      sync.Mutex
 	owners  []string
@@ -1018,6 +1027,19 @@ type keyModeGitHub struct {
 	reads   []string
 	answer  func(exchange int, body accessTokensBody) (int, string)
 	granted func(installation string, read int) (int, string)
+	refuses func(owner string) bool
+}
+
+// ownerOf is the account the installation id names, as /app/installations lists them.
+func (g *keyModeGitHub) ownerOf(installation string) string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	for i, owner := range g.owners {
+		if installation == strconv.Itoa(101+i) {
+			return strings.ToLower(owner)
+		}
+	}
+	return ""
 }
 
 func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
@@ -1038,8 +1060,13 @@ func (g *keyModeGitHub) serve(t *testing.T) *httptest.Server {
 			g.mu.Lock()
 			g.bodies = append(g.bodies, body)
 			g.raw = append(g.raw, text)
-			exchange := len(g.bodies)
+			exchange, refuses := len(g.bodies), g.refuses
 			g.mu.Unlock()
+			if owner := g.ownerOf(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/app/installations/"), "/access_tokens")); refuses != nil && refuses(owner) {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				fmt.Fprint(w, refusedNarrowingAnswer)
+				return
+			}
 			status, answer := g.answer(exchange, body)
 			w.WriteHeader(status)
 			fmt.Fprint(w, answer)
