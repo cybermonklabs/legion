@@ -7,7 +7,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, IssueReferences } from "../../api/types";
+import type { Artifact, ArtifactUploadResponse, IssueReferences } from "../../api/types";
 import { buildIssuePath } from "../refs/routes";
 import { ArtifactsTab } from "./ArtifactsTab";
 
@@ -221,6 +221,91 @@ test("New document on an issue refuses a title the issue already holds", async (
       "An artifact on this issue already holds that title: diagram.png."
     );
     expect(uploadArtifact).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+    uploadArtifact.mockRestore();
+  }
+});
+
+// INFRA-3135. The focus follows the form: New document opens it with the focus in Title, so the
+// title is typed at once, and Cancel closes it with the focus back on New document, the control
+// that opened it, rather than dropped on the page.
+test("New document puts the focus in Title, and Cancel gives it back to New document", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// INFRA-3135. The same by the keyboard alone, as the reader the tester measured went: Tab reaches
+// the filter box and then New document, and Enter opens the form with the focus in Title; Tab
+// twice reaches Cancel, and Enter closes the form with the focus back on New document, so the
+// next Tab goes on to Upload rather than starting again from the top of the page.
+test("New document by the keyboard: Enter puts the focus in Title, and Cancel gives it back", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+
+    await user.tab();
+    await user.tab();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("button", { name: "New document" })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Upload" })).toHaveFocus();
+  } finally {
+    view.unmount();
+    listArtifacts.mockRestore();
+    getIssueReferences.mockRestore();
+  }
+});
+
+// A close the reader has moved away from is not the form's to undo. While Create is out they go
+// to the filter box; the write answers, the form closes and the document opens, and the focus
+// stays in the filter box rather than going back to New document.
+test("New document leaves the focus where the reader moved it while Create was out", async () => {
+  const user = userEvent.setup();
+  const { getIssueReferences, listArtifacts, view } = renderTab([]);
+  const answer = Promise.withResolvers<ArtifactUploadResponse>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockReturnValue(answer.promise);
+
+  try {
+    await screen.findByText("No artifacts yet.");
+    await user.click(screen.getByRole("button", { name: "New document" }));
+    // The title goes where the opening put the focus.
+    expect(screen.getByRole("textbox", { name: "Title" })).toHaveFocus();
+    await user.paste("Design notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(uploadArtifact).toHaveBeenCalled());
+    const filter = screen.getByRole("searchbox", { name: "Filter artifacts" });
+    await user.click(filter);
+
+    answer.resolve(madeResponse());
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe(
+        "/issues/CORE-1/artifacts/design-notes"
+      )
+    );
+    expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+    expect(filter).toHaveFocus();
   } finally {
     view.unmount();
     listArtifacts.mockRestore();
