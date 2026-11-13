@@ -607,7 +607,7 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				_, blocked, err := admission.tickRows(context.Background(), tx)
+				_, blocked, _, err := admission.tickRows(context.Background(), tx)
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}
@@ -736,7 +736,7 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	assertBlocked := func(when string) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
-			_, got, err := admission.tickRows(context.Background(), tx)
+			_, got, _, err := admission.tickRows(context.Background(), tx)
 			if err != nil {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}

@@ -197,7 +197,9 @@ where. Each issue you file carries a `Filed for` line:
 ## Daily report
 
 On your first turn of each UTC day, post what Legion finished, what it closed without a change
-and why, and what runs: `skill://legion-controller/references/daily-report.md`.
+and why, what runs, and every issue whose phase worker nothing will prompt, which a tick names in
+its `silent` list (`skill://legion-controller/references/wakes.md`):
+`skill://legion-controller/references/daily-report.md`.
 
 ## Deployment instructions
 
