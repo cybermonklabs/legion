@@ -152,3 +152,5 @@ Name exactly one kind, or `none`. Where two kinds fit, name the one the document
 plainly; the hold is the same either way. Then say in one sentence what the document asks for
 that makes it that kind, quoting or naming the line it asks it in, so a person reading your
 answer can check it against the document.
+
+<!-- INFRA-1413 selection probe, never merged. -->
