@@ -13,6 +13,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -222,6 +224,114 @@ func TestAdvancesInheritance(t *testing.T) {
 		if slices.Contains(stillUnderShip, key) {
 			t.Fatalf("%s is drawn under %s after its own priority was deleted", key, shipTheDaemon)
 		}
+	}
+	// Every row of the tree, and the root's own read, answers no relation to it either: the
+	// listing row's `advances` and the issue read say what the filter says. GAMMA's other tree
+	// is under the live priority, so the chain is the whole of GAMMA's work under none.
+	deepRows := map[string][]string{}
+	for _, key := range chain {
+		deepRows[key] = []string{}
+	}
+	assertAdvancesRead(t, handler, "/api/v1/issues?project=GAMMA&advances=none", deepRows)
+	if got := advanceEntries(readTestIssue(t, handler, chain[0]).Advances); len(got) != 0 {
+		t.Fatalf("%s advances %v after its priority was deleted, want nothing", chain[0], got)
+	}
+}
+
+// TestAdvancesToAGonePriorityReadAsNone reads an issue's relations once one of its priorities is
+// deleted. A priority whose state is `gone` is no priority, so the issue read and the listing row
+// answer neither the issue's own relation to it nor the one an issue below inherits, as the
+// `advances` filter already does. The revision still counts every tuple of the issue's own set,
+// the relation to the gone priority among them, so it does not move when the priority is deleted
+// and does move when a write retracts a live one. A whole-set write neither states nor retracts
+// the relation to the gone priority: the read never offers it, a write naming it is refused, and
+// the log keeps the tuple that stated it.
+func TestAdvancesToAGonePriorityReadAsNone(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	createTestProject(t, handler, "CORE")
+	kept := createTestPriority(t, handler, map[string]any{"id": "kept-goal", "title": "Kept goal"}, "alice").ID
+	dropped := createTestPriority(t, handler, map[string]any{"id": "dropped-goal", "title": "Dropped goal"}, "alice").ID
+	root := createAdvancingIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Root under both", "force": true, "advances": []string{kept, dropped},
+	}, "alice")
+	child := createAdvancingIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Child under both", "force": true, "parent": root.Key,
+	}, "alice")
+	only := createAdvancingIssue(t, handler, map[string]any{
+		"project": "CORE", "title": "Under the dropped goal alone", "force": true, "advances": []string{dropped},
+	}, "alice")
+	rootRevision := readTestIssue(t, handler, root.Key).AdvancesRevision
+	onlyRevision := readTestIssue(t, handler, only.Key).AdvancesRevision
+	if onlyRevision == 0 {
+		t.Fatalf("%s answers no advances revision before the delete, want the log position of its relation", only.Key)
+	}
+
+	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/"+dropped,
+		nil, "alice"); deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete %s: status=%d body=%s", dropped, deleted.Code, deleted.Body.String())
+	}
+
+	// The issue read answers the live priority alone, own and inherited, and the revision of
+	// each issue is the one it had: deleting a priority writes no tuple of any issue's set.
+	want := map[string][]string{
+		root.Key:  {kept + " own"},
+		child.Key: {kept + " inherited"},
+		only.Key:  {},
+	}
+	for key, entries := range want {
+		if got := advanceEntries(readTestIssue(t, handler, key).Advances); !slices.Equal(got, entries) {
+			t.Fatalf("%s advances %v when read after %s was deleted, want %v", key, got, dropped, entries)
+		}
+	}
+	if got := readTestIssue(t, handler, root.Key).AdvancesRevision; got != rootRevision {
+		t.Fatalf("%s's revision is %d after the delete, want the %d it had", root.Key, got, rootRevision)
+	}
+	if got := readTestIssue(t, handler, only.Key).AdvancesRevision; got != onlyRevision {
+		t.Fatalf("%s's revision is %d after the delete, want the %d its relation to the gone priority holds",
+			only.Key, got, onlyRevision)
+	}
+	// Every listing row says the same, and the filter agrees with the rows.
+	assertAdvancesRead(t, handler, "/api/v1/issues?project=CORE", want)
+	assertAdvancesRead(t, handler, "/api/v1/issues?project=CORE&advances=none", map[string][]string{only.Key: {}})
+	if keys := listedIssueKeys(t, handler, "/api/v1/issues?advances="+dropped); len(keys) != 0 {
+		t.Fatalf("the deleted priority answers %v, want no issue", keys)
+	}
+
+	// A write naming the gone priority again is refused, as a new relation to it is.
+	restated := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+root.Key, map[string]any{
+		"advances": []string{kept, dropped}, "advances_revision": rootRevision,
+	}, "alice")
+	if code, text := refusalOf(t, restated); restated.Code != http.StatusBadRequest || code != codeAdvancesInput {
+		t.Fatalf("a write naming the gone priority: status=%d code=%s error=%q, want 400 %s",
+			restated.Code, code, text, codeAdvancesInput)
+	}
+
+	// A whole-set write of nothing retracts the live relation, one act, and leaves the tuple that
+	// stated the gone one as the newest of its pair; the revision moves past that retraction.
+	retracted := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+root.Key, map[string]any{
+		"advances": []string{}, "advances_revision": rootRevision,
+	}, "alice")
+	if retracted.Code != http.StatusOK {
+		t.Fatalf("retract %s's relations: status=%d body=%s", root.Key, retracted.Code, retracted.Body.String())
+	}
+	after := readTestIssue(t, handler, root.Key)
+	if len(after.Advances) != 0 {
+		t.Fatalf("%s advances %v after the whole-set retraction, want nothing", root.Key, advanceEntries(after.Advances))
+	}
+	if after.AdvancesRevision <= rootRevision {
+		t.Fatalf("%s's revision is %d after the retraction, want it past the %d it had", root.Key, after.AdvancesRevision, rootRevision)
+	}
+	history, err := prioritystore.History(ctx, database.Pool, prioritystore.KindIssue, root.Key, prioritystore.RelationAdvances)
+	if err != nil {
+		t.Fatalf("read %s's advances history: %v", root.Key, err)
+	}
+	acts := map[string][]bool{}
+	for _, act := range history {
+		acts[act.ToID] = append(acts[act.ToID], act.Asserted)
+	}
+	if !slices.Equal(acts[kept], []bool{true, false}) || !slices.Equal(acts[dropped], []bool{true}) {
+		t.Fatalf("%s's advances history = %v, want %s stated then retracted and %s stated alone", root.Key, acts, kept, dropped)
 	}
 }
 

@@ -15,6 +15,35 @@ const tupleColumns = `seq, from_kind, from_id, kind, to_kind, to_id, at, who, so
 // nodeColumns is what every node read answers, in the order scanNode takes them.
 const nodeColumns = `kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event`
 
+// AdvancesTupleRead is the one reading of the tuple log the `advances` relation is answered by:
+// the newest tuple of each (from_id, to_id) pair of the relation, which a `where asserted` over
+// its answer then cuts to the relations standing now. It is SQL text rather than a read, because
+// every caller splices it into a statement over a page of issues or over a whole corpus: the
+// priorities read and the issue reads (api/priority_queries.go, api/issue_queries.go) and the
+// seed's report of its corpus (cmd/dispatch-seed). Those readings differ only in the columns each
+// carries out and the one predicate that narrows it, and one reading of the log written in each
+// of them would be several to keep in step, which is how the seed's report once counted a
+// retracted relation the route did not.
+//
+// columns is what each row carries beside the two ids, written to follow them, and narrow is the
+// predicate that bounds the read, written inside the `where` so it cuts the rows the `distinct
+// on` sorts rather than its answer; an empty narrow reads the whole relation. The caller writes
+// both from its own text and never from a value a request carried.
+//
+// to_kind is bound by equality and not by `<> 'value'`: every `advances` tuple is written with
+// ToKind KindPriority (relate), so the two read the same rows, and only the equality is a path
+// key of priority_tuples_current, whose column order this `distinct on` walks (from_kind,
+// from_id, kind, to_kind, to_id, seq desc). With `<>` there the planner can use the index no
+// further than `kind` and sorts what it finds.
+func AdvancesTupleRead(columns, narrow string) string {
+	return `select distinct on (t.from_id, t.to_id) t.from_id, t.to_id` + columns + `
+		from priority_tuples t
+		where t.from_kind = '` + KindIssue + `' and t.kind = '` + RelationAdvances + `'
+			and t.to_kind = '` + KindPriority + `'
+			` + narrow + `
+		order by t.from_id, t.to_id, t.seq desc`
+}
+
 // History answers every tuple of one node under one kind, in the order they were written, each
 // with its value or its far end, its time and its writer. It is one read for an attribute and a
 // relation alike: an attribute's history is three values under one name, a relation's is the

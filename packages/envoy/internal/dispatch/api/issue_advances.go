@@ -63,8 +63,9 @@ func ownAdvances(entries []model.IssueAdvance) []string {
 }
 
 // refuseAdvancesRevision is the revision rule of a PATCH carrying `advances`, decided against
-// the issue as the write's own row lock read it (held, the ids it states now, and revision, the
-// seq of the newest tuple the store holds for them).
+// the issue as the write's own row lock read it (held, the live priorities it states now, and
+// revision, the seq of the newest tuple the store holds for its own set, retractions and
+// relations to a gone priority counted: issueAdvancesTerms, issue_queries.go).
 //
 // A write that carries the whole set rather than one act carries the revision the read it is
 // answering returned, and a revision that is not the one the server holds is refused 409 naming
@@ -114,8 +115,13 @@ func refuseAdvancesRevision(held []string, revision int64, carried *int64, ids [
 // that ends is a second tuple that does not assert it (prioritystore.Retract).
 //
 // A relation the write keeps states nothing, so the liveness of its priority is not asked
-// again: a priority somebody deleted is refused as a new relation and still retractable as an
-// old one, which is what lets a wrong state be taken back.
+// again. held is the issue's own relations as its read answers them (ownAdvances), and that read
+// answers live priorities alone, so a relation to a priority somebody deleted is not held: a
+// whole-set write neither states it, because requireLivePriority refuses an id whose priority is
+// gone, nor retracts it, because only a held relation is retracted. That is right, because a
+// priority whose state is gone is no priority and the relation already reads as none on every
+// route; its tuples stay in the log as the record of what the issue advanced, and they still
+// count in the revision, so a whole-set write is held to them as to every other tuple of the set.
 func writeIssueAdvances(
 	ctx context.Context, tx pgx.Tx, issue string, held, ids []string, actor model.Actor, at time.Time,
 ) error {

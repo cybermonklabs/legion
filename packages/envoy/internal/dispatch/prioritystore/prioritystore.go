@@ -17,9 +17,10 @@
 // priority's whole log in the order it was written. A caller that writes asks Write or the named
 // writes above it (Create, SetAttributes, SetState, Move, Advance, Retract).
 //
-// The `advances` relations of a page of issues at once are no read of this package: the routes
-// that answer them read the log with statements of their own (api/priority_queries.go,
-// api/issue_queries.go), because one statement over a page is not a read per issue.
+// The `advances` relations of a page of issues at once are no call of this package: each caller
+// that answers them splices AdvancesTupleRead, the one reading of the log they rest on, into a
+// statement of its own (api/priority_queries.go, api/issue_queries.go, cmd/dispatch-seed),
+// because one statement over a page is not a read per issue.
 package prioritystore
 
 import (

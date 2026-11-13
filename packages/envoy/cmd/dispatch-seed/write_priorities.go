@@ -64,13 +64,22 @@ func sqlStatusList(statuses []string) string {
 // parentChainCap, the deepest chain this command writes, rather than by the server's
 // parentDepthCap: a descendant below that bound is one the seeded corpus does not hold.
 //
+// `stated` is the route's own reading of the log (priorityRelationsQuery): the newest tuple of
+// each (issue, priority) pair, read by prioritystore.AdvancesTupleRead, kept when it asserts the
+// relation and its priority is live. Taking every asserted tuple instead would count a relation
+// a later tuple retracted, and a relation to a deleted priority, both of which the route answers
+// as none, so the report and the route would disagree on any corpus that holds either.
+//
 // It is the terms of a `with recursive`, so a reading of it begins `with recursive ` and ends
 // with its own select.
 var priorityMemberTerms = `stated as (
-		select distinct t.from_id as key, t.to_id as priority
-		from priority_tuples t
-		where t.from_kind = '` + prioritystore.KindIssue + `' and t.kind = '` + prioritystore.RelationAdvances + `'
-			and t.to_kind = '` + prioritystore.KindPriority + `' and t.asserted
+		select newest.from_id as key, newest.to_id as priority
+		from (
+			` + prioritystore.AdvancesTupleRead(`, t.asserted`, ``) + `
+		) newest
+		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
+			and n.state = '` + prioritystore.StateLive + `'
+		where newest.asserted
 	), members_spread as (
 		select key, priority, 0 as depth from stated
 		union all
@@ -91,7 +100,9 @@ var priorityMemberTerms = `stated as (
 // the node with its visibility, its state and each attribute, each appending its own value tuple,
 // and prioritystore.Write appends a whole batch of relation tuples in the one statement its
 // append is (one round trip a batch rather than one a relation, which is thousands at scale).
-// Nothing here writes SQL of its own, so a corpus holds what a route would have written.
+// No statement of this command writes either table, so a corpus holds what a route would have
+// written; where its report reads the `advances` relation back (priorityMemberTerms), it splices
+// the route's own reading of the log, prioritystore.AdvancesTupleRead.
 //
 // A relation is dated at the later of the issue's moment and the priority's: both are spread
 // over the same span, so an issue written before the priority it advances would otherwise state

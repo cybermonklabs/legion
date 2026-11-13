@@ -159,9 +159,9 @@ const issueProgressLateral = `
 	) progress on true`
 
 // issueAdvancesColumns are the three values every issue read answers for its `advances`
-// relations, in advancesScan's order: the priority ids the issue's own row states now, the
-// revision a whole-set write of them carries, and the ids it inherits from the issues above it.
-// An issue that states none and inherits none reads as two empty lists and revision 0. The
+// relations, in advancesScan's order: the live priority ids the issue's own row states now, the
+// revision a whole-set write of them carries, and the live ids it inherits from the issues above
+// it. An issue that states none and inherits none reads as two empty lists and revision 0. The
 // revision is the issue's own relations alone, inheritance counted in neither: it is what a
 // write of this issue's own set is held against, and no write of this issue states or retracts
 // an inherited relation.
@@ -186,18 +186,25 @@ const issueAdvancesColumnsUnread = `'{}'::text[], 0::bigint, '{}'::text[]`
 // subject's chain together, as refs.IssueRepoTerms' does, so a page of issues pays one walk
 // rather than one per row.
 //
-// `advances_current` is advancesTupleRead's reading of the log for every issue those chains name
-// at once (priority_queries.go, over priority_tuples_current): the newest tuple per (issue,
+// `advances_current` is prioritystore.AdvancesTupleRead's reading of the log for every issue
+// those chains name at once (over priority_tuples_current): the newest tuple per (issue,
 // priority), asserted or not, read once however many subjects inherit from that issue.
 //
-// `advances` groups the two back onto the subject. The ids are the asserted ones alone, since a
-// relation whose last word is a retraction is no relation now; depth 0 answers the issue's own
-// ids and the revision, and every greater depth answers what it inherits. The revision is the
-// greatest seq of the issue's own set, retractions counted, because it is what the store holds
-// for the issue rather than what it answers, and a retraction a writer did not see must move it
-// too. A tuple that is the greatest of the issue is the newest of its own pair as well, so the
-// max over these rows is the max over every tuple. Both lists come back in id order, which is
-// the order advancesScan merges them in.
+// `advances` groups the two back onto the subject. The ids are the asserted relations to live
+// priorities alone: a relation whose last word is a retraction is no relation now, and a priority
+// whose state is `gone` is no priority, so the join to priority_nodes leaves it out of both
+// lists, as issueAdvancesFilterTerms' join leaves it out of the filter and priorityRelationsQuery
+// out of the priorities read. Without it the issue read and every listing row would name a
+// priority that `advances=none` and the first fault already count as none. Depth 0 answers the
+// issue's own ids and the revision, and every greater depth answers what it inherits.
+//
+// The revision is the greatest seq of the issue's own set, retractions and relations to a gone
+// priority counted, because it is what the store holds for the issue rather than what it answers,
+// and a tuple a writer did not see must move it whichever of the two it is. The join to the live
+// priorities is a left join on their key, so it drops no tuple from the max. A tuple that is the
+// greatest of the issue is the newest of its own pair as well, so the max over these rows is the
+// max over every tuple. Both lists come back in id order, which is the order advancesScan merges
+// them in.
 var issueAdvancesTerms = `advances_chain as (
 		select s.key as start, s.key as issue_key, 0 as depth
 		from subjects s
@@ -206,16 +213,18 @@ var issueAdvancesTerms = `advances_chain as (
 		from advances_chain c join issues p on p.key = c.issue_key
 		where p.parent_key is not null and c.depth < ` + parentDepthCapSQL + `
 	), advances_current as (
-		` + advancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`) + `
+		` + prioritystore.AdvancesTupleRead(`, t.seq, t.asserted`, `and t.from_id in (select issue_key from advances_chain)`) + `
 	), advances as (
 		select c.start as issue_key,
 		       coalesce(array_agg(distinct cu.to_id order by cu.to_id)
-		                filter (where cu.asserted and c.depth = 0), '{}') as ids,
+		                filter (where cu.asserted and live.id is not null and c.depth = 0), '{}') as ids,
 		       coalesce(max(cu.seq) filter (where c.depth = 0), 0) as revision,
 		       coalesce(array_agg(distinct cu.to_id order by cu.to_id)
-		                filter (where cu.asserted and c.depth > 0), '{}') as inherited
+		                filter (where cu.asserted and live.id is not null and c.depth > 0), '{}') as inherited
 		from advances_chain c
 		left join advances_current cu on cu.from_id = c.issue_key
+		left join priority_nodes live on live.kind = '` + prioritystore.KindPriority + `' and live.id = cu.to_id
+			and live.state = '` + prioritystore.StateLive + `'
 		group by c.start
 	)`
 
@@ -243,7 +252,7 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 var issueAdvancesFilterTerms = `advances_stated as (
 		select newest.from_id as key, bool_or(newest.to_id = any($11::text[])) as named
 		from (
-			` + advancesTupleRead(`, t.asserted`, `and (cardinality($11::text[]) > 0 or $12::boolean)`) + `
+			` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and (cardinality($11::text[]) > 0 or $12::boolean)`) + `
 		) newest
 		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
 			and n.state = '` + prioritystore.StateLive + `'
@@ -323,7 +332,8 @@ const (
 	// unsetPriorityFilter is the `priority` query value that matches an issue with no priority.
 	unsetPriorityFilter = "none"
 	// noAdvancesFilter is the `advances` query value that matches an issue advancing no live
-	// priority, by its own row or by an issue above it.
+	// priority, by its own row or by an issue above it. A priority create refuses it as an id,
+	// given or derived (priorityIDRefusal), so the keyword can never also name a priority.
 	noAdvancesFilter = "none"
 )
 

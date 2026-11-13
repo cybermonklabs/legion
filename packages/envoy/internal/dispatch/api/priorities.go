@@ -19,14 +19,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
 )
 
 const (
 	// codePriorityInput refuses a body no priority can be written from: a title with nothing in
-	// it, an id that is no priority id, a title no id can be derived from, and a patch that
-	// names nothing to write.
+	// it or one longer than an issue title may be, an id that is no priority id, a title no id
+	// can be derived from, and a patch that names nothing to write.
 	codePriorityInput = "PRIORITY_INPUT"
 	// codePriorityExists refuses a create of an id the store already holds, as a project create
 	// refuses a key it holds (PROJECT_EXISTS): a second create would write its own history over
@@ -39,12 +41,63 @@ const (
 	codeRankInput = "RANK_INPUT"
 )
 
+// priorityIDMax is the longest priority id, in bytes, which for the ASCII the grammar admits is
+// characters too. The id is a btree key of priority_nodes and of priority_tuples_inbound, and
+// Postgres refuses a btree entry over about 2,700 bytes, so an id with no bound reached the
+// insert inside prioritystore.Create and failed it as a 500. 200 is far under that bound with
+// every other column of the inbound entry beside it, and well over any name a person reads at a
+// glance; a longer title derives a longer id, and the create then asks the caller to name one.
+const priorityIDMax = 200
+
 // priorityIDPattern is the grammar of a priority id: lowercase letters and digits in groups
 // joined by single hyphens, which is the slug spelling a document's id already takes
 // (artifactSlug, and text.artifactSlugPattern, which reads one back). An id is written into a
 // path and into the `advances` filter of the issue listing, so one that spells anything else
-// would be stored and then address nothing.
+// would be stored and then address nothing. The grammar admits one word the filter reads as a
+// keyword, noAdvancesFilter, and the length is bounded by priorityIDMax; priorityIDRefusal holds
+// an id to all three.
 var priorityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
+
+// priorityIDRefusal answers why id can be no priority's id, or "" when it can be one. derived
+// says the create took it from the title, so the answer says so and asks for an id in id.
+//
+// An id over priorityIDMax is refused before the grammar is read, so the answer names its length
+// rather than quoting it. noAdvancesFilter is refused although the grammar spells it, because the
+// issue listing reads `advances=none` as the work under no priority (parseAdvancesFilter): a
+// priority of that id would have its own page and row list the work under no priority, and no
+// filter could ask for the work under it.
+func priorityIDRefusal(id string, derived bool) string {
+	var reason string
+	switch {
+	case len(id) > priorityIDMax:
+		reason = fmt.Sprintf("an id is at most %d characters, and this one is %d", priorityIDMax, len(id))
+	case !priorityIDPattern.MatchString(id):
+		reason = fmt.Sprintf("%q is no priority id: an id is lowercase letters and digits in groups joined by single hyphens", id)
+	case id == noAdvancesFilter:
+		reason = fmt.Sprintf("%q is no priority id: the issue listing reads advances=%s as the work under no priority, so no filter could ask for the work under a priority of that id",
+			id, noAdvancesFilter)
+	default:
+		return ""
+	}
+	if derived {
+		return "the id this title derives cannot be used, because " + reason + ": name the id in id"
+	}
+	return reason
+}
+
+// refusePriorityTitle refuses a title longer than an issue title may be, counted as an issue
+// title is (contracts.IssueTitleMax, in UTF-16 units after the trim), on a create and a rename
+// alike. A title is one line a page heads itself with, and the id a create derives from it is
+// bounded apart (priorityIDMax).
+func refusePriorityTitle(w http.ResponseWriter, title string) bool {
+	length := itemblocks.Units16(title)
+	if length <= contracts.IssueTitleMax {
+		return false
+	}
+	writeError(w, codePriorityInput, http.StatusBadRequest, fmt.Sprintf(
+		"a title is at most %d characters, as an issue title is, and this one is %d", contracts.IssueTitleMax, length))
+	return true
+}
 
 // priorityFrom is one node row as a route answers it. The four attributes a person writes are
 // read off the row's own JSON (prioritystore.Node.Attribute) rather than walked out of the
@@ -103,9 +156,11 @@ func (s *server) listPriorities(w http.ResponseWriter, r *http.Request) {
 type createPriorityInput struct {
 	// ID is the priority's own id, the spelling every address of it carries. A body that names
 	// none takes the title written as a slug (priorityIDFromTitle), as nothing in the store
-	// makes an id: it is the caller's, as an issue key is.
+	// makes an id: it is the caller's, as an issue key is. Given or derived, it is held to
+	// priorityIDRefusal.
 	ID string `json:"id"`
-	// Title is what the priority is called, one line, and is required.
+	// Title is what the priority is called, one line, and is required; it is at most
+	// contracts.IssueTitleMax UTF-16 units, as an issue title is (refusePriorityTitle).
 	Title string `json:"title" required:"true"`
 	// Description is markdown of any length: nothing bounds it, as nothing bounds the text of
 	// any other node, and a reader who wants a sentence reads its first line.
@@ -130,18 +185,21 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codePriorityInput, http.StatusBadRequest, "title is required")
 		return
 	}
+	if refusePriorityTitle(w, input.Title) {
+		return
+	}
 	input.Owner = strings.TrimSpace(input.Owner)
 	id := strings.TrimSpace(input.ID)
-	if id == "" {
+	derived := id == ""
+	if derived {
 		if id = priorityIDFromTitle(input.Title); id == "" {
 			writeError(w, codePriorityInput, http.StatusBadRequest,
 				"this title holds no letter or digit an id can be written from: name the id in id")
 			return
 		}
 	}
-	if !priorityIDPattern.MatchString(id) {
-		writeError(w, codePriorityInput, http.StatusBadRequest, fmt.Sprintf(
-			"%q is no priority id: an id is lowercase letters and digits in groups joined by single hyphens", id))
+	if refusal := priorityIDRefusal(id, derived); refusal != "" {
+		writeError(w, codePriorityInput, http.StatusBadRequest, refusal)
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -229,6 +287,9 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 		if title == "" {
 			writeError(w, codePriorityInput, http.StatusBadRequest,
 				"title is required: a write renames a priority or leaves its name alone")
+			return
+		}
+		if refusePriorityTitle(w, title) {
 			return
 		}
 		values[prioritystore.AttributeTitle] = title
