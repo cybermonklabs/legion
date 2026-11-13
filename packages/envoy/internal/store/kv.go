@@ -38,7 +38,8 @@ type Registry struct {
 	watcher *kvwatch.Watcher
 	// roleWatcher feeds roleHolders from the role bucket, so a session's roles are read from the
 	// claims with no bucket call (RolesHeldBy), which answers only while its copy can be served
-	// (kvwatch.Watcher.Servable), and a role's holder is too (CachedRoleHolder). holdersMu guards
+	// (kvwatch.Watcher.Servable). A role's holder is never read from it: every act that turns on
+	// who holds a role reads that role's claim record (RoleClaim). holdersMu guards
 	// roleHolders, the copy of the role bucket: the session each role's claim names, its revision
 	// fence, which keeps a delayed watcher record from undoing a claim this registry wrote or read,
 	// its marks and its read epoch (kvwatch.Copy, newRoleHolderCopy), so a claim write this registry
@@ -290,34 +291,4 @@ func (r *Registry) Rewatch(conn *nats.Conn) error {
 // reads the cache by (cmd/listener/durable.go).
 func (r *Registry) CachedInterest(sessionID string) (Interest, bool) {
 	return r.Cached(sessionID)
-}
-
-// CachedRoleHolder returns role's holder from the role claim watcher's copy of the bucket, and on
-// a miss reads the bucket as RoleHolder does, which fills the copy (setOwnRoleHolder). The copy
-// holds every claim this registry wrote, read or watched, so it answers without a round trip; a
-// claim another listener wrote reaches it through the watcher, a moment after the bucket. The
-// listener's role lane resolves each role message's holder through it, and reads the bucket
-// itself (RoleHolder) when the holder it found was superseded. An unclaimed role is a miss, which
-// returns an empty holder without an error.
-func (r *Registry) CachedRoleHolder(role string) (string, error) {
-	r.holdersMu.RLock()
-	holder, ok := r.roleHolders.Get(role)
-	r.holdersMu.RUnlock()
-	if ok {
-		return holder, nil
-	}
-	// The epoch is read before the bucket, so a claim read through a handle on a bucket since
-	// recreated is dropped rather than fencing out the new bucket's lower revisions.
-	epoch := r.roleViewEpoch()
-	claim, err := r.RoleClaim(context.Background(), role)
-	if err != nil {
-		return "", err
-	}
-	// A zero revision is a role no record claims (RoleClaim): the bucket's revisions start at one,
-	// and the zero claim a miss answers carries none.
-	if claim.Revision == 0 {
-		return "", nil
-	}
-	r.setOwnRoleHolder(role, claim.HolderSessionID, claim.Revision, epoch)
-	return claim.HolderSessionID, nil
 }

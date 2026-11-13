@@ -56,8 +56,7 @@ type RoleClaim struct {
 	// Revision is the role bucket revision the claim was read at, which RoleClaim stamps on
 	// every claim it decodes and nothing stores: it belongs to the entry, not to the record,
 	// so it is never marshalled back into the bucket. Zero means no claim record was read -
-	// an unclaimed role, a claim built to be written, or the holder-only claim a watched copy
-	// of the bucket gives (roles.ResolveHolderFrom's firstHolder). It is what a conditional
+	// an unclaimed role, or a claim built to be written. It is what a conditional
 	// claim names as its precondition (SetRoleWithPrevious's ifClaimRevision) and what GET
 	// /v1/roles/<role> reports as claim_revision, so a caller can read a role and then claim
 	// it only while no other claim has landed.
@@ -1012,9 +1011,9 @@ func (r *Registry) RoleClaim(ctx context.Context, role string) (RoleClaim, error
 }
 
 // RoleHolder returns the authoritative session ID for role, read with no deadline of its own. Only
-// tests call it, to read what a claim left behind; every route and the role lane read RoleClaim
-// within a deadline, through the one resolution (roles.ResolveHolder and roles.ResolveHolderFrom,
-// internal/roles). An unclaimed role returns an empty holder without an error.
+// tests call it, to read what a claim left behind; the listener reads RoleClaim within a deadline,
+// its routes and its role lane through the one resolution (roles.ResolveHolder, internal/roles)
+// and its kept lane directly. An unclaimed role returns an empty holder without an error.
 func (r *Registry) RoleHolder(role string) (string, error) {
 	claim, err := r.RoleClaim(context.Background(), role)
 	if err != nil {

@@ -138,22 +138,6 @@ func TestResolveHolderJudgesTheHolderOnTheWindowsItIsGiven(t *testing.T) {
 	}
 }
 
-// A resolution given a firstHolder reads the claim from it and the claim store not at all, which
-// is how the role lane spends no bucket round trip on a message it forwards.
-func TestResolveHolderFromReadsTheClaimItIsGiven(t *testing.T) {
-	claimed := &claims{holder: "ses_other"}
-	held := sessions{entries: map[string]session.SessionEntry{"ses_cached": registered(time.Second)}}
-	resolution, err := roles.ResolveHolderFrom(context.Background(), claimed, func(string) (string, error) {
-		return "ses_cached", nil
-	}, held, "reviewer")
-	if err != nil || resolution.State != roles.Live || resolution.Holder != "ses_cached" {
-		t.Fatalf("resolution %+v, %v; want the cached holder read live", resolution, err)
-	}
-	if claimed.reads != 0 {
-		t.Fatalf("the claim store was read %d times, want not at all", claimed.reads)
-	}
-}
-
 // A read that fails names its step, and the holder once the claim named one, so the role lane
 // logs the read that failed and a route answers it. Nothing is decided about the holder: a
 // session read that did not answer is no verdict on the session.
@@ -188,9 +172,9 @@ func TestResolveHolderNamesTheStepThatFailed(t *testing.T) {
 
 // ClaimRevision is the revision of the claim record the resolution read, and a record stands
 // behind every holder here, since nothing releases one: the claim's own revision on a live holder
-// and on a lapsed one alike, zero where no claim stands, and zero for a claim read from a
-// firstHolder copy, which carries no revision. That revision is what a conditional claim names as
-// its precondition, so a scheduler can take the role of a holder that never came back.
+// and on a lapsed one alike, and zero where no claim stands. That revision is what a conditional
+// claim names as its precondition, so a scheduler can take the role of a holder that never came
+// back.
 func TestResolveHolderReportsTheRevisionOfTheClaimItRead(t *testing.T) {
 	held := sessions{
 		Windows:    roles.Windows{Live: time.Minute, Horizon: time.Hour},
@@ -218,26 +202,13 @@ func TestResolveHolderReportsTheRevisionOfTheClaimItRead(t *testing.T) {
 			}
 		})
 	}
-	t.Run("a holder read from a firstHolder copy", func(t *testing.T) {
-		bucket := &claims{holder: "ses_live", revision: 7}
-		resolution, err := roles.ResolveHolderFrom(context.Background(), bucket, func(string) (string, error) {
-			return "ses_live", nil
-		}, held, "reviewer")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if resolution.State != roles.Live || resolution.ClaimRevision != 0 || bucket.reads != 0 {
-			t.Fatalf("resolution %+v after %d claim reads, want live at revision 0 with no claim read", resolution, bucket.reads)
-		}
-	})
 }
 
 // HolderClientInstanceID is the process the claim names as its holder, which GET /v1/roles/<role>
 // answers beside the holder's session id so a client can see that a role is held under its own
 // session id by another process. It is the claim's own field on a live holder and on a lapsed
-// one alike, empty for a claim that names no process - one an earlier build wrote, or one whose
-// claimant stated none - and empty for a claim read from a firstHolder copy, which names a
-// holder and nothing else whatever the store holds.
+// one alike, and empty for a claim that names no process - one an earlier build wrote, or one
+// whose claimant stated none.
 func TestResolveHolderReportsTheProcessTheClaimNames(t *testing.T) {
 	const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 	held := sessions{
@@ -265,25 +236,12 @@ func TestResolveHolderReportsTheProcessTheClaimNames(t *testing.T) {
 			}
 		})
 	}
-	t.Run("a holder read from a firstHolder copy", func(t *testing.T) {
-		bucket := &claims{holder: "ses_live", instance: instance}
-		resolution, err := roles.ResolveHolderFrom(context.Background(), bucket, func(string) (string, error) {
-			return "ses_live", nil
-		}, held, "reviewer")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if resolution.State != roles.Live || resolution.HolderClientInstanceID != "" || bucket.reads != 0 {
-			t.Fatalf("resolution %+v after %d claim reads, want live naming no process with no claim read", resolution, bucket.reads)
-		}
-	})
 }
 
 // HolderHandedBack is the hand-back mark the claim carries, which GET /v1/roles/<role> answers
 // as handed_back so a client sees that the holder gave the role back and that nothing is
 // renewing the claim any more. Nothing here releases a claim, so the mark reads the same on a
-// live holder and on a lapsed one; a claim read from a firstHolder copy carries false whatever
-// the store holds, as its process does, since the copy names a holder and nothing else.
+// live holder and on a lapsed one.
 func TestResolveHolderReportsTheHandBackMarkTheClaimCarries(t *testing.T) {
 	const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
 	held := sessions{
@@ -311,18 +269,6 @@ func TestResolveHolderReportsTheHandBackMarkTheClaimCarries(t *testing.T) {
 			}
 		})
 	}
-	t.Run("a holder read from a firstHolder copy", func(t *testing.T) {
-		bucket := &claims{holder: "ses_live", instance: instance, handedBack: true}
-		resolution, err := roles.ResolveHolderFrom(context.Background(), bucket, func(string) (string, error) {
-			return "ses_live", nil
-		}, held, "reviewer")
-		if err != nil {
-			t.Fatalf("resolve: %v", err)
-		}
-		if resolution.State != roles.Live || resolution.HolderHandedBack || bucket.reads != 0 {
-			t.Fatalf("resolution %+v after %d claim reads, want live carrying no mark with no claim read", resolution, bucket.reads)
-		}
-	})
 }
 
 // No read starts once the context has ended: the answer is the context's error, naming the role,

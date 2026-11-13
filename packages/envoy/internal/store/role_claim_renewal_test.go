@@ -90,9 +90,9 @@ func TestARecordWithNoProcessOrRenewalDecodesWithBothZeroAndIsReadAtItsClaimTime
 }
 
 // No reader of the role bucket reports a record of either older shape unreadable: the registry's
-// own read answers the holder each one names, the watched copy the role lane and RolesHeldBy
-// answer from gives that holder the role, and nothing is logged at WARN, which is how a claim
-// this build cannot read is reported (roleCache.Apply).
+// own read answers the holder each one names, the watched copy RolesHeldBy and the session
+// listing answer from gives that holder the role, and nothing is logged at WARN, which is how a
+// claim this build cannot read is reported (roleCache.Apply).
 func TestNoReaderOfTheRoleBucketReportsARecordWithNoProcessOrRenewalUnreadable(t *testing.T) {
 	logs := captureRegistryLogs(t)
 	conn, cleanup := connectNATS(t)

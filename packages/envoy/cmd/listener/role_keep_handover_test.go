@@ -227,11 +227,11 @@ func TestAKeptCopyWhoseForwardFailedReachesTheHolderWithNoSecondClaim(t *testing
 	}
 }
 
-// A drain forwards to the session it was started for and reads no claim again, so a role that
-// changes holder under it would have the rest of its lane forwarded to a session that no longer
-// holds it - the two-holder case the kept lane exists to avoid. The drain reads the role's current
-// holder from the registry's watched copy before each copy instead, leaves the lane when it is no
-// longer its own session's, and the handover walks it again for the holder it finds then.
+// A drain forwards to the session it was started for, so a role that changes holder under it
+// would have the rest of its lane forwarded to a session that no longer holds it - the two-holder
+// case the kept lane exists to avoid. The drain reads the role's claim record before each copy
+// instead, leaves the lane when the record no longer names its own session, and the handover walks
+// it again for the holder it finds then.
 func TestADrainStopsWhenTheRoleChangesHolderUnderIt(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -356,10 +356,12 @@ func TestAHandoverRetriesMoreFailedWalksThanItsIdleWalksAllow(t *testing.T) {
 
 // Each walk of a handover forwards to the holder the pass that started it resolved, and that
 // resolution is made after the pause before the walk rather than before it. A handover that
-// resolved the holder and then waited forwarded to a session read up to bus.KeptRoleClaimWindow
-// ago, which the walk's own check cannot catch: a role nobody claims reads as no evidence that
-// this walk's session lost it (roleKeepDrainHolds), so the copies went to a session that had
-// released the role and the cursor moved past them.
+// resolved the holder and then waited started its walk for a session read up to
+// bus.KeptRoleClaimWindow ago, and a walk that read a role nobody claims as no evidence that its
+// session had lost it sent the copies to a session that had released the role, moving the cursor
+// past them. The walk also reads the role's claim record before each copy now
+// (roleKeepDrainHolds), so either check ends it: no copy reaches the session that released the
+// role inside the pause.
 func TestAHandoverResolvesTheHolderOfAWalkAfterThePauseBeforeIt(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -572,7 +574,7 @@ func TestADispatchRoleRoutedEventToAnUnheldRoleReachesTheNextHolder(t *testing.T
 }
 
 // A lane-head read that did not answer says nothing about the role's holder, so what decides
-// whether the handover reads that lane again is the role's cached claim. A cursor body no read
+// whether the handover reads that lane again is the role's claim record. A cursor body no read
 // can decode - which any NATS user whose grant covers notifications.> can write - is such a read
 // that no retry ever gets past, made deterministic.
 //
@@ -715,7 +717,7 @@ func claimRoleBeyondTheSessionCache(t *testing.T, harness listenerDeliveryHarnes
 // error at all. A claim's handover, whose role was claimed a moment ago, used to end on the first
 // such failure all the same - at Debug, reporting nothing - and the copies it left behind waited
 // for the five-minute sweep, whose own handover could end the same way, until they aged past
-// roleKeepWindow. The role's cached claim names the session that claimed it, so the read is
+// roleKeepWindow. The role's claim record names the session that claimed it, so the read is
 // retried and the copy reaches the holder its sender was told it was kept for.
 func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)

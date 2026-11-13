@@ -8,6 +8,10 @@
 // R4): a lookup, a publish and a role-lane delivery attempt leave the claim and its claimed_at
 // exactly as they were, so a stalled session that comes back still holds the role it had.
 //
+// Every resolution reads the role's claim record from its ClaimStore, the role bucket itself, and
+// never from a watched copy of that bucket: a copy can lack a claim the bucket holds, or keep one
+// the bucket dropped, and the answer each caller acts on is the record's.
+//
 // A holder is judged by the state its own last registration puts it in (session.StateOf, on the
 // windows the lookup runs with), never by how long a bucket keeps its record and never by a
 // staleness compiled into this package.
@@ -113,10 +117,7 @@ type Resolution struct {
 	// GET /v1/roles/<role> reports as claim_revision and a conditional claim names as its
 	// precondition. A claim record stands behind every resolution that names a holder, since no
 	// resolution here takes one away, so it is the revision that record was read at on Live and
-	// Lapsed alike, and zero for Unclaimed. A resolution whose claim came from a firstHolder
-	// (ResolveHolderFrom) read no record and carries zero whatever the store holds, since the
-	// copy names a holder and no revision; a caller that reports the revision reads the claim
-	// store.
+	// Lapsed alike, and zero for Unclaimed.
 	ClaimRevision uint64
 	// HolderClientInstanceID is the client instance of the process the claim this resolution
 	// read names as its holder (store.RoleClaim.ClientInstanceID), which GET /v1/roles/<role>
@@ -124,20 +125,14 @@ type Resolution struct {
 	// that a role is held under its own session id by another process. It is the claim's own
 	// field on Live and Lapsed alike, since no resolution here releases a claim, and empty
 	// where the claim names no process - a claim an earlier build wrote, or one whose claimant
-	// stated none - and for Unclaimed, where there is no claim at all. A resolution whose
-	// claim came from a firstHolder (ResolveHolderFrom) read no record and carries none
-	// whatever the store holds, since the copy names a holder and nothing else; a caller that
-	// reports the holder's process reads the claim store.
+	// stated none - and for Unclaimed, where there is no claim at all.
 	HolderClientInstanceID string
 	// HolderHandedBack is the hand-back mark the claim this resolution read carries
 	// (store.RoleClaim.HandedBack), which GET /v1/roles/<role> reports as handed_back on both
 	// its answers: the holder handed this role back through a release that could not free the
 	// claim, so no registration renews it any more and the role claim reaper frees the role
 	// one live window and up to one reap interval later. False where no such release reached
-	// the claim, and for Unclaimed, where there is no claim at all. A resolution whose claim
-	// came from a firstHolder (ResolveHolderFrom) read no record and carries false whatever
-	// the store holds, exactly as HolderClientInstanceID does, since the copy names a holder
-	// and nothing else; a caller that reports the mark reads the claim store.
+	// the claim, and for Unclaimed, where there is no claim at all.
 	HolderHandedBack bool
 }
 
@@ -187,49 +182,23 @@ func Valid(role string) bool {
 	return pattern.MatchString(role)
 }
 
-// readClaim reads role's claim for a resolution (ResolveHolderFrom). A resolution given a
-// firstHolder reads it from there - the listener's registry passes its watched copy of the role
-// bucket (store.Registry.CachedRoleHolder), which costs no round trip, so a role message the lane
-// forwards reads no bucket - and one given none reads the claim store itself, which is what a
-// caller answering within its own deadline, a route among them, does. The copy names a holder,
-// not a whole claim, and the resolution reads nothing else from it.
-func readClaim(ctx context.Context, claims ClaimStore, firstHolder func(role string) (string, error), role string) (store.RoleClaim, error) {
-	if firstHolder == nil {
-		return claims.RoleClaim(ctx, role)
-	}
-	holder, err := firstHolder(role)
-	if err != nil {
-		return store.RoleClaim{}, err
-	}
-	return store.RoleClaim{HolderSessionID: holder}, nil
-}
-
-// ResolveHolder resolves role's holder within ctx. It reads the role's claim (Unclaimed when
-// there is none), then that holder's session record through sessions, and judges the record by
-// the state it puts its session in (SessionLookup.EntryState): Live when it reads live, and
-// Lapsed with that state otherwise - a holder past the live window, one past the gone horizon,
-// and one with no record at all. The claim is left exactly as it is on every one of them, so a
-// stalled holder's role and its claimed_at outlive any number of resolutions.
+// ResolveHolder resolves role's holder within ctx. It reads the role's claim record from claims
+// (Unclaimed when there is none), then that holder's session record through sessions, and judges
+// the record by the state it puts its session in (SessionLookup.EntryState): Live when it reads
+// live, and Lapsed with that state otherwise - a holder past the live window, one past the gone
+// horizon, and one with no record at all. The claim is left exactly as it is on every one of them,
+// so a stalled holder's role and its claimed_at outlive any number of resolutions.
 //
 // A read that fails returns a *ReadError naming its step, with the claim's holder in the
 // Resolution when one was read. Every read waits no longer than ctx, and no resolution starts
 // once ctx has ended: that is ctx's error, wrapped to name the role, at ClaimRead.
 //
 // One resolution is one claim read: there is no release for a second read to see past.
-//
-// It reads the claim from claims. A caller whose first read is a watched copy of the role bucket
-// resolves through ResolveHolderFrom instead.
 func ResolveHolder(ctx context.Context, claims ClaimStore, sessions SessionLookup, role string) (Resolution, error) {
-	return ResolveHolderFrom(ctx, claims, nil, sessions, role)
-}
-
-// ResolveHolderFrom is ResolveHolder reading its claim through readClaim, so a resolution given a
-// firstHolder spends no claim-store round trip on it.
-func ResolveHolderFrom(ctx context.Context, claims ClaimStore, firstHolder func(role string) (string, error), sessions SessionLookup, role string) (Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return Resolution{}, &ReadError{Step: ClaimRead, Err: fmt.Errorf("resolve role %s's holder: %w", role, err)}
 	}
-	claim, err := readClaim(ctx, claims, firstHolder, role)
+	claim, err := claims.RoleClaim(ctx, role)
 	if err != nil {
 		return Resolution{}, &ReadError{Step: ClaimRead, Err: err}
 	}
