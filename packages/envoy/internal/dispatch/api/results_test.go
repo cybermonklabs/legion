@@ -2671,7 +2671,9 @@ func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
 // holds a recorded result, so it is no check CI proves. Crafted here as a browser's write that
 // gives a ci_check to a check already holding a result, before any settlement: the results read
 // shows it as an ordinary check carrying its ci_check and its recorded result, and it takes a
-// further result. Its sibling, given the same ci_check and holding no result, is CI's.
+// further result. Its sibling, given the same ci_check and holding no result, is CI's. The next
+// settlement takes the inert ci_check off the block holding results, with one block.invalid
+// naming the fourth rule, and keeps its sibling's.
 func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	documents, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "RESCR", "Raced", "A spec\n")
@@ -2697,5 +2699,20 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 	refused := recordResult(t, handler, issue.Key, resultBody("c2", "pass", headCommit, nil))
 	if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" {
 		t.Fatalf("a result against c2: status=%d body=%s, want 409 CHECK_PROVED_BY_CI", refused.Code, refused.Body.String())
+	}
+
+	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+		t.Fatalf("settle the issue's documents: %v", err)
+	}
+	settled := readResults(t, handler, issue.Key)
+	if c1 := checkOf(t, settled, "c1"); c1.CICheck != "" || len(c1.Results) != 2 {
+		t.Fatalf("c1 once settled reads %+v, want it without its ci_check and holding both results", c1)
+	}
+	if c2 := checkOf(t, settled, "c2"); c2.CICheck != ciCheckRun {
+		t.Fatalf("c2 once settled reads %+v, want its ci_check %q kept", c2, ciCheckRun)
+	}
+	want := []ciCheckRefusalEvent{{BlockID: "c1", Reason: ciCheckRecordedRule, BlockType: "check"}}
+	if got := ciCheckRefusalEvents(t, handler, issue.Key); !slices.Equal(got, want) {
+		t.Fatalf("block.invalid events = %+v, want %+v", got, want)
 	}
 }

@@ -207,7 +207,9 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "block.repaired":
       return `repaired server-owned state on block ${event.payload.block_id}`;
     case "block.invalid":
-      return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
+      return event.payload.block_type === "check"
+        ? `refused check ${event.payload.block_id}: ${event.payload.reason}`
+        : `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
     case "result.recorded":
       return `recorded ${event.payload.verdict} for check ${event.payload.check_block_id} at ${event.payload.commit_sha} as ${event.payload.role}`;
     case "result.retracted":

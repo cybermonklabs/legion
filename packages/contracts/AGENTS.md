@@ -131,7 +131,9 @@ the Dispatch specs behind the `dispatch` command:
   guarded edits passes each result's token as the next `precondition` with no `dispatch doc-read`
   between them.
   Ask lifecycle payloads include nullable `block_id`; `block.repaired` restores server-owned
-  attributes and `block.invalid` records a malformed browser-authored ask block.
+  attributes and `block.invalid` records a malformed browser-authored ask block, or, with
+  `block_type: "check"`, a browser-written `ci_check` that breaks a rule, which settlement deleted
+  (`reason` is the rule).
 - Quote anchors retain their quote display cache and inline mark while carrying nullable `block_id`;
   new quotes use their lowest complete containing block, while quotes across top-level siblings
   remain unpinned. Clients must preserve the field.

@@ -149,7 +149,9 @@ function describe(event: DispatchEvent): string | AgentPart[] {
     case "block.repaired":
       return `Repaired block ${event.payload.block_id}`;
     case "block.invalid":
-      return `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
+      return event.payload.block_type === "check"
+        ? `refused check ${event.payload.block_id}: ${event.payload.reason}`
+        : `marked decision ${event.payload.block_id} malformed: ${event.payload.reason}`;
     case "result.recorded":
       return `Check ${event.payload.check_block_id} ${event.payload.verdict === "pass" ? "passed" : "failed"} at ${event.payload.commit_sha}, recorded by ${event.payload.role}${event.payload.issue === event.payload.check_issue ? "" : ` on ${event.payload.issue}`}`;
     case "result.retracted":

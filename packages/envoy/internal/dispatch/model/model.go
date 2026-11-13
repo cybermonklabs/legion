@@ -1744,12 +1744,16 @@ type BlockRepairedEventPayload struct {
 	DisturbedBy Actor  `json:"disturbed_by"`
 }
 
-// BlockInvalidEventPayload records an ask block that browser editing left malformed.
+// BlockInvalidEventPayload records a block that browser editing left breaking a rule: an ask block
+// settlement cannot read, which it marks `invalid`, or, with BlockType "check", a check block whose
+// ci_check breaks one of the four rules, which it deletes. Reason is the ask's reason or the rule.
+// BlockType is absent for an ask.
 type BlockInvalidEventPayload struct {
 	BlockID     string `json:"block_id"`
 	Version     int    `json:"version"`
 	Reason      string `json:"reason"`
 	DisturbedBy Actor  `json:"disturbed_by"`
+	BlockType   string `json:"block_type,omitempty"`
 }
 
 // AskOption is an answer choice. ID is the id of the block this option is stored as - the part

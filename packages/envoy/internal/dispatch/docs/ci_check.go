@@ -34,8 +34,8 @@ func CarriesCICheck(check model.CheckBlock) bool {
 // (CarriesCICheck), and "" when it breaks none: it carries no run, its `when` is before_merge
 // (blank is that default), it names its negative control, and no result is recorded against it.
 // holdsRecordedResult is whether one is (HoldsRecordedResult). Every reader of the rules comes
-// here: a document write's refusal (refuseCICheckBlocks) and the results routes' test of a check
-// CI proves.
+// here: a document write's refusal (refuseCICheckBlocks), settlement's repair of what a browser
+// leaves (reconcileCICheckBlocks) and the results routes' test of a check CI proves.
 func CICheckRule(check model.CheckBlock, holdsRecordedResult bool) string {
 	switch {
 	case strings.TrimSpace(check.Run) != "":
@@ -74,11 +74,11 @@ func (e *ErrInvalidCICheck) Error() string {
 	return fmt.Sprintf("check %s (ci_check %q): %s", e.BlockID, e.CICheck, e.Rule)
 }
 
-// checkBlockAttributes is every `check` block of tree in document order, with the attributes the
-// four rules read. A block repeating the id of a check block before it is left out, as the block
-// index keeps the first holder of an id. A nil tree holds none.
-func checkBlockAttributes(tree *pmdoc.Node) []model.CheckBlock {
-	var checks []model.CheckBlock
+// checkBlockNodes is every `check` block of tree in document order. A block repeating the id of a
+// check block before it is left out, as the block index keeps the first holder of an id. A nil
+// tree holds none.
+func checkBlockNodes(tree *pmdoc.Node) []*pmdoc.Node {
+	var nodes []*pmdoc.Node
 	seen := map[string]struct{}{}
 	pmdoc.Walk(tree, func(node *pmdoc.Node) bool {
 		if node.Type != "check" {
@@ -89,18 +89,24 @@ func checkBlockAttributes(tree *pmdoc.Node) []model.CheckBlock {
 			return true
 		}
 		seen[id] = struct{}{}
-		check := model.CheckBlock{BlockID: id}
-		check.CICheck, _ = node.Attrs["ci_check"].(string)
-		check.Run, _ = node.Attrs["run"].(string)
-		check.When, _ = node.Attrs["when"].(string)
-		check.NegativeControl, _ = node.Attrs["negative_control"].(string)
-		if check.When == "" {
-			check.When = checkWhenBeforeMerge
-		}
-		checks = append(checks, check)
+		nodes = append(nodes, node)
 		return true
 	})
-	return checks
+	return nodes
+}
+
+// checkBlockOf is the check block node holds, with the attributes the four rules read.
+func checkBlockOf(node *pmdoc.Node) model.CheckBlock {
+	var check model.CheckBlock
+	check.BlockID, _ = node.Attrs[pmdoc.BlockIDAttr].(string)
+	check.CICheck, _ = node.Attrs["ci_check"].(string)
+	check.Run, _ = node.Attrs["run"].(string)
+	check.When, _ = node.Attrs["when"].(string)
+	check.NegativeControl, _ = node.Attrs["negative_control"].(string)
+	if check.When == "" {
+		check.When = checkWhenBeforeMerge
+	}
+	return check
 }
 
 // refuseCICheckBlocks refuses tree, the tree an agent's or API write to artifactID leaves, when a
@@ -113,10 +119,12 @@ func checkBlockAttributes(tree *pmdoc.Node) []model.CheckBlock {
 // never comes here: settlement repairs what it leaves.
 func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree, prior *pmdoc.Node) error {
 	held := map[string]model.CheckBlock{}
-	for _, check := range checkBlockAttributes(prior) {
+	for _, node := range checkBlockNodes(prior) {
+		check := checkBlockOf(node)
 		held[check.BlockID] = check
 	}
-	for _, check := range checkBlockAttributes(tree) {
+	for _, node := range checkBlockNodes(tree) {
+		check := checkBlockOf(node)
 		if !CarriesCICheck(check) {
 			continue
 		}
@@ -132,6 +140,60 @@ func refuseCICheckBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree
 		}
 	}
 	return nil
+}
+
+// reconcileCICheckBlocks holds every check block of tree, the document settlement read, to the four
+// rules. A browser's write is never refused, so a check block it leaves carrying a `ci_check` that
+// breaks a rule is repaired here: its `ci_check` is deleted, in tree and, through repairLive, in the
+// live document, and one block.invalid names the block, the rule it broke and block_type "check",
+// which the issue's Activity reads as the refusal. A repaired block carries no `ci_check`, so a
+// later settlement repairs it no more. Whether a result is recorded against a block is read in tx,
+// the settlement's transaction. actor is the settlement's, as its ask events name.
+func (r *settlementReconciliation) reconcileCICheckBlocks(
+	ctx context.Context,
+	tx pgx.Tx,
+	artifactID string,
+	owner artifactOwner,
+	tree *pmdoc.Node,
+	actor model.Actor,
+) error {
+	for _, node := range checkBlockNodes(tree) {
+		check := checkBlockOf(node)
+		if !CarriesCICheck(check) {
+			continue
+		}
+		recorded, err := HoldsRecordedResult(ctx, tx, artifactID, check.BlockID)
+		if err != nil {
+			return err
+		}
+		rule := CICheckRule(check, recorded)
+		if rule == "" {
+			continue
+		}
+		repair := deleteJudgedCICheck(check)
+		repair(node)
+		r.repairs = append(r.repairs, blockRepair{blockID: check.BlockID, blockType: "check", set: repair})
+		r.events = append(r.events, documentAskEvent(owner, artifactID, "block.invalid", actor, model.BlockInvalidEventPayload{
+			BlockID:     check.BlockID,
+			Reason:      rule,
+			DisturbedBy: actor,
+			BlockType:   "check",
+		}))
+	}
+	return nil
+}
+
+// deleteJudgedCICheck deletes the `ci_check` of a check block that still carries the attributes
+// judged holds, the block settlement found breaking a rule. A block a peer changed since is left
+// as it is: the change schedules a settlement of its own, which judges it again.
+func deleteJudgedCICheck(judged model.CheckBlock) func(*pmdoc.Node) bool {
+	return func(node *pmdoc.Node) bool {
+		if !sameCIRuleAttributes(checkBlockOf(node), judged) {
+			return false
+		}
+		delete(node.Attrs, "ci_check")
+		return true
+	}
 }
 
 // sameCIRuleAttributes reports whether two check blocks carry the same attributes the four rules

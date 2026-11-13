@@ -1,8 +1,11 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -219,4 +222,76 @@ func TestACheckWithNeitherCICheckNorRunStoresAsToday(t *testing.T) {
 			t.Fatalf("record a result against %s: status=%d body=%s, want 201", id, recorded.Code, recorded.Body.String())
 		}
 	}
+}
+
+// ciCheckRefusalEvent is one block.invalid event of an issue, the members a check's refusal fills
+// in.
+type ciCheckRefusalEvent struct {
+	BlockID   string `json:"block_id"`
+	Reason    string `json:"reason"`
+	BlockType string `json:"block_type"`
+}
+
+// ciCheckRefusalEvents is every block.invalid event of the issue, oldest first.
+func ciCheckRefusalEvents(t *testing.T, handler http.Handler, issueKey string) []ciCheckRefusalEvent {
+	t.Helper()
+	var found []ciCheckRefusalEvent
+	for _, event := range issueEventsOfType(t, handler, issueKey, "block.invalid") {
+		var payload ciCheckRefusalEvent
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("decode block.invalid payload %s: %v", event.Payload, err)
+		}
+		found = append(found, payload)
+	}
+	return found
+}
+
+// A browser peer's write is never refused, so the room's settlement refuses it: each check block
+// the peer wrote with a ci_check that breaks a rule - a run, a when of after_merge, no negative
+// control, and a result already recorded against it - reads back without its ci_check, and one
+// block.invalid names the block, the rule and block_type check. A check keeping every rule keeps
+// its ci_check. A second settlement, after the peer edits elsewhere, repairs nothing again.
+func TestSettlementRefusesEachBrokenCICheckABrowserPeerWrites(t *testing.T) {
+	documents, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "CIS", "CI checks", "A spec\n")
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckOrdinary))
+	id := verification.Artifact.ID
+	if recorded := recordResult(t, handler, issue.Key, resultBody("c1", "pass", headCommit, nil)); recorded.Code != http.StatusCreated {
+		t.Fatalf("record a result against c1: status=%d body=%s", recorded.Code, recorded.Body.String())
+	}
+	written := []string{ciCheckBlock("c1", ciCheckKept)}
+	want := []ciCheckRefusalEvent{{BlockID: "c1", Reason: ciCheckRecordedRule, BlockType: "check"}}
+	for index, test := range ciCheckBreaks {
+		blockID := "c" + string(rune('2'+index))
+		written = append(written, ciCheckBlock(blockID, test.markdown))
+		want = append(want, ciCheckRefusalEvent{BlockID: blockID, Reason: test.rule, BlockType: "check"})
+	}
+	written = append(written, ciCheckBlock("c5", ciCheckKept))
+	writeBrowserDocument(t, documents, id, strings.Join(written, "\n"))
+
+	assertSettled := func(stage string) {
+		t.Helper()
+		if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+			t.Fatalf("%s: settle the issue's documents: %v", stage, err)
+		}
+		if got := ciCheckRefusalEvents(t, handler, issue.Key); !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: block.invalid events = %+v, want %+v", stage, got, want)
+		}
+		read := readResults(t, handler, issue.Key)
+		for _, blockID := range []string{"c1", "c2", "c3", "c4"} {
+			if check := checkOf(t, read, blockID); check.CICheck != "" {
+				t.Fatalf("%s: %s reads %+v, want it without its ci_check", stage, blockID, check)
+			}
+		}
+		if check := checkOf(t, read, "c5"); check.CICheck != ciCheckRun {
+			t.Fatalf("%s: c5 reads %+v, want its ci_check %q kept", stage, check, ciCheckRun)
+		}
+		if text := documentMarkdown(t, handler, id); strings.Count(text, "ci_check=") != 1 {
+			t.Fatalf("%s: verification.md = %q, want c5's ci_check alone", stage, text)
+		}
+	}
+	assertSettled("the browser's write settled")
+
+	writeBrowserDocument(t, documents, id, documentMarkdown(t, handler, id)+"\nLater.\n")
+	assertSettled("an edit elsewhere settled")
 }
