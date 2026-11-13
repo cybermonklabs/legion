@@ -1360,6 +1360,9 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 		// Both thresholds, so the stall warning arrives and repeats inside a test's patience.
 		"DISPATCH_TEST_HORIZON_STALL_AFTER": testHorizonStallWarning.String(),
 		"DISPATCH_TEST_HORIZON_WARN_EVERY":  testHorizonStallWarning.String(),
+		// The writing check on, with the bundle's rules and no model, as a deployment runs it
+		// (INFRA-3231); a test that needs it off passes DISPATCH_WRITING_CHECK=off in its Env.
+		"DISPATCH_WRITING_CHECK": "on",
 	}
 	if options.NATSURL == "" {
 		environment["DISPATCH_NATS_DISABLED"] = "1"

@@ -81,14 +81,15 @@ type WritingCheck struct {
 	checker *writingcheck.Checker
 }
 
-// NewWritingCheck builds the check cfg describes, over the bundle's rules
-// (writingcheck.EnabledRules).
+// NewWritingCheck builds the check cfg describes, over the bundle: its rules
+// (writingcheck.EnabledRules), and its detector (writingcheck.DetectorEnabled), which cfg can
+// turn off and never on.
 func NewWritingCheck(cfg WritingCheckConfig) *WritingCheck {
 	return &WritingCheck{config: cfg, checker: writingcheck.New(writingcheck.Config{
 		Enabled:  cfg.Enabled,
 		Rules:    writingcheck.EnabledRules,
 		RulesOff: cfg.RulesOff,
-		Detector: cfg.Detector,
+		Detector: cfg.Detector && writingcheck.DetectorEnabled,
 		Reader:   cfg.Reader,
 	})}
 }
@@ -352,7 +353,10 @@ func (c *WritingCheck) state() writingCheckState {
 		Model: cfg.Model, BundleModelID: writingcheck.BundleModelID,
 	}
 	for _, rule := range rules.All() {
+		measured := slices.IndexFunc(writingcheck.MeasuredOff, func(m writingcheck.RuleMeasurement) bool { return m.ID == rule.ID })
 		switch {
+		case measured >= 0:
+			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, writingcheck.MeasuredOff[measured].Reason})
 		case !slices.Contains(writingcheck.EnabledRules, rule.ID):
 			state.RulesLeftOut = append(state.RulesLeftOut, writingCheckRuleLeftOut{rule.ID, "the bundle does not enable it"})
 		case slices.Contains(cfg.RulesOff, rule.ID):
@@ -367,6 +371,8 @@ func (c *WritingCheck) state() writingCheckState {
 	switch {
 	case !cfg.Enabled:
 		state.Detector.Reason = "the check is off (DISPATCH_WRITING_CHECK)"
+	case !writingcheck.DetectorEnabled:
+		state.Detector.Reason = "the bundle ships the detector off: it ships on only once its final test bounds 1 - precision at 5% or below"
 	case !cfg.Detector:
 		state.Detector.Reason = "DISPATCH_WRITING_CHECK_DETECTOR is off"
 	case slices.Contains(cfg.RulesOff, writingcheck.DetectorRule):

@@ -55,9 +55,17 @@ func writingCheckReadsSignIn(env settingValues) bool {
 // naming the setting, every shape the check could not be built from: a value that is not on or
 // off, a rule id the check does not carry, and, with the check and its detector on, a model
 // group set in part. With the check or its detector off the model group is accepted and
-// ignored. It calls nothing and reads no file, so a model service that is down never refuses
-// boot.
+// ignored. The detector runs only where the bundle ships it on (writingcheck.DetectorEnabled):
+// DISPATCH_WRITING_CHECK_DETECTOR can turn it off and never on. It calls nothing and reads no
+// file, so a model service that is down never refuses boot.
 func resolveWritingCheck(env settingValues, testHooksEnabled bool) (writingCheckConfig, error) {
+	return resolveWritingCheckUnder(env, testHooksEnabled, writingcheck.DetectorEnabled)
+}
+
+// resolveWritingCheckUnder is resolveWritingCheck under a bundle whose detector is
+// bundleDetector: the boot passes the bundle's own, and a test of the model group's settings
+// passes a bundle that ships the detector on, which no running server can be given.
+func resolveWritingCheckUnder(env settingValues, testHooksEnabled, bundleDetector bool) (writingCheckConfig, error) {
 	var cfg writingCheckConfig
 	var err error
 	if cfg.Enabled, err = onOffSetting(env, "DISPATCH_WRITING_CHECK", false); err != nil {
@@ -66,6 +74,7 @@ func resolveWritingCheck(env settingValues, testHooksEnabled bool) (writingCheck
 	if cfg.Detector, err = onOffSetting(env, "DISPATCH_WRITING_CHECK_DETECTOR", true); err != nil {
 		return writingCheckConfig{}, err
 	}
+	cfg.Detector = cfg.Detector && bundleDetector
 	known := []string{writingcheck.DetectorRule}
 	for _, rule := range rules.All() {
 		known = append(known, rule.ID)
@@ -173,6 +182,7 @@ func newWritingCheck(cfg writingCheckConfig) (*api.WritingCheck, error) {
 	}
 	config.Reader = reader.New(reader.Config{
 		Model:           reader.AzureModel(cfg.Endpoint, cfg.Deployment, cfg.APIVersion, tokens.Token),
+		NoEffort:        writingcheck.ReaderNoEffort,
 		BundleModelID:   writingcheck.BundleModelID,
 		Timeout:         cfg.ReaderTimeout,
 		TokensPerMinute: cfg.TokensPerMinute,

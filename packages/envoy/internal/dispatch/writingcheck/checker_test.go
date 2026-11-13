@@ -46,8 +46,12 @@ func (s *stubReader) Calls() int64 {
 	return s.read
 }
 
+// everyRule is every rule package rules carries: the checker's tests are about the checker, not
+// about which rules the bundle ships, so they name the rules they apply.
+var everyRule = []string{"semicolon", "phrasal-verb", "nominalization", "long-sentence", "dangling-conjunction"}
+
 func on(r Reader) Config {
-	return Config{Enabled: true, Rules: EnabledRules, Detector: true, Reader: r}
+	return Config{Enabled: true, Rules: everyRule, Detector: true, Reader: r}
 }
 
 func rulesOf(findings []Finding) []string {
@@ -131,11 +135,11 @@ func TestRulesOffDropsOneRule(t *testing.T) {
 	t.Parallel()
 	fields := []Field{{Name: "description", Text: "The job runs at 2 am; the log rotates at 3 am.\n\n" +
 		"- The first step reads the file and"}}
-	all := New(Config{Enabled: true, Rules: EnabledRules}).Check(context.Background(), fields)
+	all := New(Config{Enabled: true, Rules: everyRule}).Check(context.Background(), fields)
 	if ids := rulesOf(all.Findings); !slices.Contains(ids, "semicolon") || !slices.Contains(ids, "dangling-conjunction") {
 		t.Fatalf("findings %v, want semicolon and dangling-conjunction", ids)
 	}
-	off := New(Config{Enabled: true, Rules: EnabledRules, RulesOff: []string{"semicolon"}}).Check(context.Background(), fields)
+	off := New(Config{Enabled: true, Rules: everyRule, RulesOff: []string{"semicolon"}}).Check(context.Background(), fields)
 	if ids := rulesOf(off.Findings); slices.Contains(ids, "semicolon") || !slices.Contains(ids, "dangling-conjunction") {
 		t.Errorf("findings %v, want dangling-conjunction and no semicolon", ids)
 	}

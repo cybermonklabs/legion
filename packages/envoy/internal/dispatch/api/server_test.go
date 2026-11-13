@@ -133,9 +133,13 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
-	// writingCheck runs the server with the writing check (INFRA-3231); nil is the check turned
-	// off, as every test but writing_check_test.go's runs it.
+	// writingCheck is the writing check the server runs (INFRA-3231); nil is the check on with
+	// the bundle's structure rules and no model, as a deployment with DISPATCH_WRITING_CHECK=on
+	// and no model group runs it.
 	writingCheck *WritingCheck
+	// writingCheckOff runs the server with the writing check turned off, for a test about the
+	// server with the check off.
+	writingCheckOff bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -238,6 +242,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.identity != nil {
 		people = options.identity
 	}
+	writingCheck := options.writingCheck
+	if writingCheck == nil && !options.writingCheckOff {
+		writingCheck = NewWritingCheck(WritingCheckConfig{Enabled: true})
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:                  database,
 		Identity:               people,
@@ -263,7 +271,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:               options.answerer,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
-		WritingCheck:           options.writingCheck,
+		WritingCheck:           writingCheck,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

@@ -226,17 +226,18 @@ func TestTheWritingCheckReadsTheBlocksANewVersionAdds(t *testing.T) {
 
 // --- the write path --------------------------------------------------------------------------
 
-// The text every case writes: badProse breaks the semicolon rule, cleanProse breaks none of the
-// five rules.
+// The text every case writes: badProse breaks the phrasal-verb rule (badRule), one of the rules
+// the bundle enables, and cleanProse breaks none of them.
 const (
-	badProse    = "The build failed; the cache was empty."
+	badProse    = "We will spin up the server."
+	badRule     = "phrasal-verb"
 	cleanProse  = "The build failed because the cache was empty."
 	checkWriter = "s-writer"
 	daemonID    = "legion-daemon:WCK"
 )
 
-// writingCheckOn is the check as the tests run it: on, with the five structure rules and no
-// detector, unless a test gives a reader.
+// writingCheckOn is the check as the tests run it: on, with the bundle's structure rules, and
+// with the bundle's detector where the bundle ships one and a test gives a reader.
 func writingCheckOn(r writingcheck.Reader) *WritingCheck {
 	return NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: r != nil, Reader: r})
 }
@@ -257,7 +258,7 @@ type writingCheckFixture struct {
 
 func newWritingCheckRig(t *testing.T, check *WritingCheck) *writingCheckRig {
 	t.Helper()
-	handler, database, _ := newTestServer(t, testServerOptions{writingCheck: check})
+	handler, database, _ := newTestServer(t, testServerOptions{writingCheck: check, writingCheckOff: check == nil})
 	rig := &writingCheckRig{t: t, handler: handler, database: database}
 	rig.token = mintPersonalToken(t, handler, "alice", "writer", []string{model.ScopePerson, model.ScopeApprove})
 	issue := createInteractionIssue(t, handler, "WCK", "Writing check issue", "Seed paragraph here.\n")
@@ -509,13 +510,13 @@ func TestTheWritingCheckRefusesAndWritesOnEveryProseRoute(t *testing.T) {
 			}
 			body := decodeBody[writingCheckRefusal](t, refused)
 			if body.Code != codeWritingCheckRefused || len(body.Findings) != 1 || body.Findings[0].Field != c.field ||
-				body.Findings[0].Rule != "semicolon" || body.OverrideField != writingCheckOverrideField {
-				t.Errorf("refusal = %+v, want one semicolon finding in %s", body, c.field)
+				body.Findings[0].Rule != badRule || body.OverrideField != writingCheckOverrideField {
+				t.Errorf("refusal = %+v, want one %s finding in %s", body, badRule, c.field)
 			}
 			event := rig.lastEvent("bad text")
 			method, route, _ := strings.Cut(c.route, " ")
 			if event.Outcome != "refused" || event.Route != route || event.Method != method ||
-				!slices.Equal(event.Rules, []string{"semicolon"}) || !slices.Equal(event.Fields, []string{c.field}) {
+				!slices.Equal(event.Rules, []string{badRule}) || !slices.Equal(event.Fields, []string{c.field}) {
 				t.Errorf("refused event = %+v", event)
 			}
 			rig.clearEvents()
@@ -547,7 +548,7 @@ func TestTheWritingCheckOverrideWritesAndRecordsForced(t *testing.T) {
 			t.Fatalf("override %s: %d %s", value, response.Code, response.Body.String())
 		}
 		event := rig.lastEvent("override " + value)
-		if event.Outcome != "forced" || event.Override != value || !slices.Equal(event.Rules, []string{"semicolon"}) || !slices.Equal(event.Fields, []string{"body"}) {
+		if event.Outcome != "forced" || event.Override != value || !slices.Equal(event.Rules, []string{badRule}) || !slices.Equal(event.Fields, []string{"body"}) {
 			t.Errorf("override %s event = %+v", value, event)
 		}
 	}
@@ -696,15 +697,23 @@ func TestTheWritingCheckCountsAndStateRoutes(t *testing.T) {
 		t.Fatalf("state: %d %s", state.Code, state.Body.String())
 	}
 	got := decodeBody[writingCheckState](t, state)
-	if !got.Enabled || !slices.Equal(got.Rules, writingcheck.EnabledRules) || got.Detector.On || got.Model != nil || len(got.RulesLeftOut) == 0 {
+	if !got.Enabled || !slices.Equal(got.Rules, writingcheck.EnabledRules) || got.Detector.On || got.Model != nil {
 		t.Errorf("state = %+v", got)
 	}
-	off := NewWritingCheck(WritingCheckConfig{Enabled: true, RulesOff: []string{"semicolon"}, Detector: true}).state()
-	if slices.Contains(off.Rules, "semicolon") || !off.Detector.On || !strings.Contains(off.Detector.Reason, "no model") {
-		t.Errorf("state with semicolon off and no model = %+v", off)
+	for _, measured := range writingcheck.MeasuredOff {
+		if !slices.Contains(got.RulesLeftOut, writingCheckRuleLeftOut{measured.ID, measured.Reason}) {
+			t.Errorf("state names no measured reason for %s: %+v", measured.ID, got.RulesLeftOut)
+		}
 	}
-	if !slices.ContainsFunc(off.RulesLeftOut, func(r writingCheckRuleLeftOut) bool { return r.ID == "semicolon" }) {
-		t.Errorf("state with semicolon off names no reason for it: %+v", off.RulesLeftOut)
+	off := NewWritingCheck(WritingCheckConfig{Enabled: true, RulesOff: []string{badRule}, Detector: true}).state()
+	if slices.Contains(off.Rules, badRule) || off.Detector.On != writingcheck.DetectorEnabled {
+		t.Errorf("state with %s off and the detector asked for = %+v, want the bundle's detector %t", badRule, off, writingcheck.DetectorEnabled)
+	}
+	if !writingcheck.DetectorEnabled && !strings.Contains(off.Detector.Reason, "the bundle ships the detector off") {
+		t.Errorf("state names no bundle reason for its detector: %+v", off.Detector)
+	}
+	if !slices.Contains(off.RulesLeftOut, writingCheckRuleLeftOut{badRule, "DISPATCH_WRITING_CHECK_RULES_OFF names it"}) {
+		t.Errorf("state with %s off names no reason for it: %+v", badRule, off.RulesLeftOut)
 	}
 }
 
@@ -718,7 +727,9 @@ func (r *timeoutReader) Read(context.Context, []candidates.Candidate) ([]reader.
 
 func (r *timeoutReader) Calls() int64 { return r.calls }
 
-// TestTheWritingCheckLetsAWriteThroughWhenTheReaderTimesOut: a reader fault never refuses.
+// TestTheWritingCheckLetsAWriteThroughWhenTheReaderTimesOut: a reader fault never refuses. While
+// the bundle ships the detector off, a reader the server is given is never called, whatever the
+// write holds; the fault itself is the checker's own test (writingcheck.TestAReaderFaultIsTheOutcome).
 func TestTheWritingCheckLetsAWriteThroughWhenTheReaderTimesOut(t *testing.T) {
 	stub := &timeoutReader{}
 	rig := newWritingCheckRig(t, writingCheckOn(stub))
@@ -726,23 +737,33 @@ func TestTheWritingCheckLetsAWriteThroughWhenTheReaderTimesOut(t *testing.T) {
 	if response := rig.asSession(http.MethodPost, "/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": "This names the problem."}); response.Code != http.StatusCreated {
 		t.Fatalf("a write whose reader timed out: %d %s, want 201", response.Code, response.Body.String())
 	}
-	if event := rig.lastEvent("reader timeout"); event.Outcome != reader.OutcomeTimeout || event.Candidates == 0 || stub.calls != 1 {
+	event := rig.lastEvent("reader timeout")
+	switch {
+	case !writingcheck.DetectorEnabled && (event.Outcome != "clean" || stub.calls != 0):
+		t.Errorf("detector off in the bundle: event = %+v, %d calls, want clean and no call", event, stub.calls)
+	case writingcheck.DetectorEnabled && (event.Outcome != reader.OutcomeTimeout || event.Candidates == 0 || stub.calls != 1):
 		t.Errorf("reader timeout event = %+v, %d calls", event, stub.calls)
 	}
 }
 
-// TestTheWritingCheckRefusalTextPassesTheCheck: the refusal of each structure rule, posted as an
-// agent's own body, is written.
+// TestTheWritingCheckRefusalTextPassesTheCheck: the refusal of each rule the bundle enables,
+// posted as an agent's own body, is written.
 func TestTheWritingCheckRefusalTextPassesTheCheck(t *testing.T) {
 	rig := newWritingCheckRig(t, writingCheckOn(nil))
 	comments := "/api/v1/issues/" + rig.fixture.issue + "/comments"
-	for rule, body := range map[string]string{
-		"semicolon":            badProse,
+	breaking := map[string]string{
+		"semicolon":            "The build failed; the cache was empty.",
 		"phrasal-verb":         "We will spin up a new worker for the queue.",
 		"nominalization":       "The team will perform an analysis of the logs.",
 		"long-sentence":        strings.Repeat("The worker reads one row ", 6) + "today.",
 		"dangling-conjunction": "Steps:\n\n- The cache is warm and\n- The queue is empty.\n",
-	} {
+	}
+	for _, rule := range writingcheck.EnabledRules {
+		body, ok := breaking[rule]
+		if !ok {
+			t.Errorf("no body here breaks %s, a rule the bundle enables", rule)
+			continue
+		}
 		refused := rig.asSession(http.MethodPost, comments, map[string]any{"body": body})
 		if refused.Code != http.StatusUnprocessableEntity {
 			t.Errorf("%s: %d %s, want 422", rule, refused.Code, refused.Body.String())
