@@ -3917,6 +3917,22 @@ reviewRun("reviewer-text-findings-text-only-base-1", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([submission(approval())]),
 });
+// The reviewer's completion after its round moved the issue, refused 409
+// HANDOFF_NOT_CURRENT_PHASE: the base label's daemon (`ff2a10ef`, no `leftItsPhase`) refuses a
+// late reviewer so, and base-2 is scored; this checkout's daemon takes a late reviewer naming
+// its record and refuses no reviewer here so, and head-126 is a rig error
+// (completion-answers.ts's ANSWERS, which `unscored` and health.ts both read).
+for (const name of [
+  "reviewer-text-findings-text-only-base-2",
+  "reviewer-text-findings-text-only-head-126",
+])
+  reviewRun(name, {
+    "case.txt": "text-only\n",
+    "calls.jsonl": calls([submission(approval())]),
+    "daemon.log": calls([
+      { ...(reviewDaemon[0] ?? {}), status: 409, code: "HANDOFF_NOT_CURRENT_PHASE" },
+    ]),
+  });
 // defect: the behavioural finding stands, so the round sends the change back, here with
 // `gh pr review --request-changes`. A round that sends the change back opens no fix loop, so its
 // transcript carries no message to the implementer.
@@ -8403,6 +8419,17 @@ test("a completion the daemon stand-in refused is a rig error, unless it is the 
     "threads-closed-text-fixes-head-96",
   ])
     expect(out).not.toContain(`${name}\tpass=`);
+});
+
+// Catches: one exemption for a code whatever label and role it answered. The same 409
+// HANDOFF_NOT_CURRENT_PHASE to a reviewer is how the base label's daemon takes a late reviewer's
+// completion and a refusal the head label's daemon never gives one here (completion-answers.ts's
+// ANSWERS, read through the `refusedCompletion` health.ts reads too).
+test("a reviewer's not-current-phase refusal is scored on the base label and a rig error on head", () => {
+  expect(out).toContain("reviewer-text-findings-text-only-base-2\tpass=");
+  expect(out).toContain(
+    "reviewer-text-findings-text-only-head-126\trig error: the daemon stand-in refused a completion: POST /legion/v1/handoff/complete answered 409 HANDOFF_NOT_CURRENT_PHASE to the reviewer"
+  );
 });
 
 // Catches: "one thread per call" read as a cap on the ids a call names, which lets a call

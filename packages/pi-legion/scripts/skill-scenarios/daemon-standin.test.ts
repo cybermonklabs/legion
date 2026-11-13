@@ -26,15 +26,23 @@ const WORLD_BASE = "main";
 
 /** The stand-in, started on a port the kernel picks, with its own log and boot token file, on a
  * run directory holding `world`, which defaults to the world rig.sh builds, and in `phase` when
- * the caller names one. It prints
+ * the caller names one. The run directory is named as rig.sh's cmd_run names a run of `label`,
+ * which is how the stand-in reads the label whose daemon it answers as (completion-answers.ts's
+ * `labelOf`); `completed` is the roles the run's world says completed their phase with a commit
+ * (rig.sh's worker_boot COMPLETED). It prints
  * `listening on http://127.0.0.1:<port>` once the socket is open, which is what this waits
  * for. */
 let started = 0;
-async function standin(role: string, startIn = "", world = { repo: WORLD_REPO, base: WORLD_BASE }) {
+async function standin(
+  role: string,
+  startIn = "",
+  world = { repo: WORLD_REPO, base: WORLD_BASE },
+  { label = "head", completed = "" } = {}
+) {
   // One directory per start, so a second stand-in of the same role writes its own log: a test
   // that reads the log reads its own run's lines and no earlier run's.
   started += 1;
-  const dir = path.join(work, `${role}-${started}`);
+  const dir = path.join(work, `${role}-${label}-${started}`);
   mkdirSync(dir, { recursive: true });
   const token = path.join(dir, "boot-token");
   writeFileSync(token, "rig-boot-token\n");
@@ -63,6 +71,7 @@ async function standin(role: string, startIn = "", world = { repo: WORLD_REPO, b
       dir,
       role,
       startIn,
+      completed,
     ],
     { stdout: "pipe", stderr: "pipe" }
   );
@@ -344,8 +353,8 @@ test.skipIf(skip)(
         .logged()
         .filter((line) => line.path === "/legion/v1/handoff/complete");
       expect(completions).toMatchObject([
-        { status: 400, code: "HANDOFF_RECORD_REQUIRED" },
-        { status: 400 },
+        { status: 400, code: "HANDOFF_RECORD_REQUIRED", role: "reviewer" },
+        { status: 400, role: "reviewer" },
       ]);
       expect(completions[1]).not.toHaveProperty("code");
     } finally {
@@ -492,31 +501,130 @@ test.skipIf(skip)(
   600_000
 );
 
-// Catches: a stand-in that accepts a completion of a phase its role does not run, and one that
-// refuses it with an answer the daemon does not give. The workflow refuses such a completion
-// 409 HANDOFF_NOT_CURRENT_PHASE (packages/daemon/internal/workflow/engine.go, RoleFor), and the
-// sentence it sends is the daemon's own: this row builds it from that file, as the stand-in
-// does through daemon-pane.go's `refusal`, so neither this test nor the stand-in holds a copy
-// of it to go stale. The
-// route's earlier HANDOFF_NO_RUN fence is not what a rig half meets: each half is a live
-// registered worker serving generation 1, so the route attributes the completion to a run and
-// the phase is the workflow's to refuse. A stand-in answering 200 here teaches an agent that a
-// phase it is in no phase of completes, and a stand-in answering some other refusal teaches it
-// to quote its architect a code and a sentence the daemon never sends.
+/** The daemon's own refusal of `role`'s late completion while the issue stands in `phase`, read
+ * out of its source by the reader the stand-in answers from (daemon-pane.ts's
+ * `notCurrentPhase`); daemon-pane.test.ts holds that reading to what the daemon's own engine.go
+ * writes, so no copy of the sentence lives in this rig. */
+function lateRefusal(role: string, phase: string) {
+  const refusal = notCurrentPhase(DAEMON_MODULE, role, phase, "LWEVAL-1");
+  expect(refusal).toBeDefined();
+  return { code: refusal?.code, error: refusal?.message };
+}
+
+// Catches: a stand-in that takes a completion from threads-closed's implementer, whose
+// implementing round the run's world says already stands (rig.sh's run_threads_closed passes
+// COMPLETED), and one that refuses it with an answer the daemon does not give. Either label's
+// engine refuses a late role whose row holds a handoff commit 409 HANDOFF_NOT_CURRENT_PHASE
+// (engine.go's `leftItsPhase`, `row.HandoffCommit != ""`; `ff2a10ef`'s `RoleFor(issue.Phase) !=
+// fact.Role`), with the daemon's own sentence for the phase the issue stands in, which the skill
+// has the worker quote to its architect. The route's earlier HANDOFF_NO_RUN fence is not what a
+// rig half meets: each half is a live registered worker serving generation 1.
 test.skipIf(skip)(
-  "a completion of a phase the role does not run is refused as the daemon refuses it",
+  "threads-closed's implementer, whose round stands, is refused as the daemon refuses it",
   async () => {
-    const daemon = await standin("implementer", "accepting");
+    for (const [label, phase] of [
+      ["head", "accepting"],
+      ["head", "reviewing"],
+      ["base", "accepting"],
+    ] as const) {
+      const daemon = await standin("implementer", phase, undefined, {
+        label,
+        completed: "implementer",
+      });
+      try {
+        const refused = await daemon.complete(false, { commit: "0".repeat(40) });
+        expect([label, phase, refused.status]).toEqual([label, phase, 409]);
+        expect(await refused.json()).toEqual(lateRefusal("implementer", phase));
+        // Nothing moved: the issue stands where it stood, as the refusal says.
+        expect(await daemon.phase()).toBe(phase);
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that reads "the implementer has completed" off the phase it was booted in
+// rather than off what the run's world says. On the head label an implementer whose row holds no
+// handoff commit is one `leftItsPhase` takes, and its completion is then of the implementing
+// phase it left, whose record it must name: engine.go refuses one naming none 409
+// HANDOFF_RECORD_REQUIRED through `refused`.
+test.skipIf(skip)(
+  "on the head label, a late implementer the world gives no completed round must name its record",
+  async () => {
+    const daemon = await standin("implementer", "reviewing");
     try {
-      const refused = await daemon.complete(false);
+      const refused = await daemon.complete(false, { commit: "0".repeat(40) });
       expect(refused.status).toBe(409);
-      // The daemon's own refusal, read out of its source by the reader the stand-in answers
-      // from (daemon-pane.ts's `notCurrentPhase`), and daemon-pane.test.ts holds that reading
-      // to what the daemon's own engine.go writes, so no copy of the sentence lives in this rig.
-      const refusal = notCurrentPhase(DAEMON_MODULE, "implementer", "accepting", "LWEVAL-1");
-      expect(refusal).toBeDefined();
-      expect(await refused.json()).toEqual({ code: refusal?.code, error: refusal?.message });
-      // Nothing moved: the issue stands where it stood, as the refusal says.
+      expect(await refused.json()).toMatchObject({
+        code: "HANDOFF_RECORD_REQUIRED",
+        error: expect.stringContaining(
+          "the implementer's completion of phase implementing of LWEVAL-1 names no handoff record"
+        ),
+      });
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that decides "record required" from the phase the role was booted in
+// rather than the phase the issue stands in now, which answered every completion after a
+// reviewer's own REQUEST_CHANGES 400 HANDOFF_RECORD_REQUIRED (the batch at a61c46a7). After the
+// round sends the issue to `implementing`, the route does not hold the reviewer to a record:
+// `recordBacked := handoffPhase && writer == grant.Role` is false, the implementer being the
+// writer there. This checkout's engine then takes the reviewer's late completion
+// (`leftItsPhase`), as one of `reviewing`, the phase it left, whose record it must name: naming
+// none is refused 409 HANDOFF_RECORD_REQUIRED by the engine, never 400 by the route; naming one
+// is taken and moves nothing. A taken completion with a commit puts that commit on the
+// reviewer's row, so a second late completion is refused 409 HANDOFF_NOT_CURRENT_PHASE.
+test.skipIf(skip)(
+  "on the head label, a reviewer's completion after its change request is answered as leftItsPhase answers it",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      pullRequest(daemon.dir).requestChanges();
+      expect(await daemon.phase()).toBe("implementing");
+      const unnamed = await daemon.complete(false);
+      expect(unnamed.status).toBe(409);
+      expect(await unnamed.json()).toMatchObject({
+        code: "HANDOFF_RECORD_REQUIRED",
+        error: expect.stringContaining(
+          "the reviewer's completion of phase reviewing of LWEVAL-1 names no handoff record: write it with `dispatch handoff-write --issue LWEVAL-1 --phase review --body-file <file>`"
+        ),
+      });
+      expect((await daemon.complete(true, { commit: "0".repeat(40) })).status).toBe(200);
+      expect(await daemon.phase()).toBe("implementing");
+      const again = await daemon.complete(true, { commit: "0".repeat(40) });
+      expect(again.status).toBe(409);
+      expect(await again.json()).toEqual(lateRefusal("reviewer", "implementing"));
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: the same boot-phase decision after an approval that moves the issue to `accepting`,
+// which writes no record (`phase.Handoff`). The route refuses a completion naming one there 409
+// HANDOFF_RECORD_MISMATCH before the engine reads it; one naming none passes the route, and this
+// checkout's engine holds it to the record of `reviewing`, the phase it left: 409
+// HANDOFF_RECORD_REQUIRED.
+test.skipIf(skip)(
+  "on the head label, a reviewer's completion after an approval that moved the issue is answered as the daemon answers it",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      pullRequest(daemon.dir).approve();
+      expect(await daemon.phase()).toBe("accepting");
+      const unnamed = await daemon.complete(false);
+      expect(unnamed.status).toBe(409);
+      expect(await unnamed.json()).toMatchObject({ code: "HANDOFF_RECORD_REQUIRED" });
+      const named = await daemon.complete(true);
+      expect(named.status).toBe(409);
+      expect(await named.json()).toMatchObject({ code: "HANDOFF_RECORD_MISMATCH" });
       expect(await daemon.phase()).toBe("accepting");
     } finally {
       daemon.stop();
@@ -524,6 +632,78 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+// Catches: a base-label stand-in answered as this checkout's engine answers. Main `ff2a10ef`
+// has no `leftItsPhase`: its `handoff` refuses every completion from a role that does not run
+// the issue's phase 409 HANDOFF_NOT_CURRENT_PHASE, whatever record it names, once the route,
+// which is the same, has let it through. In `accepting` the route refuses a named record 409
+// HANDOFF_RECORD_MISMATCH first.
+test.skipIf(skip)(
+  "on the base label, a reviewer's late completion is refused HANDOFF_NOT_CURRENT_PHASE",
+  async () => {
+    const rejected = await standin("reviewer", "", undefined, { label: "base" });
+    try {
+      pullRequest(rejected.dir).requestChanges();
+      expect(await rejected.phase()).toBe("implementing");
+      for (const handoff of [false, true]) {
+        const refused = await rejected.complete(handoff);
+        expect([handoff, refused.status]).toEqual([handoff, 409]);
+        expect(await refused.json()).toEqual(lateRefusal("reviewer", "implementing"));
+      }
+    } finally {
+      rejected.stop();
+    }
+    const approved = await standin("reviewer", "", undefined, { label: "base" });
+    try {
+      pullRequest(approved.dir).approve();
+      expect(await approved.phase()).toBe("accepting");
+      const unnamed = await approved.complete(false);
+      expect(unnamed.status).toBe(409);
+      expect(await unnamed.json()).toEqual(lateRefusal("reviewer", "accepting"));
+      const named = await approved.complete(true);
+      expect(named.status).toBe(409);
+      expect(await named.json()).toMatchObject({ code: "HANDOFF_RECORD_MISMATCH" });
+    } finally {
+      approved.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that answers a run of a label the rig models no daemon for as some other
+// label's daemon would. It reads the label from the run directory's name
+// (completion-answers.ts's `labelOf`) and refuses to boot for one `LABEL_DAEMONS` does not name.
+test("a run of a label the rig models no daemon for fails the boot", () => {
+  const dir = path.join(work, "reviewer-ablate-1");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "boot-token"), "rig-boot-token\n");
+  writeFileSync(
+    path.join(dir, "world.json"),
+    JSON.stringify({
+      key: "LWEVAL-1",
+      branch: "legion/LWEVAL-1",
+      pr: 1001,
+      head: "0".repeat(40),
+      repo: WORLD_REPO,
+      base: WORLD_BASE,
+    })
+  );
+  const boot = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "daemon-standin.ts"),
+    "0",
+    path.join(dir, "daemon.log"),
+    path.join(dir, "boot-token"),
+    "skills1",
+    "LWEVAL-1",
+    dir,
+    "reviewer",
+  ]);
+  expect(boot.exitCode).toBe(2);
+  expect(boot.stderr.toString()).toContain(
+    "reviewer-ablate-1 names no label this rig models a daemon for"
+  );
+});
 
 // Catches: a stand-in whose record names a repository or a default branch the run's world has
 // not got. Agents read the record for the repository their `gh` calls name and for the branch

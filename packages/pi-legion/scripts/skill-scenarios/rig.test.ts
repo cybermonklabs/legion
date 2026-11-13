@@ -845,6 +845,7 @@ describe("worker_boot", () => {
     role: string,
     phase: string,
     {
+      completed = "",
       gh = recordingGh,
       panePath = (dir: string) => `${path.join(dir, "bin")}:${childEnv.PATH}`,
       paneRun = (dir: string) => dir,
@@ -889,9 +890,9 @@ describe("worker_boot", () => {
         assignment("world_author_email"),
         assignment("world_login"),
         "fixture_write '[]' '\"\"' '[]'",
-        'worker_boot the-run "$4" "$5" "$6"',
+        'worker_boot the-run "$4" "$5" "$6" "$7"',
       ].join("\n"),
-      [dir, import.meta.dir, "example/widgets", "skillsproject1", role, phase]
+      [dir, import.meta.dir, "example/widgets", "skillsproject1", role, phase, completed]
     );
     return { dir, result };
   }
@@ -899,8 +900,8 @@ describe("worker_boot", () => {
   /** A boot that went through: the run directory, what it handed the daemon stand-in, what it
    * handed the pane (worker-pane.ts, through the stubbed `bun`), and that world's own
    * repository and branch. */
-  function boot(role: string, phase: string) {
-    const { dir, result } = bootResult(role, phase);
+  function boot(role: string, phase: string, completed = "") {
+    const { dir, result } = bootResult(role, phase, { completed });
     expect(result).toMatchObject({ code: 0, stderr: "" });
     const bunArgs = readFileSync(path.join(dir, "bun-args"), "utf8").trim().split("\n");
     return {
@@ -1029,6 +1030,16 @@ describe("worker_boot", () => {
     expect(world).toMatchObject({ repo: "example/widgets", base: "main" });
   });
 
+  // Catches: a world statement that never reaches the stand-in. threads-closed's implementer
+  // completed its round before the run began, which is what makes either label's daemon refuse
+  // its completion 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts's HANDOFF_COMMITS); a boot
+  // that dropped COMPLETED would have the head stand-in take the implementer as a role that left
+  // its phase with nothing on its row.
+  test("the stand-in is given the roles the world says completed their phase", () => {
+    const { started } = boot("implementer", "reviewing", "implementer");
+    expect(started.split(" ").slice(-2)).toEqual(["reviewing", "implementer"]);
+  });
+
   // The pane's addressing is the world's own, as the stand-in's record is, and worker-pane.ts
   // reads both out of the world in the run directory it is given first. A worker follows
   // the addressing its system prompt carries: the pane named skills-rig/project on trunk while
@@ -1114,14 +1125,14 @@ describe("run_threads_closed", () => {
 
   test("code-defect boots no reviewer when the implementer sent it nothing", () => {
     expect(loop("code-defect", "[]\n").boots).toEqual([
-      "the-run-implementer skillsproject1 implementer accepting",
+      "the-run-implementer skillsproject1 implementer accepting implementer",
     ]);
   });
 
   test("code-defect boots the reviewer when the implementer woke it", () => {
     expect(loop("code-defect", '[{"message":"pushed 0123456789ab"}]\n').boots).toEqual([
-      "the-run-implementer skillsproject1 implementer accepting",
-      "the-run-reviewer skillsproject1 reviewer accepting",
+      "the-run-implementer skillsproject1 implementer accepting implementer",
+      "the-run-reviewer skillsproject1 reviewer accepting implementer",
     ]);
   });
 
@@ -1133,8 +1144,8 @@ describe("run_threads_closed", () => {
   // route, which a `REQUEST_CHANGES` in `reviewing` would not leave it.
   test("text-fixes boots both halves in reviewing, and the reviewer on an empty wake, which it fails on", () => {
     expect(loop("text-fixes", "[]\n").boots).toEqual([
-      "the-run-implementer skillsproject1 implementer reviewing",
-      "the-run-reviewer skillsproject1 reviewer reviewing",
+      "the-run-implementer skillsproject1 implementer reviewing implementer",
+      "the-run-reviewer skillsproject1 reviewer reviewing implementer",
     ]);
   });
 
@@ -1171,6 +1182,188 @@ describe("run_threads_closed", () => {
     const { prompt, wake } = loop("text-fixes", "[]\n");
     expect(prompt).toBe("");
     expect(wake).toEqual({ wake: [] });
+  });
+});
+
+// `rig.sh health <run dir>...`: whether each run's world could take what its agents did, read
+// through completion-answers.ts, which the score's refused-completion rule reads too. Each row
+// builds run directories as a batch leaves them: named as cmd_run names a run, with an out.txt
+// and a daemon.log that each stand-in of the run opened with its own line before its agent's.
+describe("health", () => {
+  const complete = (status: number, code?: string, role?: string) => ({
+    at: "2026-11-13T18:00:00.000Z",
+    path: "/legion/v1/handoff/complete",
+    status,
+    ...(code === undefined ? {} : { code }),
+    ...(role === undefined ? {} : { role }),
+  });
+  const NOT_CURRENT = "HANDOFF_NOT_CURRENT_PHASE";
+  /** A run directory named `name`, under a directory of its own, whose daemon.log holds one
+   * opening line per boot, each followed by that boot's lines; `finished` false leaves out.txt
+   * with no `exit=` line, as a run that never ended leaves it. */
+  function run(name: string, boots: object[][], { finished = true } = {}) {
+    const dir = path.join(freshDir("health"), name);
+    mkdirSync(dir);
+    writeFileSync(
+      path.join(dir, "out.txt"),
+      finished ? "the agent's output\nexit=0\n" : "the agent's output\n"
+    );
+    writeFileSync(
+      path.join(dir, "daemon.log"),
+      boots
+        .flatMap((lines) => [{ at: "2026-11-13T17:59:00.000Z", opened: "daemon.log" }, ...lines])
+        .map((line) => `${JSON.stringify(line)}\n`)
+        .join("")
+    );
+    return dir;
+  }
+  function health(...dirs: string[]) {
+    const result = Bun.spawnSync(
+      ["bash", path.join(import.meta.dir, "rig.sh"), "health", ...dirs],
+      { env: { ...childEnv, SKILL_SCENARIOS_WORK: freshDir("health-work") } }
+    );
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  }
+  /** The verdict line health printed for the run directory `dir`. */
+  const verdict = (stdout: string, dir: string) =>
+    stdout.split("\n").find((line) => line.startsWith(`${path.basename(dir)}  `));
+
+  // Catches: a refusal the world should not have given, read as a healthy run, and a reason
+  // that does not say which refusal it was.
+  test("a run with a refused completion is unhealthy, named with its status and code", () => {
+    const dir = run("reviewer-text-findings-defect-head-1", [
+      [complete(400, "HANDOFF_RECORD_REQUIRED", "reviewer"), complete(200, undefined, "reviewer")],
+    ]);
+    const { code, stdout } = health(dir);
+    expect(code).toBe(1);
+    expect(verdict(stdout, dir)).toBe(
+      "reviewer-text-findings-defect-head-1  unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 400 HANDOFF_RECORD_REQUIRED, which the head label's daemon does not answer it with in this world"
+    );
+    expect(stdout).toEndWith("health: 1 of 1 runs unhealthy\n");
+  });
+
+  // Catches: a health that calls the daemon's own deliberate refusal unhealthy. threads-closed's
+  // implementer, whose round stands, is refused 409 HANDOFF_NOT_CURRENT_PHASE by either label's
+  // daemon; a log written before the stand-in named the role is read by its boot, the
+  // implementer being the first rig.sh boots there.
+  test("a threads-closed run whose only refusal is the implementer's not-current-phase is healthy", () => {
+    const named = run("threads-closed-text-fixes-head-1", [
+      [complete(409, NOT_CURRENT, "implementer")],
+      [complete(200, undefined, "reviewer")],
+    ]);
+    const unnamed = run("threads-closed-code-defect-base-1", [[complete(409, NOT_CURRENT)]]);
+    const { code, stdout } = health(named, unnamed);
+    expect(code).toBe(0);
+    expect(verdict(stdout, named)).toBe("threads-closed-text-fixes-head-1  healthy");
+    expect(verdict(stdout, unnamed)).toBe("threads-closed-code-defect-base-1  healthy");
+    expect(stdout).toEndWith("health: 0 of 2 runs unhealthy\n");
+  });
+
+  // Catches: the same code read as allowed whatever role it answered. The head daemon refuses a
+  // reviewer 409 HANDOFF_NOT_CURRENT_PHASE only once its row holds a commit, which no
+  // threads-closed world gives it, so a head reviewer refused so is a world the daemon would not
+  // have served, whether its line names the role or its boot does.
+  test("a head threads-closed reviewer refused not-current-phase is unhealthy", () => {
+    const named = run("threads-closed-text-fixes-head-2", [
+      [complete(409, NOT_CURRENT, "implementer")],
+      [complete(409, NOT_CURRENT, "reviewer")],
+    ]);
+    const unnamed = run("threads-closed-text-fixes-head-3", [
+      [complete(409, NOT_CURRENT)],
+      [complete(409, NOT_CURRENT)],
+    ]);
+    const { code, stdout } = health(named, unnamed);
+    expect(code).toBe(1);
+    for (const dir of [named, unnamed])
+      expect(verdict(stdout, dir)).toContain(
+        "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE"
+      );
+  });
+
+  // Catches: one exemption for every label. Main `ff2a10ef` refuses a reviewer whose round has
+  // moved the issue 409 HANDOFF_NOT_CURRENT_PHASE, which is how the base daemon takes that
+  // completion; this checkout records it, so the same answer on the head label is a refusal the
+  // head daemon never gives a reviewer here.
+  test("a reviewer-text-findings reviewer refused not-current-phase is healthy on base and not on head", () => {
+    const base = run("reviewer-text-findings-text-only-base-1", [
+      [complete(409, NOT_CURRENT, "reviewer")],
+    ]);
+    const head = run("reviewer-text-findings-text-only-head-1", [
+      [complete(409, NOT_CURRENT, "reviewer")],
+    ]);
+    const { code, stdout } = health(base, head);
+    expect(code).toBe(1);
+    expect(verdict(stdout, base)).toBe("reviewer-text-findings-text-only-base-1  healthy");
+    expect(verdict(stdout, head)).toContain(
+      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE, which the head label's daemon"
+    );
+    expect(stdout).toEndWith("health: 1 of 2 runs unhealthy\n");
+  });
+
+  // Catches: a code outside the run's own entry read as allowed because some entry allows it.
+  test("a refusal whose code is outside the run's entry is unhealthy", () => {
+    const dir = run("threads-closed-code-defect-base-2", [
+      [complete(409, "HANDOFF_RECORD_MISMATCH", "implementer")],
+    ]);
+    const { code, stdout } = health(dir);
+    expect(code).toBe(1);
+    expect(verdict(stdout, dir)).toContain(
+      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the implementer answered 409 HANDOFF_RECORD_MISMATCH"
+    );
+  });
+
+  // Catches: a run that never finished read as healthy on a log that says nothing went wrong.
+  test("a run with no exit= line is unhealthy", () => {
+    const dir = run(
+      "reviewer-text-findings-text-only-head-2",
+      [[complete(200, undefined, "reviewer")]],
+      {
+        finished: false,
+      }
+    );
+    const { code, stdout } = health(dir);
+    expect(code).toBe(1);
+    expect(verdict(stdout, dir)).toBe(
+      "reviewer-text-findings-text-only-head-2  unhealthy: unfinished: out.txt has no exit= line"
+    );
+  });
+
+  // Catches: a reviewer-text-findings world that took no completion read as healthy. Its world
+  // must take at least one of the reviewer's; threads-closed's requires none, and a run of it
+  // with no completion at all is healthy.
+  test("reviewer-text-findings needs a completion taken, and threads-closed needs none", () => {
+    const none = run("reviewer-text-findings-defect-head-2", [[]]);
+    const taken = run("reviewer-text-findings-defect-head-3", [
+      [complete(200, undefined, "reviewer")],
+    ]);
+    const quiet = run("threads-closed-code-defect-head-1", [[]]);
+    const { code, stdout } = health(none, taken, quiet);
+    expect(code).toBe(1);
+    expect(verdict(stdout, none)).toBe(
+      "reviewer-text-findings-defect-head-2  unhealthy: no completion taken: no completion of the reviewer was answered as the head label's daemon answers one it takes"
+    );
+    expect(verdict(stdout, taken)).toBe("reviewer-text-findings-defect-head-3  healthy");
+    expect(verdict(stdout, quiet)).toBe("threads-closed-code-defect-head-1  healthy");
+  });
+
+  // Catches: a usage error read as a verdict. No argument, a path that is no directory, and a
+  // directory that is no run of a scenario and label health reads each exit 2 and print no run.
+  test("a usage error exits 2 and prints no verdict", () => {
+    const healthy = run("threads-closed-text-fixes-head-4", [[]]);
+    for (const args of [
+      [],
+      [healthy, path.join(freshDir("health"), "missing")],
+      [healthy, freshDir("tester-proof-head")],
+      [run("threads-closed-text-fixes-ablate-1", [[]])],
+    ]) {
+      const { code, stdout, stderr } = health(...args);
+      expect([args, code, stdout]).toEqual([args, 2, ""]);
+      expect(stderr).toContain("usage: rig.sh health <run dir>...");
+    }
   });
 });
 

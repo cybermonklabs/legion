@@ -30,6 +30,16 @@ import { z } from "zod";
 // sources, so they may reach the sibling plugin by path, as the tests that load its entry do
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
+// The daemon stand-in's log and the answers each run's world may give a completion, read through
+// the one module the stand-in, this score and health.ts share (completion-answers.ts).
+import {
+  COMPLETE_PATH,
+  DAEMON_LOG,
+  daemonLines,
+  finished,
+  NOT_CURRENT_PHASE,
+  refusedCompletion,
+} from "./completion-answers";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 // How gh reads a call's verb, its body and the two review endpoints, in the module the gh
 // stand-in answers that same call by (gh-call.ts), and the world every program of the run reads.
@@ -133,23 +143,6 @@ const Handoffs = z.array(
     body: z.string(),
   })
 );
-/** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
- * answered, with the refusal's code where the answer carried one; a completion's line names the
- * handoff record it reported, and a backward move's the phase it asked for. The stand-in writes
- * the reason that move gave beside it, which no score reads, so this names it nowhere. */
-const DaemonLine = z.looseObject({
-  at: z.string(),
-  path: z.string(),
-  status: z.number(),
-  code: z.string().optional(),
-  handoffId: z.string().optional(),
-  handoffVersion: z.number().optional(),
-  to: z.string().optional(),
-});
-/** The daemon's refusal of a completion of a phase the completing role does not run (the
- * workflow's `RoleFor`, daemon-standin.ts's NOT_CURRENT_PHASE): the answer a run booted in a
- * phase that is not its role's meets, which is a reading of that run and no fault of the rig. */
-const NOT_CURRENT_PHASE = "HANDOFF_NOT_CURRENT_PHASE";
 const nonEmpty = z.string().min(1);
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
@@ -185,7 +178,6 @@ function lines(file: string): string[] {
     .filter((line) => line.trim() !== "");
 }
 const PUSHES = "pushes.log";
-const DAEMON = "daemon.log";
 /** The three records a worker run leaves of what it did, each named by what it holds: the gh
  * and bun stand-ins' calls, the pushes the run's own remote logged, and the daemon stand-in's
  * answers. Nothing creates them for the run — the two JSONL records are opened by the stand-in
@@ -196,7 +188,7 @@ const DAEMON = "daemon.log";
 const RECORDS: Record<string, string> = {
   [CALLS]: "its gh and bun calls",
   [PUSHES]: "the pushes its remote took",
-  [DAEMON]: "its daemon stand-in's answers",
+  [DAEMON_LOG]: "its daemon stand-in's answers",
 };
 /** Whether this line is the line the writer of a record opened it with (`openingLine`, written
  * by the gh stand-in the first time it is invoked and by the daemon stand-in when it starts
@@ -836,8 +828,8 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
         refusedIds.has(part.id ?? "")
       );
     }).length;
-  const complete = parsed(path.join(runDir, DAEMON), DaemonLine).find(
-    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 200
+  const complete = daemonLines(runDir).find(
+    (line) => line.path === COMPLETE_PATH && line.status === 200
   );
   const completedAt =
     complete === undefined ? undefined : instant(complete.at, "the completion's time");
@@ -1620,10 +1612,12 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  * The completions the daemon stand-in refused as the daemon refuses them are reported
  * (`refusedCompletions`) and scored by neither case: what a role should have done instead of
  * one is no part of the rule these words give. They are the 409 HANDOFF_NOT_CURRENT_PHASE of a
- * half completing a phase that is not its own — the implementer in `reviewing` or `accepting`,
- * the reviewer in `accepting` — which the workflow answers so (daemon-standin.ts), and which is a
- * reading of the run; every other refusal of a completion is a rig error (`unscored`). The
- * reviewer's completion in text-fixes' `reviewing` is its own phase's and is accepted.
+ * late completion — the implementer's, whose round already stands, in `reviewing` or
+ * `accepting`, and on the base label the reviewer's once the round has moved the issue — which
+ * the run's label's daemon answers so (daemon-standin.ts, completion-answers.ts's ANSWERS), and
+ * which is a reading of the run; every other refusal of a completion is a rig error
+ * (`unscored`). The reviewer's completion in text-fixes' `reviewing` is its own phase's and is
+ * accepted.
  * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
  * where the loop, the one reply per thread and the one thread per resolving call are defined. */
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
@@ -1735,13 +1729,13 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
     entries.every(
       (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, [tip])
     );
-  const daemon = parsed(path.join(runDir, DAEMON), DaemonLine);
-  // The completions the stand-in refused as the workflow refuses a completion of a phase the
-  // completing role does not run, 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts), which is
-  // the one refusal a run of this scenario can meet and still be scored (`unscored`). Reported
-  // and scored by neither case.
+  const daemon = daemonLines(runDir);
+  // The completions the stand-in refused 409 HANDOFF_NOT_CURRENT_PHASE, as the run's label's
+  // daemon refuses a late completion (daemon-standin.ts); a run whose entry in
+  // completion-answers.ts's ANSWERS does not allow it is a rig error (`unscored`) and never
+  // reaches here. Reported and scored by neither case.
   const refusedCompletions = daemon.filter(
-    (line) => line.path === "/legion/v1/handoff/complete" && line.code === NOT_CURRENT_PHASE
+    (line) => line.path === COMPLETE_PATH && line.code === NOT_CURRENT_PHASE
   ).length;
   const moved = daemon.find(
     (line) => line.path === "/legion/v1/phase/backward" && line.status === 200
@@ -4184,7 +4178,7 @@ function outputs(runDir: string): [file: string, text: string][] {
  * made none: a log holding its opening line alone, or none at all, which is itself a rig error
  * for the scenarios that keep one (RECORDS). */
 function lastDaemonRequest(runDir: string): string | undefined {
-  return parsed(path.join(runDir, DAEMON), DaemonLine).at(-1)?.at;
+  return daemonLines(runDir).at(-1)?.at;
 }
 
 /** Why the rig cannot score a run, or undefined when it can:
@@ -4238,9 +4232,10 @@ function lastDaemonRequest(runDir: string): string | undefined {
  *     opens it with none — is the other reading: the run made no call, pushed nothing, moved
  *     nothing. It scores, with the row naming each such record (`emptyRecords`) so a reader can
  *     tell which of the two the score saw;
- *   - a completion the daemon stand-in refused, any 4xx on `handoff/complete` in daemon.log but
- *     the daemon's own HANDOFF_NOT_CURRENT_PHASE of a half booted in a phase its role does not
- *     run (NOT_CURRENT_PHASE): the row names the status and the code the line carries;
+ *   - a completion the daemon stand-in refused: a 4xx on `handoff/complete` in daemon.log whose
+ *     answer the run's world does not allow for its label and the completing role
+ *     (completion-answers.ts's `ANSWERS`, read through `refusedCompletion`, which health.ts
+ *     reads too): the row names the role, the status and the code the line carries;
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
@@ -4267,8 +4262,7 @@ function unscored(
       return `it shares Dispatch database ${database} of Postgres ${postgres} with ${others.join(", ")}, so each could read the other's issue and asks`;
     }
   }
-  if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
-    return "out.txt has no exit= line: the run never finished";
+  if (!finished(runDir)) return "out.txt has no exit= line: the run never finished";
   // A half that died in its claim boot measured nothing: it registered with the daemon, could
   // not finish the boot — whichever step its line names — and exited so the daemon would launch
   // it again, which no run of this rig does. Six of the twelve runs of 2026-11-11 exited 1 with
@@ -4338,29 +4332,24 @@ function unscored(
     if (record.unreadable !== undefined)
       return `<run>/published.jsonl holds a message of ${record.unreadable} the recorder could not read, so what reached that topic is unknown`;
   }
-  // A completion the daemon stand-in refused is the rig's fault and never the run's, with one
-  // exception, which is the daemon's own answer to a run booted in a phase its role does not run
-  // (NOT_CURRENT_PHASE): threads-closed boots the implementer in `reviewing` or `accepting` and
-  // its code-defect reviewer in `accepting`, so a completion of either there is answered 409
-  // HANDOFF_NOT_CURRENT_PHASE as the workflow answers one, and threadsClosed reports it. Every
-  // other refusal says the stand-in and the agent's own plugin disagree about the completion —
-  // a body the stand-in's request contract does not take (400 with no code), a completion with
-  // no record the tool always attaches (400 HANDOFF_RECORD_REQUIRED), a record on a phase that
-  // ends with none (409 HANDOFF_RECORD_MISMATCH), a grant it minted and does not know (403) —
-  // so what the run did next answers a world the daemon would not have served. Measured on
-  // 2026-11-12: every base run of k1 and k2 logged `handoff/complete` 400 and nothing else, the
-  // base label sending a `ready` the stand-in's contract refused, and each was scored as base
-  // behaviour (review 5887659447, finding 1). A 409 whose line carries no code is a log of an
-  // older stand-in, which cannot say which refusal it was, and is a rig error with the rest.
-  const refused = parsed(path.join(runDir, DAEMON), DaemonLine).find(
-    (line) =>
-      line.path === "/legion/v1/handoff/complete" &&
-      line.status >= 400 &&
-      line.status < 500 &&
-      !(line.status === 409 && line.code === NOT_CURRENT_PHASE)
-  );
+  // A completion the daemon stand-in refused is the rig's fault and never the run's, unless the
+  // run's label's daemon refuses that role's completion so in this world
+  // (completion-answers.ts's ANSWERS): threads-closed's implementer, whose round already stands,
+  // is refused 409 HANDOFF_NOT_CURRENT_PHASE by either daemon, and so is a base reviewer whose
+  // round has moved the issue, which threadsClosed reports. Every other refusal says the stand-in
+  // and the agent's own plugin disagree about the completion — a body the stand-in's request
+  // contract does not take (400 with no code), a completion with no record the tool always
+  // attaches (400 HANDOFF_RECORD_REQUIRED), a record on a phase that ends with none (409
+  // HANDOFF_RECORD_MISMATCH), a grant it minted and does not know (403) — so what the run did
+  // next answers a world the daemon would not have served. Measured on 2026-11-12: every base
+  // run of k1 and k2 logged `handoff/complete` 400 and nothing else, the base label sending a
+  // `ready` the stand-in's contract refused, and each was scored as base behaviour (review
+  // 5887659447, finding 1). A 409 whose line carries no code is a log of an older stand-in,
+  // which cannot say which refusal it was, and is a rig error with the rest. health.ts reads the
+  // same refusal through the same function, so a run it calls healthy is never this rig error.
+  const refused = refusedCompletion(daemonLines(runDir), scenario, label);
   if (refused !== undefined)
-    return `the daemon stand-in refused a completion: POST ${refused.path} answered ${refused.status} ${refused.code ?? "with no code"}, so the run went on in a world the daemon would not have served`;
+    return `the daemon stand-in refused a completion: POST ${refused.line.path} answered ${refused.line.status} ${refused.line.code ?? "with no code"} to the ${refused.role ?? "unnamed role"}, so the run went on in a world the daemon would not have served`;
   for (const call of calls) {
     const named: string[] = [];
     if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));

@@ -12,6 +12,14 @@
 #                                                  label (SKILL_SCENARIOS_PARALLEL at once), and
 #                                                  stops the services
 #   rig.sh score     [<scenario>]                  one row per run, then counts per label
+#   rig.sh health    <run dir>...                  whether each run's world could take what its
+#                                                  agents did, scoring nothing (health.ts): the run
+#                                                  finished, no completion was refused in a way its
+#                                                  label's daemon would not refuse it, and its world
+#                                                  took the completions it must take
+#                                                  (completion-answers.ts's ANSWERS); exits 0 when
+#                                                  every run is healthy, 1 otherwise, 2 on a usage
+#                                                  error
 #   rig.sh judge     <run dir>...                  the judge's prompts on each spec-writing or
 #                                                  spec-rewrite run (judge.ts run), each in a fresh
 #                                                  Oh My Pi session with no Dispatch
@@ -2203,8 +2211,9 @@ run_project() {
   printf 'skills%.16s\n' "$digest"
 }
 
-# worker_boot NAME PROJECT ROLE [PHASE] boots the label's checkout's phase worker for ROLE on the
-# run's issue and waits for it: the part of a worker run that is the same in every phase. The run's
+# worker_boot NAME PROJECT ROLE [PHASE [COMPLETED]] boots the label's checkout's phase worker for
+# ROLE on the run's issue and waits for it: the part of a worker run that is the same in every
+# phase. The run's
 # prompt and its world are the scenario's own (run_tester_proof, run_reviewer_text_findings,
 # run_threads_closed). PROJECT is the run's own Legion project, computed once by cmd_run and
 # passed to the recorder and to every boot of the run (run_project): two copies of it drift
@@ -2213,8 +2222,10 @@ run_project() {
 # while this agent runs, empty for the phase the role's own worker is started in (the daemon
 # stand-in's default); threads-closed passes `reviewing` or `accepting` by its case
 # (run_threads_closed), neither of which is the implementer's phase and the second of which is
-# not the reviewer's, so the stand-in refuses a completion there as the daemon refuses one of a
-# phase the role does not run (daemon-standin.ts, HANDOFF_NOT_CURRENT_PHASE).
+# not the reviewer's, so a completion there is a late one, which the stand-in answers as the run's
+# label's daemon answers it (daemon-standin.ts). COMPLETED is the roles, comma-separated, whose
+# phase the run's world says was completed with a commit before the run began, which the daemon
+# refuses a late completion from (HANDOFF_NOT_CURRENT_PHASE); empty for none.
 #
 # A run that boots a second agent calls this again with that agent's role, after writing its
 # prompt: the two run one after the other on the one run directory, so the second reads the gh
@@ -2225,7 +2236,7 @@ run_project() {
 # while the run keeps one calls.jsonl, one pushes.log and one record of what reached the daemon,
 # $R/daemon.log, which every stand-in of the run appends to.
 worker_boot() {
-  local name=$1 project=$2 role=$3 phase=${4:-} state port pane_gh pane_vars
+  local name=$1 project=$2 role=$3 phase=${4:-} completed=${5:-} state port pane_gh pane_vars
   state=$R/state
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
@@ -2258,7 +2269,7 @@ worker_boot() {
   # It is given the run directory, not a repository: the record it answers names the world's own
   # repository and default branch, which it reads out of $R/world.json (the worker world comment).
   start_process daemon bun "$here/daemon-standin.ts" 0 "$R/daemon.log" "$state/secrets/boot" \
-    "$project" "$worker_key" "$R" "$role" "$phase"
+    "$project" "$worker_key" "$R" "$role" "$phase" "$completed"
   await_start daemon "$daemon_pid" 30 "the daemon stand-in to listen" grep -q '^listening on ' "$R/logs/daemon.log"
   port=$(sed -n 's|^listening on http://127\.0\.0\.1:||p' "$R/logs/daemon.log")
   base_env
@@ -2348,7 +2359,12 @@ run_tester_proof() {
 # issue carries the implementer's passing result on its one before_merge check and the tester's
 # own at the same head, so no gate of the reviewer's refuses an approval and its verdict rests on
 # what it found. The case is in the run's name and in <run>/case.txt, which reviewerTextFindings
-# reads back and holds to the name.
+# reads back and holds to the name. The reviewer is booted in `reviewing`, its own phase, and its
+# review moves the issue (daemon-standin.ts's `servedPhase`), so a completion after that is a late
+# one, answered as the run's label's daemon answers it. What each label's daemon may answer it
+# here, and that the world must take at least one of the reviewer's completions, is
+# completion-answers.ts's ANSWERS["reviewer-text-findings"], which `rig.sh health` and the score
+# read.
 run_reviewer_text_findings() {
   local name=$1 project=$2 index=$3 start=$4 review=$5 pr head version
   start_recorder "$project"
@@ -2421,21 +2437,25 @@ reviewer_wake() {
 #                finding 3). The implementer's push sets the approval aside
 #                (`stuckApprovedOtherCode`), the record stays `reviewing`, and the reviewer's
 #                approval of the fix head, `CLEAN` once it has resolved the threads, ends the
-#                round and moves it to `accepting`. The implementer's
-#                `handoff_complete` is refused 409
-#                HANDOFF_NOT_CURRENT_PHASE, `reviewing` being the reviewer's phase and never the
-#                implementer's; the reviewer's is the completion of its own phase.
+#                round and moves it to `accepting`.
 #   code-defect  `accepting`. Its approved head is `CLEAN`, so the round ended on the
 #                approval, and the issue stands where the architect reads it. It stays there
 #                because a `REQUEST_CHANGES` submitted in `reviewing` ends the round and moves
 #                the issue back (review.go's `roundRejected`), which would make the reviewer's
 #                review a route for the finding, and the control reads the message to the
 #                architect as the one route (score.ts's threadsClosed). So each half's
-#                `read_record` answers `accepting`, and the stand-in refuses either half's
-#                completion 409 HANDOFF_NOT_CURRENT_PHASE, as the workflow does: `accepting` is
-#                the architect's phase (packages/daemon/internal/workflow/engine.go, RoleFor).
+#                `read_record` answers `accepting`, the architect's phase
+#                (packages/daemon/internal/workflow/engine.go, RoleFor).
+# The implementer's implementing round already stands on its row with its commit, which is what
+# the world says to each half's stand-in (worker_boot's COMPLETED), so its `handoff_complete` is
+# refused 409 HANDOFF_NOT_CURRENT_PHASE in either phase by either label's daemon: the one
+# deliberate refusal. The reviewer's completion in `reviewing` is of its own phase; once the round
+# has moved the issue it is a late one, answered as the run's label's daemon answers it
+# (daemon-standin.ts). What each label's daemon may answer each half here is
+# completion-answers.ts's ANSWERS["threads-closed"], which `rig.sh health` and the score read.
 run_threads_closed() {
-  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake phase=reviewing
+  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake phase=reviewing \
+    completed=implementer
   [ "$threads_case" = text-fixes ] || phase=accepting
   start_recorder "$project"
   worker_run_world "$index" "$start" "$threads_case"
@@ -2446,7 +2466,7 @@ run_threads_closed() {
   open=$(jq -r '.[] | "- Thread \(.id), \(.path): \(.body)"' "$R/threads.json")
   printf 'Reviewer → implementer, %s. I approved PR #%s (%s, repository %s) at %s. Its only open findings are text, and each is the review thread I wrote on it:\n%s\nOver to you.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$open" >"$R/prompt.txt"
-  worker_boot "$name-implementer" "$project" implementer "$phase"
+  worker_boot "$name-implementer" "$project" implementer "$phase" "$completed"
   # The reviewer's own wake is the implementer's message and nothing else: the daemon starts no
   # phase for this loop and no architect speaks, so the reviewer learns
   # the fix is pushed from that message alone (review-threads.md step 2). An implementer that
@@ -2470,7 +2490,7 @@ run_threads_closed() {
   if [ "$threads_case" = code-defect ] && [ "$(jq length <<<"$wake")" -eq 0 ]; then
     note "$name: no reviewer half — the implementer sent the reviewer nothing, which is the act code-defect asks for"
   else
-    worker_boot "$name-reviewer" "$project" reviewer "$phase"
+    worker_boot "$name-reviewer" "$project" reviewer "$phase" "$completed"
   fi
   # What the run left on its issue: every handoff record, each with its body, beside the calls the
   # gh stand-in recorded and the pushes the remote logged, which are what the score reads.
@@ -2619,6 +2639,7 @@ live-read) shift && cmd_live_read "$@" ;;
 batch) shift && cmd_batch "$@" ;;
 run) shift && cmd_run "$@" ;;
 score) shift && bun "$here/score.ts" runs "$work/runs" "$@" ;;
+health) shift && bun "$here/health.ts" "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;
