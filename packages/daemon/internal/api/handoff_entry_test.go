@@ -605,6 +605,34 @@ func TestARepeatOfAnAcceptedBehindCompletionIsAnsweredAsARepeat(t *testing.T) {
 	assertIssuePhase(t, h, phase.Reviewing)
 }
 
+// The same answer holds for any further completion from that claim, not only a byte-for-byte
+// repeat. Every phase worker's prompt says a completion it reports for a phase it no longer works
+// is refused HANDOFF_NOT_CURRENT_PHASE (go/worker-common.md), and a level claim's further
+// completion naming a newer record of the phase is answered so. A behind completion taken at the
+// recorded head leaves the claim serving the entry it was behind on, so a further completion that
+// names a newer record meets the entry fence in reviewing. It must not be answered
+// HANDOFF_STALE_ENTRY, which tells the worker the current entry's task is owed to it and the
+// daemon sends it: that task was dropped when the issue left testing, and the role's own answer
+// to the phase already stands.
+func TestAFurtherCompletionAfterATakenBehindCompletionIsAnsweredAsNoLongerTheRolesPhase(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+	assertIssuePhase(t, h, phase.Reviewing)
+
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass, record corrected", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 2), HandoffVersion: 2}), http.StatusConflict, "HANDOFF_NOT_CURRENT_PHASE")
+	if strings.Contains(message, "owed to this claim") {
+		t.Fatalf("the refusal = %q, want no task named as owed: the issue has left testing and the tester's answer stands", message)
+	}
+	assertIssuePhase(t, h, phase.Reviewing)
+}
+
 // newEntryHarness serves the daemon's routes with the workflow deciding every fact they apply
 // (newWorkflowHarness), configured as a project that checks nothing in production.
 func newEntryHarness(t *testing.T) (*harness, *workflow.Engine, *factRecorder) {
