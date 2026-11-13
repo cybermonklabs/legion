@@ -35,6 +35,9 @@ import (
 // anything else of the start: it is where a caller puts what it may change only for a claim
 // that is being run again, since an admission the lifecycle refuses leaves the claim exactly as
 // it was (retry, whose failure record and budgets go there).
+//
+// The claims it starts — spawned, resumed, retried, a suspended claim given a task — record no
+// process, so its launch lets none go and records nothing of one (noEnd).
 func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) error {
 	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
 	if err != nil {
@@ -47,7 +50,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	if err := m.takeSlotForUpdate(ctx, true); err != nil {
 		return err
 	}
-	return m.launchAfter(ctx, false, exempt)
+	return m.launchAfter(ctx, false, exempt, noEnd)
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is

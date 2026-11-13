@@ -1,0 +1,23 @@
+-- 20261113082415_claim_ended_work.up.sql — what the last let-go of a claim's process ended of the
+-- work its agent had running, for the next process to be told (dispatch://INFRA-3276 R3).
+--
+-- claims.ended_work is supervise.Claim.EndedWork: written where the daemon lets a claim's process
+-- go — every relaunch, every suspension, and a failure — before the write that moves the
+-- generation clears the process's activity report (supervise's letGo and recordEnd). It holds
+-- when, the cause in the daemon's words, whether a turn was cut off and whether it was the pending
+-- task's, the background kinds that process's own report named, whether that process left a report
+-- at all, the launch it records, and whether a later process has been told it. A relaunch can be
+-- a wake and a daemon restart away from the prompt that tells it, so the record is durable rather
+-- than held in the machine's memory.
+--
+-- jsonb on the claim's own row, as the abandoned session and the turn outcomes are, because it is
+-- written in the same decision as the let-go it records. Every existing row takes null, which is
+-- "no let-go of this claim's process ended anything worth telling": nothing backfills it, since
+-- the release this upgrades from recorded nothing of what a let-go ended.
+--
+-- Rolling the image back needs no restore of the schema: store's claims.go is the only reader and
+-- writer of this column, and the release before it names it in no statement, so its upserts leave
+-- whatever the column last held and a daemon rolled forward again reads it back.
+--
+-- There is no down file: migrations here are forward-only.
+alter table claims add column ended_work jsonb;

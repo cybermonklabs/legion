@@ -41,7 +41,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
-	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session,
+	c.last_death_cause, c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.ended_work,
 	c.update_round, c.update_reasons, c.update_opened_at, c.update_tasked_at, c.update_signalled_at,
 	c.update_head, c.update_told_at, c.update_answered_by_turn_end, c.update_reasked_for_push_check,
 	c.update_left_round, c.provider_error_run, c.death_charged,
@@ -203,6 +203,46 @@ func (s *Store) ClaimStep(ctx context.Context, token claim.Token) (supervise.Ste
 	return step, nil
 }
 
+// ClaimActivity is the activity report the store holds for launch generation of token's claim
+// (PutClaimActivity's columns, the phase reminder aside), and whether it holds one: what a
+// machine reads of the process it is letting go, which its own claim carries only as the machine
+// read it at boot (supervise.Deps.ClaimActivity, the machine's recordEnd). It is read before the
+// launch's own write, which clears the four columns as it moves the generation (putClaim).
+//
+// Only a report of that launch is answered. The columns hold the report of the launch the row
+// records and of no other — a report is written onto the launch it was authenticated for alone
+// (PutClaimActivity), and the write that moves the generation clears them — so a row at another
+// generation, a row whose launch has reported nothing (activity_at null) and a token no claim
+// holds all answer no report.
+func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation uint64) (supervise.ActivityReport, bool, error) {
+	if generation > math.MaxInt64 {
+		// No row holds it (putClaim refuses one), so no launch of the claim is this.
+		return supervise.ActivityReport{}, false, nil
+	}
+	var (
+		reportedAt *time.Time
+		report     supervise.ActivityReport
+		kinds      string
+	)
+	err := s.pool.QueryRow(ctx, `select activity_at, activity_background, activity_kinds from claims
+		where token = $1 and generation = $2`, string(token), int64(generation)).Scan(&reportedAt, &report.Background, &kinds)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return supervise.ActivityReport{}, false, nil
+	}
+	if err != nil {
+		return supervise.ActivityReport{}, false, fmt.Errorf("read the activity of claim %s at generation %d: %w", token, generation, err)
+	}
+	if reportedAt == nil {
+		return supervise.ActivityReport{}, false, nil
+	}
+	report.At = *reportedAt
+	// Kept comma-joined in the session's order, as scanClaim reads them: no kind is no slice.
+	if kinds != "" {
+		report.Kinds = strings.Split(kinds, ",")
+	}
+	return report, true, nil
+}
+
 // putClaim writes a claim through whichever executor the caller has: the pool, or a transaction
 // that carries the delivery write that goes with it.
 //
@@ -265,6 +305,16 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		}
 		abandoned = encoded
 	}
+	// Null is a claim no let-go of whose process ended anything worth telling; one that did
+	// records what it ended, for the next process to be told (supervise's EndedWork, recordEnd).
+	var endedWork []byte
+	if c.EndedWork.Cause != "" {
+		encoded, err := json.Marshal(c.EndedWork)
+		if err != nil {
+			return fmt.Errorf("put claim %s: encode what its last let-go ended: %w", c.Token, err)
+		}
+		endedWork = encoded
+	}
 	var enrollmentID, enrollmentIncarnation *string
 	if c.Enrollment != nil {
 		enrollmentID = &c.Enrollment.ID
@@ -288,10 +338,10 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at, update_answered_by_turn_end, update_reasked_for_push_check,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
-		failure_cause, failed_at, pending_cause, leak_check_cause,
+		failure_cause, failed_at, pending_cause, leak_check_cause, ended_work,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53,
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -334,6 +384,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		failed_at = excluded.failed_at,
 		pending_cause = excluded.pending_cause,
 		leak_check_cause = excluded.leak_check_cause,
+		ended_work = excluded.ended_work,
 		-- The four activity columns (activity_at, activity_background, activity_kinds,
 		-- activity_next_reminder_at) and the eight step columns (step_at, turn_started_at,
 		-- step_tool, step_call_id, step_args_bytes, step_args_hash, step_started_at,
@@ -367,7 +418,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt, c.UpdateAnsweredByTurnEnd, c.UpdateReaskedForPushCheck,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
-		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause,
+		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause, endedWork,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -680,6 +731,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		lastReady                   *time.Time
 		outcomes                    []byte
 		abandoned                   []byte
+		endedWork                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept                        []byte
@@ -698,7 +750,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
 		&turnStart, &turnEnd,
-		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned,
+		&c.LastDeathCause, &c.LastStartFailure, &lastReady, &outcomes, &abandoned, &endedWork,
 		&c.UpdateRound, &c.UpdateReasons, &updateOpened, &updateTasked, &updateSignalled,
 		&c.UpdateHead, &updateTold, &c.UpdateAnsweredByTurnEnd, &c.UpdateReaskedForPushCheck,
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
@@ -738,6 +790,12 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	if abandoned != nil {
 		if err := json.Unmarshal(abandoned, &c.Abandoned); err != nil {
 			return supervise.Claim{}, fmt.Errorf("read claim %s: decode its abandoned session: %w", token, err)
+		}
+	}
+	// Null is a claim no let-go of whose process ended anything worth telling (putClaim).
+	if endedWork != nil {
+		if err := json.Unmarshal(endedWork, &c.EndedWork); err != nil {
+			return supervise.Claim{}, fmt.Errorf("read claim %s: decode what its last let-go ended: %w", token, err)
 		}
 	}
 	c.LastTurnStart, c.LastTurnEnd, c.LastReady = orZero(turnStart), orZero(turnEnd), orZero(lastReady)

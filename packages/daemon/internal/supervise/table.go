@@ -2404,7 +2404,9 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // checked before the retirement, so the process is kept and the deadline tried again at the probe
 // interval, as one whose stop fails is. An operator suspension retained through a rule-resuming
 // launch instead completes here: no ready will arrive to run it, and relaunching would drop the
-// operator's hold.
+// operator's hold. The retirement's stop records what it ended as the deadline's (endNeverReady,
+// letGo) — what its agent never did is no turn, so a record comes only of background work the
+// process reported — and the relaunch that follows lets nothing more go.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && m.held.By == SuspendedByOperator {
 		return m.suspendHeld(ctx)
@@ -2419,12 +2421,12 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: %w", m.claim.Token, never, err)
 		}
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.suspendProcess(ctx); err != nil {
+		if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
 			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
 		}
 		m.log.Warn("supervise: the agent "+never+"; retired its process", "incarnation", incarnation)
-		return m.relaunchAfterFailure(ctx, CauseNeverRegistered)
+		return m.relaunchAfterFailure(ctx, CauseNeverRegistered, noEnd)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
 }
 
@@ -2799,12 +2801,14 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 // it instead, so it stays resumable and known to the orphan sweep, which would otherwise take
 // whatever the runtime holds for the tree with it. The agent has ended either way, so a runtime
 // that cannot release or suspend its process is logged and the claim moves all the same: a
-// finished agent's claim never stays live, its secret still authenticating.
+// finished agent's claim never stays live, its secret still authenticating. A root's stop records
+// what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
+// retirement records nothing (retire).
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.endProcess(ctx); err != nil {
+		if err := m.endProcess(ctx, endSuspended(SuspendedByExit)); err != nil {
 			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
 				"incarnation", incarnation, "error", err)
 		}

@@ -1168,6 +1168,10 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // land would leave a claim whose task is confirmed, whose prompts are over as far as this machine
 // is concerned, and whose next settlement retires a task no turn ever finished. A take-back that
 // did land leaves the task unconfirmed, which settle retires in no state at all.
+//
+// A take-back that lands also marks the task, under its new id, as taken from a turn of the
+// process the claim records (Machine.cutTurnOf): the confirmation it clears is what the let-go
+// that follows would otherwise read that from, and that let-go records it (recordEnd).
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
 	p := m.claim.Pending
 	if p == nil || p.ConfirmedAt.IsZero() {
@@ -1181,6 +1185,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	}
 	*p = next
 	m.outstanding = nil
+	m.cutTurnOf = next.ID
 	return nil
 }
 

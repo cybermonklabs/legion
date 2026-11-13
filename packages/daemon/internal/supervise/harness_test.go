@@ -176,7 +176,16 @@ func (s *memStore) PutClaim(_ context.Context, c Claim) error {
 	// The step columns are PutClaimStep's alone, as they are in the store (store's putClaim): a
 	// machine's write carries whatever its in-memory claim last read, and a step recorded since
 	// that read must survive it.
-	c.Step = s.claims[c.Token].Step
+	held, stored := s.claims[c.Token]
+	c.Step = held.Step
+	// So are the four activity columns PutClaimActivity's (reportActivity), with the store's one
+	// exception: a write that moves the generation is a launch, and it clears them, as an insert
+	// leaves them at their defaults.
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds, c.ActivityNextReminderAt = time.Time{}, false, nil, time.Time{}
+	if stored && held.Generation == c.Generation {
+		c.ActivityAt, c.ActivityBackground = held.ActivityAt, held.ActivityBackground
+		c.ActivityKinds, c.ActivityNextReminderAt = slices.Clone(held.ActivityKinds), held.ActivityNextReminderAt
+	}
 	s.claims[c.Token] = c
 	s.puts = append(s.puts, c)
 	return nil
@@ -286,6 +295,41 @@ func (s *memStore) PutClaimStep(_ context.Context, token claim.Token, step StepR
 	c.Step = held
 	s.claims[token] = c
 	return true, nil
+}
+
+// reportActivity is a session's activity report reaching the store, with the rules the real one
+// holds to (store.Store.PutClaimActivity): it is written onto the launch it names alone, so a
+// report of a launch the claim has moved past is refused, and one older than the report recorded
+// is dropped. It answers whether the store holds the claim at that launch.
+func (s *memStore) reportActivity(token claim.Token, generation uint64, report ActivityReport) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, known := s.claims[token]
+	if !known || c.Generation != generation {
+		return false
+	}
+	if !c.ActivityAt.IsZero() && report.At.Before(c.ActivityAt) {
+		return true
+	}
+	c.ActivityAt, c.ActivityBackground, c.ActivityKinds = report.At, report.Background, slices.Clone(report.Kinds)
+	s.claims[token] = c
+	return true
+}
+
+// ClaimActivity is the store's read of one launch's activity report (store.Store.ClaimActivity):
+// the report of the launch the row records, and no report for any other launch or for a launch
+// that has reported nothing.
+func (s *memStore) ClaimActivity(_ context.Context, token claim.Token, generation uint64) (ActivityReport, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["ClaimActivity"]; err != nil {
+		return ActivityReport{}, false, err
+	}
+	c, known := s.claims[token]
+	if !known || c.Generation != generation || c.ActivityAt.IsZero() {
+		return ActivityReport{}, false, nil
+	}
+	return ActivityReport{At: c.ActivityAt, Background: c.ActivityBackground, Kinds: slices.Clone(c.ActivityKinds)}, true, nil
 }
 
 // step is the record the store holds for token, as a claim read carries it back.
@@ -583,8 +627,11 @@ func newBareHarness(t *testing.T) *harness {
 		Runtime: h.rt,
 		Conns:   h.conns,
 		Store:   h.store,
-		Specs:   h.specs,
-		Clock:   h.clock,
+		// The store's read of a launch's activity report, which a let-go records the background
+		// work it ended from (recordEnd); a test reports into it through reportActivity.
+		ClaimActivity: h.store.ClaimActivity,
+		Specs:         h.specs,
+		Clock:         h.clock,
 		// Both handlers over the one logger: the text buffer every test that reads lines uses,
 		// and the recorder a test that reads an attribute's own value asks (logRecords.of).
 		Log: slog.New(logRecorder{

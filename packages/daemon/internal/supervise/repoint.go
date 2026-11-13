@@ -24,7 +24,10 @@ import (
 // compaction of its session runs on with it: the end of one gives the claim back as it would have
 // without the repoint, and the task that end owes waits for the relaunch's turn rather than going
 // to a process that turn replaces (ownsCompaction, sendPending). A compaction asked for after the
-// relaunch is parked is refused before anything is sent (compactStart).
+// relaunch is parked is refused before anything is sent (compactStart). The launch lets the
+// process go as one whose address changed (endRepointed), and records what it ended there:
+// in this decision, or at the turn of the wake the pacing parks it on, since the process runs
+// until then (launchNow, letGo).
 func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) error {
 	// The process is read through the guard backstopStalledTurn's comment gives the reason for:
 	// judge drops an observation while the claim records none, so no live path arrives here
@@ -36,7 +39,7 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 	}
 	m.log.Warn("supervise: the process is alive at a stale address; replacing it with one at the current address",
 		"incarnation", incarnation, "detail", observation.Detail)
-	_, err := m.replaceProcess(ctx, "the process at a stale address is replaced mid-turn", ordinaryEnd)
+	_, err := m.replaceProcess(ctx, "the process at a stale address is replaced mid-turn", ordinaryEnd, endRepointed)
 	return err
 }
 
@@ -54,6 +57,10 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // end's note (runtime.Observation.OutOfMemory), since a pod the daemon replaced can also have run
 // out of memory before the replacement landed, and the role whose turn that end cut off is told
 // so wherever the end is recovered.
+//
+// What the displacement ended is recorded first, as a death's is (died): the process is gone
+// whatever the replacement goes on to do, and the take-back it begins with changes the task the
+// record reads (recordEnd, endDisplaced).
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
 	// Guarded as repoint's own read is, and for the reason its comment gives
 	// (backstopStalledTurn, noProcessRecorded).
@@ -63,7 +70,8 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 	}
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
 		"incarnation", incarnation, "process", process, "observed", string(observation.Kind), "detail", observation.Detail)
-	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory)
+	m.recordEnd(ctx, endDisplaced)
+	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory, endDisplaced)
 	return err
 }
 
@@ -153,14 +161,16 @@ func (e ProcessEnd) TellsOwner() bool { return e != EndNotMade }
 // over its existing Sandbox when it has not registered yet. interruption is the sentence the
 // turn's recovery is logged with, and outOfMemory says whether the end that cut that turn off was
 // the pod running out of memory: only a displacement can carry one, since the other callers
-// replace a process that is still running.
+// replace a process that is still running. ending is why the process is let go, in the daemon's
+// words, which the launch records with what that process ended (launch, letGo); a held
+// suspension's stop records its own (endHeld).
 //
 // It answers the end it reached beside its error, for the caller that has somebody to tell
 // (ProcessEnd): every one of these recoveries can end the process and still fail — the launch's
 // write is refused, its tries run the launch budget out, the held suspension's write is refused
 // — and the end is what happened to the worker, which is decided here, once, rather than at each
 // call site.
-func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOfMemory bool) (ProcessEnd, error) {
+func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOfMemory bool, ending string) (ProcessEnd, error) {
 	found := ""
 	if loc := m.claim.Locator; loc != nil {
 		found = loc.Incarnation
@@ -170,7 +180,7 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 	// unset here: a refusal an earlier replacement of this claim met is not what the end reached
 	// now says of the process it let go (stopUnconfirmed, backstopStalledTurn).
 	m.stopUnconfirmed = false
-	err := m.replaceNow(ctx, interruption, outOfMemory)
+	err := m.replaceNow(ctx, interruption, outOfMemory, ending)
 	return m.endReached(found, parked), err
 }
 
@@ -179,15 +189,17 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 // Its first step can end the replacement where it stands: a take-back the store refuses returns
 // here with the claim's process kept, nothing relaunched and no wake raised (interrupted). A
 // stale-plugin relaunch that ends there is raised again by the next pass, which reads the claim
-// as stale as it left it (refreshStalePlugins in internal/daemon).
-func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemory bool) error {
+// as stale as it left it (refreshStalePlugins in internal/daemon). A take-back that lands marks
+// the task as taken from that process's turn, which the let-go that follows records
+// (Machine.cutTurnOf), here or at the parked launch's turn.
+func (m *Machine) replaceNow(ctx context.Context, interruption string, outOfMemory bool, ending string) error {
 	if err := m.interrupted(ctx, interruption, outOfMemory); err != nil {
 		return err
 	}
 	if m.held != nil {
 		return m.endHeld(ctx)
 	}
-	return m.launch(ctx)
+	return m.launch(ctx, ending)
 }
 
 // endReached is the end a replacement made, read from the claim it left beside found, the

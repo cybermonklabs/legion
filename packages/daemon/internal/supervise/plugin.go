@@ -306,9 +306,14 @@ func (m *Machine) relaunchStale(ctx context.Context, kind WakeKind, trigger stri
 // unmarked, and a resumed process that still speaks another contract is relaunched once more
 // uncharged. That is one relaunch, not a loop: the relaunch that follows marks the claim where
 // it starts its process, and the registration after it is the second in a row.
+//
+// The launch it raises lets the stale process go as one that ran an older plugin
+// (endStalePlugin), and records what that process ended where it lets it go: here, or at the
+// turn of the wake the pacing parks it on, which is when a process the park left running is let
+// go (launchNow, runWake, letGo).
 func (m *Machine) relaunchMarked(ctx context.Context, kind WakeKind, interruption string) error {
 	m.markPluginRelaunch(kind)
-	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd)
+	_, err := m.replaceProcess(ctx, interruption, ordinaryEnd, endStalePlugin)
 	return err
 }
 
@@ -469,7 +474,8 @@ func (m *Machine) refreshOverturned() bool {
 // registration in front of it rather than working through a fleet, and a reader of the daemon's
 // state counting what the refresh has left to do must not count it (dispatch://INFRA-2712 R4).
 // The charged path beside it raises no stale-plugin intent at all, so its launch takes the kind
-// every launch takes (relaunchAfterFailure, launchAfter).
+// every launch takes (relaunchAfterFailure, launchAfter). Both let the stale process go as one
+// that ran an older plugin (endStalePlugin), which is what their launch records of what it ended.
 func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	if got == m.deps.PluginContract {
 		return m.endCurrentPluginRound(ctx)
@@ -491,7 +497,7 @@ func (m *Machine) staleRegistration(ctx context.Context, got int) error {
 	}
 	var err error
 	if m.claim.PluginRelaunchFor == m.deps.PluginContract {
-		err = m.relaunchAfterFailure(ctx, CauseStalePlugin)
+		err = m.relaunchAfterFailure(ctx, CauseStalePlugin, endStalePlugin)
 	} else {
 		err = m.relaunchStale(ctx, WakeLaunch, "registration")
 	}

@@ -423,6 +423,12 @@ func wakeNow(m *Machine, ctx context.Context, _ Event) error {
 // such a claim is left without is the relaunch this wake held, which is what the lifecycle
 // refusal leaves owing too: the next report of the process, or the sweep's own stale-plugin
 // pass, raises one again.
+//
+// This turn is where a launch the gate parked over a running process lets that process go, so it
+// is where what the process ended is recorded: the launch carries the cause the decision that
+// raised it named (launchAfter), and the record reads the process as it stands now — the turn
+// it may have begun in the wait, the task the take-back above took from it, its own last report
+// — rather than as it stood at the park (launchNow, letGo, recordEnd).
 func (m *Machine) runWake(ctx context.Context, waiting *wake, paced bool) error {
 	if waiting.kind == WakePluginRefresh && m.refreshOverturned() {
 		m.log.Info("supervise: the fact this claim's plugin refresh was raised for is gone; its relaunch is left to the next stale-plugin pass",

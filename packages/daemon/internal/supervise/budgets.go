@@ -111,10 +111,14 @@ var FailureCauses = []FailureCause{
 // out, and what a launch the runtime refuses on the way fails under too (launchNow,
 // Claim.PendingCause). The retry of a relaunch the lifecycle check refused carries the same
 // cause, which is why it is handed over in a closure rather than as the method value.
-func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) error {
+//
+// ending is why the process the claim still records is let go, in the daemon's words, which the
+// launch records with what that process ended (launch, letGo); noEnd where the caller let it go
+// already (registrationDeadline).
+func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause, ending string) error {
 	if err := m.checkLaunch(ctx); err != nil {
 		return m.relaunchRefused(ctx, func(ctx context.Context) error {
-			return m.relaunchAfterFailure(ctx, cause)
+			return m.relaunchAfterFailure(ctx, cause, ending)
 		}, err)
 	}
 	m.claim.PendingCause = cause
@@ -122,7 +126,7 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, cause FailureCause) 
 	if m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures {
 		return m.fail(ctx, cause, "launch failures ran out")
 	}
-	return m.launchAfter(ctx, true, false)
+	return m.launchAfter(ctx, true, false, ending)
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
@@ -167,6 +171,10 @@ func (m *Machine) turnOpen() bool {
 // failure reaches the limit again and retries the retirement. So does a relaunch the tree lifecycle
 // refuses, checked before the suspension so the process is kept (checkLaunch). A retirement while a
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld).
+//
+// The retirement's stop is where the process is let go, so that is where what it ended is
+// recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
+// whose failure then finds no process left to record. The launch that follows lets nothing go.
 func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	failures := m.claim.Budgets.PromptFailures + 1
 	if failures < m.deps.Limits.PromptFailures {
@@ -186,7 +194,7 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 	} else if err := m.checkLaunch(ctx); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
 	}
-	if err := retirement(ctx); err != nil {
+	if err := retirement(ctx, endRetired); err != nil {
 		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
 	}
 	m.claim.Budgets.PromptRetires = retires
@@ -197,5 +205,5 @@ func (m *Machine) chargePrompt(ctx context.Context, why string) error {
 		return m.fail(ctx, CausePromptRetiresExhausted, "prompt retirements ran out")
 	}
 	m.claim.Budgets.PromptFailures = 0
-	return m.launch(ctx)
+	return m.launch(ctx, noEnd)
 }

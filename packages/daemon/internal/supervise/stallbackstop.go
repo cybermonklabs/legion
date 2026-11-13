@@ -128,6 +128,10 @@ type StallBackstopStop struct {
 // and bounded by a deadline (holdSuspension, whose deadline only moves earlier); this request
 // carries its deadline already passed — the recorded last step plus the role's bound — because
 // the turn it exists for is one that never ends, and a request held for it would wait for ever.
+//
+// The launch lets the stalled process go as one whose turn showed no progress for the role's
+// bound (endStalled), and records what it ended there: in this decision, or at the turn of the
+// wake the pacing parks it on (launchNow, letGo).
 func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) error {
 	last := m.claim.Step.LastStep()
 	if m.steppedAt.After(last) {
@@ -170,7 +174,7 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	// failure of the claim's life, and the owner of a stalled worker is told what this one
 	// replacement took out of it (StallBackstopStop.LaunchFailures).
 	charged := m.claim.Budgets.LaunchFailures
-	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
+	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd, endStalled(ev.Bound))
 	charged = m.claim.Budgets.LaunchFailures - charged
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
 		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,
