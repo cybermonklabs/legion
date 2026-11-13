@@ -5,11 +5,13 @@ sidebar:
   order: 3
 ---
 
-Every issue has one main document, its **spec**, which the issue page draws under the tree on the
-issue's own address and on the Spec preset. An issue can hold other documents too: the tree draws
-each one a block cites under that block, the **Files and documents** menu beside the presets lists
-the others, and `/issues/<KEY>/artifacts` lists them all. A project can hold documents that belong
-to no single issue, on the project's Documents tab. All of them work the same way.
+Every issue has one main document, its **spec**. The issue page draws no document under its
+outline: the **Files and documents** menu beside the filters lists every document and file of the
+issue, and `/issues/<KEY>/artifacts` opens that menu. Choosing one opens it in place of the
+outline, with its editor, at its own address `/issues/<KEY>/artifacts/<name>`; **Escape**, or
+**Back to the conversation**, returns to the outline. A block whose text cites a document carries
+a chip that opens it. A project can hold documents that belong to no single issue, on the
+project's Documents tab. All of them work the same way.
 
 ![An issue's spec in the editor, with a decision block in the document and a comment thread in the margin.](/legion/media/dispatch/issue-spec.png)
 
@@ -29,8 +31,11 @@ proxy in front of Dispatch takes the quiet connection for a dead one.
 ## Versions
 
 When the text settles, about two seconds after a change, Dispatch records a new version. The
-controls in the document's toolbar work with them. On the issue page that toolbar is at the end of
-the preset row, and under the tree on a screen narrower than 768 px:
+controls in the document's toolbar work with them. On the issue page that toolbar is the version
+control beside the filters. It reads the document you opened; with none open, it reads the
+filter's own document: the spec with no filter and under Spec, the Verification document under
+Checks, the plan under Plan, and none under Decisions. On a screen narrower than 768 px it is
+drawn under the outline, or above the document you opened:
 
 - **Version** picks a version to read. An older version is read-only.
 - **Name version**, which reads **Name** in the issue page's toolbar, records the current text as
@@ -38,12 +43,12 @@ the preset row, and under the tree on a screen narrower than 768 px:
 - **Diff vs current** appears while you read an older version, and shows how it differs from the
   current text.
 
-Other documents carry the same controls in their header.
+A project document carries the same controls in its header.
 
 Every version records how big it is stored: a document's markdown in bytes, as a file's are. The
-issue's list at `/issues/<KEY>/artifacts` and the project's Documents tab show each document's
-latest size beside its kind, and a document's version list shows every version's, so you can find
-a document close to the 1 MiB limit without opening it.
+project's Documents tab shows each document's latest size beside its kind, and a document's
+version list, on its own page, shows every version's, so you can find a document close to the
+1 MiB limit without opening it.
 
 ## Comments in the margin
 
@@ -137,7 +142,8 @@ issue's spec describes.
 ## Block links
 
 Every paragraph, list, and other block in a document has a stable link. Put your cursor in a
-block and choose **Copy link** in the issue page's document toolbar. The link ends in `#b-` and
+block of a document you opened on the issue page and choose **Copy link** in the version control
+beside the filters. The link ends in `#b-` and
 the block's id. Opening it scrolls to that block and highlights it briefly. Dispatch gives each
 block its id. Markdown an agent writes can name one as `{#id}`. Dispatch stores an id of any
 length, but a block whose id is longer than 256 bytes is left out of the links between documents:

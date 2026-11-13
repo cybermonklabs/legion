@@ -7,82 +7,68 @@ import type { DocumentToolbar } from "../doc/ProofDocument";
 import { buildIssuePath, type DispatchRoute } from "../refs/routes";
 import { ArtifactDetails } from "./ArtifactDetails";
 import { ArtifactBlobView, ArtifactHeader } from "./ArtifactHeader";
-import { ArtifactsTab } from "./ArtifactsTab";
+import { IssueReferenceClosure } from "./IssueReferenceClosure";
 
+/**
+ * One artifact of an issue, as its own address `/issues/<key>/artifacts/<slug>` opens it: drawn
+ * in the issue page's main column in place of the outline (dispatch://INFRA-1196 R3), with its
+ * header, its editor or its picture, its versions, their downloads and what references it, and
+ * the issue's reference closure, which the Artifacts list it replaces drew at its head.
+ *
+ * A document's version control is the one beside the filters, which reads the document opened
+ * here (`features/issue/VersionControl.tsx`), so its header draws none of its own; a file's
+ * header keeps its version picker, since the control beside the filters reads documents alone.
+ * The panel is named by what it holds - the artifact's name - and never by a tab that is gone.
+ */
 export function ArtifactRoutePanel({
-  active,
   artifact,
   artifactRoute,
   children,
   isClosed,
-  isPrimaryArtifactRoute,
-  mounted,
-  onShowDiffChange,
-  route,
-  showDiff,
   toolbar,
 }: {
-  active: boolean;
   artifact: Artifact | undefined;
-  artifactRoute: Extract<DispatchRoute, { kind: "artifact" }> | undefined;
+  artifactRoute: Extract<DispatchRoute, { kind: "artifact" }>;
+  /** The document's editor, drawn under its header; nothing for a file. */
   children: ReactNode;
   isClosed: boolean;
-  isPrimaryArtifactRoute: boolean;
-  mounted: boolean;
-  onShowDiffChange(next: boolean): void;
-  route: DispatchRoute;
-  showDiff: boolean;
   toolbar: DocumentToolbar | undefined;
 }): ReactNode {
+  if (artifact === undefined) {
+    return (
+      <section aria-label={artifactRoute.slug} className="space-y-3">
+        <p className={dangerText}>
+          No artifact {artifactRoute.slug} on {artifactRoute.key}.
+        </p>
+        <Link
+          className={`font-medium underline ${linkText} ${linkHoverText}`}
+          to={buildIssuePath({ key: artifactRoute.key, kind: "artifacts" })}
+        >
+          View artifacts
+        </Link>
+      </section>
+    );
+  }
+  const isDocument = artifact.kind === "doc";
   return (
-    // A named panel and no `tabpanel`: the issue page has no tablist for one to belong to, and
-    // the name this carried was the id of a tab control nothing renders any more, which left
-    // the panel announced with no name at all (dispatch://INFRA-1196 R21).
-    <section
-      aria-hidden={!active}
-      aria-label="Artifacts"
-      hidden={!active}
-      id="issue-artifacts-panel"
-    >
-      {mounted ? (
-        route.kind === "artifacts" ? (
-          <ArtifactsTab isClosed={isClosed} />
-        ) : artifactRoute !== undefined && !isPrimaryArtifactRoute ? (
-          artifact === undefined ? (
-            <section className="space-y-3">
-              <p className={dangerText}>
-                No artifact {artifactRoute.slug} on {artifactRoute.key}.
-              </p>
-              <Link
-                className={`font-medium underline ${linkText} ${linkHoverText}`}
-                to={buildIssuePath({ key: artifactRoute.key, kind: "artifacts" })}
-              >
-                View artifacts
-              </Link>
-            </section>
-          ) : (
-            <div className="space-y-4">
-              <ArtifactHeader
-                artifact={artifact}
-                highlight
-                isClosed={isClosed}
-                onShowDiffChange={onShowDiffChange}
-                showDiff={showDiff}
-                showVersionPicker
-                toolbar={artifact.kind === "doc" ? toolbar : undefined}
-                version={artifactRoute.version}
-              >
-                {artifact.kind === "doc" ? (
-                  children
-                ) : (
-                  <ArtifactBlobView artifact={artifact} version={artifactRoute.version} />
-                )}
-              </ArtifactHeader>
-              <ArtifactDetails artifact={artifact} />
-            </div>
-          )
-        ) : null
-      ) : null}
+    <section aria-label={artifact.name} className="space-y-4" data-testid="opened-artifact">
+      <ArtifactHeader
+        artifact={artifact}
+        highlight
+        isClosed={isClosed}
+        showVersionPicker={!isDocument}
+        toolbar={isDocument ? toolbar : undefined}
+        version={artifactRoute.version}
+        versionControls={false}
+      >
+        {isDocument ? (
+          children
+        ) : (
+          <ArtifactBlobView artifact={artifact} version={artifactRoute.version} />
+        )}
+      </ArtifactHeader>
+      <ArtifactDetails artifact={artifact} />
+      <IssueReferenceClosure issueKey={artifactRoute.key} />
     </section>
   );
 }

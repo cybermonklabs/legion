@@ -22,7 +22,6 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
-import { openIssueAddress } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, type Locator, type Page, test } from "./test";
@@ -640,7 +639,16 @@ for (const state of crossDocumentLandingStates) {
       const placement = card.locator("xpath=..");
       await card.waitFor();
       expect(await placement.evaluate((element) => (element as HTMLElement).style.top)).toBe("0px");
-      await page.mouse.click(400, 400);
+      // A press on the page outside the margin. With the issue page drawn, the spec opens in
+      // place of the outline, and the point the press used to take, (400, 400), is the opened
+      // document's Back to the conversation button above its header, which would close the
+      // document; so the press is made on the document's own heading. With the page's code held
+      // nothing of it is drawn yet, and the press lands where it always did.
+      if (state.holdIssuePageCode) {
+        await page.mouse.click(400, 400);
+      } else {
+        await page.getByTestId("artifact-header").getByRole("heading", { level: 2 }).click();
+      }
 
       pageCodeHeld.resolve();
       await transport.release();
@@ -658,30 +666,17 @@ for (const state of crossDocumentLandingStates) {
   });
 }
 
-/** Two views of the issue that keep the live editor mounted and registered but hidden. `hide` leaves
- *  the editor of the issue `issueKey` hidden, opened at `link`, and returns the way back to it. */
+/** A view of the issue that keeps the live editor mounted and registered but hidden. `hide`
+ *  leaves the editor of the issue `issueKey` hidden, opened at `link`, and returns the way back
+ *  to it.
+ *
+ *  A second journey went to the issue's conversation and back by "View in document", while the
+ *  Spec preset kept the spec's editor mounted under the conversation. The redesigned page
+ *  (dispatch://INFRA-1196 R3) draws the spec in place of the outline and unmounts it when the
+ *  reader moves to the conversation, so no editor is left hidden there to keep a stale report:
+ *  the return mounts a fresh one, which that journey's own comment named as the state it could
+ *  not catch the defect in. That journey was deleted with that page. */
 const hiddenEditorJourneys = [
-  {
-    name: "a hidden spec editor withdraws its report before View in document returns to it",
-    namedVersion: false,
-    async hide(page: Page, issueKey: string): Promise<() => Promise<void>> {
-      // The conversation keeps its address; the Spec editor it hides is the Spec preset's.
-      // The move is inside the page and never a load: a load would unmount the editor this
-      // journey is about, and "View in document" would then mount a fresh one with no stale
-      // report to withdraw, so the row would pass with the withdrawal reverted
-      // (`doc.e2e.ts:435-437` gives the same reason for the same move).
-      await openIssueAddress(page, "conversation");
-      await expect(page).toHaveURL(`/issues/${issueKey}/conversation`);
-      const conversation = page.locator("#issue-conversation-panel");
-      await expect(conversation).toBeVisible();
-      // The editor is hidden, not gone: the journey's return finds the editor that landed.
-      await expect(page.locator("#issue-spec-panel")).toBeAttached();
-      return async () => {
-        await conversation.getByRole("link", { name: "View in document" }).click();
-        await expect(page.locator("#issue-spec-panel")).toBeVisible();
-      };
-    },
-  },
   {
     name: "a hidden live editor withdraws its report before returning from a historical version",
     namedVersion: true,
@@ -924,8 +919,15 @@ test("the margin stops holding a landed card once the reader works the document"
     expect(landed.scrollTop).toBe(0);
 
     // The reader works the document: three presses and a selection, none of them in the margin.
-    for (const offset of [0, 40, 80]) {
-      await page.mouse.click(400, 300 + offset);
+    // Each press is on the document's own text: the spec opens in place of the outline, and the
+    // points the presses used to take, (400, 300) to (400, 380), are its Back to the conversation
+    // button and its header, above its text.
+    for (const paragraph of [1, 2, 3]) {
+      await documentEditor(page)
+        .getByText(`Paragraph ${paragraph}: surrounding context for a long document.`, {
+          exact: true,
+        })
+        .click();
     }
     await selectEditorText(page, "Paragraph 4: surrounding context");
 

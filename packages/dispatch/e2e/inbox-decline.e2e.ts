@@ -13,7 +13,7 @@ import {
   withOpenedAsk,
 } from "./api";
 import { paragraphsOf } from "./bodies";
-import { documentEditor, indexedBlockAsk } from "./editor";
+import { documentEditor, indexedBlockAsk, specAddress } from "./editor";
 import { askCard, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { resetDatabase } from "./seed";
 import { signIn } from "./users";
@@ -229,7 +229,7 @@ test("a document's decision block and the issue page both draw Decline to answer
 
   // The control belongs to the one card every surface draws, so a question written into a
   // document is declinable where the document draws it as well as where the issue lists it.
-  await page.goto(`/issues/${issue.key}`);
+  await page.goto(await specAddress(issue.key));
   const hosted = documentEditor(page)
     .locator(`[data-dispatch-ask-block="${block}"]`)
     .locator("article[data-testid^=ask-]");

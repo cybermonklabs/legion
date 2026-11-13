@@ -7,7 +7,7 @@ import {
   getArtifact,
   listComments,
 } from "./api";
-import { blockId } from "./editor";
+import { blockId, specAddress } from "./editor";
 import { gotoIssue, nodeRows } from "./issue-page";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, test } from "./test";
@@ -55,7 +55,7 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   expect((await getArtifact(spec.id)).versions).toHaveLength(specVersions);
 
   // The Spec tab: the decision is a margin card, and no block is out of date yet.
-  await page.goto(`/issues/${issue.key}/spec`);
+  await page.goto(await specAddress(issue.key));
   const cards = page.getByRole("article", { name: `Decision: ${DECISION}` });
   await expect(cards).toHaveCount(2);
   await expect(page.locator(`[data-margin-item$=":${stored}"]`)).toHaveCount(1);
@@ -91,7 +91,7 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
   });
   await gotoIssue(page, `/issues/${issue.key}/decisions`);
   await expect(page.getByText(CONTROL_LABELS.target_stale)).toHaveCount(2);
-  await page.goto(`/issues/${issue.key}/spec`);
+  await page.goto(await specAddress(issue.key));
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(2);
 
   // The agent changes one of those spec blocks: its mark goes and the other stays.
@@ -99,7 +99,7 @@ test("a decision links the spec blocks it shaped, goes out of date with them, an
     ops: [{ find: "Store each notice.", op: "replace", with: "Store each notice in a table." }],
     summary: "stored",
   });
-  await page.goto(`/issues/${issue.key}/spec`);
+  await page.goto(await specAddress(issue.key));
   await expect(page.locator(`[title="${STALE_TITLE}"]`)).toHaveCount(1);
   await gotoIssue(page, `/issues/${issue.key}/decisions`);
   await expect(page.getByText(CONTROL_LABELS.target_stale)).toHaveCount(1);

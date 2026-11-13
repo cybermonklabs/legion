@@ -15,7 +15,7 @@ import {
   patchIssue,
 } from "./api";
 import { runDispatch } from "./dispatch-cli";
-import { documentEditor, indexedBlockAsk, needsYouCards } from "./editor";
+import { documentEditor, indexedBlockAsk, needsYouCards, specAddress } from "./editor";
 import { inboxList, inboxPane, inboxRow, READING_PANE_WIDTH, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { gotoIssue } from "./issue-page";
@@ -249,7 +249,7 @@ test("a person hands an ask to another person and it moves between the two Inbox
     const marginCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);
     await expect(marginCard).toBeVisible();
     await expect(handOnControl(marginCard, docAsk.id)).toHaveCount(1);
-    await docPage.goto(`/issues/${blocked.key}`);
+    await docPage.goto(await specAddress(blocked.key));
     const block = documentEditor(docPage).locator('[data-dispatch-ask-block="rollout-decision"]');
     const blockCard = block.locator(`article[data-testid="ask-${blockAsk.id}"]`);
     await expect(blockCard).toBeVisible();

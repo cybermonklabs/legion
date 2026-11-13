@@ -1,3 +1,4 @@
+import { specAddress } from "./editor";
 import { expect, test } from "./test";
 import {
   DECISION_BLOCK,
@@ -39,7 +40,7 @@ test("a document block's thread folds and places its box by the chosen order", a
     for (const [order, expected] of FOLD_ORDERS) {
       await page.goto("/");
       await setThreadOrder(page, order);
-      await page.goto(`/issues/${seeded.blockIssue}/spec`);
+      await page.goto(await specAddress(seeded.blockIssue));
       // The block holds the thread's section and, beside it, the control that reveals the
       // reply box: a collapsed thread puts the box after its own Write a reply (`AskCard`'s
       // `thread="collapsed"`), so the block is what the order places both in.

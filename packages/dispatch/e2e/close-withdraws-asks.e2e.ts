@@ -11,7 +11,13 @@ import {
   requestApproval,
   withOpenedAsk,
 } from "./api";
-import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
+import {
+  connectedDot,
+  countDocumentSockets,
+  documentEditor,
+  reconnectedSockets,
+  specAddress,
+} from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -99,7 +105,7 @@ async function openIssueAndInbox(
   const sockets = countDocumentSockets(page, seeded.artifactId);
   // Neither page waits on the other, and each keeps its own checks below.
   if (clock) await page.clock.install();
-  await Promise.all([inbox.goto("/"), page.goto(`/issues/${seeded.key}`)]);
+  await Promise.all([inbox.goto("/"), page.goto(await specAddress(seeded.key))]);
   for (const id of seeded.askIds) {
     await expect(inboxRow(inbox, id)).toBeVisible();
   }
@@ -289,7 +295,7 @@ test("a closed issue's document names no unsent edit to a person who typed nothi
     // The second load reads what the first left in this browser's store of unsent edits.
     for (const load of ["first", "reload"]) {
       if (load === "first") {
-        await page.goto(`/issues/${issue.key}/spec`);
+        await page.goto(await specAddress(issue.key));
       } else {
         await page.reload();
       }

@@ -12,7 +12,7 @@ import {
   editComment,
   getIssue,
 } from "./api";
-import { documentEditor } from "./editor";
+import { documentEditor, specAddress } from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
 import { sql } from "./psql";
 import { expect, test } from "./test";
@@ -250,7 +250,7 @@ test("an answered decision keeps its backlink control and still moves with a lat
   // The later citation reaches the card over the event feed, whose refetch is held to one per
   // second (`MIN_REFETCH_INTERVAL_MS`): a page timer the page's own clock fires.
   await page.clock.install();
-  await page.goto(`/issues/${target.key}`);
+  await page.goto(await specAddress(target.key));
   // The page hosts this ask twice — the decision block and the margin sheet; the block is the
   // one the reader answers in, and it keeps rendering the card once the ask is answered.
   const card = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');

@@ -485,6 +485,58 @@ test("a pointer whose target is gone is drawn as a chip that says so", () => {
   expect(task?.chips).toEqual([{ answered: true, gone: true, name: "", ref: gone }]);
 });
 
+// R21: a typed block is a directive, and the reference read names a block by its stored excerpt,
+// which is its source: `:::plan_task{#t1 serves="…" needs="…"}`, its words, and the closing
+// fence. The opening line and the fence are markup, so a block's row and every chip naming it
+// carry its words alone.
+test("a typed block's row and a chip naming it carry its words, not its directive's source", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const verification = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const serves = `dispatch://${KEY}/spec#b-r1`;
+  const needs = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r1", "The first.")]),
+    documents: [
+      { artifactId: spec.id, blocks: [block("r1", "requirement")] },
+      {
+        artifactId: plan.id,
+        blocks: [block("t0", "plan_task", { serves }), block("t1", "plan_task", { needs, serves })],
+      },
+      { artifactId: verification.id, blocks: [block("c1", "check", { serves })] },
+    ],
+    issue: issueDetails([spec, plan, verification]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: `:::plan_task{#t0 serves="${serves}"}\nAdd the routes.\n:::`,
+        ref: needs,
+      },
+      {
+        gone: false,
+        kind: "block",
+        name: `:::plan_task{#t1 serves="${serves}" needs="${needs}"}\nDraw the panel.\n:::`,
+        ref: `dispatch://${KEY}/artifact/plan-md#b-t1`,
+      },
+      {
+        gone: false,
+        kind: "block",
+        name: `:::check{#c1 serves="${serves}"}\nThe page loads in one second.\n\nOn a phone too.\n:::`,
+        ref: `dispatch://${KEY}/artifact/${VERIFICATION}#b-c1`,
+      },
+    ],
+  });
+
+  expect(nodeOf(root, blockNodeId("plan-md", "t0"))?.text).toBe("Add the routes.");
+  const task = nodeOf(root, blockNodeId("plan-md", "t1"));
+  expect(task?.text).toBe("Draw the panel.");
+  expect(task?.chips.map(({ name }) => name)).toEqual(["Add the routes."]);
+  expect(nodeOf(root, blockNodeId(VERIFICATION, "c1"))?.text).toBe(
+    "The page loads in one second.\n\nOn a phone too."
+  );
+});
+
 // R4, R20: the model takes any depth. Today's data reaches two levels below the issue, because
 // `document_blocks` holds no parent; a chain of `from` edges is drawn however long it is.
 test("a tree of one level and a tree of six are both drawn", () => {
@@ -617,6 +669,64 @@ test("no document is a node, and each typed block and child sits under the issue
   expect(placementsOf(root, blockNodeId("plan-md", "t1")).map((one) => one.parent)).toEqual([
     blockNodeId(SPEC, "r1"),
   ]);
+});
+
+// The coverage read names a requirement by its words with every `://` word left out
+// (`blockWords`, `api/results.go`), so the document a requirement cites is read from the
+// block's own source, which the reference read names it by.
+test("a requirement whose source cites a document carries its chip, whatever words name it", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const cites = `dispatch://${KEY}/artifact/notes-md`;
+  const root = buildIssueTree({
+    coverage: coverage([requirement("r-cites", "The measurements behind it are in")]),
+    documents: [{ artifactId: spec.id, blocks: [block("r-cites", "requirement")] }],
+    issue: issueDetails([notes, spec]),
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: `:::requirement{#r-cites}\nThe measurements behind it are in ${cites}.\n:::`,
+        ref: `dispatch://${KEY}/spec#b-r-cites`,
+      },
+    ],
+  });
+
+  const chips = nodeOf(root, blockNodeId(SPEC, "r-cites"))?.chips ?? [];
+  expect(chips.map(({ name, ref }) => ({ name, ref }))).toEqual([{ name: "notes.md", ref: cites }]);
+});
+
+// R3: a document is no node, so a block whose words cite one carries a chip that opens it, at
+// its own address and named by the document's name - the spec's included, whose `spec`
+// reference is the Spec filter's address. A citation of one block of a document is that
+// block's, and draws no document chip.
+test("a block whose text cites a document carries a chip that opens it", () => {
+  const notes = artifact("artifact-notes", "notes-md", "notes.md");
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const root = buildIssueTree({
+    coverage: coverage([
+      requirement("r1", `The measurements are in dispatch://${KEY}/artifact/notes-md.`),
+      requirement("r2", `Read dispatch://${KEY}/spec and dispatch://${KEY}/artifact/notes-md#b-x.`),
+      requirement("r3", "Cites nothing."),
+    ]),
+    documents: [
+      {
+        artifactId: spec.id,
+        blocks: [
+          block("r1", "requirement"),
+          block("r2", "requirement"),
+          block("r3", "requirement"),
+        ],
+      },
+    ],
+    issue: issueDetails([notes, spec]),
+  });
+
+  const chipsOf = (id: string) =>
+    (nodeOf(root, blockNodeId(SPEC, id))?.chips ?? []).map(({ name, ref }) => ({ name, ref }));
+  expect(chipsOf("r1")).toEqual([{ name: "notes.md", ref: `dispatch://${KEY}/artifact/notes-md` }]);
+  expect(chipsOf("r2")).toEqual([{ name: "spec.md", ref: `dispatch://${KEY}/artifact/${SPEC}` }]);
+  expect(chipsOf("r3")).toEqual([]);
 });
 
 // R4: a decision sits under the ask it answers - the asks its blocks mention - edited under the

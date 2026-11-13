@@ -1,6 +1,12 @@
 import type { Actor } from "../web/src/api/types";
 import { createIssue, createProject, patchIssue } from "./api";
-import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
+import {
+  connectedDot,
+  countDocumentSockets,
+  documentEditor,
+  reconnectedSockets,
+  specAddress,
+} from "./editor";
 import { expectIssueClosed, openIssueActions, runIssueAction } from "./issue-page";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -67,7 +73,7 @@ test("a reconnect admitted read-only before the issue read names the reload @web
       await route.fulfill({ json: read, response });
     });
     await page.clock.install();
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
 
     // Open, connected and read-only because of the schema alone: a reload opens a socket the
     // server admits on the issue as it stands, so the page names it.

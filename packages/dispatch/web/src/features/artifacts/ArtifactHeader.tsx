@@ -76,6 +76,7 @@ export function ArtifactHeader({
   showVersionPicker,
   toolbar,
   version,
+  versionControls = true,
 }: {
   artifact: Artifact;
   children: ReactNode;
@@ -86,6 +87,11 @@ export function ArtifactHeader({
   showVersionPicker: boolean;
   toolbar?: DocumentToolbar;
   version: number | undefined;
+  /** Whether the header draws the document's version controls - Name version, the diff and the
+   *  live connection - beside its title. The issue page draws them beside its filters instead
+   *  (`features/issue/VersionControl.tsx`), so its opened document's header draws only what is
+   *  the document's alone: its title, its approval, and correcting or removing it. */
+  versionControls?: boolean;
 }): ReactNode {
   const [highlighted, setHighlighted] = useState(highlight);
   const navigate = useNavigate();
@@ -247,21 +253,23 @@ export function ArtifactHeader({
                     refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
                   />
                 )}
-                {version === undefined ? null : nameVersion}
-                <div className="flex items-center gap-3">
-                  {version === undefined ? (
-                    nameVersion
-                  ) : (
-                    <button
-                      className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
-                      onClick={() => onShowDiffChange?.(!showDiff)}
-                      type="button"
-                    >
-                      {showDiff ? "Show version" : "Diff vs current"}
-                    </button>
-                  )}
-                  <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
-                </div>
+                {version === undefined || !versionControls ? null : nameVersion}
+                {versionControls ? (
+                  <div className="flex items-center gap-3">
+                    {version === undefined ? (
+                      nameVersion
+                    ) : (
+                      <button
+                        className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+                        onClick={() => onShowDiffChange?.(!showDiff)}
+                        type="button"
+                      >
+                        {showDiff ? "Show version" : "Diff vs current"}
+                      </button>
+                    )}
+                    <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
+                  </div>
+                ) : null}
               </div>
             )}
           </div>

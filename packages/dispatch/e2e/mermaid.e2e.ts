@@ -21,7 +21,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { createComment, createIssue, createProject, editComment, getArtifactText } from "./api";
-import { blockId, documentEditor, openSpec, placeCaret } from "./editor";
+import { blockId, documentEditor, openSpec, placeCaret, specAddress } from "./editor";
 import {
   expectHeldAndResponsive,
   failMermaidWorkersOnCall,
@@ -606,7 +606,7 @@ test("a block link below a diagram lands on its block once the diagram draws", a
   try {
     const page = await alice.newPage();
     await holdMermaidWorkers(page);
-    await page.goto(`/issues/${issue.key}/spec#b-${target}`);
+    await page.goto(`${await specAddress(issue.key)}#b-${target}`);
     const editor = documentEditor(page);
     const paragraph = editor.getByText("Target paragraph", { exact: true });
     const diagram = diagramIn(editor);
@@ -643,7 +643,7 @@ test("a reader who scrolls after a block link lands is not pulled back once the 
   try {
     const page = await alice.newPage();
     await holdMermaidWorkers(page);
-    await page.goto(`/issues/${issue.key}/spec#b-${target}`);
+    await page.goto(`${await specAddress(issue.key)}#b-${target}`);
     const editor = documentEditor(page);
     const paragraph = editor.getByText("Target paragraph", { exact: true });
     const diagram = diagramIn(editor);

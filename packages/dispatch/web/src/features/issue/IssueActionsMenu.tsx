@@ -40,8 +40,12 @@ export function IssueActionsMenu({ actions }: { actions: readonly IssueAction[] 
         setOpen(false);
       }
     };
+    // The press is the open group's alone, as a menu's is: the page's own Escape - which closes
+    // a document opened in place of the outline (`OpenedDocument.tsx`) - waits for the next one.
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setOpen(false);
     };
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape);

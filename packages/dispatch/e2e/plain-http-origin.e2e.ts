@@ -1,5 +1,5 @@
 import { createComment, createIssue, createProject, getArtifactText } from "./api";
-import { connectedDot, documentEditor, typeAtEnd } from "./editor";
+import { connectedDot, documentEditor, specAddress, typeAtEnd } from "./editor";
 import { httpsTarget, plainHttpHost, plainHttpSkipReason } from "./plain-http-origin";
 import { expect, type Page, test } from "./test";
 import { asPlainHttpUser } from "./users";
@@ -44,7 +44,7 @@ test("a document opens and takes a new paragraph with no page error", async ({ b
     const page = await alice.newPage();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(`${error.name}: ${error.message}`));
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expectPlainHttpOrigin(page);
     await expect(documentEditor(page)).toContainText("Ship it.");
     await expect(connectedDot(page)).toHaveText("connected");

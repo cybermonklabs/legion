@@ -139,6 +139,8 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `t a` | Open the Files and documents menu |
 | `t f` | Filter the preset |
 | `Escape` | Back out of the focused status or priority |
+| `Enter` on a file in **Files and documents** | Open it in place of the tree |
+| `Escape` in a document opened in place of the tree | Leave its text, then close it and go back to the tree |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,
 where the key belongs to that control.

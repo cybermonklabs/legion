@@ -10,10 +10,10 @@ import { blockNodeId } from "./tree-drafts";
  * `dispatch://INFRA-1196/artifact/plan-md#b-t9`).
  *
  * Every address the old page's nine tabs answered still resolves, and this module is the one
- * place that says what each one opens: which preset, which node the page unfolds the path to
- * and puts the focus on, which state the conversation is in, whether the node menu is open, and
- * which version of the preset's document is pinned. `refs/routes.ts` still parses the address;
- * this reads the route it answers.
+ * place that says what each one opens: which preset, which document is opened in place of the
+ * outline, which node the page unfolds the path to and puts the focus on, which state the
+ * conversation is in, whether the node menu is open, and which version is pinned.
+ * `refs/routes.ts` still parses the address; this reads the route it answers.
  *
  * It is pure and holds no React, so the page, the margin's panel and the unit tests all read an
  * address the same way.
@@ -38,23 +38,26 @@ export type AddressTarget =
    *  row and leaves the focus alone: a row focused there scrolls the page back off that turn,
    *  and on a phone it is what the comment's thread restores the focus to when the reader
    *  closes it. */
-  | { readonly kind: "turn"; readonly id: string }
-  /** One node by its own id inside the issue, which is how a document is named by its slug. */
-  | { readonly kind: "node"; readonly id: string };
+  | { readonly kind: "turn"; readonly id: string };
 
 /** What one address of the issue page opens. */
 export interface IssueAddress {
   /** The conversation's state the address names, or undefined for one that names none, where
    *  the panel opens in the state the reader kept (`IssuePage`, R13). */
   readonly conversation: ConversationState | undefined;
+  /** The slug of the document or file the address opens in place of the outline: its own
+   *  address, `/artifacts/<slug>` (R3, R20). The issue's spec is opened at its slug like every
+   *  other document; `/spec` is the Spec filter. Undefined for every other address. */
+  readonly document: string | undefined;
   /** What `?q=` narrows the preset to; `""` for an address that narrows nothing. */
   readonly filter: string;
-  /** Whether the address opens the node menu, which `/artifacts` does (R16). */
+  /** Whether the address opens the node menu, which `/artifacts` does (R20). */
   readonly nodeMenu: boolean;
   readonly preset: Preset;
   /** The node the address names, which the page unfolds the path to and focuses (R19). */
   readonly target: AddressTarget | undefined;
-  /** The version of the preset's document the address pins (`?v=`). */
+  /** The version the address pins (`?v=`): of the document it opens, and otherwise of the
+   *  document the filter's version control reads. */
   readonly version: number | undefined;
 }
 
@@ -137,25 +140,21 @@ function routeTarget(route: IssueRoute, specSlug: string | undefined): AddressTa
     if (block !== undefined) {
       return { document: routeDocument(route, specSlug), id: block.id, kind: "block" };
     }
-    return route.kind === "artifact" ? { id: route.slug, kind: "node" } : undefined;
   }
   return undefined;
 }
 
 /**
- * What the address `route` + `search` + `hash` opens. `isPrimaryDocument` says the route names
- * the issue's own spec by its slug (`/artifacts/<spec>`), which is the Spec preset's address as
- * much as `/spec` is, and `specSlug` is that spec's slug, which a block a `/spec` address names
- * is looked up in; undefined until the issue's documents are read. The fragment outranks the
- * route's own target, because a reader who wrote `#b-` meant that block; `?ask=` and
- * `?comment=` outrank both, because they are what a deep link into a question or a comment
- * carries.
+ * What the address `route` + `search` + `hash` opens. `specSlug` is the slug of the issue's
+ * spec, which a block a `/spec` address names is looked up in; undefined until the issue's
+ * documents are read. The fragment outranks the route's own target, because a reader who wrote
+ * `#b-` meant that block; `?ask=` and `?comment=` outrank both, because they are what a deep
+ * link into a question or a comment carries.
  */
 export function issueAddress(
   route: IssueRoute,
   search: string,
   hash: string,
-  isPrimaryDocument: boolean,
   specSlug: string | undefined
 ): IssueAddress {
   const query = new URLSearchParams(search);
@@ -171,11 +170,20 @@ export function issueAddress(
     block === undefined
       ? routeTarget(route, specSlug)
       : { document: routeDocument(route, specSlug), id: block, kind: "block" };
+  // A `/spec` address that names something in the spec - a comment (`?comment=`) or a block
+  // (`#b-`) - named content the old page opened the spec at, so it opens the spec, as the spec's
+  // own address with the same query and fragment does (R20). Plain `/spec` is the Spec filter,
+  // and which block opens the outline instead is the page's to say (`IssuePage.tsx`'s
+  // `useOpensDocument`).
+  const namesSpecContent =
+    route.kind === "spec" &&
+    (item?.kind === "comment" || (item == null && named?.kind === "block"));
   return {
     conversation: ROUTE_CONVERSATION_STATES[route.kind],
+    document: route.kind === "artifact" ? route.slug : namesSpecContent ? specSlug : undefined,
     filter: query.get("q") ?? "",
     nodeMenu: route.kind === "artifacts",
-    preset: isPrimaryDocument ? "spec" : (ROUTE_PRESETS[route.kind] ?? "tree"),
+    preset: ROUTE_PRESETS[route.kind] ?? "tree",
     target: item === null || item === undefined ? named : { id: item.id, kind: "item" },
     version: pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined),
   };
@@ -220,7 +228,7 @@ export function pathToTarget(
     return pathToNode(root, (node) => node.id.endsWith(suffix));
   }
   const byId = pathToNode(root, (node) => node.id === target.id);
-  if (byId !== undefined || target.kind === "node") return byId;
+  if (byId !== undefined) return byId;
   const address = `/${target.id}`;
   return pathToNode(root, (node) => node.reference?.endsWith(address) === true);
 }

@@ -2,8 +2,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { EVENT_HEAD_RETRY_CEILING_MS } from "../web/src/api/query-client";
 import { baseUrl, createIssue, createProject, sessionCookieName } from "./api";
-import { holdFirstRequest } from "./editor";
-import { pickPreset } from "./issue-page";
+import { holdFirstRequest, specAddress } from "./editor";
+import { navigateInApp } from "./sends";
 import { failBuildScript, missEntryChunk, recordTabReloads, tabReloads } from "./shell";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -197,11 +197,12 @@ test("a chunk that fails after a Download link was followed reloads the page @pr
 
   try {
     // The Artifacts tab is gone with the tablist (dispatch://INFRA-1196 R3), so the reader
-    // opens that address first, starts the spec's transport from the Spec preset, and comes
-    // back inside the page: one document load, with the transport still held, which is the
-    // state this test needs.
+    // opens that address first, which opens the node menu with each file's download, starts the
+    // spec's transport by opening the spec at its own address inside the page, and comes back
+    // inside the page: one document load, with the transport still held, which is the state this
+    // test needs.
     await page.goto(`/issues/${issue.key}/artifacts`);
-    await pickPreset(page, "Spec");
+    await navigateInApp(page, await specAddress(issue.key));
     const held = await transportCode.held;
     await page.goBack();
     await expect(page.getByRole("link", { name: "Download version 1" })).toBeVisible();
@@ -388,8 +389,7 @@ test("the document editor renders headings and ordered lists with real typograph
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/issues/${issue.key}`);
-  await pickPreset(page, "Spec");
+  await page.goto(await specAddress(issue.key));
 
   await expect(page.getByRole("heading", { level: 1, name: "Title" })).toBeVisible();
   await expect(page.getByRole("heading", { level: 2, name: "Section" })).toBeVisible();

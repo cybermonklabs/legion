@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -11,6 +12,7 @@ import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
+import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { NoTooltips } from "../../components/tooltips";
@@ -26,33 +28,26 @@ import { ConversationTab } from "../conversation/ConversationTab";
 import { conversationScrollport } from "../conversation/use-follow-latest";
 import { useFillMarginSlot, useMarginDrawsSlot } from "../margin/margin-slot";
 import { statusText } from "../project/board-model";
-import {
-  buildReferencePath,
-  documentRoute,
-  type IssueRoute,
-  type IssueTab,
-  parseIssuePath,
-} from "../refs/routes";
+import { buildIssuePath, type IssueRoute, type IssueTab, parseIssuePath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { ISSUE_FRAME, usePageFrame } from "../shell/page-frame";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
 import { narrowConversation } from "./conversation-states";
 import { DocumentStages } from "./document-stage";
-import { drawnDocuments, editedDocument } from "./drawn-documents";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
 import { IssueBody } from "./IssueBody";
 import { IssueHeader } from "./IssueHeader";
 import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
-import { conversationStatePath, issueAddress } from "./issue-address";
-import { artifactsBySlug, documentOfNode } from "./issue-artifacts";
-import { PresetToolbar } from "./PresetToolbar";
+import { conversationStatePath, type IssueAddress, issueAddress } from "./issue-address";
+import { OpenedDocument } from "./OpenedDocument";
 import {
   CONVERSATION_STATE_ORDER,
   type ConversationState,
   NODE_TYPE_NAMES,
+  NODE_TYPES,
   sentenceCase,
 } from "./page-words";
 import { stateForIssue } from "./pins";
@@ -61,6 +56,7 @@ import { useIssueDetail } from "./useIssueDetail";
 import { useIssueKeymap } from "./useIssueKeymap";
 import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
+import { VersionControl } from "./VersionControl";
 
 /* The issue page's own root is `ISSUE_FRAME` (`features/shell/page-frame.tsx`), which the
    shell also marks from the address alone until this page registers it, so a reload lands on
@@ -135,6 +131,36 @@ function writeConversationState(state: ConversationState): string {
   return state;
 }
 
+/** The outline address a navigation carried in its state (`NodeMenu.tsx`), if it carried one. */
+function outlineOf(state: unknown): string | undefined {
+  if (typeof state !== "object" || state === null || !("outline" in state)) return undefined;
+  return typeof state.outline === "string" ? state.outline : undefined;
+}
+
+/**
+ * Whether the address opens its document in place of the outline (R3, R20). A document's own
+ * address opens the document, with one exception: an address naming a block of it that the
+ * outline holds as a node - a typed block, which a citation of a check or a plan task names - is
+ * where that block now stands, so it opens the outline at that node, as it did before the
+ * document was taken out from under the outline. A block no node holds - a paragraph of the
+ * document's own text - opens the document at the block. Which blocks are typed is the blocks
+ * read the outline is built from, so this asks it under the same key and sends nothing of its
+ * own; until it answers, the address draws the outline it most likely names.
+ */
+function useOpensDocument(address: IssueAddress, artifact: Artifact | undefined): boolean {
+  const block = address.target?.kind === "block" ? address.target.id : undefined;
+  const asksBlocks = address.document !== undefined && block !== undefined;
+  const blocks = useQuery({
+    ...artifactBlocksQuery(artifact?.id ?? ""),
+    enabled: asksBlocks && artifact?.kind === "doc",
+  });
+  if (address.document === undefined) return false;
+  if (!asksBlocks || artifact?.kind !== "doc") return true;
+  if (blocks.data === undefined) return blocks.isError;
+  const types: readonly string[] = NODE_TYPES;
+  return !blocks.data.some((one) => one.id === block && types.includes(one.type));
+}
+
 function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const {
     activeTab,
@@ -142,7 +168,6 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     askId,
     commentId,
     conversationFocusItemId,
-    isPrimaryArtifactRoute,
     highlightTerm,
     issue,
     primaryArtifact,
@@ -152,7 +177,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     verificationArtifact,
   } = useIssueDetail(route);
   const landing = useItemLanding(route, issue.data);
-  const { hash, pathname, search } = useLocation();
+  const { hash, pathname, search, state: locationState } = useLocation();
   const navigate = useNavigate();
   const panelScroll = useRef<Partial<Record<IssueTab, number>>>({});
   const { diffs, showDiff, toolbarSink, toolbars } = useDocumentToolbars();
@@ -160,10 +185,23 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // that row to take onto its own stage (`document-stage.tsx`).
   const [editing, setEditing] = useState<string | undefined>(undefined);
 
-  // What this address opens: its preset, the node it names, the conversation's state, the
-  // filter and the version it pins (`issue-address.ts`). A block a `/spec` address names is the
-  // spec's own, looked up in the spec by its slug.
-  const address = issueAddress(route, search, hash, isPrimaryArtifactRoute, primaryArtifact?.slug);
+  // What this address opens: its preset, the document it opens, the node it names, the
+  // conversation's state, the filter and the version it pins (`issue-address.ts`). A block a
+  // `/spec` address names is the spec's own, looked up in the spec by its slug.
+  const address = issueAddress(route, search, hash, primaryArtifact?.slug);
+  // The document the address opens in place of the outline (R3, R20): a document's own address,
+  // and a `/spec` address that names a comment or a block of the spec, which opens the spec as
+  // `/artifacts/<spec>` with the same query and fragment does (`issue-address.ts`).
+  const documentRoute: Extract<IssueRoute, { kind: "artifact" }> | undefined =
+    artifactRoute ??
+    (route.kind !== "spec" || address.document === undefined
+      ? undefined
+      : address.version === undefined
+        ? { key: route.key, kind: "artifact", slug: address.document }
+        : { key: route.key, kind: "artifact", slug: address.document, version: address.version });
+  const documentArtifact =
+    artifactRoute === undefined && documentRoute !== undefined ? primaryArtifact : selectedArtifact;
+  const opensDocument = useOpensDocument(address, documentArtifact);
   // Which state the conversation is in. The reader's pick is kept for their login in this
   // browser, the way this page already keeps the children section and the panel's collapsed
   // property sections (`features/shell/userPreference.ts`, `useChildrenSection.ts`,
@@ -295,10 +333,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     () => new Map((issue.data?.artifacts ?? []).map((artifact) => [artifact.id, artifact])),
     [issue.data?.artifacts]
   );
-  // Once a panel's tab has ever been active, keep rendering its content even
-  // while hidden — that is what keeps the Spec document connected and the Conversation's read
-  // observer alive across tab switches (see the `hidden` panels below). A panel the user has
-  // never opened stays unmounted, so a fresh page load doesn't pay for panels it never shows.
+  // Once a panel's tab has ever been active, keep rendering its content even while hidden -
+  // that is what keeps the Conversation's read observer and the history alive across a move to
+  // another address (see the `hidden` panels below). A panel the user has never opened stays
+  // unmounted, so a fresh page load doesn't pay for panels it never shows.
   const [activatedTabs, setActivatedTabs] = useState<Record<IssueTab, boolean>>(() => ({
     activity: activeTab === "activity",
     artifacts: activeTab === "artifacts",
@@ -476,54 +514,101 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const issueState = stateForIssue(state.data, issue.data.key);
   const isClosed = issue.data.closed_at !== null;
   const issueKey = issue.data.key;
-  const selectDocumentVersion = (artifact: Artifact, version: number | null) =>
-    navigate(buildReferencePath(documentRoute(artifact, version ?? undefined)));
-  // Which version of the spec the page reads: the version a `/artifacts/<spec>` route carries,
-  // and the `?v=` the issue's own `/spec` address holds, which is the address a reference to a
-  // version of the spec resolves to (R19, c-urls).
-  const specVersion = address.preset === "spec" ? address.version : undefined;
-  // What the page draws beside the tree where the address names no document preset: the
-  // issue's own address opens the spec there (`refs/routes.ts`'s `issueTabForRoute`). The
-  // Decisions preset draws no document, and a node-menu address draws its own panel, which
-  // carries that document's controls itself.
-  const drawnBesideTree =
-    activeTab === "spec" && (artifactRoute === undefined || isPrimaryArtifactRoute)
-      ? primaryArtifact
+  // The document the filters' version control reads while the outline is drawn (R2): the
+  // document of the filter's role, whose typed blocks the filter draws on an issue the
+  // conversion has not reached, and with no filter on the issue's spec, as the Design's picture
+  // of such an issue draws it. The Decisions filter has no document of its role and draws none.
+  const filterDocument = (
+    {
+      checks: verificationArtifact,
+      decisions: undefined,
+      plan: planArtifact,
+      spec: primaryArtifact,
+      tree: primaryArtifact,
+    } as const
+  )[address.preset];
+  // The outline the reader goes back to from a document they opened: the address they opened
+  // it from, which the node menu hands over (`NodeMenu.tsx`), and the issue's own otherwise.
+  const outline = outlineOf(locationState) ?? buildIssuePath({ key: issueKey, kind: "issue" });
+  // A version picked in the outline pins the filter's address to it (`?v=`), and keeps its
+  // words filter; the fragment is a node of the version the reader is leaving.
+  const pinFilterVersion = (version: number | null) => {
+    const query = new URLSearchParams(search);
+    if (version === null) query.delete("v");
+    else query.set("v", String(version));
+    const rest = query.toString();
+    navigate(`${pathname}${rest === "" ? "" : `?${rest}`}`);
+  };
+  // A document opened at a version of its own: its own address at that version, which keeps
+  // the outline it was opened from to go back to.
+  const openDocumentAt = (artifact: Artifact, version: number | undefined) =>
+    navigate(buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug, version }), {
+      state: { outline },
+    });
+  const outlineToolbar =
+    filterDocument === undefined ? undefined : (
+      <VersionControl
+        artifact={filterDocument}
+        isClosed={isClosed}
+        // Nothing in the outline is the document's text to draw a comparison over, so the
+        // comparison opens the document at the pinned version with its changes drawn.
+        onShowDiffChange={(next) => {
+          showDiff(filterDocument.id, next);
+          if (next) openDocumentAt(filterDocument, address.version);
+        }}
+        onVersionChange={pinFilterVersion}
+        showDiff={false}
+        toolbar={toolbars.get(filterDocument.id)}
+        version={address.version}
+      />
+    );
+  const opened = opensDocument && documentRoute !== undefined ? documentArtifact : undefined;
+  const openedId = opened?.id ?? "";
+  const openedDocument =
+    opensDocument && documentRoute !== undefined
+      ? {
+          panel: (
+            <OpenedDocument
+              artifact={documentArtifact}
+              artifactRoute={documentRoute}
+              askId={askId}
+              commentId={commentId}
+              highlightTerm={highlightTerm}
+              isClosed={isClosed}
+              issueKey={issueKey}
+              onShowDiff={(next) => showDiff(openedId, next)}
+              onToolbarChange={toolbarSink(openedId)}
+              onVersionChange={(version) =>
+                opened === undefined ? undefined : openDocumentAt(opened, version ?? undefined)
+              }
+              outline={outline}
+              showDiff={diffs.has(openedId)}
+              toolbar={toolbars.get(openedId)}
+            />
+          ),
+          toolbar:
+            opened === undefined || opened.kind !== "doc" ? undefined : (
+              <VersionControl
+                artifact={opened}
+                isClosed={isClosed}
+                onShowDiffChange={(next) => showDiff(opened.id, next)}
+                onVersionChange={(version) => {
+                  showDiff(opened.id, false);
+                  openDocumentAt(opened, version ?? undefined);
+                }}
+                showDiff={diffs.has(opened.id)}
+                toolbar={toolbars.get(opened.id)}
+                version={documentRoute.version}
+              />
+            ),
+        }
       : undefined;
-  // Whose toolbar the preset row draws: the document the preset has open, and on the Tree and
-  // Decisions presets, which draw nodes of every document, the focused node's own (R16). A
-  // focus on a node that belongs to no document falls back to the document the page is drawing
-  // beside the tree, because that document is open in front of the reader and its version
-  // picker, its name-a-version control and its approval are controls it has nowhere else
-  // (R18, c-nothing-lost); a preset that draws no document at all leaves the row with no
-  // toolbar.
-  const openDocument =
-    address.preset === "spec"
-      ? primaryArtifact
-      : address.preset === "checks"
-        ? verificationArtifact
-        : address.preset === "plan"
-          ? planArtifact
-          : (documentOfNode(focused.id, artifactsBySlug(issue.data))?.artifact ?? drawnBesideTree);
-  const openToolbar = openDocument === undefined ? undefined : toolbars.get(openDocument.id);
-  const openVersion = openDocument?.id === primaryArtifact.id ? specVersion : undefined;
-  // The item an address names (`?ask=`, `?comment=`) is handed to the spec's editor only where
-  // the Spec preset is what the address opens. On every other preset the document is content
-  // beside the tree, and the tree is what the address names (R19): an editor that focused the
-  // item there would take the focus off the row the reader was sent to.
-  //
-  // Which documents the panels below have open, and the one a row of the tree is being edited
-  // in where no panel has that document open: one answer, read here and by the panels
-  // themselves (`drawn-documents.ts`), so one document has one editor and never two.
-  const documents = drawnDocuments({
-    activated: activatedTabs,
-    otherDocument: artifactRoute !== undefined && !isPrimaryArtifactRoute,
-    plan: planArtifact,
-    selected: selectedArtifact,
-    spec: primaryArtifact,
-    verification: verificationArtifact,
-  });
-  const edited = editedDocument(documents, editing, issue.data.artifacts ?? []);
+  // The document a row of the outline is being edited in. A document opened in place of the
+  // outline leaves no row to edit in, so one document never has two editors.
+  const edited =
+    editing === undefined || openedDocument !== undefined
+      ? undefined
+      : issue.data.artifacts?.find((artifact) => artifact.id === editing);
 
   return (
     // A flex column, so the identity block's fourth row can be drawn at its end on a phone
@@ -543,34 +628,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           restoringTo={restoringTo}
           state={issueState}
         />
-        {/* The head of the page, the preset row, the children section and the one folded tree
-          the presets are queries over (R1, R3, R5, R10), on every address. A preset's nodes
-          are the tree's; the panels below hold the documents those nodes live in, and a row
-          being edited takes its own document onto its stage (`document-stage.tsx`). */}
+        {/* The head of the page, the preset row, and the children section with the one folded
+          tree the presets are queries over (R1, R3, R5, R10) - or the document the address
+          opens, in their place. A row being edited takes its own document's editor onto its
+          stage (`document-stage.tsx`). */}
         <IssueBody
           address={address}
           isClosed={isClosed}
           issue={issue.data}
           onEditing={setEditing}
           onLeave={recordScroll}
+          openedDocument={openedDocument}
           plan={planArtifact}
-          toolbar={
-            openDocument !== undefined && openToolbar !== undefined ? (
-              <PresetToolbar
-                artifact={openDocument}
-                isClosed={isClosed}
-                onShowDiffChange={(next) => showDiff(openDocument.id, next)}
-                onVersionChange={(version) => {
-                  showDiff(openDocument.id, false);
-                  selectDocumentVersion(openDocument, version);
-                }}
-                reference={documentRoute(openDocument, openVersion)}
-                showDiff={diffs.has(openDocument.id)}
-                toolbar={openToolbar}
-                version={openVersion}
-              />
-            ) : undefined
-          }
+          toolbar={outlineToolbar}
         />
         {/* Wherever the shell's margin draws no panel of its own - at the width it is a sheet,
           and while the reader has collapsed it to its rail - the panel's stage is held here,
@@ -603,28 +673,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
         <IssuePresetPanels
           activatedTabs={activatedTabs}
           activeTab={activeTab}
-          artifactRoute={artifactRoute}
-          askId={askId}
-          commentId={commentId}
           conversationState={conversationState}
-          diffs={diffs}
-          documents={documents}
           editedDocument={edited}
-          highlightTerm={highlightTerm}
           isClosed={isClosed}
-          isPrimaryArtifactRoute={isPrimaryArtifactRoute}
           issueKey={issueKey}
-          onShowDiff={showDiff}
           onToolbarSink={toolbarSink}
-          onVersionChange={selectDocumentVersion}
-          planArtifact={planArtifact}
-          route={route}
-          selectedArtifact={selectedArtifact}
-          specOpensItem={address.preset === "spec"}
-          specVersion={specVersion}
+          onVersionChange={(artifact, version) => openDocumentAt(artifact, version ?? undefined)}
           state={state.data}
-          toolbars={toolbars}
-          verificationArtifact={verificationArtifact}
         />
       </section>
     </NoTooltips>

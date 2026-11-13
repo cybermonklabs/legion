@@ -2,6 +2,7 @@ import { type AddressInfo, createServer, type Socket } from "node:net";
 
 import { type DispatchEvent, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { expiredRetryNote } from "../web/src/features/writes/keyed-write";
 import {
   baseUrl,
@@ -32,6 +33,17 @@ import { httpsTarget, plainHttpSkipReason } from "./plain-http-origin";
 import { sql } from "./psql";
 import { expect, type Locator, type Page, test } from "./test";
 import { asPlainHttpUser, asUser } from "./users";
+
+/** The download of version `version` of the file `name`, which its item of the node menu
+ *  carries for the latest version (dispatch://INFRA-1196 R3): the item the Artifacts tab's row
+ *  became, and the reading of how many versions the upload left. */
+function latestDownload(page: Page, name: string, version: number): Locator {
+  return page
+    .getByRole("menu")
+    .getByRole("menuitem")
+    .filter({ has: page.getByRole("button", { exact: true, name }) })
+    .getByRole("link", { exact: true, name: `Download version ${version}` });
+}
 
 // Every write the page makes goes under an `Idempotency-Key` minted for the person's one action,
 // and the page tries it again under that key until Dispatch answers it (`ApiClient.send`). These
@@ -568,7 +580,7 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
     await openIssueAddress(page, "artifacts");
-    await page.getByLabel("Upload artifact").setInputFiles({
+    await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
       mimeType: "application/octet-stream",
       name: "slow-link.bin",
@@ -611,7 +623,7 @@ test("an upload throttled to take 30 s is one attempt and lands once @pr", async
 
     expect(keys).toEqual([expect.any(String)]);
     await expect.poll(() => answers).toEqual([expect.objectContaining({ status: 201 })]);
-    await expect(page.getByTestId("artifact-slow-link-bin")).toContainText("1 version");
+    await expect(latestDownload(page, "slow-link.bin", 1)).toBeVisible();
   } finally {
     await alice.close();
   }
@@ -651,7 +663,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
     await openIssueAddress(page, "artifacts");
-    await page.getByLabel("Upload artifact").setInputFiles({
+    await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
       mimeType: "application/octet-stream",
       name: "in-flight.bin",
@@ -704,7 +716,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     const key = first?.key;
     expect(key).toEqual(expect.any(String));
     expect(repeats.every((repeat) => repeat.key === key)).toBe(true);
-    await expect(page.getByTestId("artifact-in-flight-bin")).toContainText("1 version");
+    await expect(latestDownload(page, "in-flight.bin", 1)).toBeVisible();
     expect(
       await sql(
         `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.issue_key = '${issue.key}' and a.name = 'in-flight.bin'`
@@ -822,7 +834,7 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     };
     await page.goto(`/issues/${issue.key}`);
     await openArtifacts();
-    await page.getByLabel("Upload artifact").setInputFiles({
+    await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles({
       buffer: Buffer.from("kept through a retry\n"),
       mimeType: "application/octet-stream",
       name: "once.bin",
@@ -853,9 +865,7 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
     answers = "through";
     await page.reload();
     await openArtifacts();
-    await expect(page.getByTestId("artifact-once-bin")).toContainText("1 version", {
-      timeout: 10_000,
-    });
+    await expect(latestDownload(page, "once.bin", 1)).toBeVisible({ timeout: 10_000 });
     await expect(indicator).toHaveCount(0);
     await expect.poll(() => keptWrites(page)).toBe(0);
     expect(keys.length).toBeGreaterThanOrEqual(4);

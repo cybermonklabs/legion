@@ -99,10 +99,13 @@ import { navigateInApp } from "./sends";
  *   what "the ancestors faint and reachable with the arrow keys" is read by. c-presets.
  * - **`[data-testid="issue-filter"]`**, the filter the preset's filter key opens: a `searchbox`
  *   carrying the query. c-keyboard (`t f`), c-urls (`?q=`).
- * - **`[data-testid="issue-preset-toolbar"]`**, the toolbar of the preset whose document is open,
- *   holding the version picker, the name-a-version control and the approval control, which the
- *   Design section puts there. c-urls (`?v=`), c-home (the approval), c-nothing-lost (naming a
+ * - **`[data-testid="issue-version-control"]`**, the version control beside the filters, holding
+ *   the version picker, the name-a-version control and the link, which reads the document
+ *   opened in place of the outline and, with none opened, the filter's own document; it holds
+ *   no approval, which stays in the identity block. c-urls (`?v=`), c-nothing-lost (naming a
  *   version).
+ * - **`[data-testid="opened-artifact"]`**, the document or file an address opens in place of
+ *   the outline, named by its own name. c-nodes, c-urls.
  * - **`[data-conversation-state]`** on each of the conversation's four state controls, with
  *   `aria-selected` saying which state the panel is in. c-urls (`/conversation`, `/activity`),
  *   c-one-panel.
@@ -359,18 +362,28 @@ export function filterBox(page: Page): Locator {
   return page.getByTestId("issue-filter");
 }
 
-/** The toolbar of the preset whose document is open: the version picker, the name-a-version
- *  control and the approval control. */
-export function presetToolbar(page: Page): Locator {
-  return page.getByTestId("issue-preset-toolbar");
+/** The version control beside the filters: the version picker, the name-a-version control, the
+ *  link, and beside an open editor its live connection (`VersionControl.tsx`). */
+export function versionControl(page: Page): Locator {
+  return page.getByTestId("issue-version-control");
 }
 
-/** Which version of the open document the toolbar is showing, as the picker's own value: the
- *  empty string for the current version and the number of a pinned one. The toolbar's text
- *  cannot say it - a `select`'s option texts are part of its container's `innerText`, so
- *  "Version 1" is in that text whichever version is shown - so the value is what is read. */
+/** Which version the version control is showing, as the picker's own value: the empty string
+ *  for the current version and the number of a pinned one. The control's text cannot say it - a
+ *  `select`'s option texts are part of its container's `innerText`, so "Version 1" is in that
+ *  text whichever version is shown - so the value is what is read. */
 export function versionPicker(page: Page): Locator {
-  return presetToolbar(page).getByRole("combobox", { exact: true, name: CONTROL_LABELS.version });
+  return versionControl(page).getByRole("combobox", { exact: true, name: CONTROL_LABELS.version });
+}
+
+/** The document or file opened in place of the outline (`ArtifactRoutePanel.tsx`). */
+export function openedArtifact(page: Page): Locator {
+  return page.getByTestId("opened-artifact");
+}
+
+/** The editor of a document opened in place of the outline. */
+export function openedEditor(page: Page): Locator {
+  return openedArtifact(page).getByRole("textbox", { name: "Document editor" });
 }
 
 /** The issue page's own slot in the shell's margin. */

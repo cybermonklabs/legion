@@ -3,6 +3,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 
 import {
   createAsk,
@@ -13,15 +14,16 @@ import {
   dashboardOrigin,
   editArtifact,
   getArtifactText,
+  listIssueArtifacts,
 } from "./api";
-import { countDocumentSockets, documentEditor, documentTransport, typeAtEnd } from "./editor";
 import {
-  openIssueAddress,
-  pickPreset,
-  presetChooser,
-  presetTablist,
-  presetTabs,
-} from "./issue-page";
+  countDocumentSockets,
+  documentEditor,
+  documentTransport,
+  specAddress,
+  typeAtEnd,
+} from "./editor";
+import { openIssueAddress, presetChooser, presetTablist, presetTabs } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, type TestInfo, test } from "./test";
 
@@ -53,6 +55,18 @@ async function openArtifacts(page: Page, isPhone: boolean) {
   await openIssueAddress(page, "artifacts");
 }
 
+/** The node menu's item for the file `name`. The menu took the Artifacts tab's list
+ *  (dispatch://INFRA-1196 R3, the Design's "Where each thing goes"), and its item carries what
+ *  the list's row offered beside the file: the control that opens it, its copy control, its
+ *  latest version's download and, for a document the issue can drop, Remove. The file's versions,
+ *  its picture and what references it are on its own page, which the item opens. */
+function menuItem(page: Page, name: string): Locator {
+  return page
+    .getByRole("menu")
+    .getByRole("menuitem")
+    .filter({ has: page.getByRole("button", { exact: true, name }) });
+}
+
 // Choosing a file only stages it; the row then shows a Summary field plus a confirming
 // "Upload" button (or "Cancel" to discard the pick) before it actually creates the version.
 async function confirmUpload(page: Page): Promise<void> {
@@ -80,41 +94,41 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   });
   await createAsk(issue.key, { question: "Can this ship?" });
 
-  await page.goto(`/issues/${issue.key}`);
-  await pickPreset(page, "Spec");
+  await page.goto(await specAddress(issue.key));
   await expect(documentEditor(page)).toContainText("The original document.");
   await expect.poll(sockets).toBe(1);
   await openArtifacts(page, testInfo.project.name === "iphone");
 
-  const upload = page.getByLabel("Upload artifact");
+  // The menu's upload stages the picked file, with its Summary, Upload and Cancel.
+  const upload = page.getByLabel(CONTROL_LABELS.upload_file);
   const diagramUpload = await diagramFile(testInfo);
   await upload.setInputFiles(diagramUpload);
   await confirmUpload(page);
-  const diagram = page.getByTestId("artifact-diagram-png");
-  await expect(diagram).toContainText("diagram.png");
-  await expect(diagram).toContainText("1 version");
-  await expect(diagram.getByRole("img", { name: "diagram.png version 1" })).toBeVisible();
+  const diagram = menuItem(page, "diagram.png");
+  await expect(diagram).toBeVisible();
+  await expect(diagram.getByRole("link", { name: "Download version 1" })).toBeVisible();
 
   await upload.setInputFiles(diagramUpload);
   await confirmUpload(page);
-  await expect(diagram).toContainText("2 versions");
   await expect(diagram.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
     "download",
     ""
   );
-  // The tab is a compact row list now — versions, compare, and references live on the
-  // artifact's own page, not stacked under every row.
+  // The menu item is compact: the versions, their count, the picture, the compare and the
+  // references live on the artifact's own page, not under every item.
   await expect(diagram.getByRole("button", { name: "Show all versions" })).toHaveCount(0);
-  await expect(page.getByLabel("Filter artifacts")).toBeVisible();
+  await expect(page.getByLabel(CONTROL_LABELS.filter_files)).toBeVisible();
 
   await navigateInApp(page, `/issues/${issue.key}/artifacts/diagram-png`);
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   await expect(page.getByTestId("artifact-header")).toContainText("diagram.png");
+  await expect(page.getByRole("img", { name: "diagram.png version 2" })).toBeVisible();
   expect(sockets()).toBe(1);
   await page.getByRole("button", { name: "Show all versions" }).click();
   const versions = page.getByRole("region", { exact: true, name: "Versions for diagram.png" });
   await expect(versions).toContainText("Version 1");
   await expect(versions).toContainText("Version 2");
+  await expect(versions).not.toContainText("Version 3");
   await expect(versions).toContainText("SHA-256");
   await expect(versions.getByRole("link", { name: "Download version 2" })).toHaveAttribute(
     "download",
@@ -132,10 +146,10 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
 
   await upload.setInputFiles(await notesFile(testInfo));
   await confirmUpload(page);
-  const notes = page.getByTestId("artifact-notes-md");
-  await expect(notes).toContainText("notes.md");
+  const notes = menuItem(page, "notes.md");
+  await expect(notes).toBeVisible();
   await expect(notes.getByRole("button", { name: /make primary/i })).toHaveCount(0);
-  await pickPreset(page, "Spec");
+  await navigateInApp(page, await specAddress(issue.key));
   await expect(documentEditor(page)).toContainText("The original document.");
 
   await createComment(issue.key, {
@@ -149,7 +163,7 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   // what the feed left.
   await openArtifacts(page, testInfo.project.name === "iphone");
 
-  await diagram.getByRole("link", { name: "diagram.png" }).click();
+  await diagram.getByRole("button", { exact: true, name: "diagram.png" }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/diagram-png`);
   // The panel names the record that cites this artifact and quotes it; its link goes to that
   // source, not back to the artifact the reader is already on.
@@ -164,7 +178,7 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   // One cold load, so the notes.md panel below is read by a page that cached nothing.
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, testInfo.project.name === "iphone");
-  await notes.getByRole("link", { name: "notes.md" }).click();
+  await notes.getByRole("button", { exact: true, name: "notes.md" }).click();
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/notes-md`);
   const notesReferencedBy = page.getByRole("region", { name: "Referenced by" });
   await expect(notesReferencedBy).toContainText(`Comment · ${issue.key}`);
@@ -207,10 +221,10 @@ test("artifacts upload, version, references, and phone layout @phone @pr", async
   }
 });
 
-// The From/To compare of a document shows what changed as the change view, word by word. It is
-// seeded on a document that is not the issue's primary one, because `ArtifactRoutePanel` mounts
-// `ArtifactDetails` - the version history and this compare - only off the primary document's own
-// route (`isPrimaryDocumentArtifactRoute`, `features/refs/routes.ts`).
+// The From/To compare of a document shows what changed as the change view, word by word. Every
+// artifact's own page draws `ArtifactDetails` - the version history and this compare - the spec's
+// as much as any other (`ArtifactRoutePanel`); the row compares a second document so the spec's
+// own text stays out of the comparison.
 test("the version history compares two versions of a document with the change view", async ({
   page,
 }) => {
@@ -250,32 +264,62 @@ test("the version history compares two versions of a document with the change vi
   await expect(changed.locator("ins")).toHaveText(["seven"]);
 });
 
-test("the artifacts tab filter narrows rows by name and kind", async ({ page }, testInfo) => {
+test("the node menu's filter narrows its files by name and kind", async ({ page }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Artifact filtering" });
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, false);
 
-  const upload = page.getByLabel("Upload artifact");
+  const upload = page.getByLabel(CONTROL_LABELS.upload_file);
+  const diagram = menuItem(page, "diagram.png");
+  const notes = menuItem(page, "notes.md");
   await upload.setInputFiles(await diagramFile(testInfo));
   await confirmUpload(page);
-  await expect(page.getByTestId("artifact-diagram-png")).toBeVisible();
+  await expect(diagram).toBeVisible();
   await upload.setInputFiles(await notesFile(testInfo));
   await confirmUpload(page);
-  await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
+  await expect(notes).toBeVisible();
 
-  const filter = page.getByLabel("Filter artifacts");
+  const filter = page.getByLabel(CONTROL_LABELS.filter_files);
   await filter.fill("notes");
-  await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
-  await expect(page.getByTestId("artifact-diagram-png")).toHaveCount(0);
+  await expect(notes).toBeVisible();
+  await expect(diagram).toHaveCount(0);
 
   await filter.fill("image");
-  await expect(page.getByTestId("artifact-diagram-png")).toBeVisible();
-  await expect(page.getByTestId("artifact-notes-md")).toHaveCount(0);
+  await expect(diagram).toBeVisible();
+  await expect(notes).toHaveCount(0);
 
   await filter.fill("");
-  await expect(page.getByTestId("artifact-diagram-png")).toBeVisible();
-  await expect(page.getByTestId("artifact-notes-md")).toBeVisible();
+  await expect(diagram).toBeVisible();
+  await expect(notes).toBeVisible();
+});
+
+// The node menu's upload stages a picked file as the Artifacts list's did (dispatch://INFRA-1196
+// R19, "nothing lost"): the file's name, an optional Summary for the version it makes, and Upload
+// and Cancel. Cancel sends nothing; Upload sends the file with its summary.
+test("the node menu's upload stages a file with a Summary for its version, and Cancel sends nothing", async ({
+  page,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Staged upload" });
+  const held = (await listIssueArtifacts(issue.key)).length;
+  await page.goto(`/issues/${issue.key}/artifacts`);
+
+  const upload = page.getByLabel(CONTROL_LABELS.upload_file);
+  const summary = page.getByRole("textbox", { name: "Summary (optional)" });
+  await upload.setInputFiles(await notesFile(testInfo));
+  await expect(page.getByText("notes.md", { exact: true })).toBeVisible();
+  await expect(summary).toBeVisible();
+  await page.getByRole("button", { exact: true, name: "Cancel" }).click();
+  await expect(summary).toHaveCount(0);
+  expect(await listIssueArtifacts(issue.key)).toHaveLength(held);
+
+  await upload.setInputFiles(await notesFile(testInfo));
+  await summary.fill("First review notes");
+  await confirmUpload(page);
+  await expect(menuItem(page, "notes.md")).toBeVisible();
+  const notes = (await listIssueArtifacts(issue.key)).find((one) => one.name === "notes.md");
+  expect(notes?.versions?.map((version) => version.summary)).toEqual(["First review notes"]);
 });
 
 // SLOW(>=2s): a real upload the Activity list links, and the keyboard tour of the five presets
@@ -403,7 +447,10 @@ test("an uploaded document is linked from the Activity list and the presets fit 
   await expect(page.getByTestId("artifact-header")).toContainText(name);
 });
 
-test("the Artifacts badge counts the rows the tab lists, and a row's details are not truncated @phone", async ({
+// The Artifacts tab's badge and its rows' detail lines went with the tab (dispatch://INFRA-1196
+// R3): the node menu holds one item per file, whose name is never cut, and a file's version, size
+// and upload time are on its own page.
+test("the node menu lists every file of the issue, and an item's name is not truncated @phone", async ({
   page,
 }) => {
   await createProject({ key: "OPS", name: "Ops" });
@@ -415,18 +462,22 @@ test("the Artifacts badge counts the rows the tab lists, and a row's details are
   await createIssueArtifact(issue.key, { content: "# Audit\n\nOne more.\n", name: "audit.md" });
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  const rows = page.locator("[data-testid^='artifact-']");
-  await expect(rows).toHaveCount(2);
+  const files = page
+    .getByRole("menu")
+    .getByRole("menuitem")
+    .filter({ has: page.getByRole("link", { name: /^Download version/ }) });
+  await expect(files).toHaveCount(2);
 
-  // Every row shows its whole detail line: it wraps where it must rather than truncating on a
-  // row with room beside it.
-  for (const row of await rows.all()) {
-    const details = row.locator("p").first();
-    await expect(details).toContainText("Updated");
-    expect(await details.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
-      true
-    );
+  // Every item shows its whole name: it wraps where it must rather than truncating.
+  for (const file of await files.all()) {
+    const name = file.getByRole("button").first();
+    expect(await name.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   }
+  await files.getByRole("button", { exact: true, name: "audit.md" }).click();
+  await page.getByRole("button", { name: "Show all versions" }).click();
+  await expect(
+    page.getByRole("region", { exact: true, name: "Versions for audit.md" })
+  ).toContainText("Version 1");
 });
 
 // The repair replaces the unreadable document whatever the picked file is called: a second
@@ -470,8 +521,9 @@ test("an out-of-schema document does not reconnect from cached text", async ({ p
     name: "cached-repair.md",
   });
   const sockets = countDocumentSockets(page, upload.artifact.id);
-  const row = page.getByTestId(`artifact-${upload.artifact.slug}`);
-  const openDocument = () => row.getByRole("link", { name: "cached-repair.md" }).click();
+  const row = menuItem(page, "cached-repair.md");
+  const openDocument = () =>
+    row.getByRole("button", { exact: true, name: "cached-repair.md" }).click();
 
   await page.goto(`/issues/${issue.key}`);
   await openArtifacts(page, false);

@@ -7,6 +7,7 @@ import {
   openSpec,
   selectEditorText,
   setSheet,
+  specAddress,
 } from "./editor";
 import { expectIssueClosed } from "./issue-page";
 import {
@@ -104,7 +105,7 @@ test("a bar Comment on another document while a margin send is out opens its own
     const send = await holdPosts(page, `**/api/v1/issues/${first.key}/comments`);
     await sendFromBar(page, "quick", "Left behind");
 
-    await navigateInApp(page, `/issues/${second.key}/spec`);
+    await navigateInApp(page, await specAddress(second.key));
     await expect(
       page.getByTestId("issue-header").getByRole("heading", { level: 1, name: "Opened next" })
     ).toBeVisible();
@@ -158,7 +159,7 @@ test("leaving a document while a margin send is out keeps its draft and refusal 
     refuse();
     await refused;
 
-    await navigateInApp(page, `/issues/${issue.key}/spec`);
+    await navigateInApp(page, await specAddress(issue.key));
     await expect(
       page
         .getByTestId("issue-header")

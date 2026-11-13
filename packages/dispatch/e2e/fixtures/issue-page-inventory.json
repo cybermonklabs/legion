@@ -2719,17 +2719,24 @@
     "button \"Reopen issue\"": "button \"Reopen into Backlog\"",
     "button \"Upload\"": "menuitem \"Upload\"",
     "button \"Upload artifact\"": "button \"Upload a file\"",
-    "searchbox \"Filter artifacts\"": "searchbox \"Filter\"",
+    "searchbox \"Filter artifacts\"": "searchbox \"Filter files and documents\"",
+    "button \"New document\"": "menuitem \"New document\"",
     "link \"Block r1\"": "link \"Every property of the issue that carries a value is visible …\"",
     "link \"Block r2\"": "link \"Requirement 2 of the redesign stands on a row of its own.\"",
     "link \"Block r3\"": "link \"Requirement 3 of the redesign stands on a row of its own.\"",
     "link \"Block r4\"": "link \"Requirement 4 of the redesign stands on a row of its own.\"",
     "link \"Block r5\"": "link \"Requirement 5 of the redesign stands on a row of its own.\"",
-    "link \"The ask it answers\"": "link \"Which addresses must the new page still answer?\"",
     "region \"Open questions\"": "region \"Decisions\"",
     "region \"Waiting for your review\"": "region \"Decisions\"",
     "region \"Your decisions\"": "region \"Decisions\"",
     "region \"Replaced\"": "region \"Decisions\"",
     "link \"session:e2e-seed…\"": "link \"Recorder (issue layout)\""
+  },
+  "parentRows": {
+    "link \"The ask it answers\"": {
+      "node": "Keep every address the old page answered",
+      "parent": "Which addresses must the new page still answer?",
+      "reason": "A decision's card linked the ask it answers; the outline draws the decision under that ask, its parent row, which the left arrow reaches (R4)."
+    }
   }
 }

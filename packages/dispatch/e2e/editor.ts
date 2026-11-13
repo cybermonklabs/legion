@@ -27,10 +27,23 @@ export function connectedDot(scope: Page | Locator): Locator {
   return scope.getByRole("status", { name: "connected" });
 }
 
+/** The address that opens an issue's spec with its editor: the spec's own address,
+ *  `/issues/KEY/artifacts/<slug>`, which draws it in place of the outline. `/issues/KEY/spec`
+ *  is the Spec filter and the issue's own address the outline, and neither draws the spec's
+ *  text (dispatch://INFRA-1196 R3, R20). */
+export async function specAddress(issueKey: string): Promise<string> {
+  const issue = await getIssue(issueKey);
+  const spec = (issue.artifacts ?? []).find(
+    (artifact) => artifact.id === issue.primary_artifact_id
+  );
+  if (spec === undefined) throw new Error(`${issueKey} has no spec to open`);
+  return `/issues/${issueKey}/artifacts/${spec.slug}`;
+}
+
 /** Opens an issue's spec and waits until its editor shows `text` and its document is connected,
  *  so a selection or a margin card the row reaches for next is live. */
 export async function openSpec(page: Page, issueKey: string, text: string): Promise<void> {
-  await page.goto(`/issues/${issueKey}/spec`);
+  await page.goto(await specAddress(issueKey));
   await expect(documentEditor(page)).toContainText(text);
   await expect(connectedDot(page)).toHaveText("connected");
 }
@@ -45,7 +58,7 @@ export async function openSpecAndAwaitHeadingIds(
   text: string
 ): Promise<string | undefined> {
   const before = (await getArtifactText(artifactId)).token;
-  await page.goto(`/issues/${issueKey}/spec`);
+  await page.goto(await specAddress(issueKey));
   await expect(documentEditor(page)).toContainText(text);
   let after = before;
   await expect
@@ -547,7 +560,7 @@ export async function openIssue(browser: Browser, title: string, spec: string) {
   const issue = await createIssue({ project: "CORE", spec, title });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  await page.goto(`/issues/${issue.key}`);
+  await page.goto(await specAddress(issue.key));
   return { alice, issue, page };
 }
 

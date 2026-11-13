@@ -14,9 +14,16 @@ import {
   getAsk,
   patchIssue,
 } from "./api";
-import { actionBar, barAction, documentEditor, needsYouCards, selectEditorText } from "./editor";
+import {
+  actionBar,
+  barAction,
+  documentEditor,
+  needsYouCards,
+  selectEditorText,
+  specAddress,
+} from "./editor";
 import { askCard, inboxList } from "./inbox-pane";
-import { expectActivePreset, openIssueAddress } from "./issue-page";
+import { expectActivePreset, openedArtifact, openIssueAddress } from "./issue-page";
 import { expectConsecutiveLinksClear } from "./layout";
 import { insertExternalLink } from "./seed";
 import { navigateInApp, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
@@ -131,7 +138,10 @@ test("the phone shell traps focus, dismisses on Escape at the right nesting leve
       ).toBe(true);
       await page.getByRole("button", { name: /Close review panel/ }).click();
     }
-    await expect(page.locator("#issue-spec-panel").getByRole("article")).toContainText(
+    // The issue's own address draws no document (dispatch://INFRA-1196 R3): the spec opens at its
+    // own address, in place of the outline, and is read there.
+    await navigateInApp(page, await specAddress(issue.key));
+    await expect(openedArtifact(page).getByRole("article")).toContainText(
       "The quick brown fox jumps over the lazy dog"
     );
     await expect(documentEditor(page).locator("table")).toBeVisible();
@@ -216,7 +226,7 @@ test("a phone thread trap skips a held composer's disabled controls @phone", asy
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
     const sheet = page.getByTestId("margin-sheet");
@@ -277,7 +287,7 @@ test("a phone sheet trap wraps Shift+Tab from its first control past a held comp
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ height: 844, width: 390 });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     await selectEditorText(page, "brown");
     await barAction(page, "Comment");
     const sheet = page.getByTestId("margin-sheet");
@@ -898,10 +908,23 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       .soft(row.getByRole("link", { name: longName }).locator("[title]"))
       .toHaveAttribute("title", longName);
 
+    // The node menu took the Artifacts tab's list (dispatch://INFRA-1196 R3), and the issue page
+    // carries no `title` anywhere (R2, R21): the item writes the file's whole name and wraps it.
+    // What this row guards of it is that the long name never reaches past the screen.
     await navigateInApp(page, `/issues/${issue.key}/artifacts`);
-    const artifactLink = page.getByRole("link", { exact: true, name: longName });
-    await expectEllipsis(artifactLink);
-    await expect.soft(artifactLink.locator("[title]")).toHaveAttribute("title", longName);
+    const artifactName = page
+      .getByRole("menu")
+      .getByRole("button", { exact: true, name: longName });
+    await expect(artifactName).toBeVisible();
+    expect
+      .soft(
+        await artifactName.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          return rect.left >= -1 && rect.right <= window.innerWidth + 1;
+        }),
+        "the file's name in the node menu reaches past the screen"
+      )
+      .toBe(true);
 
     // The long name belongs to a project document, whose ask nobody holds: the cleared filter
     // is where the Inbox lists it. From 1280 px the owner link is on the short row and again
@@ -923,7 +946,7 @@ test("a long name ends in an ellipsis wherever a link or control truncates it @p
       .soft(authorChip.getByText(longTitle, { exact: true }))
       .toHaveAttribute("title", `${longTitle} · e2e-long-title`);
 
-    await navigateInApp(page, `/issues/${issue.key}`);
+    await navigateInApp(page, await specAddress(issue.key));
     // The issue page writes a link's whole address and carries no `title` anywhere
     // (dispatch://INFRA-1196 R2, R21: what a tooltip said is drawn, because a fact a pointer
     // alone can reach is a fact a reader on a phone does not have). So neither the external

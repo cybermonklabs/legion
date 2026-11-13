@@ -11,9 +11,10 @@ test.beforeEach(async ({ context }) => {
   await signIn(context, "alice");
 });
 
-/** The whole press a person makes on the Documents tab: `New document`, the title, `Create`. */
+/** The whole press a person makes in the node menu, which took the Artifacts tab's list
+ *  (dispatch://INFRA-1196 R3): `New document`, the title, `Create`. */
 async function createDocument(page: Page, title: string): Promise<void> {
-  await page.getByRole("button", { name: "New document" }).click();
+  await page.getByRole("menuitem", { name: "New document" }).click();
   const form = page.getByRole("form", { name: "New document" });
   await form.getByRole("textbox", { name: "Title" }).fill(title);
   await form.getByRole("button", { name: "Create" }).click();
@@ -60,17 +61,20 @@ test("a document's title is corrected and a document made by mistake is removed,
   await expect(page).toHaveURL(`${documents}/lauch-notes`);
   expect((await issueDocument(issue.key, "lauch-notes")).name).toBe("Launch notes");
 
-  // The issue's document list, reached without loading the page again, reads the new title too.
+  // The issue's node menu, reached without loading the page again, reads the new title too.
+  const files = page.getByRole("menu");
   await navigateInApp(page, documents);
-  await expect(page.getByRole("link", { exact: true, name: "Launch notes" })).toBeVisible();
-  await expect(page.getByRole("link", { exact: true, name: "Lauch notes" })).toHaveCount(0);
+  await expect(files.getByRole("button", { exact: true, name: "Launch notes" })).toBeVisible();
+  await expect(files.getByRole("button", { exact: true, name: "Lauch notes" })).toHaveCount(0);
 
-  // A second document, made by mistake and removed from its row in that list.
+  // A second document, made by mistake and removed from its item in that menu.
   await createDocument(page, "Draft notes");
   await expect(page).toHaveURL(`${documents}/draft-notes`);
   await expect(documentEditor(page)).toBeAttached();
   await navigateInApp(page, documents);
-  const draftRow = page.getByTestId("artifact-draft-notes");
+  const draftRow = files
+    .getByRole("menuitem")
+    .filter({ has: page.getByRole("button", { exact: true, name: "Draft notes" }) });
   await draftRow.getByRole("button", { name: "Remove" }).click();
   await expect(draftRow).toHaveCount(0);
 

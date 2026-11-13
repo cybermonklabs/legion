@@ -25,6 +25,7 @@ import {
   needsYouCards,
   selectEditorText,
   setSheet,
+  specAddress,
 } from "./editor";
 import { pickPreset } from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
@@ -64,8 +65,8 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await expect(documentEditor(alicePage)).toContainText(initialMarkdown);
     await expect(documentEditor(bobPage)).toContainText(initialMarkdown);
@@ -123,8 +124,8 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     await expect(alicePage).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
     // A load, not an in-app step: closing the thread the deep link opened beside the document is
     // what leaves one composer on the page for the bar action below.
-    await alicePage.goto(`/issues/${issue.key}/spec`);
-    await navigateInApp(bobPage, `/issues/${issue.key}/spec`);
+    await alicePage.goto(await specAddress(issue.key));
+    await navigateInApp(bobPage, await specAddress(issue.key));
     await expect(documentEditor(alicePage)).toContainText(initialMarkdown);
 
     await selectEditorText(alicePage, "quick");
@@ -179,7 +180,7 @@ test("a bar Comment focuses its composer from the margin's rail and from its Pin
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(documentEditor(page)).toContainText(initialMarkdown);
     await expect(connectedDot(page)).toHaveText("connected");
     const form = page.getByRole("form", { name: "Comment composer" });
@@ -222,8 +223,8 @@ test("an agent's quote-anchored comment and ask render as highlights in open edi
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await expect(connectedDot(alicePage)).toHaveText("connected");
     await expect(connectedDot(bobPage)).toHaveText("connected");
@@ -271,8 +272,8 @@ test("highlights follow edits in the other browser and preserve their anchor sta
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -352,8 +353,8 @@ test("accepting a suggestion changes the text in both browsers and names a versi
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -393,7 +394,7 @@ test("accepting a suggestion changes the text in both browsers and names a versi
         .getByTestId(`margin-comment-${accepted.id}`)
         .getByRole("button", { name: "Reopen" })
     ).toHaveCount(0);
-    await navigateInApp(alicePage, `/issues/${issue.key}/spec`);
+    await navigateInApp(alicePage, await specAddress(issue.key));
     await Promise.all([
       expect(aliceEditor).toContainText("The quick red fox"),
       expect(bobEditor).toContainText("The quick red fox"),
@@ -446,7 +447,7 @@ test("accepting a suggestion changes the text in both browsers and names a versi
       rejectButton.click(),
     ]);
     expect(response.ok()).toBe(true);
-    await navigateInApp(alicePage, `/issues/${issue.key}/spec`);
+    await navigateInApp(alicePage, await specAddress(issue.key));
     await Promise.all([
       expect(aliceEditor).toContainText("The quick red fox"),
       expect(bobEditor).toContainText("The quick red fox"),
@@ -538,7 +539,7 @@ test("a document mark opens its thread in the margin and stays on the document",
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
     const comment = await createComment(
       issue.key,
@@ -639,8 +640,7 @@ test("margin ask composer sends option choices that the inbox records as a selec
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}`);
-    await pickPreset(page, "Spec");
+    await page.goto(await specAddress(issue.key));
     await selectEditorText(page, "brown");
     await barAction(page, "Ask");
 
@@ -895,7 +895,7 @@ test("a browser reconnecting after an accept keeps the accepted text", async ({ 
     const transport = await documentTransport(page);
     // The reconnect draw the sever below arms is spent on the page's clock, not in real time.
     await page.clock.install();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const connected = connectedDot(page);
     await expect(connected).toHaveText("connected");
     await expect(markSpan(page, suggestion.anchor.mark_id)).not.toHaveCount(0);

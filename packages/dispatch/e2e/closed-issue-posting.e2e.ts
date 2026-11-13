@@ -17,6 +17,7 @@ import {
   expectMark,
   marginCard,
   selectEditorQuote,
+  specAddress,
   typeAtEnd,
 } from "./editor";
 import { expectIssueClosed, runIssueAction } from "./issue-page";
@@ -242,7 +243,7 @@ test("a margin comment on a closed issue's spec posts with its quote @phone", as
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issueKey}/spec`);
+    await page.goto(await specAddress(issueKey));
     await expect(documentEditor(page)).toContainText(spec);
     await selectEditorQuote(page, "brown");
     await expect(actionBar(page).getByRole("button")).toHaveText(["Comment"]);
@@ -282,7 +283,7 @@ test("a margin comment on a spec whose issue closed while the page was open post
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(documentEditor(page)).toContainText(spec);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true");
     await selectEditorQuote(page, "brown");
@@ -324,7 +325,7 @@ test("a spec opened while its issue was closed takes edits once the issue is reo
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issueKey}/spec`);
+    await page.goto(await specAddress(issueKey));
     await expect(documentEditor(page)).toContainText(spec);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
 

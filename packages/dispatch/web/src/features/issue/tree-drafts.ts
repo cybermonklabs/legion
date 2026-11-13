@@ -2,6 +2,7 @@ import { parseBlockPointerValue } from "@legion/contracts";
 
 import type { Actor, Ask, CheckBlock, Decision, DisplayTree } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { referenceSpans } from "../refs/reference-spans";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { checkFacts, resultFacts } from "./check-facts";
@@ -151,7 +152,7 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
       return {
         answered: target !== undefined,
         gone,
-        name: gone ? "" : (target?.name ?? ""),
+        name: gone ? "" : blockWords(target?.name ?? ""),
         ref: reference,
       };
     },
@@ -160,6 +161,26 @@ export function treeContext(reads: IssueTreeReads): TreeContext {
     specSlug,
     slugOf: (artifactId: string) => slugs.get(artifactId),
   };
+}
+
+/** A directive's own opening line, `:::plan_task{#t1 serves="…"}`, and its closing fence. */
+const DIRECTIVE_OPENER = /^:{3,}[a-z_]/;
+const DIRECTIVE_FENCE = /^:{3,}\s*$/;
+
+/**
+ * The words a target is named by. The reference read names a document's block by its stored
+ * excerpt, which is the block's source: a typed block is a directive, so its excerpt opens on
+ * the directive's line - its type and its attributes - and, where the excerpt holds the whole
+ * block, ends on its closing fence. Both are markup and no word of the block (R21), so they are
+ * left out, as the head's three sentences leave them out of the callout they read
+ * (`IssueThreeThings.tsx`). Any other name is its own words already.
+ */
+function blockWords(name: string): string {
+  const lines = name.trimEnd().split("\n");
+  if (!DIRECTIVE_OPENER.test(lines[0] ?? "")) return name;
+  lines.shift();
+  if (DIRECTIVE_FENCE.test(lines.at(-1) ?? "")) lines.pop();
+  return lines.join("\n").trim();
 }
 
 /** Every draft the reads hold, by its node id. */
@@ -173,7 +194,48 @@ export function treeDrafts(reads: IssueTreeReads, context: TreeContext): Map<str
   addRequirements(drafts, reads, context);
   addChecks(drafts, reads, context);
   servePlacements(drafts, context);
+  addDocumentChips(drafts, reads, context);
   return drafts;
+}
+
+/**
+ * A chip that opens each document of the issue a node's own words cite (R3): a document is no
+ * node of the outline, so a block that names one carries a chip of its own for it, which opens
+ * the document at its own address in place of the outline (`NodeRow.tsx`'s `Chip`). The chip is
+ * named by the document's name, which the issue's own read carries, and addresses the document
+ * as `artifact/<slug>` - the spec too, whose `spec` reference is the Spec filter's address. A
+ * citation of one block of a document names that block, which the text's own link opens, and
+ * no chip.
+ */
+function addDocumentChips(
+  drafts: Map<string, Draft>,
+  reads: IssueTreeReads,
+  context: TreeContext
+): void {
+  const artifacts = reads.issue.artifacts ?? [];
+  if (artifacts.length === 0) return;
+  const bySlug = new Map(artifacts.map((artifact) => [artifact.slug, artifact]));
+  for (const draft of drafts.values()) {
+    // The words a node is drawn by can leave a citation out - the coverage read drops every
+    // `://` word of a requirement (`blockWords`, `api/results.go`) - so the node's own source,
+    // which the reference read names it by, is read as well.
+    const source = draft.reference === undefined ? "" : context.chipOf(draft.reference).name;
+    for (const span of [
+      ...referenceSpans(draft.text, "dispatch://"),
+      ...referenceSpans(source, "dispatch://"),
+    ]) {
+      const route = parseNodeReference(span.value);
+      if (route === undefined || !("key" in route) || route.key !== context.key) continue;
+      if ("block" in route && route.block !== undefined) continue;
+      const slug =
+        route.kind === "artifact" ? route.slug : route.kind === "spec" ? context.specSlug : "";
+      const artifact = bySlug.get(slug);
+      if (artifact === undefined) continue;
+      const ref = buildDispatchReference({ key: context.key, kind: "artifact", slug });
+      if (draft.chips.some((chip) => chip.ref === ref)) continue;
+      draft.chips = [...draft.chips, { answered: true, gone: false, name: artifact.name, ref }];
+    }
+  }
 }
 
 /** Where each document of the issue stands among its own, by its artifact id: the spec first

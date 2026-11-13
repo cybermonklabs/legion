@@ -20,7 +20,8 @@ import { useIssueTree } from "./useIssueTree";
 
 /**
  * The issue's body on every address: its three sentences, the preset row, the children section
- * and the one tree the preset is a query over (dispatch://INFRA-1196 R1, R3, R5, R10).
+ * and the one tree the preset is a query over (dispatch://INFRA-1196 R1, R3, R5, R10) - or, where
+ * the address opens a document, that document in place of the children section and the tree.
  *
  * It is one component because all four read the same tree: the head reads the spec's summary
  * node and the issue's checks, the row counts what each preset's query holds, and the tree
@@ -30,6 +31,7 @@ import { useIssueTree } from "./useIssueTree";
  */
 export function IssueBody({
   address,
+  openedDocument,
   isClosed,
   issue,
   onEditing,
@@ -38,6 +40,9 @@ export function IssueBody({
   toolbar,
 }: {
   address: IssueAddress;
+  /** The document the address opens, drawn in place of the children section and the tree
+   *  (R3), with its version control beside the filters; undefined where the outline is drawn. */
+  openedDocument?: { readonly panel: ReactNode; readonly toolbar: ReactNode };
   /** Whether the issue is closed, which the node menu's upload reads. */
   isClosed: boolean;
   issue: IssueDetails;
@@ -49,7 +54,7 @@ export function IssueBody({
   onLeave: () => void;
   /** The issue's plan document, whose state the head's first row draws. */
   plan: Artifact | undefined;
-  /** The open document's toolbar, where the preset has a document of its own. */
+  /** The version control beside the filters while the outline is drawn. */
   toolbar?: ReactNode;
 }): ReactNode {
   const navigate = useNavigate();
@@ -101,20 +106,26 @@ export function IssueBody({
     [address.filter, address.preset, named, root]
   );
   const artifacts = useMemo(() => artifactsBySlug(issue), [issue]);
+  const drawsDocument = openedDocument !== undefined;
+  const shownToolbar = openedDocument === undefined ? toolbar : openedDocument.toolbar;
   const specSlug = primarySpec(issue)?.slug ?? "";
   // What a key reported when it had nowhere to go, raised by the tree (`IssueTree`'s
   // `onReport`) and drawn here as the page's own status.
   const [report, setReport] = useState("");
-  // Where the open document's toolbar goes. From `md` it sits beside the preset row, as the
-  // design draws it (R16). Below `md` it is 96 px of a 844 px screen - the version picker, the
-  // name-a-version control and the approval, two lines of 44 px controls - and the identity
-  // block, the head, the preset row and the children section already take 700 px of it, so it
-  // is drawn under the tree instead, where the document it belongs to is: the same move the
-  // identity block's fourth row makes at that width (`IssueHeader.tsx`), and for the same
-  // reason - the first open question has to be on a phone's first screen (R6). Nothing is
-  // behind a control either way, so every one of its controls is still drawn with nothing
-  // opened (R18).
+  // Where the version control goes. From `md` it sits beside the preset row, as the design
+  // draws it (R2). Below `md` it is 96 px of a 844 px screen - the version picker, the
+  // name-a-version control and the link, two lines of 44 px controls - and the identity block,
+  // the head, the preset row and the children section already take 700 px of it, so it is
+  // drawn under the tree instead: the same move the identity block's fourth row makes at that
+  // width (`IssueHeader.tsx`), and for the same reason - the first open question has to be on a
+  // phone's first screen (R6). A document opened in place of the tree has no tree to go under,
+  // so there it is drawn above the document it reads. Nothing is behind a control either way,
+  // so every one of its controls is still drawn with nothing opened (R18).
   const isPhoneViewport = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const phoneToolbar =
+    isPhoneViewport && shownToolbar !== undefined ? (
+      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">{shownToolbar}</div>
+    ) : null;
 
   return (
     <>
@@ -149,27 +160,32 @@ export function IssueBody({
           const rest = query.toString();
           navigate(`${pathname}${rest === "" ? "" : `?${rest}`}${hash}`, { replace: true });
         }}
-        toolbar={isPhoneViewport ? undefined : toolbar}
+        toolbar={isPhoneViewport ? undefined : shownToolbar}
       />
-      <IssueChildren issue={issue} />
-      <IssueTree
-        artifacts={artifacts}
-        context={view.context}
-        emptyLine={EMPTY_STATE_LINES[address.preset]}
-        filtering={view.filtering}
-        focusReveal={
-          followed || (address.preset !== "spec" && targetKind !== "node" && targetKind !== "turn")
-        }
-        isClosed={isClosed}
-        onEditing={onEditing}
-        onReport={setReport}
-        openBody={opened}
-        reveal={reveal}
-        root={view.root}
-      />
-      {isPhoneViewport && toolbar !== undefined ? (
-        <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">{toolbar}</div>
-      ) : null}
+      {drawsDocument ? (
+        <>
+          {phoneToolbar}
+          {openedDocument?.panel}
+        </>
+      ) : (
+        <>
+          <IssueChildren issue={issue} />
+          <IssueTree
+            artifacts={artifacts}
+            context={view.context}
+            emptyLine={EMPTY_STATE_LINES[address.preset]}
+            filtering={view.filtering}
+            focusReveal={followed || (address.preset !== "spec" && targetKind !== "turn")}
+            isClosed={isClosed}
+            onEditing={onEditing}
+            onReport={setReport}
+            openBody={opened}
+            reveal={reveal}
+            root={view.root}
+          />
+          {phoneToolbar}
+        </>
+      )}
     </>
   );
 }

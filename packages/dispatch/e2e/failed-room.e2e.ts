@@ -21,7 +21,7 @@ import {
   getArtifactText,
   userHeaders,
 } from "./api";
-import { documentEditor } from "./editor";
+import { documentEditor, specAddress } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { expect, test } from "./test";
@@ -129,7 +129,7 @@ test("a writer inside the docs layer when its room fails is told, and the room r
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  await page.goto(`/issues/${issue.key}/spec`);
+  await page.goto(await specAddress(issue.key));
   const editor = documentEditor(page);
   await expect(editor).toBeVisible();
   await expect(editor).toContainText("Ship the migration.");

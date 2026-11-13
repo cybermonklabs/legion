@@ -1,5 +1,5 @@
 import { createIssue, createProject, getArtifactText } from "./api";
-import { connectedDot, documentEditor, placeCaret } from "./editor";
+import { connectedDot, documentEditor, placeCaret, specAddress } from "./editor";
 import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
@@ -50,8 +50,8 @@ for (const { name, edge, type, code } of cases) {
       const [alicePage, bobPage] = await Promise.all([alice.newPage(), bob.newPage()]);
       // The two readers' loads overlap: neither waits on the other to mount its editor.
       await Promise.all([
-        alicePage.goto(`/issues/${issue.key}/spec`),
-        bobPage.goto(`/issues/${issue.key}/spec`),
+        alicePage.goto(await specAddress(issue.key)),
+        bobPage.goto(await specAddress(issue.key)),
       ]);
       await expect(connectedDot(alicePage)).toHaveText("connected");
       await expect(connectedDot(bobPage)).toHaveText("connected");
@@ -90,8 +90,8 @@ test("a reader outside the editor sees a collaborator's cursor even where their 
     const [alicePage, bobPage] = await Promise.all([alice.newPage(), bob.newPage()]);
     // The two readers' loads overlap: neither waits on the other to mount its editor.
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await expect(connectedDot(alicePage)).toHaveText("connected");
     await expect(connectedDot(bobPage)).toHaveText("connected");

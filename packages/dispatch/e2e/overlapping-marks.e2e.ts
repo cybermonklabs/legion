@@ -18,6 +18,7 @@ import {
   markSpan,
   placeCaret,
   selectEditorText,
+  specAddress,
 } from "./editor";
 import { commentWithBody } from "./margin-helpers";
 import { expect, type Page, test } from "./test";
@@ -46,8 +47,8 @@ test("two readers' comments can cover the same text, and neither cuts the other'
     const bobPage = await bob.newPage();
     const readers = [alicePage, bobPage];
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await Promise.all(
       readers.flatMap((page) => [
@@ -173,8 +174,8 @@ test("two readers' suggestions keep both action-bar anchors", async ({ browser }
     const bobPage = await bob.newPage();
     const readers = [alicePage, bobPage];
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await Promise.all(readers.map((page) => expect(connectedDot(page)).toHaveText("connected")));
 
@@ -333,7 +334,7 @@ for (const { kind, noun } of overlapKinds) {
       try {
         // A fresh reader of the document clicks the text both marks cover.
         const page = await context.newPage();
-        await page.goto(`/issues/${issue.key}/spec`);
+        await page.goto(await specAddress(issue.key));
         await expect(connectedDot(page)).toHaveText("connected");
         await Promise.all([
           expectMark(page, wide.markId, "quick brown"),

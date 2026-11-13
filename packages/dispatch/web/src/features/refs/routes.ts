@@ -222,17 +222,10 @@ export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route
   );
 }
 
-export function isPrimaryDocumentArtifactRoute(
-  route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
-): boolean {
-  return route.kind === "artifact" && artifact?.primary === true && artifact.kind === "doc";
-}
-
-export function issueTabForRoute(
-  route: IssueRoute,
-  artifact: Pick<Artifact, "kind" | "primary"> | undefined
-): IssueTab {
+/** The old tab an issue route named, which says what the page mounts for it. A document's own
+ *  address names the document, the issue's spec included: `/spec` is the Spec filter, and
+ *  `/artifacts/<spec>` opens the spec itself (dispatch://INFRA-1196 R3, R20). */
+export function issueTabForRoute(route: IssueRoute): IssueTab {
   if (isPlainIssueRoute(route)) {
     return route.kind;
   }
@@ -243,7 +236,7 @@ export function issueTabForRoute(
     return "decisions";
   }
   if (route.kind === "artifact") {
-    return isPrimaryDocumentArtifactRoute(route, artifact) ? "spec" : "artifacts";
+    return "artifacts";
   }
   return route.kind === "issue" || route.kind === "spec" ? "spec" : "conversation";
 }

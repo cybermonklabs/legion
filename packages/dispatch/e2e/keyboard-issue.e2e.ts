@@ -2,7 +2,7 @@ import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue/page-wor
 import { blockNodeId } from "../web/src/features/issue/tree-drafts";
 import { DRAWN_LEVELS } from "../web/src/features/issue/tree-fold";
 import { createAsk, createIssue, createProject, getArtifact, getIssue } from "./api";
-import { barAction, selectEditorText, selectTextIn } from "./editor";
+import { barAction, selectEditorText, selectTextIn, specAddress } from "./editor";
 import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
 import { requirementBlockId } from "./issue-layout-seed-text";
 import {
@@ -23,6 +23,7 @@ import {
   nodeMenuButton,
   nodeRow,
   onScreen,
+  openedArtifact,
   openMenu,
   pickPreset,
   pinnedBodies,
@@ -424,7 +425,7 @@ test.describe("issue page", () => {
     try {
       const page = await context.newPage();
       await page.setViewportSize({ width: 1280, height: 900 });
-      await page.goto(`/issues/${issue.key}/spec`);
+      await page.goto(await specAddress(issue.key));
       await selectEditorText(page, "brown");
       await barAction(page, "Ask");
       const multiple = page
@@ -818,6 +819,22 @@ test("every chord the page bound before the redesign brings a target on screen w
       await nodeMenuButton(page).count(),
       `the menu t a opened is not the one named "${CONTROL_LABELS.other_nodes}" beside the presets`
     ).toBe(1);
+
+    // From the menu `t a` left the focus in, Enter opens the document on the focused item in
+    // place of the outline, and Escape - the key table's step after leaving a caret - closes it
+    // and draws the outline again.
+    await page.keyboard.press("Enter");
+    await expect(
+      openedArtifact(page),
+      "Enter on the node menu's item opens no document"
+    ).toHaveCount(1);
+    expect(
+      await tree(page).count(),
+      "the opened document is not drawn in place of the outline"
+    ).toBe(0);
+    await page.keyboard.press("Escape");
+    await expect(tree(page), "Escape does not close the opened document").toBeVisible();
+    expect(await openedArtifact(page).count(), "Escape leaves the document drawn").toBe(0);
   } finally {
     await context.close();
   }

@@ -48,6 +48,7 @@ import {
   patchIssue,
   requestApproval,
 } from "./api";
+import { placeCaret } from "./editor";
 import {
   type BaselineSeed,
   seedFrontierShallow,
@@ -125,6 +126,8 @@ import {
   nodeRows,
   offered,
   openEveryDeeperBranch,
+  openedArtifact,
+  openedEditor,
   openIssueActions,
   openMenu,
   openPreset,
@@ -142,7 +145,6 @@ import {
   presetTab,
   presetTablist,
   presetTabs,
-  presetToolbar,
   rowAuthor,
   rowBody,
   rowGaps,
@@ -157,9 +159,14 @@ import {
   undividedTexts,
   unfoldEveryBranch,
   uploadInput,
+  versionControl,
   versionPicker,
 } from "./issue-page";
-import { assertInventoryCarried, type InventoryEntry } from "./page-inventory";
+import {
+  assertInventoryCarried,
+  type InventoryEntry,
+  type ParentRowMapping,
+} from "./page-inventory";
 import { resetDatabase } from "./seed";
 import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertFitsItsBox, assertPageFits, assertWhole, assertWholeAcross } from "./unclipped";
@@ -1980,10 +1987,18 @@ test("the spec is a preset over the tree and an approval still names it", async 
       (await getArtifactVersion(seeded.specArtifactId, pinned)).markdown,
       "the document version the approval pins does not resolve to the spec's own text"
     ).toContain(requirementText(2));
+    // The Spec filter's version control reads the spec's versions; the approval is the identity
+    // block's own (R31), so the control carries none.
     expect(
-      await presetToolbar(page).count(),
-      "the preset whose document is open draws no toolbar to carry the approval"
+      await versionControl(page).count(),
+      "the Spec filter draws no version control beside the filters"
     ).toBe(1);
+    expect(
+      await versionControl(page)
+        .getByRole("button", { name: /^Approve/ })
+        .count(),
+      "the version control beside the filters carries an approval control"
+    ).toBe(0);
   });
 
   // The same drawing on an issue that carries one document.
@@ -2652,33 +2667,40 @@ test("the page draws no internal word and no helper text @phone", async ({ brows
   });
 });
 
-// c-nodes. What waits on the next item of this round, the node menu as the documents' home,
-// and is not read here: no document's text under a filter (the Spec, Checks and Plan presets
-// still draw their document under the tree), a document opened from the menu in place of the
-// outline with Escape back to it, and a chip on the block that cites a document, which today
-// links it from its own text. The issue's spec, plan and verification documents are listed in
-// the menu as every other document is, which is read.
+/** A paragraph of the seeded Verification document's own text, which no node of the outline
+ *  holds: the page draws it only where that document is opened (`specDocument`'s siblings in
+ *  `e2e/issue-layout-seed-text.ts`). */
+const VERIFICATION_PROSE = "How the issue page is proved.";
+
+// c-nodes. The seeded issue is today's model, an issue the conversion has not reached, so its
+// spec, plan and verification documents are listed in the menu as every other document is.
 test("documents open from the node menu and are never rows of the outline @phone", async ({
   browser,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     const artifacts = (await getIssue(seeded.key)).artifacts ?? [];
     const slugs = new Set(artifacts.map((artifact) => artifact.slug));
 
-    // No document and no file is a row of the outline, with no filter and with each on, at
-    // 1440 px with every branch open and at 390 px.
+    // No document and no file is a row of the outline, and no document's text and no editor
+    // is drawn, with no filter and with each on, at 1440 px with every branch open and at
+    // 390 px.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
+        const where = `the ${PRESET_NAMES[preset]} preset at ${size.width} px`;
         await gotoIssue(page, presetPath(seeded.key, preset));
         await expectIssuePageDrawn(page);
         if (size.width > 1024) await unfoldEveryBranch(page);
-        expectNoIssueNodeRows(
-          await drawnRows(page),
-          slugs,
-          `the ${PRESET_NAMES[preset]} preset at ${size.width} px`
-        );
+        expectNoIssueNodeRows(await drawnRows(page), slugs, where);
+        expect(
+          await page.getByRole("region", { name: "Document editor" }).count(),
+          `${where} draws a document's editor with no document opened`
+        ).toBe(0);
+        expect(
+          await page.getByText(VERIFICATION_PROSE).count(),
+          `${where} draws the Verification document's own text with no document opened`
+        ).toBe(0);
       }
     }
 
@@ -2707,6 +2729,17 @@ test("documents open from the node menu and are never rows of the outline @phone
         `the node menu does not list ${artifact.name}: ${JSON.stringify(items)}`
       ).toBe(true);
     }
+    for (const id of [
+      seeded.specArtifactId,
+      seeded.planArtifactId,
+      seeded.verificationArtifactId,
+    ]) {
+      const name = artifacts.find((artifact) => artifact.id === id)?.name ?? id;
+      expect(
+        items.some((text) => text.includes(name)),
+        `the node menu does not list the issue's role document ${name}`
+      ).toBe(true);
+    }
     for (const name of [CONTROL_LABELS.upload, CONTROL_LABELS.new_document]) {
       expect(
         await openMenu(page).getByRole("menuitem", { name }).count(),
@@ -2714,17 +2747,57 @@ test("documents open from the node menu and are never rows of the outline @phone
       ).toBe(1);
     }
 
-    // A document opens from the menu, at its own address, with its own text.
-    const cited = artifacts.find((artifact) => artifact.slug === seeded.documents.cited);
+    // A document opened from the menu is drawn in the main column in place of the outline, at
+    // its own address, with its own text, its editor and its versions; Escape returns to the
+    // outline.
+    const verification = artifacts.find((one) => one.id === seeded.verificationArtifactId);
     await openMenu(page)
-      .getByRole("button", { exact: true, name: cited?.name ?? "" })
+      .getByRole("button", { exact: true, name: verification?.name ?? "" })
       .click();
     await expect(page, "the node menu's item does not open the document's address").toHaveURL(
+      new RegExp(`/issues/${seeded.key}/artifacts/${verification?.slug ?? ""}$`)
+    );
+    await expect(
+      page.getByText(VERIFICATION_PROSE),
+      "the document opened from the node menu draws none of its own text"
+    ).toBeVisible();
+    await expect(openedEditor(page), "the opened document draws no editor").toBeVisible();
+    expect(await tree(page).count(), "the outline is still drawn beside the document").toBe(0);
+    expect(
+      await childrenSection(page).count(),
+      "the children section is still drawn beside the document"
+    ).toBe(0);
+    await expect(
+      versionPicker(page),
+      "the version control beside the filters does not read the opened document"
+    ).toHaveCount(1);
+    await expect(
+      openedArtifact(page).getByRole("region", { name: /^Versions for / }),
+      "the opened document draws no versions"
+    ).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(tree(page), "Escape does not return to the outline").toBeVisible();
+    await expect(page).toHaveURL(new RegExp(`/issues/${seeded.key}$`));
+    expect(await openedArtifact(page).count(), "Escape leaves the document drawn").toBe(0);
+
+    // The block that cites a document carries a chip that opens it.
+    const cited = artifacts.find((artifact) => artifact.slug === seeded.documents.cited);
+    const specSlug = (await getArtifact(seeded.specArtifactId)).slug;
+    await unfoldEveryBranch(page);
+    // A row drawn on one line carries its chips in its body, which the focus on it opens (R6).
+    const citing = nodeRow(page, blockNodeId(specSlug, seeded.documents.citingBlock)).first();
+    await citing.focus();
+    const chip = citing
+      .locator("[data-node-chip]")
+      .getByRole("link", { exact: true, name: cited?.name ?? "" });
+    await expect(chip, "the block that cites a document carries no chip for it").toHaveCount(1);
+    await chip.click();
+    await expect(page, "the chip does not open the document it names").toHaveURL(
       new RegExp(`/issues/${seeded.key}/artifacts/${seeded.documents.cited}$`)
     );
     await expect(
-      page.getByText("The measurements behind the first requirement."),
-      "the document opened from the node menu draws none of its own text"
+      page.getByText("The measurements behind the first requirement.", { exact: true }),
+      "the chip opened no text of the document it names"
     ).toBeVisible();
 
     // The upload uploads a file.
@@ -2737,38 +2810,52 @@ test("documents open from the node menu and are never rows of the outline @phone
         mimeType: "text/markdown",
         name: "uploaded.md",
       });
+    // The pick is staged, with its Summary, Upload and Cancel; Upload sends it.
+    await page.getByRole("button", { exact: true, name: CONTROL_LABELS.upload }).click();
     await expect
       .poll(async () => ((await getIssue(seeded.key)).artifacts ?? []).map((one) => one.name))
       .toContain("uploaded.md");
 
-    // An artifact's version history and a version's download are reachable from the artifact:
-    // its own address draws its version picker, and the issue's list of artifacts at
-    // `/issues/<key>/artifacts` a download of each one's latest version. The image draws its
+    // An artifact's version history and a version's download are reachable from the artifact
+    // itself: its own address draws its versions, each with its download. The image draws its
     // picture at its own address.
     await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page)).toHaveCount(1);
     await expect(
       page.getByRole("combobox", { exact: true, name: "Version" }),
       "the document's versions are not reachable"
     ).toHaveCount(1);
-    await gotoIssue(page, `/issues/${seeded.key}/artifacts`);
-    await expectIssuePageDrawn(page);
+    // The version list is folded at rest; its control opens it, with each version's download.
+    await openedArtifact(page).getByRole("button", { name: "Show all versions" }).click();
     await expect(
-      page.getByRole("link", { name: /^Download version \d+$/ }).first(),
-      "no version's download is reachable from the artifacts"
+      openedArtifact(page)
+        .getByRole("link", { name: /^Download version \d+$/ })
+        .first(),
+      "no version's download is reachable from the artifact"
     ).toBeVisible();
     await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.image}`);
-    await expectIssuePageDrawn(page);
+    await expect(issuePage(page)).toHaveCount(1);
     await expect(
       page.locator('main img[src*="/versions/"]').first(),
       "the image draws no picture at its own address"
     ).toBeVisible();
 
-    // Nothing is named Artifacts.
-    expect(
-      await presetTabs(page).allInnerTexts(),
-      "a preset is still named Artifacts"
-    ).not.toContain("Artifacts");
+    // Nothing is named Artifacts: on the issue's own address, the node menu's, and a
+    // document's.
+    for (const address of [
+      `/issues/${seeded.key}`,
+      `/issues/${seeded.key}/artifacts`,
+      `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`,
+    ]) {
+      await gotoIssue(page, address);
+      await expect(issuePage(page)).toHaveCount(1);
+      for (const role of ["region", "tab", "button", "link", "menuitem"] as const) {
+        expect(
+          await page.getByRole(role, { exact: true, name: "Artifacts" }).count(),
+          `${address} draws a ${role} named Artifacts`
+        ).toBe(0);
+      }
+    }
   });
 });
 
@@ -2945,6 +3032,8 @@ test("a child whose title holds an unbroken run keeps the page inside its viewpo
 interface PageInventoryFixture {
   readonly commit: string;
   readonly renames: Readonly<Record<string, string>>;
+  /** Links of the old page carried by a parent row of the outline (`page-inventory.ts`). */
+  readonly parentRows: Readonly<Record<string, ParentRowMapping>>;
   readonly "open-1440": readonly InventoryEntry[];
   readonly "open-390": readonly InventoryEntry[];
   readonly "closed-1440": readonly InventoryEntry[];
@@ -3007,6 +3096,23 @@ test("the new page carries every element of the old one @phone", async ({ browse
     // loads and every view of that walk after it reads it back; each walk fills it again,
     // because the tree a width and a state draw is their own.
     const zoomsInto = new Set<number>();
+    // The spec's name, which its item in the node menu carries.
+    const specName = (await getArtifact(seeded.specArtifactId)).name;
+    // The outline drawing both rows a parent-row mapping names (`page-inventory.ts`): every
+    // branch open where the outline draws the whole tree, and below 1025 px, where a twisty
+    // zooms instead, the target's own zoom, whose nodes follow it.
+    const outline = (width: number) => async (mapping: ParentRowMapping) => {
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      if (width > 1024) {
+        await unfoldEveryBranch(page);
+        return;
+      }
+      await nodeRows(page)
+        .filter({ hasText: mapping.parent })
+        .first()
+        .getByRole("button", { name: CONTROL_LABELS.unfold })
+        .click();
+    };
     const views = (width: number) => [
       ...PRESET_ORDER.map((preset) => async () => {
         await gotoIssue(page, presetPath(seeded.key, preset));
@@ -3029,14 +3135,35 @@ test("the new page carries every element of the old one @phone", async ({ browse
         await gotoIssue(page, `/issues/${seeded.key}/collaborators`);
         return true;
       },
-      // `/issues/<key>/artifacts`, the address the Artifacts tab answered: it is the one
-      // address that draws the Artifacts panel's own controls (`ArtifactRoutePanel.tsx`'s
-      // `ArtifactsTab`) - New document, and Remove on each document the issue can drop - which
-      // the old page's Artifacts tab offered and this page still offers there. The node menu
-      // below holds an item named New document as well, but it draws none on a closed issue
-      // and no Remove at all, so a walk without this view reads those controls as lost.
+      // `/issues/<key>/artifacts`, the address the Artifacts tab answered, opens the node menu,
+      // which carries that tab's list (R20, the Design's "Where each thing goes"): each file
+      // with its download and, for a document the issue can drop, Remove, the list's filter,
+      // the upload and New document, which a closed issue draws refused.
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}/artifacts`);
+        await expect(openMenu(page), "/artifacts opens no node menu").toHaveCount(1);
+        await expect(
+          openMenu(page)
+            .getByRole("button", { name: /^Copy reference/ })
+            .first()
+        ).toBeVisible();
+        return true;
+      },
+      // The spec opened from the node menu, in place of the outline (R3): its editor, with its
+      // collaborative cursors and its comment chord, and the version control beside the filters
+      // reading it, with the old spec toolbar's link to the block the caret is in and its live
+      // connection, which belong to an open editor.
+      async () => {
+        await gotoIssue(page, `/issues/${seeded.key}`);
+        await nodeMenuButton(page).click();
+        await openMenu(page).getByRole("button", { exact: true, name: specName }).click();
+        await expect(
+          openedEditor(page),
+          "the spec opened from the menu draws no editor"
+        ).toBeVisible();
+        await expect(
+          versionControl(page).getByRole("button", { name: "Copy link to block" })
+        ).toHaveCount(1);
         return true;
       },
       // The five views a control opens are all of the issue's own address, so they are one
@@ -3217,6 +3344,8 @@ test("the new page carries every element of the old one @phone", async ({ browse
     for (const [state, size] of states) {
       await page.setViewportSize({ height: size.height, width: size.width });
       await assertInventoryCarried(page, fixture[state], {
+        outline: outline(size.width),
+        parentRows: fixture.parentRows,
         renames: fixture.renames,
         state: `${state}, recorded at ${fixture.commit}`,
         views: views(size.width),
@@ -3232,6 +3361,8 @@ test("the new page carries every element of the old one @phone", async ({ browse
     for (const [state, size] of closed) {
       await page.setViewportSize({ height: size.height, width: size.width });
       await assertInventoryCarried(page, fixture[state], {
+        outline: outline(size.width),
+        parentRows: fixture.parentRows,
         renames: fixture.renames,
         state: `${state}, recorded at ${fixture.commit}`,
         views: views(size.width),
@@ -3442,7 +3573,8 @@ test("the new page carries every element of the old one @phone", async ({ browse
       .poll(async () => (await getIssueArtifactText(seeded.key, specSlug)).markdown)
       .toContain("Edited in place.");
 
-    await presetToolbar(page).getByRole("button", { name: "Name version" }).click();
+    // Naming a version, from the version control beside the filters, which reads the spec.
+    await versionControl(page).getByRole("button", { name: "Name version" }).click();
     const naming = page.getByRole("dialog", { name: "Name this version" });
     await naming.getByRole("textbox", { name: "What changed?" }).fill("Carried over");
     await naming.getByRole("button", { name: /^Save/ }).click();
@@ -3451,6 +3583,19 @@ test("the new page carries every element of the old one @phone", async ({ browse
         ((await getArtifact(seeded.specArtifactId)).versions ?? []).map((one) => one.summary)
       )
       .toContain("Carried over");
+
+    // Editing a document's text in the document opened from the node menu, in place of the
+    // outline, with its own editor.
+    await gotoIssue(page, `/issues/${seeded.key}`);
+    await nodeMenuButton(page).click();
+    await openMenu(page).getByRole("button", { exact: true, name: specName }).click();
+    // The caret goes where a reader's click after a requirement's own words puts it: text the
+    // document holds as editable, inside the requirement's block.
+    await placeCaret(page, "after", requirementText(2), openedEditor(page));
+    await page.keyboard.type(" Edited where it was opened.");
+    await expect
+      .poll(async () => (await getIssueArtifactText(seeded.key, specSlug)).markdown)
+      .toContain("Edited where it was opened.");
   });
 });
 
@@ -3473,7 +3618,7 @@ test("every address of the old page still resolves", async ({ browser }) => {
     await expectIssuePageDrawn(page);
     expect(await openMenu(page).count(), "/artifacts does not open the node menu").toBe(1);
 
-    // Every preset's own address.
+    // Every preset's own address opens its filter, and draws no document under it.
     for (const preset of PRESET_ORDER) {
       await gotoIssue(page, presetPath(seeded.key, preset));
       await expectIssuePageDrawn(page);
@@ -3481,6 +3626,10 @@ test("every address of the old page still resolves", async ({ browser }) => {
         await activePreset(page),
         `${presetPath(seeded.key, preset)} does not open the ${PRESET_NAMES[preset]} preset`
       ).toBe(PRESET_NAMES[preset]);
+      expect(
+        await page.getByRole("region", { name: "Document editor" }).count(),
+        `${presetPath(seeded.key, preset)} draws a document under its filter`
+      ).toBe(0);
     }
 
     // The conversation and the activity: one list, in two of its four states.
@@ -3503,18 +3652,29 @@ test("every address of the old page still resolves", async ({ browser }) => {
       seeded.children.keys.length
     );
 
-    // A document's address opens that document - its own text on the page - and no row of the
-    // outline is the document (R3).
-    await gotoIssue(page, `/issues/${seeded.key}/artifacts/${seeded.documents.cited}`);
-    await expectIssuePageDrawn(page);
-    await expect(
-      page.getByText("The measurements behind the first requirement."),
-      "/artifacts/<slug> does not open that document"
-    ).toBeVisible();
-    expect(
-      await nodeRow(page, seeded.documents.cited).count(),
-      "/artifacts/<slug> draws the document as a row of the outline"
-    ).toBe(0);
+    // A document's address opens that document - its own text on the page - in place of the
+    // outline, and no row of the outline is the document (R3). `/artifact/<slug>` opens the same
+    // document, and so does the spec's own address, which `/spec` does not.
+    for (const [address, words] of [
+      [`/issues/${seeded.key}/artifacts/${seeded.documents.cited}`, "notes"],
+      [`/issues/${seeded.key}/artifact/${seeded.documents.cited}`, "notes"],
+      [`/issues/${seeded.key}/artifacts/${specSlug}`, "spec"],
+    ] as const) {
+      await gotoIssue(page, address);
+      await expect(issuePage(page), `${address} draws no issue page`).toHaveCount(1);
+      if (words === "notes") {
+        await expect(
+          page.getByText("The measurements behind the first requirement.", { exact: true }),
+          `${address} does not open that document`
+        ).toBeVisible();
+      }
+      await expect(openedEditor(page), `${address} opens no document's editor`).toBeVisible();
+      expect(await tree(page).count(), `${address} draws the outline beside the document`).toBe(0);
+      expect(
+        await nodeRow(page, seeded.documents.cited).count(),
+        `${address} draws the document as a row of the outline`
+      ).toBe(0);
+    }
 
     // An ask the server indexed from a document's `ask` block *is* that block's node
     // (`e2e/issue-page.ts`), which is what the `?ask=` reading below asserts too: no row of the
@@ -3629,25 +3789,20 @@ test("the first load stays inside its request budget", async ({ browser }) => {
       `the page read /api/v1/references ${perPointer} times, one for each pointer: ${byRoute}`
     ).toBe(0);
 
-    // No read of the text of a document the page does not show. `GET /artifacts/{id}/text` is
-    // that read and the only one: `GET /artifacts/{id}/blocks` answers `ArtifactBlock`s, which
-    // carry a block's id, type, byte offsets, token, reference counts, attributes and a table's
-    // cells and no prose at all (`packages/contracts/src/dispatch-api.ts`, `ArtifactBlock`), so
-    // it is not a text read and naming it here would ban the one listing the tree is built
-    // from. The spec is the one document the page does show on this address: it is the issue's
-    // primary document, which the page stages for the Spec preset (`drawn-documents.ts`). The
-    // head is no longer a reason for that read - it draws its sentences out of the summary
-    // node's own text, which the tree already carries, and parses no stored markdown at all
-    // (R20, `web/src/features/issue/IssueThreeThings.tsx`).
-    expect(
+    // No read of any document's text before a document is opened (R21). `GET
+    // /artifacts/{id}/text` is that read and the only one: `GET /artifacts/{id}/blocks` answers
+    // `ArtifactBlock`s, which carry a block's id, type, byte offsets, token, reference counts,
+    // attributes and a table's cells and no prose at all (`packages/contracts/src/
+    // dispatch-api.ts`, `ArtifactBlock`), so it is not a text read and naming it here would ban
+    // the one listing the tree is built from. The head draws its sentences out of the summary
+    // node's own text, which the tree already carries (`IssueThreeThings.tsx`), and the version
+    // control beside the filters reads the versions the issue's own read carries
+    // (`VersionControl.tsx`), so nothing on this address reads the spec's text either.
+    const textReads = () =>
       traffic.requests
-        .filter(
-          (request) =>
-            /\/text(\?|$)/.test(request.path) && !request.path.includes(seeded.specArtifactId)
-        )
-        .map((request) => request.path),
-      "the first load read the stored text of a document it does not show"
-    ).toEqual([]);
+        .filter((request) => /\/text(\?|$)/.test(request.path))
+        .map((request) => request.path);
+    expect(textReads(), "the first load read the stored text of a document").toEqual([]);
 
     // The ceiling and a floor together, because a ceiling alone passes a page that read
     // nothing: the baseline's own load is 37 reads, so a count in single figures is a page
@@ -3661,6 +3816,15 @@ test("the first load stays inside its request budget", async ({ browser }) => {
       `the first load sent only ${traffic.total()} requests under /api/, too few to be a load of this issue: ${byRoute}`
     ).toBeGreaterThanOrEqual(20);
     baseline = { byRoute, total: traffic.total() };
+
+    // Opening a document reads its text: the spec, opened from the node menu.
+    const specName = (await getArtifact(seeded.specArtifactId)).name;
+    await nodeMenuButton(page).click();
+    await openMenu(page).getByRole("button", { exact: true, name: specName }).click();
+    await expect(openedEditor(page)).toBeVisible();
+    await expect
+      .poll(textReads, { message: "opening the spec read no text of it" })
+      .toContainEqual(expect.stringContaining(seeded.specArtifactId));
   });
 
   // No request for each node: twice the nodes, the same count.

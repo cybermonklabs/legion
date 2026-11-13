@@ -6,8 +6,7 @@ import {
   listComments,
   putIssueState,
 } from "./api";
-import { barAction, selectEditorText } from "./editor";
-import { pickPreset } from "./issue-page";
+import { barAction, selectEditorText, specAddress } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -96,8 +95,7 @@ test("double-clicking Submit posts exactly one comment @pr", async ({ browser })
 
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/issues/${issue.key}`);
-  await pickPreset(page, "Spec");
+  await page.goto(await specAddress(issue.key));
   await selectEditorText(page, "brown");
   await barAction(page, "Comment");
   const composer = page.getByRole("form", { name: "Comment composer" });

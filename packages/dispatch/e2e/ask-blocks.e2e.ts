@@ -19,6 +19,7 @@ import {
   openWithCaret,
   paste,
   selectEditorText,
+  specAddress,
 } from "./editor";
 import { navigateInApp } from "./sends";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
@@ -72,7 +73,7 @@ async function openAnsweredDecision(browser: Browser) {
   await answerAsk(blockAsk.id, { expected_edited_at: null, selected: ["A"], text: "Go A." });
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  await page.goto(`/issues/${issue.key}`);
+  await page.goto(await specAddress(issue.key));
   const decision = documentEditor(page).locator('[data-dispatch-ask-block="decision"]');
   await expect((await expectHosted(decision)).getByText("Go A.")).toBeVisible();
   return { alice, blockAsk, issue, page };
@@ -113,7 +114,7 @@ test("agentWrittenAskBlockAppearsAndAnswersInPlace", async ({ browser }, testInf
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ width: 1770, height: 900 });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     const ask = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     await expect(ask).toContainText("Should we ship?");
     const decisions = page.getByRole("navigation", { name: "Open decisions" });
@@ -243,7 +244,7 @@ test("a reader asks back from a decision block: the question threads under the b
   try {
     const page = await alice.newPage();
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     const block = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     const hosted = await expectHosted(block);
     // No exchange yet: nothing to disclose.
@@ -321,7 +322,7 @@ test("a resolved decision block is read-only", async ({ browser }) => {
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     const ask = documentEditor(page).locator('[data-dispatch-ask-block="resolved-decision"]');
     // The hosted card's resolution record, with its reason; no composer.
     const hosted = await expectHosted(ask);
@@ -363,7 +364,7 @@ test("a failed in-document decision answer reports inside the failed block and c
         status: 400,
       });
     });
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     await expect(page.getByRole("navigation", { name: "Open decisions" })).toBeVisible();
     const ask = documentEditor(page).locator('[data-dispatch-ask-block="failing-decision"]');
     const hosted = await expectHosted(ask);
@@ -437,7 +438,7 @@ test("open decision navigation cycles through the available decisions", async ({
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     const decisions = page.getByRole("navigation", { name: "Open decisions" });
     await expect(decisions.getByText("2 open decisions", { exact: true })).toBeVisible();
     const firstDecision = await decisions.getByRole("link").textContent();
@@ -504,7 +505,7 @@ test("decision blocks read as urgency-accented cards in the document and its ver
       for (const scheme of ["light", "dark"] as const) {
         await page.emulateMedia({ colorScheme: scheme });
         await page.setViewportSize({ width, height });
-        await page.goto(`/issues/${issue.key}`);
+        await page.goto(await specAddress(issue.key));
         await expect(editor.locator('[data-dispatch-ask-block="naming"]')).toContainText(
           "Answered by bob"
         );
@@ -667,7 +668,7 @@ test("a pasted rendered callout and decision keep attributes, content, and the o
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     const clipboard = await copyWholeDocument(page);
     expect(clipboard.html).toContain('data-proof-block-attr-kind="warning"');
     expect(clipboard.html).toContain('data-proof-block-attr-title="Risk"');

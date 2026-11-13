@@ -1,6 +1,6 @@
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { createIssue, createProject, getArtifactText, patchIssue } from "./api";
-import { connectedDot, documentEditor, documentTransport, typeAtEnd } from "./editor";
+import { connectedDot, documentEditor, documentTransport, specAddress, typeAtEnd } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -83,7 +83,7 @@ test("an edit typed while the document transport is down survives a reload @webk
   try {
     const page = await alice.newPage();
     const transport = await documentTransport(page);
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
     transport.hold();
@@ -115,7 +115,7 @@ test("unsent edits are named, then cleared after acknowledgement and a connected
     const transport = await documentTransport(page);
     // The reconnect draw below is spent on the page's clock, not in real time.
     await page.clock.install();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
     transport.hold();
@@ -155,8 +155,8 @@ test("two disconnected tabs restore each browser-held edit once @webkit @firefox
     const firstTransport = await documentTransport(firstPage);
     const secondTransport = await documentTransport(secondPage);
     await Promise.all([
-      firstPage.goto(`/issues/${issue.key}/spec`),
-      secondPage.goto(`/issues/${issue.key}/spec`),
+      firstPage.goto(await specAddress(issue.key)),
+      secondPage.goto(await specAddress(issue.key)),
     ]);
     await Promise.all([
       expect(connectedDot(firstPage)).toHaveText("connected"),
@@ -201,7 +201,7 @@ test("read-only admission preserves edits until a later read-write reload @pr", 
   try {
     const page = await alice.newPage();
     const transport = await documentTransport(page);
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
     transport.hold();
@@ -244,7 +244,7 @@ test("a reopened issue's page names no unsent edit before typing, and an edit ty
     const transport = await documentTransport(page);
     // The reconnect draw the reopen below arms is spent on the page's clock, not in real time.
     await page.clock.install();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
     const editor = documentEditor(page);
     await expect(editor).toHaveAttribute("contenteditable", "false");
@@ -296,7 +296,7 @@ test("an edit applied before its acknowledgement clears its row on reload", asyn
   try {
     const page = await alice.newPage();
     const transport = await documentTransport(page);
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
     transport.holdServerFrames();

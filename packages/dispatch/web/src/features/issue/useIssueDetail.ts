@@ -4,7 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
-import { type IssueRoute, isPrimaryDocumentArtifactRoute, issueTabForRoute } from "../refs/routes";
+import { type IssueRoute, issueTabForRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 
 export function useIssueDetail(route: IssueRoute) {
@@ -21,12 +21,13 @@ export function useIssueDetail(route: IssueRoute) {
   const planArtifact = roleDocument(issue.data, "plan");
   const verificationArtifact = roleDocument(issue.data, "verification");
   const primaryArtifact = primarySpec(issue.data);
+  // The document or file the address opens in place of the outline (R3), the spec among them:
+  // its own address is where every document of the issue is opened.
   const selectedArtifact =
     artifactRouteSlug === undefined
-      ? primaryArtifact
+      ? undefined
       : issue.data?.artifacts?.find(({ slug }) => slug === artifactRouteSlug);
-  const isPrimaryArtifactRoute = isPrimaryDocumentArtifactRoute(route, selectedArtifact);
-  const activeTab = issueTabForRoute(route, selectedArtifact);
+  const activeTab = issueTabForRoute(route);
   const conversationFocusItemId =
     route.kind === "ask" || route.kind === "comment" || route.kind === "message"
       ? route.id
@@ -38,7 +39,6 @@ export function useIssueDetail(route: IssueRoute) {
     askId,
     commentId,
     conversationFocusItemId,
-    isPrimaryArtifactRoute,
     highlightTerm,
     issue,
     planArtifact,

@@ -27,10 +27,11 @@ import {
   openSpecAndAwaitHeadingIds,
   placeCaret,
   selectEditorText,
+  specAddress,
   typeAtEnd,
 } from "./editor";
-import { pickPreset } from "./issue-page";
 import { engineParagraphs } from "./read-back";
+import { navigateInApp } from "./sends";
 import { type BrowserContext, expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -54,7 +55,7 @@ test("the spec opens as a formatted, editable document with no source pane", asy
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
 
     const documentArticle = page.locator('article[aria-label="Document"]');
     const editor = documentEditor(page);
@@ -104,7 +105,7 @@ test("the spec opens as a formatted, editable document with no source pane", asy
     await expect(editor.locator('input[type="checkbox"]')).toBeVisible();
     await expect(editor.locator("pre code")).toBeVisible();
     await expect(page.getByRole("button", { name: /^(Edit|Preview)$/ })).toHaveCount(0);
-    await expect(page.locator("#issue-spec-panel").locator("textarea")).toHaveCount(0);
+    await expect(page.getByTestId("opened-artifact").locator("textarea")).toHaveCount(0);
 
     await page.screenshot({ path: testInfo.outputPath("rendered-document.png"), fullPage: true });
   } finally {
@@ -128,7 +129,7 @@ test("a spec whose table holds an unbreakable token keeps the page within the sc
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const table = documentEditor(page).locator("table");
     await expect(table).toBeVisible();
     expect(
@@ -212,8 +213,8 @@ test("two users edit the same spec, see each other's text and cursor, and settle
     const [alicePage, bobPage] = await Promise.all([alice.newPage(), bob.newPage()]);
     // The two readers' loads overlap: neither waits on the other to mount its editor.
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -275,7 +276,7 @@ test("named versions, the version picker, and the diff stay current across users
   try {
     const page = await alice.newPage();
     const sockets = countDocumentSockets(page);
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const editor = documentEditor(page);
     await expect(editor).toContainText("Use SQLite");
     await expect.poll(sockets).toBe(1);
@@ -345,8 +346,8 @@ test("an agent edit lands live in every open editor @pr", async ({ browser }) =>
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     const aliceEditor = documentEditor(alicePage);
     const bobEditor = documentEditor(bobPage);
@@ -381,8 +382,8 @@ test("reloading mid-edit reopens the same content", async ({ browser }) => {
     const aliceSockets = countDocumentSockets(alicePage);
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     const bobEditor = documentEditor(bobPage);
     await expect(documentEditor(alicePage)).toContainText("Use SQLite");
@@ -422,7 +423,7 @@ test("tab round-trips keep one document connection, the typed text, and the Conv
   try {
     const page = await alice.newPage();
     const sockets = countDocumentSockets(page);
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const editor = documentEditor(page);
     await typeAtEnd(page, "stay mounted");
     await expect(editor).toContainText("stay mounted");
@@ -535,14 +536,14 @@ test("a dropped document transport reconnects the mounted editor and leaves one 
     const sockets = countDocumentSockets(page);
     const open = openDocumentSockets(page);
     const transport = await documentTransport(page);
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const editor = documentEditor(page);
     await expect(editor).toContainText("Original body.");
     await expect(connectedDot(page)).toHaveText("connected");
     await expect.poll(sockets).toBe(1);
 
     const bobPage = await bob.newPage();
-    await bobPage.goto(`/issues/${issue.key}/spec`);
+    await bobPage.goto(await specAddress(issue.key));
     await expect(documentEditor(bobPage)).toContainText("Original body.");
 
     await transport.sever();
@@ -605,7 +606,7 @@ for (const row of [
       // clock spends it rather than the run (`artifacts.e2e.ts:478` drives the same connection).
       await page.clock.install();
       const sockets = countDocumentSockets(page, issue.primary_artifact_id);
-      await page.goto(`/issues/${issue.key}/spec`);
+      await page.goto(await specAddress(issue.key));
       await expect(documentEditor(page)).toContainText("It stays connected.");
       if (row.readOnly) {
         await expect(
@@ -663,7 +664,7 @@ test("document marks and table alignment use classes rather than inline styles",
   ]);
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const editor = documentEditor(page);
     const decoration = editor.locator(".mark-comment");
     const rightCell = editor.locator("tbody td").nth(1);
@@ -675,10 +676,10 @@ test("document marks and table alignment use classes rather than inline styles",
     );
 
     const selectionPage = await selectionAlice.newPage();
-    await selectionPage.goto(`/issues/${issue.key}/spec`);
+    await selectionPage.goto(await specAddress(issue.key));
     const selectionEditor = documentEditor(selectionPage);
     const bobPage = await selectionBob.newPage();
-    await bobPage.goto(`/issues/${issue.key}/spec`);
+    await bobPage.goto(await specAddress(issue.key));
     await selectEditorText(bobPage, "marked phrase");
     const selection = selectionEditor.locator(".proof-collab-selection");
     await expect(selection).toHaveCount(1);
@@ -736,7 +737,7 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
     expect(scripts.size).toBeGreaterThan(1);
     expect(await transportChunks()).toEqual([]);
 
-    await pickPreset(page, "Spec");
+    await navigateInApp(page, await specAddress(issue.key));
     await expect(documentEditor(page)).toContainText("Use SQLite");
     expect((await transportChunks()).length).toBeGreaterThan(0);
   } finally {
@@ -800,7 +801,7 @@ test("clicking a Markdown dispatch:// link in the live editor navigates in-app w
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${source.key}/spec`);
+    await page.goto(await specAddress(source.key));
 
     const editor = documentEditor(page);
     // The live editor keeps the author's own link text (`@legion/proof-editor` exposes no
@@ -854,7 +855,7 @@ test("a backslash before a character reference reads as its text in a document, 
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     const editor = documentEditor(page);
     await expect.poll(() => editor.locator("p").allTextContents()).toEqual([text]);
 

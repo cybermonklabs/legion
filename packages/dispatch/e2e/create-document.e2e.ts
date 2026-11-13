@@ -1,5 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
+
 import {
   createIssue,
   createProject,
@@ -24,9 +26,13 @@ function newDocumentForm(page: Page): Locator {
   return page.getByRole("form", { name: "New document" });
 }
 
-/** The whole press a person makes: `New document`, the title, `Create`. */
+/** The whole press a person makes: `New document`, the title, `Create`. On an issue the control
+ *  is an item of the node menu (dispatch://INFRA-1196 R3); on a project's list it is a button. */
 async function createDocument(page: Page, title: string): Promise<void> {
-  await page.getByRole("button", { name: "New document" }).click();
+  await page
+    .getByRole("menuitem", { name: "New document" })
+    .or(page.getByRole("button", { name: "New document" }))
+    .click();
   const form = newDocumentForm(page);
   await form.getByRole("textbox", { name: "Title" }).fill(title);
   await form.getByRole("button", { name: "Create" }).click();
@@ -55,19 +61,19 @@ test("a title typed on an issue's Documents tab makes an empty document and open
 
   await page.goto(`/issues/${issue.key}/artifacts`);
   // The create control is a second way to add a document, beside the upload rather than in
-  // place of it: the upload's button is still on the strip and its file input took no file, so
-  // "no file was chosen" below would be said of a control this page holds.
-  await expect(page.getByRole("button", { name: "New document" })).toBeVisible();
-  await expect(page.getByRole("button", { exact: true, name: "Upload" })).toBeVisible();
+  // place of it: the upload is still an item of the node menu and its file input took no file,
+  // so "no file was chosen" below would be said of a control this page holds.
+  await expect(page.getByRole("menuitem", { name: "New document" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { exact: true, name: "Upload" })).toBeVisible();
   expect(
     await page
-      .getByLabel("Upload artifact")
+      .getByLabel(CONTROL_LABELS.upload_file)
       .evaluate((input: HTMLInputElement) => input.files?.length ?? -1)
   ).toBe(0);
 
   await createDocument(page, "Launch notes");
-  // The person is taken to the document, which on an issue is the artifacts panel of the page
-  // they are already on.
+  // The person is taken to the document, which on an issue opens in place of the outline of the
+  // page they are already on.
   await expect(page).toHaveURL(`/issues/${issue.key}/artifacts/launch-notes`);
   await expect(page.getByRole("heading", { name: "Launch notes" })).toBeVisible();
   await expect(documentEditor(page)).toBeAttached();
@@ -107,7 +113,7 @@ test("two presses of Create in one go make one document", async ({ page }) => {
   const posts = watchWrites(page, "POST", path);
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  await page.getByRole("button", { name: "New document" }).click();
+  await page.getByRole("menuitem", { name: "New document" }).click();
   const form = newDocumentForm(page);
   await form.getByRole("textbox", { name: "Title" }).fill("Launch notes");
   // Two synthetic clicks in the same task of the page, so the second press is made before the
@@ -129,7 +135,9 @@ test("two presses of Create in one go make one document", async ({ page }) => {
   ).toHaveLength(1);
 
   await navigateInApp(page, `/issues/${issue.key}/artifacts`);
-  await expect(page.getByRole("link", { exact: true, name: "Launch notes" })).toHaveCount(1);
+  await expect(
+    page.getByRole("menu").getByRole("button", { exact: true, name: "Launch notes" })
+  ).toHaveCount(1);
 });
 
 // SLOW(>=2s): the project's document made in the browser and its editor mounted on the live

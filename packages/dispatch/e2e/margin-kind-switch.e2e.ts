@@ -12,6 +12,7 @@ import {
   needsYouCards,
   placeCaret,
   selectEditorText,
+  specAddress,
 } from "./editor";
 import { refusePosts, WRITE_REFUSED_TEXT } from "./sends";
 import { type Browser, expect, type Page, test } from "./test";
@@ -45,8 +46,8 @@ async function withReaders(
     const alicePage = await alice.newPage();
     const bobPage = await bob.newPage();
     await Promise.all([
-      alicePage.goto(`/issues/${issue.key}/spec`),
-      bobPage.goto(`/issues/${issue.key}/spec`),
+      alicePage.goto(await specAddress(issue.key)),
+      bobPage.goto(await specAddress(issue.key)),
     ]);
     await expect(documentEditor(alicePage)).toContainText(initialMarkdown);
     await expect(documentEditor(bobPage)).toContainText(initialMarkdown);

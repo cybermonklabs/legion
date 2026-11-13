@@ -290,12 +290,10 @@ than five minutes ago is not sent on its own: the corner lists it as **Not saved
 name, so it is saved at most once if you retry within 24 hours of the first try; after that
 Dispatch no longer knows the name, and the change may be made twice. The corner says so.
 
-A closed issue takes no upload and no new document. In the **Files and documents** menu,
-**Upload** is shown as unavailable, with **This issue is closed. Reopen it to add a document.**,
-and **New document** is not offered. The list at
-`/issues/<KEY>/artifacts` says **This issue is closed. Reopen it to add a document.** beside its
-**New document** and **Upload**: it picks no file, no key opens a file picker there, and a file
-dropped on it is ignored.
+A closed issue takes no upload and no new document. In the **Files and documents** menu, which
+`/issues/<KEY>/artifacts` opens, **Upload** and **New document** are each shown as unavailable,
+with **This issue is closed. Reopen it to add a document.**: neither picks a file or opens a form,
+no key opens a file picker there, and a file dropped on the menu is ignored.
 
 Now and then Dispatch makes a change but its answer is lost on the way back. The change is made;
 the page says so (for example **The issue “…” was made, but Dispatch lost its answer, so it may
@@ -359,18 +357,16 @@ is how many nodes it holds.
 
 | Preset | What it draws | Address |
 | --- | --- | --- |
-| **Tree** | Every node, with the spec under the tree | `/issues/<KEY>` |
+| **Tree** | Every node | `/issues/<KEY>` |
 | **Decisions** | Asks and decisions. It opens the body of the first decision that waits for your review | `/issues/<KEY>/decisions` |
-| **Checks** | Checks and the results recorded against each one, with the Verification document, when there is one, under the tree | `/issues/<KEY>/verification` |
-| **Spec** | Requirements, with the spec under the tree | `/issues/<KEY>/spec` |
-| **Plan** | Plan tasks, with the plan document under the tree | `/issues/<KEY>/plan` |
+| **Checks** | Checks and the results recorded against each one | `/issues/<KEY>/verification` |
+| **Spec** | Requirements | `/issues/<KEY>/spec` |
+| **Plan** | Plan tasks | `/issues/<KEY>/plan` |
 
-Under the spec, **Requirements** lists the spec's requirements, and marks each one no check serves
-**No check**.
-[Documents](/legion/dispatch/documents/) covers the spec itself. The Plan preset puts the plan's
-approval chip above the plan document, and under it each plan task the document marks, with the
-requirements it **serves** and the tasks it **needs**. An issue with no plan document shows there
-the `dispatch artifact` command that makes one.
+No preset draws a document under the tree. A document, the spec included, opens from **Files and
+documents** in place of the tree; [Documents](/legion/dispatch/documents/) covers it. The Plan
+preset draws each plan task under the requirement it **serves**, with a chip for each task it
+**needs**, and the plan's approval chip is on the plan's own page.
 
 A check reads **Passed**, **Failed**, **Out of date**, **No result**, **Retracted**, **Cannot
 tell** or **Could not read**. Its body shows its **when**, **surface**, **run** command and
@@ -385,16 +381,20 @@ that names the preset you are on and opens a menu of the five.
 
 Beside the presets:
 
-- **Files and documents** lists every document and file of the issue, each with a copy control;
-  choose one to open it at its own address. The menu also holds **Upload**, which uploads the
-  file you pick at once, and **New document**, which asks for a title.
+- **Files and documents** lists every document and file of the issue, each with a copy control,
+  the download of its latest version and, for a document the issue can drop, **Remove**. Choose
+  one to open it in place of the tree, at its own address; `Escape` or **Back to the
+  conversation** returns to the tree. The box at the top of the menu narrows it by name or kind.
+  The menu also holds **Upload**, which uploads the file you pick at once, and **New document**,
+  which asks for a title; a file dropped on the open menu uploads. `t a` opens it.
 - The **Filter** box narrows the preset to the rows whose text holds what you type, and the rows
   above them, with every branch it keeps unfolded. The counts follow it, and the address keeps it
   as `?q=`.
-- The toolbar of the document the preset has open: its **Version**, **Name**, connection dot,
-  copy control, **Copy link** and approval chip.
-  [Documents](/legion/dispatch/documents/#versions) covers them. On a screen narrower than
-  768 px the toolbar is under the tree.
+- The version control: **Version**, **Name**, the connection dot, the copy control and **Copy
+  link**, for the document you opened or, with none open, the preset's own document.
+  [Documents](/legion/dispatch/documents/#versions) covers them. The approval chip is in the
+  identity block. On a screen narrower than 768 px the version control is under the tree, or
+  above the document you opened.
 
 ### The panel
 
@@ -469,22 +469,26 @@ open:
 
 | Address | What it opens |
 | --- | --- |
-| `/issues/<KEY>` | The Tree preset, with the spec under the tree |
-| `/issues/<KEY>/spec` | The Spec preset, with the spec under the tree |
-| `/issues/<KEY>/verification` | The Checks preset, with the Verification document under the tree |
-| `/issues/<KEY>/plan` | The Plan preset, with the plan document under the tree |
+| `/issues/<KEY>` | The Tree preset |
+| `/issues/<KEY>/spec` | The Spec preset |
+| `/issues/<KEY>/verification` | The Checks preset |
+| `/issues/<KEY>/plan` | The Plan preset |
 | `/issues/<KEY>/decisions` | The Decisions preset |
 | `/issues/<KEY>/conversation` | The Tree preset, with **What people said** chosen and the conversation's list in the panel |
 | `/issues/<KEY>/activity` | The Tree preset, with **Everything** chosen and the issue's whole history under the tree |
 | `/issues/<KEY>/children` | The Tree preset. The **Children** section is above the tree on every preset |
-| `/issues/<KEY>/artifacts` | The Tree preset, with **Files and documents** open and every document and file of the issue listed under the tree |
+| `/issues/<KEY>/artifacts` | The Tree preset, with the **Files and documents** menu open |
 | `/issues/<KEY>/collaborators` | The Tree preset, with **Collaborators** open in the panel's **People** section |
-| `/issues/<KEY>/artifacts/<name>` | The Tree preset, with that document or file, its versions and its details under the tree. The spec's own name opens the Spec preset |
+| `/issues/<KEY>/artifacts/<name>` | That document or file in place of the tree, with its editor, its versions, its details and what references the issue. A `#b-` naming a block the tree holds as a node opens the tree at that node instead |
 | `/issues/<KEY>/asks/<id>`, `/comments/<id>` or `/messages/<id>` | The Tree preset, with **What people said** chosen, the panel's conversation on that entry, and the tree unfolded to its row |
 
 On any of them, `?q=` fills the **Filter** box, and `#b-` with a block's id, `?ask=` or
-`?comment=` unfolds the tree down to that node. `?v=` with a version number reads that version
-of the spec on `/issues/<KEY>/spec`, and of the document on `/issues/<KEY>/artifacts/<name>`.
+`?comment=` unfolds the tree down to that node. `?v=` with a version number pins the version
+control to that version on a preset's address, and reads that version of the document on
+`/issues/<KEY>/artifacts/<name>`. On `/issues/<KEY>/spec`, a `?comment=`, or a `#b-` naming a
+block of the spec's own text, opens the spec in place of the tree at that comment or block, as
+the spec's own address does; a `#b-` naming a requirement or another node the tree draws opens
+the Spec preset at that node.
 
 ### Writing in the Conversation
 

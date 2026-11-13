@@ -7,6 +7,7 @@ import {
   indexedBlockAsk,
   placeCaret,
   selectTextIn,
+  specAddress,
 } from "./editor";
 import { type Browser, type BrowserContext, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -66,7 +67,7 @@ async function crossOptionLists(
     page.on("pageerror", (error) => errors.push(error.message));
     await page.clock.install();
     const transport = await documentTransport(page);
-    await page.goto(`/issues/${issueKey}`);
+    await page.goto(await specAddress(issueKey));
     opened.push({ option, page, transport });
   }
   for (const { page } of opened) {

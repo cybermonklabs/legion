@@ -10,8 +10,10 @@ import { assertPageFits } from "./unclipped";
  * The walk is Playwright's own accessibility snapshot (`page.ariaSnapshotJSON`), so a name is the
  * one Playwright computes from `aria-label`, `aria-labelledby`, the element's own text, `title`
  * and `alt`, which is the name `getByRole(role, { name })` resolves and the name a screen reader
- * reads. Nothing here extracts DOM text by hand, and nothing here knows anything about the
- * redesign: this module records what is on a page and asserts that a later page still carries it.
+ * reads. Nothing here extracts DOM text by hand but the text of the outline's `treeitem` rows,
+ * for the one kind of entry a parent row carries (`ParentRowMapping`), and nothing here knows
+ * anything about the redesign: this module records what is on a page and asserts that a later
+ * page still carries it.
  *
  * The snapshot leaves out what no reader can reach - an element with `display: none`, `hidden`,
  * or `aria-hidden` - and renders only one view of the page at a time, so a page that hides part
@@ -206,6 +208,22 @@ async function measured(snapshot: Promise<unknown>): Promise<MeasuredEntry[]> {
   return found;
 }
 
+/**
+ * One link of the old page from a node to another node, which the new page carries by drawing
+ * the target as that node's parent row, the row the left arrow reaches from it - the one form of
+ * carrying an entry that is no landmark and no control of its own. A decision's card linked the
+ * ask it answers; the outline draws the decision under that ask instead (R4), so the link's job
+ * is done by the tree itself, and the entry is carried exactly when the tree does it.
+ */
+export interface ParentRowMapping {
+  /** Words of the node the old link sat on, which its row holds. */
+  readonly node: string;
+  /** Words of the node the old link pointed at, which the node's parent row holds. */
+  readonly parent: string;
+  /** Why the parent row stands in for the link. */
+  readonly reason: string;
+}
+
 export interface CarriedOptions {
   /**
    * The fixture's rename table: each recorded entry, written as the `role "name"` a failure
@@ -220,6 +238,17 @@ export interface CarriedOptions {
    * matching nothing.
    */
   readonly renames: Readonly<Record<string, string>>;
+  /**
+   * The fixture's links carried by a parent row (`ParentRowMapping`), keyed by the recorded
+   * entry in the same `role "name"` form. Such an entry is looked for in the outline's
+   * `treeitem` rows and nowhere else: it is carried when a row holding the node's words is drawn
+   * under a row holding the target's words, one level up, and the left arrow from that row
+   * reaches that parent. Every other entry is read as a landmark or a control, as above.
+   */
+  readonly parentRows?: Readonly<Record<string, ParentRowMapping>>;
+  /** Puts the page where the outline draws the rows a parent-row mapping names, both of them:
+   *  the walk's own views leave the page wherever the last one did. */
+  readonly outline?: (mapping: ParentRowMapping) => Promise<void>;
   /** Which recorded state this is (`open-1440`), named in every failure. */
   readonly state: string;
   /**
@@ -241,6 +270,52 @@ export interface CarriedOptions {
   readonly views: readonly (() => Promise<boolean>)[];
 }
 
+/** How many presses of the left arrow reach a parent row: a row that holds rows of its own and
+ *  is open folds on the first press, and moves to its parent on the second. */
+const LEFT_ARROW_PRESSES = 2;
+
+/**
+ * Whether the outline carries one parent-row mapping: a `treeitem` holding the node's words,
+ * drawn one level under the nearest `treeitem` above it that holds the target's words, from
+ * which the left arrow moves the focus to that parent. Undefined where it does, and otherwise
+ * what the rows showed instead.
+ */
+async function parentRowMissing(
+  page: Page,
+  mapping: ParentRowMapping
+): Promise<string | undefined> {
+  const rows = page.getByRole("treeitem");
+  const drawn = await rows.evaluateAll((items) =>
+    items.map((item) => ({
+      level: Number(item.getAttribute("aria-level")),
+      text: (item.textContent ?? "").replace(/\s+/g, " "),
+    }))
+  );
+  const placements = drawn.flatMap((row, at) => {
+    if (!row.text.includes(mapping.node)) return [];
+    let parent = at - 1;
+    while (parent >= 0 && drawn[parent]?.level !== row.level - 1) parent -= 1;
+    return [{ at, parent }];
+  });
+  if (placements.length === 0) return `no row of the outline holds "${mapping.node}"`;
+  const under = placements.find(
+    ({ parent }) => drawn[parent]?.text.includes(mapping.parent) === true
+  );
+  if (under === undefined) {
+    const parents = placements.map(({ parent }) => drawn[parent]?.text ?? "the outline's top");
+    return `"${mapping.node}" is drawn under ${JSON.stringify(parents)}, not under "${mapping.parent}"`;
+  }
+  await rows.nth(under.at).focus();
+  for (let press = 0; press < LEFT_ARROW_PRESSES; press += 1) {
+    await page.keyboard.press("ArrowLeft");
+    const reached = await rows
+      .nth(under.parent)
+      .evaluate((row) => row === document.activeElement || row.contains(document.activeElement));
+    if (reached) return undefined;
+  }
+  return `the left arrow from "${mapping.node}" does not reach its parent row "${mapping.parent}"`;
+}
+
 /**
  * Nothing recorded was lost: every recorded `{role, name}`, under the name the rename table gives
  * it, is a landmark or control of the page as it stands, and a reader reaches each of them
@@ -256,13 +331,20 @@ export async function assertInventoryCarried(
   options: CarriedOptions
 ): Promise<void> {
   // One row per recorded entry, each naming every entry that carries it: itself, or whatever
-  // the rename table says stands in its place.
+  // the rename table says stands in its place. An entry a parent row carries is read off the
+  // outline's rows below, and is no row of this list.
   const seen = new Set<string>();
   const wanted: { carried: InventoryEntry[]; described: string; instances: MeasuredEntry[] }[] = [];
+  const byParentRow: { described: string; mapping: ParentRowMapping }[] = [];
   for (const entry of recorded) {
     const described = describe(entry);
     if (seen.has(described)) continue;
     seen.add(described);
+    const mapping = options.parentRows?.[described];
+    if (mapping !== undefined) {
+      byParentRow.push({ described, mapping });
+      continue;
+    }
     const renamed = options.renames[described];
     const carried =
       renamed === undefined ? [entry] : renamed.split(" | ").map((one) => entryOf(one));
@@ -295,6 +377,17 @@ export async function assertInventoryCarried(
     one.instances = one.carried.flatMap((entry) => present.get(entryKey(entry)) ?? []);
   }
   const lost = wanted.filter((one) => one.instances.length === 0).map((one) => one.described);
+  // Each link a parent row carries, read once the views are done: the left arrow moves the
+  // focus and may fold a row, which no view's own reading should meet.
+  for (const { described, mapping } of byParentRow) {
+    expect(
+      options.outline,
+      `${options.state}: ${described} is carried by a parent row, and the check names no way to the outline`
+    ).toBeDefined();
+    await options.outline?.(mapping);
+    const missing = await parentRowMissing(page, mapping);
+    if (missing !== undefined) lost.push(`${described} (${missing})`);
+  }
   expect(lost, `${options.state} no longer offers: ${lost.join(", ")}`).toEqual([]);
 
   const viewport = await page.evaluate(() => document.documentElement.clientWidth);

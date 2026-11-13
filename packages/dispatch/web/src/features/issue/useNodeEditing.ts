@@ -93,6 +93,9 @@ export function useNodeEditing({
 
   useEffect(() => {
     onEditing(editingArtifact);
+    // The outline going - a document opened in its place - takes the row's editing with it, so
+    // the page holds no editor for a row that is no longer drawn.
+    return () => onEditing(undefined);
   }, [editingArtifact, onEditing]);
 
   useEffect(() => {

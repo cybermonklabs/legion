@@ -1,7 +1,13 @@
 import type { Comment } from "../web/src/api/types";
 
 import { createIssue, createProject, listComments } from "./api";
-import { barAction, deleteEditorText, documentEditor, selectEditorText } from "./editor";
+import {
+  barAction,
+  deleteEditorText,
+  documentEditor,
+  selectEditorText,
+  specAddress,
+} from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
@@ -25,7 +31,7 @@ test("a block-anchored comment remains with its block through a reword and quote
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(documentEditor(page)).toContainText("Target passage.");
 
     await selectEditorText(page, "Target passage");

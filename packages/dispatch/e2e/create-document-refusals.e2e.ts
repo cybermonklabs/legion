@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
+import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import {
   createIssue,
   createIssueArtifact,
@@ -48,7 +49,7 @@ test("a title the issue already holds is refused by the control, by its name and
   const held = (await listIssueArtifacts(issue.key)).length;
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  await page.getByRole("button", { name: "New document" }).click();
+  await page.getByRole("menuitem", { name: "New document" }).click();
   const form = newDocumentForm(page);
   // The write compares the title with each document by name and by slug, and the control says
   // so before it writes: both spellings name the one document that holds the title.
@@ -91,7 +92,7 @@ test("a title whose slug is a role slug is refused, and the real plan.md is stil
   });
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  await page.getByRole("button", { name: "New document" }).click();
+  await page.getByRole("menuitem", { name: "New document" }).click();
   const form = newDocumentForm(page);
   await form.getByRole("textbox", { name: "Title" }).fill("Plan.md");
   await form.getByRole("button", { name: "Create" }).click();
@@ -104,12 +105,16 @@ test("a title whose slug is a role slug is refused, and the real plan.md is stil
   expect((await listIssueArtifacts(issue.key)).map((item) => item.slug)).not.toContain("plan-md");
   await form.getByRole("button", { name: "Cancel" }).click();
 
-  // What that slug is kept for: a real plan.md, uploaded on the same tab.
+  // What that slug is kept for: a real plan.md, uploaded from the same node menu.
   const planFile = testInfo.outputPath("plan.md");
   await writeFile(planFile, "# Plan\n\nThe steps, in order.\n");
-  await page.getByLabel("Upload artifact").setInputFiles(planFile);
+  // The node menu's upload stages the file, and its Upload sends it; the menu lists it.
+  await page.getByLabel(CONTROL_LABELS.upload_file).setInputFiles(planFile);
   await page.getByRole("button", { exact: true, name: "Upload" }).click();
-  await expect(page.getByTestId("artifact-plan-md")).toContainText("plan.md");
+  await page.getByRole("button", { exact: true, name: CONTROL_LABELS.other_nodes }).click();
+  await expect(
+    page.getByRole("menu").getByRole("button", { exact: true, name: "plan.md" })
+  ).toBeVisible();
 
   const plan = (await listIssueArtifacts(issue.key)).find((item) => item.role === "plan");
   expect(plan?.slug).toBe("plan-md");
@@ -139,23 +144,24 @@ test("a closed issue refuses both ways to add a document, in one sentence", asyn
   const held = (await listIssueArtifacts(issue.key)).length;
 
   await page.goto(`/issues/${issue.key}/artifacts`);
-  const create = page.getByRole("button", { name: "New document" });
-  const upload = page.getByRole("button", { exact: true, name: "Upload" });
+  const create = page.getByRole("menuitem", { name: "New document" });
+  const upload = page.getByRole("menuitem", { exact: true, name: "Upload" });
   await expect(create).toBeVisible();
   await expect(upload).toBeVisible();
 
   await patchIssue(issue.key, { status: "done" });
   const refusal = "This issue is closed. Reopen it to add a document.";
-  // One line covers the whole strip, and every control in it says that line: as its description
-  // rather than a `title`, since the issue page raises no tooltip at all (dispatch://INFRA-1196
-  // R21, `components/tooltips.tsx`).
+  // Each refused item of the menu says that one sentence as its description, drawn inside it -
+  // a menu owns menu items alone, so the line cannot stand beside them as it stood beside the
+  // Artifacts list's strip - rather than as a `title`, since the issue page raises no tooltip at
+  // all (dispatch://INFRA-1196 R21, `components/tooltips.tsx`).
   await expect(create).toHaveAttribute("aria-disabled", "true");
   await expect(create).toHaveAccessibleDescription(refusal);
   await expect(create).not.toHaveAttribute("title", /./);
   await expect(upload).toHaveAttribute("aria-disabled", "true");
   await expect(upload).toHaveAccessibleDescription(refusal);
   await expect(upload).not.toHaveAttribute("title", /./);
-  await expect(page.getByText(refusal, { exact: true })).toHaveCount(1);
+  await expect(page.getByText(refusal, { exact: true })).toHaveCount(2);
 
   // `force`: the refusal is `aria-disabled`, which Playwright reads as not enabled, and the
   // press a person can still make is exactly what this reads - it opens no form.

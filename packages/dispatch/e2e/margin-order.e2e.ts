@@ -7,7 +7,14 @@ import {
   listArtifactComments,
   listComments,
 } from "./api";
-import { connectedDot, expectMark, markSpan, openedThreadCard, setSheet } from "./editor";
+import {
+  connectedDot,
+  expectMark,
+  markSpan,
+  openedThreadCard,
+  setSheet,
+  specAddress,
+} from "./editor";
 import { setCreatedAt } from "./seed";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -63,7 +70,7 @@ test("the margin lists replies written in the same second in the order they were
 
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}/spec`);
+    await page.goto(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
     await expectMark(page, root.anchor.mark_id, "brown");
     await markSpan(page, root.anchor.mark_id).click();

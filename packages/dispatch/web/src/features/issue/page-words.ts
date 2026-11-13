@@ -273,18 +273,17 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, a spec with no summary, and a spec that marks no requirements. Each is
+ * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
  * one sentence, in the simple present, saying what is absent rather than what the reader should
  * do about it.
  */
 export const EMPTY_STATE_LINES = freeze({
   checks: "This issue has no checks yet.",
   decisions: "This issue has no decisions yet.",
+  /** What the node menu says where its filter leaves none of the issue's files (R3). */
+  files_filtered: "No file or document matches this filter.",
   plan: "This issue has no plan tasks yet.",
   spec: "This issue has no requirements yet.",
-  /** What the requirements panel says of a spec that marks none, which is not the same as an
-   *  issue with no spec at all. */
-  spec_marks_none: "This spec marks no requirements.",
   spec_summary: "This spec has no summary.",
   /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
    *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
@@ -369,13 +368,6 @@ export const PROGRESS_NOUNS = freeze({
   tasks: "tasks",
 } as const);
 
-/** What a panel says while a read of its own is out. It is no empty state - the place may hold
- *  plenty - so it does not belong in `EMPTY_STATE_LINES`; the line for that read failing is an
- *  answer (`ANSWER_LINES`). */
-export const READING_LINES = freeze({
-  coverage_loading: "Loading requirements…",
-} as const);
-
 /** How the issue stands, in a line of its own where no control's word carries it: a closed
  *  issue, whose writes the identity block refuses. One line, saying what is so. */
 export const STATE_LINES = freeze({
@@ -383,9 +375,9 @@ export const STATE_LINES = freeze({
 } as const);
 
 /**
- * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
- * a write of theirs still out, and a read that failed once they opened what it fills
- * (dispatch://INFRA-1196 R22). The page's other answers are tables of their own -
+ * What the page says in answer to the reader's own act, and never on load: a copy they pressed
+ * and a write of theirs still out (dispatch://INFRA-1196 R22). The page's other answers are
+ * tables of their own -
  * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
  * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
@@ -396,8 +388,6 @@ export const ANSWER_LINES = freeze({
   copied: "Copied",
   copy_failed: "Copy failed",
   copy_failed_hint: "Copy failed - select the text",
-  /** The requirements panel's read of the coverage failed. */
-  coverage_failed: "Could not load the requirement coverage.",
   /** What a control says while its own write is out: Dispatch has not answered, so none of
    *  these says the thing is done. */
   saving_close: "Closing…",
@@ -529,6 +519,9 @@ export const CONTROL_LABELS = freeze({
   children: "Children",
   /** The direct children done of total, labelled on the collapsed header (R10). */
   children_done: "Children done",
+  /** Closes the document opened in place of the outline and draws the outline again (R3); the
+   *  key that does the same is Escape. */
+  close_document: "Back to the conversation",
   /** Closes the issue, from the identity block's one actions control (R11). */
   close_issue: "Close issue",
   /** What the components line says of an issue whose components come from an ancestor. */
@@ -558,6 +551,9 @@ export const CONTROL_LABELS = freeze({
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
+  /** A file's latest version as a download, in the node menu, before that version's number:
+   *  the link the Artifacts list drew on each row (R3, c-nothing-lost). */
+  download_version: "Download version",
   /** Opens the editor of a property beside the value it already holds, where that value is
    *  drawn: the issues this one waits on (`BlockedByControl.tsx`). */
   edit: "Edit",
@@ -567,6 +563,9 @@ export const CONTROL_LABELS = freeze({
   external_link_unsafe: "unsafe external link",
   /** The box that narrows the preset to the rows whose words hold what is typed (R3). */
   filter: "Filter",
+  /** The box that narrows the node menu to the files whose name or kind holds what is typed:
+   *  the Artifacts list's own filter, in the menu's words (R3). */
+  filter_files: "Filter files and documents",
   /** Closes a branch of the tree (R1). */
   fold: "Fold",
   /** What a folded branch says it holds, after the count of the rows under it (R1): they are
@@ -608,8 +607,6 @@ export const CONTROL_LABELS = freeze({
   no_repository: "No repository",
   /** What the route control says while the issue has none to show. */
   no_route: "No route",
-  /** What one side of a plan task's pointers says while it names nothing (R4). */
-  none: "none",
   /** What the claim says of a holder the agent registry no longer lists (R11, row four). */
   not_running: "not running",
   /** The node menu beside the presets, holding every document and artifact of the issue and
@@ -624,8 +621,6 @@ export const CONTROL_LABELS = freeze({
   /** Why the repository shown may not be the issue's own, said beside the control rather than
    *  in a tooltip (R11, R21). */
   repository_inherited: "inherited or the project's default",
-  /** The heading of the requirements the spec marks, under the document itself (R14). */
-  requirements: "Requirements",
   /** Each editor's save, naming the field it writes. */
   save_blocked_by: "Save blocked by",
   save_parent: "Save parent",
@@ -796,6 +791,16 @@ export const AUTHOR_KIND_WORDS = freeze({
   unknown: "an author nobody recorded",
 } as const satisfies Record<AuthorKind, string>);
 
+/** What the node menu says beside each file's name (R3, R22): its kind, in a reader's word where
+ *  the Artifacts list drew the kind's own token (`doc`), and the mark on the issue's spec, which
+ *  that list drew as its Primary badge. A kind this build does not know is a file. */
+export const FILE_WORDS = freeze({
+  doc: "document",
+  file: "file",
+  image: "image",
+  primary: "Primary",
+} as const);
+
 /**
  * The `data-glyph` token of each shape the page draws: one per node type, one per state of the
  * three types that have states, and one per kind of author. No two types share a token and no
@@ -937,7 +942,6 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   GAP_LINES,
   GAP_WORDS,
   PROGRESS_NOUNS,
-  READING_LINES,
   CHECK_WHEN_WORDS,
   RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
@@ -948,6 +952,7 @@ export const UNASKED_SOURCES: readonly unknown[] = freeze([
   BLOCK_ATTRIBUTE_LABELS,
   NODE_FACT_LABELS,
   AUTHOR_KIND_WORDS,
+  FILE_WORDS,
 ]);
 
 /** What the page says only in answer to the reader's own act, and never on load

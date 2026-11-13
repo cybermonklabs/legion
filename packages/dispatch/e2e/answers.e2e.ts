@@ -11,7 +11,7 @@ import {
   getIssueEvents,
   listMyAnswers,
 } from "./api";
-import { documentEditor } from "./editor";
+import { documentEditor, specAddress } from "./editor";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -278,7 +278,7 @@ test("changing a decision block's answer rewrites the block in the document", as
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     const block = documentEditor(page).locator('[data-dispatch-ask-block="ship-decision"]');
     const hosted = block.locator("article[data-testid^=ask-]");
     await expect(hosted).toBeVisible();

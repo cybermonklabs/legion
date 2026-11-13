@@ -1525,40 +1525,6 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   }
 });
 
-test("IssuePage keeps the Spec mounted across presets", async () => {
-  const restore = stubIssuePage(issue);
-  const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
-    ...issue.artifacts[0],
-  });
-  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: "The mounted specification",
-    version: 1,
-    token: "sha256:mounted-specification",
-  });
-  const view = renderIssuePage("/issues/CORE-1/spec", undefined, "The mounted specification");
-
-  try {
-    await expectPreset("Spec");
-    await waitFor(() =>
-      expect(within(view.container).getByRole("article")).toHaveTextContent(
-        "The mounted specification"
-      )
-    );
-
-    await openPreset("Tree");
-    await openPreset("Spec");
-
-    expect(within(view.container).getByRole("article")).toHaveTextContent(
-      "The mounted specification"
-    );
-  } finally {
-    view.unmount();
-    getArtifact.mockRestore();
-    getArtifactText.mockRestore();
-    restore();
-  }
-});
-
 test("IssuePage preserves an in-progress Conversation composer draft across a preset round-trip", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -1746,11 +1712,8 @@ test("IssuePage highlights a historical quote from its comment deep link", async
       ).toBe(true)
     );
     expect(view.runtime.editors.some((editor) => editor.focused.includes("comment-1"))).toBe(true);
-    expect(
-      within(
-        view.container.querySelector<HTMLDivElement>("#issue-spec-panel") as HTMLDivElement
-      ).getAllByRole("article")
-    ).toHaveLength(1);
+    // The spec's own address opens it in place of the outline, once (R3).
+    expect(within(screen.getByTestId("opened-artifact")).getAllByRole("article")).toHaveLength(1);
   } finally {
     view.unmount();
     getArtifact.mockRestore();
@@ -1872,7 +1835,7 @@ test("IssuePage renders an image artifact at its own address", async () => {
   }
 });
 
-test("IssuePage does not mount an image as the hidden Spec document", async () => {
+test("IssuePage reads no document's text on the Spec filter, nor an image's when it opens", async () => {
   const user = userEvent.setup();
   const imageArtifact = {
     created_at: "2026-09-09T01:00:00Z",
@@ -1909,8 +1872,8 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
 
   try {
     await expectPreset("Spec");
-    await waitFor(() => expect(getArtifactText).toHaveBeenCalledWith("artifact-1"));
-    getArtifactText.mockClear();
+    // The Spec filter draws no document, so it reads no document's text (R3, R21).
+    expect(getArtifactText).not.toHaveBeenCalled();
     await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
     await screen.findByRole("img", { name: "diagram.png version 1" });
     expect(getArtifactText).not.toHaveBeenCalledWith("artifact-image");
@@ -2033,23 +1996,7 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
   }
 });
 
-test("IssuePage hides the artifact panel after switching to the Spec preset", async () => {
-  const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1/artifacts");
-
-  try {
-    await expectPreset("Tree");
-    await openPreset("Spec");
-    const artifactsPanel = view.container.querySelector<HTMLDivElement>("#issue-artifacts-panel");
-    expect(artifactsPanel?.hidden).toBe(true);
-    expect(artifactsPanel?.getAttribute("aria-hidden")).toBe("true");
-  } finally {
-    view.unmount();
-    restore();
-  }
-});
-
-test("IssuePage encodes primary-document version selection in the artifact route", async () => {
+test("IssuePage pins a version picked beside the Spec filter on the filter's own address", async () => {
   const user = userEvent.setup();
   const primaryArtifact = issue.artifacts[0];
   if (primaryArtifact === undefined) {
@@ -2090,9 +2037,7 @@ test("IssuePage encodes primary-document version selection in the artifact route
     await screen.findByLabelText("Version");
     await user.selectOptions(screen.getByLabelText("Version"), "1");
     await waitFor(() =>
-      expect(screen.getByTestId("current-route").textContent).toBe(
-        "/issues/CORE-1/artifacts/spec?v=1"
-      )
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec?v=1")
     );
   } finally {
     view.unmount();
@@ -2129,7 +2074,7 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
     restore();
   }
 });
-test("IssuePage keeps version controls in the active Spec tab row", async () => {
+test("IssuePage draws the version control beside the filters, with no approval", async () => {
   const restore = stubIssuePage(issue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
@@ -2142,24 +2087,21 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
-    const toolbar = await screen.findByTestId("issue-preset-toolbar");
-    expect(within(toolbar).getByRole("combobox", { name: "Version" })).not.toBeNull();
-    expect(within(toolbar).getByRole("button", { name: "Name version" })).not.toBeNull();
-    expect(screen.queryByTestId("spec-document-toolbar")).not.toBeInTheDocument();
+    const control = await screen.findByTestId("issue-version-control");
+    expect(within(control).getByRole("combobox", { name: "Version" })).not.toBeNull();
+    expect(within(control).getByRole("button", { name: "Name version" })).not.toBeNull();
+    expect(within(control).queryByRole("button", { name: /^Approve/ })).toBeNull();
+    // No editor is on the page, so no document's text was read for it (R21).
+    expect(getArtifactText).not.toHaveBeenCalled();
 
-    // The Tree preset is the issue's own address, and the page draws the spec beside its tree
-    // there, so that document keeps its toolbar: the version picker, Name version and the
-    // approval are controls it has nowhere else (dispatch://INFRA-1196 R18). The three
-    // presets below draw no document of this issue at all, so their row carries no toolbar.
+    // With no filter on, the control reads the spec, as the Design's picture of an issue the
+    // conversion has not reached draws it; the Decisions filter has no document of its role.
     await openPreset("Tree");
-    const treeToolbar = await screen.findByTestId("issue-preset-toolbar");
-    expect(within(treeToolbar).getByRole("combobox", { name: "Version" })).not.toBeNull();
-    for (const preset of ["Decisions", "Checks", "Plan"] as const) {
-      await openPreset(preset);
-      expect(screen.queryByTestId("issue-preset-toolbar")).not.toBeInTheDocument();
-      expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Name version" })).not.toBeInTheDocument();
-    }
+    const treeControl = await screen.findByTestId("issue-version-control");
+    expect(within(treeControl).getByRole("combobox", { name: "Version" })).not.toBeNull();
+    await openPreset("Decisions");
+    expect(screen.queryByTestId("issue-version-control")).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getArtifact.mockRestore();
@@ -2203,15 +2145,18 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
     await user.keyboard("{/Control}");
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1"));
 
-    const toolbar = await screen.findByTestId("issue-preset-toolbar");
     await user.click(
-      within(toolbar).getByRole("button", { name: "Copy reference dispatch://CORE-1/spec" })
+      within(await screen.findByTestId("issue-version-control")).getByRole("button", {
+        name: "Copy reference dispatch://CORE-1/spec",
+      })
     );
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/spec"));
 
+    // The spec's own address at a version opens the spec there, and the control beside the
+    // filters reads that version.
     await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
     await user.click(
-      await within(toolbar).findByRole("button", {
+      await within(await screen.findByTestId("issue-version-control")).findByRole("button", {
         name: "Copy reference dispatch://CORE-1/artifact/spec@v1",
       })
     );
@@ -2946,7 +2891,7 @@ test("IssuePage carries the filter into the address a conversation state names",
 // the fragment and the filter. This row used to pin the opposite - Everything and Words, the
 // latter already the selected state, sent the reader to `/activity` and `/conversation`, which
 // closed the spec and dropped the `#b-` - and nothing the reader asked for needed that (R19).
-test("IssuePage keeps the issue's own address, its spec and its fragment when a state is picked", async () => {
+test("IssuePage keeps the issue's own address and its fragment when a state is picked", async () => {
   const user = userEvent.setup();
   window.localStorage.removeItem(KEPT_STATE);
   const restore = stubIssuePage(issue);
@@ -2954,8 +2899,6 @@ test("IssuePage keeps the issue's own address, its spec and its fragment when a 
 
   try {
     await expectPreset("Tree");
-    const spec = document.getElementById("issue-spec-panel") as HTMLElement;
-    expect(spec).not.toHaveAttribute("hidden");
     for (const name of ["Everything", "What people said"]) {
       const states = await screen.findByRole("listbox", { name: "Conversation" });
       await user.click(within(states).getByRole("option", { name }));
@@ -2964,8 +2907,6 @@ test("IssuePage keeps the issue's own address, its spec and its fragment when a 
         "/issues/CORE-1?q=socket#b-r1"
       );
       await expectPreset("Tree");
-      expect(document.getElementById("issue-spec-panel"), `${name} closed the spec`).toBe(spec);
-      expect(spec, `${name} hid the spec`).not.toHaveAttribute("hidden");
       expect(
         within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
           name,

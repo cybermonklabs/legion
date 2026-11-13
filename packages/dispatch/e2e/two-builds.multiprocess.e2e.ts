@@ -400,10 +400,13 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
+      // The spec's editor is drawn at the spec's own address, in place of the outline: `/spec`
+      // is the Spec filter and draws no document (dispatch://INFRA-1196 R3, R20). An issue's
+      // spec is `spec.md` under the slug `spec` (`issue_create.go`).
       loads: ["editor"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.spec),
-      url: `${issue}/spec`,
+      url: `${issue}/artifacts/spec`,
     },
     {
       // The message's diagram is the Mermaid worker's: without it the body shows its source. Its
@@ -439,7 +442,13 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     {
       route: "/issues/:key/*",
-      shows: (page) => [page.getByTestId(`artifact-${seed.issueArtifact}`)],
+      // `/artifacts` opens the node menu, whose item for each file took the Artifacts tab's row.
+      shows: (page) => [
+        page
+          .getByRole("menu")
+          .getByRole("menuitem")
+          .filter({ has: page.getByRole("button", { exact: true, name: "rollout-notes.md" }) }),
+      ],
       url: `${issue}/artifacts`,
     },
     {

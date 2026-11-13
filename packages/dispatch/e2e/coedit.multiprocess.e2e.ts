@@ -5,6 +5,7 @@ import {
   cursorLabel,
   documentEditor,
   placeCaret,
+  specAddress,
   typeAtEnd,
 } from "./editor";
 import { type DispatchProcess, processPinCookie } from "./harness-processes";
@@ -155,7 +156,7 @@ test("two people on two processes see each other's typing and cursor within a se
     // Each page's connection dot is read from the moment it first connects to the end.
     const alicePage = await alice.newPage();
     const aliceSockets = countDocumentSockets(alicePage);
-    await alicePage.goto(`/issues/${issue.key}/spec`);
+    await alicePage.goto(await specAddress(issue.key));
     const aliceEditor = documentEditor(alicePage);
     await expect(aliceEditor).toContainText("Use SQLite");
     await expect(connectedDot(alicePage)).toHaveText("connected");
@@ -163,7 +164,7 @@ test("two people on two processes see each other's typing and cursor within a se
 
     const bobPage = await bob.newPage();
     const bobSockets = countDocumentSockets(bobPage);
-    await bobPage.goto(`/issues/${issue.key}/spec`);
+    await bobPage.goto(await specAddress(issue.key));
     const bobEditor = documentEditor(bobPage);
     await expect(bobEditor).toContainText("Use SQLite");
     await expect(connectedDot(bobPage)).toHaveText("connected");

@@ -1,5 +1,5 @@
 import { answerAsk, createComment, createIssue, createProject } from "./api";
-import { documentEditor, indexedBlockAsk } from "./editor";
+import { documentEditor, indexedBlockAsk, specAddress } from "./editor";
 import { expect, type Locator, type Page, test } from "./test";
 import { centerOf } from "./touch";
 import { withAlice } from "./users";
@@ -293,7 +293,7 @@ test("a reply under a decision inside a document shows the checkboxes with no bu
   );
 
   await withAlice(browser, async (page) => {
-    await page.goto(`/issues/${issue.key}`);
+    await page.goto(await specAddress(issue.key));
     const block = documentEditor(page).locator('[data-dispatch-ask-block="naming"]');
     const thread = block.getByTestId(`thread-${blockAsk.id}`);
     await expect(thread.getByText("alias added")).toBeVisible();

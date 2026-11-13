@@ -1,5 +1,5 @@
 import { createComment, createIssue, createProject, resolveComment } from "./api";
-import { documentEditor, marginCard, openSpec } from "./editor";
+import { documentEditor, marginCard, openSpec, specAddress } from "./editor";
 import {
   answeredPost,
   navigateInApp,
@@ -243,7 +243,7 @@ test("leaving the document while a margin thread's reply is out keeps the reply'
     await answered;
 
     // The thread the reader left is open again on their return, with its reply.
-    await navigateInApp(page, `/issues/${issueKey}/spec`);
+    await navigateInApp(page, await specAddress(issueKey));
     await expect(documentEditor(page)).toContainText(spec);
     const card = marginCard(page, first.id);
     await expect(card).toHaveAttribute("aria-expanded", "true");

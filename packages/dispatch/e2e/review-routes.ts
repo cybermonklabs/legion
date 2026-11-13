@@ -181,47 +181,32 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/issues/${seed.issue}/spec`,
     pattern: "/issues/:key/*",
     // Two facts, each of which one run of the drift probe caught this page without. This
-    // address is the Spec preset over the issue's one tree now, with the spec document drawn
-    // beside it (`web/src/features/issue/IssuePresetPanels.tsx`), so each fact is read where
-    // the redesign draws it rather than off the tab panel that used to hold it.
+    // address is the Spec filter over the issue's one tree now, and it draws no document: the
+    // spec opens at its own address, in place of the outline (dispatch://INFRA-1196 R3, R20).
+    // So each fact is read where the redesign draws it rather than off the tab panel that used to
+    // hold it.
     //
-    // The document's connection dot once its socket is up: it reads "connected" only in that
-    // state, so it matches nothing while the page still draws "Connecting to the document…".
-    // Its accessible name is its `aria-label` and no longer the `title` it used to lean on
-    // (`web/src/features/doc/ConnectionDot.tsx`), because the issue page draws no tooltip at
-    // all (dispatch://INFRA-1196 R2, R21) and the dot still has to say which state it is in:
-    // the locator is unchanged, the attribute under it is not. The dot is drawn by the preset
-    // row's toolbar (`PresetToolbar.tsx` over `SpecToolbar.tsx`), which that row draws only
-    // once the open document has reported one, so it proves the editor is on the screen as
-    // well as connected. Spelled here rather than imported from `./editor`, which locates the
-    // same dot: `./editor` reaches no `./psql`, so the container rule would allow it, but it
-    // pulls `@hocuspocus/provider`, `lib0` and `web/src/api/live-socket` - and so React and
-    // @tanstack/react-query - into a module of data and locators that a bun unit test imports.
+    // The tree's words once they have settled: the Spec filter keeps the issue's requirements,
+    // and the rows it leaves on the screen for this corpus - the issue and the document the
+    // requirements live in - carry words the issue read already holds.
     //
     // And the margin's decision card with the block its decision shaped named by that block's
-    // own words. The card arrives with the decisions view, after the document; its preview
-    // then holds the reference as the reader wrote it (`dispatch://CORE-1/spec#b-<uuid>`)
-    // until the reference graph answers, and the words replace it
-    // (`web/src/features/refs/MarkdownPreview.tsx`). Both states were shot. The card is the
-    // margin's own, drawn at the head of the page's one right-hand panel (`IssueMargin.tsx`,
-    // which hands the margin's cards through), and it is placed against the spec block it
-    // shaped - so of the issue's addresses this is the one that draws it.
+    // own words. The card arrives with the decisions view; its preview then holds the reference
+    // as the reader wrote it (`dispatch://CORE-1/spec#b-<uuid>`) until the reference graph
+    // answers, and the words replace it (`web/src/features/refs/MarkdownPreview.tsx`). Both
+    // states were shot. The card is the margin's own, drawn at the head of the page's one
+    // right-hand panel (`IssueMargin.tsx`, which hands the margin's cards through).
     //
     // That panel is a column beside the page at the wide layout's width and the margin's own
     // sheet below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
     // acceptance"), so the card is on the screen at a desktop width and nowhere narrower. The
-    // phone row of this page waits on the dot alone, as the Inbox row waits on its heading
-    // alone.
-    //
-    // The tree this preset draws needs no fact of its own here: the Spec preset keeps the
-    // issue's requirements, and the rows it leaves on the screen for this corpus - the issue
-    // and the document the requirements live in - carry words the issue read already holds.
+    // phone row of this page waits on the tree's words alone, as the Inbox row waits on its
+    // heading alone.
     ready: (page) => {
-      const connected = page.getByRole("status", { name: "connected" });
-      const wideEnoughForMargin = wideLayout(page);
-      return wideEnoughForMargin
-        ? [connected, page.locator("[data-margin-item]").getByText(SHAPED_BLOCK_WORDS)]
-        : [connected];
+      const settled = treeNamesSettled(page);
+      return wideLayout(page)
+        ? [settled, page.locator("[data-margin-item]").getByText(SHAPED_BLOCK_WORDS)]
+        : [settled];
     },
   },
   {
@@ -276,19 +261,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     path: (seed) => `/issues/${seed.issue}/artifacts`,
     pattern: "/issues/:key/*",
     // What this address opens on the redesigned page is the node menu beside the presets,
-    // which lists every artifact no block of the tree cites (`NodeMenu.tsx`; the issue's own
-    // check records that `/artifacts` opens it). The menu's item for the issue's spec is the
-    // primary document's row here - an issue's spec is `spec.md` under the slug `spec`
-    // (`issue_create.go`) - and the menu is built out of the tree, so the item says the
-    // issue's artifacts have reached it.
-    //
-    // The list that tab drew is still the panel under the tree (`ArtifactsTab.tsx` through
-    // `ArtifactRoutePanel.tsx`) and `artifact-spec` is still that document's row in it, so
-    // the fact this row has always held is kept rather than dropped. The tree's words are the
-    // third, as on every address that opens the Tree preset.
+    // which lists every document and artifact of the issue with what the Artifacts tab's list
+    // offered on each (`NodeMenu.tsx`; the issue's own check records that `/artifacts` opens
+    // it). The menu's item for the issue's spec is the primary document's row there - an issue's
+    // spec is `spec.md` under the slug `spec` (`issue_create.go`) - so the item says the issue's
+    // artifacts have reached the page. The tree's words are the second, as on every address
+    // that opens the Tree preset.
     ready: (page) => [
       page.getByRole("menu").getByRole("menuitem").filter({ hasText: "spec.md" }),
-      page.getByTestId("artifact-spec"),
       treeNamesSettled(page),
     ],
   },

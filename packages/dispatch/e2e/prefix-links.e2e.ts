@@ -6,7 +6,7 @@ import {
   getArtifactBlocks,
   getArtifactText,
 } from "./api";
-import { connectedDot, documentEditor } from "./editor";
+import { connectedDot, documentEditor, specAddress } from "./editor";
 import { sql } from "./psql";
 import {
   ANCHOR,
@@ -161,7 +161,7 @@ test("a document address whose block fragment writes the block's id short opens 
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
-    const address = `/issues/${world.host.key}/spec#b-`;
+    const address = `${await specAddress(world.host.key)}#b-`;
     await page.goto(`${address}${short(block)}`);
     await expect(connectedDot(page)).toHaveText("connected");
     await expect(documentEditor(page).locator(`[data-block-id="${block}"]`)).toBeInViewport();
