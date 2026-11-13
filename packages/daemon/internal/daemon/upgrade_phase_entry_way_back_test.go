@@ -44,18 +44,31 @@ const (
 	// commit. The header, the guide and this test all call them the eleven, so a block holding
 	// another number is one that at least one of the three no longer describes.
 	wayBackRecoveryStatements = 11
+	// taskNumbersMigration is the one migration above the phase entry that the contract 87
+	// release does not record (preEntryNewestMigration), and taskNumbersMigrationFile its file. A
+	// rollback to that release runs its way back first, from the block its own header carries,
+	// and the phase entry's after it (upgradeRecoveryReadsAnswer); internal/store's own tests
+	// hold that block to its count and to its copy in the guide.
+	taskNumbersMigration     = 20261113175649
+	taskNumbersMigrationFile = "internal/store/migrations/20261113175649_task_numbers.up.sql"
 )
 
-// wayBackBlockOfTheHeader is the recovery block of the migration's header as an operator copies
-// it out of the file: the psql line, the lines of the heredoc and its terminator, with the
-// comment marker and the header's own indent taken off each. It is read from the embedded
-// migration, which is that file's bytes as the binary ships them (migrations.All, over the embed
-// internal/store/migrations/embed.go declares).
+// wayBackBlockOfTheHeader is the recovery block of the phase entry's header (wayBackBlockOf).
+func wayBackBlockOfTheHeader(t *testing.T) string {
+	t.Helper()
+	return wayBackBlockOf(t, phaseEntryMigration, wayBackMigrationFile)
+}
+
+// wayBackBlockOf is the recovery block of the header of migration version, whose file is file, as
+// an operator copies it out of the file: the psql line, the lines of the heredoc and its
+// terminator, with the comment marker and the header's own indent taken off each. It is read from
+// the embedded migration, which is that file's bytes as the binary ships them (migrations.All,
+// over the embed internal/store/migrations/embed.go declares).
 //
 // Every failure here stops the test by name, because a check that cannot find what it means to
 // read is a check that passes while reading nothing: a header carrying no such block, a block
 // opened and never closed, and a line indented outside the opener's indent each name the file.
-func wayBackBlockOfTheHeader(t *testing.T) string {
+func wayBackBlockOf(t *testing.T, version int, file string) string {
 	t.Helper()
 	all, err := migrations.All()
 	if err != nil {
@@ -63,14 +76,14 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 	}
 	header := ""
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration {
+		if migration.Version == version {
 			header = migration.SQL
 			break
 		}
 	}
 	if header == "" {
-		t.Fatalf("the embedded migrations hold no migration %d: %s is the source of the way back, and this test runs the block that file carries",
-			phaseEntryMigration, wayBackMigrationFile)
+		t.Fatalf("the embedded migrations hold no migration %d: %s carries a way back, and this test runs the block that file carries",
+			version, file)
 	}
 	var block []string
 	indent := ""
@@ -94,7 +107,7 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 			held, indented := strings.CutPrefix(comment, indent)
 			if !indented {
 				t.Fatalf("%s indents %q inside the way back's block below the indent its %q line carries: the block is read by that indent, so such a line would be dropped from the transaction this test runs",
-					wayBackMigrationFile, line, wayBackHeredoc)
+					file, line, wayBackHeredoc)
 			}
 			text = held
 		}
@@ -105,10 +118,10 @@ func wayBackBlockOfTheHeader(t *testing.T) string {
 	}
 	if len(block) == 0 {
 		t.Fatalf("%s carries no %q line in its header: that line opens the way back's block, which this test runs as the one transaction an operator runs",
-			wayBackMigrationFile, wayBackHeredoc)
+			file, wayBackHeredoc)
 	}
 	t.Fatalf("%s opens the way back's block and closes it with no %q line; what it carries is:\n%s",
-		wayBackMigrationFile, wayBackTerminator, strings.Join(block, "\n"))
+		file, wayBackTerminator, strings.Join(block, "\n"))
 	return ""
 }
 
@@ -294,6 +307,15 @@ func wayBackBlockDifference(header, guide string) string {
 // current is the next helper's
 // (upgradeRollForwardSweepsTheLostTask).
 //
+// The rollback to contract 87 also crosses a migration of a later release than the phase entry's:
+// 20261113175649_task_numbers, which drops the pending delivery's read marks (delivered_at,
+// marked_by and prompted) that the claim read of every release before it names. Its own header
+// carries its way back in the same form, and an operator runs that block first and this one
+// after it (docs/kubernetes.md), so this helper does the same: the later block is read from its
+// header (wayBackBlockOf) and sent the same way, before the phase entry's. Its shape and its copy
+// in the guide are held by internal/store's tests of that migration, so it is run here and not
+// counted.
+//
 // What this cannot show is that daemon running: no binary of it is here to boot against the
 // recovered schema, so that it then mints a fresh token at each role's next start is not
 // asserted, and neither is the decode this copies — what the copy shows is that the payloads the
@@ -301,6 +323,16 @@ func wayBackBlockDifference(header, guide string) string {
 func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Token, issue string) {
 	t.Helper()
 	ctx := context.Background()
+	later := strings.Split(strings.TrimSuffix(wayBackBlockOf(t, taskNumbersMigration, taskNumbersMigrationFile), "\n"), "\n")
+	if len(later) < 2 || later[len(later)-1] != wayBackTerminator {
+		t.Fatalf("the way back's block of %s is no heredoc closed by %q; what it holds is:\n%s",
+			taskNumbersMigrationFile, wayBackTerminator, strings.Join(later, "\n"))
+	}
+	laterRecovery := strings.Join(later[1:len(later)-1], "\n") + "\n"
+	if _, err := pool.Exec(ctx, laterRecovery, pgx.QueryExecModeSimpleProtocol); err != nil {
+		t.Fatalf("run the way back's block of %s, which a rollback to contract 87 runs first: %v\nthe block is:\n%s",
+			taskNumbersMigrationFile, err, laterRecovery)
+	}
 	recovery := wayBackRecovery(t, wayBackBlockOfTheHeader(t))
 	if _, err := pool.Exec(ctx, recovery, pgx.QueryExecModeSimpleProtocol); err != nil {
 		t.Fatalf("run the way back's block of %s as the one transaction an operator runs: %v\nthe block is:\n%s",
@@ -430,24 +462,26 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
 	var armed, recorded int
-	if err := pool.QueryRow(ctx, "select count(*) from schema_version where version = $1::bigint", phaseEntryMigration).Scan(&armed); err != nil {
-		t.Fatalf("read whether the phase entry migration is still recorded: %v", err)
+	if err := pool.QueryRow(ctx, "select count(*) from schema_version where version = any($1::bigint[])",
+		[]int64{phaseEntryMigration, taskNumbersMigration}).Scan(&armed); err != nil {
+		t.Fatalf("read whether the phase entry migration and the task numbers migration are still recorded: %v", err)
 	}
 	if armed != 0 {
-		t.Fatalf("schema_version holds %d rows of the phase entry migration after the recovery, want none: its row is what store.apply reads to decide the migration is taken, and the roll-forward has to run it again", armed)
+		t.Fatalf("schema_version holds %d rows of the phase entry migration and the task numbers migration after the recovery, want none: a migration's row is what store.apply reads to decide it is taken, and the roll-forward has to run both again", armed)
 	}
 	if err := pool.QueryRow(ctx, "select count(*) from schema_version").Scan(&recorded); err != nil {
 		t.Fatalf("count the versions recorded after the recovery: %v", err)
 	}
-	if recorded != len(all)-1 {
-		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: the delete names one version, and store.apply decides each migration on its own row",
-			recorded, len(all)-1)
+	if recorded != len(all)-2 {
+		t.Fatalf("schema_version holds %d rows after the recovery, want the %d every other migration recorded: each block's delete names one version, and store.apply decides each migration on its own row",
+			recorded, len(all)-2)
 	}
 }
 
 // upgradeRollForwardSweepsTheLostTask is the roll-forward that follows the way back: the newer
-// image comes back, Migrate runs this migration a second time because the way back deleted its
-// version row, and the daemon's ordinary sweep runs over what the second fill left.
+// image comes back, Migrate runs this migration a second time, and 20261113175649_task_numbers
+// after it, because each way back deleted its own version row, and the daemon's ordinary sweep
+// runs over what the second fill left.
 //
 // The role it is read on is one whose task the older daemon lost while it ran, which is the
 // window the re-arm exists for. The shape written here is a start finished without acting: that
@@ -525,8 +559,8 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	if err != nil {
 		t.Fatalf("roll forward onto the record the older daemon left: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration run a second time: the way back deletes its version row, and store.apply decides each migration on its own row",
+	if applied != 2 {
+		t.Fatalf("the roll-forward applied %d migrations, want the phase entry migration and the task numbers migration each run a second time: each way back deletes its own version row, and store.apply decides each migration on its own row",
 			applied)
 	}
 	var entry int64

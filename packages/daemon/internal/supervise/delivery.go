@@ -45,7 +45,10 @@ type CheckLook struct {
 // acknowledged and waiting for a turn keeps the mark — the turn may be this task's, starting late
 // — and so does one the wait for its turn re-queued. It is what a worker's read of its task is
 // judged by wherever the claim has a run behind it; a claim that has served no run at all is
-// working the one task it holds whether or not that mark is set (Claim.ServingRun).
+// working the one task it holds whether or not that mark is set (Claim.ServingRun). The mark and
+// its two companions, MarkedBy and Prompted, are memory only: migration
+// 20261113175649_task_numbers dropped their columns, so a delivery the store restores carries
+// none of them.
 //
 // The id is the daemon's and travels on the prompt frame; a shim that sees the same id twice
 // answers it without a second turn. The id is kept across a send that failed in transit, so a
@@ -75,6 +78,19 @@ type Delivery struct {
 	// was upgraded to number them. The promotion's resume of a mid-phase worker is no such task:
 	// it carries the entry it raised (workflow.Engine.StartPromotedWorker).
 	Entry int64
+	// Number is the task number this task was queued under (Claim.TaskWritten), counting from 1,
+	// and 0 for a task of none. A take names the number it takes, so a take of any other number is
+	// no take of this task.
+	Number uint64
+	// Origin is the source that queued this task — phase-start, resume, wake, notice,
+	// update-round, operator, check-look or controller-start — and "" for a task queued before
+	// the record kept one (migration 20261113175649_task_numbers).
+	Origin string
+	// TakenText is the text the daemon's accepted take of this task was answered with, and ""
+	// while no take of it has been accepted. A take of the same number sent again after its answer
+	// was lost is answered this same text, across a daemon restart too, so it is persisted (the
+	// store writes "" as null).
+	TakenText string
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). It is what says a
 	// turn's completion is a check report rather than a phase completion: the API routes on the
@@ -84,16 +100,16 @@ type Delivery struct {
 	CheckLook   CheckLook
 	Phase       phase.Phase
 	QueuedAt    time.Time
-	DeliveredAt time.Time
+	DeliveredAt time.Time // T5 deletes this with the push path
 	// MarkedBy is the delivery id the marking prompt carried: the prompt whose acknowledgement set
 	// DeliveredAt, the read mark. A late refusal is judged against the prompt it names: one naming
 	// MarkedBy says the prompt that marked the task never ran, so the mark goes (markUnread), whatever
 	// the claim's state and whichever connection carried it; one naming any other prompt says nothing
 	// about the mark. Which prompt set the mark is a fact recorded when it is set and kept with the
-	// task, so no ordering of sends, acknowledgements, refusals, reconnects and restarts has to be
-	// reasoned about: only markRead and clearReadMark write it, each together with DeliveredAt. A task
-	// that was replaced may still be named by a refusal, which then has nothing to clear.
-	MarkedBy    string
+	// task, so no ordering of sends, acknowledgements, refusals and reconnects has to be reasoned
+	// about: only markRead and clearReadMark write it, each together with DeliveredAt. A task that
+	// was replaced may still be named by a refusal, which then has nothing to clear.
+	MarkedBy    string // T5 deletes this with the push path
 	ConfirmedAt time.Time
 	// Interrupted says a turn of the task was running when its process died (interrupted), so the
 	// task is sent behind interruptedTask from then on (message). The task text stays as the
@@ -101,11 +117,11 @@ type Delivery struct {
 	Interrupted bool
 	// Prompted says the daemon has put a prompt of this task to the agent, whatever came of it —
 	// a refusal, a busy answer, an acknowledgement, a turn. It is set when the send goes out
-	// (startSend) and by any outcome of such a send (markRead, clearReadMark), never cleared while
-	// the task lives, and persisted, because it is what tells a task nobody has read from one the
-	// daemon has not sent at all: a claim that has served no run is working the task it holds
-	// unless a prompt of that task has already come to nothing (Claim.ServingRun).
-	Prompted bool
+	// (startSend) and by any outcome of such a send (markRead, clearReadMark), and never cleared
+	// while the task lives, because it is what tells a task nobody has read from one the daemon has
+	// not sent at all: a claim that has served no run is working the task it holds unless a prompt
+	// of that task has already come to nothing (Claim.ServingRun).
+	Prompted bool // T5 deletes this with the push path
 	// OutOfMemory says the end that cut a turn of this task off was its pod running out of memory
 	// (runtime.Observation.OutOfMemory), so the task is sent behind outOfMemoryTask as well as
 	// behind interruptedTask from then on (message). The task text stays as the workflow wrote it.

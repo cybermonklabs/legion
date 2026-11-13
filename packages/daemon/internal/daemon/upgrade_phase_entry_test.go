@@ -37,6 +37,12 @@ import (
 // through everything but it whatever lands beside it.
 const phaseEntryMigration = 20261111225552
 
+// preEntryNewestMigration is the newest migration the contract 87 release records,
+// 20261112180548_claim_leak_check_cause: every embedded migration above it is of a release after
+// that one (20261113175649_task_numbers, INFRA-2811, among them), so a database that release
+// migrated holds none of them.
+const preEntryNewestMigration = 20261112180548
+
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
 // root. Each shape is a member of that one tree, standing in testing, so the role every shape is
 // read on is the tester (phase.RoleFor).
@@ -46,21 +52,24 @@ const (
 )
 
 // preEntryStore is a database carrying the schema of the release before the phase entry: every
-// embedded migration but phaseEntryMigration, each applied as Store.Migrate applies one — the
-// migration's SQL, the widening of schema_version for a timestamped version, and the version row
-// — and that migration itself withheld, for the test's own Store.Migrate to run. The migrations
-// above it are the fixture's too, because the release before this one records them: the one
-// standing there, 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so a
-// database that release migrated holds its row and its claims.leak_check_cause before the phase
-// entry runs, and Store.Migrate, which decides each migration on its own row, then applies the
-// phase entry alone. That column is one no statement of the phase entry reads or writes.
+// embedded migration but phaseEntryMigration and those above preEntryNewestMigration, each applied
+// as Store.Migrate applies one — the migration's SQL, the widening of schema_version for a
+// timestamped version, and the version row — and the withheld ones left for the test's own
+// Store.Migrate to run, in version order, the phase entry first. It answers how many it withheld,
+// which is how many that Migrate applies. The migrations between the two are the fixture's too,
+// because the release before this one records them: the one standing there,
+// 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so a database that
+// release migrated holds its row and its claims.leak_check_cause before the phase entry runs. That
+// column is one no statement of the phase entry reads or writes. The ones above it are not the
+// fixture's: 20261113175649_task_numbers fills claims from served_entry, which the phase entry
+// adds, and drops the pending delivery's read marks, which the release before it still writes.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
 // the release before it leaves it can only be written against the schema those migrations build.
 // internal/testpg's Clone copies a template migrated to the head instead, where those columns are
 // already gone.
-func preEntryStore(t *testing.T) *store.Store {
+func preEntryStore(t *testing.T) (*store.Store, int) {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(ctx, testdb.Database(t, "legion_phase_entry_upgrade"))
@@ -72,9 +81,10 @@ func preEntryStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	widened := false
+	widened, withheld := false, 0
 	for _, migration := range all {
-		if migration.Version == phaseEntryMigration {
+		if migration.Version == phaseEntryMigration || migration.Version > preEntryNewestMigration {
+			withheld++
 			continue
 		}
 		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
@@ -93,7 +103,7 @@ func preEntryStore(t *testing.T) *store.Store {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
-	return st
+	return st, withheld
 }
 
 // upgradeShape is one member of the tree as the release before the phase entry left it, and what
@@ -230,7 +240,7 @@ type upgradeShape struct {
 // owedEntryRoles selects.
 func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *testing.T) {
 	ctx := context.Background()
-	st := preEntryStore(t)
+	st, withheld := preEntryStore(t)
 	pool := st.Pool()
 	log := quietLogger()
 	records := record.NewStore()
@@ -328,8 +338,8 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		}
 		if shape.delivery != "" {
 			if _, err := pool.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, phase,
-				generation, queued_at, marked_by, interrupted, assignment)
-				values ($1, $2, $3, 'testing', 1, now(), '', false, $4)`,
+				generation, queued_at, interrupted, assignment)
+				values ($1, $2, $3, 'testing', 1, now(), false, $4)`,
 				string(tokens[shape.key]), "outbox:"+shape.key, "Test the change. Issue: "+shape.key+". Phase: testing.",
 				shape.delivery); err != nil {
 				t.Fatalf("record the delivery in flight on %s: %v", shape.key, err)
@@ -388,8 +398,9 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	if err != nil {
 		t.Fatalf("run the upgrade: %v", err)
 	}
-	if applied != 1 {
-		t.Fatalf("the upgrade applied %d migrations, want the one phase entry migration: every other migration is the fixture's own", applied)
+	if applied != withheld {
+		t.Fatalf("the upgrade applied %d migrations, want the %d the fixture withheld, the phase entry first: every other migration is the fixture's own",
+			applied, withheld)
 	}
 
 	// What the fill left, which is what every send below is decided on: a role that release had

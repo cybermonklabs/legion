@@ -95,6 +95,9 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		Generation: 3, TreeEpoch: 2,
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
 		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
+		TaskWritten: 5, TaskTaken: 5, TaskFinished: 4, TaskFinishedSession: "ses_implementer_500",
+		TaskSeenEpoch: "2026-11-02T08:00:00.123456789Z", TaskSeenRevision: 41, TaskTakeState: supervise.TakeAccepted,
+		TaskWrittenEpoch: "2026-11-02T08:00:00.123456789Z", TaskWrittenRevision: 41,
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
 		Locator: &runtime.Locator{

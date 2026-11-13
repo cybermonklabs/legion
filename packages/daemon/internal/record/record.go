@@ -1732,8 +1732,9 @@ type QueuedSupervise struct {
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
 // in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
-// it was last given work of (given_entry), the moment its agent last stepped (step_at,
-// turn_started_at), what its own session last reported it was doing (activity_at,
+// it was last given work of (given_entry), its session and its task numbers (session,
+// task_written, task_finished, task_finished_session), the moment its agent last stepped
+// (step_at, turn_started_at), what its own session last reported it was doing (activity_at,
 // activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
 // task's generation, phase and confirmation.
 type RoleClaim struct {
@@ -1795,7 +1796,18 @@ type RoleClaim struct {
 	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
 	// row names — one owed that entry's work — from one already holding it.
 	GivenEntry int64
-	Pending    *supervise.Delivery
+	// Session is the session the claim's agent registered (supervise.Claim.Session), "" for one
+	// none has. TaskWritten is the highest task number the claim's record has queued, and
+	// TaskFinished and TaskFinishedSession the number of the last task whose turn finished and
+	// the session the claim had when it did (supervise.Claim's fields of those names), each zero
+	// for a claim that has been queued or has finished no numbered task. Together they are what
+	// tells a ready worker that has finished its task, in the session it still runs, from one
+	// that has not or whose session is a fresh one, which has read nothing of that task.
+	Session             string
+	TaskWritten         uint64
+	TaskFinished        uint64
+	TaskFinishedSession string
+	Pending             *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

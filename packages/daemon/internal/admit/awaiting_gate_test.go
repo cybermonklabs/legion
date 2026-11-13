@@ -81,8 +81,8 @@ func setArchitectState(t *testing.T, pool *pgxpool.Pool, root string, state supe
 func giveArchitectTask(t *testing.T, pool *pgxpool.Pool, root, task string, confirmed bool) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		if _, err := tx.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, delivered_at, confirmed_at)
-			values ($1, 'delivery-1', $2, now(), now(), case when $3 then now() end)
+		if _, err := tx.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, confirmed_at)
+			values ($1, 'delivery-1', $2, now(), case when $3 then now() end)
 			on conflict (claim_token) do update set task = excluded.task, confirmed_at = excluded.confirmed_at`,
 			string(architectToken(t, root)), task, confirmed); err != nil {
 			t.Fatalf("give the architect its task: %v", err)

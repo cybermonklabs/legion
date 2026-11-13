@@ -38,6 +38,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.given_entry, c.served_entry, c.serving_check_look, c.serving_check_opened_at,
+	c.task_written, c.task_taken, c.task_finished, c.task_finished_session,
+	c.task_seen_epoch, c.task_seen_revision, c.task_take_state, c.task_written_epoch, c.task_written_revision,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
@@ -48,8 +50,8 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
-	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
+	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.number, d.origin, d.taken_text,
+	d.check_look, d.check_opened_at, d.queued_at, d.confirmed_at, d.interrupted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
@@ -237,6 +239,10 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	if c.Generation > math.MaxInt64 {
 		return fmt.Errorf("put claim %s: generation %d does not fit a bigint", c.Token, c.Generation)
 	}
+	if max(c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision, c.TaskWrittenRevision) > math.MaxInt64 {
+		return fmt.Errorf("put claim %s: a task number or revision does not fit a bigint: written %d, taken %d, finished %d, seen revision %d, written revision %d",
+			c.Token, c.TaskWritten, c.TaskTaken, c.TaskFinished, c.TaskSeenRevision, c.TaskWrittenRevision)
+	}
 	var locator []byte
 	if c.Locator != nil {
 		encoded, err := json.Marshal(c.Locator)
@@ -289,9 +295,12 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_head, update_told_at, update_answered_by_turn_end, update_reasked_for_push_check,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
 		failure_cause, failed_at, pending_cause, leak_check_cause,
+		task_written, task_taken, task_finished, task_finished_session,
+		task_seen_epoch, task_seen_revision, task_take_state, task_written_epoch, task_written_revision,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
+		$55, $56, $57, $58, $59, $60, $61, $62, $63,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -335,6 +344,11 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		failed_at = excluded.failed_at,
 		pending_cause = excluded.pending_cause,
 		leak_check_cause = excluded.leak_check_cause,
+		task_written = excluded.task_written, task_taken = excluded.task_taken,
+		task_finished = excluded.task_finished, task_finished_session = excluded.task_finished_session,
+		task_seen_epoch = excluded.task_seen_epoch, task_seen_revision = excluded.task_seen_revision,
+		task_take_state = excluded.task_take_state,
+		task_written_epoch = excluded.task_written_epoch, task_written_revision = excluded.task_written_revision,
 		-- The four activity columns (activity_at, activity_background, activity_kinds,
 		-- activity_next_reminder_at) and the eight step columns (step_at, turn_started_at,
 		-- step_tool, step_call_id, step_args_bytes, step_args_hash, step_started_at,
@@ -369,6 +383,8 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateHead, c.UpdateToldAt, c.UpdateAnsweredByTurnEnd, c.UpdateReaskedForPushCheck,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
 		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause,
+		int64(c.TaskWritten), int64(c.TaskTaken), int64(c.TaskFinished), c.TaskFinishedSession,
+		c.TaskSeenEpoch, int64(c.TaskSeenRevision), string(c.TaskTakeState), c.TaskWrittenEpoch, int64(c.TaskWrittenRevision),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -543,6 +559,9 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
+	if d.Number > math.MaxInt64 {
+		return fmt.Errorf("put delivery %s on %s: task number %d does not fit a bigint", d.ID, token, d.Number)
+	}
 	kept := keptDecisions(d.Kept)
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
@@ -551,26 +570,27 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		}
 	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
-		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
-		confirmed_at, interrupted, prompted, out_of_memory,
+		phase, generation, entry, number, origin, taken_text, check_look, check_opened_at, queued_at,
+		confirmed_at, interrupted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
 		provider_error_retries, provider_error_note)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
 		coalesce($19::jsonb, '{}'::jsonb), $20, $21)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
-		entry = excluded.entry, check_look = excluded.check_look,
+		entry = excluded.entry, number = excluded.number, origin = excluded.origin,
+		taken_text = excluded.taken_text, check_look = excluded.check_look,
 		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
-		delivered_at = excluded.delivered_at, marked_by = excluded.marked_by, confirmed_at = excluded.confirmed_at,
-		interrupted = excluded.interrupted, prompted = excluded.prompted,
+		confirmed_at = excluded.confirmed_at, interrupted = excluded.interrupted,
 		out_of_memory = excluded.out_of_memory, send_failures = excluded.send_failures,
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
 		provider_error_note = excluded.provider_error_note`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
-		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
-		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
+		int64(d.Number), d.Origin, text(d.TakenText),
+		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt,
+		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
 		d.ProviderErrorRetries, d.ProviderErrorNote,
 	)
@@ -656,20 +676,24 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		generation, treeEpoch       int64
 		locator                     []byte
 		deliveryID, task            *string
-		markedBy                    *string
 		deliveryPhase               *string
 		deliveryGeneration          *int64
 		deliveryEntry               *int64
+		deliveryNumber              *int64
+		deliveryOrigin, takenText   *string
 		deliveryCheckLook           *int
 		deliveryCheckOpened         *time.Time
 		servingGeneration           int64
 		servingCheckLook            int
 		servingCheckOpened          *time.Time
+		taskWritten, taskTaken      int64
+		taskFinished                int64
+		seenRevision                int64
+		writtenRevision             int64
+		takeState                   string
 		enrollmentID, enrollmentIC  *string
-		queuedAt, delivered         *time.Time
-		confirmed                   *time.Time
-		interrupted, prompted       *bool
-		outOfMemory                 *bool
+		queuedAt, confirmed         *time.Time
+		interrupted, outOfMemory    *bool
 		sendFailures                *int64
 		lastSendFailure             *time.Time
 		lastSendError               *string
@@ -692,6 +716,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
 		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry, &servingCheckLook, &servingCheckOpened,
+		&taskWritten, &taskTaken, &taskFinished, &c.TaskFinishedSession,
+		&c.TaskSeenEpoch, &seenRevision, &takeState, &c.TaskWrittenEpoch, &writtenRevision,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
 		&turnStart, &turnEnd,
@@ -702,8 +728,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
-		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
-		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
+		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry,
+		&deliveryNumber, &deliveryOrigin, &takenText, &deliveryCheckLook, &deliveryCheckOpened,
+		&queuedAt, &confirmed, &interrupted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
@@ -720,6 +747,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.FailureCause, c.PendingCause = supervise.FailureCause(cause), supervise.FailureCause(pendingCause)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(servingGeneration)
+	c.TaskWritten, c.TaskTaken, c.TaskFinished = uint64(taskWritten), uint64(taskTaken), uint64(taskFinished)
+	c.TaskSeenRevision, c.TaskWrittenRevision = uint64(seenRevision), uint64(writtenRevision)
+	c.TaskTakeState = supervise.TakeState(takeState)
 	c.ServingCheckLook = supervise.CheckLook{Look: servingCheckLook, OpenedAt: orZero(servingCheckOpened)}
 	if len(outcomes) > 0 {
 		if err := json.Unmarshal(outcomes, &c.TurnOutcomes); err != nil {
@@ -764,18 +794,19 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	}
 	if deliveryID != nil {
 		c.Pending = &supervise.Delivery{
-			ID:          *deliveryID,
-			Task:        *task,
-			Phase:       phase.Phase(*deliveryPhase),
-			Generation:  uint64(orZeroInt(deliveryGeneration)),
-			Entry:       orZeroInt(deliveryEntry),
+			ID:         *deliveryID,
+			Task:       *task,
+			Phase:      phase.Phase(*deliveryPhase),
+			Generation: uint64(orZeroInt(deliveryGeneration)),
+			Entry:      orZeroInt(deliveryEntry),
+			Number:     uint64(orZeroInt(deliveryNumber)),
+			Origin:     *deliveryOrigin,
+			// Null is a task no take of has been accepted, which the delivery holds as no text.
+			TakenText:   orEmpty(takenText),
 			CheckLook:   supervise.CheckLook{Look: *deliveryCheckLook, OpenedAt: orZero(deliveryCheckOpened)},
 			QueuedAt:    *queuedAt,
-			DeliveredAt: orZero(delivered),
-			MarkedBy:    *markedBy,
 			ConfirmedAt: orZero(confirmed),
 			Interrupted: orFalse(interrupted),
-			Prompted:    orFalse(prompted),
 			OutOfMemory: orFalse(outOfMemory),
 			// The three the send failures are diagnosed from: a count, the moment of the last
 			// failure — null until a send has failed, which the delivery holds as the zero
@@ -797,6 +828,22 @@ func instant(t time.Time) *time.Time {
 		return nil
 	}
 	return &t
+}
+
+// text is a string as a nullable column: the empty string is "none", which SQL says as null.
+func text(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
+
+// orEmpty is a nullable text column read as the empty string when null.
+func orEmpty(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // keptDecisions is a delivery's kept-decision record as the column holds it and as the delivery

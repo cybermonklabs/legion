@@ -494,7 +494,7 @@ func readIdleView(ctx context.Context, tx pgx.Tx, project, issue string) (pods.I
 	claims, err := tx.Query(ctx, `select c.role, c.state, c.plugin_contract, c.serving_generation,
 		c.last_start_row, c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 		c.update_round, c.updated_at, c.locator is not null, c.suspended_by,
-		greatest(d.delivered_at, d.confirmed_at)
+		d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token
 		where c.project = $1 and c.issue = $2 order by c.token`, project, issue)
 	if err != nil {

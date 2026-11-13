@@ -2367,10 +2367,12 @@ func TestRoleRunsSkipsAnotherRolesUndecodableRow(t *testing.T) {
 // stands under is absent from the answer, which is the nil claim RoleRuns reports for it. The
 // task a claim holds comes with it, as it does through RoleRuns, and so do the update round
 // the claim is in (RoleClaim.UpdateRound), the record of its agent's last step
-// (RoleClaim.Step) and what its own session last reported it was doing (RoleClaim.ActivityAt,
+// (RoleClaim.Step), what its own session last reported it was doing (RoleClaim.ActivityAt,
 // ActivityBackground, ActivityNextReminderAt), which a rule over a run reads to tell a worker
 // whose round prompts it, whose agent is still moving, or whose own process will prompt it,
-// from one nothing will prompt (workflow.SilentPhaseWorker).
+// from one nothing will prompt (workflow.SilentPhaseWorker), and its session beside its task
+// numbers (RoleClaim.Session, TaskWritten, TaskFinished, TaskFinishedSession), which tell a
+// worker that finished its task in the session it runs from one owed it.
 func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2378,9 +2380,10 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 	tester := claim.Token("legion-legion-legion-208-tester")
 	held := supervise.Claim{Token: tester, Project: "legion", Tree: "LEGION-208", Issue: "LEGION-208", Role: claim.RoleTester,
 		Generation: 1, State: supervise.StateRetired, LastStartRow: 17, Session: "ses_tester", SessionFile: "/tmp/tester.jsonl",
-		UpdateRound: supervise.PodRound("a-pod-uid")}
+		UpdateRound: supervise.PodRound("a-pod-uid"),
+		TaskWritten: 3, TaskTaken: 3, TaskFinished: 2, TaskFinishedSession: "ses_tester_before"}
 	task := supervise.Delivery{ID: "outbox:17", Task: "Test it.", Generation: 1, Phase: phase.Testing,
-		QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}
+		QueuedAt: time.Now(), ConfirmedAt: time.Now()}
 	if err := st.PutClaimAndDelivery(ctx, held, task); err != nil {
 		t.Fatalf("record the tester's claim and the task it holds: %v", err)
 	}
@@ -2431,6 +2434,10 @@ func TestRoleClaimsReadsTheClaimsAloneOfTheTokensItIsGiven(t *testing.T) {
 		if !read.ActivityAt.Equal(reported) || !read.ActivityBackground || !read.ActivityNextReminderAt.Equal(reminder) {
 			t.Fatalf("the activity of the tester's claim = %s, background %v, reminder %s, want the report of background work at %s with its reminder due at %s",
 				read.ActivityAt, read.ActivityBackground, read.ActivityNextReminderAt, reported, reminder)
+		}
+		if read.Session != "ses_tester" || read.TaskWritten != 3 || read.TaskFinished != 2 || read.TaskFinishedSession != "ses_tester_before" {
+			t.Fatalf("the tester's claim reads session %q, written task %d, finished task %d in %q; want the session and the numbers the fixture wrote",
+				read.Session, read.TaskWritten, read.TaskFinished, read.TaskFinishedSession)
 		}
 		if _, found := claims[merger]; found {
 			t.Fatalf("the answer holds %s, a role the store has no claim of", merger)

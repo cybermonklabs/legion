@@ -324,18 +324,20 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 	}
 
 	// OMP taking back a prompt it acknowledged is a stream event of its own: the task returns to
-	// waiting under a new id, and nothing is charged — the agent is in a turn of its own.
+	// waiting under a new id, and nothing is charged — the agent is in a turn of its own. The
+	// acknowledgement's read mark is memory only since migration 20261113175649_task_numbers and
+	// no claim view carries it, so nothing here waits for the mark: the refusal follows the
+	// acknowledgement on the same connection, and the two end alike in either order the machine
+	// takes them — a refusal taken first rotates the id, and the acknowledgement it overtook names
+	// an id the claim no longer holds, so it charges nothing and sends the task again under the
+	// new one (supervise's fenceOutcome).
 	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/deliver",
 		api.DeliverRequest{Task: "Say it again."}, true); status != http.StatusOK {
 		t.Fatalf("deliver = %d; body %s", status, body)
 	}
 	second := sh.prompt()
-	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: true})
-	testwait.Eventually(t, "the acknowledgement to be recorded", func() bool {
-		c := d.claim(token)
-		return c.Pending != nil && c.Pending.DeliveredAt != nil
-	})
 	acknowledged := d.claim(token).Pending.ID
+	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: true})
 	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."})
 	testwait.Eventually(t, "the refused task to return to waiting", func() bool {
 		c := d.claim(token)

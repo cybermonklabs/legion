@@ -382,10 +382,9 @@ func (r *providerErrorLive) token(key string, role claim.Role) claim.Token {
 //
 // The task is the one the planner's claim has held pending since the daemon booted, which is
 // what its phase's start left there (seed), so the first send is the daemon's own and this step
-// waits for it rather than delivering a task of its own. It is read off the delivery's read
-// mark, the instant the shim acknowledged that first prompt, which a provider error keeps
-// (supervise's takeBackPending) — so every gap below is measured from the send that began the
-// ladder and not from a later rung.
+// waits for it rather than delivering a task of its own. It is read off the start of the turn
+// that first send began (awaitFirstSend), so every gap below is measured from the send that began
+// the ladder and not from a later rung.
 func (r *providerErrorLive) ladderWalks() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
@@ -678,19 +677,21 @@ func (r *providerErrorLive) awaitFreshSession(token claim.Token, old string) str
 }
 
 // awaitFirstSend waits until the claim's pending task is task and the daemon has put it in front
-// of its agent, and answers the instant it did: the delivery's read mark, which the shim's
-// acknowledgement of that first prompt set. A provider error keeps the mark while it takes the
-// task back (supervise's takeBackPending), so the instant answered here stays the first send's
-// however far the ladder climbs afterwards.
+// of its agent, and answers the instant it did: the start of the first turn the claim began after
+// the task was queued, which that first send started. The read mark the shim's acknowledgement
+// set is memory only since migration 20261113175649_task_numbers and no claim view carries it,
+// so the turn's start, which the claim records, stands for it. The wait answers at the first turn
+// it reads, which is the first send's, since the ladder's next send comes 30 s after it.
 func (r *providerErrorLive) awaitFirstSend(token claim.Token, task string) time.Time {
 	r.t.Helper()
 	var at time.Time
 	r.await(string(token)+" to be sent the task its start left pending", paneReady, func() bool {
 		held := r.claim(token)
-		if held.Pending == nil || held.Pending.Task != task || held.Pending.DeliveredAt == nil {
+		if held.Pending == nil || held.Pending.Task != task || held.LastTurnStart == nil ||
+			held.LastTurnStart.Before(held.Pending.QueuedAt) {
 			return false
 		}
-		at = *held.Pending.DeliveredAt
+		at = *held.LastTurnStart
 		return true
 	})
 	return at

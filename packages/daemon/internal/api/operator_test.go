@@ -100,7 +100,7 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 	if got.Locator == nil || got.Locator.Claim != architectToken {
 		t.Fatalf("spawn answered locator %+v, want the launch's", got.Locator)
 	}
-	if got.Pending == nil || got.Pending.Task != "Say hello." || got.Pending.DeliveredAt != nil {
+	if got.Pending == nil || got.Pending.Task != "Say hello." || got.Pending.ConfirmedAt != nil {
 		t.Fatalf("spawn answered pending %+v, want the task queued and not yet sent", got.Pending)
 	}
 	spawns := h.runtime.CallsOf("Spawn")
@@ -1556,11 +1556,10 @@ func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesC
 }
 
 // A claim's view carries the record of the sends of its task that never reached a turn — how
-// many failed, when the last of them failed and the error it failed with — beside the queued,
-// delivered and confirmed times. Without it, a claim that has waited days on a send which never
-// lands says so only in a log line inside its own pod (INFRA-1480). The three are omitempty, and
-// the send that reaches a turn clears them, so a task no send has failed for carries none of
-// them on the wire.
+// many failed, when the last of them failed and the error it failed with — beside the queued and
+// confirmed times. Without it, a claim that has waited days on a send which never lands says so
+// only in a log line inside its own pod (INFRA-1480). The three are omitempty, and the send that
+// reaches a turn clears them, so a task no send has failed for carries none of them on the wire.
 func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 	h := newHarness(t)
 	token := claim.Token("legion-legion-legion-209-implementer")
@@ -1589,14 +1588,14 @@ func TestClaimViewCarriesTheSendFailures(t *testing.T) {
 		!pending.LastSendFailureAt.Equal(failedAt) || pending.LastSendError != failing.LastSendError {
 		t.Fatalf("pending %+v, want %d failed sends, the last at %v, with its error", pending, failing.SendFailures, failedAt)
 	}
-	if !pending.QueuedAt.Equal(queued) || pending.DeliveredAt != nil || pending.ConfirmedAt != nil {
-		t.Fatalf("pending %+v, want the record beside the three times, of which only the queue has happened", pending)
+	if !pending.QueuedAt.Equal(queued) || pending.ConfirmedAt != nil {
+		t.Fatalf("pending %+v, want the record beside the two times, of which only the queue has happened", pending)
 	}
 
-	// The send that reached a turn: the task is acknowledged and confirmed, and supervise's
-	// confirm cleared all three with the budgets.
+	// The send that reached a turn: the task is confirmed, and supervise's confirm cleared all
+	// three with the budgets.
 	confirmed := failing
-	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = failedAt.Add(time.Second), failing.ID, failedAt.Add(2*time.Second)
+	confirmed.ConfirmedAt = failedAt.Add(2 * time.Second)
 	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
 	if err := h.store.PutDelivery(h.ctx, token, confirmed); err != nil {
 		t.Fatalf("put the confirmed delivery: %v", err)

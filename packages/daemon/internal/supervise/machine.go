@@ -115,6 +115,18 @@ func (s SuspendSource) RetiresPhaseTask() bool {
 	return s != SuspendedByOperator && s != SuspendedByReleased
 }
 
+// TakeState is what came of a take at the revision of a claim's value its worker last reported
+// seeing (Claim.TaskTakeState): "" while no take came at that revision, TakeMade once one did,
+// and TakeAccepted or TakeRefused by the daemon's answer to it. The store holds these four and
+// no other (the check on claims.task_take_state).
+type TakeState string
+
+const (
+	TakeMade     TakeState = "made"
+	TakeAccepted TakeState = "accepted"
+	TakeRefused  TakeState = "refused"
+)
+
 // Claim is one role claim as the supervisor holds and persists it.
 type Claim struct {
 	Token      claim.Token
@@ -167,6 +179,32 @@ type Claim struct {
 	// worker's turn. Zero is a claim that has retired no confirmed task of an entry, which every
 	// claim of a daemon upgraded in place is until its role's next start.
 	ServedEntry int64
+	// TaskWritten, TaskTaken and TaskFinished are the claim's task numbers: the highest number
+	// its record has queued a task under (Delivery.Number), the number of the last take the
+	// daemon accepted, and the number of the last task whose turn finished. Each counts from 1,
+	// and 0 is a claim that has been queued, has taken or has finished no numbered task.
+	// TaskFinishedSession is the claim's session when it finished task TaskFinished, "" while it
+	// has finished none: a worker whose session is still that one has done its task, where a
+	// fresh session has read nothing of it. All four are persisted, and migration
+	// 20261113175649_task_numbers filled them for every claim an earlier release left, as the
+	// claim's task 1.
+	TaskWritten         uint64
+	TaskTaken           uint64
+	TaskFinished        uint64
+	TaskFinishedSession string
+	// TaskSeenEpoch and TaskSeenRevision are the bucket epoch and revision of this claim's value
+	// that its worker last reported seeing, and TaskTakeState what came of a take at that
+	// revision. TaskWrittenEpoch and TaskWrittenRevision are the epoch and revision of the
+	// daemon's own last write of the value. A revision is read only beside its epoch, because a
+	// bucket created again counts its revisions from 1 again: a record whose epoch is not the
+	// bucket's current one has seen, and written, nothing of it. Empty epochs and zero
+	// revisions are a claim that has seen and written nothing, which is every claim the
+	// migration filled.
+	TaskSeenEpoch       string
+	TaskSeenRevision    uint64
+	TaskTakeState       TakeState
+	TaskWrittenEpoch    string
+	TaskWrittenRevision uint64
 	// ServingCheckLook is the production check look of the last confirmed delivery this claim
 	// retired, the look side of ServingGeneration: what ServingCheck answers with once no delivery
 	// backs the worker's turn. The zero value is a claim that has retired no confirmed task of a

@@ -186,10 +186,9 @@ func BudgetsViewOf(b supervise.Budgets) BudgetsView {
 	}
 }
 
-// DeliveryView is the claim's pending task (`supervise.Delivery`): DeliveredAt is the latest
-// acknowledgement of this task's prompt, cleared when that prompt is refused, and ConfirmedAt the
-// turn a send started; each absent until it happens. SendFailures, LastSendFailureAt and
-// LastSendError stand beside them as the record of the sends that did not get that far.
+// DeliveryView is the claim's pending task (`supervise.Delivery`): ConfirmedAt is when the task
+// was recorded as taken, absent until it is. SendFailures, LastSendFailureAt and LastSendError
+// stand beside it as the record of the sends that did not get that far.
 type DeliveryView struct {
 	ID   string `json:"id"`
 	Task string `json:"task"`
@@ -198,7 +197,6 @@ type DeliveryView struct {
 	// do, so an operator reading a claim can see it rather than infer it from the task's prose.
 	Phase       phase.Phase `json:"phase,omitempty"`
 	QueuedAt    time.Time   `json:"queuedAt"`
-	DeliveredAt *time.Time  `json:"deliveredAt,omitempty"`
 	ConfirmedAt *time.Time  `json:"confirmedAt,omitempty"`
 	// Interrupted is a task a process died in a turn of: it is sent behind the sentence saying so
 	// (`supervise.Delivery.Interrupted`). Absent for every other task.
@@ -328,7 +326,7 @@ func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
 			ID: p.ID, Task: p.Task, Phase: p.Phase, QueuedAt: p.QueuedAt,
-			DeliveredAt: instant(p.DeliveredAt), ConfirmedAt: instant(p.ConfirmedAt), Interrupted: p.Interrupted,
+			ConfirmedAt: instant(p.ConfirmedAt), Interrupted: p.Interrupted,
 			SendFailures: p.SendFailures, LastSendFailureAt: instant(p.LastSendFailureAt), LastSendError: p.LastSendError,
 		}
 	}
