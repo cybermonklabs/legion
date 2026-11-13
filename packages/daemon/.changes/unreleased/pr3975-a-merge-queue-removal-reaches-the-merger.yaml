@@ -17,11 +17,12 @@ body: |-
   reason of each removal from GitHub's `RemovedFromMergeQueueEvent`, with what to do for each
   reason.
 
-  The first boot of this release starts each merger that the upgrade from a build with the phase
-  `awaiting_merge` left stopped: a merger whose pod the idle release took while its issue waited
-  in `awaiting_merge`, of an issue now in `merging` with its pull request open. It gets the
-  merging task through the start any merging phase owes, and one message on the Dispatch issue
-  says so. A later boot repairs nothing again.
+  The first boot of this release queues a start for each merger that the upgrade from a build
+  with the phase `awaiting_merge` left stopped: a merger whose pod the idle release took while
+  its issue waited in `awaiting_merge`, of an issue now in `merging` with its pull request open.
+  It gets the merging task through the start any merging phase owes, so it starts when the
+  issue's admission slot and the tree's design gate allow it, and one message on the Dispatch
+  issue says so. A later boot repairs nothing again.
 
   An earlier release cannot read the two new outbox kinds, `merge_queue_read` and
   `merge_queue_removal`. Before you roll back to one, stop the daemon and delete those rows

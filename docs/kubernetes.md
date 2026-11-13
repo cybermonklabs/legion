@@ -4581,7 +4581,7 @@ A release is three acts, in this order, and the daemon gives it an id (`issue_re
 
 - each live claim of the pod is suspended with a source of its own, `released` (`supervise.SuspendedByReleased`).
   That source keeps the claim's phase, its place in that phase and the task it holds, which every other source but the operator's retires (`SuspendSource.RetiresPhaseTask`), and the boot's resume by rule passes it over (`booted`, `internal/workflow/resume.go`).
-  Only a wake brings a released claim back, with one exception: the first boot of this release starts, once, each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`, below);
+  A wake starts a released claim again, and two other steps do too, both below: admission's pass, for a claim that stands behind the entry its phases row names, and the first boot of this release, for each merger that the `awaiting_merge` cutover left stopped (`cutoverMergerRepair`);
 
 - the issue's Sandbox is set `Suspended`, its pod is waited out, and the Sandbox and the six role Secrets it owns are deleted (`SuspendIssue`, `internal/runtime/sandbox/issue_suspend.go`), the teardown an issue's stop already runs ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
 
@@ -4608,13 +4608,18 @@ The wakes are these:
 The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
+The message wakes no merger that an operator suspended, since a wake acts only on a released claim (`wakeForDelivery`, `internal/daemon/wake.go`).
+It waits for that merger too, and it reaches the merger when the operator resumes the claim.
 While it waits, the message holds the issue's pod, as any row of the role-message lane does.
 The idle release does not take that pod, and the other roles of the issue keep running in it.
 
 A wake acts only on a claim that is still `released`, of an issue still in the workflow whose tree is live.
 Every other path that suspends, resumes, stops or closes a claim takes a released claim over, after which no wake acts on it: a linger, a park, a close, a hand-over, the production check — whose `pending` report suspends the checking role's claim, the role the project's `production_check` names, until the look the report's own `wake_at` asked for — and the operator's `legion claims` commands.
-A daemon restart resumes no released claim, and a wake or a backstop that came due while the daemon was down acts once it has started.
-The first boot of this release is the one exception: it starts, once, each merger that the cutover from `awaiting_merge`, the phase of the builds before `legion-v20.5.0`, left stopped (`cutoverMergerRepair`, `internal/workflow/resume.go`).
+The boot's resume by rule passes over a released claim (`booted`), and a wake or a backstop that came due while the daemon was down acts once the daemon has started.
+Two other boot steps can start a released claim.
+Admission's pass at a boot does what each of its passes does: when a released claim stands behind the entry that its phases row names, the pass sends that entry's task to the claim (`owedEntryRoles`, `internal/admit/admit.go`).
+The first boot of this release also queues, once, a start for each merger that the cutover from `awaiting_merge`, the phase of the builds before `legion-v20.5.0`, left stopped (`cutoverMergerRepair`, `internal/workflow/cutover_merger_repair.go`).
+That merger starts when the issue's admission slot and its tree's design gate allow it, as at any start of the `merging` phase.
 A wake that arrives while the release runs cancels it, up to the moment the first role process of the pod is stopped, and the roles go on in the same pod; after that moment the wake waits for the release to finish and then resumes the pod.
 A cancel is one act: in one transaction the daemon queues the resume of each claim that release had suspended — the roles its own mark recorded, never a claim an earlier release left `released` — and deletes the mark.
 Each woken role is given one task or message that names the wake, so an agent reads why its pod came back.

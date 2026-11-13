@@ -44,17 +44,25 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 
    Watch until GitHub merges the pull request or removes it from the queue. Do not use `gh pr view` for this watch. On the `gh` of your pod, `gh pr view` has no `isInMergeQueue` field.
 
-   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. GitHub's event names no reason for the removal. Read the removals with this command. It lists them newest last:
+   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. While the root's design gate is closed, the daemon does not start your pod for the message. The message then waits until the gate opens. GitHub's event names no reason for the removal. Read the entries to the queue and the removals from it with this command. It lists them newest last:
 
    ```bash
-   gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}'
+   gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{__typename ... on AddedToMergeQueueEvent{createdAt actor{login}} ... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}'
    ```
 
-   Act on the `reason` of the newest removal, the last node:
+   An entry is an `AddedToMergeQueueEvent` node. A removal is a `RemovedFromMergeQueueEvent` node. The newest entry is the last `AddedToMergeQueueEvent` node. Act only on the last removal that comes after the newest entry. A removal before the newest entry is of an earlier turn in the queue.
+
+   If the list has no entry, or no removal comes after the newest entry, GitHub's timeline is behind the event. Run the command again about every ten seconds, for about one minute in all. If there is still no removal after the newest entry, run the watch command. Then act on its answer:
+
+   - `state` is `MERGED`: the pull request needs nothing more. The daemon closes the issue on the merge.
+   - `isInMergeQueue` is `true`: the pull request is in the queue again. Continue the watch.
+   - Any other answer: tell the architect with `envoy_publish` to its encoded role token. Quote the output of both commands.
+
+   Act on the `reason` of the last removal after the newest entry:
 
    - `merged`: GitHub merged the pull request. This is not a removal. The daemon closes the issue on the merge.
    - `failed_checks`: the queue's own `merge_group` checks failed. That is work to fix. Send the issue back with `request_backward_move` (step 6).
-   - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. If you already used it for this head, send the issue back with `request_backward_move` (step 6). If not, run the watch again. Decide by the `mergeStateStatus` that it reads now:
+   - `merge_conflict`: each head gets one further enqueue after a `merge_conflict` removal. Read your own `dispatch comment` on the issue to know if you already used it for this head. Do not use the timeline for this, because `beforeCommit` is empty on some removals. If you already used it, send the issue back with `request_backward_move` (step 6). If not, run the watch again. Decide by the `mergeStateStatus` that it reads now:
      - `DIRTY`: the head conflicts with the base. Send the issue back with `request_backward_move` (step 6).
      - `UNKNOWN`: run the watch again on your own backoff for up to five minutes. Then decide in the same way by the state that it reads.
      - Any other state: the head conflicted with an entry ahead of it in the queue. Enqueue the same head one more time (step 4). Record that enqueue in a `dispatch comment` on the issue.
