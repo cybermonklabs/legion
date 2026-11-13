@@ -640,12 +640,19 @@ type IssueSummary struct {
 	BlockedBy []string `json:"blocked_by"`
 	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
 	// the same revision the issue's own read answers.
-	Advances         []IssueAdvance  `json:"advances"`
-	AdvancesRevision int64           `json:"advances_revision"`
-	Assignee         *string         `json:"assignee"`
-	Claim            *IssueClaim     `json:"claim"`
-	Components       IssueComponents `json:"components"`
-	Route            *string         `json:"route"`
+	Advances         []IssueAdvance `json:"advances"`
+	AdvancesRevision int64          `json:"advances_revision"`
+	// MovedAt and MovedBy are PriorityIssue's two cells of the move into `backlog` or `icebox`,
+	// by the same reading, and the listing answers them only under `?moved=true`: a listing
+	// without the key carries neither on any row and pays for no read of them. With it, a row
+	// standing in neither status, or whose events do not reach back to the move, carries neither
+	// as well, since a field the marshaller leaves out when empty is never null.
+	MovedAt    *time.Time      `json:"moved_at,omitempty"`
+	MovedBy    *Actor          `json:"moved_by,omitempty"`
+	Assignee   *string         `json:"assignee"`
+	Claim      *IssueClaim     `json:"claim"`
+	Components IssueComponents `json:"components"`
+	Route      *string         `json:"route"`
 	// Repo and ResolvedRepo are Issue's.
 	Repo         *string `json:"repo"`
 	ResolvedRepo *string `json:"resolved_repo"`

@@ -192,23 +192,18 @@ func priorityUnplacedQuery(summary bool) string {
 
 // priorityParkedQuery is the second fault: an issue that advances a live priority and stands in
 // `backlog` or `icebox`. Beside the row's own columns it carries the time the issue was moved
-// there and the actor who moved it, read from that issue's own `issue.updated` events — the
-// newest whose payload names `status` in `changed` and whose status is one of the two — which is
-// the one read this body makes over the events of the parked members alone. An issue whose events
-// do not reach back to the move answers both cells null and stays in the list, since the fault is
-// the work standing there and not the record of how it arrived.
-//
-// Each lateral walks one issue's events backwards over the unique (issue_key, seq) index and
-// stops at the first match, so the read costs the parked members rather than the table.
+// there and the actor who moved it (parkedMoveLateral), which is the one read this body makes
+// over the events of the parked members alone. An issue whose events do not reach back to the
+// move answers both cells null and stays in the list, since the fault is the work standing there
+// and not the record of how it arrived.
 func priorityParkedQuery(summary bool) string {
-	statuses := sqlStringList(priorityParkedStatuses)
 	parked := `with recursive ` + priorityMemberTerms + `, parked as (
 		select i.key, i.title, i.project_key, i.status, i.assignee, i.claimed_by, i.claimed_at, i.updated_at,
 		       array_agg(distinct m.priority order by m.priority) as priorities
 		from members m
 		join issues i on i.key = m.key
 		where i.closed_at is null
-			and i.status in (` + statuses + `)
+			and i.status in (` + sqlStringList(priorityParkedStatuses) + `)
 			and ` + priorityProjectFilter + `
 		group by i.key
 	)`
@@ -231,18 +226,38 @@ func priorityParkedQuery(summary bool) string {
 	left join (
 		select p.*, moved.created_at as moved_at, moved.actor as moved_by
 		from parked p
-		left join lateral (
-			select e.created_at, e.actor
-			from events e
-			where e.issue_key = p.key and e.type = 'issue.updated'
-				and e.payload->'changed' @> '"status"'::jsonb
-				and e.payload->>'status' in (` + statuses + `)
-			order by e.seq desc
-			limit 1
-		) moved on true
+		` + parkedMoveLateral("p", "") + `
 		order by moved.created_at desc nulls last, p.key asc
 		limit ` + strconv.Itoa(priorityFaultRows) + `
 	) listed on true`
+}
+
+// parkedMoveLateral reads when the issue aliased `issue` was moved into `backlog` or `icebox` and
+// who moved it, as `moved.created_at` and `moved.actor`: that issue's own newest `issue.updated`
+// event whose payload names `status` in `changed` and whose status is one of the two. It is the
+// one reading of the move, which the second fault (priorityParkedQuery) and the listing's
+// `?moved=true` (issueSummaryJoins) both splice, so the two answer the same cells for one issue.
+// An issue whose events do not reach back to the move answers both null.
+//
+// The lateral walks the issue's events backwards over the unique (issue_key, seq) index and stops
+// at the first match, so a read costs the issues it is asked for rather than the table. gate,
+// where it is not empty, is a condition the read runs under at all; it is written against the
+// request's parameters and the outer issue alone, so the planner makes it a one-time filter
+// above the index scan and a row it is false for reads no event.
+func parkedMoveLateral(issue, gate string) string {
+	if gate != "" {
+		gate += `
+			and `
+	}
+	return `left join lateral (
+			select e.created_at, e.actor
+			from events e
+			where ` + gate + `e.issue_key = ` + issue + `.key and e.type = 'issue.updated'
+				and e.payload->'changed' @> '"status"'::jsonb
+				and e.payload->>'status' in (` + sqlStringList(priorityParkedStatuses) + `)
+			order by e.seq desc
+			limit 1
+		) moved on true`
 }
 
 // The four texts the two faults run, built once at start: pgx caches a prepared plan per

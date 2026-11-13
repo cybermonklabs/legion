@@ -779,7 +779,7 @@ test("API client encodes list filters and artifact version query parameters", as
     pinned: true,
     open: true,
     project: "CORE",
-    status: "in progress",
+    status: ["in progress"],
     parent: "CORE-1",
     updated_since: "2026-09-10T12:00:00Z",
     label: ["frontend", "docs"],

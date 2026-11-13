@@ -10,6 +10,11 @@
 // answers for one priority, for two named together, for none, for the two together, paged, and
 // after the priority is deleted — a priority whose state is `gone` is no priority, so the work
 // under it advances none.
+//
+// The listing also draws the two fault lists of GET /api/v1/priorities, which the page's one
+// Issues table renders: `advances=any` beside `none`, a repeated `status`, and the move into
+// `backlog` or `icebox` under `?moved=true`. Each is read here on its own, and then the two
+// listings that ask for the faults are held to the issues that route's own two lists answer.
 package api
 
 import (
@@ -18,7 +23,9 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
@@ -372,4 +379,310 @@ func listedIssuePage(t *testing.T, handler http.Handler, target string) model.Is
 		t.Fatalf("list %s: status=%d body=%s", target, response.Code, response.Body.String())
 	}
 	return decodeBody[model.IssueSummaryPage](t, response)
+}
+
+// TestListIssuesFiltersByRepeatedStatus reads `status` as a list: the issues standing in any
+// status named, one value meaning what it meant when the key took one, a repeat of one status the
+// same as naming it once, and no value or a blank one every status. A status the lifecycle does
+// not hold is refused 400 INVALID_STATUS, naming the value, rather than answering a list nothing
+// stands in.
+func TestListIssuesFiltersByRepeatedStatus(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "STAT")
+	keys := map[string]string{}
+	for _, status := range []string{model.IssueStatusTriage, "todo", "in_progress", "backlog", "done"} {
+		moved := status
+		if status == model.IssueStatusTriage {
+			// Every issue is created in triage, so that one is written with no move.
+			moved = ""
+		}
+		keys[status] = seedPriorityIssue(t, handler, "STAT", "Work in "+status, moved, "", nil)
+	}
+	every := slices.Sorted(maps.Values(keys))
+	for query, statuses := range map[string][]string{
+		"project=STAT":                         nil,
+		"project=STAT&status=":                 nil,
+		"project=STAT&status=todo":             {"todo"},
+		"project=STAT&status=todo&status=todo": {"todo"},
+		"project=STAT&status=todo&status=backlog&status=in_progress": {"todo", "backlog", "in_progress"},
+		"project=STAT&status=done&status=":                           {"done"},
+	} {
+		want := every
+		if statuses != nil {
+			want = []string{}
+			for _, status := range statuses {
+				want = append(want, keys[status])
+			}
+			slices.Sort(want)
+		}
+		if got := slices.Sorted(slices.Values(listedIssueKeys(t, handler, "/api/v1/issues?"+query))); !slices.Equal(got, want) {
+			t.Fatalf("?%s answers %v, want %v", query, got, want)
+		}
+	}
+	for query, named := range map[string]string{
+		"status=almost":             "almost",
+		"status=todo&status=closed": "closed",
+		"project=STAT&status=Todo":  "Todo",
+	} {
+		refused := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+		code, text := refusalOf(t, refused)
+		if refused.Code != http.StatusBadRequest || code != "INVALID_STATUS" || !strings.Contains(text, fmt.Sprintf("%q", named)) {
+			t.Fatalf("?%s: status=%d code=%s error=%q, want 400 INVALID_STATUS naming %q", query, refused.Code, code, text, named)
+		}
+	}
+}
+
+// TestAdvancesAnyIsTheComplementOfNone reads `advances=any` as the issues `advances=none` leaves
+// out, over the same listing: an issue that states a live priority, one that inherits it from an
+// issue above it, and none else. An issue above the one that states it inherits nothing, and an
+// issue under a priority that is gone advances none, as `none` already reads both. The two
+// keywords together are the whole listing, a priority id beside `any` adds nothing to it, and
+// the complement holds inside a narrower listing too.
+func TestAdvancesAnyIsTheComplementOfNone(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	for _, project := range []string{"LEFT", "RIGHT"} {
+		createTestProject(t, handler, project)
+	}
+	kept := createTestPriority(t, handler, map[string]any{"id": "kept-goal", "title": "Kept goal"}, "alice").ID
+	dropped := createTestPriority(t, handler, map[string]any{"id": "dropped-goal", "title": "Dropped goal"}, "alice").ID
+
+	root := seedPriorityIssue(t, handler, "LEFT", "Root under the kept goal", "", "", []string{kept})
+	child := seedPriorityIssue(t, handler, "LEFT", "Child inheriting it", "in_progress", root, nil)
+	grandchild := seedPriorityIssue(t, handler, "LEFT", "Grandchild inheriting it", "", child, nil)
+	above := seedPriorityIssue(t, handler, "RIGHT", "Above the issue that states it", "in_progress", "", nil)
+	stated := seedPriorityIssue(t, handler, "RIGHT", "Stating it below a root that does not", "", above, []string{kept})
+	underDropped := seedPriorityIssue(t, handler, "RIGHT", "Under the dropped goal", "", "", []string{dropped})
+	belowDropped := seedPriorityIssue(t, handler, "RIGHT", "Below the dropped goal", "", underDropped, nil)
+	unrelated := seedPriorityIssue(t, handler, "LEFT", "Under nothing", "", "", nil)
+	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/"+dropped,
+		nil, "alice"); deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete %s: status=%d body=%s", dropped, deleted.Code, deleted.Body.String())
+	}
+
+	wantAny := slices.Sorted(slices.Values([]string{root, child, grandchild, stated}))
+	wantNone := slices.Sorted(slices.Values([]string{above, underDropped, belowDropped, unrelated}))
+	sorted := func(target string) []string {
+		return slices.Sorted(slices.Values(listedIssueKeys(t, handler, target)))
+	}
+	if got := sorted("/api/v1/issues?advances=" + anyAdvancesFilter); !slices.Equal(got, wantAny) {
+		t.Fatalf("advances=any answers %v, want the issues that state the kept goal or sit below one that does: %v", got, wantAny)
+	}
+	if got := sorted("/api/v1/issues?advances=" + noAdvancesFilter); !slices.Equal(got, wantNone) {
+		t.Fatalf("advances=none answers %v, want %v", got, wantNone)
+	}
+	every := listedIssueKeys(t, handler, "/api/v1/issues")
+	if got := listedIssueKeys(t, handler, "/api/v1/issues?advances=any&advances=none"); !slices.Equal(got, every) {
+		t.Fatalf("any and none together answer %v, want the whole listing %v", got, every)
+	}
+	if got := sorted("/api/v1/issues?advances=any&advances=" + kept); !slices.Equal(got, wantAny) {
+		t.Fatalf("any beside %s answers %v, want any's own %v", kept, got, wantAny)
+	}
+	// Each row of either listing says what the filter says of it.
+	assertAdvancesRead(t, handler, "/api/v1/issues?advances=any", map[string][]string{
+		root: {kept + " own"}, child: {kept + " inherited"}, grandchild: {kept + " inherited"}, stated: {kept + " own"},
+	})
+
+	// Inside a narrower listing the two keywords still split it in two.
+	for _, narrowed := range []string{"project=LEFT", "project=RIGHT", "status=in_progress", "status=triage&status=todo"} {
+		whole := sorted("/api/v1/issues?" + narrowed)
+		some := sorted("/api/v1/issues?" + narrowed + "&advances=any")
+		none := sorted("/api/v1/issues?" + narrowed + "&advances=none")
+		if len(some) == 0 || len(none) == 0 {
+			t.Fatalf("?%s splits into %v and %v, want both arms holding an issue so the split decides something", narrowed, some, none)
+		}
+		for _, key := range some {
+			if slices.Contains(none, key) {
+				t.Fatalf("?%s answers %s under both any and none", narrowed, key)
+			}
+		}
+		if union := slices.Sorted(slices.Values(slices.Concat(some, none))); !slices.Equal(union, whole) {
+			t.Fatalf("?%s's any %v and none %v together are %v, want the listing %v", narrowed, some, none, union, whole)
+		}
+	}
+}
+
+// TestListIssuesAnswersTheMoveOnlyWhenAsked reads moved_at and moved_by on the listing. Without
+// `?moved=true` no row carries either field, paged or not. With it, an issue standing in
+// `backlog` or `icebox` carries the time and the actor of its newest move into either, a later
+// write that moves no status leaving them where they are; an issue whose status was written with
+// no event, one moved there and out again, and one never moved carry neither field.
+func TestListIssuesAnswersTheMoveOnlyWhenAsked(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	createTestProject(t, handler, "MOVE")
+	twice := seedPriorityIssue(t, handler, "MOVE", "Moved twice", "", "", nil)
+	moveTestIssue(t, handler, twice, "backlog", "bob")
+	moveTestIssue(t, handler, twice, "icebox", "alice")
+	if retitled := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+twice,
+		map[string]any{"title": "Moved twice, then retitled"}, "bob"); retitled.Code != http.StatusOK {
+		t.Fatalf("retitle %s: status=%d body=%s", twice, retitled.Code, retitled.Body.String())
+	}
+	unrecorded := seedPriorityIssue(t, handler, "MOVE", "Parked before moves were recorded", "", "", nil)
+	if _, err := database.Pool.Exec(ctx, `update issues set status = 'backlog' where key = $1`, unrecorded); err != nil {
+		t.Fatalf("park %s with no event: %v", unrecorded, err)
+	}
+	returned := seedPriorityIssue(t, handler, "MOVE", "Parked and taken back", "backlog", "", nil)
+	moveTestIssue(t, handler, returned, "todo", "bob")
+	never := seedPriorityIssue(t, handler, "MOVE", "Never parked", "", "", nil)
+
+	// The move into icebox, and the retitle after it, which is the issue's newest event and moves
+	// no status: the listing answers the first.
+	var wantAt, retitledAt time.Time
+	if err := database.Pool.QueryRow(ctx, `
+		select created_at from events
+		where issue_key = $1 and type = 'issue.updated' and payload->'changed' @> '"status"'::jsonb
+		order by seq desc limit 1`, twice).Scan(&wantAt); err != nil {
+		t.Fatalf("read the time %s was moved into icebox: %v", twice, err)
+	}
+	if err := database.Pool.QueryRow(ctx, `
+		select created_at from events where issue_key = $1 and type = 'issue.updated'
+		order by seq desc limit 1`, twice).Scan(&retitledAt); err != nil {
+		t.Fatalf("read the time %s was retitled: %v", twice, err)
+	}
+	if !retitledAt.After(wantAt) {
+		t.Fatalf("%s's newest event is at %v, want the retitle after its move at %v", twice, retitledAt, wantAt)
+	}
+
+	for _, query := range []string{"project=MOVE", "project=MOVE&limit=10", "project=MOVE&moved=false"} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("list ?%s: status=%d body=%s", query, response.Code, response.Body.String())
+		}
+		if body := response.Body.String(); strings.Contains(body, `"moved_at"`) || strings.Contains(body, `"moved_by"`) {
+			t.Fatalf("?%s, which asks for no move, answers a row carrying one: %s", query, body)
+		}
+	}
+
+	for _, query := range []string{"project=MOVE&moved=true", "project=MOVE&moved=true&limit=10"} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("list ?%s: status=%d body=%s", query, response.Code, response.Body.String())
+		}
+		var rows []model.IssueSummary
+		if strings.Contains(query, "limit=") {
+			rows = decodeBody[model.IssueSummaryPage](t, response).Issues
+		} else {
+			rows = decodeBody[[]model.IssueSummary](t, response)
+		}
+		byKey := map[string]model.IssueSummary{}
+		for _, row := range rows {
+			byKey[row.Key] = row
+		}
+		if len(byKey) != 4 {
+			t.Fatalf("?%s answers %d issues, want the 4 of the project", query, len(byKey))
+		}
+		moved := byKey[twice]
+		if moved.MovedAt == nil || !moved.MovedAt.Equal(wantAt) {
+			t.Fatalf("?%s says %s was moved at %v, want %v, its move into icebox", query, twice, moved.MovedAt, wantAt)
+		}
+		if moved.MovedBy == nil || *moved.MovedBy != (model.Actor{Kind: "user", ID: "alice"}) {
+			t.Fatalf("?%s says %s was moved by %v, want alice, who moved it into icebox", query, twice, moved.MovedBy)
+		}
+		for _, key := range []string{unrecorded, returned, never} {
+			if row := byKey[key]; row.MovedAt != nil || row.MovedBy != nil {
+				t.Fatalf("?%s says %s (%s) was moved at %v by %v, want neither", query, key, row.Status, row.MovedAt, row.MovedBy)
+			}
+		}
+	}
+}
+
+// faultListingStatuses are the statuses each fault reads, as the listing's repeated `status`.
+func faultListingStatuses(statuses []string) string {
+	var query strings.Builder
+	for _, status := range statuses {
+		query.WriteString("&status=" + status)
+	}
+	return query.String()
+}
+
+// TestTheListingAnswersTheFaultLists holds the two listings the priorities page draws its fault
+// lists with to the two lists GET /api/v1/priorities answers for the same deployment, which is
+// seeded under the fifty rows each list there is cut at: work in flight under no priority is
+// `advances=none` over the four statuses work runs in, and priority work parked is
+// `advances=any` over `backlog` and `icebox` with `?moved=true`, whose rows carry the same time
+// and actor of the move as the parked list's. The seed holds each case either list turns on: own
+// and inherited relations, a relation on a child that places nothing above it, a priority that
+// is gone, work parked under no priority, work parked with no recorded move, and finished work.
+func TestTheListingAnswersTheFaultLists(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	for _, project := range []string{"CORE", "OPS"} {
+		createTestProject(t, handler, project)
+	}
+	for _, id := range []string{"ship-the-daemon", "park-the-bus", "gone-goal"} {
+		createTestPriority(t, handler, map[string]any{"id": id, "title": id}, "alice")
+	}
+
+	// In flight under no priority, a root whose child carries the relation among them, and in
+	// flight under a priority, own and inherited.
+	seedPriorityIssue(t, handler, "CORE", "Unplaced in progress", "in_progress", "", nil)
+	seedPriorityIssue(t, handler, "OPS", "Unplaced in testing", "testing", "", nil)
+	seedPriorityIssue(t, handler, "CORE", "Unplaced in review", "needs_review", "", nil)
+	retroRoot := seedPriorityIssue(t, handler, "CORE", "Unplaced root in retro", "retro", "", nil)
+	seedPriorityIssue(t, handler, "CORE", "The child that carries the relation", "todo", retroRoot, []string{"ship-the-daemon"})
+	placed := seedPriorityIssue(t, handler, "CORE", "Placed in progress", "in_progress", "", []string{"ship-the-daemon"})
+	seedPriorityIssue(t, handler, "CORE", "Placed by inheritance in testing", "testing", placed, nil)
+	seedPriorityIssue(t, handler, "OPS", "In review under the gone goal", "needs_review", "", []string{"gone-goal"})
+
+	// Parked under a priority, through a parent, on its own, and with no recorded move; parked
+	// under none and under the gone goal; and finished work under a priority.
+	parkedParent := seedPriorityIssue(t, handler, "CORE", "Parked work's parent", "todo", "", []string{"park-the-bus"})
+	parkedChild := seedPriorityIssue(t, handler, "CORE", "Parked work", "todo", parkedParent, nil)
+	moveTestIssue(t, handler, parkedChild, "backlog", "bob")
+	seedPriorityIssue(t, handler, "OPS", "Iced on its own", "icebox", "", []string{"ship-the-daemon"})
+	unrecorded := seedPriorityIssue(t, handler, "OPS", "Parked with no recorded move", "todo", "", []string{"park-the-bus"})
+	if _, err := database.Pool.Exec(context.Background(), `update issues set status = 'backlog' where key = $1`, unrecorded); err != nil {
+		t.Fatalf("park %s with no event: %v", unrecorded, err)
+	}
+	seedPriorityIssue(t, handler, "OPS", "Parked under nothing", "backlog", "", nil)
+	seedPriorityIssue(t, handler, "OPS", "Parked under the gone goal", "icebox", "", []string{"gone-goal"})
+	seedPriorityIssue(t, handler, "CORE", "Finished under a priority", "done", "", []string{"ship-the-daemon"})
+	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/gone-goal",
+		nil, "alice"); deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete gone-goal: status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+
+	body := readPriorities(t, handler, "")
+	unplaced, parked := body.WorkUnderNoPriority, body.PriorityWorkParked
+	if unplaced.Count != 5 || len(unplaced.Issues) != unplaced.Count {
+		t.Fatalf("the priorities read counts %d issues in flight under no priority and draws %d, want all 5 drawn",
+			unplaced.Count, len(unplaced.Issues))
+	}
+	if parked.Count != 3 || len(parked.Issues) != parked.Count {
+		t.Fatalf("the priorities read counts %d parked priority issues and draws %d, want all 3 drawn",
+			parked.Count, len(parked.Issues))
+	}
+
+	unplacedListing := "/api/v1/issues?advances=none" + faultListingStatuses(model.IssueStatusesInFlight)
+	if got, want := slices.Sorted(slices.Values(listedIssueKeys(t, handler, unplacedListing))),
+		slices.Sorted(slices.Values(faultKeys(unplaced.Issues))); !slices.Equal(got, want) {
+		t.Fatalf("%s answers %v, want the work in flight under no priority %v", unplacedListing, got, want)
+	}
+
+	parkedListing := "/api/v1/issues?advances=any&moved=true" + faultListingStatuses(model.IssueStatusesParked)
+	response := dispatchRequest(t, handler, http.MethodGet, parkedListing, nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list %s: status=%d body=%s", parkedListing, response.Code, response.Body.String())
+	}
+	rows := map[string]model.IssueSummary{}
+	for _, row := range decodeBody[[]model.IssueSummary](t, response) {
+		rows[row.Key] = row
+	}
+	if got, want := slices.Sorted(maps.Keys(rows)), slices.Sorted(slices.Values(faultKeys(parked.Issues))); !slices.Equal(got, want) {
+		t.Fatalf("%s answers %v, want the parked priority work %v", parkedListing, got, want)
+	}
+	for _, fault := range parked.Issues {
+		row := rows[fault.Key]
+		sameAt := (row.MovedAt == nil) == (fault.MovedAt == nil) && (row.MovedAt == nil || row.MovedAt.Equal(*fault.MovedAt))
+		sameBy := (row.MovedBy == nil) == (fault.MovedBy == nil) && (row.MovedBy == nil || *row.MovedBy == *fault.MovedBy)
+		if !sameAt || !sameBy {
+			t.Fatalf("%s says %s was moved at %v by %v, where the parked list says %v by %v",
+				parkedListing, fault.Key, row.MovedAt, row.MovedBy, fault.MovedAt, fault.MovedBy)
+		}
+	}
+	if row := rows[parkedChild]; row.MovedBy == nil || *row.MovedBy != (model.Actor{Kind: "user", ID: "bob"}) {
+		t.Fatalf("%s says %s was moved by %v, want bob, so the comparison above is of a recorded move", parkedListing, parkedChild, row.MovedBy)
+	}
+	if row := rows[unrecorded]; row.MovedAt != nil || row.MovedBy != nil {
+		t.Fatalf("%s says %s was moved at %v by %v, want neither: no event records its move", parkedListing, unrecorded, row.MovedAt, row.MovedBy)
+	}
 }

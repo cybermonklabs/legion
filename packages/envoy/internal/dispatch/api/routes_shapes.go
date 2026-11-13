@@ -165,8 +165,9 @@ type issueListQuery struct {
 	Pinned bool `query:"pinned"`
 	// Project lists one project's issues.
 	Project string `query:"project"`
-	// Status lists issues at one status.
-	Status string `query:"status"`
+	// Status, repeatable, lists issues standing in any of these lifecycle statuses; none is every
+	// status, and one the lifecycle does not hold is 400 INVALID_STATUS.
+	Status []string `query:"status"`
 	// Parent lists the children of one issue.
 	Parent string `query:"parent"`
 	// Label lists issues carrying every label given.
@@ -180,8 +181,12 @@ type issueListQuery struct {
 	// Priority lists issues at these priorities, 0-3, or `none` for unset.
 	Priority []string `query:"priority"`
 	// Advances lists issues that advance these priorities, by their own relation or by one an
-	// issue above them states, over every project; `none` lists those that advance none.
+	// issue above them states, over every project; `none` lists those that advance no live
+	// priority and `any` those that advance one, which is every other issue.
 	Advances []string `query:"advances"`
+	// Moved, `true`, adds moved_at and moved_by to each row standing in backlog or icebox: when
+	// the issue was moved there and who moved it. A listing without it reads neither.
+	Moved bool `query:"moved"`
 	// RouteStatus lists open issues whose route is live, no_holder or unknown.
 	RouteStatus string `query:"route_status"`
 	// Open, `true`, lists open issues alone.

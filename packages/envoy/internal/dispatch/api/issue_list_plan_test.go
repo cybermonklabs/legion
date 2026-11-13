@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -108,13 +109,13 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 		{
 			name:      "the paged listing",
 			statement: listIssuesPageQuery,
-			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, 5, 10},
+			arguments: []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, 5, 10},
 			limit:     5,
 		},
 		{
 			name:      "the paged pinned listing",
 			statement: listPinnedIssuesPageQuery,
-			arguments: []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, "alice", 2, 1},
+			arguments: []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, "alice", 2, 1},
 			limit:     2,
 		},
 	} {
@@ -161,7 +162,7 @@ func TestAPagedListingResolvesItsPageAlone(t *testing.T) {
 // its joins reach once for all of them rather than once per issue.
 func TestAnUnpagedListingReadsEachResolvedTableOnce(t *testing.T) {
 	fixture := newIssueListFixture(t)
-	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false)
+	plan, text := analyzePlan(t, fixture.database, listIssuesQuery, "LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false)
 	for _, relation := range []string{"issue_links", "issue_components", "repo_projects"} {
 		read := 0
 		for _, node := range plan.everyNode() {
@@ -193,8 +194,8 @@ func TestTheListingReadsOpenAsksThroughTheirIndex(t *testing.T) {
 		statement string
 		arguments []any
 	}{
-		"the listing":       {listIssuesQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false}},
-		"the paged listing": {listIssuesPageQuery, []any{"LIST", "", "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, 5, 10}},
+		"the listing":       {listIssuesQuery, []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false}},
+		"the paged listing": {listIssuesPageQuery, []any{"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, false, 5, 10}},
 	} {
 		plan := planWithoutSeqScans(t, fixture.database, read.statement, read.arguments...)
 		if explaintest.SeqScansRelation(t, plan, "asks") {
@@ -202,6 +203,99 @@ func TestTheListingReadsOpenAsksThroughTheirIndex(t *testing.T) {
 		}
 		firstKeys.RequireIndexKeyed(t, plan, "asks_open", name, explaintest.CondOptional)
 	}
+}
+
+// The listing reads the move into `backlog` or `icebox` only when a request asks for it
+// (issueMovedJoin), and then only for the rows standing in one of the two. Two of the fixture's
+// issues are moved into `backlog`, so each has an event the read would find. A request without
+// `?moved=true` never runs the events read, whichever plan it gets: a plan made for its own
+// arguments drops the read, and the generic plan a prepared statement settles on after five runs
+// holds it under a one-time filter that is false. A request with the key runs it once for each
+// of the two parked rows and for no other of the several hundred it lists.
+func TestTheListingReadsTheMoveOnlyWhenAskedAndOnlyForParkedRows(t *testing.T) {
+	fixture := newIssueListFixture(t)
+	parked := []string{fixture.keys[4], fixture.keys[5]}
+	for _, key := range parked {
+		moveTestIssue(t, fixture.handler, key, "backlog", "alice")
+	}
+	for _, listing := range []struct {
+		name    string
+		moved   bool
+		generic bool
+		loops   float64
+	}{
+		{name: "a listing that does not ask for the move", moved: false, loops: 0},
+		{name: "a listing that does not ask for the move, under the generic plan", moved: false, generic: true, loops: 0},
+		{name: "a listing that asks for the move", moved: true, loops: float64(len(parked))},
+		{name: "a listing that asks for the move, under the generic plan", moved: true, generic: true, loops: float64(len(parked))},
+	} {
+		var plan analyzedNode
+		var text string
+		if listing.generic {
+			plan, text = analyzeGenericListingPlan(t, fixture.database, listing.moved)
+		} else {
+			plan, text = analyzePlan(t, fixture.database, listIssuesQuery,
+				"LIST", []string{}, "", nil, []string{}, false, []int16{}, false, nil, nil, []string{}, false, false, listing.moved)
+		}
+		reads, loops := 0, 0.0
+		for _, node := range plan.everyNode() {
+			if node.RelationName == "events" {
+				reads++
+				loops += node.Loops
+			}
+		}
+		// A plan that holds no events read at all is one that read none, which only a request
+		// without the key may be answered by; the generic plan must hold it, or it says nothing.
+		if reads == 0 && (listing.moved || listing.generic) {
+			t.Fatalf("%s holds no read of events in its plan, so the plan cannot say whether the gate holds:\n%s", listing.name, text)
+		}
+		if loops != listing.loops {
+			t.Errorf("%s reads events over %.0f loops, want %.0f:\n%s", listing.name, loops, listing.loops, text)
+		}
+	}
+}
+
+// analyzeGenericListingPlan runs the unpaged listing of project LIST under the generic plan a
+// prepared statement settles on, which is planned without its arguments, and answers its root
+// node as analyzePlan does. The arguments are the request that filters by nothing, with moved the
+// one that varies.
+func analyzeGenericListingPlan(t *testing.T, database *store.Store, moved bool) (analyzedNode, string) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire a connection: %v", err)
+	}
+	defer conn.Release()
+	for _, statement := range []string{
+		"set plan_cache_mode = force_generic_plan",
+		"prepare generic_listing as " + listIssuesQuery,
+	} {
+		if _, err := conn.Exec(ctx, statement); err != nil {
+			t.Fatalf("prepare the generic listing: %v", err)
+		}
+	}
+	defer func() {
+		if _, err := conn.Exec(ctx, "deallocate generic_listing"); err != nil {
+			t.Errorf("deallocate the generic listing: %v", err)
+		}
+		if _, err := conn.Exec(ctx, "reset plan_cache_mode"); err != nil {
+			t.Errorf("reset plan_cache_mode: %v", err)
+		}
+	}()
+	var raw []byte
+	if err := conn.QueryRow(ctx, fmt.Sprintf(
+		"explain (analyze, format json) execute generic_listing('LIST', '{}', '', null, '{}', false, '{}', false, null, null, '{}', false, false, %t)",
+		moved)).Scan(&raw); err != nil {
+		t.Fatalf("explain the generic listing: %v", err)
+	}
+	var plans []struct {
+		Plan analyzedNode `json:"Plan"`
+	}
+	if err := json.Unmarshal(raw, &plans); err != nil || len(plans) != 1 {
+		t.Fatalf("decode the explain answer (%v): %s", err, raw)
+	}
+	return plans[0].Plan, string(raw)
 }
 
 // The project list counts every project's open asks in one grouped read: no node of its plan is

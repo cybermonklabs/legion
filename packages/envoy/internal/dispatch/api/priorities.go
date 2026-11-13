@@ -53,19 +53,20 @@ const priorityIDMax = 200
 // joined by single hyphens, which is the slug spelling a document's id already takes
 // (artifactSlug, and text.artifactSlugPattern, which reads one back). An id is written into a
 // path and into the `advances` filter of the issue listing, so one that spells anything else
-// would be stored and then address nothing. The grammar admits one word the filter reads as a
-// keyword, noAdvancesFilter, and the length is bounded by priorityIDMax; priorityIDRefusal holds
-// an id to all three.
+// would be stored and then address nothing. The grammar admits two words the filter reads as
+// keywords, noAdvancesFilter and anyAdvancesFilter, and the length is bounded by priorityIDMax;
+// priorityIDRefusal holds an id to all of them.
 var priorityIDPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // priorityIDRefusal answers why id can be no priority's id, or "" when it can be one. derived
 // says the create took it from the title, so the answer says so and asks for an id in id.
 //
 // An id over priorityIDMax is refused before the grammar is read, so the answer names its length
-// rather than quoting it. noAdvancesFilter is refused although the grammar spells it, because the
-// issue listing reads `advances=none` as the work under no priority (parseAdvancesFilter): a
-// priority of that id would have its own page and row list the work under no priority, and no
-// filter could ask for the work under it.
+// rather than quoting it. noAdvancesFilter and anyAdvancesFilter are refused although the grammar
+// spells them, because the issue listing reads `advances=none` as the work under no priority and
+// `advances=any` as the work under any (parseAdvancesFilter): a priority of either id would have
+// its own page and row list the work the keyword reads, and no filter could ask for the work
+// under it.
 func priorityIDRefusal(id string, derived bool) string {
 	var reason string
 	switch {
@@ -76,6 +77,9 @@ func priorityIDRefusal(id string, derived bool) string {
 	case id == noAdvancesFilter:
 		reason = fmt.Sprintf("%q is no priority id: the issue listing reads advances=%s as the work under no priority, so no filter could ask for the work under a priority of that id",
 			id, noAdvancesFilter)
+	case id == anyAdvancesFilter:
+		reason = fmt.Sprintf("%q is no priority id: the issue listing reads advances=%s as the work under any priority, so no filter could ask for the work under a priority of that id",
+			id, anyAdvancesFilter)
 	default:
 		return ""
 	}

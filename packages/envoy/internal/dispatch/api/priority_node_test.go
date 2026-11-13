@@ -324,6 +324,42 @@ func TestPriorityIDRefusesTheNoneKeyword(t *testing.T) {
 	}
 }
 
+// TestPriorityIDRefusesTheAnyKeyword reads that no priority takes the id `any`, given or derived
+// from its title, for the reason it takes no `none`: the issue listing reads `advances=any` as
+// the work under any live priority (parseAdvancesFilter), so a priority of that id would have its
+// own page and row list the work under every priority, and no filter could ask for the work
+// under it. An id that merely begins with the word is a slug like any other and is written.
+func TestPriorityIDRefusesTheAnyKeyword(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	for name, body := range map[string]map[string]any{
+		"named in id":            {"id": anyAdvancesFilter, "title": "Whatever matters"},
+		"derived from the title": {"title": "Any"},
+		"derived from a title in capitals and spaces": {"title": "  ANY  "},
+	} {
+		refused := dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities", body, "alice")
+		code, text := refusalOf(t, refused)
+		if refused.Code != http.StatusBadRequest || code != codePriorityInput {
+			t.Fatalf("a create whose id is %q, %s: status=%d code=%s error=%q, want 400 %s",
+				anyAdvancesFilter, name, refused.Code, code, text, codePriorityInput)
+		}
+		if !strings.Contains(text, "advances="+anyAdvancesFilter) {
+			t.Fatalf("the refusal of the id %q, %s, says %q, want it to name the filter keyword", anyAdvancesFilter, name, text)
+		}
+	}
+	var written int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from priority_nodes where kind = $1 and id = $2`,
+		prioritystore.KindPriority, anyAdvancesFilter).Scan(&written); err != nil {
+		t.Fatalf("count the priorities of the id %q: %v", anyAdvancesFilter, err)
+	}
+	if written != 0 {
+		t.Fatalf("the refused creates wrote %d priorities of the id %q, want none", written, anyAdvancesFilter)
+	}
+	if made := createTestPriority(t, handler, map[string]any{"title": "Any other business"}, "alice"); made.ID != "any-other-business" {
+		t.Fatalf("a title beginning with the word derives the id %q, want %q", made.ID, "any-other-business")
+	}
+}
+
 // TestPriorityTitleAndIDAreBounded reads the two bounds a priority write holds its text to. The
 // title is at most contracts.IssueTitleMax, as an issue title is, on a create and a rename alike.
 // The id is at most priorityIDMax, whether given or derived from the title: it is a btree key, so

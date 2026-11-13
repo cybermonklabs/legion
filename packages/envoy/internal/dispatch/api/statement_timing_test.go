@@ -69,11 +69,13 @@ func TestStatementTimings(t *testing.T) {
 	subjects := runner.Subjects()
 
 	// The eight filters main's listing took, narrowed to the project and nothing else: the list a
-	// dashboard opens. listIssues' arguments are those eight, the closed window and the
-	// `advances` keys, named here as the request that asks for none of them, so both sides read
-	// the same rows.
+	// dashboard opens. listIssues' arguments are those eight, the closed window, the `advances`
+	// keys and the move read's gate, named here as the request that asks for none of them, so
+	// both sides read the same rows; the listing's status is a list where main's was one value,
+	// so each side is passed its own empty status.
 	filters := []any{subjects.Project, "", "", nil, []string{}, false, []int16{}, false}
-	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false})
+	listArguments := slices.Concat(filters, []any{nil, nil, []string{}, false, false, false})
+	listArguments[1] = []string{}
 	runner.Pair(t, "the issue list, unpaged",
 		benchtime.Statement{SQL: mainListIssuesQuery, Args: filters},
 		benchtime.Statement{SQL: listIssuesQuery, Args: listArguments})

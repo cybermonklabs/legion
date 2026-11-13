@@ -66,9 +66,10 @@ var (
 // time of the same page without it; every text the server runs passes true. The `advances`
 // filter term stays in both, because it is a filter rather than a read: a request that names no
 // `advances` key leaves its seed gated off (issueAdvancesFilterTerms), so the text without the
-// read measures the read alone.
+// read measures the read alone. The move into `backlog` or `icebox` stays in both for the same
+// reason: it is read only under `?moved=true` ($14), and a request without it reads no event.
 func issueSummaryQuery(pinned, paged, readAdvances bool) string {
-	parameter := 13
+	parameter := 15
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = fmt.Sprintf("\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $%d and s.pinned", parameter)
@@ -111,16 +112,23 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 `
 }
 
-// issueListFilters are the ten filters a listing request carries, written as twelve parameters
-// (the priority filter and the `advances` filter each take a list and a flag for the unset),
-// every one but the last written against `issues i` alone, so the filtered term joins nothing.
-// The closed window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no
-// time, is outside every window. The last is the `advances` filter, which no column of an issue
-// holds and whose answer a relation of an issue above it can decide: it reads one term computed
-// once per request (issueAdvancesFilterTerms), joined to the issue by its key, so the filtered
-// term still resolves nothing per row and the page and the count both read it.
+// issueListFilters are the ten filters a listing request carries, written as thirteen parameters
+// (the priority filter takes a list and a flag for the unset, and the `advances` filter a list
+// and a flag for each of its two keywords), every one but the last written against `issues i`
+// alone, so the filtered term joins nothing. The status filter ($2) is a list of lifecycle
+// statuses, an issue standing in any of them, and the empty list is every status. The closed
+// window ($9, $10) is [closed_since, closed_before), and an open issue, closed at no time, is
+// outside every window. The last is the `advances` filter, which no column of an issue holds and
+// whose answer a relation of an issue above it can decide: it reads one term computed once per
+// request (issueAdvancesFilterTerms), joined to the issue by its key, so the filtered term still
+// resolves nothing per row and the page and the count both read it. Its four arms are a union:
+// the ids named ($11), the work under none ($12), and the work under any ($13), which is every
+// issue `advancing` holds and so exactly the issues the arm for none leaves out.
+//
+// $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
+// (issueSummaryJoins), and the parameters after it are the pinned login and the page.
 const issueListFilters = `where ($1 = '' or i.project_key = $1)
-		  and ($2 = '' or i.status = $2)
+		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
 		  and ($5::text[] = '{}' or (select array_agg(lower(label)) from unnest(i.labels) as label) @> $5)
@@ -130,9 +138,10 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		       or ($8::boolean and i.priority is null))
 		  and ($9::timestamptz is null or i.closed_at >= $9)
 		  and ($10::timestamptz is null or i.closed_at < $10)
-		  and ((cardinality($11::text[]) = 0 and not $12::boolean)
+		  and ((cardinality($11::text[]) = 0 and not $12::boolean and not $13::boolean)
 		       or coalesce(advancing.named, false)
-		       or ($12::boolean and advancing.key is null))`
+		       or ($12::boolean and advancing.key is null)
+		       or ($13::boolean and advancing.key is not null))`
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -233,11 +242,12 @@ var issueAdvancesTerms = `advances_chain as (
 const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 
 // issueAdvancesFilterTerms answer the listing's `advances` query keys, as one term computed once
-// per request rather than a read per row: $11 is the priority ids the request named and $12 is
-// whether it asked for the work that advances none. `advancing` holds one row per issue that
-// advances a live priority by either route, `named` saying whether one of them is an id the
-// request asked for, so `filtered` decides both keys by one join on the issue's key
-// (issueListFilters) and still resolves nothing per row.
+// per request rather than a read per row: $11 is the priority ids the request named, $12 is
+// whether it asked for the work that advances none and $13 whether it asked for the work that
+// advances any. `advancing` holds one row per issue that advances a live priority by either
+// route, `named` saying whether one of them is an id the request asked for, so `filtered`
+// decides every key by one join on the issue's key (issueListFilters) and still resolves nothing
+// per row.
 //
 // `advances_stated` is the issues whose own rows state an asserted relation now, by the reading
 // of the log issueAdvancesTerms makes for a page. A priority whose state is `gone` is no
@@ -252,7 +262,7 @@ const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
 var issueAdvancesFilterTerms = `advances_stated as (
 		select newest.from_id as key, bool_or(newest.to_id = any($11::text[])) as named
 		from (
-			` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and (cardinality($11::text[]) > 0 or $12::boolean)`) + `
+			` + prioritystore.AdvancesTupleRead(`, t.asserted`, `and (cardinality($11::text[]) > 0 or $12::boolean or $13::boolean)`) + `
 		) newest
 		join priority_nodes n on n.kind = '` + prioritystore.KindPriority + `' and n.id = newest.to_id
 			and n.state = '` + prioritystore.StateLive + `'
@@ -272,10 +282,12 @@ var issueAdvancesFilterTerms = `advances_stated as (
 // the three `advances` columns the text was built with: either the relation read's
 // (issueAdvancesColumns) or the constants of the text that leaves it out
 // (issueAdvancesColumnsUnread), which is why they are a parameter rather than spliced in here.
+// The two cells of the move (issueMovedColumns) stand right behind them.
 func issueSummaryColumns(advances string) string {
 	return `i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce(blockers.keys, '{}'),
 	       ` + advances + `,
+	       ` + issueMovedColumns + `,
 	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce(spec.id, ''),
 	       ` + issueClaimColumns + `,
@@ -286,13 +298,26 @@ func issueSummaryColumns(advances string) string {
 	       i.closed_at`
 }
 
+// issueMovedColumns are the two cells `?moved=true` answers on a listing row, in
+// issueSummaryRow's order: when the issue was moved into `backlog` or `icebox` and who moved it
+// (parkedMoveLateral). Both are null on every row of a request that did not ask for them, and on
+// a row the read finds no move for.
+const issueMovedColumns = `moved.created_at, moved.actor`
+
+// issueMovedJoin is that read for the issue aliased `i`, gated on the request asking for it ($14)
+// and on the issue standing in one of the two statuses now. A row the gate is false for reads no
+// event, so a listing without the key pays nothing for the read and one with it pays for its
+// parked rows alone. An issue standing in any other status answers null although it may once
+// have been moved there, since the cells say how the issue came to stand where it stands.
+var issueMovedJoin = parkedMoveLateral("i", `$14::boolean and i.status in (`+sqlStringList(priorityParkedStatuses)+`)`)
+
 // issueSummaryJoins resolve the seven values a listing row carries beside the issue's own
-// columns, each for every issue of `subjects` at once rather than for one row at a time. The
-// open-ask read keeps the state filter in its own where clause, so it matches the partial
-// asks_open(issue_key) where state = 'open' index instead of scanning asks, and the closed-issue
-// rule stays in the select list: a closed issue reports 0 open asks however many it has. The
-// `advances` join is the one a text may leave out (issueSummaryQuery's readAdvances), since
-// nothing else reads its terms.
+// columns, each for every issue of `subjects` at once rather than for one row at a time, and the
+// move a request asked for (issueMovedJoin), one issue at a time. The open-ask read keeps the
+// state filter in its own where clause, so it matches the partial asks_open(issue_key) where
+// state = 'open' index instead of scanning asks, and the closed-issue rule stays in the select
+// list: a closed issue reports 0 open asks however many it has. The `advances` join is the one a
+// text may leave out (issueSummaryQuery's readAdvances), since nothing else reads its terms.
 func issueSummaryJoins(readAdvances bool) string {
 	joins := `left join (
 		select l.issue_key, array_agg(l.target_key order by l.target_key) as keys
@@ -323,7 +348,8 @@ func issueSummaryJoins(readAdvances bool) string {
 	`
 	}
 	return joins + issueComponentsJoin + `
-	` + refs.IssueRepoJoin
+	` + refs.IssueRepoJoin + `
+	` + issueMovedJoin
 }
 
 const (
@@ -332,10 +358,36 @@ const (
 	// unsetPriorityFilter is the `priority` query value that matches an issue with no priority.
 	unsetPriorityFilter = "none"
 	// noAdvancesFilter is the `advances` query value that matches an issue advancing no live
-	// priority, by its own row or by an issue above it. A priority create refuses it as an id,
-	// given or derived (priorityIDRefusal), so the keyword can never also name a priority.
-	noAdvancesFilter = "none"
+	// priority, by its own row or by an issue above it, and anyAdvancesFilter the one that
+	// matches an issue advancing at least one, which is every other issue. A priority create
+	// refuses each as an id, given or derived (priorityIDRefusal), so a keyword can never also
+	// name a priority.
+	noAdvancesFilter  = "none"
+	anyAdvancesFilter = "any"
 )
+
+// parseStatusFilter reads the repeated `status` query parameter: each value is a status of the
+// lifecycle (model.IssueStatuses), and the listing answers the issues standing in any of them.
+// No value means every status, and so does a blank one, which is what `status=` has always
+// answered; one value means what it meant when the key took one. A value the lifecycle does not
+// hold is refused, naming it, as a write of one is (issue_patch.go): it would otherwise match no
+// issue and read as a status nothing stands in.
+func parseStatusFilter(values []string) ([]string, error) {
+	statuses := []string{}
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		switch {
+		case value == "":
+		case model.IsIssueStatus(value):
+			statuses = append(statuses, value)
+		default:
+			return nil, errorf(http.StatusBadRequest, "INVALID_STATUS",
+				"status filter values must be one of %s, got %q", strings.Join(model.IssueStatuses, ", "), raw)
+		}
+	}
+	slices.Sort(statuses)
+	return slices.Compact(statuses), nil
+}
 
 // parsePriorityFilter reads the repeated `priority` query parameter: each value is 0..3, or
 // "none" for an issue with no priority. No values means no priority filter.
@@ -358,27 +410,30 @@ func parsePriorityFilter(values []string) (priorities []int16, unset bool, err e
 }
 
 // parseAdvancesFilter reads the repeated `advances` query parameter: each value is a priority
-// id, or "none" for an issue that advances none. No values means no advances filter, and the
-// two together are a union, as the `priority` filter's two halves are. An id no priority
-// carries, and one of a priority that is gone, matches no issue rather than refusing: the
-// listing answers what the store holds now. A blank value is refused, since it names neither a
-// priority nor "none".
-func parseAdvancesFilter(values []string) (ids []string, none bool, err error) {
+// id, "none" for an issue that advances none, or "any" for an issue that advances one. No values
+// means no advances filter, and several together are a union, as the `priority` filter's two
+// halves are, so "none" and "any" together are every issue. An id no priority carries, and one
+// of a priority that is gone, matches no issue rather than refusing: the listing answers what
+// the store holds now. A blank value is refused, since it names neither a priority nor a
+// keyword.
+func parseAdvancesFilter(values []string) (ids []string, none, some bool, err error) {
 	ids = []string{}
 	for _, raw := range values {
 		value := strings.TrimSpace(raw)
 		switch value {
 		case noAdvancesFilter:
 			none = true
+		case anyAdvancesFilter:
+			some = true
 		case "":
-			return nil, false, errorf(http.StatusBadRequest, "INVALID_ADVANCES",
-				"advances filter values must be a priority id or %s, got %q", noAdvancesFilter, raw)
+			return nil, false, false, errorf(http.StatusBadRequest, "INVALID_ADVANCES",
+				"advances filter values must be a priority id, %s or %s, got %q", noAdvancesFilter, anyAdvancesFilter, raw)
 		default:
 			ids = append(ids, value)
 		}
 	}
 	slices.Sort(ids)
-	return slices.Compact(ids), none, nil
+	return slices.Compact(ids), none, some, nil
 }
 
 // microsecondCeiling is a listing's time bound as the statement compares it. Postgres stores a
@@ -511,7 +566,11 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	project := strings.TrimSpace(query.Get("project"))
-	status := strings.TrimSpace(query.Get("status"))
+	statuses, err := parseStatusFilter(query["status"])
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	parent := strings.TrimSpace(query.Get("parent"))
 	labels, err := normalizeIssueLabels(query["label"])
 	if err != nil {
@@ -562,7 +621,7 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	advances, noAdvances, err := parseAdvancesFilter(query["advances"])
+	advances, noAdvances, anyAdvances, err := parseAdvancesFilter(query["advances"])
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -580,8 +639,11 @@ func (s *server) listIssues(w http.ResponseWriter, r *http.Request) {
 	// A route matters only while there is work to reach, so the route_status filter reads open
 	// issues alone: the owner audit is every open issue whose route reaches nobody.
 	open := query.Get("open") == "true" || routeStatus != ""
-	arguments := []any{project, status, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
-		microsecondCeiling(closedSince), microsecondCeiling(closedBefore), advances, noAdvances}
+	// The move into `backlog` or `icebox` is read only when the request asks for it, and a row
+	// carries its two cells only then (model.IssueSummary's MovedAt and MovedBy).
+	moved := query.Get("moved") == "true"
+	arguments := []any{project, statuses, parent, microsecondCeiling(updatedSince), labels, open, priorities, unsetPriority,
+		microsecondCeiling(closedSince), microsecondCeiling(closedBefore), advances, noAdvances, anyAdvances, moved}
 	if pinned {
 		arguments = append(arguments, login)
 	}
@@ -673,6 +735,7 @@ type issueSummaryRow struct {
 func (r *issueSummaryRow) targets(leading ...any) []any {
 	targets := append(leading, &r.issue.Key, &r.issue.Title, &r.issue.Status, &r.issue.Priority, &r.issue.Rank, &r.issue.Labels, &r.issue.Parent, &r.issue.BlockedBy)
 	targets = append(targets, r.advances.targets()...)
+	targets = append(targets, &r.issue.MovedAt, &r.issue.MovedBy)
 	targets = append(targets, &r.issue.Assignee, &r.issue.Route, &r.issue.UpdatedAt, &r.issue.LastSeq, &r.issue.CreatedBy, &r.issue.CreatedAt, &r.issue.PrimaryArtifactID)
 	targets = append(targets, r.claim.targets()...)
 	targets = append(targets, &r.issue.OpenAsks)
