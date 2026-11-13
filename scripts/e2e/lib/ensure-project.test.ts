@@ -280,6 +280,30 @@ describe("ensure_project", () => {
     expect(r.stderr).not.toContain("Owner@Example.com");
   });
 
+  // allowedLogin names the email with `%q`, so a `"` or `\` in it is escaped once by Go's quoting
+  // and again by the JSON body: the refusal carries `\\\"` and `\\\\` where the email held `"`
+  // and `\`. scrub must hide that spelling too.
+  test("400 ASSIGNEE_NOT_ALLOWED for an email Go quotes and JSON escapes again names the variable, never the email", () => {
+    expect(stage4bScrub).toBeDefined();
+    const person = 'Smoke"Quoted\\Owner@Example.com';
+    const goQuoted = `"${person.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+    const r = run(
+      `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
+      {
+        status: "400",
+        body: JSON.stringify({
+          code: "ASSIGNEE_NOT_ALLOWED",
+          error: `${goQuoted} has not signed in to Dispatch`,
+        }),
+      },
+      proofActor,
+      person
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
+    expect(r.stderr).not.toContain("Owner@Example.com");
+  });
+
   // The email is matched in any case, as the hosts are, and literally: each character sed's regular
   // expression or its `#` delimiter reads as special stands for itself, so a line that differs only
   // where the email holds `.` keeps it, and a host still names its own variable.

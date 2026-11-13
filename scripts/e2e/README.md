@@ -5629,7 +5629,8 @@ A child carries neither, since it runs under its root's tree.
 Stage 4b's `prerequisites` calls it first, before the lock, and `read_bearers` calls it again for the run proper.
 `ensure_project` creates `project` as a proof-human write, naming `dispatch_actor` and, as `default_assignee`, `dispatch_default_assignee`, since the agents' bearer acts for nobody and Dispatch refuses its create naming no person (400 `INVALID_PROJECT`) before it reads the key:
 it fails the check before any call when `dispatch_default_assignee` is unset, 201 and 409 `PROJECT_EXISTS` both leave the project ready, any other status fails the check naming the status and the body through `scrub`, and a failed connection fails it in one line naming curl's error.
-`400 ASSIGNEE_NOT_ALLOWED` names the email it refused as the operator spelled it, and Stage 4b's `scrub` replaces that email, in any case, with `<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>`.
+`400 ASSIGNEE_NOT_ALLOWED` names the email it refused as the operator spelled it, Go-quoted (`%q`) inside a JSON body, which escapes `\` and `"` and writes `&`, `<` and `>` as `\u0026`, `\u003c` and `\u003e`.
+Stage 4b's `scrub` replaces that email, in any case, with `<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>` in each of those spellings and as written.
 `dispatch_human METHOD PATH [BODY]` is every proof-human write, over `dispatch-human-header`;
 `dispatch_agent METHOD PATH BODY` is a write in an agent's name over `dispatch-auth-header`, the agents' bearer, whose body gains the stand-in session `stage3-architect-stand-in` as its `actor` (a bearer caller must name one;
 the stand-in holds no claim), for a proof step whose author must be a session, such as the decision block Stage 3 inserts into the spec as its architect would.

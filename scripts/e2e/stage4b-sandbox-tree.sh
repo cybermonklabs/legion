@@ -1405,16 +1405,32 @@ read_bearers() {
 # tool's error (a refused connection, an unresolved name) may carry a host, and Dispatch's refusal
 # of the project create (ensure_project, lib/workflow.sh) the email. Each is matched in any case,
 # since address-moved-env-same-pod hands the Envoy host upper-cased. The email is replaced first,
-# so a host inside it cannot split it, with each character sed's regular expression or the `#`
-# delimiter reads as special escaped, since an email may hold `.`, `#` and others; prerequisites
-# refuses one holding whitespace, so it is one line.
+# so a host inside it cannot split it, and in three spellings, longest first: as Dispatch's
+# refusal writes it, the email Go-quoted (`%q`, `\` and `"` escaped with a backslash) and then
+# JSON-encoded (Go's encoding/json escaping `\` and `"` again, and `&`, `<` and `>` as `\u0026`,
+# `\u003c` and `\u003e`); as JSON-encoded alone; and as the operator wrote it. Each spelling has
+# every character sed's regular expression or the `#` delimiter reads as special escaped, since an
+# email may hold `.`, `#` and others; prerequisites refuses one holding whitespace, so it is one
+# line.
 scrub() {
   local args=() i names=(LEGION_E2E_DISPATCH_URL LEGION_E2E_ENVOY_URL LEGION_E2E_NATS_URL LEGION_E2E_MODEL_GATEWAY_URL) h
-  local person=${dispatch_default_assignee:-} c
+  local person=${dispatch_default_assignee:-} spellings=() text spelling c
   if [ -n "$person" ]; then
-    person=${person//'\'/'\\'}
-    for c in '[' '.' '*' '^' '$' '#'; do person=${person//"$c"/"\\$c"}; done
-    args+=(-e "s#$person#<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>#gI")
+    # The Go-quoted email, then each of the two as JSON writes it inside a string.
+    text=${person//'\'/'\\'}
+    text=${text//'"'/'\"'}
+    for spelling in "$text" "$person"; do
+      spelling=${spelling//'\'/'\\'}
+      spelling=${spelling//'"'/'\"'}
+      spelling=${spelling//'&'/'\u0026'}
+      spelling=${spelling//'<'/'\u003c'}
+      spellings+=("${spelling//'>'/'\u003e'}")
+    done
+    for spelling in "${spellings[@]}" "$person"; do
+      spelling=${spelling//'\'/'\\'}
+      for c in '[' '.' '*' '^' '$' '#'; do spelling=${spelling//"$c"/"\\$c"}; done
+      args+=(-e "s#$spelling#<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>#gI")
+    done
   fi
   for i in "${!service_hosts[@]}"; do
     h=${service_hosts[$i]%%:*}
