@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +44,7 @@ func TestTheInstalledSchemaIsOneAtomicValue(t *testing.T) {
 	pmdoctest.UseBlockSchema(t, decodeSchema(t, pmdoc.SchemaJSON()))
 
 	requireTheRegistrationIsAWake(t)
+	requireTheServerClosesItsSocketsOnASwitch(t)
 
 	built := pmdoc.BuiltSchemaVersion()
 	if built < 2 {
@@ -106,6 +106,56 @@ func requireTheRegistrationIsAWake(t *testing.T) {
 		if strings.Contains(source, handler) {
 			t.Errorf("%s registers the schema channel as a notification handler (%s); the reinstall would then run on the hub's goroutine", serverMain, handler)
 		}
+	}
+}
+
+// requireTheServerClosesItsSocketsOnASwitch reads the installer the server runs and fails unless
+// its OnSwitch closes the document sockets (docs.Service.CloseDocumentSockets). The hook firing
+// is proved below, on the reads that move the schema; this is what makes that firing a close of
+// the sockets a browser admitted on the schema the process no longer serves.
+func requireTheServerClosesItsSocketsOnASwitch(t *testing.T) {
+	t.Helper()
+	fileSet := token.NewFileSet()
+	parsed, err := parser.ParseFile(fileSet, serverMain, nil, 0)
+	if err != nil {
+		t.Fatalf("read %s: %v", serverMain, err)
+	}
+	installers, closing := 0, 0
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		literal, isLiteral := node.(*ast.CompositeLit)
+		if !isLiteral {
+			return true
+		}
+		named, isNamed := literal.Type.(*ast.SelectorExpr)
+		if !isNamed || named.Sel.Name != "Installer" {
+			return true
+		}
+		if from, isIdent := named.X.(*ast.Ident); !isIdent || from.Name != "schemanodes" {
+			return true
+		}
+		installers++
+		for _, element := range literal.Elts {
+			field, isField := element.(*ast.KeyValueExpr)
+			if !isField {
+				continue
+			}
+			if key, isIdent := field.Key.(*ast.Ident); !isIdent || key.Name != "OnSwitch" {
+				continue
+			}
+			ast.Inspect(field.Value, func(inner ast.Node) bool {
+				if call, isCall := inner.(*ast.CallExpr); isCall {
+					if selector, isSelector := call.Fun.(*ast.SelectorExpr); isSelector && selector.Sel.Name == "CloseDocumentSockets" {
+						closing++
+					}
+				}
+				return true
+			})
+		}
+		return true
+	})
+	if installers != 1 || closing != 1 {
+		t.Errorf("%s builds %d schemanodes.Installer values, %d of them with an OnSwitch that calls CloseDocumentSockets; want one installer that closes the document sockets when the schema it serves moves",
+			serverMain, installers, closing)
 	}
 }
 
@@ -211,17 +261,31 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 }
 
 // requireAFailedReadKeepsTheValueAndIsMadeAgain holds a read that fails to leaving the installed
-// value where it is, and to being made again after the retry interval.
+// value where it is, and to being made again after the retry interval: not before it, or a store
+// that is down would be read as fast as it fails, and the server's installer, which sets no
+// interval of its own, waits RetryInterval.
 func requireAFailedReadKeepsTheValueAndIsMadeAgain(t *testing.T, ctx context.Context) {
 	t.Helper()
+	if interval := (&Installer{}).retryInterval(); interval != RetryInterval {
+		t.Errorf("an installer given no retry interval reads a failed store again after %v, want RetryInterval (%v): the server's installer sets none", interval, RetryInterval)
+	}
 	before := pmdoc.SchemaJSON()
+	const retry = 20 * time.Millisecond
 	unreachable := &unreachableStore{}
-	installer := &Installer{Store: unreachable, Retry: 20 * time.Millisecond}
+	installer := &Installer{Store: unreachable, Retry: retry}
 	running, stop := context.WithTimeout(ctx, 300*time.Millisecond)
 	defer stop()
 	installer.Run(running)
-	if reads := unreachable.reads.Load(); reads < 2 {
-		t.Errorf("a store that cannot be read was read %d times in 300ms at a 20ms retry, want it read again", reads)
+	reads := unreachable.reads
+	if len(reads) < 2 {
+		t.Errorf("a store that cannot be read was read %d times in 300ms at a %v retry, want it read again", len(reads), retry)
+	}
+	for index := 1; index < len(reads); index++ {
+		if gap := reads[index].Sub(reads[index-1]); gap < retry {
+			t.Errorf("read %d of a store that cannot be read came %v after the read before it, want at least the retry interval %v (%d reads in 300ms): a retry that does not wait reads a store that is down as fast as it fails",
+				index+1, gap, retry, len(reads))
+			break
+		}
 	}
 	if string(pmdoc.SchemaJSON()) != string(before) {
 		t.Errorf("a read that failed changed the installed schema")
@@ -232,12 +296,14 @@ func requireAFailedReadKeepsTheValueAndIsMadeAgain(t *testing.T, ctx context.Con
 }
 
 // requireARefusedValueKeepsTheValue holds a store schema that fails validation to installing
-// nothing, with the process still serving the schema it had and still ready.
+// nothing, with the process still serving the schema it had and still ready, and so to running
+// no switch: the document sockets the server holds were admitted on the schema it still serves.
 func requireARefusedValueKeepsTheValue(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
 	t.Helper()
 	before := pmdoc.SchemaJSON()
 	setStoreVersion(t, ctx, pool, 0)
-	installer := &Installer{Store: pool}
+	switches := 0
+	installer := &Installer{Store: pool, OnSwitch: func() { switches++ }}
 	if !installer.reload(ctx) {
 		t.Errorf("a schema the install refused was reported as a read that failed; it is an answer, and no retry is owed")
 	}
@@ -247,17 +313,23 @@ func requireARefusedValueKeepsTheValue(t *testing.T, ctx context.Context, pool *
 	if reason := pmdoc.NotReadyReason(); reason != "" {
 		t.Errorf("a schema that fails validation made the process not ready (%q)", reason)
 	}
+	if switches != 0 {
+		t.Errorf("a schema that fails validation ran OnSwitch %d times, want none: the process serves the schema it served, so no document socket is owed a close", switches)
+	}
 	setStoreVersion(t, ctx, pool, built)
 }
 
 // requireASchemaAboveThisBuildIsNotInstalled holds a store schema above the version this build
 // was made for to installing nothing and to making the process report itself not ready, naming
-// the version. A store back at a version it can install makes it ready again.
+// the version. A store back at a version it can install makes it ready again. Each of those two
+// reads moves what the process serves, so each runs OnSwitch once, the hook the server closes
+// its document sockets on; a second read of the same store moves nothing and runs it not at all.
 func requireASchemaAboveThisBuildIsNotInstalled(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
 	t.Helper()
 	before := pmdoc.SchemaJSON()
 	setStoreVersion(t, ctx, pool, built+1)
-	installer := &Installer{Store: pool}
+	switches := 0
+	installer := &Installer{Store: pool, OnSwitch: func() { switches++ }}
 	installer.reload(ctx)
 	if string(pmdoc.SchemaJSON()) != string(before) {
 		t.Errorf("a schema above this build's version was installed")
@@ -266,6 +338,14 @@ func requireASchemaAboveThisBuildIsNotInstalled(t *testing.T, ctx context.Contex
 	if !strings.Contains(reason, strconv.Itoa(built+1)) || !strings.Contains(reason, strconv.Itoa(built)) {
 		t.Errorf("the process is not ready because %q, want a reason naming the store's version %d and this build's %d", reason, built+1, built)
 	}
+	if switches != 1 {
+		t.Errorf("the read of a schema above this build's version ran OnSwitch %d times, want once: the process serves no schema now, and the server closes its document sockets there", switches)
+	}
+	away := switches
+	installer.reload(ctx)
+	if switches != away {
+		t.Errorf("a second read of the same schema above this build's version ran OnSwitch %d more times, want none: nothing moved, so no document socket is owed a close", switches-away)
+	}
 	setStoreVersion(t, ctx, pool, built)
 	installer.reload(ctx)
 	if reason := pmdoc.NotReadyReason(); reason != "" {
@@ -273,6 +353,9 @@ func requireASchemaAboveThisBuildIsNotInstalled(t *testing.T, ctx context.Contex
 	}
 	if pmdoc.SchemaVersion() != built {
 		t.Errorf("the installed schema is version %d, want the store's %d", pmdoc.SchemaVersion(), built)
+	}
+	if switches != 2 {
+		t.Errorf("the store's return to version %d left OnSwitch run %d times in all, want twice: once for the read that left the process serving no schema, once for the read that installed one again", built, switches)
 	}
 }
 
@@ -325,18 +408,19 @@ func decodeSchema(t *testing.T, body []byte) pmdoc.BlockSchema {
 	return value
 }
 
-// unreachableStore is a store no read reaches, which counts the reads made of it.
-type unreachableStore struct{ reads atomic.Int64 }
+// unreachableStore is a store no read reaches, which records when each read of it was made. Run
+// reads it on the test's own goroutine, so the record needs no lock.
+type unreachableStore struct{ reads []time.Time }
 
 var errUnreachable = errors.New("the store is unreachable")
 
 func (s *unreachableStore) Query(context.Context, string, ...any) (pgx.Rows, error) {
-	s.reads.Add(1)
+	s.reads = append(s.reads, time.Now())
 	return nil, errUnreachable
 }
 
 func (s *unreachableStore) QueryRow(context.Context, string, ...any) pgx.Row {
-	s.reads.Add(1)
+	s.reads = append(s.reads, time.Now())
 	return unreachableRow{}
 }
 
