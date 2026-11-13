@@ -670,7 +670,7 @@ func (s *shim) rescue(request shimwire.RescueUnpushed) {
 		timeout := time.Duration(request.TimeoutMs) * time.Millisecond
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		result.Workspaces = rescue.Run(ctx, rescue.Request{
-			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Env: s.cfg.Env,
+			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Target: request.Target, Env: s.cfg.Env,
 			WorkspaceTimeout: time.Duration(request.WorkspaceTimeoutMs) * time.Millisecond,
 			Deadline:         time.Now().Add(timeout),
 		})

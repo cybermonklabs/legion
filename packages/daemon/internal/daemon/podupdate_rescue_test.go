@@ -32,7 +32,7 @@ var podUpdateRescueBranch = "legion/" + podUpdateIssue + "-rescue-" + podUpdateP
 func (r *podUpdateRig) rescueOn(d *rescuetest.Disk) {
 	r.rt.RescueWith(func(ctx context.Context, _ runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
 		return rescue.Report(rescue.Run(ctx, rescue.Request{
-			StateDir: d.StateDir, Branch: request.Branch, Env: d.Env,
+			StateDir: d.StateDir, Branch: request.Branch, Target: request.Target, Env: d.Env,
 			WorkspaceTimeout: request.WorkspaceTimeout, Deadline: time.Now().Add(request.Timeout),
 		})), nil
 	})

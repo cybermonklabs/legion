@@ -672,10 +672,20 @@ func (p pushCheck) branches() []rescuedBranch {
 }
 
 // rescueBranch is the prefix of every rescue branch of a pod's replacement:
-// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which the check numbers from 1. It is no
-// issue's branch (claim.BranchIssue), so nothing the daemon keeps follows it.
+// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which a shim that predates the issue's one
+// rescue branch (rescueTarget) numbers from 1. It is no issue's branch (claim.BranchIssue), so
+// nothing the daemon keeps follows it.
 func rescueBranch(issue, pod string) string {
 	return claim.IssueBranch(issue) + "-rescue-" + pod[:min(8, len(pod))]
+}
+
+// rescueTarget is the issue's one rescue branch, `legion/<KEY>-rescue`, which only moves forward.
+// The request names it in a field of its own, beside rescueBranch rather than in its place: an
+// older shim reports every remote branch that starts with `<branch>-` as its own, so this name
+// there would have it report every earlier pod's rescue branches (shimwire.RescueUnpushed). Like
+// rescueBranch, it is no issue's branch (claim.BranchIssue).
+func rescueTarget(issue string) string {
+	return claim.IssueBranch(issue) + "-rescue"
 }
 
 // checkUnpushed runs the push check of the round's pod (runtime.Runtime.RescueUnpushed) through a
@@ -706,7 +716,8 @@ func (s *supervision) checkUnpushed(ctx context.Context, issue, round, pod strin
 	if timeout <= 0 {
 		return fmt.Errorf("%w: the replacement has no time left to run it in", errPushCheckFailed)
 	}
-	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
+	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescueTarget(issue),
+		WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
 	var refused []string
 	for _, c := range rescuers(group, round) {
 		report, err := s.runtime.RescueUnpushed(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator}, request)

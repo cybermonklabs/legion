@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -225,14 +226,14 @@ func TestARescueBranchSkipsANumberTheRemoteHoldsAndReportsIt(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	w := only(t, d, d.Check(context.Background(), prefix))
 	want := []shimwire.RescueBranch{{Name: prefix + "-1", Commit: d.Base}, {Name: prefix + "-2", Commit: commit}}
-	if w.Status != rescue.Rescued || !slices.Equal(w.Branches, want) {
+	if w.Status != rescue.Rescued || !reflect.DeepEqual(w.Branches, want) {
 		t.Fatalf("the check reported %+v, want %+v", w, want)
 	}
 	if held := d.RemoteBranch(prefix + "-1"); held != d.Base {
 		t.Errorf("the remote's %s-1 is %s, want it left at %s", prefix, held, d.Base)
 	}
 	again := only(t, d, d.Check(context.Background(), prefix))
-	if again.Status != rescue.Rescued || !slices.Equal(again.Branches, want) {
+	if again.Status != rescue.Rescued || !reflect.DeepEqual(again.Branches, want) {
 		t.Fatalf("a second check reported %+v, want the two branches again and nothing new pushed: %+v", again, want)
 	}
 }

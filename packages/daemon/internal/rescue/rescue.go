@@ -140,6 +140,10 @@ type Request struct {
 	// with n the least number from 1 that names no branch the remote has and none this check has
 	// pushed already.
 	Branch string
+	// Target is the issue's one rescue branch, `legion/<KEY>-rescue`, which only moves forward:
+	// the daemon names it beside Branch (shimwire.RescueUnpushed), and an older daemon names none.
+	// The check names its branches from Branch alone and does not read Target.
+	Target string
 	// WorkspaceTimeout bounds one workspace's check and push.
 	WorkspaceTimeout time.Duration
 	// Deadline bounds the whole check: a workspace not reached by then is an error, not a pass.
@@ -160,7 +164,14 @@ func Report(workspaces []shimwire.RescueWorkspace) []runtime.WorkspaceRescue {
 	for i, w := range workspaces {
 		report[i] = runtime.WorkspaceRescue{Dir: w.Dir, Status: w.Status, Error: w.Error}
 		for _, b := range w.Branches {
-			report[i].Branches = append(report[i].Branches, runtime.RescuedBranch{Name: b.Name, Commit: b.Commit})
+			branch := runtime.RescuedBranch{Name: b.Name, Commit: b.Commit, Previous: b.Previous, Pushed: b.Pushed}
+			if len(b.Commits) > 0 {
+				branch.Commits = make([]runtime.RescuedCommit, len(b.Commits))
+				for j, c := range b.Commits {
+					branch.Commits[j] = runtime.RescuedCommit{ID: c.ID, Subject: c.Subject}
+				}
+			}
+			report[i].Branches = append(report[i].Branches, branch)
 		}
 	}
 	return report
