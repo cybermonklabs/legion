@@ -70,11 +70,12 @@ runs:
         key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
 
     # The inputs reach the script as environment variables and never as text of `run:`, so no
-    # input can become shell code.
+    # input can become shell code. Their names leave out the INPUT prefix, which this
+    # repository's Bun pin check reserves for an action's own inputs.
     - id: run
       name: Check the architecture notes
       shell: bash
       env:
-        INPUT_PATH: ${{ inputs.path }}
-        INPUT_ALLOW_EMPTY: ${{ inputs.allow-empty }}
+        ARCHITECTURE_CHECK_PATH: ${{ inputs.path }}
+        ARCHITECTURE_CHECK_ALLOW_EMPTY: ${{ inputs.allow-empty }}
       run: bash "$GITHUB_ACTION_PATH/check.sh" run

@@ -12,18 +12,18 @@
 #          $RUNNER_TEMP/architecture-check/mod and its build cache in
 #          $RUNNER_TEMP/architecture-check/build, the two directories the action's cache steps
 #          restore and save. It exits with go build's status.
-#   run    Runs that binary over INPUT_PATH, resolved against GITHUB_WORKSPACE (an absolute path
-#          stays as it is), with --allow-empty when INPUT_ALLOW_EMPTY is `true`. The binary's
-#          standard error goes to the log, and its standard output to
+#   run    Runs that binary over ARCHITECTURE_CHECK_PATH, resolved against GITHUB_WORKSPACE (an
+#          absolute path stays as it is), with --allow-empty when ARCHITECTURE_CHECK_ALLOW_EMPTY
+#          is `true`. The binary's standard error goes to the log, and its standard output to
 #          $RUNNER_TEMP/architecture-check/stdout, which this script then prints. When that output
 #          holds the count line, `architecture-check: <dir>: <n> notes, the set is valid` or
 #          `... the set is refused` (`note` for one), it appends `count=<n>` to GITHUB_OUTPUT. It
 #          exits with the binary's status: 0 valid, 1 refused, 2 not judged (no count line then).
 #
 # Both modes need GITHUB_ACTION_PATH and RUNNER_TEMP. run also needs GITHUB_WORKSPACE,
-# GITHUB_OUTPUT, INPUT_PATH and INPUT_ALLOW_EMPTY, which is exactly `true` or `false`. A missing
-# variable, an INPUT_ALLOW_EMPTY of any other value, a run before a build, or a mode other than
-# the two is exit 2, with one line on standard error.
+# GITHUB_OUTPUT, ARCHITECTURE_CHECK_PATH and ARCHITECTURE_CHECK_ALLOW_EMPTY, which is exactly
+# `true` or `false`. A missing variable, an ARCHITECTURE_CHECK_ALLOW_EMPTY of any other value, a
+# run before a build, or a mode other than the two is exit 2, with one line on standard error.
 set -euo pipefail
 
 usage='usage: check.sh build|run'
@@ -81,15 +81,15 @@ build() {
 }
 
 run() {
-  require GITHUB_WORKSPACE GITHUB_OUTPUT INPUT_PATH INPUT_ALLOW_EMPTY
-  case "$INPUT_PATH" in
-    /*) dir=$INPUT_PATH ;;
-    *) dir="$GITHUB_WORKSPACE/$INPUT_PATH" ;;
+  require GITHUB_WORKSPACE GITHUB_OUTPUT ARCHITECTURE_CHECK_PATH ARCHITECTURE_CHECK_ALLOW_EMPTY
+  case "$ARCHITECTURE_CHECK_PATH" in
+    /*) dir=$ARCHITECTURE_CHECK_PATH ;;
+    *) dir="$GITHUB_WORKSPACE/$ARCHITECTURE_CHECK_PATH" ;;
   esac
-  case "$INPUT_ALLOW_EMPTY" in
+  case "$ARCHITECTURE_CHECK_ALLOW_EMPTY" in
     true) set -- --allow-empty "$dir" ;;
     false) set -- "$dir" ;;
-    *) refuse "the input allow-empty is '$INPUT_ALLOW_EMPTY', and it must be 'true' or 'false'" ;;
+    *) refuse "the input allow-empty is '$ARCHITECTURE_CHECK_ALLOW_EMPTY', and it must be 'true' or 'false'" ;;
   esac
   [ -x "$binary" ] || refuse "no command at $binary: run check.sh build first"
 
