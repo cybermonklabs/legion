@@ -28,7 +28,7 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // line's own fields beside that place, every issue of it that is not working now carries its
 // answer under `why`, and the two issues whose current phase names a phase worker role carry the
 // entry that role stands on and the entry it was given, so one state proves fifteen of the
-// sixteen downgrades and that they compose; it stands no member of the line of the kind 108
+// sixteen downgrades and that they compose; it stands no member of the line of the kind 110
 // added, whose downgrade waiting_on_issue_test.go proves.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
@@ -120,9 +120,9 @@ var (
 // line's own fields too, and still neither the cause, nor either entry number, nor the held
 // list; a pod from 87 to 93 the claim views' `leakCheckCause` too, and still neither entry
 // number nor the held list; a pod from 94 to 97 the two entry numbers too, and still no held
-// list; a pod from 98 to 107 the held list too; a pod below 46 none of the sixteen; and a pod at
-// 108, this daemon's declared contract — the fixture stands no member of the line of the one
-// kind 108 added, so 108's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod
+// list; a pod from 98 to 109 the held list too; a pod below 46 none of the sixteen; and a pod at
+// 110, this daemon's declared contract — the fixture stands no member of the line of the one
+// kind 110 added, so 110's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod
 // whose claims record no contract and a caller in no pod — the operator's `legion state`, whose
 // memory line reads the draws, whose queue line reads the wakes and whose tool-call line reads
 // the step records — are served all of them.
@@ -261,7 +261,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 94 to 97, from phaseEntriesContract to below heldContract: the two entry
 		// numbers are served too, and the held list is the one key held back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
-		// The band from 98 to 107, from heldContract to below waitingOnIssueContract, the last
+		// The band from 98 to 109, from heldContract to below waitingOnIssueContract, the last
 		// under the declared contract: the held list is served too, and this fixture stands
 		// nothing the one contract above it holds back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
