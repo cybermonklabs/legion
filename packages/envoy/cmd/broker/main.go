@@ -1282,11 +1282,44 @@ func kindMinters(githubApp secrets.GitHubApp, googleLogin secrets.GoogleLogin, a
 	}
 }
 
+// The sign-in client check's lines (checkSignInClient). Each says that a pass found other than
+// what the line before it said, keyed on the check's state and on whether its write failed, never
+// on an error's text, as enroll.ServingClock.Run logs its beats: a provider that stays away for a
+// day writes one line, not one each clientCheckInterval.
+const (
+	// clientCheckFailedMessage is logged, at WARN, by a pass that finds a state other than ready
+	// and other than the state this message last named since the client was last ready, followed
+	// by state=, issuer= and error=.
+	clientCheckFailedMessage = "broker: the sign-in client check"
+	// clientCheckReadyMessage is logged, at INFO, by a pass that finds the client ready after a
+	// clientCheckFailedMessage line, followed by issuer= and was=<the state that line named>.
+	clientCheckReadyMessage = "broker: the sign-in client check finds the client ready again"
+	// clientCheckUnwrittenMessage is logged, at WARN, by a pass whose write fails when the pass
+	// before it wrote, followed by state= and error=.
+	clientCheckUnwrittenMessage = "broker: the sign-in client check was not written"
+	// clientCheckWrittenMessage is logged, at INFO, by a pass that writes after a pass that logged
+	// clientCheckUnwrittenMessage, followed by state=.
+	clientCheckWrittenMessage = "broker: the sign-in client check is written again"
+)
+
+// clientCheckLog is what the client check last logged, which runClientChecks holds from one pass
+// to the next so that a pass logs a change and nothing while nothing changes. Its zero value is a
+// check that has logged nothing, which is the same as one that last found the client ready and
+// wrote it: a pass that finds that logs nothing.
+type clientCheckLog struct {
+	// notReady is the state clientCheckFailedMessage last named, and empty when it has named none
+	// since the client was last ready.
+	notReady oidc.ClientCheck
+	// unwritten is whether the last pass's write failed.
+	unwritten bool
+}
+
 // runClientChecks checks the sign-in client at once and every clientCheckInterval after, until
-// ctx ends.
+// ctx ends, holding what the passes logged.
 func runClientChecks(ctx context.Context, signIn approval.SignIn, st *store.Store) {
+	var logged clientCheckLog
 	for {
-		checkSignInClient(ctx, signIn, st)
+		checkSignInClient(ctx, signIn, st, &logged)
 		select {
 		case <-ctx.Done():
 			return
@@ -1304,17 +1337,36 @@ func runClientChecks(ctx context.Context, signIn approval.SignIn, st *store.Stor
 // path that reads the discovery document again on its own, so a check that fails says nothing
 // about whether the next sign-in works. A write that fails loses this pass's answer and the
 // next pass writes again.
-func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.Store) {
+//
+// Each half logs only a change from what logged holds, which it then updates: the check
+// logs clientCheckFailedMessage when it finds a state that is not ready and not the one logged
+// last, and clientCheckReadyMessage when it finds ready after one that was not; the write logs
+// clientCheckUnwrittenMessage when it fails after one that did not, and clientCheckWrittenMessage
+// when it succeeds after one that failed.
+func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.Store, logged *clientCheckLog) {
 	check, err := oidc.CheckClient(ctx, signIn.Issuer, signIn.ClientID, signIn.ClientSecret)
-	if err != nil {
-		slog.Warn("broker: the sign-in client check", "state", check, "issuer", signIn.Issuer, "error", err)
-	}
 	if ctx.Err() != nil {
-		// The process is stopping: this answer is the end of the context, not the provider's.
+		// The process is stopping: this answer is the end of the context, not the provider's,
+		// so it is neither logged nor written, and what logged holds stands.
 		return
 	}
-	if err := st.RecordClientCheck(ctx, string(check), time.Now()); err != nil {
-		slog.Warn("broker: the sign-in client check was not written", "state", check, "error", err)
+	switch {
+	case check == oidc.ClientCheckReady && logged.notReady != "":
+		slog.Info(clientCheckReadyMessage, "issuer", signIn.Issuer, "was", logged.notReady)
+		logged.notReady = ""
+	case check != oidc.ClientCheckReady && check != logged.notReady:
+		slog.Warn(clientCheckFailedMessage, "state", check, "issuer", signIn.Issuer, "error", err)
+		logged.notReady = check
+	}
+	err = st.RecordClientCheck(ctx, string(check), time.Now())
+	switch {
+	case ctx.Err() != nil:
+	case err != nil && !logged.unwritten:
+		slog.Warn(clientCheckUnwrittenMessage, "state", check, "error", err)
+		logged.unwritten = true
+	case err == nil && logged.unwritten:
+		slog.Info(clientCheckWrittenMessage, "state", check)
+		logged.unwritten = false
 	}
 }
 
