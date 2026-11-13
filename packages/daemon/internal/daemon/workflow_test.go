@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -313,7 +312,7 @@ hooks: [{name: nudge, on: work_back, every: 1, roles: [implementer], prompt_file
 
 // seedRetroIssue records key as a root of project standing in its retro, with the implementer's
 // phase row the moves back are counted on (record.PhaseRow.BackwardMoves).
-func seedRetroIssue(t *testing.T, pool *pgxpool.Pool, project, key string) {
+func seedRetroIssue(t *testing.T, pool *store.Pool, project, key string) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -331,7 +330,7 @@ func seedRetroIssue(t *testing.T, pool *pgxpool.Pool, project, key string) {
 
 // firedHooks is every firing the engine wrote to the outbox, oldest first, decoded as the runner
 // decodes one before it publishes it (record.HookPrompt).
-func firedHooks(t *testing.T, pool *pgxpool.Pool) []record.HookPrompt {
+func firedHooks(t *testing.T, pool *store.Pool) []record.HookPrompt {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), "select payload from outbox where kind = 'hook_prompt' order by id")
 	if err != nil {

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -23,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -38,7 +38,7 @@ type entryStartRow struct {
 // entryStartRows is every supervise start row issue holds, oldest first, each with its request.
 // The daemon writes a start as a message and rewrites none, so a role can hold the row of an
 // entry it has left beside the row of the entry its phases row names, and a case reads both here.
-func entryStartRows(t *testing.T, pool *pgxpool.Pool, issue string) []entryStartRow {
+func entryStartRows(t *testing.T, pool *store.Pool, issue string) []entryStartRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, payload from outbox
 		where issue = $1 and kind = 'supervise' and payload->>'op' = 'start' order by id`, issue)
@@ -75,7 +75,7 @@ func entryStartRows(t *testing.T, pool *pgxpool.Pool, issue string) []entryStart
 // rolePhaseRow is role's phases row of issue: the record the entry a phase is on and that entry's
 // task are read from (record.PhaseRow.Entry and EntryTask), and the zero row for a role the
 // record holds none of.
-func rolePhaseRow(t *testing.T, pool *pgxpool.Pool, issue string, role claim.Role) record.PhaseRow {
+func rolePhaseRow(t *testing.T, pool *store.Pool, issue string, role claim.Role) record.PhaseRow {
 	t.Helper()
 	ctx := context.Background()
 	var found record.PhaseRow
@@ -687,7 +687,9 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	sweeper := &workflowRuntime{pool: rig.pool, records: records, admission: admission,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", bootID: "test-boot", log: quietLogger()}
-	sweeper.applyEntrySweep(ctx, time.Now())
+	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
+	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as in production (INFRA-3169).
+	sweeper.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now())
 	if starts := testerStarts(); len(starts) != 0 {
 		t.Fatalf("the sweep wrote the tester %+v while its worker works entry 1's task, want nothing: the pass passes over a claim whose pending delivery is still worked", starts)
 	}
@@ -697,7 +699,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	if got := machine.Claim(); got.Pending != nil || got.GivenEntry != 1 || got.ServedEntry != 1 {
 		t.Fatalf("the claim after the turn = %+v, want its delivery retired, entry 1 given and entry 1 served", got)
 	}
-	sweeper.applyEntrySweep(ctx, time.Now().Add(time.Second))
+	sweeper.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Second))
 	owed := testerStart(2)
 	if owed.row.ID == second.row.ID || owed.request.Task != row.EntryTask {
 		t.Fatalf("the start the sweep wrote = row %d carrying %q, want a row of its own carrying the task the tester's phases row names (%q)",

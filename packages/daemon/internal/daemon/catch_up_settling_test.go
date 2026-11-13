@@ -10,11 +10,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -73,7 +73,7 @@ func (p *hookPublisher) ranHook(t *testing.T) {
 // keptCatchUp is the catch-up of root a launch's ready writes, naming every decision nobody
 // claims and claiming them for its row (workflow.QueueCatchUp), for launch. No pacing holds it:
 // the launch took its turn at the machine's gate, so the row is due at now.
-func keptCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root string, launch uint64, now time.Time) {
+func keptCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, launch uint64, now time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -90,7 +90,7 @@ func keptCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root st
 // leaseCatchUp leases the one catch-up of root the outbox holds, as a lane does before it runs it
 // (Store.ClaimRow, which writes the lease from the caller's clock), and returns it with its
 // payload.
-func leaseCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root string, now time.Time) (record.OutboxRow, record.Notice) {
+func leaseCatchUp(t *testing.T, pool *store.Pool, records record.Store, root string, now time.Time) (record.OutboxRow, record.Notice) {
 	t.Helper()
 	ctx := context.Background()
 	rows := catchUpRows(t, pool, root)
@@ -120,7 +120,7 @@ func leaseCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root s
 }
 
 // catchUpRows is every catch-up notice of root the outbox holds, oldest first.
-func catchUpRows(t *testing.T, pool *pgxpool.Pool, root string) []record.OutboxRow {
+func catchUpRows(t *testing.T, pool *store.Pool, root string) []record.OutboxRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 and issue = $2 and payload->>'kind' = 'catch-up' order by id`, string(record.OutboxKindNotice), root)
@@ -144,7 +144,7 @@ func catchUpRows(t *testing.T, pool *pgxpool.Pool, root string) []record.OutboxR
 
 // catchUpsNaming is, for each catch-up of root in the outbox other than row, whether its task
 // names ref, by row id.
-func catchUpsNaming(t *testing.T, pool *pgxpool.Pool, root string, row int64, ref string) map[int64]bool {
+func catchUpsNaming(t *testing.T, pool *store.Pool, root string, row int64, ref string) map[int64]bool {
 	t.Helper()
 	naming := map[int64]bool{}
 	for _, held := range catchUpRows(t, pool, root) {
@@ -174,7 +174,7 @@ func namingRef(naming map[int64]bool) int {
 
 // keepDecision keeps one person's decision on issue, as the one rule for a decision nobody in its
 // tree hears keeps it (record.RelayParkedDecision).
-func keepDecision(t *testing.T, pool *pgxpool.Pool, records record.Store, issue, ref string, at time.Time) {
+func keepDecision(t *testing.T, pool *store.Pool, records record.Store, issue, ref string, at time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -458,7 +458,7 @@ func TestADesignGateChangedUnderTheRunningOutboxIsStatedByTheNextCatchUp(t *test
 // in the outbox states them (record.CatchUp.Gates, the entries whose Gated is set), which is
 // what its architect is told it must hold open. A catch-up carries one entry per required step
 // whether or not a person approves it, so the gated ones are what the deployment's gate says.
-func catchUpApproved(t *testing.T, pool *pgxpool.Pool, root string) []record.DesignStep {
+func catchUpApproved(t *testing.T, pool *store.Pool, root string) []record.DesignStep {
 	t.Helper()
 	rows := catchUpRows(t, pool, root)
 	if len(rows) == 0 {

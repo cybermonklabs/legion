@@ -79,8 +79,15 @@ func (*fakeTx) LargeObjects() pgx.LargeObjects                         { return 
 func (*fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescription, error) {
 	return nil, errors.New("unexpected prepare")
 }
-func (*fakeTx) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
-	return pgconn.CommandTag{}, errors.New("unexpected exec")
+
+// Exec takes the one statement a route runs of its own on this transaction — the state route's
+// bound on its own statements — and refuses every other: those belong to a state source, and the
+// sources here are fakes that run none.
+func (*fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	if strings.HasPrefix(sql, "set local statement_timeout = ") {
+		return pgconn.CommandTag{}, nil
+	}
+	return pgconn.CommandTag{}, errors.New("unexpected exec: " + sql)
 }
 func (*fakeTx) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, errors.New("unexpected query")

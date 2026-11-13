@@ -27,8 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -95,7 +93,7 @@ type fleetRig struct {
 	s       *supervision
 	sup     *supervisor
 	rt      *fake.Runtime
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	records record.Store
 	clock   *heldClock
 	grants  *credential.Grants

@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -193,6 +194,12 @@ type overrides struct {
 	// what the file watcher does for a rotation of a file whose path did not change. nil, in
 	// production, is nobody.
 	settingsRebuilder func(*rebuilder)
+	// beforeServingLatched runs once the goroutine that serves the API has begun and before the
+	// daemon's readiness latch is set (serve, servingLatch), on a context that ends when serving
+	// does, so a hook that waits never outlives the daemon's stop; nil, in production, is nothing.
+	// It is the seam a test holds the daemon at the moment it serves HTTP and reports itself not
+	// ready, which is what /readyz answers 503 for.
+	beforeServingLatched func(ctx context.Context)
 	// pluginRelaunchable overrides whether a stale-plugin claim can be relaunched onto a plugin
 	// (supervise.Deps.PluginRelaunchable), bypassing the configuration-derived default: nil keeps
 	// that default, which a kubernetes-runtime test without a real cluster has no other way to
@@ -262,6 +269,18 @@ func handed(listener net.Listener) func(network, address string) (net.Listener, 
 	return func(string, string) (net.Listener, error) { return listener, nil }
 }
 
+// bootBudget is a budget of bootTimeout for the boot's next steps, on ctx's values but not its
+// cancellation: a signal that arrives mid-startup still leaves a recorded, stamped boot (Run), so
+// the steps that lead to the boot record end on this bound rather than on the signal, and the
+// steps after it end on the signal through starting, which run derives from it. It carries the
+// boot's hold mark (store.WithTransactionTracking), since the boot's steps run one after another
+// on it: a step that asks the pool for a connection while one of its own transactions holds one
+// is refused at that call (store.ErrNestedAcquire) rather than waiting out a boot that can no
+// longer finish.
+func bootBudget(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(store.WithTransactionTracking(context.WithoutCancel(ctx)), bootTimeout)
+}
+
 func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, o overrides) error {
 	if log == nil {
 		log = slog.Default()
@@ -271,7 +290,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 	// read-only and build nothing, and they run against the file's own configuration, which is
 	// all the daemon holds until its store is open (clusterFence). An operator whose cluster
 	// still carries that layout is told so, rather than shown whatever the daemon met next.
-	boot, cancelBoot := context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+	boot, cancelBoot := bootBudget(ctx)
 	defer cancelBoot()
 	fence, err := clusterFence(*live.Snapshot(), o, log)
 	if err != nil {
@@ -288,7 +307,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 	// from what the daemon is actually running on, and not from a file a change of that key sits
 	// above (internal/settings' Keeper.Restore). Nothing of the schema is written yet — the
 	// claims' half of the layout fence and Migrate both still come later.
-	opening, cancelOpening := context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+	opening, cancelOpening := bootBudget(ctx)
 	defer cancelOpening()
 	st, err := store.Open(opening, live.Snapshot().PostgresDSN)
 	if err != nil {
@@ -385,7 +404,9 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 	}
 	if workflow != nil {
 		var cancelAfterMint context.CancelFunc
-		boot, cancelAfterMint = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+		// A fresh budget for the rest of the boot, since the boot budget bounds neither the
+		// mapping read nor the App mint above.
+		boot, cancelAfterMint = bootBudget(ctx)
 		defer cancelAfterMint()
 		workflow.controllerFirstWake, workflow.idleTick, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.entrySweep
 		plan.identity = workflow.identity
@@ -465,7 +486,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		// The probe waits out a cold node and an image pull, which the boot budget does not bound,
 		// as it does not bound the plugin gate: the work after the probe has a budget of its own.
 		var cancelAfterProbe context.CancelFunc
-		boot, cancelAfterProbe = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+		boot, cancelAfterProbe = bootBudget(ctx)
 		defer cancelAfterProbe()
 	} else if plan.modelFallback != nil {
 		// The tmux counterpart of the probe's model-fallback mark, read from the host's Oh My Pi
@@ -489,12 +510,15 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		// unreachable Postgres refuses earlier, at store.Open
 		// (TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword, scripts/e2e/stage1-skeleton.sh).
 		plan.nats.log(log)
-		err := bootprobe.Run(ctx, "connect Envoy NATS", readinessRetry, log,
+		// The three probes run one after another on this goroutine, so they share one hold mark
+		// (a sequential flow); whether the daemon is stopping is still read from ctx.
+		probing := store.WithTransactionTracking(ctx)
+		err := bootprobe.Run(probing, "connect Envoy NATS", readinessRetry, log,
 			readinessAttempt(func(attempt context.Context) error {
 				return workflow.connect(attempt, *live.Snapshot(), rebuild, environLookup(plan.environ))
 			}, bootTimeout, natsauth.Unreachable))
 		if err == nil {
-			err = bootprobe.Run(ctx, "list Dispatch issues for admission", readinessRetry, log,
+			err = bootprobe.Run(probing, "list Dispatch issues for admission", readinessRetry, log,
 				readinessAttempt(workflow.reconcile, bootTimeout, dispatch.Unreachable))
 		}
 		// The catch-up of the roots that run or wait on a person is its own probe, after the
@@ -505,7 +529,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		// catch-up that would never end. The durable consumers start only after it, so no live
 		// fact meets a root still held.
 		if err == nil {
-			err = bootprobe.Run(ctx, "catch up the roots that run or wait on a person", readinessRetry, log,
+			err = bootprobe.Run(probing, "catch up the roots that run or wait on a person", readinessRetry, log,
 				readinessAttempt(workflow.catchUpAwaiting, catchUpAttemptBound, dispatch.Unreachable))
 		}
 		if err != nil {
@@ -523,9 +547,9 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		workflow.attach(s)
 		// Both waited out whatever they waited out on ctx, which the boot budget does not bound:
 		// what follows gets a budget of its own, as the App mint and the image probe's callers
-		// already do.
+		// already do, for the boot record and supervision's start (starting).
 		var cancelAfterReady context.CancelFunc
-		boot, cancelAfterReady = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
+		boot, cancelAfterReady = bootBudget(ctx)
 		defer cancelAfterReady()
 	}
 
@@ -553,10 +577,13 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 	failed := make(chan error, 1)
 	lived := make(chan error, 1)
 	// The replay runs on ctx with a budget per fact (replayTerminal), not on starting: the boot's
-	// budget would end it on the number of facts no daemon applied.
+	// budget would end it on the number of facts no daemon applied. It is one more of the boot's
+	// sequential steps, on start's goroutine after the restore, so its context carries a hold mark.
 	var settle func() error
 	if workflow != nil {
-		settle = func() error { return workflow.replayTerminal(ctx, s.claims, bootTimeout) }
+		settle = func() error {
+			return workflow.replayTerminal(store.WithTransactionTracking(ctx), s.claims, bootTimeout)
+		}
 	}
 	go func() {
 		err := s.start(starting, settle)
@@ -814,6 +841,8 @@ type plan struct {
 	secretsLogin *agentsecrets.Client
 	// strandedReported is overrides.strandedReported; nil runs nothing.
 	strandedReported func()
+	// beforeServingLatched is overrides.beforeServingLatched; nil runs nothing.
+	beforeServingLatched func(ctx context.Context)
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
@@ -896,7 +925,8 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		dispatchToken:      reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
 		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
-		pluginRelaunchable: pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		beforeServingLatched: o.beforeServingLatched,
+		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		environ: o.environment(),
 	}
 	if cfg.Runtime.Name == "kubernetes" {
@@ -1569,6 +1599,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		// `pod_update_retask_hours` and their neighbours take effect at once, with no machine
 		// rebuilt.
 		Settings: liveBudgets{live: p.live},
+		// A timer that fires and a prompt's send each apply their decision on a goroutine of
+		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
+		Worker: store.ForConcurrentWorker,
 		WakePace: supervise.WakePace{
 			Reserve: reserve,
 			Rate:    cfg.WorkerWakesPerMinute,
@@ -1771,7 +1804,9 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 	}()
 	go func() {
 		defer s.wg.Done()
-		s.reconcileOrphans(s.supervisor.ctx)
+		// The sweep runs on a goroutine of its own beside the machines for supervision's life, so
+		// it takes a hold mark of its own.
+		s.reconcileOrphans(store.ForConcurrentWorker(s.supervisor.ctx))
 	}()
 	s.endPluginRounds(s.claims)
 	s.refreshStalePlugins(s.claims, "boot")
@@ -2137,8 +2172,9 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 // uncertain; its hello changes the state before a later retry, and it must never be joined by a
 // second pane. It returns the claims whose release the store did not take, outside the daemon's
 // stop: each is still launch_uncertain, in memory as in the store, and nothing else in this boot
-// releases it, so the caller retries it (relaunchUnfinished).
-func (s *supervision) launchUnfinished(tokens []claim.Token) []claim.Token {
+// releases it, so the caller retries it (relaunchUnfinished). ctx is the relaunches' context; each
+// relaunch derives a context of its own from it.
+func (s *supervision) launchUnfinished(ctx context.Context, tokens []claim.Token) []claim.Token {
 	refused := make([]bool, len(tokens))
 	var launching sync.WaitGroup
 	for i, token := range tokens {
@@ -2149,7 +2185,9 @@ func (s *supervision) launchUnfinished(tokens []claim.Token) []claim.Token {
 		launching.Add(1)
 		go func() {
 			defer launching.Done()
-			refused[i] = s.launchUnfinishedClaim(token, m)
+			// Each relaunch runs on a goroutine of its own beside the others, so each takes a
+			// hold mark of its own rather than ctx's.
+			refused[i] = s.launchUnfinishedClaim(store.ForConcurrentWorker(ctx), token, m)
 		}()
 	}
 	launching.Wait()
@@ -2162,10 +2200,10 @@ func (s *supervision) launchUnfinished(tokens []claim.Token) []claim.Token {
 	return failed
 }
 
-// launchUnfinishedClaim releases one unfinished launch and launches it again, and reports whether
-// the store refused the release (launchUnfinished).
-func (s *supervision) launchUnfinishedClaim(token claim.Token, m *supervise.Machine) bool {
-	released, err := m.ReleaseUncertainLaunch(s.supervisor.ctx)
+// launchUnfinishedClaim releases one unfinished launch and launches it again, both on ctx, and
+// reports whether the store refused the release (launchUnfinished).
+func (s *supervision) launchUnfinishedClaim(ctx context.Context, token claim.Token, m *supervise.Machine) bool {
+	released, err := m.ReleaseUncertainLaunch(ctx)
 	if err != nil {
 		return s.supervisor.decisionFailed(token, "release of an uncertain launch", err,
 			"supervise: release an uncertain launch; retrying at the next orphan sweep")
@@ -2177,7 +2215,7 @@ func (s *supervision) launchUnfinishedClaim(token claim.Token, m *supervise.Mach
 	}
 	s.log.Warn("supervise: launching again a launch the previous daemon did not finish", "claim", token)
 	spawn := supervise.RequestSpawn{Claim: token}
-	if err := m.Handle(s.supervisor.ctx, spawn); err != nil {
+	if err := m.Handle(ctx, spawn); err != nil {
 		s.supervisor.decisionFailed(token, fmt.Sprintf("%T", spawn), err, "supervise: launch an unfinished launch again")
 	}
 	return false
@@ -2207,8 +2245,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		// The relaunches run on a goroutine of their own beside the machines and the orphan sweep,
+		// so this goroutine takes a hold mark of its own.
+		relaunching := store.ForConcurrentWorker(s.supervisor.ctx)
 		if reconciled {
-			tokens = s.launchUnfinished(tokens)
+			tokens = s.launchUnfinished(relaunching, tokens)
 		}
 		ticker := time.NewTicker(s.plan.orphanSweep)
 		defer ticker.Stop()
@@ -2219,11 +2260,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 			case <-ticker.C:
 			}
 			if !reconciled {
-				if reconciled = s.reconcileBootOrphans(s.supervisor.ctx); !reconciled {
+				if reconciled = s.reconcileBootOrphans(relaunching); !reconciled {
 					continue
 				}
 			}
-			tokens = s.launchUnfinished(tokens)
+			tokens = s.launchUnfinished(relaunching, tokens)
 		}
 	}()
 }
@@ -2328,6 +2369,29 @@ func (s *supervision) stop() {
 	})
 }
 
+// servingLatch is the one-way latch GET /readyz answers from (api.Options.Ready): false while the
+// boot runs, true from the moment the daemon serves — its pod runtime built and its launcher
+// acceptor installed (openSupervision, sandboxRuntime's SetLauncherResolver), and the goroutine
+// that runs the API's server.Serve begun (serve) — and never false again of itself. Only the
+// daemon's stop makes it 503 once more, which the API server knows for itself
+// (api.Options.Stopping).
+//
+// It reports the boot and nothing else: not the pool, not the database and not the load. The
+// daemon's Kubernetes Service carries the API port and the worker stream's port under one
+// selector, so a probe that failed while the daemon was busy would take the worker stream out of
+// the Service while every pod's launcher was trying to reach it, and the deployment runs one
+// replica with the Recreate strategy, so no second pod answers in its place. It is a readiness
+// probe and never a liveness probe.
+type servingLatch struct{ served atomic.Bool }
+
+// reach marks the daemon serving. serve is the only caller: nothing else sets the latch, and
+// nothing clears it.
+func (l *servingLatch) reach() { l.served.Store(true) }
+
+// serving reports whether the daemon has reached serving; this is what api.Options.Ready reads,
+// on whatever goroutine a probe's request runs on.
+func (l *servingLatch) serving() bool { return l.served.Load() }
+
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
 // shutdown runs on a context of its own so a cancelled ctx still drains the connections it has.
@@ -2396,14 +2460,15 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// `controller` moves to the operator and start it again when it moves back, and ends with
 	// serving either way. The holder is the one thing that starts it (keeperHolder.begin) and
 	// the one thing that knows whether this daemon launches the controller now, which the API
-	// reads at every request that turns on it.
+	// reads at every request that turns on it. The loop runs beside every other goroutine of the
+	// process, so it takes a hold mark of its own (store.ForConcurrentWorker).
 	keeping := newKeeperHolder(cfg.ControllerWakeInterval, keeper != nil, func() context.CancelFunc {
 		kept, stop := context.WithCancel(serving)
 		running := ensureKeeper()
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			running.run(kept, p.orphanSweep)
+			running.run(store.ForConcurrentWorker(kept), p.orphanSweep)
 		}()
 		return stop
 	})
@@ -2420,7 +2485,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		// (workflowRuntime.connect).
 		p.rebuild.register(newMappingHolder(p.repositories))
 	}
-
+	// The readiness latch the API's /readyz answers from. It is built here, unset: by the time
+	// this runs the runtime is built and the launcher acceptor installed, and what is left of the
+	// boot is the server goroutine below.
+	ready := &servingLatch{}
 	server := api.NewServer(cfg.Bind, cfg.Port, api.Options{
 		State: &source{
 			store:        st,
@@ -2448,6 +2516,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		StateTransactions: st,
 		ConsumerLag:       consumerLag,
 		CallerPod:         callerPodOf(s.runtime),
+		Ready:             ready.serving,
 		Supervisor:        s.supervisor,
 		PodUpdateRounds:   s.podUpdateRoundsView,
 		BootTokens:        s.tokens,
@@ -2523,8 +2592,28 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// runs under the settings holder's own lock (config.Live.WhileSettled), where an applied
 	// change's rebuilds run, so a reread and a route change never build one holder at once.
 	watcher.Settled = func([]config.Change) { p.live.WhileSettled(p.rebuild.rereadCredentials) }
+	// The file arm writes what the file took back through the pool (internal/settings'
+	// Keeper.File), and runs beside every other goroutine of this group for the life of the
+	// process, so it takes a hold mark of its own (store.ForConcurrentWorker).
 	group.Go(func() error {
-		watcher.Run(serving)
+		watcher.Run(store.ForConcurrentWorker(serving))
+		return nil
+	})
+	// The daemon serves from the moment that goroutine has begun, which is what the latch
+	// records. While the boot runs the API is not served at all, so /readyz gives no answer;
+	// between that goroutine's start and the latch it answers 503, from here 200, and only the
+	// stop makes it 503 again (api.Options.Stopping). The hook before the latch is the seam a test
+	// holds it at.
+	group.Go(func() error {
+		select {
+		case <-serverStarted:
+		case <-serving.Done():
+			return nil
+		}
+		if p.beforeServingLatched != nil {
+			p.beforeServingLatched(serving)
+		}
+		ready.reach()
 		return nil
 	})
 	// The report is advisory: its transaction must never sit in the path from restored claims to a
@@ -2536,7 +2625,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		case <-serving.Done():
 			return nil
 		}
-		report, cancel := context.WithTimeout(serving, strandedReportTimeout)
+		// The report runs beside every other goroutine of this group for as long as it takes, so
+		// it reads under a hold mark of its own (store.ForConcurrentWorker) and its one
+		// transaction refuses nothing but itself a second connection.
+		report, cancel := context.WithTimeout(store.ForConcurrentWorker(serving), strandedReportTimeout)
 		defer cancel()
 		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, cfg.Gates.Steps(), s.log)
 		if p.strandedReported != nil {
@@ -2559,12 +2651,16 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		return err
 	})
 	if workflow != nil {
-		group.Go(func() error { return workflow.run(serving) })
+		// The workflow's loops, the boot fact, the orphan keeper and the controller watch each run
+		// for the life of the process beside the others, so each takes a hold mark of its own
+		// (store.ForConcurrentWorker): a mark they shared would have one loop's open transaction
+		// refuse the rest their first connection.
+		group.Go(func() error { return workflow.run(store.ForConcurrentWorker(serving)) })
 		// The boot fact runs beside the already-started API server, so a slow census of claims
 		// never delays /healthz or repeats LEGION-653's boot-time deadlock. A failure while the
 		// daemon serves is retried (runBooted); only the daemon's stop ends it unapplied.
 		group.Go(func() error {
-			workflow.runBooted(serving, bootID)
+			workflow.runBooted(store.ForConcurrentWorker(serving), bootID)
 			return nil
 		})
 	}
@@ -2573,7 +2669,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// loop has one beginning (keeperHolder.begin).
 	keeping.begin()
 	group.Go(func() error {
-		watchController(serving, st, cfg, p, s.log)
+		watchController(store.ForConcurrentWorker(serving), st, cfg, p, s.log)
 		return nil
 	})
 	return group.Wait()
@@ -2817,7 +2913,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// internal/projection may not read. It is read through tx like every other durable fact
 	// here, so the body is still one snapshot, and it is what the state serves as
 	// `strandedClaims` below.
-	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
+	resumes, err := strandedReleaseWakes(ctx, s.store, tx, s.projectToken, claims, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

@@ -390,11 +390,7 @@ func (s *Store) ClaimsTx(ctx context.Context, tx pgx.Tx) ([]supervise.Claim, err
 	return readClaims(ctx, tx)
 }
 
-type claimQuerier interface {
-	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
-}
-
-func readClaims(ctx context.Context, q claimQuerier) ([]supervise.Claim, error) {
+func readClaims(ctx context.Context, q rowsQuerier) ([]supervise.Claim, error) {
 	rows, err := q.Query(ctx, claimSelect+" order by c.token")
 	if err != nil {
 		return nil, fmt.Errorf("read claims: %w", err)

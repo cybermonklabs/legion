@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -161,7 +161,7 @@ func (d *bootClaimDispatch) releasesOf(key string) int {
 // own that drains the rows the boot queues on a clock the test holds.
 type bootClaimRig struct {
 	t      *testing.T
-	pool   *pgxpool.Pool
+	pool   *store.Pool
 	w      *workflowRuntime
 	client *bootClaimDispatch
 	runner *outbox
@@ -217,7 +217,7 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 
 // bootClaimConsumers opens this test's own durable consumers, which the reconcile reads the
 // notification stream's target and the Dispatch consumer's position from.
-func bootClaimConsumers(t *testing.T, pool *pgxpool.Pool) *intake.Consumers {
+func bootClaimConsumers(t *testing.T, pool *store.Pool) *intake.Consumers {
 	t.Helper()
 	conn := testnats.Connect(t, workflowNATS(t))
 	js, err := jetstream.New(conn)

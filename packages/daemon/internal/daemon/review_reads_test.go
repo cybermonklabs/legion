@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -55,7 +55,7 @@ const (
 )
 
 // captureHeadAt moves CAPTURE-1's pull request to head, the head its checks settled on with it.
-func captureHeadAt(t *testing.T, pool *pgxpool.Pool, head string) {
+func captureHeadAt(t *testing.T, pool *store.Pool, head string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), "update pull_requests set head_sha = $1, checked_head = $1 where issue = 'CAPTURE-1'", head); err != nil {
 		t.Fatalf("move CAPTURE-1's head to %s: %v", head, err)
@@ -111,7 +111,7 @@ func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64
 
 // reviewReadRuntime is a workflow runtime over pool whose GitHub reads go to api, with the review
 // App's login set on the engine and the runtime as a boot sets both.
-func reviewReadRuntime(pool *pgxpool.Pool, api string) *workflowRuntime {
+func reviewReadRuntime(pool *store.Pool, api string) *workflowRuntime {
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: "CAPTURE", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, ReviewAppLogin: reviewReadApp}, quietLogger())
 	return &workflowRuntime{
 		pool: pool, records: projectRecords{Store: record.NewStore(), project: "CAPTURE"}, engine: engine, handlers: []intake.Handler{engine},
@@ -128,7 +128,7 @@ func completedReviewer(handoff string) record.PhaseRow {
 
 // reviewerDecision is the state of CAPTURE-1's recorded review decision, "" for none, and the
 // implementer's count of returns to implementing.
-func reviewerDecision(t *testing.T, pool *pgxpool.Pool) (string, int) {
+func reviewerDecision(t *testing.T, pool *store.Pool) (string, int) {
 	t.Helper()
 	var state string
 	var rounds int
@@ -208,7 +208,7 @@ func TestAReviewWhoseWebhookNeverArrivedDecidesItsRoundOnTheRead(t *testing.T) {
 }
 
 // holdFromReviewing puts CAPTURE-1 in held, held from reviewing.
-func holdFromReviewing(t *testing.T, pool *pgxpool.Pool) {
+func holdFromReviewing(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

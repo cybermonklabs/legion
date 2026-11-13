@@ -19,7 +19,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // Change is one stored settings change: the dotted `legion.yaml` path, the value the route asked
@@ -48,12 +49,12 @@ func Digest(value string) string {
 // Store is the daemon's table of route changes, scoped to one project: one database serves every
 // project's daemon, and each reads and writes its own project's rows alone.
 type Store struct {
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	project string
 }
 
 // NewStore is the store of project's route changes over pool.
-func NewStore(pool *pgxpool.Pool, project string) *Store {
+func NewStore(pool *store.Pool, project string) *Store {
 	return &Store{pool: pool, project: project}
 }
 

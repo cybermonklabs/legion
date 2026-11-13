@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
@@ -159,7 +158,7 @@ func TestControllerTickOfABootedWorkflowNamesTheBackgroundStalledWorker(t *testi
 // bootedTickWorkflow is the boot's own workflow runtime over pool, with a controller registered,
 // a board that answers the boot's calls, and the shipped bounds on a worker's silence and on its
 // background work (config.Config.WorkerSilence, config.Config.WorkerBackground).
-func bootedTickWorkflow(t *testing.T, pool *pgxpool.Pool) *workflowRuntime {
+func bootedTickWorkflow(t *testing.T, pool *store.Pool) *workflowRuntime {
 	t.Helper()
 	ctx := context.Background()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -205,7 +204,7 @@ func bootedTickWorkflow(t *testing.T, pool *pgxpool.Pool) *workflowRuntime {
 // The turn the step was taken in started ten minutes before the step itself, so the claim holds
 // both the columns the rule reads one moment from (record.RoleClaim.Step,
 // supervise.StepRecord.LastStep).
-func seedSilentPhaseWorker(t *testing.T, pool *pgxpool.Pool, key string, lastStep time.Time) {
+func seedSilentPhaseWorker(t *testing.T, pool *store.Pool, key string, lastStep time.Time) {
 	t.Helper()
 	ctx := context.Background()
 	seedTickIssue(t, pool, record.Issue{
@@ -245,7 +244,7 @@ func seedSilentPhaseWorker(t *testing.T, pool *pgxpool.Pool, key string, lastSte
 // queuedTickNotice is the one tick wake the pass queued for the controller, and fails the test
 // where the pass queued another controller notice beside it: this case is about what one tick
 // carries, so a second notice in the outbox would make the assertions read the wrong row.
-func queuedTickNotice(t *testing.T, pool *pgxpool.Pool) record.ControllerNotice {
+func queuedTickNotice(t *testing.T, pool *store.Pool) record.ControllerNotice {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, kind, issue, payload from outbox
 		where kind = $1 order by id`, string(record.OutboxKindControllerNotice))
