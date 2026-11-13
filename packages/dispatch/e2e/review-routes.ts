@@ -86,16 +86,20 @@ function wideLayout(page: Page): boolean {
   return (page.viewportSize()?.width ?? 0) >= WIDE_LAYOUT_MIN_PX;
 }
 
-/** The margin's card for an open ask, where the margin is a column beside the page; nothing
- *  where it is a sheet that stays shut until a button opens it. The card is the margin's last
- *  part to draw: it waits on the margin's own reads. The margin is a chunk of its own, fetched
- *  after the first paint on a page with no document and once the document has drawn on a page
- *  with one (`web/src/features/shell/content-drawn.ts`), so every shot of a page that has a
- *  margin waits for this card: a page read without it was shot with no margin at all, once on
- *  the Plan tab (run 43367787934) and once on a project document (run 43395925903). The
- *  question defaults to the open ask of the issue the review corpus opens. */
+/** The margin's last part to draw, at either width: where the margin is a column beside the
+ *  page, its card for an open ask, which waits on the margin's own reads; where it is a sheet
+ *  shut at the foot of the page, the sheet's toggle, which counts those same asks. The margin is
+ *  a chunk of its own, fetched after the first paint on a page with no document and once the
+ *  document has drawn on a page with one (`web/src/features/shell/content-drawn.ts`), so every
+ *  shot of a page that has a margin waits for it: a page read without it was shot with no
+ *  margin at all, once on the Plan tab (run 43367787934), once on a project document (run
+ *  43395925903), and once on the phone's issue page with no sheet (run 43430182487). The
+ *  question defaults to the open ask of the issue the review corpus opens, which is its only
+ *  one. */
 function heldMargin(page: Page, question = "Which sign-in path?"): Locator[] {
-  return wideLayout(page) ? [page.locator("[data-margin-item]").getByText(question)] : [];
+  return wideLayout(page)
+    ? [page.locator("[data-margin-item]").getByText(question)]
+    : [page.getByTestId("margin-sheet").getByText("Review (1)")];
 }
 
 export const reviewRoutes: readonly ReviewRoute[] = [
@@ -182,20 +186,18 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     //
     // The margin is a column beside the document at the wide layout's width and a bottom sheet
     // below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
-    // acceptance"), so the card is on the screen at a desktop width and nowhere narrower. The
-    // phone row of this page waits on the dot alone, as the Inbox row waits on its heading
-    // alone.
+    // acceptance"), so the card is on the screen at a desktop width and only the sheet's
+    // toggle narrower; the phone row waits on the dot and that toggle (`heldMargin`).
     ready: (page) => {
       const connected = page.getByRole("status", { name: "connected" });
-      const wideEnoughForMargin = wideLayout(page);
-      return wideEnoughForMargin
+      return wideLayout(page)
         ? [
             connected,
             page
               .locator("[data-margin-item]")
               .getByText("One command, a seeded corpus, a signed-in browser."),
           ]
-        : [connected];
+        : [connected, ...heldMargin(page)];
     },
   },
   {
