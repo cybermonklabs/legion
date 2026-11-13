@@ -266,8 +266,9 @@ func TestTheMergeWaitIsStrippedBelowItsContract(t *testing.T) {
 // mergeWaitContract is the contract whose entry in version.go added the object, and this daemon's
 // own contract is never below it: a caller at this contract is served what the round waits on.
 func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
-	// The number is the census the entry that added the merge wait records in version.go, read
-	// there and never copied here, since a copy drifts at the next reading.
+	// The literal is a deliberate pin of the number the version.go entry that added the merge wait
+	// declares: a renumber moves it with the other sites, and the test fails while
+	// mergeWaitContract says another number.
 	const addedMergeWait = 110
 	if mergeWaitContract != addedMergeWait {
 		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
