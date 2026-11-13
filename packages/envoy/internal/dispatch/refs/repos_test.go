@@ -18,7 +18,7 @@ import (
 func TestTheCanonicalNameRuleOverATableOfItsOwnColumnAnswersEachRowsOwnName(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('REPO', 'Repository project')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('REPO', 'Repository project', 'alice')`); err != nil {
 		t.Fatalf("create the project: %v", err)
 	}
 	for _, mapping := range []struct{ repo, renamedTo string }{
