@@ -89,6 +89,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the one word for what failed the claim, which a retry, an escalation or a re-admission turns on"},
 	{Field: "FailedAt", Column: ColumnAgents, Keys: []string{"failure.at"},
 		Reason: "when the claim failed, which says whether the record is of this round or an older one"},
+	{Field: "LeakCheckCause", Column: ColumnAgents, Keys: []string{"leakCheckCause"},
+		Reason: "the sentence the latest launch try was refused with because the shared public leak check could not be installed in the role's pod, which says what to fix where the failure's sentence says only that launches ran out"},
 	{Field: "PendingCause", Column: ColumnAgents, Keys: []string{"pendingCause"},
 		Reason: "names the cause of the death whose relaunch is in flight, which an architect reads while `failure` is still empty"},
 	{Field: "Pending", Column: ColumnAgents, Keys: []string{"pendingTask"},

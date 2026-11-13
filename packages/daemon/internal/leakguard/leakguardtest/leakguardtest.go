@@ -1,15 +1,18 @@
 // Package leakguardtest writes the stand-in shared public leak checks the guard's own tests and
 // the tests of everything that drives the guard are run against. The real check is a script no
-// clone of this repository holds — a pod installs it from a private repository — and the guard
-// refuses a write it can run no check for, so every test that reaches the guard carries a
-// stand-in of its own: a shell script under the real check's name, which reads its standard input
-// as the real one does, so nothing is left in a pipe when it exits, and whose exit status is the
-// verdict.
+// clone of this repository holds — the daemon reads it from a private repository and the pod's
+// launcher installs what the daemon served — and the guard refuses a write it can run no check
+// for, so every test that reaches the guard carries a stand-in of its own: a shell script under
+// the real check's name, which reads its standard input as the real one does, so nothing is left
+// in a pipe when it exits, and whose exit status is the verdict.
 //
 // What a caller needs of that stand-in differs, so the shapes are offered rather than flattened
 // into one: Passes, Refuses and CannotFinish are the plain ones, Refusing is a refusal whose
-// report is the caller's own, Recording records the call it was handed, and Reading is the
-// two-go shape of a call whose body is on standard input.
+// report is the caller's own, Recording records the call it was handed, Reading is the
+// two-go shape of a call whose body is on standard input, and AnswersHelp is a check a pod's
+// launcher installs, counting the verifications that ran it. GitHubTarball writes the tarball
+// GitHub serves of the check's repository, which the daemon packs for the launcher, and Tarball
+// one of a shape GitHub's is not.
 //
 // It is an ordinary package rather than a _test.go file of one of them because cmd/legion is
 // package main, which can import no other package's test-only helpers (internal/fixturegit says
@@ -60,6 +63,17 @@ const (
 // here rather than from Refuses.
 func Refusing(report string) string {
 	return readsStdin + "echo '" + report + "'\nexit 3\n"
+}
+
+// AnswersHelp is the stand-in of a check a pod's launcher installs: it answers `--help` as the
+// real one does, with the usage header naming the two shapes the install's verification reads
+// (check-public-text and gh-guard) and exit 1, and appends one line to the file runs names on
+// every run, so a test reads how many verifications ran. The path is written into the script
+// rather than read from the environment, since the verification hands the check none of the
+// test's. It reads no standard input: the verification gives it none.
+func AnswersHelp(runs string) string {
+	return "echo help >>'" + runs + "'\n" +
+		"echo '# Usage: check-public-text FILE..., --commits REV..., --tree DIR, gh-guard ARGS, or REMOTE URL.'\nexit 1\n"
 }
 
 // Recording is script with a line before it that appends the call's own arguments to the file

@@ -348,6 +348,7 @@ on:
       - '!packages/daemon/internal/store/migration_20261111001612_test.go'
       - '!packages/daemon/internal/store/migration_20261111181500_test.go'
       - '!packages/daemon/internal/store/migration_20261111212544_test.go'
+      - '!packages/daemon/internal/store/migration_20261112180548_test.go'
       - '!packages/daemon/internal/store/migration_upgrade_from_main_test.go'
       - '!packages/daemon/internal/store/release_records_test.go'
       - '!packages/daemon/internal/store/store_test.go'
