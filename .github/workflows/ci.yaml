@@ -2280,6 +2280,10 @@ jobs:
               # reads the Go package's own testdata by relative path, that file itself and never a
               # copy, so a field added there must start this job.
               - 'packages/envoy/internal/brokerclient/testdata/wire.json'
+              # src/__tests__/stream-topics.test.ts:118-121,131 reads the listener's own cases of
+              # which topics reach a private stream subject, the file
+              # packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads.
+              - 'packages/envoy/internal/bus/testdata/private-stream-subjects.json'
 
       # The second of the two filter strings. Actions hands a step's input to the action as one
       # environment variable, and Linux caps one of those at MAX_ARG_STRLEN, 131,072 bytes: the
@@ -3083,9 +3087,11 @@ jobs:
               - 'packages/contracts/src/**'
               # The pmdoc fixture check runs pmdoc/gen, which imports the editor.
               - 'packages/proof-editor/**'
-              # The web app's display-tree fixture, which the fixture step's --check reads
+              # The web app's display-tree fixture, whose content the fixture step's --check reads
               # (internal/dispatch/pmdoc/web_fixtures_test.go:40-45). envoy-go's unit step skips
-              # that test, so the fixture is this job's alone.
+              # that test (TestWebDisplayFixture) and reads none of the file's content; its
+              # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255) only
+              # stats that the file exists, and a deletion that fails it fails this job too.
               - 'packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json'
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
@@ -3103,7 +3109,7 @@ jobs:
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
             # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - the prompt below and the three committed
+            # every package of this module it imports - the prompt below and the four committed
             # copies the waiting line's checks are held to, so the module's other files - its
             # .sql, .json and .md - are no input of this job and no pattern here matches them.
             text_checks:

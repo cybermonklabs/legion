@@ -538,7 +538,9 @@ RULES = {
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:518")),
     f"{ENVOY}/internal/dispatch/outbox/expects_reply_never_false_test.go": reads(
-        ("packages/contracts/src/dispatch-api.ts", "internal/dispatch/outbox/expects_reply_never_false_test.go:133")),
+        ("packages/contracts/src/dispatch-api*.ts",
+         "internal/dispatch/outbox/expects_reply_never_false_test.go:137-138 globs ../../../../contracts/src/dispatch-api*.ts "
+         "and :149 reads each module the glob finds (the .test.ts files :146 skips apart)")),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
         Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
@@ -2047,6 +2049,7 @@ GATES = [
         ("packages/*/AGENTS.md", "packages/envoy-client/src/__tests__/dispatch-asked-of.test.ts:374-382 reads every package's AGENTS.md, and its ALLOWED names lines of four of them, so rewording one of those lines fails that test"),
         (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:82 reads the Go package's own corpus by relative path (CORPUS_PATH :27-29) - that file itself, never a copy, so the two clients are held to one wire"),
+        (f"{ENVOY}/internal/bus/testdata/private-stream-subjects.json", "packages/envoy-client/src/__tests__/stream-topics.test.ts:131 reads the listener's own cases by relative path (SHARED_CASES :118-121), which packages/envoy/internal/bus's TestReachesPrivateStreamSubjectBoundsInterests reads too"),
     ) + bun_job("envoy-client")),
 
     gate("pi_shared", "pi-shared", reads=reads(
@@ -2337,14 +2340,17 @@ GATES = [
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
-        # The web app's display-tree fixture, which the fixture step's --check compares the trees it
-        # builds with. Declared on this step and not as a RULES row keyed on web_fixtures_test.go: a
-        # row keyed on the file would put the fixture into every job that compiles pmdoc's tests,
-        # envoy-go's unit step among them, which skips this test (WEB_FIXTURE_TESTS) and never reads
-        # the file.
+        # The web app's display-tree fixture, whose content the fixture step's --check compares the
+        # trees it builds with. Declared on this step and not as a RULES row keyed on
+        # web_fixtures_test.go: a row keyed on the file would put the fixture into every job that
+        # compiles pmdoc's tests, envoy-go's unit step among them, which skips this test
+        # (WEB_FIXTURE_TESTS) and reads none of the file's content. That step only stats that the
+        # file exists, in TestTheWebFixtureFindsItsFilesFromAnyDirectory
+        # (web_fixtures_test.go:248-255): a change to the content cannot fail it, and a deletion
+        # that does also fails this step, so this job's filter is enough to hold the file.
         ("packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",
          f"{at('envoy-go-checks', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
-         "webFixturePath joins it under pmdocSourceDir, and --check reads it to compare"),
+         "webFixturePath joins it under pmdocSourceDir, and --check reads its content to compare"),
         (f"{ENVOY}/loadtest/run-step.test.sh", at("envoy-go-checks", LOADTEST_RUN_STEP)),
         (f"{ENVOY}/loadtest/run-step.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
         (f"{ENVOY}/loadtest/run-series.sh", "packages/envoy/loadtest/run-step.test.sh runs it"),
