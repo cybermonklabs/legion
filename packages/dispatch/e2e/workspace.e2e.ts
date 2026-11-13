@@ -39,12 +39,10 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
         name: /Reviewer/,
       })
     ).toBeVisible();
-    // The runbook's question is on a document, which nobody holds, so it is the one row of this
-    // seed her own list leaves out; the Unassigned filter is where it is listed.
-    await expect(inboxRow(page, seeded.asks.document)).toHaveCount(0);
-    await page.screenshot({ path: testInfo.outputPath("workspace-inbox.png"), fullPage: true });
-    await navigateInApp(page, "/?assignee=unassigned");
+    // The runbook's question is on a document, which holds nobody, so it reaches the default
+    // assignee of its project - alice, who made CORE - and her own list holds it with the rest.
     await expect(inboxRow(page, seeded.asks.document)).toContainText("Runbook");
+    await page.screenshot({ path: testInfo.outputPath("workspace-inbox.png"), fullPage: true });
 
     // Every session with Dispatch activity is `Active`; the one Dispatch never heard from is
     // `Idle` and the one unseen for twenty minutes is `Quiet`. Every group is open when the

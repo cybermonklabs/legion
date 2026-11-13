@@ -94,14 +94,17 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 104's merge wait
+number is the one `DaemonAPIVersion` declares, last bumped by contract 110's merge wait
 (dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
 answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
 merge state the record holds for that head, when that state was last read, when GitHub last moved
 the pull request, how many of the fence's check runs are that head's own, and the head and state
 the architect and the reviewer were told of; an issue whose round waits on nothing there carries
-no such key, and a caller from a pod below 104 is served every issue without `mergeWait`), after
-contract 98's held list
+no such key, and a caller from a pod below 110 is served every issue without `mergeWait`), after
+contract 104's claim recoveries
+(dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no process stands
+behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_session`, and no
+shape the plugin parses moves), after contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
 each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words

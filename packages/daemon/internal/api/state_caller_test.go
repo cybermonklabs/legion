@@ -292,7 +292,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// and `givenEntry` gone, the two keys contract 94 added (withoutPhaseEntries), with
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), and with what each reviewing issue's round waits on from GitHub gone, the
-			// object contract 104 added (withoutMergeWait). Every row that reaches here is below
+			// object contract 110 added (withoutMergeWait). Every row that reaches here is below
 			// all of them, so every one of them goes whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {

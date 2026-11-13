@@ -268,7 +268,7 @@ func TestTheMergeWaitIsStrippedBelowItsContract(t *testing.T) {
 func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 	// The number is the census the entry that added the merge wait records in version.go, read
 	// there and never copied here, since a copy drifts at the next reading.
-	const addedMergeWait = 104
+	const addedMergeWait = 110
 	if mergeWaitContract != addedMergeWait {
 		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
 			mergeWaitContract, addedMergeWait)

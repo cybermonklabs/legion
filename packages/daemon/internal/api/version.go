@@ -1377,59 +1377,108 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 104: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
+// 104: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
+// reaches a claim stored working that no process stands behind. Such a claim was refused
+// `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
+// dead architect. Both doors now read that claim's process at the moment of the request
+// (`supervise.Machine.ReadProcess`) rather than the daemon's memory of an old report, which a
+// restart forgets. `fresh_session`, the controller's and the operator's
+// `legion claims retry --fresh-session` alike, reaches such a claim: it is suspended where the
+// request arrives, it leaves the session it recorded behind, and it is started again with the
+// task its dead turn held. The machine lands that suspension where it arrives rather than
+// holding it for a turn that will never end (`supervise`'s holdSuspension). The compaction still
+// refuses the claim, since it has no agent to ask, with `CLAIM_NOT_RUNNING` naming
+// `fresh_session` as the operation that reaches it, or, for the project's own controller claim,
+// which the fresh session refuses and its keeper leaves alone while it is stored working, the
+// operator's `legion claims suspend` and then `legion claims resume`. `CLAIM_IN_A_TURN` now
+// means a process that is running: a claim whose process the read finds alive, and one whose
+// session is being compacted. A claim whose process the runtime would not answer for, and one
+// that records no process to read, is refused `CLAIM_UNSETTLED` instead, left exactly as the
+// request found it and told which read did not happen; so is a claim that moved under the
+// request: at the fresh session, one whose later view is no longer working or whose second read
+// finds the process gone once more, a moved claim being otherwise answered as that second read
+// finds it; at the compaction, one the machine refused as working whose later view is no longer
+// working, which before this change was read and could be answered `CLAIM_IN_A_TURN`. A claim
+// under a relaunch the wake pacing parks keeps `CLAIM_UNSETTLED`. The read records what it finds
+// as the sweep's report of the process would: a running verdict that clears the death charge
+// writes the claim as the machine holds it, as that report's write does, and a refusal stops,
+// suspends, forgets, takes back and starts nothing. One answer more changed: a fresh session that
+// stopped the claim and could not start it again — the forget of its session or its start refused
+// — answers 200 with that refusal, and the state it left the claim in, in `phaseNotRestarted`,
+// rather than reporting a failure about a claim it had already stopped, so that member now carries
+// either the workflow's refused phase restart or a step the machine refused after the claim was
+// stopped. No request or response shape the plugin parses changes: `api.ClaimRequest`,
+// `api.FreshSessionResponse` and `api.CompactResponse` keep their fields. What moved is which
+// claims each operation reaches and the code and the sentence each refusal gives, which
+// `packages/contracts/src/legion-claim-recovery.ts` mirrors and which a controller reads in the
+// `legion` tool's own description, so this number is what keeps a plugin stating the old
+// behaviour off a daemon that answers the new one. (This entry has taken six numbers: 70 when the
+// base carried 68, 76 at the forward merges of 2026-11-12 where main declared 73 and then 75, 86 at
+// the third, fbe970eef84d, where main declared 85, 90 at the fourth, a4c0ff994adc, which the pull
+// request's own conflict forced and where main declared 86, still 90 at the fifth, 12ba4e6afa71,
+// where main declared 87, and 103 at the sixth, 8d9d1ff2dd56, where main declared 94. It takes 104
+// at the seventh, b7a2f926d3a8, which the conflict forced again and where main declares 98, the
+// entry right above this one. The reading of `const DaemonAPIVersion` at refs/pull/<n>/head at
+// 2026-11-13T12:40Z, for every open pull request whose file list names this file or is longer than
+// the page that lists it, gives above the base's 98: 99 on #3575, 100 on #3573 and #3715, 101 on
+// #3712, 102 on #3730 and 103 on #3519, so 104 is the lowest free number above the base's and above
+// every other open head's, which is what the gate's refusal names. Read the base's own number and
+// every open pull request again at the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 110: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
 // the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
-// mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one
-// rule the engine reads to decide whether to ask GitHub about a round at all, so the object is on
-// the view for every round the daemon is reading for and for no other). Its fields are
-// `waitsOn`, the head the round waits on, which is the pull request's current head and the head
-// the reviewer's approval stands on; `mergeState`, the merge state the record holds for that head
-// in GitHub's own lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent
-// until a read has answered for the head; `stateReadAt`, the moment of the daemon's last
-// answering read of the pull request (record.PullRequest.StateReadAt), absent for a round no read
-// has answered, since a reader must never take "never read" for a read at the zero instant;
-// `headUpdatedAt`, the newest `updated_at` GitHub has given the pull request among its lifecycle
-// observations, absent when the record holds none; `checkRuns`, how many of the fence's runs are
-// stamped with that head, which is the runs a CI settlement has applied for it and so 0 until a
-// settlement has arrived, which is no evidence of what GitHub holds, written whatever its value
-// so that 0 is that reading rather than a gap in the view; and `toldHead` with `toldState`, the
-// head and state the architect and the reviewer were told of once the round was reported stuck,
-// both empty while the round still waits for its first answer, which is what tells a stuck round
-// from a new one. A caller from a pod whose claims record a contract below 104 is served the
-// state with no `mergeWait` on any issue at all — the key absent rather than empty, since a
-// strict reader before the contract that added a key refuses it whatever it names (api's
-// stateNarrowings, withoutMergeWait) — as a caller below 98 is served the admission block without
-// `admission.held`, one below 94 every issue without `phaseEntry` and `givenEntry`, one below 87
-// every claim view without `leakCheckCause`, one below 85 every issue without `why` and every
-// member of the waiting line with its `place` and its `length` alone, one below 75 the claim views
-// and the issues without the nine keys the decided record added and the body without its `contract`
-// mark, one below 73 a body with no `claimsToRefresh`, one below 62 the workers without their
-// counts of the moves back, one below 58 the issues without their place in the admission line, one
-// below 57 the claim views with no `step`, one below 56 the stranded report without its retired
-// entries, one below 55 the issues without the gated steps, one below 53 a body with no
-// `wakesWaiting`, one below 51 the issues without the admission's trees, one below 49 one with no
-// memory draw and one below 46 the claim views without their update rounds; the bands compose, and
-// every reader from this contract on takes the object as optional. The daemon makes no read of
-// GitHub of its
-// own for any of it: every field is the record as the daemon's own reads of the pull request have
-// left it, so a state request costs no GitHub call and the object says how old the daemon's
-// knowledge of the head is rather than what GitHub would answer now.
+// mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one rule
+// the engine reads to decide whether to ask GitHub about a round at all, so the object is on the
+// view for every round the daemon is reading for and for no other). Its fields are `waitsOn`, the
+// head the round waits on, which is the pull request's current head and the head the reviewer's
+// approval stands on; `mergeState`, the merge state the record holds for that head in GitHub's own
+// lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent until a read has
+// answered for the head; `stateReadAt`, the moment of the daemon's last answering read of the pull
+// request (record.PullRequest.StateReadAt), absent for a round no read has answered, since a reader
+// must never take "never read" for a read at the zero instant; `headUpdatedAt`, the newest
+// `updated_at` GitHub has given the pull request among its lifecycle observations, absent when the
+// record holds none; `checkRuns`, how many of the fence's runs are stamped with that head, which is
+// the runs a CI settlement has applied for it and so 0 until a settlement has arrived, which is no
+// evidence of what GitHub holds, written whatever its value so that 0 is that reading rather than a
+// gap in the view; and `toldHead` with `toldState`, the head and state the architect and the
+// reviewer were told of once the round was reported stuck, both empty while the round still waits
+// for its first answer, which is what tells a stuck round from a new one. A caller from a pod whose
+// claims record a contract below 110 is served the state with no `mergeWait` on any issue at all —
+// the key absent rather than empty, since a strict reader before the contract that added a key
+// refuses it whatever it names (api's stateNarrowings, withoutMergeWait) — as a caller below 98 is
+// served the admission block without `admission.held`, one below 94 every issue without
+// `phaseEntry` and `givenEntry`, one below 87 every claim view without `leakCheckCause`, one below
+// 85 every issue without `why` and every member of the waiting line with its `place` and its
+// `length` alone, one below 75 the claim views and the issues without the nine keys the decided
+// record added and the body without its `contract` mark, one below 73 a body with no
+// `claimsToRefresh`, one below 62 the workers without their counts of the moves back, one below 58
+// the issues without their place in the admission line, one below 57 the claim views with no
+// `step`, one below 56 the stranded report without its retired entries, one below 55 the issues
+// without the gated steps, one below 53 a body with no `wakesWaiting`, one below 51 the issues
+// without the admission's trees, one below 49 one with no memory draw and one below 46 the claim
+// views without their update rounds; the bands compose, and every reader from this contract on
+// takes the object as optional. The daemon makes no read of GitHub of its own for any of it: every
+// field is the record as the daemon's own reads of the pull request have left it, so a state
+// request costs no GitHub call and the object says how old the daemon's knowledge of the head is
+// rather than what GitHub would answer now.
 // The number is a census of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
 // request of this repository, taken at the moment the sites are written and never the base's number
 // plus one, because the open heads move the free number within the hour. The reading that chose
-// this one was taken at 2026-11-13T12:54Z, at the forward merge of main b7a2f926, over the 141 open
-// pull requests: main declares 98 (dispatch://INFRA-3107's entry above), and the open heads above
-// it declare 99 (#3575), 100 (#3573 and #3715), 101 (#3712), 102 (#3730) and 103 (#3519 and #3830),
-// and none declares 104 or above, so 104 is the lowest number above the base's that no other open
-// head declares. This change keeps its number while it stands above its base, even when another
-// open head declares the same one: check-daemon-api-contract.sh compares a change with its base
-// alone, a renumber costs a push, a full check run and a test round, and the change that lands
-// second is the one renumbered (AGENTS.md). When the base declares this change's number or a higher
-// one, the base has taken it, and this change takes the free number at its next forward merge, from
-// a census read then, in one push. The readings that chose this change's earlier numbers are in its
-// implement handoffs on dispatch://INFRA-3027 rather than here, since each merge would make them
-// false, and the entries above keep the numbers they were read at. Read the base's own number and
-// every open head again at the next merge rather than from this entry, as
+// this one was taken at 2026-11-13T17:14Z, at the forward merge of main aee2873c, over the 138 open
+// pull requests: main declares 104 (dispatch://INFRA-3161's entry above, landed by #3830), and the
+// open heads above it declare 105 (#3659), 106 (#2731 and #3730), 107 (#3712), 108 (#3715) and 109
+// (#3519 and #3793), and none declares 110 or above, so 110 is the lowest number above the base's
+// that no other open head declares. This change keeps its number while it stands above its base,
+// even when another open head declares the same one: check-daemon-api-contract.sh compares a change
+// with its base alone, a renumber costs a push, a full check run and a test round, and the change
+// that lands second is the one renumbered (AGENTS.md). When the base declares this change's number
+// or a higher one, the base has taken it, and this change takes the free number at its next forward
+// merge, from a census read then, in one push. The readings that chose this change's earlier
+// numbers are in its implement handoffs on dispatch://INFRA-3027 rather than here, since each merge
+// would make them false, and the entries above keep the numbers they were read at. Read the base's
+// own number and every open head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 104
+const DaemonAPIVersion = 110

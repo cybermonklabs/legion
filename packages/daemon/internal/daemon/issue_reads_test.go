@@ -12,12 +12,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
 // A webhook GitHub never delivers leaves the record at a head GitHub has moved past, and every
@@ -160,7 +160,7 @@ func TestAHandoffCompletionReadsThatIssuesPullRequestAlone(t *testing.T) {
 
 // seedSecondIssue records CAPTURE-2 in testing with its own pull request 87 open on its own branch
 // at head code, so a read of another issue that reaches for it is seen.
-func seedSecondIssue(t *testing.T, pool *pgxpool.Pool) {
+func seedSecondIssue(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	records := record.NewStore()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

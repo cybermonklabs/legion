@@ -95,8 +95,8 @@ export interface SeededWorkspace {
   /** The rows the unfiltered Inbox read returns for alice once the seed has settled: the open
    *  asks on open issues and documents, the snoozed one among them, under Later. The answered
    *  ask and the retracted ask are absent. The Inbox page opens on the reader's own work - every
-   *  issue here is alice's - so her default list is these rows less the document's, which
-   *  nobody holds and `?assignee=unassigned` lists. */
+   *  issue here is alice's, and the document's question waits on CORE's default assignee, alice
+   *  too - so her default list is these rows. */
   readonly inbox: readonly SeededInboxRow[];
 }
 
