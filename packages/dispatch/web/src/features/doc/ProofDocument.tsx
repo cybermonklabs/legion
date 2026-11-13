@@ -54,6 +54,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { writesOf } from "../writes/write-store";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
@@ -791,8 +792,8 @@ export function ProofDocument({
     // A blocked admission waits for the next successful read of the text, which a repair upload
     // or a rebuild brings about, and is admitted again (`readmitRef`).
     const admit = () => {
-      const textRead = queryClient
-        .fetchQuery({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
+      const textRead = writesOf(queryClient)
+        .fetchDispatched({ ...liveTextQueryOptions(artifact.id), staleTime: 0 })
         .then(
           () => undefined,
           async (error: unknown) => {

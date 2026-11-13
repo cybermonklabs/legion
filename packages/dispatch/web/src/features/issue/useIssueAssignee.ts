@@ -1,9 +1,7 @@
-import { useQueryClient } from "@tanstack/react-query";
-
 import { issueQuery, projectDefaultAssigneesQuery, projectListsKey } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
 import { issueProject } from "../inbox/list-row";
-import type { Shown } from "../writes/write-store";
+import { type Shown, useWrites } from "../writes/write-store";
 import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /**
@@ -18,13 +16,15 @@ import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFi
  * `coalesce(a.asked_of, i.assignee, p.default_assignee)`: so a row whose ask nobody has handed on
  * follows the new assignee here, and one somebody handed to a person keeps that person whoever
  * holds its issue. An unassign moves a row nobody handed on to its project's default assignee,
- * taken from the defaults read the Settings page holds (`projectDefaultAssigneesQuery`) where the
- * client has it; where it does not, the row keeps the person it waited on until the refetch names
- * the default. It never names nobody: every project names a default, so no row the server
+ * taken from Dispatch's answer to the defaults read the Settings page holds
+ * (`projectDefaultAssigneesQuery`, `Writes.dispatched`: the change is composed over Dispatch's
+ * data and written into the cache as its write lands, so it reads no other write's change) where
+ * the client has it; where it does not, the row keeps the person it waited on until the refetch
+ * names the default. It never names nobody: every project names a default, so no row the server
  * answers does, and one written so would read as an ask no person waits on.
  */
 export function useIssueAssignee(issueKey: string): IssueFieldWrite<string | null> {
-  const queryClient = useQueryClient();
+  const writes = useWrites();
   const detailKey = issueQuery(issueKey).queryKey;
   const showAssignee = (assignee: string | null, shown: Shown) => {
     shown.on<IssueDetails>(detailKey, (current) => ({ ...current, assignee }));
@@ -37,8 +37,8 @@ export function useIssueAssignee(issueKey: string): IssueFieldWrite<string | nul
     const project = issueProject(issueKey);
     const person =
       assignee ??
-      queryClient
-        .getQueryData(projectDefaultAssigneesQuery().queryKey)
+      writes
+        .dispatched(projectDefaultAssigneesQuery().queryKey)
         ?.find((entry) => entry.project === project)?.assignee;
     shown.under<InboxRow[]>(inboxKey, (current) =>
       current.map((row) => {

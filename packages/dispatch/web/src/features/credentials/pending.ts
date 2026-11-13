@@ -2,6 +2,7 @@ import { type Query, type QueryClient, queryOptions } from "@tanstack/react-quer
 import { api } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
 import { useShownQuery } from "../writes/shown-query";
+import { Writes, writesOf } from "../writes/write-store";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
@@ -12,9 +13,10 @@ const CREDENTIAL_POLL_INTERVAL_MS = 15_000;
 /** `null` is a Dispatch with no secrets broker; anything else - even an empty list - is one that
  *  answered. `enabled` and `refetchInterval` below both gate on this one fact through this one
  *  function, so the two can never drift apart: a `null`-holding query can neither fetch again on
- *  its own nor have the poll armed for it. */
+ *  its own nor have the poll armed for it. It is Dispatch's answer the gate reads
+ *  (`Writes.dispatchedOf`), since whether a broker answered is no write's to change. */
 function holdsList(query: Query<CredentialPendingResponse | null>): boolean {
-  return query.state.data !== null;
+  return Writes.dispatchedOf(query) !== null;
 }
 
 /** Every credential request waiting on the viewer, as the Inbox's credential-requests section
@@ -42,7 +44,7 @@ export const credentialPendingQuery = () =>
  *  list that comes back makes the query an ordinary one that every refresh refetches. */
 export function reaskHeldCredentialList(queryClient: QueryClient): void {
   const query = credentialPendingQuery();
-  if (queryClient.getQueryData(query.queryKey) !== null) return;
+  if (writesOf(queryClient).dispatched(query.queryKey) !== null) return;
   void queryClient.prefetchQuery({ ...query, staleTime: 0 });
 }
 

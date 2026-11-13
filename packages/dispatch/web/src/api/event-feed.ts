@@ -6,6 +6,7 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
+import { writesOf } from "../features/writes/write-store";
 
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
@@ -220,7 +221,7 @@ export function useEventFeed({
     // here: a later check names a head no read of the page was made after. The cursor is null
     // only where there is no answer to read it from - no page of the app, which mounts under
     // that answer - and the feed then adopts where Dispatch starts it (`events_start`).
-    const signedIn = queryClient.getQueryData<AuthenticatedUser>(["whoami"]);
+    const signedIn = writesOf(queryClient).dispatched<AuthenticatedUser>(["whoami"]);
     let cursor = signedIn === undefined ? null : eventPosition(signedIn.event_head);
     let flush: number | undefined;
     // `pendingAll` is the whole-cache entry of the pending batch: it means "something changed
@@ -338,7 +339,7 @@ export function useEventFeed({
           prependEventToLog(queryClient, event);
           const targets = eventRefreshTargets(
             event,
-            queryClient.getQueryData<AuthenticatedUser>(["whoami"])?.login
+            writesOf(queryClient).dispatched<AuthenticatedUser>(["whoami"])?.login
           );
           markAskThreadsSeededByAnInFlightInbox(queryClient, targets, askThreadsIssue(event));
           queueRefresh(targets);

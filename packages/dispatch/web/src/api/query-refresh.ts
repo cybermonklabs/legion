@@ -1,5 +1,6 @@
 import type { Query, QueryClient, QueryKey } from "@tanstack/react-query";
 
+import { Writes } from "../features/writes/write-store";
 import { ApiError } from "./client";
 
 /** Whether a query is owned by a live socket subscription (a delivery view) rather than refreshed
@@ -37,13 +38,14 @@ export const MIN_REFETCH_INTERVAL_MS = 1_000;
 
 /**
  * Which queries a refresh reaches: every query `queryKey` matches (by prefix unless `exact`), and,
- * with `when`, only those whose answer it accepts. `when` runs against the query's data at the
- * flush, and against `undefined` for a query that holds none and is not fetching (an error, a
- * query never fetched); the query itself is beside it, for a test on the answer rather than the
- * body, such as a 404 a later event cannot change (`answeredNotFound`). For a query with a fetch
- * out - a first load or a refetch - it runs on the response that lands, not on the data that
- * response replaces, which is then fetched again if `when` accepts it; a body composed after the
- * event is not.
+ * with `when`, only those whose answer it accepts. `when` runs against Dispatch's answer the
+ * query holds at the flush (`Writes.dispatchedOf`, with no live change over it: the event moved
+ * what Dispatch said), and against `undefined` for a query that holds none and is not fetching (an
+ * error, a query never fetched); the query itself is beside it, for a test on the answer rather
+ * than the body, such as a 404 a later event cannot change (`answeredNotFound`). For a query with
+ * a fetch out - a first load or a refetch - it runs on the response that lands, not on the data
+ * that response replaces, which is then fetched again if `when` accepts it; a body composed after
+ * the event is not.
  */
 export interface RefreshTarget {
   readonly queryKey: QueryKey;
@@ -110,7 +112,7 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
       // which is judged instead.
       const check = state.deferred.get(hash);
       state.deferred.delete(hash);
-      const data = query.state.data;
+      const data = Writes.dispatchedOf(query);
       if (data !== undefined && check?.when.some((when) => when(data, query)) === true) {
         owe(state, query, check.requestedAt);
       }
@@ -121,7 +123,7 @@ function schedulerFor(queryClient: QueryClient): SchedulerState {
         state.deferred.delete(hash);
         const started = state.started.get(hash);
         const composedAfter = started !== undefined && started > check.requestedAt;
-        if (!composedAfter && check.when.some((when) => when(query.state.data, query))) {
+        if (!composedAfter && check.when.some((when) => when(Writes.dispatchedOf(query), query))) {
           owe(state, query, check.requestedAt);
         }
       }
@@ -253,7 +255,7 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
         });
         continue;
       }
-      if (!condition.some((when) => when(query.state.data, query))) {
+      if (!condition.some((when) => when(Writes.dispatchedOf(query), query))) {
         continue;
       }
     }

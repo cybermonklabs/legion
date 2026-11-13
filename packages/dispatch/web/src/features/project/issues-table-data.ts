@@ -5,6 +5,7 @@ import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
 import { useShownQuery } from "../writes/shown-query";
+import { writesOf } from "../writes/write-store";
 import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 
 /** How many parent reads the ancestry walk keeps in flight. A project that has been running a
@@ -57,7 +58,9 @@ export function useProjectIssueItems(
       const ancestors: EpicAncestor[] = [];
       // A parent this reader cannot read — deleted, or in a project they are not in — costs
       // its own rows their epic and nothing else: the walk keeps every ancestor it did read,
-      // and stops asking for the one that failed.
+      // and stops asking for the one that failed. Each parent is Dispatch's answer
+      // (`fetchDispatched`), since the walk's own answer is a cache's data, which holds no
+      // live change.
       const unreadable = new Set<string>();
       for (;;) {
         const missing = [
@@ -73,7 +76,9 @@ export function useProjectIssueItems(
         for (let from = 0; from < missing.length; from += PARENT_READS_IN_FLIGHT) {
           const slice = missing.slice(from, from + PARENT_READS_IN_FLIGHT);
           const answers = await Promise.allSettled(
-            slice.map((key) => queryClient.fetchQuery({ ...issueQuery(key), staleTime: Infinity }))
+            slice.map((key) =>
+              writesOf(queryClient).fetchDispatched({ ...issueQuery(key), staleTime: Infinity })
+            )
           );
           answers.forEach((answer, index) => {
             const key = slice[index];

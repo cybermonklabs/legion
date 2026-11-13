@@ -1,9 +1,7 @@
 import {
   type QueryClient,
   type QueryKey,
-  QueryObserver,
   type QueryObserverOptions,
-  type QueryObserverResult,
   type QueryStatus,
   queryOptions,
   type UseQueryResult,
@@ -24,7 +22,8 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
-import { useShownQuery } from "../writes/shown-query";
+import { useShownQuery, watchShownQuery } from "../writes/shown-query";
+import { writesOf } from "../writes/write-store";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
@@ -269,8 +268,10 @@ export interface ReferenceReadOptions {
  * its id is known; a block's graph read and, for a block of a document, the summary that names its
  * document, and no document text (a block of a comment or message is its graph read alone, whose
  * node carries the block's text); an ask's, comment's or message's own read. Every key comes from
- * the query builders above. */
+ * the query builders above. The document whose text is warmed is the one Dispatch's answer names
+ * (`Writes.dispatched`): a text read is Dispatch's, and the card composes its own reads. */
 export function prefetchReference(queryClient: QueryClient, route: DispatchReferenceRoute): void {
+  const writes = writesOf(queryClient);
   const warmText = (
     artifact: Pick<ReferenceArtifact, "id" | "kind"> | undefined,
     version: number | undefined
@@ -296,7 +297,7 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
     case "agent-artifact": {
       const query = agentArtifactQuery(route.session, route.slug);
       void queryClient.prefetchQuery(query).then(() => {
-        const artifact = queryClient.getQueryData(query.queryKey);
+        const artifact = writes.dispatched(query.queryKey);
         warmText(
           artifact === undefined ? undefined : agentReferenceArtifact(artifact),
           route.version
@@ -325,13 +326,13 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
       const query = documentSummaryQuery(route.project, route.slug);
       void queryClient
         .prefetchQuery(query)
-        .then(() => warmText(queryClient.getQueryData(query.queryKey), route.version));
+        .then(() => warmText(writes.dispatched(query.queryKey), route.version));
       return;
     }
     case "artifact": {
       const query = issueSummaryQuery(route.key);
       void queryClient.prefetchQuery(query).then(() => {
-        const documents = queryClient.getQueryData(query.queryKey)?.documents;
+        const documents = writes.dispatched(query.queryKey)?.documents;
         warmText(
           documents?.find((candidate) => candidate.slug === route.slug),
           route.version
@@ -343,7 +344,7 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
       const query = issueQuery(route.key);
       void queryClient
         .prefetchQuery(query)
-        .then(() => warmText(primarySpec(queryClient.getQueryData(query.queryKey)), undefined));
+        .then(() => warmText(primarySpec(writes.dispatched(query.queryKey)), undefined));
     }
   }
 }
@@ -642,9 +643,10 @@ function picturePath(
     : artifactVersionPath(named.owner, named.slug, version);
 }
 
-/** Calls `onPicture` with the picture path a summary's data gives, now and whenever the summary
- *  query changes (an event refreshes it, a failed read recovers), until the returned function
- *  unsubscribes. Undefined while the summary is unread or unreadable. */
+/** Calls `onPicture` with the picture path a summary's data gives, as the person sees it
+ *  (`watchShownQuery`, the read `useReferenceTarget`'s picture makes inside React), now and
+ *  whenever the summary changes (an event refreshes it, a failed read recovers), until the
+ *  returned function unsubscribes. Undefined while the summary is unread or unreadable. */
 function observePicturePath<TData, TKey extends QueryKey>(
   queryClient: QueryClient,
   options: QueryObserverOptions<TData, Error, TData, TData, TKey>,
@@ -652,12 +654,9 @@ function observePicturePath<TData, TKey extends QueryKey>(
   named: ReferencedArtifact,
   onPicture: (path: string | undefined) => void
 ): () => void {
-  const observer = new QueryObserver(queryClient, options);
-  const report = (result: QueryObserverResult<TData, Error>) =>
-    onPicture(result.data === undefined ? undefined : picturePath(named, artifactOf(result.data)));
-  const unsubscribe = observer.subscribe(report);
-  report(observer.getCurrentResult());
-  return unsubscribe;
+  return watchShownQuery(queryClient, options, (data) =>
+    onPicture(data === undefined ? undefined : picturePath(named, artifactOf(data)))
+  );
 }
 
 /** `useReferenceTarget`'s `picture`, for a caller outside React (the document editors' picture
@@ -725,7 +724,8 @@ export function useReferencePath(route: DispatchReferenceRoute | undefined): str
 
 /** `useReferencePath`'s answer for a click outside a render: it waits for the issue summary a
  *  pinned block of a spec needs, and opens the live spec at the block when the summary cannot be
- *  read, as the hook's path does before it is. */
+ *  read, as the hook's path does before it is. The slug is the one Dispatch's answer names
+ *  (`fetchDispatched`): the path opens a page Dispatch serves. */
 export async function fetchReferencePath(
   queryClient: QueryClient,
   route: DispatchReferenceRoute
@@ -733,6 +733,8 @@ export async function fetchReferencePath(
   if (!needsSpecSlug(route)) {
     return buildReferencePath(route);
   }
-  const issue = await queryClient.fetchQuery(issueSummaryQuery(route.key)).catch(() => undefined);
+  const issue = await writesOf(queryClient)
+    .fetchDispatched(issueSummaryQuery(route.key))
+    .catch(() => undefined);
   return buildReferencePath(route, summarySpec(issue)?.slug);
 }

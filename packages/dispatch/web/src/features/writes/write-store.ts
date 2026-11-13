@@ -1,6 +1,9 @@
 import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
 import {
+  type DefaultError,
+  type FetchQueryOptions,
   hashKey,
+  type InferDataFromTag,
   type Query,
   type QueryClient,
   type QueryKey,
@@ -636,9 +639,43 @@ export class Writes {
   /** The cache at `key` as the person sees it: Dispatch's data with every live change over it
    *  (`overlay`), for a read made outside React that must see what the person sees - the board's
    *  neighbours and drop indices, the pin's toggle, the rows a mark-all or a dismiss takes, the
-   *  count an unread press drops from. A read that wants Dispatch's answer reads the cache. */
+   *  count an unread press drops from. A read that wants Dispatch's answer alone is `dispatched`;
+   *  every read of a cache's data is one of the two (`no-bare-cache-reads.test.ts`). */
   shown<T>(key: QueryKey): T | undefined {
     return this.overlay(key)(this.#client.getQueryData(key)) as T | undefined;
+  }
+
+  /** The cache at `key` as Dispatch answered it, with no live change over it, for a reader that
+   *  wants exactly that: who Dispatch says is signed in, the event feed's cursor, the id a
+   *  reference warms a document's text by, and a read a change makes inside its own composition,
+   *  which a landing writes into the cache (`#keepMade`) and so must carry no other write's
+   *  change. Typed by the key as TanStack's `getQueryData` is. */
+  dispatched<
+    TQueryFnData = unknown,
+    TTaggedQueryKey extends QueryKey = QueryKey,
+    TInferredQueryFnData = InferDataFromTag<TQueryFnData, TTaggedQueryKey>,
+  >(key: TTaggedQueryKey): TInferredQueryFnData | undefined {
+    return this.#client.getQueryData<TQueryFnData, TTaggedQueryKey, TInferredQueryFnData>(key);
+  }
+
+  /** `dispatched`, fetched first where the cache holds no answer or one stale by `options`'
+   *  `staleTime`: TanStack's `fetchQuery`, which rejects with the fetch's error. */
+  fetchDispatched<
+    TQueryFnData,
+    TError = DefaultError,
+    TData = TQueryFnData,
+    TQueryKey extends QueryKey = QueryKey,
+  >(options: FetchQueryOptions<TQueryFnData, TError, TData, TQueryKey>): Promise<TData> {
+    return this.#client.fetchQuery(options);
+  }
+
+  /** `dispatched` of a query in hand, which no key need be looked up for: one TanStack hands an
+   *  option's callback (`enabled`, `refetchInterval`) or a cache's subscriber, or one a reader
+   *  finds in the cache. */
+  static dispatchedOf<TData>(query: {
+    readonly state: { readonly data: TData | undefined };
+  }): TData | undefined {
+    return query.state.data;
   }
 
   /** Composes every cache again, for a change whose rule reads more than the cache - the unread

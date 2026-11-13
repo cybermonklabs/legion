@@ -2066,6 +2066,48 @@ function readAgain(client: QueryClient, key: readonly unknown[]): boolean | unde
   return client.getQueryState(key)?.isInvalidated;
 }
 
+// R7 of dispatch://INFRA-299: every read of a cache's data is one of two named reads. While a
+// pin is live, `shown` is the screen - Dispatch's state with the pin over it - and `dispatched`
+// is Dispatch's answer alone, as is every other form of it: fetched (`fetchDispatched`, which a
+// fresh answer leaves unasked) and of the query in hand (`Writes.dispatchedOf`).
+test("dispatched reads Dispatch's answer while a live change shows another value, and shown the composed one", async () => {
+  const tab = keptTab();
+  const client = signedIn();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  client.setQueryData(["user-state"], { pinned: false });
+  try {
+    void writes
+      .run({
+        detail: null,
+        kind: plainWrite,
+        label: "CORE-1 pinned",
+        presentation: "indicator",
+        shows: pinShown,
+        unlined: offLine,
+        write: attemptOf(put, () => Promise.withResolvers<never>().promise),
+      })
+      .catch(() => {});
+    expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+    expect(writes.dispatched<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: false });
+    const query = client.getQueryCache().find({ queryKey: ["user-state"] });
+    expect(query === undefined ? undefined : Writes.dispatchedOf(query)).toEqual({
+      pinned: false,
+    });
+    await expect(
+      writes.fetchDispatched({
+        queryFn: (): Promise<{ pinned: boolean }> =>
+          Promise.reject(new Error("a fresh answer is not asked again")),
+        queryKey: ["user-state"],
+        staleTime: Number.POSITIVE_INFINITY,
+      })
+    ).resolves.toEqual({ pinned: false });
+    expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+  } finally {
+    writes.clear();
+    tab.close();
+  }
+});
+
 // R10 of dispatch://INFRA-299. A Retry's change has no press behind it: the first refusal settled
 // that press, and the store stopped composing its change then. So once the Retry is refused in
 // its turn, the store reads again the caches its change named, and only those.

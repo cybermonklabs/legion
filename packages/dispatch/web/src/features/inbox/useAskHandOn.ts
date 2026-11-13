@@ -4,6 +4,7 @@ import { askHandOnRequest } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { writesOf } from "../writes/write-store";
 import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
@@ -34,13 +35,13 @@ export interface AskHandOnWrite {
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was
  * handed to the assignee of its own issue, since an empty field means the ask follows that
- * issue again; `asked_of_by`, the reader; and `asked_of_at`, now. The reader is taken from the
- * `/auth/whoami` read the shell already holds rather than read again: it is in the cache before
- * any card can be pressed, and a hand-on made without it leaves the pair unnamed until the
- * refetch answers. Both are read once, at the press, so the change shown again over a later
- * answer is the same change; whom the ask is stored against is read from the row as it stands,
- * so an answer that moves the issue's assignee is met by the rule rather than by a value taken
- * before it.
+ * issue again; `asked_of_by`, the reader; and `asked_of_at`, now. The reader is the person
+ * Dispatch's `/auth/whoami` answer the shell already holds names (`Writes.dispatched`), not read
+ * again: it is in the cache before any card can be pressed, and a hand-on made without it leaves
+ * the pair unnamed until the refetch answers. Both are read once, at the press, so the change
+ * shown again over a later answer is the same change; whom the ask is stored against is read from
+ * the row as it stands, so an answer that moves the issue's assignee is met by the rule rather
+ * than by a value taken before it.
  */
 export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const queryClient = useQueryClient();
@@ -53,7 +54,7 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,
     shows: (askedOf) => {
-      const by = queryClient.getQueryData(whoAmIQuery().queryKey)?.login ?? null;
+      const by = writesOf(queryClient).dispatched(whoAmIQuery().queryKey)?.login ?? null;
       const at = new Date().toISOString();
       return (shown) => {
         shown.under<InboxRow[]>(inboxKey, (current) =>
