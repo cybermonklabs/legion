@@ -39,7 +39,11 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done, and sign off again.
   Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
   and say in a comment which of those it is. Ask the person about a child that can reach neither
-  `done` nor a park under that rule, and hold the acceptance until they answer. A parent: sign off
+  `done` nor a park under that rule, and hold the acceptance until they answer. Hold it too, for
+  the root and for the issue you moved an unreleased child under, until the person answers the ask
+  on the root about that child (`skill://legion-architect`, section 3): release the child when they
+  say to run it, and when they say to stop it, close it or park it under the rule, citing their
+  answer. A parent: sign off
   only after its last round (below). The
   daemon then closes a parent that is not the root at its own merge, which under this rule comes
   after its children's. One issue beneath never holds it: one the daemon itself holds at

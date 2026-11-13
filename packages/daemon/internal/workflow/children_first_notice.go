@@ -47,7 +47,9 @@ func ChildrenFirstNotice(wait record.ChildWait) record.Notice {
 		"A released child, a held one included, stays under %s, because this wait ends when that child leaves the workflow. "+
 		"Move out from under %s only a child you have not released and that should not run now. "+
 		"Move it under another issue of the same tree that has started a phase and has not reached accepting, and never under an issue it waits on. "+
-		"After the move, ask the person on your tree's root (dispatch ask) when that child's work should run or stop, and release it when they say to run it. "+
+		"After the move, ask the person on your tree's root (dispatch ask) when that child's work should run or stop: "+
+		"release it when they say to run it, and when they say to stop it, close it or park it under the rule, citing their answer. "+
+		"Hold the acceptance of the issue you moved it under, and of the root, until they answer. "+
 		"Where the tree holds no issue to move the child under, ask the person.",
 		wait.Parent, strings.Join(named, ", "), wait.Parent, wait.Parent, wait.Parent, wait.Parent)
 	if len(cycles) > 0 {
