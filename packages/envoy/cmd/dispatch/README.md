@@ -1148,6 +1148,7 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   the triggers of migration `20261109051232` notify `dispatch_block_schema`.
   A type is data, so a type added by a migration reaches a running server without a restart;
   a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value either of `installSchema`'s two checks refuses.
+  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
   A store schema above the version this binary was built for installs nothing and makes `/healthz` answer 503 with `not_ready` naming both versions, so the deployment replaces that pod.
 
 The two leased woken loops take their lease with no period.

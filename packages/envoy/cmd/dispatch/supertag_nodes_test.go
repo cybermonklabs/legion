@@ -21,9 +21,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// seedMigration is the file that writes the type nodes. The test runs it a second time, through
-// the same path the migration runner runs it, to prove a second seed leaves the same nodes.
-const seedMigration = "../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql"
+// typeMigrations are the files that write the type nodes, in the order the runner applies them:
+// the seed, then each migration that has changed a type since. The test runs them all a second
+// time, in that order and through the same path the migration runner runs each, to prove a second
+// run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
+// the attributes it was written at, which every later type migration has moved on from.
+var typeMigrations = []string{
+	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
+	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
+}
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
 // pmdoc, so what the store holds is compared with the file itself.
@@ -73,7 +79,7 @@ func TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt(t *testing.T) {
 	requireClosedSupertagList(t, ctx, pool)
 	requireAttributeNodesMatchTheFile(t, ctx, pool, file)
 	requireTheStoreBuildsTheFilesSchema(t, ctx, pool, file)
-	requireASecondSeedLeavesTheSameNodes(t, ctx, pool)
+	requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t, ctx, pool)
 	requireNoRouteOrCommandWritesAType(t)
 	requireTheEraseRefusesATypeNode(t, ctx, pool)
 	requireTheServedSchemaFollowsTheNodes(t, ctx, pool)
@@ -240,24 +246,26 @@ func requireTheStoreBuildsTheFilesSchema(t *testing.T, ctx context.Context, pool
 	}
 }
 
-// requireASecondSeedLeavesTheSameNodes runs the seed migration again and holds every node row
-// and every tuple to being the one the first seed left.
-func requireASecondSeedLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
+// requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes runs every type migration again, in
+// order, and holds every node row and every tuple to being the one the first run left.
+func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	before, beforeTuples := schemaRows(t, ctx, pool)
-	seed, err := os.ReadFile(filepath.Clean(seedMigration))
-	if err != nil {
-		t.Fatalf("read the seed migration: %v", err)
-	}
-	if _, err := pool.Exec(ctx, string(seed)); err != nil {
-		t.Fatalf("run the seed migration a second time: %v", err)
+	for _, migration := range typeMigrations {
+		text, err := os.ReadFile(filepath.Clean(migration))
+		if err != nil {
+			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
+		}
+		if _, err := pool.Exec(ctx, string(text)); err != nil {
+			t.Fatalf("run the type migration %s a second time: %v", filepath.Base(migration), err)
+		}
 	}
 	after, afterTuples := schemaRows(t, ctx, pool)
 	if !slices.Equal(before, after) {
-		t.Errorf("a second seed left different nodes\nbefore: %v\nafter:  %v", before, after)
+		t.Errorf("a second run of the type migrations left different nodes\nbefore: %v\nafter:  %v", before, after)
 	}
 	if beforeTuples != afterTuples {
-		t.Errorf("a second seed left %d tuples, want the %d the first seed wrote", afterTuples, beforeTuples)
+		t.Errorf("a second run of the type migrations left %d tuples, want the %d the first run wrote", afterTuples, beforeTuples)
 	}
 }
 

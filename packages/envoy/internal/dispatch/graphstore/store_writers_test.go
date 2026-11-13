@@ -48,12 +48,16 @@ var storeWriteCallSites = []string{
 	"api/comment_delivery.go#completeCommentDelivery",
 	"api/comment_delivery.go#replyComment",
 	"api/message_delivery.go#completeMessageDelivery",
-	// The seed's comments, which a seeded database's own writer states.
+	// The seed's comments, with their author's person node and each comment's authored_by
+	// tuple, which its one batch write states as a seeded database's own writer.
 	"cmd/dispatch-seed/write_items.go#writeComments",
-	// The backfill command's three batches.
+	// The backfill command's four batches: the blocks, the block references and the comments
+	// written before the store existed, and the role and page nodes of the roles the census
+	// holds to one (addressedRoles).
 	"graphcensus/backfill.go#writeBlockBatch",
 	"graphcensus/backfill.go#writeBlockRefBatch",
 	"graphcensus/backfill.go#writeCommentBatch",
+	"graphcensus/backfill.go#writeRoleBatch",
 	// This package's own writers that run another of them: Write is WriteStating and the
 	// append of what it states, and Authored and Reached are arms of one statement.
 	"graphstore/people.go#Authored",

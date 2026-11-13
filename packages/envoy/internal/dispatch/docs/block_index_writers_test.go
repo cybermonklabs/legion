@@ -450,8 +450,10 @@ var indexPasses = map[string]string{
 	// A delivery attempt's settle states the session it reached (graphstore.Reached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",
-	"cmd/dispatch-seed/write_items.go#writeComments":  "the seed's own plan",
-	"docs/block_index.go#stampVersionEvent":           "the event that recorded the version",
+	// The seed's comments: their nodes, their author's person node and each comment's
+	// authored_by tuple, all drawn from the plan before any row is written (commentStoreWrite).
+	"cmd/dispatch-seed/write_items.go#writeComments": "the seed's own plan",
+	"docs/block_index.go#stampVersionEvent":          "the event that recorded the version",
 	// The backfill of the rows written before the store existed. Each pass reads the rows of
 	// its own kind and nothing else: a row's own content - its time, its author, the
 	// document it is in, its own source_seq - is what it writes into the store, and the
@@ -461,6 +463,12 @@ var indexPasses = map[string]string{
 	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content",
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	"graphcensus/backfill.go#writeCommentBatch":  "each pre-store comments row's own content",
+	// The backfill of the roles. A role, its page and the page's part_of it have no projection
+	// row, so there is no projection to read one side of: the batch's input is the roles the
+	// store census holds to a node, which a row addresses now or an event of the log ever
+	// addressed (addressedRoles), and it writes the nodes the store lacks of them, leaving a node
+	// another write made alone rather than mending it.
+	"graphcensus/backfill.go#writeRoleBatch": "the roles a row addresses now or an event ever addressed (addressedRoles)",
 	// The erase (R5), the one statement of the tree that removes bytes. Its input is the node
 	// the operator named and what the store itself holds about it, which is neither side of a
 	// projection read to mend the other: it deletes both sides together rather than bringing
