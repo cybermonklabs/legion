@@ -542,6 +542,7 @@ run_recorded() {
         printf '__ioc_failed=%q\n' "$out.failed"
         printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; printf "%s\t%s\t%s\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%s " "$@" | tr "\n\t" "  ")" >>"$__ioc_failed"; }'
         while IFS= read -r name; do
+            [ -n "$name" ] || continue
             # The classifier admits only names of this pattern, so one that does not
             # match is refused here rather than dropped, which would pass it unread.
             if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_.+-]*$ ]]; then

@@ -532,6 +532,14 @@ for expect in '{"exit":1,"zz":"ran once"}' '{"contains":"ran once","exit":"one"}
     case_result "a predicate with a key of the wrong kind is refused: $expect" predicate-form "$(fixture_run "$dir" --replay)"
 done
 
+# 36. A row whose only program is a program variable names no program to wrap, and the
+# runner reads no empty name for a program it cannot wrap: the row runs its shim and
+# passes. Four rows of claims.jsonl have this shape (s-model-install among them), and a
+# runner that refused the empty name refused all four on a cold replay.
+dir="$(fresh program-variable-alone)"
+plant_behaviour "$dir" "\"\$IOC_PY\" -c \"print('ran once')\"" '{"contains":"ran once"}'
+honest_result "a row whose only program is a program variable passes" replay-command "$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
