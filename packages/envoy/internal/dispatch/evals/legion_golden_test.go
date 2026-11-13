@@ -172,6 +172,13 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
+func minTime(a, b time.Time) time.Time {
+	if b.Before(a) {
+		return b
+	}
+	return a
+}
+
 func firstOf(lines []string) string {
 	if len(lines) == 0 {
 		return "none"

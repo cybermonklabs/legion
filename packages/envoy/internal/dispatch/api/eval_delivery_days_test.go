@@ -296,13 +296,12 @@ func subtree(tree any, path string, drop ...string) any {
 	return node
 }
 
-// evalDaysWindow is one window the day rows are compared over, and what it compared.
+// evalDaysWindow is one window the day rows are compared over, what it compared, and the
+// deploys with pull requests the day rows and the route both count in it.
 type evalDaysWindow struct {
-	from, to         time.Time
-	compared         int
-	storedWithPRs    int
-	routeWithPRs     int
-	shippedOnlyEarly int
+	from, to time.Time
+	compared int
+	withPRs  int
 }
 
 // compareDayRowsWithRoutes folds the day rows of window, read by DayWindow for the project's cut
@@ -312,10 +311,10 @@ type evalDaysWindow struct {
 // measures (lead_time, rework_share) under repo= for each repository's cut, the measures a
 // delivery repo facet narrows; and the deploy repository's deploy, run and CI measures against the
 // route's whole answer, since every run is the deploy repository's (every other repository's cut
-// reads no data for them). deploys_with_prs, which the route counts over its window's pull
-// requests alone, is compared on its own: the day rows count every deploy that shipped a pull
-// request, so they exceed the route by the deploys that shipped only pull requests merged before
-// the window, which the fixture names. It answers the window's tally and every difference found.
+// reads no data for them). Every value of those answers but the failure-flag measures' is
+// compared, deploys_with_prs and with_prs_per_day included: a deploy with pull requests is one
+// that ships any, whenever it merged, on both sides (delivery.Deploys.ShippedBy). It answers the
+// window's tally and every difference found.
 func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *evals.Store, fixture deliverytest.Fixture, settings delivery.DeliverySettings, stored []evals.DayRow, from, to time.Time) (evalDaysWindow, []string) {
 	t.Helper()
 	tally := evalDaysWindow{from: from, to: to}
@@ -348,23 +347,18 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		return decodeDeliveryOracleTree(t, response.Body.Bytes())
 	}
 	// The failure-flag measures read no flag (no failure source exists), and their evals get no day
-	// row: both are left out, as is deploys_with_prs.
-	measuresDropped := []string{"change_failure_rate", "time_to_restore", "deploy_frequency.deploys_with_prs", "deploy_frequency.with_prs_per_day"}
+	// row: both are left out.
+	measuresDropped := []string{"change_failure_rate", "time_to_restore"}
 	pipelineDropped := []string{"computed_at", "freshness", "targets", "pr_checks.failing_jobs"}
 
 	wholeMeasures := route("/api/v1/delivery/measures", query)
-	routeWithPRs, err := subtree(wholeMeasures, "measures.deploy_frequency.deploys_with_prs").(json.Number).Int64()
-	if err != nil {
-		t.Fatalf("read deploys_with_prs: %v", err)
-	}
-	tally.routeWithPRs = int(routeWithPRs)
 	wholePipeline := route("/api/v1/delivery/pipeline", query)
 	all := read(nil)
 	if folded, missing := foldedMeasures(all, window); missing != "" {
 		differ("all repositories: %s", missing)
 	} else {
 		compare("the measures of all repositories", subtree(oracleTree(t, folded), "", measuresDropped...), subtree(wholeMeasures, "measures", measuresDropped...))
-		tally.storedWithPRs = folded.DeployFrequency.DeploysWithPRs
+		tally.withPRs = folded.DeployFrequency.DeploysWithPRs
 	}
 	compare("the pipeline of all repositories",
 		subtree(oracleTree(t, foldedPipeline(all, jobParts(fixture.Project, stored, "", from, to), settings, days)), "", pipelineDropped...),
@@ -406,34 +400,6 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 		for _, field := range []string{"pr_checks", "staging_e2e", "staging_apply", "production_apply"} {
 			compare("the "+field+" of "+repo, subtree(cutPipeline, field), subtree(subtree(wholePipeline, "", pipelineDropped...), field))
 		}
-	}
-
-	// deploys_with_prs, from the fixture's own containment: every deploy started in the window that
-	// shipped a pull request, and those whose every pull request merged before the window.
-	shipped := map[int64][]time.Time{}
-	for _, pr := range fixture.PullRequests {
-		if apply := delivery.ContainingRun(pr, fixture.DeployRepo, fixture.Applies); apply != nil {
-			shipped[apply.RunID] = append(shipped[apply.RunID], *pr.MergedAt)
-		}
-	}
-	reached := map[int64]bool{}
-	for _, apply := range fixture.Applies {
-		reached[apply.RunID] = true
-	}
-	withPRs := 0
-	for _, run := range fixture.Runs {
-		if run.Kind != delivery.DeliveryRunKindDeploy || !reached[run.RunID] || run.StartedAt.Before(from) || !run.StartedAt.Before(to) || len(shipped[run.RunID]) == 0 {
-			continue
-		}
-		withPRs++
-		if !slices.ContainsFunc(shipped[run.RunID], func(merged time.Time) bool { return !merged.Before(from) }) {
-			tally.shippedOnlyEarly++
-		}
-	}
-	tally.compared += 2
-	if tally.storedWithPRs != withPRs || tally.routeWithPRs != withPRs-tally.shippedOnlyEarly {
-		differ("deploys_with_prs: the day rows count %d and the route %d, want %d and %d (%d deploys shipped only pull requests merged before the window)",
-			tally.storedWithPRs, tally.routeWithPRs, withPRs, withPRs-tally.shippedOnlyEarly, tally.shippedOnlyEarly)
 	}
 	return tally, differences
 }
@@ -502,9 +468,9 @@ func TestTheDeliveryDayRowsFoldToWhatTheDeliveryRoutesAnswer(t *testing.T) {
 			t.Error(difference)
 		}
 		total += tally.compared
-		t.Logf("%s..%s (%d days): %d values compared; deploys_with_prs %d in the day rows, %d in the route, %d deploys shipped only pull requests merged before the window",
+		t.Logf("%s..%s (%d days): %d values compared; deploys_with_prs %d in the day rows and the route alike",
 			tally.from.Format(time.DateOnly), tally.to.Format(time.DateOnly), int(tally.to.Sub(tally.from).Hours()/24), tally.compared,
-			tally.storedWithPRs, tally.routeWithPRs, tally.shippedOnlyEarly)
+			tally.withPRs)
 	}
 	t.Logf("%d windows, every cut of each: %d values compared", len(windows), total)
 

@@ -248,14 +248,19 @@ type deliveryPopulation struct {
 	applyRuns []delivery.DeliveryRun
 	jobsByRun map[int64][]delivery.DeliveryRunJob
 	// windowRuns is every deploy run on main started in the window, oldest start first, and
-	// windowJobs their production jobs: the measures' deploys.
-	windowRuns []delivery.DeliveryRun
-	windowJobs map[int64][]delivery.DeliveryRunJob
-	unownedP0  []delivery.UnownedIssue
-	groups     []delivery.SessionGroup
-	titles     map[string]string
-	issues     map[string]deliveryIssue
-	components map[string]delivery.DeliveryComponentView
+	// windowJobs their production jobs: the measures' deploys. windowShipped is how many
+	// population pull requests each of the window's deploys ships first, whenever they merged
+	// (delivery.Deploys.ShippedBy): the deploys with pull requests. It is counted once, when the
+	// population is read, so a narrowed population keeps the count a deploy has whatever window
+	// holds it.
+	windowRuns    []delivery.DeliveryRun
+	windowJobs    map[int64][]delivery.DeliveryRunJob
+	windowShipped map[int64]int
+	unownedP0     []delivery.UnownedIssue
+	groups        []delivery.SessionGroup
+	titles        map[string]string
+	issues        map[string]deliveryIssue
+	components    map[string]delivery.DeliveryComponentView
 	// unfetchable is how many population pull requests can no longer be fetched from GitHub.
 	unfetchable int
 }
@@ -271,8 +276,7 @@ type deliveryDerived struct {
 	// figures count.
 	rows []deliveryRow
 	// shipped is, for each deploy run, every row whose first shipping apply it is, whatever the
-	// facets: the timeline sizes a deploy and lists its drill-down by it, and the measures count a
-	// deploy as one that shipped a pull request by it, so deploys_with_prs belongs to the deploy.
+	// facets: the timeline sizes a deploy and lists its drill-down by it.
 	shipped     map[int64][]delivery.DeliveryShippedPRView
 	selection   deliverySelection
 	waiting     []deliveryWaitingRow
@@ -321,12 +325,13 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	// (store.ForConcurrentRead): on the request's shared mark one read's open cursor would refuse
 	// the rest. The run jobs depend on the runs, so they follow the runs in the same goroutine.
 	//
-	// A timeline request therefore holds up to seven of the shared pool's connections
+	// A timeline request therefore holds up to eight of the shared pool's connections
 	// (store.sharedPoolSize) for the length of its longest read, where it held one at a time (the
-	// merged rows' two reads run side by side within their own read). That is fine because none
-	// of them holds a lock or opens a transaction, so none waits on another caller or makes
-	// another caller wait on it: the deadlock the pool's guard exists to prevent needs a caller
-	// already holding a connection, which ForConcurrentRead refuses. A read past the pool's free
+	// merged rows' two reads, and the two reads of the rows before the window that the deploys'
+	// shipped sets read, run side by side within their own read). That is fine because none of
+	// them holds a lock or opens a transaction, so none waits on another caller or makes another
+	// caller wait on it: the deadlock the pool's guard exists to prevent needs a caller already
+	// holding a connection, which ForConcurrentRead refuses. A read past the pool's free
 	// connections waits for one, as any request does.
 	independent := []func(ctx context.Context) error{
 		// The pull requests merged in the window and every deploy run on main GitHub created at
@@ -350,11 +355,13 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 			return err
 		},
 	}
+	var deploys delivery.Deploys
 	if withMeasures {
 		independent = append(independent,
-			func(ctx context.Context) error {
-				started, err := delivery.ListDeployRunsStartedIn(ctx, pool, settings, from, to)
-				pop.windowRuns, pop.windowJobs = started.Runs, started.Jobs
+			// The window's deploys and the rows before the window their shipped sets read
+			// (delivery.ReadDeploys), the read the eval registry's day rows make.
+			func(ctx context.Context) (err error) {
+				deploys, err = delivery.ReadDeploys(ctx, pool, settings, from, to)
 				return err
 			},
 			// Every project's: the delivery measures follow no project.
@@ -388,6 +395,14 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 	}
 	if err := reads.Wait(); err != nil {
 		return deliveryPopulation{}, err
+	}
+	if withMeasures {
+		pop.windowRuns, pop.windowJobs = deploys.Started.Runs, deploys.Started.Jobs
+		shipped := deploys.ShippedBy(delivery.MergedRows{PullRequests: pop.prs, ApplyRuns: pop.applyRuns, ApplyJobs: pop.jobsByRun}, settings)
+		pop.windowShipped = make(map[int64]int, len(shipped))
+		for runID, prs := range shipped {
+			pop.windowShipped[runID] = len(prs)
+		}
 	}
 	// Warned here, once per run, rather than in the compute, which runs again on every expiry.
 	s.productionApplies(ctx, pop.applyRuns, pop.jobsByRun, settings.Production())

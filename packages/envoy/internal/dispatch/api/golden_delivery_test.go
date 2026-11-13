@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 )
 
@@ -51,6 +53,14 @@ type deliveryOracleFixture struct {
 // golden_delivery_record_test.go recorded it, the recorder's stripped fields left out. Integers
 // and strings must be equal; floats within deliveryOracleTolerance of each other, relative to the
 // larger.
+//
+// The one named exception is a deploy's with_prs, whose rule INFRA-2916 changed: a deploy is one
+// with pull requests when it ships any pull request, whenever that pull request merged, where the
+// base head counted only those merged inside the window. So each measures answer's
+// deploys_with_prs must be the base head's plus exactly the deploys of the window whose every
+// shipped pull request merged before it, counted from the fixture's own containment
+// (deploysShippingOnlyEarlier), and with_prs_per_day the base head's plus that count over the
+// window's days; the two fields are then left out of the value-for-value comparison.
 func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 	dir := filepath.Join("testdata", "golden_delivery")
 	var recorded deliveryOracleFixture
@@ -67,7 +77,7 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 			fixture.Summary(), fixture.Repos, recorded.Fixture.Summary, recorded.Fixture.Repos)
 	}
 
-	requests, values, differing := 0, 0, 0
+	requests, values, differing, moved, movedWindows := 0, 0, 0, 0, 0
 	for _, window := range recorded.Windows {
 		var file struct {
 			Head    string                     `json:"head"`
@@ -77,6 +87,8 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 		if file.Head != recorded.Head || len(file.Answers) == 0 {
 			t.Fatalf("%s: head %q and %d answers, want head %q and the window's answers", window.File, file.Head, len(file.Answers), recorded.Head)
 		}
+		earlier := deploysShippingOnlyEarlier(fixture, window.From, window.To)
+		var withPRsMoved []string
 		for _, target := range slices.Sorted(maps.Keys(file.Answers)) {
 			response := dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
 			if response.Code != http.StatusOK {
@@ -90,6 +102,15 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 				delete(got.(map[string]any), field)
 			}
 			want := decodeDeliveryOracleTree(t, file.Answers[target])
+			if strings.HasPrefix(target, "/api/v1/delivery/measures?") {
+				change, difference := takeWithPRs(t, got, want, earlier, window.Days)
+				values += 2
+				withPRsMoved = append(withPRsMoved, change)
+				if difference != "" {
+					differing++
+					t.Errorf("%s: GET %s: %s", window.File, target, difference)
+				}
+			}
 			compared, difference := compareDeliveryOracleTrees("", got, want)
 			requests, values = requests+1, values+compared
 			if difference != "" {
@@ -97,10 +118,88 @@ func TestTheDeliveryRoutesAnswerWhatTheyAnsweredAtTheBaseHead(t *testing.T) {
 				t.Errorf("%s: GET %s differs from the base head's answer first at %s", window.File, target, difference)
 			}
 		}
+		if earlier > 0 {
+			moved, movedWindows = moved+earlier, movedWindows+1
+		}
+		t.Logf("%s..%s (%d days): %d deploys ship only pull requests merged before the window; the measures answers' with_prs moved by %s",
+			window.From.Format(time.DateOnly), window.To.Format(time.DateOnly), window.Days, earlier, strings.Join(slices.Compact(withPRsMoved), ", "))
 	}
-	t.Logf("history %s (seed %d, %d days to %s), recorded at %s: %d windows, %d requests, %d values compared, %d requests differing",
+	t.Logf("history %s (seed %d, %d days to %s), recorded at %s: %d windows, %d requests, %d values compared, %d requests differing; "+
+		"deploys_with_prs moved in %d of the %d windows, by %d deploys in all",
 		recorded.Fixture.Spec.Project, recorded.Fixture.Spec.Seed, recorded.Fixture.Spec.Days, recorded.Fixture.Spec.Now.Format(time.DateOnly),
-		recorded.Head, len(recorded.Windows), requests, values, differing)
+		recorded.Head, len(recorded.Windows), requests, values, differing, movedWindows, len(recorded.Windows), moved)
+}
+
+// deploysShippingOnlyEarlier is how many of the fixture's deploys started in [from, to) ship pull
+// requests every one of which merged before from, by the fixture's own containment
+// (delivery.ContainingRun over every deploy the fixture judged): the deploys the base head's rule
+// counted as shipping none in that window and INFRA-2916's counts as shipping some.
+func deploysShippingOnlyEarlier(fixture deliverytest.Fixture, from, to time.Time) int {
+	// shipsInWindow holds every deploy that ships a pull request, true where one of them merged in
+	// the window or after it.
+	shipsInWindow := map[int64]bool{}
+	for _, pr := range fixture.PullRequests {
+		if apply := delivery.ContainingRun(pr, fixture.DeployRepo, fixture.Applies); apply != nil {
+			shipsInWindow[apply.RunID] = shipsInWindow[apply.RunID] || !pr.MergedAt.Before(from)
+		}
+	}
+	deploys := map[int64]bool{}
+	for _, apply := range fixture.Applies {
+		deploys[apply.RunID] = true
+	}
+	earlier := 0
+	for _, run := range fixture.Runs {
+		inWindow, ships := shipsInWindow[run.RunID]
+		if run.Kind == delivery.DeliveryRunKindDeploy && deploys[run.RunID] && ships && !inWindow &&
+			!run.StartedAt.Before(from) && run.StartedAt.Before(to) {
+			earlier++
+		}
+	}
+	return earlier
+}
+
+// takeWithPRs checks got's with_prs against want's, a measures answer's and the base head's, and
+// takes both fields out of both: deploys_with_prs must be want's plus earlier, exactly, and
+// with_prs_per_day want's plus earlier over days, within deliveryOracleTolerance. It answers the
+// change it measured (`+<n> deploys, +<per day>/day`) and, where either field is off, what is.
+func takeWithPRs(t *testing.T, got, want any, earlier, days int) (string, string) {
+	t.Helper()
+	frequency := func(tree any) map[string]any {
+		return tree.(map[string]any)["measures"].(map[string]any)["deploy_frequency"].(map[string]any)
+	}
+	gotFrequency, wantFrequency := frequency(got), frequency(want)
+	number := func(fields map[string]any, name string) json.Number {
+		value, ok := fields[name].(json.Number)
+		if !ok {
+			t.Fatalf("deploy_frequency.%s = %v, want a number", name, fields[name])
+		}
+		delete(fields, name)
+		return value
+	}
+	gotCount, err := number(gotFrequency, "deploys_with_prs").Int64()
+	if err != nil {
+		t.Fatalf("deploys_with_prs: %v", err)
+	}
+	wantCount, err := number(wantFrequency, "deploys_with_prs").Int64()
+	if err != nil {
+		t.Fatalf("the base head's deploys_with_prs: %v", err)
+	}
+	gotPerDay, err := number(gotFrequency, "with_prs_per_day").Float64()
+	if err != nil {
+		t.Fatalf("with_prs_per_day: %v", err)
+	}
+	wantPerDay, err := number(wantFrequency, "with_prs_per_day").Float64()
+	if err != nil {
+		t.Fatalf("the base head's with_prs_per_day: %v", err)
+	}
+	change := fmt.Sprintf("%+d deploys, %+.4f/day", gotCount-wantCount, gotPerDay-wantPerDay)
+	expectedPerDay := wantPerDay + float64(earlier)/float64(days)
+	if gotCount-wantCount != int64(earlier) ||
+		math.Abs(gotPerDay-expectedPerDay) > deliveryOracleTolerance*math.Max(math.Abs(gotPerDay), math.Abs(expectedPerDay)) {
+		return change, fmt.Sprintf("deploys_with_prs is %d and with_prs_per_day %g, want the base head's %d and %g plus the %d deploys that ship only pull requests merged before the window (%d and %g)",
+			gotCount, gotPerDay, wantCount, wantPerDay, earlier, wantCount+int64(earlier), expectedPerDay)
+	}
+	return change, ""
 }
 
 func readDeliveryOracleFile(t *testing.T, path string, into any) {

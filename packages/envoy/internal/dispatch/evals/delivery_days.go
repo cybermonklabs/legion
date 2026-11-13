@@ -19,7 +19,7 @@ import (
 
 // The delivery and CI evals' day rows (dispatch://INFRA-2916, R12, R15, R16 and D1). One UTC day's
 // delivery population is read once (ReadDeliveryDay), by the reads the delivery routes read their
-// window with (delivery.ReadMergedRows, ListDeployRunsStartedIn and ReadCIRows); each row of it is
+// window with (delivery.ReadDeploys, ReadMergedRows and ReadCIRows); each row of it is
 // attributed to the projects it counts for; each project's rows are built into day parts by the
 // measures package's day builders, the builders the delivery routes build their window's parts
 // with (DeliveryDay.Rows); and the parts are written as that project's rows of the day
@@ -34,11 +34,9 @@ import (
 // where the settings name their jobs). A pull request's deploy is its first shipping apply
 // (delivery.ContainingRun) among the deploy runs GitHub created from its merge on, unbounded, as
 // the delivery routes read it. A deploy's shipped set is every population pull request whose first
-// shipping apply it is, whatever day that pull request merged: the deploy's own, which counts it
-// as a deploy with pull requests (with_prs) and names the projects it counts for. (The delivery
-// routes count with_prs over the pull requests merged in their window alone, so a deploy early in
-// a window that shipped only pull requests merged before it is one with pull requests here and
-// one without in a route's answer for that window.) Two kinds of row are not settled when their
+// shipping apply it is, whatever day that pull request merged (delivery.Deploys.ShippedBy): the
+// deploy's own, which counts it as a deploy with pull requests (with_prs), as the delivery routes
+// count it, and names the projects it counts for. Two kinds of row are not settled when their
 // day is first built (measures.go names them): a pull request with no deploy yet and a deploy run
 // still running; the day is built again when the run that settles them lands. change-fail-rate and
 // failed-deploy-recovery get no rows: no failure source exists, so they read "no data".
@@ -216,15 +214,13 @@ func utcMidnight(t time.Time) time.Time {
 }
 
 // ReadDeliveryDay reads the delivery and CI rows of the UTC day day is on, under settings, and
-// attributes each to its projects. Its reads: the day's deploy runs on main with the jobs a deploy
-// is judged by (delivery.ListDeployRunsStartedIn); the pull requests merged from since to the day's
-// end with every deploy run created from since on (delivery.ReadMergedRows), where since is the
-// day's start, or earlier where the day's deploys can ship a pull request merged before it: the
-// latest creation among the deploys that succeeded before the day's first deploy did
-// (delivery.LatestShipBefore, the beginning of time when none did), or the earliest creation of
-// the day's deploys if that is earlier still; the day's CI runs (delivery.ReadCIRows); the
-// projects of the issues those pull requests name; and repo_projects. The pull requests merged
-// before the day are read only for the shipped sets of the day's deploys.
+// attributes each to its projects. Its reads are the delivery routes' for a window of that day:
+// the day's deploys and the rows before the day their shipped sets read (delivery.ReadDeploys);
+// the pull requests merged in the day with every deploy run created from the day's start on
+// (delivery.ReadMergedRows); the day's CI runs (delivery.ReadCIRows); the projects of the issues
+// those pull requests name; and repo_projects. Each deploy's shipped pull requests are
+// delivery.Deploys.ShippedBy's, the rule the routes count with_prs by; the pull requests merged
+// before the day are read for them alone.
 func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time) (DeliveryDay, error) {
 	pool := s.database.Pool
 	day = utcMidnight(day)
@@ -232,26 +228,11 @@ func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 	production := settings.Production()
 	read := DeliveryDay{Day: day, cards: measures.DeployCards(settings)}
 
-	started, err := delivery.ListDeployRunsStartedIn(ctx, pool, settings, day, end)
+	deploys, err := delivery.ReadDeploys(ctx, pool, settings, day, end)
 	if err != nil {
-		return DeliveryDay{}, fmt.Errorf("read the deploy runs of %s: %w", day.Format(time.DateOnly), err)
+		return DeliveryDay{}, fmt.Errorf("read the deploys of %s: %w", day.Format(time.DateOnly), err)
 	}
-	dayApplies := delivery.ProductionApplies(started.Runs, started.Jobs, production).Applies
-	since := day
-	if len(dayApplies) > 0 {
-		bound, found, err := delivery.LatestShipBefore(ctx, pool, settings.DeployRepo, production, dayApplies[0].CompletedAt)
-		if err != nil {
-			return DeliveryDay{}, fmt.Errorf("read the earliest merge the deploys of %s can ship: %w", day.Format(time.DateOnly), err)
-		}
-		since = time.Time{}
-		if found {
-			since = minTime(day, bound)
-			for _, apply := range dayApplies {
-				since = minTime(since, apply.CreatedAt)
-			}
-		}
-	}
-	merged, err := delivery.ReadMergedRows(ctx, pool, settings, since, end, false)
+	merged, err := delivery.ReadMergedRows(ctx, pool, settings, day, end, false)
 	if err != nil {
 		return DeliveryDay{}, fmt.Errorf("read the pull requests of %s: %w", day.Format(time.DateOnly), err)
 	}
@@ -260,9 +241,11 @@ func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 		return DeliveryDay{}, fmt.Errorf("read the CI runs of %s: %w", day.Format(time.DateOnly), err)
 	}
 	var issueKeys []string
-	for _, pr := range merged.PullRequests {
-		if pr.IssueKey != nil {
-			issueKeys = append(issueKeys, *pr.IssueKey)
+	for _, prs := range [][]delivery.DeliveryPullRequest{merged.PullRequests, deploys.Earlier.PullRequests} {
+		for _, pr := range prs {
+			if pr.IssueKey != nil {
+				issueKeys = append(issueKeys, *pr.IssueKey)
+			}
 		}
 	}
 	issueProjects, err := readIssueProjects(ctx, s, issueKeys)
@@ -283,27 +266,17 @@ func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 		return counted{project: repos.of(pr.Repo), via: true}
 	}
 	reached := map[int64]bool{}
-	for _, apply := range dayApplies {
+	for _, apply := range deploys.Applies {
 		reached[apply.RunID] = true
 	}
 	applies := delivery.ProductionApplies(merged.ApplyRuns, merged.ApplyJobs, production).Applies
-	shippedCount := map[int64]int{}
-	shippedTo := map[int64][]counted{}
 	for _, pr := range merged.PullRequests {
-		apply := delivery.ContainingRun(pr, settings.DeployRepo, applies)
-		pullRequestCounts := attribute(pr)
-		if apply != nil && reached[apply.RunID] {
-			shippedCount[apply.RunID]++
-			if pullRequestCounts.project != "" {
-				shippedTo[apply.RunID] = append(shippedTo[apply.RunID], pullRequestCounts)
-			}
-		}
-		// A pull request merged before the day is read for the shipped sets alone; one whose
-		// opening is not known yet (a partial row) has no lead time to count, as the delivery
-		// routes leave it out of theirs.
-		if pr.MergedAt.Before(day) || pr.CreatedAt == nil {
+		// A pull request whose opening is not known yet (a partial row) has no lead time to
+		// count, as the delivery routes leave it out of theirs.
+		if pr.CreatedAt == nil {
 			continue
 		}
+		apply := delivery.ContainingRun(pr, settings.DeployRepo, applies)
 		measured := measures.PR{
 			ID: pr.Repo + "#" + strconv.Itoa(pr.Number), CreatedAt: *pr.CreatedAt, MergedAt: *pr.MergedAt,
 			FirstCommitAt: pr.FirstCommitAt, Rework: pr.Rework,
@@ -312,25 +285,30 @@ func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 			runID, completedAt := apply.RunID, apply.CompletedAt
 			measured.DeployRunID, measured.DeployedAt = &runID, &completedAt
 		}
-		read.prs = append(read.prs, dayPR{pr: measured, repo: pr.Repo, member: PullRequestMember(pr.Repo, pr.Number), counted: pullRequestCounts})
+		read.prs = append(read.prs, dayPR{pr: measured, repo: pr.Repo, member: PullRequestMember(pr.Repo, pr.Number), counted: attribute(pr)})
 	}
-	for _, run := range started.Runs {
+	shipped := deploys.ShippedBy(merged, settings)
+	for _, run := range deploys.Started.Runs {
 		deploy := dayDeploy{
 			run: measures.Run{
 				ID: run.RunID, StartedAt: run.StartedAt, Conclusion: run.Conclusion,
-				ReachedProduction: reached[run.RunID], ShippedPRs: shippedCount[run.RunID],
+				ReachedProduction: reached[run.RunID], ShippedPRs: len(shipped[run.RunID]),
 			},
 			repo: run.Repo, member: RunMember(run.Repo, run.RunID),
 		}
 		// Once in each project its pull requests count for, through an issue where any of that
 		// project's did.
-		for _, shipped := range shippedTo[run.RunID] {
-			index := slices.IndexFunc(deploy.projects, func(c counted) bool { return c.project == shipped.project })
-			if index < 0 {
-				deploy.projects = append(deploy.projects, shipped)
+		for _, pr := range shipped[run.RunID] {
+			counts := attribute(*pr)
+			if counts.project == "" {
 				continue
 			}
-			deploy.projects[index].via = deploy.projects[index].via && shipped.via
+			index := slices.IndexFunc(deploy.projects, func(c counted) bool { return c.project == counts.project })
+			if index < 0 {
+				deploy.projects = append(deploy.projects, counts)
+				continue
+			}
+			deploy.projects[index].via = deploy.projects[index].via && counts.via
 		}
 		if len(deploy.projects) == 0 {
 			if project := repos.of(run.Repo); project != "" {
@@ -349,13 +327,6 @@ func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 	read.checks, read.checkJobs = ciRuns(ci.Checks.Runs), ci.Checks.Jobs
 	read.pushes, read.pushJobs = ciRuns(ci.Deploys.Runs), ci.Deploys.Jobs
 	return read, nil
-}
-
-func minTime(a, b time.Time) time.Time {
-	if b.Before(a) {
-		return b
-	}
-	return a
 }
 
 // readIssueProjects is the project of each of keys that an issue holds.

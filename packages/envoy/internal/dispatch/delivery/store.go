@@ -450,7 +450,7 @@ func shippingRunJoin(repo, jobNames, applyStep string) string {
 // whose production job succeeded, by shippingRunJoin's judgement, before at: a pull request merged
 // before it had shipped by at, since that run was created after the merge and its job succeeded
 // before at. repo, jobNames, applyStep and at are the placeholders of the query that embeds it.
-// ListPullRequestsWaitingAt and LatestShipBefore both embed it.
+// ListPullRequestsWaitingAt and readLatestShipBefore both embed it.
 func latestShipBefore(repo, jobNames, applyStep, at string) string {
 	return `select ` + runCreatedAt + `
 			from delivery_runs r
@@ -462,20 +462,20 @@ func latestShipBefore(repo, jobNames, applyStep, at string) string {
 			limit 1`
 }
 
-// LatestShipBefore is latestShipBefore's creation for deployRepo and production, found false when
-// no deploy succeeded before at. Every pull request merged before it had shipped by at, so no
+// readLatestShipBefore is latestShipBefore's creation for deployRepo and production, the zero time
+// when no deploy succeeded before at. Every pull request merged before it had shipped by at, so no
 // deploy completing at or after at ships one: it is the earliest merge the shipped set of such a
-// deploy reaches back to (evals reads the pull requests a day's deploys ship from it).
-func LatestShipBefore(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) (time.Time, bool, error) {
+// deploy reaches back to (ReadDeploys reads a window's shipped sets from it).
+func readLatestShipBefore(ctx context.Context, pool *store.Pool, deployRepo string, production Production, at time.Time) (time.Time, error) {
 	var created time.Time
 	err := pool.QueryRow(ctx, latestShipBefore("$1", "$2", "$3", "$4"), deployRepo, production.JobNames, production.ApplyStep, at).Scan(&created)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, false, nil
+		return time.Time{}, nil
 	}
 	if err != nil {
-		return time.Time{}, false, err
+		return time.Time{}, err
 	}
-	return created.UTC(), true, nil
+	return created.UTC(), nil
 }
 
 // DeletePullRequest removes a stored row: a provisional row written from an envelope alone
@@ -977,13 +977,25 @@ func runJobsByRun(ctx context.Context, pool *store.Pool, runIDs []int64, query s
 const maxRunsPerWindow = 50_000
 
 func ListRuns(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch string, since time.Time) ([]DeliveryRun, error) {
+	return listRunsCreated(ctx, pool, repo, kind, branch, since, nil)
+}
+
+// listRunsCreated is ListRuns, and with until set only the runs GitHub created before it: the runs
+// created before a window that its deploys' shipped sets read (ReadDeploys), beside ListRuns' read
+// of those created in it and after. The bound is written into the statement only when it is set,
+// so ListRuns' plan keeps no test of an empty parameter.
+func listRunsCreated(ctx context.Context, pool *store.Pool, repo string, kind DeliveryRunKind, branch string, since time.Time, until *time.Time) ([]DeliveryRun, error) {
+	bound, arguments := "", []any{repo, string(kind), since, branch, maxRunsPerWindow}
+	if until != nil {
+		bound, arguments = ` and `+runCreatedAt+` < $6`, append(arguments, *until)
+	}
 	rows, err := pool.Query(ctx, `
 		select `+RunColumns+`
 		from delivery_runs r
-		where r.repo = $1 and r.kind = $2 and `+runCreatedAt+` >= $3 and ($4 = '' or r.head_branch = $4)
+		where r.repo = $1 and r.kind = $2 and `+runCreatedAt+` >= $3`+bound+` and ($4 = '' or r.head_branch = $4)
 		order by `+runCreatedAt+`, r.run_id
 		limit $5
-	`, repo, string(kind), since, branch, maxRunsPerWindow)
+	`, arguments...)
 	if err != nil {
 		return nil, err
 	}

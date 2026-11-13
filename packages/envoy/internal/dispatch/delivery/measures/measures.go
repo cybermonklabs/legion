@@ -40,7 +40,9 @@ type Run struct {
 	StartedAt         time.Time
 	Conclusion        *delivery.DeliveryRunConclusion
 	ReachedProduction bool // the production job concluded success (delivery.ProductionApplies found it)
-	ShippedPRs        int  // population PRs merged in the window whose first shipping apply is this run, before facets
+	// ShippedPRs is every population PR whose first shipping apply is this run, whenever it
+	// merged and before facets (delivery.Deploys.ShippedBy).
+	ShippedPRs int
 }
 
 // Flag is one failed-change flag against a population PR: the PR that broke production, the PR
@@ -235,7 +237,12 @@ func windowDays(window Window) []time.Time {
 
 // DeployFrequencyDay is deploy-frequency's part of one UTC day, from the deploy runs started that
 // day (dora.ts:169-174): the runs that reached production, a cancelled one included, with how many
-// of those shipped a pull request in CountWithPRs.
+// of those shipped a pull request in CountWithPRs. A deploy shipped a pull request when it is the
+// first shipping apply of any population pull request, whenever that pull request merged
+// (Run.ShippedPRs): with_prs is the deploy's own, so the delivery routes and the day rows count
+// one deploy alike in every window that holds it. This replaced the rule that counted only the
+// pull requests merged inside the window (dispatch://INFRA-2916), under which a deploy that shipped
+// only pull requests merged before a window counted as one with none in that window.
 func DeployFrequencyDay(day time.Time, runs []Run) []DayPart {
 	successful, withPRs := 0, 0
 	for _, run := range runs {

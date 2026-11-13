@@ -12,7 +12,8 @@ import (
 // The rows the delivery and CI measures count, read by one function for every reader that counts
 // them: the delivery routes (api's readDeliveryRows and readPipelinePopulation) read their
 // window's, and the eval registry's day rows (evals.ReadDeliveryDay) one UTC day's, so a route and
-// a day row count the same rows by the same reads.
+// a day row count the same rows by the same reads, and a deploy's shipped pull requests by the
+// same rule (Deploys.ShippedBy).
 
 // MergedRows is the population pull requests merged in a window and the deploy runs that can have
 // shipped them.
@@ -34,6 +35,12 @@ type MergedRows struct {
 // each deploy run with (its failed jobs and the job that failed first, FailedJobs and
 // RootFailingJob, can be any job); every other reader judges a run by its production jobs alone.
 func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, everyJob bool) (MergedRows, error) {
+	return readMergedRows(ctx, pool, settings, from, to, nil, everyJob)
+}
+
+// readMergedRows is ReadMergedRows, and with createdBefore set only the apply runs GitHub created
+// before it.
+func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, createdBefore *time.Time, everyJob bool) (MergedRows, error) {
 	var rows MergedRows
 	err := readSideBySide(ctx,
 		func(ctx context.Context) (err error) {
@@ -41,7 +48,7 @@ func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 			return err
 		},
 		func(ctx context.Context) error {
-			runs, err := ListRuns(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from)
+			runs, err := listRunsCreated(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
 			if err != nil {
 				return err
 			}
@@ -67,13 +74,85 @@ func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 	return rows, nil
 }
 
-// ListDeployRunsStartedIn is the measures' deploys of [from, to): every deploy run on main of the
-// deploy repository started in the window, whatever its event, with the jobs it is judged by
-// (Production.JudgedJobNames). Whether a run reached production is decided on these runs and
+// Deploys is the measures' deploys of a window: every deploy run on main of the deploy repository
+// started in it, whatever its event, with the jobs it is judged by (Production.JudgedJobNames), the
+// deploys among them, and the rows from before the window that decide which pull requests merged
+// before it those deploys ship. Whether a run reached production is decided on these runs and
 // their jobs, never on the creation-time listing containment reads, so every run a window counts
 // is judged.
-func ListDeployRunsStartedIn(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time) (RunsWithJobs, error) {
-	return ListRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, settings.Production().JudgedJobNames())
+type Deploys struct {
+	Started RunsWithJobs
+	// Applies is the deploys among Started (ProductionApplies), in compareApplies' order.
+	Applies []Apply
+	// Earlier is the pull requests merged before the window that Applies can ship, and the deploy
+	// runs on main GitHub created before the window, which can ship them first: MergedRows from
+	// since (ReadDeploys says what it is) up to the window's start, its apply runs those created
+	// in that span alone. Empty where no pull request merged before the window can ship with one
+	// of Applies.
+	Earlier MergedRows
+}
+
+// ReadDeploys reads Deploys for [from, to). The earlier rows start at since: the latest creation
+// among the deploys that succeeded before the first of Applies completed (readLatestShipBefore; the
+// beginning of time where none did), since a pull request merged before it had shipped by then
+// and so ships with none of Applies; or the creation of one of Applies, where one was created
+// earlier still, so that run is among the apply runs. Nothing earlier is read where the window
+// holds no deploy, or since is not before from.
+func ReadDeploys(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time) (Deploys, error) {
+	production := settings.Production()
+	started, err := ListRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, production.JudgedJobNames())
+	if err != nil {
+		return Deploys{}, err
+	}
+	deploys := Deploys{Started: started, Applies: ProductionApplies(started.Runs, started.Jobs, production).Applies}
+	if len(deploys.Applies) == 0 {
+		return deploys, nil
+	}
+	since, err := readLatestShipBefore(ctx, pool, settings.DeployRepo, production, deploys.Applies[0].CompletedAt)
+	if err != nil {
+		return Deploys{}, err
+	}
+	for _, apply := range deploys.Applies {
+		if apply.CreatedAt.Before(since) {
+			since = apply.CreatedAt
+		}
+	}
+	if !since.Before(from) {
+		return deploys, nil
+	}
+	if deploys.Earlier, err = readMergedRows(ctx, pool, settings, since, from, &from, false); err != nil {
+		return Deploys{}, err
+	}
+	return deploys, nil
+}
+
+// ShippedBy is, for each of d.Applies that ships a pull request, the pull requests it ships first
+// (ContainingRun over the apply runs of window and of d.Earlier), whenever they merged: those of
+// window (ReadMergedRows of d's window) and those merged before it, of d.Earlier, each list in that
+// order. A deploy is one with pull requests when it ships one, whenever the pull request merged
+// (dispatch://INFRA-2916): the deploy-frequency measure's with_prs (measures.Run.ShippedPRs) is
+// this rule on the delivery routes and on the eval day rows alike. The pointers are into window's
+// and d.Earlier's lists.
+func (d Deploys) ShippedBy(window MergedRows, settings DeliverySettings) map[int64][]*DeliveryPullRequest {
+	production := settings.Production()
+	// The two listings hold no run in common (Earlier's were created before the window, window's
+	// in it or after), and a run's verdict reads its own jobs alone, so their deploys are the
+	// deploys of the two together.
+	applies := append(ProductionApplies(d.Earlier.ApplyRuns, d.Earlier.ApplyJobs, production).Applies,
+		ProductionApplies(window.ApplyRuns, window.ApplyJobs, production).Applies...)
+	deploys := make(map[int64]bool, len(d.Applies))
+	for _, apply := range d.Applies {
+		deploys[apply.RunID] = true
+	}
+	shipped := map[int64][]*DeliveryPullRequest{}
+	for _, prs := range [][]DeliveryPullRequest{window.PullRequests, d.Earlier.PullRequests} {
+		for i := range prs {
+			if apply := ContainingRun(prs[i], settings.DeployRepo, applies); apply != nil && deploys[apply.RunID] {
+				shipped[apply.RunID] = append(shipped[apply.RunID], &prs[i])
+			}
+		}
+	}
+	return shipped
 }
 
 // CIRows is the CI measures' runs of a window, each read by start over the window: the PR-checks
