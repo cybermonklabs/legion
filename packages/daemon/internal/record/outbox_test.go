@@ -469,6 +469,40 @@ func TestAStartTheReleaseBeforeWroteWithTheRelaunchMarkStillDecodes(t *testing.T
 	}
 }
 
+// The start a role was owed when the release before this one stopped still decodes and still
+// carries its task. That release wrote the token it minted for the start onto the row
+// (SuperviseRequest.Assignment, which the phase entry replaced), and such a row is in the outbox
+// at the moment this release boots: the upgrade's own fill reads exactly that row's task as the
+// work of entry 1 (migrations/20261111225552_phase_entry.up.sql). The outbox decodes strictly
+// (DisallowUnknownFields) and record.Postgres.RoleRuns decodes every supervise row of the issues
+// it reads, so a refused payload is both a row that retries for ever and an admission pass that
+// fails on every fact — which is why the field is kept for one release, written by nothing and
+// read by nothing.
+func TestAnOwedStartTheReleaseBeforeWroteWithItsAssignmentStillDecodes(t *testing.T) {
+	const task = "Test the change. Issue: LEGION-208. Phase: testing."
+	row := OutboxRow{ID: 43, Kind: OutboxKindSupervise, Issue: "LEGION-208",
+		Payload: json.RawMessage(`{"op":"start","tree":"LEGION-208","role":"tester","generation":1,"phase":"testing",` +
+			`"assignment":"A1","needsSlot":true,"task":"` + task + `"}`)}
+	got, err := DecodeOutboxPayload(row)
+	if err != nil {
+		t.Fatalf("decoding the start the previous release owed a tester = %v, want it accepted: a refused payload retries for ever and fails the admission pass that reads it", err)
+	}
+	want := SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1,
+		Phase: phase.Testing, Assignment: "A1", NeedsSlot: true, Task: task}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("payload = %#v, want %#v: the row carries the task the upgrade reads as the work of entry 1", got, want)
+	}
+	// Nothing writes the field: a start of this release carries its entry and no assignment.
+	encoded, err := json.Marshal(SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleTester,
+		Generation: 1, Phase: phase.Testing, Entry: 2, NeedsSlot: true, Task: task})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "assignment") {
+		t.Fatalf("a start of this release encodes %s, want no assignment field: the entry replaced it", encoded)
+	}
+}
+
 // A tick notice carries the names of the deployment capabilities with no decision through the
 // outbox row and back, and a notice with none carries no such field: the controller's payload
 // reads `openCapabilities` only when there is a gap to name.
@@ -732,7 +766,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "worker-stalled", Role: claim.RoleImplementer,
 			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "worker-silent", Role: claim.RoleTester, Phase: phase.Testing,
-			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, under the assignment A1 its phase row already names. A suspension an operator holds over the claim refuses that start when the outbox runs it."},
+			Reason: "LEGION-208's tester is a phase worker nothing will prompt: its process is up and between turns, it holds no task of testing, and its agent last stepped at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so the daemon wrote the start row that sends the phase's task again, on phase entry 2 its phase row names and its claim was already given. A suspension an operator holds over the claim refuses that start when the outbox runs it."},
 		{Kind: "worker-background-stalled", Role: claim.RoleTester, Phase: phase.Testing,
 			Reason: "LEGION-208's tester is waiting on background work of its own that has stood too long: its session reports async-job running and last said so at 2026-11-08T08:00:00Z, 1h0m0s ago, past the bound this deployment sets (worker_background_hours). Nothing was sent to it and nothing will be: the daemon cannot tell a background job that hung from a long one, so this is yours to read."},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},

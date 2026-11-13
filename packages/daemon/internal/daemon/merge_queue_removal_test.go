@@ -88,12 +88,14 @@ const dequeueRetry = 20 * time.Millisecond
 //
 // A released merger is a claim stored suspended by `released` before the boot, as the idle
 // release leaves one: its session kept, and nothing but a wake to bring its pod back. The boot's
-// resume by rule and admission's slot repair start no released claim (workflow's booted,
-// admission's slot repair). The boot's cutover repair does start a released merger in merging
-// once, but only one whose phase row holds a READY head (workflow's cutoverMergerRepair), and no
-// case of this test writes a phase row for its merger, so the repair passes over every merger
-// here. The only resume of a released merger is therefore the delivery's own (wakeForDelivery),
-// which the record keeps as one pods.WakeDelivery row of pod_resumes. The idle release of
+// resume by rule starts no released claim (workflow's booted). Admission's slot repair and the
+// entry sweep start a claim only when it stands behind the entry its phases row names (admit's
+// owedEntryRoles, workflow.OwedEntry), and no case of this test writes a phase row, so every role
+// here stands at entry 0 and was given nothing, which is owed nothing. The boot's cutover repair
+// does start a released merger in merging once, but only one whose phase row holds a READY head
+// (workflow's cutoverMergerRepair), so the repair passes over every merger here too. The only
+// resume of a released merger is therefore the delivery's own (wakeForDelivery), which the
+// record keeps as one pods.WakeDelivery row of pod_resumes. The idle release of
 // idle_rig_test.go's rig is not used: it needs the Agent Sandbox runtime over a Kubernetes
 // stand-in and a real listener, and the rows under test read only the claim's state.
 //
@@ -373,7 +375,8 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 // GitHub last read mergeable and clean at the issue's head on main, so the boot's start read
 // applies nothing. Its merger's claim stands in merger, where a suspended claim is one the idle
 // release suspended: released, its session kept. An issue in implementing has its implementer
-// released too, so the slot repair starts no worker of it. gateClosed records the root's design
+// released too. No phase row is written, so no role of the issue is behind its entry and the
+// slot repair starts no worker of it (workflow.OwedEntry). gateClosed records the root's design
 // gate closed by a newer version of its spec than the one approved.
 func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.ClaimState, gateClosed bool) dequeueIssue {
 	t.Helper()

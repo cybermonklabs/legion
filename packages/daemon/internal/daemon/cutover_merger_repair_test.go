@@ -43,15 +43,18 @@ import (
 
 // cutoverRelease is the directory of what this test keeps of legion-v19.57.3, the release INFRA,
 // BET and OSSV run: migrations.txt, the name of every migration the tag embeds (jj file list -r
-// legion-v19.57.3 packages/daemon/internal/store/migrations), and the tag's own text of the two
+// legion-v19.57.3 packages/daemon/internal/store/migrations), and the tag's own text of the four
 // migrations of that list whose text main has changed since (cutoverReleaseText).
 const cutoverRelease = "testdata/legion-v19.57.3"
 
-// cutoverReleaseText names the two migrations legion-v19.57.3 shares with this head whose text
+// cutoverReleaseText names the four migrations legion-v19.57.3 shares with this head whose text
 // this head has changed, which the record is built from at the tag's own text (jj file show -r
-// legion-v19.57.3 <path>). Every other migration of the tag is applied from the embedded set,
-// whose text for those versions is the tag's.
-var cutoverReleaseText = []string{"20261110225246_backward_moves_and_cap_told", "20261110235320_design_gates_publish"}
+// legion-v19.57.3 <path>). Two of them changed only in their comments (0067_phase_assignment and
+// 20261109191929_outbox_write_mark), and they are kept at the tag's text all the same, so the
+// record is built from the tag's own text of every migration it embeds. Every other migration of
+// the tag is applied from the embedded set, whose text for those versions is the tag's.
+var cutoverReleaseText = []string{"0067_phase_assignment", "20261109191929_outbox_write_mark",
+	"20261110225246_backward_moves_and_cap_told", "20261110235320_design_gates_publish"}
 
 // The daemon's own lines this test reads: the repair's one record per boot (workflow's
 // cutoverMergerRepair, and the daemon's repairCutoverMergers for a boot that finds the repair
@@ -103,14 +106,19 @@ const cutoverIdleTick = 250 * time.Millisecond
 //
 // The record is built as legion-v19.57.3 leaves it, not as this head would write it. The test
 // applies by hand exactly the migrations the tag embeds (cutoverRelease's migrations.txt), in
-// version order: the two whose text main has changed since at the tag's own text, and the rest
+// version order: the four whose text main has changed since at the tag's own text, and the rest
 // from the embedded set. A cut of the embedded set at the tag's newest version would be wrong:
 // this head embeds migrations below that version which the tag does not, because a version is the
 // moment its migration was written and not the moment it merged. The list internal/store's
 // upgrade test applies is no release's either. On that schema the test writes the issues with
-// plain SQL in that release's columns. Then Store.Migrate applies the rest of this head's
-// migrations, 20261029120700 among them, as a deployment's roll does, and the whole daemon boots
-// on the store (startDaemonWithin).
+// plain SQL in that release's columns, the phase assignment among them (0067_phase_assignment):
+// each merger's phases row carries the token that release minted when it started the merger on
+// merging, and the merger's claim carries the same token as the one its worker took. Then
+// Store.Migrate applies the rest of this head's migrations, as a deployment's roll does:
+// 20261029120700 moves the issues to merging, and the fill of 20261111225552 puts each merger at
+// entry 1, given and served, with no task recorded for that entry, which is where a merger that
+// took its merging task stands after the upgrade. The whole daemon then boots on the store
+// (startDaemonWithin).
 //
 // The four issues, each a tree root of its own, all in `awaiting_merge` with their merger's READY
 // head and `completed_at` on its phase row, and none holding a slot, as that release kept none for
@@ -363,6 +371,23 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 	if _, err := st.Migrate(ctx); err != nil {
 		t.Fatalf("migrate the record legion-v19.57.3 left to this head's schema: %v", err)
 	}
+	// The record the daemon boots on is the upgraded one: the fill put every merger at entry 1,
+	// given and served, with no task recorded for it. A merger left behind its entry would be sent
+	// the same resume task by another rule (workflow's sendOwedEntry, for an entry with no task),
+	// so the prompts the test counts would not tell the two records apart.
+	for _, issue := range []cutoverIssue{rig.a, rig.g, rig.e, rig.d} {
+		var entry, given, served int64
+		var task string
+		if err := st.Pool().QueryRow(ctx, `select p.entry, p.entry_task, c.given_entry, c.served_entry from phases p
+			join claims c on c.token = $2 where p.issue = $1 and p.role = 'merger'`, issue.key, string(issue.merger)).Scan(
+			&entry, &task, &given, &served); err != nil {
+			t.Fatalf("read the entry of %s's merger after the upgrade: %v", issue.key, err)
+		}
+		if entry != 1 || task != "" || given != 1 || served != 1 {
+			t.Fatalf("%s's merger stands at entry %d with task %q, given %d and served %d after the upgrade; want entry 1 with no task, given 1 and served 1, where the fill puts a merger that took its merging task",
+				issue.key, entry, task, given, served)
+		}
+	}
 
 	rig.rt = &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true, sandboxName: "legion-" + project + "-cutover"}
 	rig.rt.InPod = true
@@ -376,7 +401,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 }
 
 // cutoverReleaseStore is a database of this test's own carrying exactly the migrations
-// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the two of
+// legion-v19.57.3 embeds, applied by hand in version order (applyMigrationsByHand): the four of
 // cutoverReleaseText at the tag's own text, and every other one from the embedded set. Each name
 // the list holds must be the embedded migration of its version, so a migration renamed or
 // renumbered since the tag is named here rather than applied as something else.
@@ -430,6 +455,13 @@ func cutoverReleaseStore(t *testing.T) (*store.Store, string) {
 // lifecycle open under the workflow, the pull requests, each merger's READY phase row, the
 // claims, E's design gate closed by a newer spec version, and a ready report of the Envoy
 // listener, without which the idle release releases nothing.
+//
+// Each merger's phases row holds the assignment that release minted when it started the merger
+// on merging (0067_phase_assignment's phases.assignment), and the merger's claim holds the same
+// token as the one its worker took (claims.serving_assignment), since each of those mergers took
+// its merging task and completed it with a READY. That is what the fill of 20261111225552 reads:
+// it puts each merger at entry 1, given and served, and takes no task for that entry, since no
+// start of it is still owed. No other role has a phases row here, and its claim holds no token.
 func (r *cutoverRig) seed(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -455,9 +487,9 @@ func (r *cutoverRig) seed(t *testing.T) {
 			failing, fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, state, mergeability, merge_sha)
 			values ($1, $2, $3, $4, $5, now() - interval '3 hours', '[]', 0, 0, '[]', 1, '', '', $6, 'MERGEABLE', $7)`,
 			issue.key, startedAgainRepo, issue.number, claim.IssueBranch(issue.key), issue.head, state, mergeSHA)
-		exec("the merger's READY on "+issue.key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary, completed_at)
-			values ($1, 'merger', $2, $3, 1, '', 'READY: the reviewed head is ready to merge.', now() - interval '2 hours')`,
-			issue.key, string(issue.merger), issue.head)
+		exec("the merger's READY on "+issue.key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary, completed_at,
+			assignment) values ($1, 'merger', $2, $3, 1, '', 'READY: the reviewed head is ready to merge.', now() - interval '2 hours', $4)`,
+			issue.key, string(issue.merger), issue.head, cutoverAssignment(issue.key))
 	}
 	exec("the open child of "+r.d.key, `insert into issues (key, tree, project, title, parent, phase, generation, status, rank,
 		last_dispatch_seq, handed_over, dispatch_status, repo, default_branch, github_repo)
@@ -472,18 +504,23 @@ func (r *cutoverRig) seed(t *testing.T) {
 	}
 	claimRow := `insert into claims (token, project, tree, issue, role, generation, session, session_file, locator, state,
 		launch_failures, prompt_failures, prompt_retires, uncertain_streak, boot_token_hash, serving_generation, tree_epoch,
-		suspended_by, plugin_contract)
-		values ($1, $2, $3, $3, $4, 1, $5, $6, $7::jsonb, $8, 0, 0, 0, 0, $9, 1, 1, $10, $11)`
+		suspended_by, plugin_contract, serving_assignment)
+		values ($1, $2, $3, $3, $4, 1, $5, $6, $7::jsonb, $8, 0, 0, 0, 0, $9, 1, 1, $10, $11, $12)`
 	session := func(issue string, role claim.Role) (string, string) {
 		return "ses_" + string(role) + "_" + issue, filepath.Join(r.cfg.StateDir, issue+"-"+string(role)+".jsonl")
 	}
 	name, file := session(r.a.key, claim.RoleMerger)
 	exec("A's idle merger", claimRow, string(r.a.merger), r.project, r.a.key, string(claim.RoleMerger), name, file, string(locator),
-		string(supervise.StateIdle), supervise.HashBootToken("cutover-a-"+randomSuffix(t)), "", cutoverOldContract)
+		string(supervise.StateIdle), supervise.HashBootToken("cutover-a-"+randomSuffix(t)), "", cutoverOldContract,
+		cutoverAssignment(r.a.key))
 	released := func(issue string, role claim.Role) {
 		name, file := session(issue, role)
+		served := ""
+		if role == claim.RoleMerger {
+			served = cutoverAssignment(issue)
+		}
 		exec(issue+"'s released "+string(role), claimRow, string(r.token(t, issue, role)), r.project, issue, string(role), name, file, nil,
-			string(supervise.StateSuspended), nil, string(supervise.SuspendedByReleased), cutoverOldContract)
+			string(supervise.StateSuspended), nil, string(supervise.SuspendedByReleased), cutoverOldContract, served)
 	}
 	for _, issue := range []cutoverIssue{r.g, r.e} {
 		for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
@@ -495,6 +532,13 @@ func (r *cutoverRig) seed(t *testing.T) {
 	exec("the closed design gate of "+r.e.key, `insert into design_gates (issue, artifact_id, latest_version, approved_version, ever_opened, step)
 		values ($1, $2, 2, 1, true, 'spec')`, r.e.key, "spec-"+r.e.key)
 	exec("the listener's ready report", `insert into listener_reports (project, ready_at) values ($1, now())`, r.project)
+}
+
+// cutoverAssignment is the token legion-v19.57.3 minted onto issue's merger phases row when it
+// started the merger on merging (0067_phase_assignment), which the merger's claim then served.
+// That release minted a random one; any token both sides carry is the same record.
+func cutoverAssignment(issue string) string {
+	return "merging-" + issue
 }
 
 // startOrOweMark is the slot mark workflow.StartOrOwe writes on a start of merging: the
