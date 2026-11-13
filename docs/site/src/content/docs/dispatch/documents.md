@@ -5,11 +5,13 @@ sidebar:
   order: 3
 ---
 
-Every issue has one main document, its **spec**, on the Spec tab. An issue can hold other documents
-too, listed on its Artifacts tab, and a project can hold documents that belong to no single issue,
-on the project's Documents tab. All of them work the same way.
+Every issue has one main document, its **spec**, which the issue page draws under the tree on the
+issue's own address and on the Spec preset. An issue can hold other documents too: the tree draws
+each one a block cites under that block, the **Files and documents** menu beside the presets lists
+the others, and `/issues/<KEY>/artifacts` lists them all. A project can hold documents that belong
+to no single issue, on the project's Documents tab. All of them work the same way.
 
-![An issue's Spec tab, with the document in the middle and comment threads in the margin](/legion/media/dispatch/issue-spec.png)
+![An issue's spec in the editor, with a decision block in the document and a comment thread in the margin.](/legion/media/dispatch/issue-spec.png)
 
 ## Editing
 
@@ -17,29 +19,31 @@ A document is live: you and everyone else with it open edit the same text at the
 see each other's changes as they happen. There is no save button. Dispatch saves what you type as
 you go.
 
-A dot at the end of the tab row shows the document's connection: connecting, connected, offline,
-or failed. Point at it to read which. A document left open stays connected while nobody types in
-it: the page renews its presence every 15 to 18 seconds and Dispatch answers each renewal (a page
-that can only read gets an empty answer, since it cannot change who is shown present), so neither
-the page nor a proxy in front of Dispatch takes the quiet connection for a dead one.
+A dot in the document's toolbar or header shows its connection: connecting, connected, offline,
+or failed. A screen reader reads which. Pointing at the dot shows it too, except on the issue page,
+which shows no tooltips. A document left open stays connected while nobody types in it: the page
+renews its presence every 15 to 18 seconds and Dispatch answers each renewal (a page that can only
+read gets an empty answer, since it cannot change who is shown present), so neither the page nor a
+proxy in front of Dispatch takes the quiet connection for a dead one.
 
 ## Versions
 
 When the text settles, about two seconds after a change, Dispatch records a new version. The
-controls at the end of the Spec tab row work with them:
+controls in the document's toolbar work with them. On the issue page that toolbar is at the end of
+the preset row, and under the tree on a screen narrower than 768 px:
 
 - **Version** picks a version to read. An older version is read-only.
-- **Name version** records the current text as a version and asks **What changed?** for a short
-  description.
+- **Name version**, which reads **Name** in the issue page's toolbar, records the current text as
+  a version and asks **What changed?** for a short description.
 - **Diff vs current** appears while you read an older version, and shows how it differs from the
   current text.
 
 Other documents carry the same controls in their header.
 
 Every version records how big it is stored: a document's markdown in bytes, as a file's are. The
-issue's Artifacts tab and the project's Documents tab show each document's latest size beside its
-kind, and a document's version list shows every version's, so you can find a document close to
-the 1 MiB limit without opening it.
+issue's list at `/issues/<KEY>/artifacts` and the project's Documents tab show each document's
+latest size beside its kind, and a document's version list shows every version's, so you can find
+a document close to the 1 MiB limit without opening it.
 
 ## Comments in the margin
 
@@ -66,8 +70,8 @@ A thread is a card with its replies in order. In a thread you can:
 - **Resolve** the thread when it is done.
 
 Resolved threads fold into **Resolved (N)**. A resolved thread has **Reopen**. The same comments
-also appear on the issue's Conversation tab, one card per thread, where a resolved one is listed
-under **Closed**.
+also appear in the issue's Conversation, in the issue page's panel, one card per thread, where a
+resolved one is listed under **Closed**.
 
 ### Suggestions
 
@@ -89,7 +93,8 @@ made in either place shows in both.
 To edit a decision's options, click into its question. The option list appears for that block,
 and folds away again when you click elsewhere.
 
-When a document has open decisions, a link under the tab row jumps to the next one.
+When a document has open decisions, a line above its text counts them and links one of them. With
+more than one, the arrow at the end of the line, **Next open decision**, links the next one.
 
 ## Approvals
 
@@ -132,14 +137,14 @@ issue's spec describes.
 ## Block links
 
 Every paragraph, list, and other block in a document has a stable link. Put your cursor in a
-block and choose **Copy link to block** in the Spec tab row. The link ends in `#b-` and the block's
-id. Opening it scrolls to that block and highlights it briefly. Dispatch gives each block its id.
-Markdown an agent writes can name one as `{#id}`. Dispatch stores an id of any length, but a block
-whose id is longer than 256 bytes is left out of the links between documents: text that links it
-is no link, and nothing lists what cites it. A block link names its block only while the
-document's key and name and the block's id, `<KEY>/<name>#<id>`, come to at most 2048 bytes, the
-bound every reference is held to (References, below); a longer one names no block, and opening it
-opens the document.
+block and choose **Copy link** in the issue page's document toolbar. The link ends in `#b-` and
+the block's id. Opening it scrolls to that block and highlights it briefly. Dispatch gives each
+block its id. Markdown an agent writes can name one as `{#id}`. Dispatch stores an id of any
+length, but a block whose id is longer than 256 bytes is left out of the links between documents:
+text that links it is no link, and nothing lists what cites it. A block link names its block only
+while the document's key and name and the block's id, `<KEY>/<name>#<id>`, come to at most 2048
+bytes, the bound every reference is held to (References, below); a longer one names no block, and
+opening it opens the document.
 
 ## References
 

@@ -268,8 +268,8 @@ decision block, and in the ask's own row where there is no second column.
 3. Add a note if you want. You can type context beside any option.
 4. Choose **Answer**, or press `Ctrl+Enter` (`⌘Enter` on a Mac). `Enter` alone starts a new line.
 
-The ask leaves the Inbox once your answer is saved. Its question, options, and your answer stay on
-the issue's Conversation tab.
+The ask leaves the Inbox once your answer is saved. Its question, options, and your answer stay in
+the issue's Conversation, in the issue page's panel.
 
 If the agent edits the question while you are answering, the card loads the new wording, keeps your
 text, and clears your pick. Pick again so your answer matches the question you read. If someone
@@ -312,15 +312,15 @@ offers **Ask back instead** and **Answer with it anyway**.
 
 An ask's replies read in the order you chose in **View → Thread order**: **Oldest first**, the
 default, or **Newest first**. That order is the same for every thread in Dispatch — the Inbox,
-the margin, a document's decision block, the Conversation tab — and the reply box sits next to
-the newest message, so it is under the root in **Newest first** and at the end in **Oldest
-first**.
+the margin, a document's decision block, the issue page's Conversation — and the reply box sits
+next to the newest message, so it is under the root in **Newest first** and at the end in
+**Oldest first**.
 
 The root and the two newest replies always show. Older ones fold behind **Show N earlier
 replies**, and **Show fewer replies** folds them back; a reply you have not read never folds.
-After an ask is answered, write a follow-up in **Reply**; in the Conversation tab and in document
-decisions, choose **Write a reply** first. A reply you are still typing survives if its card
-remounts elsewhere, such as switching margin tabs away and back.
+After an ask is answered, write a follow-up in **Reply**; in the issue page's Conversation and in
+document decisions, choose **Write a reply** first. A reply you are still typing survives if its
+card remounts elsewhere, such as switching margin tabs away and back.
 
 ### Approvals
 

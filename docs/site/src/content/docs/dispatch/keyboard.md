@@ -128,19 +128,65 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `l` | Edit labels |
 | `e` | Edit the title |
 | `Shift+P` | Pin or unpin the issue |
-| `t s` | Spec tab |
-| `t k` | Verification tab |
-| `t p` | Plan tab |
-| `t c` | Conversation tab |
-| `t h` | Children tab |
-| `t a` | Artifacts tab |
-| `t v` | Activity tab |
-| `t d` | Decisions tab |
-| `t o` | Collaborators tab |
+| `t t` | Open the Tree preset |
+| `t s` | Open the Spec preset |
+| `t k` | Open the Checks preset |
+| `t p` | Open the Plan preset |
+| `t d` | Open the Decisions preset |
+| `t c` | Open the conversation in the panel |
+| `t v` | Open the activity in the panel |
+| `t h` | Open the issue's children |
+| `t a` | Open the Files and documents menu |
+| `t f` | Filter the preset |
 | `Escape` | Back out of the focused status or priority |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,
 where the key belongs to that control.
+
+Each `t` key but `t f` opens an address of the issue page and puts the focus in what it opens.
+`t f` puts the focus in the **Filter** box. While a preset has the focus, `←` and `→` move to the
+previous and next preset, and `Home` and `End` to the first and last. At 1024 px and below the
+presets are one menu instead.
+
+## Issue tree
+
+These keys move through the issue page's tree, where each node is a row.
+
+| Keys | Action |
+| --- | --- |
+| `Tab` / `Shift+Tab` | Move into the tree (from the page itself) |
+| `j` / `↓` | Move to the next row |
+| `k` / `↑` | Move to the previous row |
+| `Home` | Move to the first row |
+| `End` | Move to the last row |
+| `→` | Unfold the focused row, or move into it |
+| `←` | Fold the focused row, or move to its parent |
+| `Enter` | Put the caret in the focused row |
+| `Escape` in a row's text | Leave the row's text |
+| `Escape` | Leave the control, then the tree |
+| `o` | Keep the focused row's body open |
+| `f` | Move to the next link on the focused row |
+| `Shift+K` | Keep the focused decision |
+| `Shift+C` | Change the focused decision |
+| `.` | Zoom into the focused row |
+| `,` | Zoom back out one level |
+| `q` | Move to the next open question |
+| `w` | Move into the decision behind the focused row |
+| `z` | Cycle how much of the tree is drawn |
+
+The tree is one stop of `Tab`: `Tab` from a row leaves the tree. `Home` and `End` move through
+the tree only while the focus is in it, and scroll the page everywhere else. `j`, `k`, `↓`, `↑`,
+`,`, `q`, `w` and `z` also work from the page itself, but not from a control elsewhere on the
+page. `Shift+K` and `Shift+C` work only while the focused row shows **Keep** or **Change**. While
+the caret is in a row's text, the tree's keys stop, and `Escape` takes you back to the row.
+
+At 1024 px and below the tree shows one node at a time, and there `→` and `←` zoom into the
+focused row and back out to its parent.
+
+`z` steps through three views: each row's first line; those lines with every body down to the
+second level open; and every branch unfolded with every body open. Your own folds and pins stay as
+they were. A key that has nowhere to go says so in a line under the header, such as **No further
+open question.**
 
 ## Document
 

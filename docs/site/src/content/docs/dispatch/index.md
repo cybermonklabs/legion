@@ -52,7 +52,7 @@ has replied to you and you have not read it.
    **Answer**. If the question is unclear, type what you need to know and choose
    **Ask back** instead. [The Inbox and asks](/legion/dispatch/inbox-and-asks/) explains both.
 3. **Open its issue.** Choose the issue name at the top of the ask, or press `o` on a focused row.
-   Read the Spec tab, then press `?` to see every keyboard shortcut on that page.
+   Read its tree and the spec under it, then press `?` to see every keyboard shortcut on that page.
 
 ## Where to go next
 
