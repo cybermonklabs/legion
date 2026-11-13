@@ -123,9 +123,9 @@ const cutoverIdleTick = 250 * time.Millisecond
 // took its merging task stands after the upgrade. The whole daemon then boots on the store
 // (startDaemonWithin).
 //
-// The six issues, each a tree root of its own, all in `awaiting_merge` with their merger's READY
-// head and `completed_at` on its phase row, and none holding a slot, as that release kept none for
-// the phase:
+// The eight issues, each a tree root of its own, all but N in `awaiting_merge` with their merger's
+// READY head and `completed_at` on its phase row. None holds a slot: that release kept none for
+// `awaiting_merge`, and N holds none, as G holds none once the upgrade moves it to `merging`:
 //
 //   - A: an open pull request and a live, idle merger on plugin contract 68. The boot relaunches it
 //     onto this daemon's contract (pluginRelaunchable), and the relaunch's ready gives it its
@@ -143,6 +143,15 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     claim, so the repair passes over it.
 //   - B: like G, but the release of its merger armed a backstop that has not fired, due a day after
 //     the boot. That backstop wakes the merger, so the repair passes over it.
+//   - N: like G, but N stands in `merging` itself, where its merger has not completed: the
+//     merger's phase row holds no READY head and no `completed_at`. Only a READY moved an issue to
+//     `awaiting_merge`, so the old build did not stop this merger there, and the repair passes
+//     over it.
+//   - C: like G, but its pull request record is closed without a merge. The merger merges only an
+//     open pull request, and the architect is told of one closed unmerged, so the repair passes
+//     over it. Merging is not finished for C (PhaseFinished answers true only for a merge), so the
+//     boot's owner read keeps C's merger, and the repair's own term of an open pull request is the
+//     one that passes over it.
 //
 // The daemon runs `runtime: kubernetes` over releaseRuntime (idle_release_test.go), the fake
 // runtime that also answers what the idle release asks of a pod, since the boot turns the idle
@@ -156,7 +165,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // The first boot:
 //
 //   - The repair writes one record naming 2 mergers, G and E: the selection of
-//     cutoverMergerRepair, read on the six kinds of merger the old record holds.
+//     cutoverMergerRepair, read on the eight kinds of merger the old record holds.
 //   - Its line for each of them names the slot mark of the start it owed, and that mark is the one
 //     workflow.StartOrOwe writes for a start of `merging`, read here from a start StartOrOwe
 //     writes for a control issue in `merging` inside a transaction the test rolls back. The start
@@ -174,8 +183,9 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     daemon's life.
 //   - D's merger gets no task, and no role but the merger starts on G or E: their implementer,
 //     tester and reviewer claims stay released.
-//   - The repair passes over the mergers of O and B. Each keeps the READY head on its phase row
-//     and its claim as the old record left it, and neither is started over both boots.
+//   - The repair passes over the mergers of O, B, N and C. Each keeps its phase row as the
+//     upgrade left it and its claim as the old record left it, none has a start queued or a
+//     cutover message, and none is started over both boots.
 //
 // The second boot: G's merger completes with no merge, which records a READY head on its phase
 // row again, the idle release suspends it again, and the test deletes the backstop row that
@@ -183,7 +193,7 @@ const cutoverIdleTick = 250 * time.Millisecond
 // store, and the repair starts nothing: G's merger gets no start, and the boot's one record of the
 // repair names 0 mergers. A repair keyed on anything that changes at each boot would start G
 // again here. Once the outbox holds no Dispatch message, Dispatch has received exactly one
-// cutover message on G and one on E over both boots, and none on A, D, O or B.
+// cutover message on G and one on E over both boots, and none on A, D, O, B, N or C.
 func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig := newCutoverRig(t)
 	ctx := context.Background()
@@ -195,15 +205,23 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.boot(t)
 	first := rig.logs
 
-	// O and B: the repair passes over a merger the operator suspended and a released merger whose
-	// backstop is open. The repair is a boot step before the API serves, so what it wrote is in
-	// the record by now.
-	const (
-		operatorHeld  = "O's merger: the operator suspended it, and that suspension holds until the operator resumes the claim"
-		backstopArmed = "B's merger: its release armed a backstop, which wakes it"
-	)
-	rig.passedOver(t, rig.op, supervise.SuspendedByOperator, operatorHeld)
-	rig.passedOver(t, rig.b, supervise.SuspendedByReleased, backstopArmed)
+	// O, B, N and C: the repair passes over a merger the operator suspended, a released merger
+	// whose backstop is open, a merger whose phase row holds no READY head, and a merger whose pull
+	// request is closed unmerged. The repair is a boot step before the API serves, so what it wrote
+	// is in the record by now.
+	passed := []struct {
+		issue cutoverIssue
+		by    supervise.SuspendSource
+		why   string
+	}{
+		{rig.op, supervise.SuspendedByOperator, "O's merger: the operator suspended it, and that suspension holds until the operator resumes the claim"},
+		{rig.b, supervise.SuspendedByReleased, "B's merger: its release armed a backstop, which wakes it"},
+		{rig.n, supervise.SuspendedByReleased, "N's merger: its phase row holds no READY head, so the old build never moved N to awaiting_merge"},
+		{rig.c, supervise.SuspendedByReleased, "C's merger: its pull request is closed without a merge, and the merger merges only an open one"},
+	}
+	for _, merger := range passed {
+		rig.passedOver(t, merger.issue, merger.by, merger.why)
+	}
 
 	// A and G: each merger the boot starts is started, and gets one merging task, whatever else of
 	// the boot ran. Nothing but the repair starts G's merger, so a boot with no repair fails here.
@@ -308,10 +326,11 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		!strings.Contains(fmt.Sprint(repairs[0]["msg"]), "0 mergers") {
 		t.Fatalf("the second boot wrote the records %v starting %q, want one naming 0 mergers", repairs, cutoverRepairLine)
 	}
-	// O and B over both boots: neither repair started either merger, cleared its READY head or
-	// moved its claim.
-	rig.passedOver(t, rig.op, supervise.SuspendedByOperator, operatorHeld)
-	rig.passedOver(t, rig.b, supervise.SuspendedByReleased, backstopArmed)
+	// O, B, N and C over both boots: neither repair started any of their mergers, queued a start
+	// of one, posted a cutover message on its issue, changed its phase row or moved its claim.
+	for _, merger := range passed {
+		rig.passedOver(t, merger.issue, merger.by, merger.why)
+	}
 
 	// Dispatch: one cutover message on each issue whose merger the repair started, over both boots.
 	rig.await(t, "the outbox to hold no Dispatch message", func() bool {
@@ -324,7 +343,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	for _, want := range []struct {
 		issue cutoverIssue
 		told  int
-	}{{rig.a, 0}, {rig.g, 1}, {rig.e, 1}, {rig.d, 0}, {rig.op, 0}, {rig.b, 0}} {
+	}{{rig.a, 0}, {rig.g, 1}, {rig.e, 1}, {rig.d, 0}, {rig.op, 0}, {rig.b, 0}, {rig.n, 0}, {rig.c, 0}} {
 		if told := rig.cutoverMessages(want.issue.key); told != want.told {
 			t.Errorf("Dispatch received %d cutover messages on %s over both boots, want %d", told, want.issue.key, want.told)
 		}
@@ -347,12 +366,15 @@ type cutoverRig struct {
 	// apart.
 	daemon *daemon
 	logs   *syncBuffer
-	// a, g, e, d, op and b are the six issues of the doc comment, A, G, E, D, O and B, and child
-	// is d's open child.
-	a, g, e, d, op, b cutoverIssue
-	child             string
-	mu                sync.Mutex
-	agents            map[claim.Token][]*cutoverAgent
+	// a, g, e, d, op, b, n and c are the eight issues of the doc comment, A, G, E, D, O, B, N and
+	// C, and child is d's open child.
+	a, g, e, d, op, b, n, c cutoverIssue
+	child                   string
+	// upgraded is the merger's phase row of each root as the upgrade left it, before any boot,
+	// by the root's key.
+	upgraded map[string]cutoverMergerRow
+	mu       sync.Mutex
+	agents   map[claim.Token][]*cutoverAgent
 }
 
 // cutoverIssue is one root of the old record: its key, its pull request's number and head, and
@@ -364,9 +386,30 @@ type cutoverIssue struct {
 	merger claim.Token
 }
 
-// roots is the six roots of the old record, A, G, E, D, O and B, in key order.
+// roots is the eight roots of the old record, A, G, E, D, O, B, N and C, in key order.
 func (r *cutoverRig) roots() []cutoverIssue {
-	return []cutoverIssue{r.a, r.g, r.e, r.d, r.op, r.b}
+	return []cutoverIssue{r.a, r.g, r.e, r.d, r.op, r.b, r.n, r.c}
+}
+
+// cutoverMergerRow is what a repair that selects a merger can change on the merger's phases row:
+// the handoff it clears (workflow's clearHandoff empties the commit, the verdict, the summary and
+// the completion's time) and the entry a start is built from.
+type cutoverMergerRow struct {
+	handoff, verdict, summary, completed string
+	entry                                int64
+	task                                 string
+}
+
+// mergerRow reads issue's merger phases row.
+func (r *cutoverRig) mergerRow(t *testing.T, issue cutoverIssue) cutoverMergerRow {
+	t.Helper()
+	var row cutoverMergerRow
+	if err := r.pool.QueryRow(context.Background(), `select handoff_commit, verdict, summary, completed_at::text, entry, entry_task
+		from phases where issue = $1 and role = $2`, issue.key, string(claim.RoleMerger)).Scan(
+		&row.handoff, &row.verdict, &row.summary, &row.completed, &row.entry, &row.task); err != nil {
+		t.Fatalf("read %s's merger phases row: %v", issue.key, err)
+	}
+	return row
 }
 
 // newCutoverRig builds the record legion-v19.57.3 leaves (cutoverReleaseStore, seed), brings it to
@@ -392,15 +435,15 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 		t.Fatal(err)
 	}
 	rig := &cutoverRig{cfg: cfg, project: project, pool: st.Pool(), records: record.NewStore(), built: &built{},
-		board: newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}}
+		board: newLiveDispatch(t, cfg.Project), agents: map[claim.Token][]*cutoverAgent{}, upgraded: map[string]cutoverMergerRow{}}
 	rig.board.lists = true
 	rig.cfg.DispatchURL = rig.board.url
-	for i, issue := range []*cutoverIssue{&rig.a, &rig.g, &rig.e, &rig.d, &rig.op, &rig.b} {
+	for i, issue := range []*cutoverIssue{&rig.a, &rig.g, &rig.e, &rig.d, &rig.op, &rig.b, &rig.n, &rig.c} {
 		key := cfg.Project + "-" + strconv.Itoa(i+1)
 		*issue = cutoverIssue{key: key, number: 400 + i + 1, head: fmt.Sprintf("%040x", 0xa11ce00000+i+1), merger: rig.token(t, key, claim.RoleMerger)}
 		rig.board.show(key, workflow.PhaseStatus(phase.Merging))
 	}
-	rig.child = cfg.Project + "-7"
+	rig.child = cfg.Project + "-9"
 	rig.board.place(rig.child, workflow.PhaseStatus(phase.Implementing), rig.d.key, false)
 	rig.seed(t)
 	if _, err := st.Migrate(ctx); err != nil {
@@ -422,6 +465,7 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 			t.Fatalf("%s's merger stands at entry %d with task %q, given %d and served %d after the upgrade; want entry 1 with no task, given 1 and served 1, where the fill puts a merger that took its merging task",
 				issue.key, entry, task, given, served)
 		}
+		rig.upgraded[issue.key] = rig.mergerRow(t, issue)
 	}
 
 	rig.rt = &releaseRuntime{Runtime: fake.NewRuntime(), onImage: true, sandboxName: "legion-" + project + "-cutover"}
@@ -486,17 +530,18 @@ func cutoverReleaseStore(t *testing.T) (*store.Store, string) {
 }
 
 // seed writes the old record with plain SQL in legion-v19.57.3's columns, as that release's
-// daemon left it (the doc comment of the test): the six roots and D's child, each tree's
-// lifecycle open under the workflow, the pull requests, each merger's READY phase row, the
-// claims, E's design gate closed by a newer spec version, B's open backstop, and a ready report
-// of the Envoy listener, without which the idle release releases nothing.
+// daemon left it (the doc comment of the test): the eight roots and D's child, each tree's
+// lifecycle open under the workflow, the pull requests, each merger's phase row, READY on every
+// root but N, the claims, E's design gate closed by a newer spec version, B's open backstop, and a
+// ready report of the Envoy listener, without which the idle release releases nothing.
 //
 // Each merger's phases row holds the assignment that release minted when it started the merger
 // on merging (0067_phase_assignment's phases.assignment), and the merger's claim holds the same
 // token as the one its worker took (claims.serving_assignment), since each of those mergers took
-// its merging task and completed it with a READY. That is what the fill of 20261111225552 reads:
-// it puts each merger at entry 1, given and served, and takes no task for that entry, since no
-// start of it is still owed. No other role has a phases row here, and its claim holds no token.
+// its merging task, and each but N's completed it with a READY. That is what the fill of
+// 20261111225552 reads: it puts each merger at entry 1, given and served, and takes no task for
+// that entry, since no start of it is still owed. No other role has a phases row here, and its
+// claim holds no token.
 func (r *cutoverRig) seed(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -508,20 +553,32 @@ func (r *cutoverRig) seed(t *testing.T) {
 	}
 	status := workflow.PhaseStatus(phase.Merging)
 	for _, issue := range r.roots() {
+		stands := "awaiting_merge"
+		if issue == r.n {
+			stands = string(phase.Merging)
+		}
 		exec("the root "+issue.key, `insert into issues (key, tree, project, title, phase, generation, status, rank,
 			last_dispatch_seq, handed_over, dispatch_status, repo, default_branch, github_repo)
-			values ($1, $1, $2, $1, 'awaiting_merge', 1, $3, $1, $4, true, $3, $5, 'main', $5)`,
-			issue.key, r.cfg.Project, status, cutoverStoredSeq, startedAgainRepo)
+			values ($1, $1, $2, $1, $6, 1, $3, $1, $4, true, $3, $5, 'main', $5)`,
+			issue.key, r.cfg.Project, status, cutoverStoredSeq, startedAgainRepo, stands)
 		exec("the tree of "+issue.key, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, $2, 1, 'workflow')`,
 			r.project, issue.key)
 		state, mergeSHA := string(record.PullRequestOpen), ""
-		if issue == r.d {
+		switch issue {
+		case r.d:
 			state, mergeSHA = string(record.PullRequestMerged), fmt.Sprintf("%040x", 0xd0e0000000+issue.number)
+		case r.c:
+			state = string(record.PullRequestClosed)
 		}
 		exec("the pull request of "+issue.key, `insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at,
 			failing, fix_attempts, blocked_attempts, check_runs, generation, snapshot, head_counted, state, mergeability, merge_sha)
 			values ($1, $2, $3, $4, $5, now() - interval '3 hours', '[]', 0, 0, '[]', 1, '', '', $6, 'MERGEABLE', $7)`,
 			issue.key, startedAgainRepo, issue.number, claim.IssueBranch(issue.key), issue.head, state, mergeSHA)
+		if issue == r.n {
+			exec("the merger's phase row on "+issue.key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary,
+				assignment) values ($1, 'merger', $2, '', 0, '', '', $3)`, issue.key, string(issue.merger), cutoverAssignment(issue.key))
+			continue
+		}
 		exec("the merger's READY on "+issue.key, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, summary, completed_at,
 			assignment) values ($1, 'merger', $2, $3, 1, '', 'READY: the reviewed head is ready to merge.', now() - interval '2 hours', $4)`,
 			issue.key, string(issue.merger), issue.head, cutoverAssignment(issue.key))
@@ -565,6 +622,8 @@ func (r *cutoverRig) seed(t *testing.T) {
 	suspended(r.d.key, claim.RoleMerger, supervise.SuspendedByReleased)
 	suspended(r.op.key, claim.RoleMerger, supervise.SuspendedByOperator)
 	suspended(r.b.key, claim.RoleMerger, supervise.SuspendedByReleased)
+	suspended(r.n.key, claim.RoleMerger, supervise.SuspendedByReleased)
+	suspended(r.c.key, claim.RoleMerger, supervise.SuspendedByReleased)
 	exec("the open backstop of "+r.b.key+"'s merger", `insert into pod_wake_backstops (project, issue, role, due_at)
 		values ($1, $2, 'merger', now() + interval '1 day')`, r.project, r.b.key)
 
@@ -839,25 +898,43 @@ func (r *cutoverRig) matchesTheSelection(t *testing.T, issue cutoverIssue) {
 }
 
 // passedOver holds that the repair passed over issue's merger, why saying why it must: the
-// merger's phase row still holds the READY head the old record gave it, its claim still stands
-// suspended by by, and it was never launched. A repair that selected the merger would clear that
-// head in the fact's own transaction (workflow's oweCutoverMerger).
+// merger's phase row is still the row the upgrade left (cutoverRig.upgraded), its claim still
+// stands suspended by by, no start of it is queued, no cutover message is queued or posted on its
+// issue, and it was never launched. A repair that selected the merger would clear its handoff,
+// queue its start and queue the message, all in the fact's own transaction (workflow's
+// oweCutoverMerger), so each is in the record as soon as the boot serves.
 func (r *cutoverRig) passedOver(t *testing.T, issue cutoverIssue, by supervise.SuspendSource, why string) {
 	t.Helper()
-	var head, state, suspendedBy string
-	if err := r.pool.QueryRow(context.Background(), `select ph.handoff_commit, c.state, c.suspended_by from phases ph
-		join claims c on c.token = $3 where ph.issue = $1 and ph.role = $2`, issue.key, string(claim.RoleMerger), string(issue.merger)).Scan(
-		&head, &state, &suspendedBy); err != nil {
-		t.Fatalf("read %s's merger: %v", issue.key, err)
+	if row, upgraded := r.mergerRow(t, issue), r.upgraded[issue.key]; row != upgraded {
+		t.Fatalf("%s's merger's phase row is %+v, want %+v, the row the upgrade left: the repair must pass over %s",
+			issue.key, row, upgraded, why)
 	}
-	if head != issue.head {
-		t.Fatalf("%s's merger's phase row holds the READY head %q, want %s, the head the old record gave it: the repair must pass over %s",
-			issue.key, head, issue.head, why)
+	var state, suspendedBy string
+	if err := r.pool.QueryRow(context.Background(), `select state, suspended_by from claims where token = $1`, string(issue.merger)).Scan(
+		&state, &suspendedBy); err != nil {
+		t.Fatalf("read %s's merger claim: %v", issue.key, err)
 	}
 	if state != string(supervise.StateSuspended) || suspendedBy != string(by) {
 		t.Fatalf("%s's merger stands %s by %q, want suspended by %s: the repair must pass over %s", issue.key, state, suspendedBy, by, why)
 	}
+	if queued := r.startsQueued(t, issue.key); queued != 0 {
+		t.Fatalf("the outbox holds %d starts of %s's merger, want none: the repair must pass over %s", queued, issue.key, why)
+	}
+	if told := r.cutoverMessages(issue.key) + r.cutoverMessagesQueued(t, issue.key); told != 0 {
+		t.Fatalf("%s has %d cutover messages queued or posted, want none: the repair must pass over %s", issue.key, told, why)
+	}
 	r.notStarted(t, issue.merger, "the repair must pass over "+why)
+}
+
+// cutoverMessagesQueued is how many of the cutover's messages on issue the outbox still holds.
+func (r *cutoverRig) cutoverMessagesQueued(t *testing.T, issue string) int {
+	t.Helper()
+	var queued int
+	if err := r.pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = $2
+		and strpos(payload->>'body', $3) > 0`, issue, string(record.OutboxKindDispatchMessage), cutoverTold).Scan(&queued); err != nil {
+		t.Fatalf("count the cutover messages the outbox holds for %s: %v", issue, err)
+	}
+	return queued
 }
 
 // cutoverMessages is how many messages the daemon posted on issue that are the cutover's.
@@ -872,11 +949,11 @@ func (r *cutoverRig) cutoverMessages(issue string) int {
 }
 
 // github is GitHub's REST API for acme/widgets as this test's daemon reads it: each root's pull
-// request, open at its head and mergeable, or merged for D; no reviews and no open pull request in
-// the listing; the repository, with main its default branch, and that branch's ref; and every
-// create of an issue branch answered as GitHub answers a branch that is there already. Anything
-// else is answered 404 and logged, so a read the test did not foresee is named in its output
-// rather than reaching github.com.
+// request, open at its head and mergeable, merged for D, or closed unmerged for C; no reviews and
+// no open pull request in the listing; the repository, with main its default branch, and that
+// branch's ref; and every create of an issue branch answered as GitHub answers a branch that is
+// there already. Anything else is answered 404 and logged, so a read the test did not foresee is
+// named in its output rather than reaching github.com.
 func (r *cutoverRig) github(t *testing.T) string {
 	t.Helper()
 	pulls := map[string]cutoverIssue{}
@@ -916,8 +993,11 @@ func (r *cutoverRig) github(t *testing.T) string {
 				"html_url": fmt.Sprintf("https://github.com/%s/pull/%d", startedAgainRepo, issue.number), "mergeable": true,
 				"mergeable_state": "clean", "base": map[string]string{"ref": "main"},
 				"head": map[string]string{"ref": claim.IssueBranch(issue.key), "sha": issue.head}}
-			if issue == r.d {
+			switch issue {
+			case r.d:
 				answer["state"], answer["merged"], answer["merge_commit_sha"] = "closed", true, fmt.Sprintf("%040x", 0xd0e0000000+issue.number)
+			case r.c:
+				answer["state"] = "closed"
 			}
 			write(answer)
 			return
