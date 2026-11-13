@@ -296,7 +296,7 @@ test.each([
   }
 });
 
-test("AssigneeControl rolls back and shows the server's refusal when the person has not signed in", async () => {
+test("AssigneeControl shows the assignee Dispatch last gave and the server's refusal when the person has not signed in", async () => {
   const patchIssue = answerIssuePatches().mockRejectedValue(
     new ApiError(400, {
       code: "ASSIGNEE_NOT_ALLOWED",

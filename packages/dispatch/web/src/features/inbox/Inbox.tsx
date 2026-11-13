@@ -741,7 +741,7 @@ export function Inbox({
   };
   const agentText = useAgentText();
   // Rows (by ask id) whose "Assign to me" write is in flight or failed: their control stays
-  // mounted through the optimistic assignment and the rollback out of it (see `AssignToMe`).
+  // mounted while the assignment is composed and once it stops being composed (see `AssignToMe`).
   const [assigning, setAssigning] = useState<ReadonlySet<string>>(() => new Set());
   const onAssignLive = useCallback((askId: string, live: boolean) => {
     setAssigning((current) => {
