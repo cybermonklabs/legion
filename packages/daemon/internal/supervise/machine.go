@@ -406,6 +406,30 @@ type Claim struct {
 	// no write a machine makes carries it or erases it, exactly as a session's activity report
 	// is held.
 	Step StepRecord
+	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are what the
+	// process this claim runs now last reported it was doing (POST /legion/v1/claims/activity):
+	// when it read what it was doing, the zero time for a session that has reported nothing;
+	// whether that reading found background work of the session's own running, and the kinds it
+	// named; and when the phase reminder armed in that session is due, the zero time for none.
+	// They are written by the store's PutClaimActivity alone and read back with the claim, as
+	// Step is: no write a machine makes carries them, and a launch's write clears them.
+	//
+	// The store's putClaim sets all four to their zero values on a write that moves Generation
+	// (launchNow), because the report describes the process that made it and the launch replaces
+	// that process; and a report is written only onto the launch whose secret the route
+	// authenticated it with, so one a dead process sent around its relaunch is refused rather
+	// than written over that clear. So a worker displaced into a replacement pod while a
+	// background task of its own ran is read as a session that has reported nothing, not as one
+	// still waiting on that task.
+	//
+	// The daemon's minute sweep reads them off the live claim, which is the only reading it has
+	// of what a quiet worker says it is waiting on (internal/daemon's tellSilentPhaseWorkers,
+	// config.Config.WorkerBackground). The rules over a run read the same report from the record
+	// instead (record.RoleClaim).
+	ActivityAt             time.Time
+	ActivityBackground     bool
+	ActivityKinds          []string
+	ActivityNextReminderAt time.Time
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
