@@ -385,10 +385,38 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 	if err != nil {
 		return fail(err)
 	}
+	// The read of each worktree's files is the one step of this check whose cost follows the size
+	// of the worktree rather than its history: git hashes again every file whose stat data the
+	// index does not match, and jj writes a colocated index with no stat data at all (measured on
+	// jj 0.46: every entry it writes carries ctime, mtime, dev, ino, uid, gid and size 0), so in a
+	// pod every tracked file is read again. A workspace's bound covers that read (worktreeRead),
+	// and the read is cut here with the guard's own run and the reserve it leaves the push still
+	// in hand (pushReserve), so a read that still cannot finish loses the files it was reading and
+	// not the commits this check has already found: those are pushed, and the entry fails naming
+	// the step that did not finish, which leaves the pod where it is for a person to read.
+	var unread error
+	readRun, reading := run, context.Context(nil)
+	if deadline, ok := ctx.Deadline(); ok {
+		left := time.Until(deadline) - pushReserve
+		if left <= 0 {
+			unread = fmt.Errorf("the files %s holds that no commit does could not be read: the workspace's bound had no time left for them", dir)
+		} else {
+			bounded, cancel := context.WithTimeout(ctx, left)
+			defer cancel()
+			reading, readRun = bounded, runner{ctx: bounded, env: req.Env}
+		}
+	}
 	for _, w := range mine {
-		edits, err := run.edits(w, heads[w])
+		if unread != nil {
+			break
+		}
+		edits, err := readRun.edits(w, heads[w])
 		if err != nil {
-			return fail(err)
+			unread = fmt.Errorf("the files %s holds that no commit does could not be read, so they are not rescued: %w", w, err)
+			if reading != nil && reading.Err() != nil {
+				unread = fmt.Errorf("the files %s holds that no commit does could not be read in the time the workspace's bound left for them, so they are not rescued: %w", w, err)
+			}
+			break
 		}
 		if edits == "" {
 			continue
@@ -432,12 +460,23 @@ func check(ctx context.Context, req Request, dir string, used, seen map[string]b
 			pushed = append(pushed, shimwire.RescueBranch{Name: name, Commit: tip})
 		}
 		if err := guardPush(ctx, req, run, clone, pushed); err != nil {
-			return fail(err)
+			return fail(errors.Join(unread, err))
 		}
 		if _, err := run.git(clone, []string{"GIT_TERMINAL_PROMPT=0"}, append([]string{"push", "--atomic", "--quiet", "origin"}, refspecs...)...); err != nil {
-			return fail(fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err))
+			return fail(errors.Join(unread, fmt.Errorf("push %s: %w", strings.Join(refspecs, " "), err)))
 		}
 		result.Branches = append(result.Branches, pushed...)
+	}
+	if unread != nil {
+		// The branches this check pushed stay on the entry: that work is on the remote and the
+		// issue must be told of it, whatever the step that did not finish leaves unread. The
+		// reader is told so here, where the push has happened, and never by the read's own
+		// error, which is written before it.
+		result.Status, result.Error = Failed, unread.Error()
+		if len(result.Branches) > 0 {
+			result.Error = unread.Error() + "; the work this check did find is on the remote, in the branches of this entry"
+		}
+		return result
 	}
 	result.Status = Clean
 	if len(result.Branches) > 0 {
@@ -472,8 +511,34 @@ const pushAlone = 30 * time.Second
 const GuardReserve = CheckRun + pushAlone
 
 // readsBeforeThePush is the jj and git reads that find a workspace's unpushed work, which the
-// four minutes a workspace's bound once was left 90 s for.
+// four minutes a workspace's bound once was left 90 s for. It does not hold the read of the
+// worktree's own files, which is worktreeRead below.
 const readsBeforeThePush = 90 * time.Second
+
+// worktreeRead is the read of one worktree's files that finds what no commit holds (edits): the
+// one step of this check whose cost follows the size of the worktree rather than its history.
+// git hashes again every file whose stat data its index does not match, and jj writes a
+// colocated index with no stat data at all — measured on jj 0.46, every entry it writes carries
+// ctime, mtime, dev, ino, uid, gid and size 0 — so in a pod the read hashes every tracked file,
+// whether or not one of them changed.
+//
+// What that costs, measured in issue pods on 2026-11-11: on a 13 GB workspace of 291,957 tracked
+// files, on two CPUs, git read every entry as changed (78 s to list them) and took 200 s to
+// answer that no file had changed; the same read on other pods' workspaces took 9 minutes 13
+// seconds and up to 25 minutes. Refreshing the index first is that same read and buys nothing:
+// it pays the hash once and jj writes the stat data away again at its next snapshot.
+//
+// So the bound covers the read: 30 minutes, a fifth more than the slowest measured. A bound that
+// does not is what thirteen pods met on 2026-11-11: the read ran out, the check failed the
+// workspace, no pod was replaced and every one of them waited on a person — while in all
+// thirteen the files the read was after turned out to hold nothing the remote lacked.
+const worktreeRead = 30 * time.Minute
+
+// pushReserve is what a workspace's bound keeps back from the read of its files: the guard's own
+// run of the shared check (CheckRun) and what that guard leaves the push (GuardReserve). A read
+// that runs past it would take the commits this check has already found down with it, which is
+// the loss check stops the read to prevent.
+const pushReserve = CheckRun + GuardReserve
 
 // wholeDiskMargin is what the bound of a whole disk's check keeps over one workspace's: enough
 // for the workspaces a disk holds past the first, and the three minutes it has always kept.
@@ -486,15 +551,19 @@ const wholeDiskMargin = 3 * time.Minute
 // internal/shim's tests): a fixture bounded under GuardReserve would have every push refused
 // for want of time rather than checked.
 //
-// A workspace's bound holds three things in a pod, and each is measured: the reads that find
-// the unpushed work (readsBeforeThePush), the guard's own run of the shared check (CheckRun),
-// and what that guard leaves the push, which in a pod runs the same check a second time in the
-// pre-push hook (GuardReserve). 90 + 120 + 150 is 360 s, so a workspace's bound is six minutes
-// and the whole disk's, keeping wholeDiskMargin over it, nine. A bound that fits one run of the
-// check and not two ends inside the hook's run and loses the dying pod's work to a timeout
-// rather than refusing it, which is the failure these numbers exist to prevent.
+// A workspace's bound holds four things in a pod, and each is measured: the reads that find the
+// unpushed work (readsBeforeThePush), the read of the worktree's own files (worktreeRead), the
+// guard's own run of the shared check (CheckRun), and what that guard leaves the push, which in
+// a pod runs the same check a second time in the pre-push hook (GuardReserve). 90 + 1800 + 120 +
+// 150 is 2160 s, so a workspace's bound is 36 minutes and the whole disk's, keeping
+// wholeDiskMargin over it, 39. Each is a ceiling and not a wait: a workspace whose files git can
+// answer for at once is checked and pushed in seconds, as every one of this package's tests is.
+//
+// A bound that fits one run of the check and not two ends inside the hook's run and loses the
+// dying pod's work to a timeout rather than refusing it; a bound that does not fit the worktree
+// read never replaces the pod at all. Both are the failure these numbers exist to prevent.
 const (
-	WorkspaceTimeout = readsBeforeThePush + CheckRun + GuardReserve
+	WorkspaceTimeout = readsBeforeThePush + worktreeRead + CheckRun + GuardReserve
 	Timeout          = WorkspaceTimeout + wholeDiskMargin
 )
 
