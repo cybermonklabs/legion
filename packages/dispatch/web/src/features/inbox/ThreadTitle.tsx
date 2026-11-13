@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import type { MyReplyRow } from "../../api/types";
 import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { DeletedBody, deletedLineText, EditedMark } from "../refs/PostBody";
+import { deletedLineText, EditedMark } from "../refs/PostBody";
 import { postDeletion } from "../refs/post-marks";
 import { questionLine } from "./question-line";
 
@@ -23,6 +23,10 @@ export function useThreadLine(thread: MyReplyRow): string {
  * What a thread row is about, in one line, bold with a dot while the thread holds a write the
  * reader has not read. A root its author deleted reads as the deleted line, and a root its
  * author edited carries ` · edited` after the line, outside the truncation that would cut it.
+ * The deleted line here is its words alone (`deletedLineText`), in the deleted line's own italic,
+ * with no time: the row already shows its own age, and that age is the one time a row holds, the
+ * part of a short row that is neither the owner link nor a control, where the pointer selects
+ * the row (`selectRow` in the browser suite).
  *
  * Both layouts draw it: the short row beside the reading column, where it is the link `o`
  * follows (`data-inbox-owner`), and the card below that width, where **Open** is that link and
@@ -42,7 +46,14 @@ export function ThreadTitle({
 }): ReactNode {
   const title = useThreadLine(thread);
   const deleted = postDeletion(thread);
-  const words = deleted === null ? title : <DeletedBody deleted={deleted} />;
+  const words =
+    deleted === null ? (
+      title
+    ) : (
+      <span className="italic" data-post-deleted="">
+        {title}
+      </span>
+    );
   const text = `${className} ${
     thread.unread ? `font-semibold ${textPrimaryOnCanvas}` : textMutedOnCanvas
   }`;
