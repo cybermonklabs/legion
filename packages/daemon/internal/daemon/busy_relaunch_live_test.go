@@ -146,6 +146,11 @@ const (
 	relaunchJobWords      = "Each background job that you started stopped with that process."
 	// relaunchCutTaskWords opens the sentence in front of a task the death cut off in its turn.
 	relaunchCutTaskWords = "Your previous turn on this task was interrupted."
+	// relaunchNoTurnReportWords and relaunchTurnGoneWords are what the sentence of a turn cut off
+	// says when no report covers that turn: the daemon has none, so its subagents and background
+	// jobs are gone (supervise's relaunchSentence).
+	relaunchNoTurnReportWords = "The daemon has no report of the background work of that turn."
+	relaunchTurnGoneWords     = "So the subagents and background jobs of that turn are gone."
 	// endedWorkDiedCause opens the cause the claim row records for a death (endDied).
 	endedWorkDiedCause = "the process died: "
 )
@@ -629,7 +634,9 @@ func (r *busyRelaunchLive) relaunchSubagentWorker() {
 	r.holdsTheSentence(prompt, relaunchDiedWords, relaunchSubagentWords)
 	r.note("the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
-	ended := r.claimRowHolds(pane.token, func(e endedWorkRow) bool { return slices.Contains(e.Kinds, "subagent") && !e.Turn })
+	ended := r.claimRowHolds(pane.token, func(e endedWorkRow) bool {
+		return slices.Contains(e.Kinds, "subagent") && !e.Turn && e.Reported
+	})
 	r.note("the claim row records %s", ended.describe())
 }
 
@@ -637,7 +644,11 @@ func (r *busyRelaunchLive) relaunchSubagentWorker() {
 // delivery, and once holding a task in its turn when the process dies. Each time the first prompt
 // the relaunched process is sent carries the sentence (sentence), the catch-up notice the daemon
 // publishes at that process's ready opens with it (catch-up), and the claim row holds the record
-// (claim-row).
+// (claim-row). The second time the subagent was started in the turn before the task's, and Oh My
+// Pi reports only when what runs changes and at a turn's end (pi-legion's legion.ts), so the
+// newest report, which names the subagent, is older than the task's turn: the row keeps the
+// subagent and records no report of that turn (supervise's recordEnd), and the sentence says that
+// the daemon has no report of that turn and that its subagents and background jobs are gone.
 func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 	pane := r.pane(r.root)
 	r.awaitQuiet(pane.token, 3*time.Minute)
@@ -651,7 +662,9 @@ func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 	r.note("holding no task: the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
 	r.catchUpOpensWithTheSentence(pane, told)
-	ended := r.claimRowHolds(pane.token, func(e endedWorkRow) bool { return slices.Contains(e.Kinds, "subagent") && !e.TaskTurn })
+	ended := r.claimRowHolds(pane.token, func(e endedWorkRow) bool {
+		return slices.Contains(e.Kinds, "subagent") && !e.TaskTurn && e.Reported
+	})
 	r.note("the claim row records %s", ended.describe())
 
 	r.awaitQuiet(pane.token, 3*time.Minute)
@@ -664,12 +677,13 @@ func (r *busyRelaunchLive) relaunchSubagentArchitect() {
 	told = len(r.architectNotices(pane.issue, "catch-up"))
 	killed, ready = r.killAndRelaunch(pane)
 	prompt = r.firstPromptAfter(pane, killed, ready)
-	r.holdsTheSentence(prompt, relaunchCutTaskWords, relaunchDiedWords, relaunchSubagentWords, held)
+	r.holdsTheSentence(prompt, relaunchCutTaskWords, relaunchDiedWords, relaunchSubagentWords,
+		relaunchNoTurnReportWords, relaunchTurnGoneWords, held)
 	r.note("holding a task in its turn: the first prompt the relaunched process was sent, %s after the death, reads:\n%s",
 		prompt.at.Sub(killed).Round(100*time.Millisecond), indentOutput(prompt.last))
 	r.catchUpOpensWithTheSentence(pane, told)
 	ended = r.claimRowHolds(pane.token, func(e endedWorkRow) bool {
-		return slices.Contains(e.Kinds, "subagent") && e.Turn && e.TaskTurn
+		return slices.Contains(e.Kinds, "subagent") && e.Turn && e.TaskTurn && !e.Reported
 	})
 	r.note("the claim row records %s", ended.describe())
 }
@@ -688,7 +702,7 @@ func (r *busyRelaunchLive) relaunchTask() {
 	r.awaitReported(pane.token, "async-job")
 	killed, ready := r.killAndRelaunch(pane)
 	ended := r.claimRowHolds(pane.token, func(e endedWorkRow) bool {
-		return slices.Contains(e.Kinds, "async-job") && e.Turn && e.TaskTurn
+		return slices.Contains(e.Kinds, "async-job") && e.Turn && e.TaskTurn && e.Reported
 	})
 	r.note("the claim row records %s", ended.describe())
 	prompt := r.firstPromptAfter(pane, killed, ready)
@@ -871,17 +885,17 @@ func (r *busyRelaunchLive) catchUpOpensWithTheSentence(pane *busyPane, told int)
 	r.note("the catch-up published at the relaunched process's ready opens with the sentence:\n%s", indentOutput(firstParagraph(reason)))
 }
 
-// claimRowHolds reads the claim row's `ended_work` and holds that it records a death, that the
-// process it records left a report (Reported), and that want holds of it. The read is SQL, so over
-// the base commit — whose schema has no such column — the read's own error is this assertion's
-// failure.
+// claimRowHolds reads the claim row's `ended_work` and holds that it records a death and that want
+// holds of it, which says whether a report covers the process's last turn (Reported). The read is
+// SQL, so over the base commit — whose schema has no such column — the read's own error is this
+// assertion's failure.
 func (r *busyRelaunchLive) claimRowHolds(token claim.Token, want func(endedWorkRow) bool) endedWorkRow {
 	r.t.Helper()
 	ended, err := readEndedWork(r.st, token)
 	if err != nil {
 		r.fails("claim-row", "read %s's ended_work: %v", token, err)
 	}
-	if !strings.HasPrefix(ended.Cause, endedWorkDiedCause) || !ended.Reported || !want(ended) {
+	if !strings.HasPrefix(ended.Cause, endedWorkDiedCause) || !want(ended) {
 		r.fails("claim-row", "%s's row records %s", token, ended.describe())
 	}
 	return ended
