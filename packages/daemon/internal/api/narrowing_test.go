@@ -153,10 +153,22 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				t.Errorf("the line says it dropped %q, which does not name %s", line.Dropped, key)
 			}
 		}
+		// The bands above the mark's own, which this caller stands below as well: each writes a
+		// line of its own naming that arm's keys, so the lines are read apart rather than as
+		// one. What each should say is read from the table (narrowingsExpected), so a band
+		// added above the mark is counted by this row rather than failing it.
+		for i, dropped := range want {
+			if narrowings[i].Dropped != dropped {
+				t.Errorf("line %d of a caller at %d says it dropped %q, want %q",
+					i, recordFieldsContract-1, narrowings[i].Dropped, dropped)
+			}
+		}
 	})
 
 	// The body of a caller at the contract: the two numbers stand beside the record whose keys
 	// the same contract added, so a reader that has the record can say which contract it reads.
+	// Such a caller is still below every band above it, the tree quiet time among them, so its
+	// issues carry no measure and its request writes one line for each of those bands.
 	t.Run("a caller at the contract carries the two numbers beside the record", func(t *testing.T) {
 		state := populatedState(t)
 		body, narrowings := stateNarrowed(t, state, statePodAddr+":41000", podClaims(recordFieldsContract))
@@ -172,6 +184,12 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 		for _, key := range recordFieldKeys {
 			if !bytes.Contains(body, []byte(`"`+key+`"`)) {
 				t.Errorf("the body served to a pod at %d carries no %q; the mark is meant to stand beside the record: %s",
+					recordFieldsContract, key, body)
+			}
+		}
+		for _, key := range []string{TreeMovedAtField, QuietHoursField} {
+			if bytes.Contains(body, []byte(`"`+key+`"`)) {
+				t.Errorf("the body served to a pod at %d carries %q, which a band above it holds back: %s",
 					recordFieldsContract, key, body)
 			}
 		}

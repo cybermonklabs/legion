@@ -101,7 +101,9 @@
       "slot": {
         "index": 0,
         "admittedAt": "2026-10-06T18:02:11Z"
-      }
+      },
+      "treeMovedAt": "2026-10-06T18:03:01Z",
+      "quietHours": 0.002777777777777778
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -115,7 +117,9 @@
       "why": {
         "state": "blocked",
         "reason": "The design gate of its tree stands shut: LEGION-208 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."
-      }
+      },
+      "treeMovedAt": "2026-10-06T18:03:01Z",
+      "quietHours": 0.002777777777777778
     },
     "LEGION-210": {
       "key": "LEGION-210",
@@ -142,7 +146,9 @@
       "why": {
         "state": "waiting",
         "reason": "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank. It waits on LEGION-301, which is not done."
-      }
+      },
+      "treeMovedAt": "0001-01-01T00:00:00Z",
+      "quietHours": 2562047.7880152157
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -169,7 +175,9 @@
       "why": {
         "state": "waiting",
         "reason": "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank."
-      }
+      },
+      "treeMovedAt": "0001-01-01T00:00:00Z",
+      "quietHours": 2562047.7880152157
     }
   },
   "pendingStatusWrites": [],
@@ -230,6 +238,7 @@
     "production_check_hours": 336,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "stalled_tree_notice_hours": 6,
     "worker_silence_minutes": 30,
     "worker_background_hours": 4,
     "pod_update_max_open_rounds": null,

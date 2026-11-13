@@ -230,7 +230,7 @@ func TestAMixedPodIsServedTheHighestsKeysAndTheLowestsStandIns(t *testing.T) {
 }
 
 // The pod a roll makes, holding one build at the floor and one at this daemon's own contract,
-// is served the floor's shape and not the union of the two. The build at 105 states its
+// is served the floor's shape and not the union of the two. The build at 115 states its
 // contract in the header, so contractsFor answers it there and it never reads the body the pod
 // decides; the build at 46 does read it, and it is the only process that does. Counting the
 // newer one would serve that reader `admission.trees`, the memory fields and the rest, which
@@ -259,7 +259,7 @@ func TestAPodWhoseNewestBuildStatesItsOwnContractIsServedTheOldests(t *testing.T
 		t.Errorf("the rolled pod logged %s, want no line: the floor is a shape this daemon describes", logs)
 	}
 
-	// The 105 build of that same pod is served this contract's own body, by its header.
+	// The 115 build of that same pod is served this contract's own body, by its header.
 	wantThisContract(t, stateStating(t, handler, statePodAddr+":41000", DaemonAPIVersion))
 }
 
@@ -438,7 +438,7 @@ func TestAClaimThatStatesItsOwnContractIsInNoPodsReckoning(t *testing.T) {
 	}
 	mixedLowest, mixedHighest, _ := podContracts(mixedPodClaims(ServingFloor, DaemonAPIVersion), statePodUID)
 	if mixedLowest != ServingFloor || mixedHighest != ServingFloor {
-		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 105 build reads no body this decides",
+		t.Errorf("the rolled pod reports %d and %d, want the floor on both sides: its 115 build reads no body this decides",
 			mixedLowest, mixedHighest)
 	}
 }

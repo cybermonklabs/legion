@@ -83,6 +83,34 @@ func issueFixture(key string) Issue {
 	}
 }
 
+// written is got with the movement taken off, after holding it to what PutIssue promises of that
+// column: moved_at is not null and no write of the record names it (PutIssue's own carve-out,
+// which keeps a stale copy from writing a movement away), so a row read back always carries the
+// moment it was written, which no fixture can name. Every comparison below is of the fields
+// PutIssue writes, so the movement is checked here, once, and left out of them.
+func written(t *testing.T, got *Issue) *Issue {
+	t.Helper()
+	if got == nil {
+		return nil
+	}
+	if got.MovedAt.IsZero() {
+		t.Fatalf("issue %s reads back carrying no movement: moved_at is not null and every row is stamped when it is written", got.Key)
+	}
+	bare := *got
+	bare.MovedAt = time.Time{}
+	return &bare
+}
+
+// writtenAll is written over a list of records.
+func writtenAll(t *testing.T, got []Issue) []Issue {
+	t.Helper()
+	bare := make([]Issue, 0, len(got))
+	for _, issue := range got {
+		bare = append(bare, *written(t, &issue))
+	}
+	return bare
+}
+
 // An issue's repository, its default branch and GitHub's spelling of the repository are taken when
 // the daemon first records the issue and never change after: the store refuses a record without
 // any of them, or whose GitHub spelling names another repository, and a write that would change
@@ -136,7 +164,7 @@ func TestPutIssueRefusesAMissingOrChangedRepository(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		got, err := records.Issue(ctx, tx, recorded.Key)
 		must(t, err)
-		if !reflect.DeepEqual(got, &recorded) {
+		if !reflect.DeepEqual(written(t, got), &recorded) {
 			t.Fatalf("issue after refused moves = %#v, want %#v", got, recorded)
 		}
 	})
@@ -356,12 +384,12 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 	inTx(t, st, func(tx pgx.Tx) {
 		gotIssue, err := records.Issue(ctx, tx, issue.Key)
 		must(t, err)
-		if !reflect.DeepEqual(gotIssue, &issue) {
+		if !reflect.DeepEqual(written(t, gotIssue), &issue) {
 			t.Fatalf("issue = %#v, want %#v", gotIssue, issue)
 		}
 		issues, err := records.Issues(ctx, tx)
 		must(t, err)
-		if !reflect.DeepEqual(issues, []Issue{issue}) {
+		if !reflect.DeepEqual(writtenAll(t, issues), []Issue{issue}) {
 			t.Fatalf("issues = %#v, want %#v", issues, []Issue{issue})
 		}
 		phases, err := records.Phases(ctx, tx, issue.Key)
@@ -398,7 +426,7 @@ func TestStoreRoundTripsEveryRecord(t *testing.T) {
 		// column the issue read returns, so a column added to the issue is never left out of it.
 		slotted, err := records.SlottedIssues(ctx, tx, issue.Project)
 		must(t, err)
-		if !reflect.DeepEqual(slotted, []Issue{issue}) {
+		if !reflect.DeepEqual(writtenAll(t, slotted), []Issue{issue}) {
 			t.Fatalf("slotted issues = %#v, want %#v", slotted, []Issue{issue})
 		}
 		other, err := records.SlottedIssues(ctx, tx, "OTHER")
@@ -465,12 +493,12 @@ func TestStoreRoundTripsATreeTakenBack(t *testing.T) {
 		must(t, records.PutIssue(ctx, tx, taken))
 		got, err := records.Issue(ctx, tx, taken.Key)
 		must(t, err)
-		if !reflect.DeepEqual(got, &taken) {
+		if !reflect.DeepEqual(written(t, got), &taken) {
 			t.Fatalf("taken-back issue = %#v, want %#v", got, taken)
 		}
 		issues, err := records.Issues(ctx, tx)
 		must(t, err)
-		if !reflect.DeepEqual(issues, []Issue{taken}) {
+		if !reflect.DeepEqual(writtenAll(t, issues), []Issue{taken}) {
 			t.Fatalf("listed issues = %#v, want %#v", issues, []Issue{taken})
 		}
 	})
@@ -481,7 +509,7 @@ func TestStoreRoundTripsATreeTakenBack(t *testing.T) {
 		must(t, records.PutIssue(ctx, tx, cleared))
 		got, err := records.Issue(ctx, tx, cleared.Key)
 		must(t, err)
-		if !reflect.DeepEqual(got, &cleared) {
+		if !reflect.DeepEqual(written(t, got), &cleared) {
 			t.Fatalf("issue after a write that carries no mark = %#v, want %#v", got, cleared)
 		}
 	})
@@ -501,12 +529,12 @@ func TestStoreRoundTripsTheTreeARootLeft(t *testing.T) {
 		must(t, records.PutIssue(ctx, tx, left))
 		got, err := records.Issue(ctx, tx, left.Key)
 		must(t, err)
-		if !reflect.DeepEqual(got, &left) {
+		if !reflect.DeepEqual(written(t, got), &left) {
 			t.Fatalf("handed-over root = %#v, want %#v", got, left)
 		}
 		issues, err := records.TreeIssues(ctx, tx, left.Key)
 		must(t, err)
-		if !reflect.DeepEqual(issues, []Issue{left}) {
+		if !reflect.DeepEqual(writtenAll(t, issues), []Issue{left}) {
 			t.Fatalf("tree issues = %#v, want %#v", issues, []Issue{left})
 		}
 	})
@@ -677,7 +705,7 @@ func TestStoreRoundTripsLingerStateAndRefusesHeldFromHeld(t *testing.T) {
 		must(t, records.PutIssue(ctx, tx, cleared))
 		got, err := records.Issue(ctx, tx, cleared.Key)
 		must(t, err)
-		if !reflect.DeepEqual(got, &cleared) {
+		if !reflect.DeepEqual(written(t, got), &cleared) {
 			t.Fatalf("cleared issue = %#v, want %#v", got, cleared)
 		}
 	})
@@ -2110,7 +2138,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"linger_until", "held_from", "last_dispatch_seq", "ready_pending_version", "ready_pending_step", "hold_reason", "dispatch_status", "repo",
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
-			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried"},
+			"ancestry", "handed_over_from", "told_parent", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried",
+			"moved_at", "tree_stalled_told_at"},
 		"phases":            {"issue", "role", "claim", "handoff_commit", "pass", "rounds", "conflict_rounds", "backward_moves", "cap_told", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "entry", "entry_task", "entry_raised_at", "handoff_record", "handoff_version"},
 		"pull_requests":     {"issue", "repo", "number", "branch", "base", "base_moved", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_state", "conflicting_head", "merge_sha"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},

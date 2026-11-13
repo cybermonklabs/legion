@@ -164,5 +164,7 @@
   "memoryDrawMode": "random",
   "memoryDrawnAt": "2026-09-20T11:04:05Z",
   "phaseEntry": 4,
-  "givenEntry": 4
+  "givenEntry": 4,
+  "treeMovedAt": "2026-09-22T09:17:12Z",
+  "quietHours": 0.013333333333333334
 }

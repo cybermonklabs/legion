@@ -115,9 +115,9 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   Answer from `read_state` and Dispatch as they stand now, never from memory: each issue's
   `issues.<KEY>.phase` and `issues.<KEY>.tree`, its pull request, `admission.trees` for the trees
   that run, and `admission.active` and `admission.waiting` for the issues holding a slot and the
-  issues in the line: an issue holds its slot from the moment the daemon starts it
-  until it is done or leaves the workflow, so `admission.active` names
-  a tree's waits as well as its work. Say what you
+  issues in the line: an issue holds one of the cap's slots from the moment the daemon starts it
+  until its work is past its review, until it is done, or until Dispatch takes it out of the
+  workflow, so `admission.active` names a tree's waits up to that review as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
   first (`skill://dispatch-first`): when an open issue already tracks it, reply with that issue and
