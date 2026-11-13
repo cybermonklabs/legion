@@ -30,10 +30,12 @@ type AcceptedField struct {
 }
 
 // AcceptedByName is every field a request type keeps for an older plugin's body alone. The
-// request gate reads it two ways (request_shapes_test.go). A recorded field that this daemon's
+// request gate reads it three ways (request_shapes_test.go). A recorded field that this daemon's
 // request type no longer carries passes only with a row here whose LeftAt is above the record's
-// contract. And each row's field must still be a field of the route's request type, so that the
-// body the row is written for is read and not refused as an unknown member.
+// contract. Each row's field must still be a field of the route's request type, so that the
+// body the row is written for is read and not refused as an unknown member. And a field the
+// type reads that the record of this daemon's own contract does not hold must have a row here,
+// so a row deleted while its field stays in the type fails rather than losing its reason.
 //
 // Each Go field a row names is in the request type, so it is in the type's walk. The record of
 // any contract at or above the row's LeftAt leaves the field out all the same, because that

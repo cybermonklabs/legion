@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/netip"
 	"reflect"
@@ -481,6 +482,56 @@ func TestTheEdgesOfTheContractACallerIsServed(t *testing.T) {
 		}
 		if lines := strings.Count(strings.TrimSpace(logged), "\n") + 1; lines != 1 {
 			t.Errorf("logs %s carry %d lines, want the one line this edge writes", logged, lines)
+		}
+
+		// The rule holds over every answer, so the record route of the same pod is read too:
+		// each issue's record is the issue the state above carries for that pod, with every key
+		// added after the floor stripped, `pullRequest.fixAttempts` as its stand-in and no
+		// `check.role` (shapeIssue). The records are read after the log is counted, since each
+		// read is a below-floor caller of its own.
+		var pullRequests, checks int
+		issues := issuesOf(t, body)
+		for _, key := range slices.Sorted(maps.Keys(issues)) {
+			route := "GET /legion/v1/issues/" + key + "/record"
+			record := recordOf(t, handler, statePodAddr+":41000", key, 0)
+			if string(record) != string(issues[key]) {
+				t.Errorf("%s served a pod at %d a record other than the issue its state holds: %s,\nwant %s", route, recorded, record, issues[key])
+			}
+			var carried []string
+			for _, added := range append(append([]string{}, keysAddedAfterTheFloor...), keysOfThisContract...) {
+				if strings.Contains(string(record), added) {
+					carried = append(carried, added)
+				}
+			}
+			if len(carried) != 0 {
+				t.Errorf("%s served a pod at %d %s, each added after the floor: such a pod loses every key it loses today; record %s", route, recorded, strings.Join(carried, ", "), record)
+			}
+			var issue struct {
+				PullRequest *struct {
+					FixAttempts *int `json:"fixAttempts"`
+				} `json:"pullRequest"`
+				Check *struct {
+					Role *string `json:"role"`
+				} `json:"check"`
+			}
+			if err := json.Unmarshal(record, &issue); err != nil {
+				t.Fatalf("decode %s's record %s: %v", route, record, err)
+			}
+			if issue.PullRequest != nil {
+				pullRequests++
+				if attempts := issue.PullRequest.FixAttempts; attempts == nil || *attempts != 0 {
+					t.Errorf("%s served a pod at %d a pull request with no `fixAttempts` of 0, the stand-in its reader requires; record %s", route, recorded, record)
+				}
+			}
+			if issue.Check != nil {
+				checks++
+				if issue.Check.Role != nil {
+					t.Errorf("%s served a pod at %d a check carrying `role`, which the reader before checkRoleContract refuses; record %s", route, recorded, record)
+				}
+			}
+		}
+		if pullRequests == 0 || checks == 0 {
+			t.Fatalf("no record a pod at %d was served carries a pull request or a check; this proves nothing", recorded)
 		}
 	})
 

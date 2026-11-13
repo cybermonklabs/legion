@@ -436,6 +436,27 @@ func TestHandoffCompleteWithReadyTrueIsRefused(t *testing.T) {
 	}
 }
 
+// `ready` is read by name as a boolean, which is what every plugin from 46 to 85 sends. A `ready`
+// of another type is no body any plugin builds, and the decoder's type check refuses it before
+// the route reads anything: the refusal names the field's type, and nothing is recorded.
+func TestHandoffCompleteWithReadyNotABooleanIsRefused(t *testing.T) {
+	h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+	seedIssueAt(t, h, "LEGION-208", phase.Merging)
+	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
+
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/handoff/complete", map[string]any{
+		"grantId": merger.grant(t), "summary": "READY", "verdict": "", "ready": "true", "commit": headSHA,
+	}, nil), http.StatusBadRequest, "")
+	for _, want := range []string{"invalid request body", "HandoffCompleteRequest.ready", "of type bool"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("the refusal is %q, want it to say %q", message, want)
+		}
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("facts after the refused ready of a string = %#v, want none", got)
+	}
+}
+
 // An implementer's completion with no open pull request on its branch is refused before anything
 // is applied: the implementer's phase row and the pull request record stay as they were, so the
 // same completion, once the pull request is open, is applied and moves the issue to testing.
