@@ -414,11 +414,12 @@ test("a priority row opens its work by status, and four writes survive a reload"
     // Described in the row that holds it, which is where the whole description is shown: read
     // rendered, every paragraph of it, and opened into its editor by a click on what it reads.
     const described = "The fleet is one build, or the rollout is not done.";
-    const rendered = page.getByRole("button", { exact: true, name: "Description of P1" });
+    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
     const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
+    const finished = "It is finished when no machine is left on the old build";
     await page.getByRole("button", { name: `Open P1 ${seed.titles[0]}` }).click();
-    await expect(rendered).toContainText("It is finished when no machine is left on the old build");
-    await rendered.click();
+    await expect(rendered).toContainText(finished);
+    await rendered.getByText(finished).click();
     await expect(editor).toHaveValue(seed.description);
     await editor.fill(described);
     await editor.blur();
@@ -617,7 +618,7 @@ test("a priority's own page writes its title and description and lists only its 
     await page.getByRole("textbox", { name: "Title" }).blur();
 
     // The description reads rendered, and no editor is drawn until the reader asks for one.
-    const rendered = page.getByRole("button", { exact: true, name: "Description of P1" });
+    const rendered = page.getByRole("group", { exact: true, name: "Description of P1" });
     const editor = page.getByRole("textbox", { exact: true, name: "Description of P1" });
     await expect(rendered.getByRole("heading", { name: "Why" })).toBeVisible();
     await expect(rendered.getByRole("listitem")).toHaveText([
@@ -630,7 +631,7 @@ test("a priority's own page writes its title and description and lists only its 
     // there follows the text; leaving the field saves it and gives the rendered block back.
     const line = "The roll-back is written down";
     const described = `${outline}\n- ${line}`;
-    await rendered.click();
+    await rendered.getByRole("listitem").last().click();
     await expect(editor).toBeFocused();
     await expect(editor).toHaveValue(outline);
     await editor.pressSequentially(`\n- ${line}`);
@@ -652,8 +653,13 @@ test("a priority's own page writes its title and description and lists only its 
     await page.reload();
     await expect(page.getByRole("textbox", { name: "Title" })).toHaveValue(retitled);
     await expect(rendered.getByRole("listitem").last()).toHaveText(line);
-    // Enter on the rendered block opens the editor as a click does.
-    await rendered.focus();
+    // The keyboard's way in is the one button in the block, named by the words it shows, which
+    // is drawn only once it holds the focus; Enter on it opens the editor as a click does.
+    const edit = rendered.getByRole("button", { exact: true, name: "Edit the description of P1" });
+    await expect(edit).toHaveText("Edit the description of P1");
+    expect((await edit.boundingBox())?.width ?? 0).toBeLessThanOrEqual(1);
+    await edit.focus();
+    expect((await edit.boundingBox())?.width ?? 0).toBeGreaterThan(1);
     await page.keyboard.press("Enter");
     await expect(editor).toHaveValue(described);
     await editor.blur();

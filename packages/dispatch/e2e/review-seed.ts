@@ -63,12 +63,15 @@ function firstMachine(): string {
 
 /** The one priority this corpus writes. It is written as the signed-in person rather than over
  *  the agent bearer, because the margin of `/priorities/:id` draws who wrote the priority and a
- *  bearer would name a session there instead. */
+ *  bearer would name a session there instead. Its description holds a link, so the accessibility
+ *  pass reads a link inside the rendered description a writer may open into its editor: a
+ *  control wrapping that text would put the link inside it (axe's `nested-interactive`). */
 function createReviewPriority() {
   return createPriority({
     description:
       "Every reader of this deployment reaches the same corpus in one command.\n\n" +
-      "The work under it is the seeding, the sign-in and the pages both review layers read.",
+      "The work under it is the seeding, the sign-in and the pages both review layers read, " +
+      "from [the priorities page](/priorities).",
     owner: "alice",
     title: "Local testing is one command",
   });

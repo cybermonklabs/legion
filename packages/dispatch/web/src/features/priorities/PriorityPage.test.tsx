@@ -73,6 +73,10 @@ const ROWS: PriorityRow[] = [
       open_asks: 0,
     },
   }),
+  priority("runbook", {
+    title: "The fleet has a runbook",
+    description: "Read [the runbook](https://example.com/runbook) before a roll-out.",
+  }),
 ];
 
 const BODY: Priorities = {
@@ -165,11 +169,11 @@ test("the header carries the order, the title in place, the owner and the three 
 test("the description is a disclosure that closes, and the work stays below it", async () => {
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"])]);
-  const described = await screen.findByRole("button", { name: "Description of P2" });
+  const described = await screen.findByRole("group", { name: "Description of P2" });
   expect(await within(described).findByText("Speedruns run again.")).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Description" }));
   await waitFor(() =>
-    expect(screen.queryByRole("button", { name: "Description of P2" })).toBeNull()
+    expect(screen.queryByRole("group", { name: "Description of P2" })).toBeNull()
   );
   expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
   // The work fills the page with the description closed.
@@ -178,16 +182,16 @@ test("the description is a disclosure that closes, and the work stays below it",
   ).toBeDefined();
 });
 
-test("the description reads rendered, opens on a click and is saved as it is written, with no Save button", async () => {
+test("the description reads rendered, opens on a click on its text and is saved as it is written, with no Save button", async () => {
   const user = userEvent.setup();
   const { patch } = page();
-  const described = await screen.findByRole("button", { name: "Description of P2" });
+  const described = await screen.findByRole("group", { name: "Description of P2" });
   // Read as the markdown it is, not as its source: the heading is a heading.
   expect(
     await within(described).findByRole("heading", { name: "Rocq and Lean speed work restarted" })
   ).toBeDefined();
   expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull();
-  await user.click(described);
+  await user.click(within(described).getByText("Speedruns run again."));
   const field = await screen.findByRole("textbox", { name: "Description of P2" });
   expect(document.activeElement).toBe(field);
   await user.type(field, " More.");
@@ -199,38 +203,62 @@ test("the description reads rendered, opens on a click and is saved as it is wri
   expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
   // Leaving the field gives the rendered block back, with what was written in it.
   await user.tab();
-  const back = await screen.findByRole("button", { name: "Description of P2" });
+  const back = await screen.findByRole("group", { name: "Description of P2" });
   expect(await within(back).findByText("Speedruns run again. More.")).toBeDefined();
   expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull();
   expect(patch).toHaveBeenCalledTimes(1);
 });
 
-test("Enter on the rendered description opens the editor", async () => {
+test("the rendered description is no control: the keyboard opens the editor with a button named by its own words", async () => {
   const user = userEvent.setup();
   page();
-  (await screen.findByRole("button", { name: "Description of P2" })).focus();
+  const described = await screen.findByRole("group", { name: "Description of P2" });
+  // The one control in the block is the button, and it says what it is called (WCAG 2.5.3).
+  const edit = within(described).getByRole("button");
+  expect(edit).toBe(screen.getByRole("button", { name: "Edit the description of P2" }));
+  expect(edit.textContent).toBe("Edit the description of P2");
+  expect(edit.getAttribute("aria-label")).toBeNull();
+  edit.focus();
   await user.keyboard("{Enter}");
   expect(await screen.findByRole("textbox", { name: "Description of P2" })).toBeDefined();
+});
+
+test("a link in the description is drawn as a link, and a click on it is followed, not edited", async () => {
+  const user = userEvent.setup();
+  page("runbook");
+  const described = await screen.findByRole("group", { name: "Description of P3" });
+  const link = await within(described).findByRole("link", { name: "the runbook" });
+  expect(link.getAttribute("href")).toBe("https://example.com/runbook");
+  // The test document follows no link; the press itself is what reaches the block.
+  link.addEventListener("click", (event) => event.preventDefault());
+  await user.click(link);
+  expect(screen.queryByRole("textbox", { name: "Description of P3" })).toBeNull();
+  expect(screen.getByRole("group", { name: "Description of P3" })).toBeDefined();
+  // The words around it are still the way in.
+  await user.click(within(described).getByText(/before a roll-out/));
+  expect(await screen.findByRole("textbox", { name: "Description of P3" })).toBeDefined();
 });
 
 test("a reader who may not write reads the description rendered, with no control over it", async () => {
   page("rocq-lean", [], false);
   expect(await screen.findByText("Speedruns run again.")).toBeDefined();
-  expect(screen.queryByRole("button", { name: "Description of P2" })).toBeNull();
+  expect(screen.queryByRole("group", { name: "Description of P2" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Edit the description of P2" })).toBeNull();
   expect(screen.queryByRole("textbox", { name: "Description of P2" })).toBeNull();
 });
 
 test("an empty description says none is written to a reader who may not write it", async () => {
   page("legion-first", [], false);
   expect(await screen.findByText("No description is written.")).toBeDefined();
-  expect(screen.queryByRole("button", { name: "Description of P1" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Edit the description of P1" })).toBeNull();
 });
 
 test("an empty description is, for a writer, the prompt that opens the editor", async () => {
   const user = userEvent.setup();
   page("legion-first");
-  const prompt = await screen.findByRole("button", { name: "Description of P1" });
-  expect(prompt.textContent).toContain("No description is written.");
+  const described = await screen.findByRole("group", { name: "Description of P1" });
+  const prompt = within(described).getByText(/No description is written\./);
+  expect(prompt.textContent).toBe("No description is written. Click here to write one.");
   await user.click(prompt);
   expect(await screen.findByRole("textbox", { name: "Description of P1" })).toBeDefined();
 });

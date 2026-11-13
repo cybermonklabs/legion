@@ -368,10 +368,10 @@ test("the first line of a description shows on a closed row and the whole of it 
   await screen.findByRole("row", { name: "P1 Legion works reliably first" });
   expect(screen.getByText("The first line.")).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Open P1 Legion works reliably first" }));
-  // Open, the row reads the whole description rendered, and a click on it opens its source.
-  const rendered = await screen.findByRole("button", { name: "Description of P1" });
+  // Open, the row reads the whole description rendered, and a click on its text opens its source.
+  const rendered = await screen.findByRole("group", { name: "Description of P1" });
   expect(await within(rendered).findByText(/The rest of it/)).toBeDefined();
-  await user.click(rendered);
+  await user.click(within(rendered).getByText(/The rest of it/));
   const whole = await screen.findByRole("textbox", { name: "Description of P1" });
   expect((whole as HTMLTextAreaElement).value).toBe(
     "The first line.\nThe rest of it, which the row shows when it is open."
@@ -426,8 +426,9 @@ test("a description is written on the open row: the empty block is the prompt th
   const { patch } = page(FIFTEEN);
   await screen.findByRole("row", { name: "P3 OSS Verify" });
   await user.click(screen.getByRole("button", { name: "Open P3 OSS Verify" }));
-  const prompt = await screen.findByRole("button", { name: "Description of P3" });
-  expect(prompt.textContent).toContain("No description is written.");
+  const rendered = await screen.findByRole("group", { name: "Description of P3" });
+  const prompt = within(rendered).getByText(/No description is written\./);
+  expect(prompt.textContent).toBe("No description is written. Click here to write one.");
   await user.click(prompt);
   const field = await screen.findByRole("textbox", { name: "Description of P3" });
   await user.type(field, "What it is.");
@@ -435,8 +436,8 @@ test("a description is written on the open row: the empty block is the prompt th
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.slice(0, 2)).toEqual(["oss-verify", { description: "What it is." }]);
   // Left, the description reads rendered again, with what was written.
-  const rendered = await screen.findByRole("button", { name: "Description of P3" });
-  expect(await within(rendered).findByText("What it is.")).toBeDefined();
+  const back = await screen.findByRole("group", { name: "Description of P3" });
+  expect(await within(back).findByText("What it is.")).toBeDefined();
 });
 
 test("dragging a row onto another writes the place it landed", async () => {
