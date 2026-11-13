@@ -228,6 +228,9 @@ type bootConfig struct {
 	// or DISPATCH_CHAT_* settings of the place it names), checked whole; an empty Place is no
 	// model configured, which the server says at boot rather than refusing to start.
 	Answerer answererConfig
+	// WritingCheck is the writing check (DISPATCH_WRITING_CHECK and the settings beside it),
+	// checked whole; newWritingCheck builds it, its reader's model included where one is set.
+	WritingCheck writingCheckConfig
 }
 
 func main() {
@@ -485,6 +488,13 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// The writing check (INFRA-3231): its reader is a model of its own with a quota of its own,
+	// never the answerer's. A shape it could not build from refuses the boot.
+	writingCheck, err := newWritingCheck(boot.WritingCheck)
+	if err != nil {
+		slog.Error("dispatch: build the writing check", "error", err)
+		os.Exit(1)
+	}
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -504,6 +514,7 @@ func main() {
 		AgentStream:    agentStream,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		WritingCheck:   writingCheck,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -571,10 +582,12 @@ func main() {
 	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
 	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute) and
-	//     the document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
+	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
+	//     start, with or without NATS) and the writing check's event sweep
+	//     (api.RunWritingCheckEventSweep, every day from a tick at start), each recording its
+	//     passes in duty_passes like the timers above; each tick sends its statements whether or
+	//     not anything is owed.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -888,6 +901,10 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, leases, background.ResumeDeliveries)
+	// The writing check's decisions past their 90 days, once a day across the processes under
+	// the writing-check-events lease, the first pass at start. It runs whether the check is on or
+	// off, so rows a deployment wrote before it turned the check off still age out.
+	go api.RunWritingCheckEventSweep(ctx, database, leases)
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
@@ -1228,6 +1245,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot.Answerer, err = resolveAnswerer(env, boot.Embedder.Place)
+	if err != nil {
+		return bootConfig{}, err
+	}
+	boot.WritingCheck, err = resolveWritingCheck(env, boot.TestHooksEnabled)
 	if err != nil {
 		return bootConfig{}, err
 	}

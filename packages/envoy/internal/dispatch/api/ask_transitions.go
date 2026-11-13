@@ -174,6 +174,7 @@ func parseReplacesAnswer(raw json.RawMessage) (*time.Time, error) {
 
 // answerAskInput is the body of POST /api/v1/asks/{id}/answer.
 type answerAskInput struct {
+	writingCheckOverride
 	Selected []string `json:"selected"`
 	Text     *string  `json:"text"`
 	// ExpectedEditedAt is required: an answer names the wording it answers, and a body without
@@ -210,6 +211,9 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 			capExceeded(w, "text", length, contracts.DispatchEventBodyMax)
 			return
 		}
+	}
+	if !s.writingCheck(w, r, actor, input) {
+		return
 	}
 	expectedEditedAt, provided, err := parseAnswerPrecondition("expected_edited_at", input.ExpectedEditedAt)
 	if err != nil {
@@ -303,6 +307,7 @@ func (s *server) answerAsk(w http.ResponseWriter, r *http.Request) {
 
 // resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.
 type resolveAskInput struct {
+	writingCheckOverride
 	Kind   string       `json:"kind" required:"true"`
 	Reason string       `json:"reason" required:"true"`
 	Actor  *model.Actor `json:"actor"`
@@ -350,6 +355,9 @@ func (s *server) resolveAsk(w http.ResponseWriter, r *http.Request) {
 			"reason may not begin with "+strconv.Quote(docs.SettlementRetractionReason)+", which marks a retraction the document's settlement wrote")
 		return
 	}
+	if !s.writingCheck(w, r, actor, input) {
+		return
+	}
 	ask, err := s.closeAsk(r.Context(), r.PathValue("id"), actor, askTransition{
 		EventType: "ask.resolved",
 		Apply: func(ctx context.Context, tx pgx.Tx, ask model.Ask) (model.Ask, error) {
@@ -390,6 +398,7 @@ func (s *server) writeClosedBlockState(ctx context.Context, ask model.Ask, actor
 // declineAskInput is the body of POST /api/v1/asks/{id}/decline. Both fields are optional: a
 // person who writes no note declines all the same, and a browser names no acting session.
 type declineAskInput struct {
+	writingCheckOverride
 	Note  *string      `json:"note"`
 	Actor *model.Actor `json:"actor"`
 }
@@ -424,6 +433,9 @@ func (s *server) declineAsk(w http.ResponseWriter, r *http.Request) {
 	// event's bound; before the transition opens its transaction, so nothing is written.
 	if length := itemblocks.Units16(note); length > contracts.DispatchEventBodyMax {
 		capExceeded(w, "note", length, contracts.DispatchEventBodyMax)
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	// The resolve route refuses a reason opening with docs.SettlementRetractionReason because

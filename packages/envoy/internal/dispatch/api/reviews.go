@@ -304,6 +304,7 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 
 // createArtifactReviewInput is the body of POST /api/v1/artifacts/{id}/reviews.
 type createArtifactReviewInput struct {
+	writingCheckOverride
 	State  string  `json:"state" required:"true"`
 	Reason *string `json:"reason"`
 }
@@ -340,6 +341,9 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 			capExceeded(w, "reason", length, contracts.DispatchEventBodyMax)
 			return
 		}
+	}
+	if !s.writingCheck(w, r, actor, input) {
+		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -446,6 +450,7 @@ func (s *server) writeApprovalReviews(
 
 // approvalRequestInput is the body of POST /api/v1/artifacts/{id}/approval-requests.
 type approvalRequestInput struct {
+	writingCheckOverride
 	Actor   *model.Actor `json:"actor"`
 	Summary *string      `json:"summary"`
 	// IncludeVerification asks the human to approve the issue's Verification document in the
@@ -487,6 +492,9 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	pool, err := s.readyPool()

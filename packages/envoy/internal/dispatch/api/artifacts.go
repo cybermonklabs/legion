@@ -73,6 +73,9 @@ type artifactUploadInput struct {
 	supplied    *model.Actor
 	inline      bool
 	blank       bool
+	// override is the upload's override_writing_check: the JSON member, or the multipart form
+	// value of that name.
+	override string
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -97,6 +100,7 @@ func (target artifactTarget) refPrefix() string {
 }
 
 type jsonArtifactUpload struct {
+	writingCheckOverride
 	Name string `json:"name" required:"true"`
 	// Content is required of a JSON upload, which is always a markdown document: a body with
 	// no content, or whose content is blank, is refused (400 ARTIFACT_INPUT, uploadArtifactFor).
@@ -106,7 +110,13 @@ type jsonArtifactUpload struct {
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
 	Actor   *model.Actor    `json:"actor"`
+	// unreadFile is the media type of an uploaded file the writing check does not read, one not
+	// stored as a Markdown document; "" for every upload it reads. It is no member of the body.
+	unreadFile string
 }
+
+// unreadUpload answers the media type of an uploaded file the writing check does not read.
+func (upload jsonArtifactUpload) unreadUpload() string { return upload.unreadFile }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 	issueKey := r.PathValue("key")
@@ -248,8 +258,47 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 			return
 		}
 	}
+	if !s.checkUploadWriting(w, r, input, actor, kind, mediaType, target) {
+		return
+	}
 	input.contentType = storedType
 	s.storeArtifact(w, r, input, actor, kind, target)
+}
+
+// checkUploadWriting runs the writing check over an upload before anything of it is stored: a
+// Markdown document's text, read as inline content is, and the summary, which is read on a file
+// upload too. A new version of a document uploaded whole is read for the blocks it adds to the
+// newest saved version alone. Any other file is not read, and its record says so
+// (exempt_unread_upload). It answers whether the upload goes on, as writingCheck does.
+func (s *server) checkUploadWriting(
+	w http.ResponseWriter, r *http.Request, input artifactUploadInput, actor model.Actor, kind, mediaType string,
+	target artifactTarget,
+) bool {
+	checked := jsonArtifactUpload{Summary: input.summary}
+	checked.OverrideWritingCheck = input.override
+	if kind != "doc" {
+		checked.unreadFile = mediaType
+		return s.writingCheck(w, r, actor, checked)
+	}
+	content := string(input.content)
+	if s.deps.WritingCheck.on() {
+		existing, err := lookupArtifactByNameOrSlug(r.Context(), s.deps.Store.Pool, target, input.name)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			s.writeHandlerError(w, err)
+			return false
+		case existing.Kind == "doc":
+			previous, err := s.previousDocumentMarkdown(r.Context(), existing.ID)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return false
+			}
+			content = addedMarkdownBlocks(previous, content)
+		}
+	}
+	checked.Content = &content
+	return s.writingCheck(w, r, actor, checked)
 }
 
 func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
@@ -291,6 +340,7 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		supplied:    body.Actor,
 		inline:      true,
 		blank:       blank,
+		override:    body.OverrideWritingCheck,
 	}, true
 }
 
@@ -378,6 +428,7 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		contentType: contentType,
 		summary:     strings.TrimSpace(r.FormValue("summary")),
 		supplied:    supplied,
+		override:    r.FormValue(writingCheckOverrideField),
 	}, true
 }
 
@@ -959,6 +1010,7 @@ func (s *server) commitArtifactVersionEvent(
 // createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
 // project artifact patterns.
 type createVersionInput struct {
+	writingCheckOverride
 	Summary string       `json:"summary" required:"true"`
 	Actor   *model.Actor `json:"actor"`
 }
@@ -983,6 +1035,9 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := validateArtifactRequestRef(r); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -1034,6 +1089,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 // editArtifactInput is the body of POST /api/v1/artifacts/{id}/edits and its issue and project
 // artifact patterns.
 type editArtifactInput struct {
+	writingCheckOverride
 	Ops          []model.EditOp          `json:"ops"`
 	Summary      string                  `json:"summary"`
 	Precondition *model.EditPrecondition `json:"precondition"`
@@ -1067,6 +1123,11 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
+		return
+	}
+	// An edit adds only what its operations write (with, markdown), and the check reads only
+	// that: the text an operation finds is the document's already.
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)

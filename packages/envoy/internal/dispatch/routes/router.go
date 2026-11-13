@@ -121,7 +121,10 @@ type AppContextOptions struct {
 	Embedder embed.Embedder
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is configured.
 	// cmd/dispatch builds it (newAnswerer). See api.DepsInput.
-	Answerer      api.Answerer
+	Answerer api.Answerer
+	// WritingCheck is the writing check every prose write runs; nil turns it off. cmd/dispatch
+	// builds it (newWritingCheck). See api.Deps.WritingCheck.
+	WritingCheck  *api.WritingCheck
 	Events        *events.Broker
 	App           *auth.AppConfig
 	GitHubAPIBase string
@@ -203,6 +206,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		Docs:                   opts.Docs,
 		Embedder:               opts.Embedder,
 		Answerer:               opts.Answerer,
+		WritingCheck:           opts.WritingCheck,
 		Events:                 opts.Events,
 		App:                    opts.App,
 		GitHubAPIBase:          opts.GitHubAPIBase,

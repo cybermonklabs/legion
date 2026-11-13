@@ -177,3 +177,5 @@ GET /api/v1/signins any
 POST /api/v1/signins/{id}/revoke any
 GET /api/v1/users any
 GET /api/v1/whoami any
+GET /api/v1/writing-check any
+GET /api/v1/writing-check/counts any

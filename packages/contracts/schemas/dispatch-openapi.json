@@ -193,6 +193,10 @@
                     "description": "the artifact's name, trimmed",
                     "type": "string"
                   },
+                  "override_writing_check": {
+                    "description": "the writing check's override, \"agent\" or \"generated\", as the JSON body's override_writing_check field",
+                    "type": "string"
+                  },
                   "summary": {
                     "description": "what this version changed, trimmed",
                     "type": "string"
@@ -224,6 +228,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtifactUploadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -447,6 +461,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Message"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -1026,6 +1050,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1148,6 +1182,16 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -1443,6 +1487,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1530,6 +1584,16 @@
                       "$ref": "#/components/schemas/AmbiguousTargetError"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -1734,6 +1798,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -1887,6 +1961,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ArtifactReview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -2101,6 +2185,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -2323,6 +2417,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2378,6 +2482,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Ask"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -2500,6 +2614,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Ask"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -2725,6 +2849,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -2868,6 +3002,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/BroadcastCreated"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -3066,6 +3210,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -3420,6 +3574,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CommentWriteResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -5037,6 +5201,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -5198,6 +5372,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -5297,6 +5481,10 @@
                     "description": "the artifact's name, trimmed",
                     "type": "string"
                   },
+                  "override_writing_check": {
+                    "description": "the writing check's override, \"agent\" or \"generated\", as the JSON body's override_writing_check field",
+                    "type": "string"
+                  },
                   "summary": {
                     "description": "what this version changed, trimmed",
                     "type": "string"
@@ -5340,6 +5528,16 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -5554,6 +5752,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -5672,6 +5880,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -5871,6 +6089,16 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -6177,6 +6405,16 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -6706,6 +6944,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -6918,6 +7166,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CheckResultRecorded"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -8530,6 +8788,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "bearer",
@@ -9178,6 +9446,10 @@
                     "description": "the artifact's name, trimmed",
                     "type": "string"
                   },
+                  "override_writing_check": {
+                    "description": "the writing check's override, \"agent\" or \"generated\", as the JSON body's override_writing_check field",
+                    "type": "string"
+                  },
                   "summary": {
                     "description": "what this version changed, trimmed",
                     "type": "string"
@@ -9221,6 +9493,16 @@
                       "type": "object"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -9435,6 +9717,16 @@
                 }
               }
             }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
+                }
+              }
+            }
           }
         },
         "x-auth": "any",
@@ -9608,6 +9900,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unprocessable Entity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckRefusal"
                 }
               }
             }
@@ -11044,6 +11346,91 @@
         "x-test-hook": true,
         "x-write-scope": "deployment"
       }
+    },
+    "/api/v1/writing-check": {
+      "get": {
+        "description": "The writing check as this process runs it: {enabled, rules, rules_left_out, detector, model, reader_calls, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {on, reason}, reason saying why it is off or runs with no model; model the reader's {endpoint_host, deployment, api_version, tokens_per_minute}, or null where none is configured, never a key or a token; reader_calls the reader calls this process made since it started; bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it.",
+        "operationId": "getApiV1WritingCheck",
+        "parameters": [
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckState"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
+    "/api/v1/writing-check/counts": {
+      "get": {
+        "description": "One UTC day of the writing check's decisions, ?day=YYYY-MM-DD (default today): {day, total, outcomes, overrides, routes}, each a count by outcome (refused, forced, clean, the exemptions and the reader's fail-open outcomes), by override_writing_check value, and by \"\u003cmethod\u003e \u003croute\u003e\". A day that is not YYYY-MM-DD is 400 INVALID_QUERY. Rows are kept 90 days.",
+        "operationId": "getApiV1WritingCheckCounts",
+        "parameters": [
+          {
+            "name": "day",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WritingCheckCounts"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
     }
   },
   "components": {
@@ -11653,6 +12040,9 @@
               }
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "selected": {
             "items": {
               "type": "string"
@@ -11699,6 +12089,9 @@
           },
           "include_verification": {
             "type": "boolean"
+          },
+          "override_writing_check": {
+            "type": "string"
           },
           "summary": {
             "type": [
@@ -14368,6 +14761,9 @@
               "string"
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "reply_to_block": {
             "type": [
               "null",
@@ -14562,6 +14958,9 @@
               "null",
               "string"
             ]
+          },
+          "override_writing_check": {
+            "type": "string"
           }
         },
         "required": [
@@ -14592,6 +14991,9 @@
       },
       "CreateArtifactReviewInput": {
         "properties": {
+          "override_writing_check": {
+            "type": "string"
+          },
           "reason": {
             "type": [
               "null",
@@ -14647,6 +15049,9 @@
               "null"
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "question": {
             "type": "string"
           },
@@ -14665,6 +15070,9 @@
             "type": "string"
           },
           "delivery": {
+            "type": "string"
+          },
+          "override_writing_check": {
             "type": "string"
           },
           "session_ids": {
@@ -14764,6 +15172,9 @@
               "array",
               "null"
             ]
+          },
+          "override_writing_check": {
+            "type": "string"
           },
           "reply_to": {
             "type": [
@@ -14945,6 +15356,9 @@
               "null"
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "parent": {
             "type": [
               "null",
@@ -15023,6 +15437,9 @@
               "string"
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "target": {
             "type": [
               "null",
@@ -15098,6 +15515,9 @@
                 "type": "null"
               }
             ]
+          },
+          "override_writing_check": {
+            "type": "string"
           },
           "summary": {
             "type": "string"
@@ -15486,6 +15906,9 @@
               "null",
               "string"
             ]
+          },
+          "override_writing_check": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -17269,6 +17692,9 @@
               "null"
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "precondition": {
             "anyOf": [
               {
@@ -17362,6 +17788,9 @@
               "array"
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "question": {
             "type": [
               "null",
@@ -17410,6 +17839,9 @@
             ]
           },
           "body": {
+            "type": "string"
+          },
+          "override_writing_check": {
             "type": "string"
           }
         },
@@ -20147,6 +20579,9 @@
           "name": {
             "type": "string"
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "primary": {
             "description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload",
             "type": "boolean"
@@ -20510,6 +20945,9 @@
               "null",
               "string"
             ]
+          },
+          "override_writing_check": {
+            "type": "string"
           }
         },
         "required": [
@@ -21445,6 +21883,9 @@
               "null",
               "string"
             ]
+          },
+          "override_writing_check": {
+            "type": "string"
           }
         },
         "type": "object"
@@ -21477,6 +21918,9 @@
             "type": "string"
           },
           "observed": {
+            "type": "string"
+          },
+          "override_writing_check": {
             "type": "string"
           },
           "role": {
@@ -22046,6 +22490,9 @@
             ]
           },
           "kind": {
+            "type": "string"
+          },
+          "override_writing_check": {
             "type": "string"
           },
           "reason": {
@@ -23136,6 +23583,9 @@
               "array"
             ]
           },
+          "override_writing_check": {
+            "type": "string"
+          },
           "parent": {
             "anyOf": [
               {
@@ -23577,6 +24027,211 @@
           "id",
           "snippet",
           "href"
+        ],
+        "type": "object"
+      },
+      "WritingCheckCounts": {
+        "properties": {
+          "day": {
+            "type": "string"
+          },
+          "outcomes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "overrides": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "routes": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "day",
+          "total",
+          "outcomes",
+          "overrides",
+          "routes"
+        ],
+        "type": "object"
+      },
+      "WritingCheckDetector": {
+        "properties": {
+          "on": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "on",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "WritingCheckFinding": {
+        "properties": {
+          "field": {
+            "type": "string"
+          },
+          "rewrite": {
+            "type": "string"
+          },
+          "rule": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field",
+          "rule",
+          "text",
+          "rewrite"
+        ],
+        "type": "object"
+      },
+      "WritingCheckModel": {
+        "properties": {
+          "api_version": {
+            "type": "string"
+          },
+          "deployment": {
+            "type": "string"
+          },
+          "endpoint_host": {
+            "type": "string"
+          },
+          "tokens_per_minute": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "endpoint_host",
+          "deployment",
+          "api_version",
+          "tokens_per_minute"
+        ],
+        "type": "object"
+      },
+      "WritingCheckRefusal": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/WritingCheckFinding"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "override_field": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "error",
+          "findings",
+          "override_field"
+        ],
+        "type": "object"
+      },
+      "WritingCheckRuleLeftOut": {
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "WritingCheckState": {
+        "properties": {
+          "bundle_model_id": {
+            "type": "string"
+          },
+          "detector": {
+            "$ref": "#/components/schemas/WritingCheckDetector"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WritingCheckModel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reader_calls": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "rules": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "rules_left_out": {
+            "items": {
+              "$ref": "#/components/schemas/WritingCheckRuleLeftOut"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "enabled",
+          "rules",
+          "rules_left_out",
+          "detector",
+          "model",
+          "reader_calls",
+          "bundle_model_id"
         ],
         "type": "object"
       }

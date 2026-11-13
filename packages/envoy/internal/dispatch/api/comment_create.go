@@ -21,6 +21,7 @@ import (
 )
 
 type commentInput struct {
+	writingCheckOverride
 	Body    string             `json:"body"`
 	Anchor  *model.AnchorInput `json:"anchor"`
 	ReplyTo *string            `json:"reply_to"`
@@ -621,6 +622,9 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	delivery, mentionTargets, err := validateCommentMentions(input)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 

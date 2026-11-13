@@ -27,6 +27,7 @@ const issueUpdatedNow = "greatest(updated_at, clock_timestamp())"
 
 // updateIssueInput is the body of PATCH /api/v1/issues/{key}.
 type updateIssueInput struct {
+	writingCheckOverride
 	Title         *string               `json:"title"`
 	Status        *string               `json:"status"`
 	Rank          *rankInput            `json:"rank"`
@@ -52,6 +53,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	actor, ok := s.requireActor(w, r, input.Actor)
 	if !ok {
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	var blockers []string

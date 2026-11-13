@@ -984,6 +984,7 @@ func (s *server) createCommentDelivery(w http.ResponseWriter, r *http.Request) {
 
 // commentReplyInput is the body of POST /api/v1/comments/{id}/reply.
 type commentReplyInput struct {
+	writingCheckOverride
 	Actor   *model.Actor `json:"actor"`
 	Target  *string      `json:"target"`
 	Attempt int          `json:"attempt" required:"true"`
@@ -1024,6 +1025,9 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.ReplyToBlock != nil && input.Body == nil {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 

@@ -96,8 +96,12 @@ type Deps struct {
 	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
 	// capability route says no model is configured.
 	Answerer Answerer
-	Envoy    *envoy.Client
-	Events   *events.Broker
+	// WritingCheck is the writing check every route whose request carries prose runs before it
+	// writes (INFRA-3231, writing_check.go); nil is the check turned off. cmd/dispatch builds it
+	// (DISPATCH_WRITING_CHECK and the settings beside it).
+	WritingCheck *WritingCheck
+	Envoy        *envoy.Client
+	Events       *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -202,7 +206,9 @@ type DepsInput struct {
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
-	Events   *events.Broker
+	// WritingCheck is the writing check; nil turns it off. See Deps.WritingCheck.
+	WritingCheck *WritingCheck
+	Events       *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -307,6 +313,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
+		WritingCheck:           input.WritingCheck,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,

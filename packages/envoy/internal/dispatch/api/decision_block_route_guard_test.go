@@ -197,10 +197,17 @@ func TestTheGuardReadsABodyStringOffARequestType(t *testing.T) {
 }
 
 // decisionBlockRouteHandlers is every POST and PATCH row of the table, by "<method> <pattern>",
-// with the handler bodies that row mounts. It is read from the source of routes() rather than from
-// a server's own table so that each row's handler comes with it: a handler read at run time is a
-// function value, and what this guard asks is what that function's source runs.
+// with the handler bodies that row mounts (writeRouteHandlers).
 func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockFunction {
+	t.Helper()
+	return writeRouteHandlers(t, graph, keyedMethod)
+}
+
+// writeRouteHandlers is every row of the table whose method include takes, by "<method>
+// <pattern>", with the handler bodies that row mounts. It is read from the source of routes()
+// rather than from a server's own table so that each row's handler comes with it: a handler read
+// at run time is a function value, and what a guard asks is what that function's source runs.
+func writeRouteHandlers(t *testing.T, graph *lockGraph, include func(method string) bool) map[string][]*lockFunction {
 	t.Helper()
 	table := graph.named["api.server.routes"]
 	if table == nil {
@@ -217,7 +224,7 @@ func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lo
 			return true
 		}
 		verb := strings.ToUpper(strings.TrimPrefix(method.Sel.Name, "Method"))
-		if !keyedMethod(verb) {
+		if !include(verb) {
 			return false
 		}
 		pattern, ok := literalText(row.Elts[1], table.pkg, graph.constants)
@@ -229,17 +236,24 @@ func decisionBlockRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lo
 		return false
 	})
 	if len(routes) == 0 {
-		t.Fatal("the guard reads no POST or PATCH row off the routes table")
+		t.Fatal("the guard reads no row of the methods it asks for off the routes table")
 	}
 	return routes
 }
 
 // decisionBlockChecked reports whether running one of handlers runs the shared check: a call of
 // blockBoundError over a call of itemblocks.Check, anywhere in what the handler runs inside
-// package api. A call is followed as the copy-lock graph resolves it, plus every function handed
-// to it as an argument, whatever the callee does with it; a function of another package is not
-// walked, since the helper is unexported and no path to it leaves this one.
+// package api (routeReaches).
 func decisionBlockChecked(graph *lockGraph, handlers []*lockFunction) bool {
+	return routeReaches(graph, handlers, func(call *ast.CallExpr) bool { return checksABody(graph, call) })
+}
+
+// routeReaches reports whether running one of handlers makes a call matches takes, anywhere in
+// what the handler runs inside package api. A call is followed as the copy-lock graph resolves
+// it, plus every function handed to it as an argument, whatever the callee does with it; a
+// function of another package is not walked, since the helpers the guards look for are
+// unexported and no path to them leaves this one.
+func routeReaches(graph *lockGraph, handlers []*lockFunction, matches func(*ast.CallExpr) bool) bool {
 	walked := map[*lockFunction]bool{}
 	var runs func(fn *lockFunction) bool
 	runs = func(fn *lockFunction) bool {
@@ -248,7 +262,7 @@ func decisionBlockChecked(graph *lockGraph, handlers []*lockFunction) bool {
 		}
 		walked[fn] = true
 		for _, call := range ownCalls(fn) {
-			if checksABody(graph, call) {
+			if matches(call) {
 				return true
 			}
 			for _, callee := range graph.callees(call) {

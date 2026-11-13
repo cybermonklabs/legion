@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // routeAnswer is one answer a route can give: a status and a zero value of the Go type its body
@@ -423,6 +424,11 @@ type liveWritePauseQuery struct {
 	Wait string `query:"wait"`
 }
 
+// writingCheckCountsQuery is GET /api/v1/writing-check/counts's query.
+type writingCheckCountsQuery struct {
+	Day string `query:"day"`
+}
+
 // --- the shapes ------------------------------------------------------------------------------
 
 // routeShapes is the shape of every row of the table with its test hooks in, by
@@ -646,7 +652,11 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
-	"GET /api/v1/agents":           {Status: http.StatusOK, Response: []agentResponse{}},
+	"GET /api/v1/writing-check":    {Status: http.StatusOK, Response: writingCheckState{}},
+	"GET /api/v1/writing-check/counts": {
+		Status: http.StatusOK, Response: store.WritingCheckCounts{}, Params: writingCheckCountsQuery{},
+	},
+	"GET /api/v1/agents": {Status: http.StatusOK, Response: []agentResponse{}},
 	"GET /api/v1/agents/{session_id}/answers": {
 		Status: http.StatusOK, Response: model.SessionAnswersResponse{}, Params: sessionAnswersQuery{},
 	},

@@ -125,6 +125,7 @@ type broadcastTarget struct {
 
 // createBroadcastInput is the body of POST /api/v1/broadcasts.
 type createBroadcastInput struct {
+	writingCheckOverride
 	Body       string   `json:"body" required:"true"`
 	Delivery   string   `json:"delivery" required:"true"`
 	SessionIDs []string `json:"session_ids" required:"true"`
@@ -147,6 +148,9 @@ func (s *server) createBroadcast(w http.ResponseWriter, r *http.Request) {
 	requested, err := validateBroadcastInput(input.Body, input.Delivery, input.SessionIDs)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	if s.deps.Envoy == nil {

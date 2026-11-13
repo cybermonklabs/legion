@@ -151,6 +151,7 @@ func (s *server) reopenComment(w http.ResponseWriter, r *http.Request) {
 // block's id and where its span starts in body, in UTF-16 code units, against the comment's
 // revision the editor read them at (refs.IndexItem). Without them the ids follow the text.
 type editCommentInput struct {
+	writingCheckOverride
 	Body         string               `json:"body" required:"true"`
 	BaseRevision *int                 `json:"base_revision"`
 	Blocks       []itemblocks.Carried `json:"blocks"`
@@ -181,6 +182,9 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		carried = &refs.CarriedEdit{BaseRevision: *input.BaseRevision, Blocks: input.Blocks}
+	}
+	if !s.writingCheck(w, r, actor, input) {
+		return
 	}
 	tx, err := s.begin(r.Context())
 	if err != nil {

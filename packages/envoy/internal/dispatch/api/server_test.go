@@ -133,6 +133,9 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// writingCheck runs the server with the writing check (INFRA-3231); nil is the check turned
+	// off, as every test but writing_check_test.go's runs it.
+	writingCheck *WritingCheck
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -260,6 +263,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:               options.answerer,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
+		WritingCheck:           options.writingCheck,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

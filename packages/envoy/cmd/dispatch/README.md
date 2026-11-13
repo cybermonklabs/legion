@@ -856,7 +856,7 @@ What the two processes share, and what each keeps to itself:
 
 - No leased background loop runs a pass beside another process's pass of the same loop.
   Each pass takes a named session-level advisory lease for its length (`duty.Exclusive`), so a process whose attempt lands inside another's pass finds it held and logs a skip.
-  The eleven timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the document settlement resumption and the prune of the registry of live server processes
+  The twelve timer loops — the delivery reconcile, the architecture import, the webhook redelivery sweep, the CI reconcile pass (lease `ci-reconcile`, beside the redelivery sweep in what it recovers), the hourly document compaction sweep (lease `document-compaction`, first tick at start, with or without NATS), the block index reconciliation, the term-statistics refresh, the repair of closed and reopened issues' asks, the keyed writes' maintenance sweep (lease `suggestion-outcomes`), the daily writing check event sweep (lease `writing-check-events`, first tick at start), the document settlement resumption and the prune of the registry of live server processes
   — also record each pass in `duty_passes` (migration `0115`) with the loop's own period, so a process whose tick lands between another's passes
   — the ordinary case, since each ticker draws its phase at boot and a rolling update starts the second process minutes after the first
   — finds the period already served and logs the same skip: each runs once per period across the processes.
@@ -1168,6 +1168,8 @@ A process that finds it held tries again
   No notification replaces this timer, which is why it is the one piece of maintenance that stayed one:
   a key passes its window by the clock alone, an answer run passes its own by the clock too, and a delivery is owed because the process holding it died, which commits nothing to announce.
   It keeps the lease name the suggestion outcome sweep carried this work under, so during a roll the earlier release's pass and this one still exclude each other on it.
+
+- The writing check event sweep (`api.RunWritingCheckEventSweep`, lease `writing-check-events`) deletes the `writing_check_events` rows older than 90 days (`store.WritingCheckRetention`, Writing check below) once a day, its first pass at start, whether the check is on or off.
 
 Outside these classes, the document compaction sweep (lease `document-compaction`) runs every hour from a tick at start whether or not NATS is configured, the outbox's publish scan is woken, never periodic (`outbox.Run`), the settlement resumption still runs every minute, the block index reconciliation (lease `block-index`) runs every 30 s (every 2 s while a batch is full) and the repair of closed and reopened issues' asks (lease `issue-ask-repair`, Database migrations below) every 10 minutes after its boot pass, each recording its passes in `duty_passes` with its period, and the per-feature listeners (the delivery live hub, the event stream relay and the events outbox) keep their own connections and keep-alive pings.
 
@@ -2550,6 +2552,73 @@ A pod that dies mid-run therefore stores no terminal frame, and the next reader 
 At that moment the running answer, a reader and the sweep may each try to end one run, so the table settles which of them does rather than whichever is first:
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
+
+## Writing check
+
+The writing check reads the prose of an agent's write before the server stores it, and refuses a write that breaks one of its rules (`internal/dispatch/writingcheck`, `internal/dispatch/api/writing_check.go`).
+It is off unless `DISPATCH_WRITING_CHECK=on`.
+
+### Settings
+
+| Setting | What it does |
+| --- | --- |
+| `DISPATCH_WRITING_CHECK` | `on` or `off` (default `off`). |
+| `DISPATCH_WRITING_CHECK_RULES_OFF` | A comma list of rule ids not to apply: `semicolon`, `phrasal-verb`, `nominalization`, `long-sentence`, `dangling-conjunction`, and `vacuous-verb-phrase` for the detector. An id the check does not carry refuses the boot. It turns rules off and never on: the bundle (`writingcheck/bundle.go`) names the rules that can run. |
+| `DISPATCH_WRITING_CHECK_DETECTOR` | `on` or `off` (default `on` once the check is on). `off` turns the detector off; the structure rules still run. |
+| `DISPATCH_WRITING_CHECK_AZURE_ENDPOINT`, `_AZURE_DEPLOYMENT`, `_AZURE_TOKENS_PER_MINUTE` | The detector's reader: an Azure AI Foundry chat deployment of its own, with a rate limiter of its own sized by the quota. It shares neither the answerer's model nor its quota. With the check and the detector on, the three are set together or not at all: a group set in part refuses the boot, and a group not set at all is no model, where the structure rules run alone and each check records `no_model`. With the check or the detector off, the group is accepted and ignored. |
+| `DISPATCH_WRITING_CHECK_AZURE_API_VERSION` | Optional `api-version` query value. |
+| `DISPATCH_WRITING_CHECK_AZURE_SCOPE` | The token scope (default `embed.DefaultEntraScope`, as the answerer's). |
+| `DISPATCH_AZURE_TENANT_ID`, `DISPATCH_AZURE_CLIENT_ID`, `DISPATCH_AZURE_FEDERATED_TOKEN_FILE` | The shared keyless Azure sign-in. The writing check's model is its third reader, beside an `azure` embedder and an `azure` answerer: the three are accepted when any `DISPATCH_WRITING_CHECK_AZURE_*` setting is set. |
+| `DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT` | Test processes only, under `DISPATCH_TEST_HOOKS=1`: a Go duration that replaces the reader's two-second bound. |
+
+### What the check reads
+
+The check reads a write by an agent session that is not a project's Legion daemon (`legion-daemon:<PROJECT>`), and a write a person's credential makes for such a session (the actor's `act.session`).
+It does not read a person's own write, a daemon's write or a write Dispatch itself makes.
+One registry (`api/writing_check_fields.go`) marks every string member of every request type as prose or not prose, and the check reads every prose member a request carries.
+A document edit is read for the text it adds (an operation's `with` and `markdown`), and a new version uploaded whole for the blocks it adds to the newest saved version.
+An upload stored as a Markdown document is read as inline content is; any other file is not read, and only its `summary` is.
+The check runs once the request is decoded and its writer resolved, before the write opens a transaction: the reader may call a model, and no transaction waits on it.
+A reader fault (`reader_timeout`, `reader_error`, `reader_malformed`, `reader_budget`, `candidate_cap`, `model_mismatch`) never refuses a write: the structure rules decide it alone.
+
+### Refusal and override
+
+A refused write is `422 WRITING_CHECK_REFUSED` with `{code, error, findings: [{field, rule, text, rewrite}], override_field: "override_writing_check"}`, and nothing of it is written.
+The `error` text gives, for each finding, the rewrite, then the rule id and the sentence, and last the way through.
+A write that is correct as it stands is sent again with `override_writing_check`: `agent` for an agent's own judgement (the CLI flag `--override-writing-check`), or `generated` for text a plugin generated.
+Every request type with a prose member declares the field, and an upload takes it as a multipart form value; any other value is `400 INVALID_WRITING_CHECK_OVERRIDE`.
+The keyed layer stores a `422` under its `Idempotency-Key` (Keyed writes, below), so a write sent again with the override takes a new key.
+
+### Records
+
+Each decision is one row of `writing_check_events`: the route and method, the actor's kind and id, the act's session, the personal token's row id where the write was made with one, the outcome, the override value, the rules broken and their fields, the code stage's candidate count, and how long the reader took.
+The outcomes are `refused`, `forced`, `clean`, `exempt_person`, `exempt_daemon`, `exempt_system`, `exempt_unread_upload`, and the reader's fail-open outcomes with `no_model`.
+A write that carries no prose text is not recorded.
+The server inserts the row outside the write's transaction, after the decision and before the answer; an insert that fails is logged and the write goes on.
+A daily sweep deletes the rows older than 90 days (Background loops, above).
+
+`GET /api/v1/writing-check` answers the check as this process runs it: `enabled`, the `rules` it applies, `rules_left_out` with each reason, the `detector` (`on` and why not), the reader's `model` (endpoint host, deployment, api version, tokens per minute, never a credential), `reader_calls` since the process started, and `bundle_model_id`.
+`GET /api/v1/writing-check/counts?day=YYYY-MM-DD` counts one UTC day by outcome, by override value and by route.
+
+A day's forced writes of each kind:
+
+```sql
+select override_value, method || ' ' || route as route, count(*)
+from writing_check_events
+where outcome = 'forced' and created_at >= '2026-11-13' and created_at < '2026-11-14'
+group by 1, 2 order by 1, 3 desc;
+```
+
+A day's exemptions, with the daemon-named writes counted by the personal token that made them:
+
+```sql
+select outcome, actor_id, act_session, token_id, count(*)
+from writing_check_events
+where outcome like 'exempt_%' and created_at >= '2026-11-13' and created_at < '2026-11-14'
+group by 1, 2, 3, 4 order by 1, 5 desc;
+```
+
+An `exempt_daemon` row with a `token_id` is a daemon-named write made with a person's token: a session that names itself `legion-daemon:<PROJECT>` to pass the check shows up there.
 
 ## Keyed writes
 

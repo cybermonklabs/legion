@@ -221,6 +221,10 @@ var openAPIMultipartSchema = map[string]any{
 			"type":        "string",
 			"description": "the acting session as one JSON object, as the JSON body's `actor` field",
 		},
+		writingCheckOverrideField: map[string]any{
+			"type":        "string",
+			"description": `the writing check's override, "agent" or "generated", as the JSON body's override_writing_check field`,
+		},
 	},
 	"required": []any{"file"},
 }

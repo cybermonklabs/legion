@@ -46,6 +46,7 @@ type issueDuplicateError struct {
 
 // createIssueInput is the body of POST /api/v1/issues.
 type createIssueInput struct {
+	writingCheckOverride
 	// Project and Title are not required of a caller: a create that names an external
 	// owner/repo#n takes the project from that repository's mapping and the title from the
 	// external issue (:92-127, :169-170), and only a create that names neither is refused.
@@ -136,6 +137,11 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// is written before this point.
 	if covers, scoped := s.callerProject(r); scoped && covers != input.Project {
 		refuseWriteOutsideProjectScope(w, covers, input.Project)
+		return
+	}
+	// The writing check reads the title, the spec and a components reason before anything is
+	// written or locked: its reader may call a model, and no transaction waits on it.
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	if input.External != "" {
