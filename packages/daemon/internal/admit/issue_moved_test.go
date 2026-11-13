@@ -674,7 +674,11 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// the only thing left to deliver that entry is the sweep. The record moved at the
 	// transition, and the sweep that delivers the entry later leaves it there. Making
 	// sendOwedEntry tell its start it is news of the issue fails this case at the sweep's
-	// assertion; a transition that marked nothing would fail it at the control's.
+	// assertion. Cutting the transition's mark alone does not redden the control: the phase
+	// write and the start it queues each mark at the same moment, so either one leaves the
+	// record moved (the site-mutation pass finds the phase write's mark covered this way on every
+	// path the daemon takes), and only cutting both reddens this test, first at the phase-change
+	// case of the main body above.
 	//
 	// Every clock is the engine's and stands past the record's own stamp, so a mark the sweep
 	// wrote would be newer than the one the record carries and this case would see it. The
@@ -835,6 +839,83 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		if got := movedAt(t, pool, issueKey); !got.Equal(moved) {
 			t.Fatalf("after the settlement of %s that closed its head run and decided nothing the record says the issue last moved at %s, want %s still: the daemon recording a fence it read is no movement",
 				issueKey, got.Format(time.RFC3339Nano), moved.Format(time.RFC3339Nano))
+		}
+	})
+
+	// The boot's resume of a claim the daemon suspended by rule, level with the entry its phases
+	// row names, which is the tenth kind: a start of a phase worker that moves no issue. At its
+	// boot the daemon starts again every claim of its project that owns its issue's current phase
+	// and that the daemon or its own exit suspended (workflow's booted, the resume by rule); a
+	// claim level with its entry is sent the task that takes its phase on at no entry of its own
+	// (workflow.ResumePhaseTask), built where every start of a phase worker is built (workflow's
+	// Engine.started, through workflow.StartOrOwe's own body). A claim behind that entry is sent
+	// the entry's work through the one function every send of an owed entry is written by
+	// (workflow's sendOwedEntry), which the eighth kind above locks. Either start is the daemon
+	// re-asserting work the record already owes the worker, and R3 counts the daemon's own
+	// re-assertions as no movement (dispatch://INFRA-2560): the boot is the daemon coming back,
+	// no fact of the issue, and DaemonBooted marks nothing of its own. Marked, every restart
+	// would read as every suspended tree moving at once, and a tree that had stopped before a
+	// deploy would have its quiet time reset by the deploy, so a fleet that restarts more often
+	// than the bound would never send the stalled-tree notice.
+	//
+	// It is a case of its own because nothing else reaches this branch: no fact but the boot
+	// takes it, and the boot is a fact no other case here applies. With the re-assertion taken off
+	// that one start (startMarks.reasserts in workflow's booted), every other kind of this test
+	// stays green, which is why the lock is here.
+	//
+	// The boot is applied as the daemon applies it, through the engine and the admission
+	// together, and in the shape workflow's own boot tests reach this branch with
+	// (TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow): a root of a running tree
+	// whose phase owner the daemon's rule suspended. The engine's clock stands a minute past the
+	// record's own stamp, so a mark the resume wrote would be newer than the time the record
+	// carries and this case would see it; admission keeps fixedNow, so the starts of its own pass
+	// are the monotone no-ops they are elsewhere in this test. The start row carrying the boot's
+	// own mark (record.SuperviseRequest.RuleResume), which only the resume by rule writes, is
+	// what says the case drove the resume at all, and not some other start of the pass: a resume
+	// that never ran must not pass as one that did not mark.
+	t.Run("the boot's resume of a claim level with its entry is no movement of its issue", func(t *testing.T) {
+		pool := migratedPool(t)
+		const issueKey = "LEGION-784"
+		now := fixedNow
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+			Clock: func() time.Time { return now }}, nil)
+		admission := New(record.NewStore(), engine, 1, testProject, nil)
+		admission.now = func() time.Time { return fixedNow }
+
+		// A root implementing in its own slot, whose tree runs, and whose implementer the daemon
+		// suspended by its own rule. The claim was given no entry and the issue's phases row names
+		// none, so the claim is level with it and the boot takes the resume's level branch.
+		seedSlotted(t, pool, issueKey, "U")
+		stands := issue(t, pool, issueKey)
+		stands.Phase, stands.Status, stands.DispatchStatus, stands.LastDispatchSeq = phase.Implementing, "in_progress", "in_progress", 1
+		putIssue(t, pool, stands)
+		putWorkerClaim(t, pool, issueKey, issueKey, claim.RoleImplementer, stands.Generation, supervise.StateSuspended,
+			supervise.SuspendedByDaemon)
+		before := movedAt(t, pool, issueKey)
+		if before.IsZero() {
+			t.Fatalf("the record of %s carries no movement before the boot: every row is stamped when it is written", issueKey)
+		}
+
+		// The clock stands past the row's own stamp, because a movement is only ever written
+		// forwards: a clock behind it would prove nothing.
+		now = before.Add(time.Minute)
+		applyMovement(t, pool, admission, engine, "daemon", "boot:"+testProject+":1", intake.DaemonBooted{Boot: 1})
+
+		var resumed bool
+		for _, row := range effects(t, pool) {
+			if payload, ok := row.payload.(record.SuperviseRequest); ok {
+				resumed = resumed || (row.issue == issueKey && payload.Op == "start" && payload.RuleResume &&
+					payload.ResumeTask && payload.Entry == 0 && payload.Role == claim.RoleImplementer &&
+					payload.Phase == phase.Implementing && payload.Task == workflow.ResumePhaseTask(stands))
+			}
+		}
+		if !resumed {
+			t.Fatalf("the boot left the outbox %#v, want the resume by rule that sends %s's suspended implementer its phase's resume task at no entry: the boot must take the level branch of the resume, or this case proves nothing",
+				effects(t, pool), issueKey)
+		}
+		if got := movedAt(t, pool, issueKey); !got.Equal(before) {
+			t.Fatalf("after the boot resumed %s's suspended implementer the record says the issue last moved at %s, want %s still: the resume is the daemon coming back and re-asserting work the worker holds, and marking it would reset every stopped tree's quiet time at every restart",
+				issueKey, got.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano))
 		}
 	})
 
