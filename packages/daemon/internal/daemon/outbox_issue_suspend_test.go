@@ -739,8 +739,8 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// Nothing of the old run is wanted back: the one start the re-entry queued is the
 		// planner's, of the new generation and the new run's first phase, carrying that phase's
-		// own task and the assignment it minted, which is no resume of anything
-		// (workflow.StartOrOwe).
+		// own task at the entry the transition raised on the planner's phases row, which is no
+		// resume of anything (workflow.StartOrOwe).
 		queued := startRequestsOf(t, rig.pool, child.Key)
 		if len(queued) != 1 {
 			t.Fatalf("the re-entry queued %d starts, want the one of the planner's first phase: %+v", len(queued), queued)
@@ -748,8 +748,8 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		if row := queued[0]; row.Role != claim.RolePlanner || row.Generation != back.Generation || row.Phase != phase.Planning || row.ResumeTask {
 			t.Fatalf("the re-entry queued %+v, want a start of the planner at %s generation %d carrying no resume of the old run", row, phase.Planning, back.Generation)
 		}
-		if row := queued[0]; row.Task == "" || row.Assignment == "" {
-			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task and the assignment it minted", row)
+		if row := queued[0]; row.Task == "" || row.Entry == 0 {
+			t.Fatalf("the re-entry's start = %+v, want it carrying the phase's own task at the entry the transition raised", row)
 		}
 
 		// The fixture runs no controller, so the planner's launch ends at its wait for a pod and

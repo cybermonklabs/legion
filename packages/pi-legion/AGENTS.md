@@ -97,6 +97,11 @@ refused naming that number. The split of the one plugin into this package and `@
 number is the one `DaemonAPIVersion` declares, last bumped by contract 96's setting provenance
 (`GET /legion/v1/state` carries `settingSources` and `daemon.commit`, which the reader that
 contract ships requires, so a caller from a pod below 96 is served the state without them),
+after contract 94's phase entries (INFRA-2800: each issue of `GET /legion/v1/state` carries
+`phaseEntry`, the entry the role of its current phase stands on, and `givenEntry`, the entry of
+the last task that role's claim was queued, the completion route refuses a completion of an
+entry other than the one the role's phases row names with `HANDOFF_STALE_ENTRY`, and a caller
+from a pod below 94 is served the issues without the two numbers),
 after contract 87's leak check cause (INFRA-3219: a claim view of `GET /legion/v1/state` and a
 claim of the operator's claim routes carry `leakCheckCause`, the sentence a launch try was
 refused with because the shared public leak check could not be installed in the role's pod,

@@ -302,7 +302,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 		// The retro is the implementer's own phase, as implementing is, so the move back is one
 		// between two phases of one role: the worker the move starts is the worker the operator
-		// stopped (workflow.RoleFor, TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
+		// stopped (phase.RoleFor, TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
 		kept := stoppableWorker(cfg, project, implementer, root, root, claim.RoleImplementer, phase.Retro)
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Retro), kept)
 		writePrompt(t, cfg, implementer)
@@ -361,7 +361,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 		// Both roots stand where a root's own architect works and no phase worker does: at
 		// admitted, before the first phase, which is the one root phase that holds a slot
-		// (record.AtWork) and which no pass starts a worker for (workflow.RoleFor names none).
+		// (record.AtWork) and which no pass starts a worker for (phase.RoleFor names none).
 		// So the only worker of this fixture is the member's implementer.
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Admitted))
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, other, other, phase.Admitted))

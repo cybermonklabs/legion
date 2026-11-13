@@ -28,7 +28,7 @@ import (
 
 // freshSessionHarness is the one daemon both doors are driven against: the operator's bearer and
 // a controller grant on the same server, with the workflow's facts recorded and the role of each
-// phase known (workflow.RoleFor), which the start of a phase worker whose process is gone reads.
+// phase known (phase.RoleFor), which the start of a phase worker whose process is gone reads.
 func freshSessionHarness(t *testing.T, handler intake.Handler) *harness {
 	t.Helper()
 	return freshSessionHarnessStopping(t, handler, context.Background(), NewRouteDecisions())
@@ -43,7 +43,7 @@ func freshSessionHarnessStopping(t *testing.T, handler intake.Handler, stopping 
 	h.handler = NewServer("127.0.0.1", 8437, Options{
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: settingsGating(nil), Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
-		Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
+		Handlers: []intake.Handler{handler}, RoleFor: phase.RoleFor,
 		Stopping: stopping, Decisions: decisions,
 	}).Handler
 	return h

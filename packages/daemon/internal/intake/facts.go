@@ -475,6 +475,23 @@ type ControllerTick struct {
 
 func (ControllerTick) isFact() {}
 
+// EntrySweep is the daemon's periodic convergence of the phase entries, applied as a synthetic
+// fact every entrySweepInterval by the workflow runtime's own ticker (internal/daemon's
+// tickEntrySweep) and never decoded from an event. Admission is the only handler that acts on
+// it: it reads the project's issues, its slots and its line facts as its promote path does and
+// sends every role whose claim is behind the entry its phases row names that entry's work
+// (admit.Admission.convergeEntries).
+//
+// It carries nothing, because the difference it closes is one the record already holds and the
+// handler reads the whole project. What it is for is the running: an admission pass runs on a
+// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
+// the outbox fenced out — would otherwise leave a role behind its entry until something else
+// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
+// record a transition is in the middle of writing.
+type EntrySweep struct{}
+
+func (EntrySweep) isFact() {}
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo    string

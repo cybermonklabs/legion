@@ -282,11 +282,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
 			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
-			// sentence contract 87 added (withoutLeakCheckCause), and with the two fields
-			// settingSourcesContract added gone — `settingSources` and the `daemon` block's
-			// `commit` (withoutSettingSources; state_sources_contract_test.go holds that half).
-			// Every row that reaches here is below all fourteen narrowings, so what each of them
-			// takes goes whatever the row is.
+			// sentence contract 87 added (withoutLeakCheckCause), with each issue's `phaseEntry`
+			// and `givenEntry` gone, the two keys contract 94 added (withoutPhaseEntries), and
+			// with the two fields settingSourcesContract added gone — `settingSources` and the
+			// `daemon` block's `commit` (withoutSettingSources; state_sources_contract_test.go
+			// holds that half). Every row that reaches here is below all fifteen narrowings, so
+			// what each of them takes goes whatever the row is.
 			if carriesSettingSources(t, body) || carriesCommit(t, body) {
 				t.Errorf("the state %s carries a field contract %d added, which a reader before it refuses", body, settingSourcesContract)
 			}
@@ -315,6 +316,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
+				// Every row that reaches here is below phaseEntriesContract too, so the two
+				// entry numbers go whatever the row is, as the decided record's keys above do.
+				delete(issue, "phaseEntry")
+				delete(issue, "givenEntry")
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)

@@ -586,6 +586,25 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
+	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
+	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase), and GivenEntry the
+	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
+	// sends the entry's own work to a role whose given number is below the entry its row names, on
+	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
+	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
+	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	//
+	// Both are absent together for an issue whose current phase names no phase worker role: a root
+	// at admitted whose design gate has never opened is at work (record.AtWork) and phase.RoleFor
+	// names no role for that phase, so the sweep passes it over and nothing would ever close a
+	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
+	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
+	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
+	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
+	// value no reader parses empty.
+	PhaseEntry int64 `json:"phaseEntry,omitempty"`
+	GivenEntry int64 `json:"givenEntry,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
