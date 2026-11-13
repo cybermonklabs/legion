@@ -403,15 +403,14 @@ func newPaneListener(t *testing.T) string {
 // (packages/envoy-client/test/subscribe-answer.ts, consumerDelivery, with omp-harness.ts's
 // stream id). Since the core receive path was removed (#2603), the plugin refuses a registration
 // answered without one (packages/envoy-client/src/transport.ts, parseSubscribeAnswer), and the
-// claim boot that registration belongs to exits the pane before its claim is ready. The subject's
-// prefix is the listener's own (packages/envoy/internal/bus/stream.go, DeliverSubjectPrefix, and
-// the client's DELIVER_SUBJECT_PREFIX), written out because that package is internal to the
-// Envoy module. Nothing is published to the subject: what the proof reads comes from the
-// daemon's own listener.
+// claim boot that registration belongs to exits the pane before its claim is ready. The mode and
+// the subject's prefix are the idle rig's constants (idle_rig_agent_test.go), which say whose
+// they are. Nothing is published to the subject: what the proof reads comes from the daemon's own
+// listener.
 func paneListenerDelivery(sessionID string) map[string]any {
 	return map[string]any{
-		"mode":      "consumer",
-		"subject":   "notifications.envoy.deliver." + sessionID,
+		"mode":      idleRigDeliveryConsumer,
+		"subject":   idleRigDeliverSubjectPrefix + sessionID,
 		"stream_id": "standin-stream",
 		"gap":       false,
 	}
