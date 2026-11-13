@@ -346,15 +346,16 @@ type deliverySub struct {
 }
 
 // deliveryLiveSpec is a subscribed view, resolved: its kind, its window (a preset's length in days,
-// or a custom range), its query without from and to, a pipeline view's pinned at, a legion
-// view's project, and the canonical key identical views share.
+// or a custom range), its query without from and to, a pipeline view's pinned at, a legion or
+// evals view's project, and the canonical key identical views share.
 type deliveryLiveSpec struct {
 	kind     string
 	preset   int
 	from, to time.Time
 	query    url.Values
 	at       *time.Time
-	// project is the project a legion view's board shows; every other kind names none.
+	// project is the project a legion view's board or an evals view's list shows; every other
+	// kind names none.
 	project string
 	key     string
 }
@@ -503,13 +504,15 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 
 // dirtyLegionBoard marks the board of the project a read of a Legion daemon just recorded. The
 // sampler announces every read, failed or not: the header carries the read itself, so a board
-// whose daemon stopped answering moves as surely as one whose issues did.
+// whose daemon stopped answering moves as surely as one whose issues did. A view that names the
+// project and shows no daemon state (an evals view) is left: the sampler reads each daemon once a
+// minute, and nothing such a view shows moves with that read.
 func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, view := range g.views {
-		if view.spec.classes().project && view.spec.project == project {
+		if view.spec.classes().daemon && view.spec.project == project {
 			h.markDirtyLocked(g, view, now, deliveryCauseChange)
 		}
 	}

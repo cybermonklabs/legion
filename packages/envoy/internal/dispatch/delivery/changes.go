@@ -26,10 +26,14 @@ import (
 // definition and carries no span, since it changes how every window of the eval reads; an
 // eval_days row is one transaction's writes of one eval's day rows, spanning midnight UTC of the
 // first and the last day written.
+//
+// An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
+// key (migration 20261113170751). TOld and TNew are the filing's filed_at before and after: an
+// insert carries TNew alone, a delete TOld alone.
 type Change struct {
 	Seq     int64
 	At      time.Time
-	Kind    string // "pull_request" | "run" | "run_job" | "session_group" | "settings" | "issue_facts" | "eval_readings" | "eval_versions" | "eval_days"
+	Kind    string // "pull_request" | "run" | "run_job" | "session_group" | "settings" | "issue_facts" | "eval_readings" | "eval_versions" | "eval_days" | "issue_filings"
 	RunKind string // "deploy" | "pr_checks" | "" for the rest
 	Repo    string
 	Ref     string

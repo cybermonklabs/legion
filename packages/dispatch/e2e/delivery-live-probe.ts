@@ -8,10 +8,14 @@
  * applied. The watch ends after `--minutes`, on Ctrl-C, or when Dispatch refuses the view.
  *  Then `--body-file` writes the body it holds, and `--compare` reads the matching GET routes for
  *  the last window it applied and writes, for each, whether the pull request ids, run ids and every
- *  measure are equal.
+ *  measure are equal (for an evals view, every eval and every field of the list read).
  *
  *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
  *      --view '{"kind":"timeline","window":{"preset":28},"query":""}' --minutes 10 --compare
+ *
+ *    bun e2e/delivery-live-probe.ts --url <dispatch> --token-file <file> \
+ *      --view '{"kind":"evals","project":"INFRA","window":{"preset":28},"query":"kind=delivery"}' \
+ *      --minutes 10 --compare
  *
  *  It exits 0 when every comparison is equal or none was asked for; 1 when one is not, a read
  *  fails, the first connection is refused, Dispatch refuses the view, or a frame breaks the
@@ -31,6 +35,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
   LegionBoardResponse,
   LiveServerFrame,
   LiveSubscribe,
@@ -53,8 +58,9 @@ export interface ProbeListChanges {
 /** One frame Dispatch sent: when it arrived and its size on the wire in UTF-8 bytes. A snapshot
  *  counts what it holds: its lists' items, each map's keys, and each count map's values by facet.
  *  A delta names what it changes: each list's upserted and removed ids, each map's keys, each
- *  count map's values by facet, and the fields `set` replaces whole. A section the frame does not
- *  carry is null; an error frame adds its code and message, a freshness frame the verdict. */
+ *  count map's values by facet, and the fields `set` replaces whole. An evals view's one list is
+ *  `items`, its evals by id. A section the frame does not carry is null; an error frame adds its
+ *  code and message, a freshness frame the verdict. */
 export interface ProbeFrameLine {
   readonly at: string;
   readonly type: DeliveryServerFrame["type"];
@@ -64,6 +70,7 @@ export interface ProbeFrameLine {
   readonly prs: number | ProbeListChanges | null;
   readonly runs: number | ProbeListChanges | null;
   readonly session_groups: number | ProbeListChanges | null;
+  readonly items: number | ProbeListChanges | null;
   readonly maps: Readonly<Record<string, number | readonly string[]>> | null;
   readonly counts: Readonly<
     Record<string, Readonly<Record<string, number | readonly string[]>>>
@@ -149,6 +156,7 @@ type MeasureField = Exclude<keyof DeliveryMeasuresResponse, "window" | "computed
 type PipelineField = Exclude<keyof DeliveryPipelineResponse, "computed_at" | "freshness">;
 type LegionField = Exclude<keyof LegionBoardResponse, "computed_at" | "header">;
 type LegionHeaderField = Exclude<keyof LegionBoardResponse["header"], "facts_cursor_age_seconds">;
+type EvalsField = Exclude<keyof EvalListResponse, "freshness">;
 
 /** The measures every comparison holds equal: each field but the window, computed_at and
  *  freshness, which a live body keeps as they were last sent. A record, so a field the response
@@ -196,6 +204,18 @@ const LEGION_HEADER_FIELDS: Readonly<Record<LegionHeaderField, true>> = {
   slots_in_use: true,
   trees: true,
 };
+/** The evals list's fields, every one but its freshness, whose refresher age the route measures at
+ *  the moment of the read (`api/evals.go`), as the board's header measures its cursor age; the
+ *  freshness's other field, the age of the rows the read folded, is compared on its own. A record,
+ *  so a field the response gains fails the type check until it is named here. */
+const EVALS_FIELDS: Readonly<Record<EvalsField, true>> = {
+  compare: true,
+  items: true,
+  limit: true,
+  offset: true,
+  total: true,
+  window: true,
+};
 
 const SERVER_FRAME_TYPES: Readonly<Record<DeliveryServerFrame["type"], true>> = {
   delta: true,
@@ -222,7 +242,10 @@ interface Options {
   readonly bodyFile: string | undefined;
 }
 
-type Sections = Pick<ProbeFrameLine, "prs" | "runs" | "session_groups" | "maps" | "counts" | "set">;
+type Sections = Pick<
+  ProbeFrameLine,
+  "prs" | "runs" | "session_groups" | "items" | "maps" | "counts" | "set"
+>;
 
 const now = () => new Date().toISOString();
 const write = (line: ProbeLine) => console.log(JSON.stringify(line));
@@ -243,6 +266,7 @@ const isMeasures = (body: DeliveryLiveBody): body is DeliveryMeasuresResponse =>
   "flags_source" in body;
 const isPipeline = (body: DeliveryLiveBody): body is DeliveryPipelineResponse => "days" in body;
 const isLegion = (body: DeliveryLiveBody): body is LegionBoardResponse => "columns" in body;
+const isEvals = (body: DeliveryLiveBody): body is EvalListResponse => "total" in body;
 
 function mapValues<V, W>(
   record: Readonly<Record<string, V>>,
@@ -276,9 +300,9 @@ function required(value: string | undefined, flag: string): string {
   return value;
 }
 
-/** The view `--view` names. The probe checks what it reads itself (the kind, a timeline or
- *  measures view's window and query, a pipeline view's `at`); Dispatch judges the rest and answers
- *  a view it refuses with an error frame. */
+/** The view `--view` names. The probe checks what it reads itself (the kind, a timeline, measures
+ *  or evals view's window and query, an evals view's project, a pipeline view's `at`); Dispatch
+ *  judges the rest and answers a view it refuses with an error frame. */
 function parseView(text: string): DeliveryLiveView {
   let value: unknown;
   try {
@@ -290,7 +314,12 @@ function parseView(text: string): DeliveryLiveView {
     throw new UsageError("--view is a JSON object");
   }
   const kind = "kind" in value ? value.kind : undefined;
-  if (kind === "timeline" || kind === "measures") {
+  if (kind === "timeline" || kind === "measures" || kind === "evals") {
+    if (kind === "evals" && (!("project" in value) || typeof value.project !== "string")) {
+      throw new UsageError(
+        `an evals view's "project" is the key of the project whose evals it shows`
+      );
+    }
     const window = "window" in value ? value.window : undefined;
     if (typeof window !== "object" || window === null) {
       throw new UsageError(
@@ -307,7 +336,9 @@ function parseView(text: string): DeliveryLiveView {
       throw new UsageError(`a pipeline view's "at" is an RFC 3339 time`);
     }
   } else {
-    throw new UsageError(`--view's "kind" is timeline, measures or pipeline, not ${String(kind)}`);
+    throw new UsageError(
+      `--view's "kind" is timeline, measures, pipeline or evals, not ${String(kind)}`
+    );
   }
   // Checked above as far as the probe reads it; Dispatch refuses the rest of a malformed view.
   const view = value as DeliveryLiveView;
@@ -364,12 +395,22 @@ function listChanges(
   return { remove: [...changes.remove], upsert: changes.upsert.map((item) => item.id) };
 }
 
-/** What a snapshot's body holds, counted. Only a timeline body has lists, maps and counts. */
+/** What a snapshot's body holds, counted. A timeline body has lists, maps and counts, and an evals
+ *  body one list, its evals; no other body has any. */
 function holds(body: DeliveryLiveBody): Sections {
-  if (!isTimeline(body)) {
-    return { counts: null, maps: null, prs: null, runs: null, session_groups: null, set: null };
-  }
+  const none: Sections = {
+    counts: null,
+    items: null,
+    maps: null,
+    prs: null,
+    runs: null,
+    session_groups: null,
+    set: null,
+  };
+  if (isEvals(body)) return { ...none, items: (body.items ?? []).length };
+  if (!isTimeline(body)) return none;
   return {
+    ...none,
     counts: Object.fromEntries(
       COUNTS.map((name) => [
         name,
@@ -380,7 +421,6 @@ function holds(body: DeliveryLiveBody): Sections {
     prs: (body.prs ?? []).length,
     runs: (body.runs ?? []).length,
     session_groups: (body.session_groups ?? []).length,
-    set: null,
   };
 }
 
@@ -394,6 +434,7 @@ function changes(delta: DeliveryLiveDelta): Sections {
     prs: listChanges(delta.items.prs),
     runs: listChanges(delta.items.runs),
     session_groups: listChanges(delta.items.session_groups),
+    items: listChanges(delta.items.items),
     set: Object.keys(delta.set),
   };
 }
@@ -404,6 +445,7 @@ function frameLine(frame: DeliveryServerFrame, bytes: number): ProbeFrameLine {
     bytes,
     changed_at: null,
     counts: null,
+    items: null,
     maps: null,
     prs: null,
     runs: null,
@@ -645,9 +687,25 @@ function compareLegion(
   return { differ, equal: differ.length === 0 };
 }
 
+/** An evals list's comparison: its fields but the freshness, and the freshness's rows' age, which
+ *  is reported under `freshness.` so a reader sees where the difference is. */
+function compareEvals(
+  held: EvalListResponse,
+  answer: EvalListResponse
+): NonNullable<Checked["measures"]> {
+  const fields = compareFields(held, answer, EVALS_FIELDS);
+  const rows = differences(
+    held.freshness.rows_updated_at,
+    answer.freshness.rows_updated_at,
+    "freshness.rows_updated_at"
+  );
+  const differ = [...fields.differ, ...rows];
+  return { differ, equal: differ.length === 0 };
+}
+
 /** The GET routes that answer the figures `body` holds, for the window it last applied. */
 function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
-  const query = (base: string, window: DeliveryTimelineWithMeasures["window"]) => {
+  const query = (base: string, window: { readonly from: string; readonly to: string }) => {
     const params = new URLSearchParams(base);
     params.set("from", window.from);
     params.set("to", window.to);
@@ -710,6 +768,19 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
           `/api/v1/projects/${encodeURIComponent(view.project)}/legion/board`,
           (answer) => ({
             measures: compareLegion(body, answer),
+            prs: null,
+            runs: null,
+          })
+        ),
+      ];
+    }
+    case "evals": {
+      if (!isEvals(body)) throw new Error("the evals view's snapshot is not an evals body");
+      return [
+        read<EvalListResponse>(
+          `/api/v1/projects/${encodeURIComponent(view.project)}/evals?${query(view.query, body.window)}`,
+          (answer) => ({
+            measures: compareEvals(body, answer),
             prs: null,
             runs: null,
           })

@@ -19,6 +19,7 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimelineWithMeasures,
+  EvalListResponse,
   InboxRow,
   IssueDetails,
   LegionBoardResponse,
@@ -353,6 +354,7 @@ interface DeliveryLiveBodies {
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
   readonly legion: LegionBoardResponse;
+  readonly evals: EvalListResponse;
 }
 
 /** The live view's answer, which is the body of the GET route its kind mirrors. */

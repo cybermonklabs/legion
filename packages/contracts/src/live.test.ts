@@ -4,12 +4,16 @@ import agent from "../fixtures/live/agent.json";
 import delta from "../fixtures/live/delta.json";
 import ended from "../fixtures/live/ended.json";
 import error from "../fixtures/live/error.json";
+import evalsAfter from "../fixtures/live/evals_after.json";
+import evalsDelta from "../fixtures/live/evals_delta.json";
+import evalsSnapshot from "../fixtures/live/evals_snapshot.json";
 import event from "../fixtures/live/event.json";
 import eventsStart from "../fixtures/live/events_start.json";
 import freshness from "../fixtures/live/freshness.json";
 import heartbeat from "../fixtures/live/heartbeat.json";
 import snapshot from "../fixtures/live/snapshot.json";
 import subscribeAgent from "../fixtures/live/subscribe_agent.json";
+import subscribeEvals from "../fixtures/live/subscribe_evals.json";
 import subscribeEvents from "../fixtures/live/subscribe_events.json";
 import subscribeTimeline from "../fixtures/live/subscribe_timeline.json";
 import unsubscribe from "../fixtures/live/unsubscribe.json";
@@ -29,6 +33,8 @@ import {
   type DeliveryLiveView,
   type DeliveryTimelineWithMeasures,
   type DispatchEvent,
+  type EvalListItem,
+  type EvalListResponse,
   type EventsLiveResume,
   type EventsLiveView,
   LIVE_SOCKET_MAX_AGE_CLOSE,
@@ -104,6 +110,7 @@ const VIEW_KINDS = allOf<LiveView["kind"]>()([
   "measures",
   "pipeline",
   "legion",
+  "evals",
   "events",
   "agent",
 ]);
@@ -157,7 +164,31 @@ const ITEM_CHANGE_KEYS = allOf<keyof DeliveryLiveItemChanges<DeliveryLiveList>>(
   "upsert",
   "remove",
 ]);
-const LISTS = allOf<DeliveryLiveList>()(["prs", "runs", "session_groups"]);
+const LISTS = allOf<DeliveryLiveList>()(["prs", "runs", "session_groups", "items"]);
+/** The timeline's lists; an evals view's one list is `items`. */
+const TIMELINE_LISTS = [
+  "prs",
+  "runs",
+  "session_groups",
+] as const satisfies readonly DeliveryLiveList[];
+const EVALS_KEYS = allOf<keyof EvalListResponse>()([
+  "items",
+  "total",
+  "limit",
+  "offset",
+  "window",
+  "compare",
+  "freshness",
+]);
+/** An evals body's fields sent whole: every one but its list. */
+const EVALS_WHOLE = EVALS_KEYS.filter((key) => key !== "items");
+const EVAL_ITEM_KEYS = allOf<keyof EvalListItem>()([
+  "id",
+  "definition",
+  "owner",
+  "series",
+  "verdict",
+]);
 const MAPS = allOf<DeliveryLiveMap>()([
   "issue_titles",
   "session_titles",
@@ -186,10 +217,10 @@ test("a snapshot frame is the timeline's GET body with a revision for every key 
     expect(frame.seq).toMatch(/^\d+$/);
     expect(keysOf(frame.body)).toEqual(sorted(TIMELINE_KEYS));
     expect(keysOf(frame.revs)).toEqual(sorted(REVS_KEYS));
-    expect(keysOf(frame.revs.items)).toEqual(sorted(LISTS));
+    expect(keysOf(frame.revs.items)).toEqual(sorted(TIMELINE_LISTS));
     expect(keysOf(frame.revs.maps)).toEqual(sorted(MAPS));
     expect(keysOf(frame.revs.counts)).toEqual(sorted(COUNTS));
-    for (const list of LISTS) {
+    for (const list of TIMELINE_LISTS) {
       const ids = frame.body[list].map((item: { id: string | number }) => String(item.id));
       expect(sorted(ids)).toEqual(keysOf(frame.revs.items[list]));
     }
@@ -242,6 +273,55 @@ test("a delta frame carries lists by id, maps by key, counts two levels deep, an
     expect(revision === null || REVISION.test(String(revision))).toBe(true);
   }
   for (const revision of leaves(delta.revs.fields, 1)) expect(revision).toMatch(REVISION);
+});
+
+test("an evals snapshot is the list read's body, its evals by id and every other field whole", () => {
+  for (const frame of [evalsSnapshot, evalsAfter]) {
+    expect(keysOf(frame)).toEqual(sorted(SNAPSHOT_KEYS));
+    expect(frame.type).toBe("snapshot");
+    expect(frame.seq).toMatch(/^\d+$/);
+    expect(keysOf(frame.body)).toEqual(sorted(EVALS_KEYS));
+    expect(keysOf(frame.revs)).toEqual(sorted(REVS_KEYS));
+    expect(keysOf(frame.revs.items)).toEqual(["items"]);
+    expect(frame.revs.maps).toEqual({});
+    expect(frame.revs.counts).toEqual({});
+    // An eval's id is its eval id, `<project>/<slug>`, which its definition carries too.
+    for (const item of frame.body.items) {
+      expect(keysOf(item)).toEqual(sorted(EVAL_ITEM_KEYS));
+      expect(item.id).toBe(item.definition.eval_id);
+    }
+    const ids = frame.body.items.map((item) => item.id);
+    expect(sorted(ids)).toEqual(keysOf(frame.revs.items.items));
+    expect(keysOf(frame.revs.fields)).toEqual(sorted(EVALS_WHOLE));
+    for (const revision of [...leaves(frame.revs.items, 2), ...leaves(frame.revs.fields, 1)]) {
+      expect(revision).toMatch(REVISION);
+    }
+  }
+});
+
+test("an evals delta upserts the evals that moved by id and sets the fields that moved whole", () => {
+  expect(keysOf(evalsDelta)).toEqual(sorted(DELTA_KEYS));
+  expect(keysOf(evalsDelta.items)).toEqual(["items"]);
+  expect(keysOf(evalsDelta.items.items)).toEqual(sorted(ITEM_CHANGE_KEYS));
+  // A reading moved pr-size's numbers and lead-time was registered: each sent whole, in the
+  // body's order; the total counts lead-time, and the folded rows' new age moved the freshness.
+  expect(evalsDelta.items.items.upsert.map((item) => item.id)).toEqual([
+    "ACME/lead-time",
+    "ACME/pr-size",
+  ]);
+  expect(evalsDelta.items.items.remove).toEqual([]);
+  expect(evalsDelta.maps).toEqual({});
+  expect(evalsDelta.counts).toEqual({});
+  expect(keysOf(evalsDelta.set)).toEqual(["freshness", "total"]);
+  for (const field of Object.keys(evalsDelta.set)) {
+    expect(EVALS_WHOLE).toContain(field as (typeof EVALS_WHOLE)[number]);
+  }
+  for (const revision of [
+    ...leaves(evalsDelta.revs.items, 2),
+    ...leaves(evalsDelta.revs.fields, 1),
+  ]) {
+    expect(revision).toMatch(REVISION);
+  }
 });
 
 test("an error frame names its code and its message", () => {
@@ -326,6 +406,12 @@ test("the page's frames carry every key of their types, and the socket reads eac
     "window",
     "query",
   ]);
+  const evalsViewKeys = allOf<keyof Extract<DeliveryLiveView, { kind: "evals" }>>()([
+    "kind",
+    "project",
+    "window",
+    "query",
+  ]);
   const eventsViewKeys = allOf<keyof EventsLiveView>()(["kind"]);
   const agentViewKeys = allOf<keyof AgentLiveView>()(["kind", "session_id"]);
   const subscribeKeys = sorted(CLIENT_FRAME_KEYS.subscribe);
@@ -334,6 +420,9 @@ test("the page's frames carry every key of their types, and the socket reads eac
   expect(keysOf(subscribeTimeline.view)).toEqual(sorted(timelineViewKeys));
   expect(keysOf(subscribeTimeline.resume)).toEqual(sorted(DELIVERY_RESUME_KEYS));
   expect(keysOf(subscribeTimeline.resume.revs)).toEqual(sorted(REVS_KEYS));
+  expect(keysOf(subscribeEvals)).toEqual(subscribeKeys);
+  expect(keysOf(subscribeEvals.view)).toEqual(sorted(evalsViewKeys));
+  expect(keysOf(subscribeEvals.resume)).toEqual(sorted(DELIVERY_RESUME_KEYS));
   expect(keysOf(subscribeEvents)).toEqual(subscribeKeys);
   expect(keysOf(subscribeEvents.view)).toEqual(sorted(eventsViewKeys));
   expect(keysOf(subscribeEvents.resume)).toEqual(sorted(EVENTS_RESUME_KEYS));

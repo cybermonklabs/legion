@@ -253,13 +253,13 @@ func (h *deliveryHub) receive(g *hubGeneration, event model.Event) {
 }
 
 // applyEventLocked marks the views one event can touch: an issue write or claim the views whose
-// issues or their ancestors hold the issue, and every timeline and measures view when the issue is
-// a P0 before or after it (the measures' unowned P0 list); an architecture import every view; and
-// a session's titled write every view that shows the session under another title than the one it
-// wrote under, while a write carrying no title takes no name away and marks nothing. Those are
-// every writer of a field the Delivery page shows (Task 0 Step 18: route has one writer, PATCH
-// /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is the relay's,
-// shared with every other subscriber, and is only read.
+// issues or their ancestors hold the issue, and every timeline, measures and evals view when the
+// issue is a P0 before or after it (the unowned P0 count each shows); an architecture import every
+// view; and a session's titled write every view that shows the session under another title than
+// the one it wrote under, while a write carrying no title takes no name away and marks nothing.
+// Those are every writer of a field the Delivery page shows (Task 0 Step 18: route has one writer,
+// PATCH /api/v1/issues/{key}, whose event is issue.updated or issue.closed). The event is the
+// relay's, shared with every other subscriber, and is only read.
 //
 // A mark judges a view by the issues, ancestors and sessions its last answer names (none before
 // its first), while a view whose read is under way (reading, set as that read took its change
@@ -386,7 +386,7 @@ func (h *deliveryHub) recheckHeardLocked(g *hubGeneration, view *deliveryView, n
 // showsIssue is whether a write to the issue key, a P0 before or after it when p0, can move the
 // view's answer: the view's population, or its ancestors, names the issue, or the view shows the
 // unowned P0 list and the issue is a P0. A Legion board names its own issues and shows no P0
-// list, so only the first rule reaches it.
+// list, so only the first rule reaches it; an evals view names no issue, so only the second does.
 func (view *deliveryView) showsIssue(key string, p0 bool) bool {
 	_, named := view.issues[key]
 	_, ancestor := view.ancestors[key]
@@ -423,20 +423,41 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // change whose rows carry no time at all (a pull request never merged, a job of a run not stored)
 // is taken as touching timeline and measures views. Pipeline lead times read only merged pull
 // requests (ListPullRequestsInWindow), so an unmerged pull request cannot move a Pipeline view.
+//
+// The kinds of the first switch are rows no delivery view reads. Each answers there, above the
+// test that refuses every view reading no delivery row (the views those kinds mark are such
+// views), so none reaches the second switch, whose closing `return true` would mark every
+// delivery view with it.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
-	if change.Kind == "issue_facts" {
+	switch change.Kind {
+	case "issue_facts":
 		// One issue's stored Legion facts, which the Legion board is the one reader of
-		// (legionfacts.Read). The branch stands above the test below, and not as a case of the
-		// switch under it, because that test refuses every view that reads no delivery row, and
-		// the board is one. No other kind of view reads a facts row, so a board that shows the
+		// (legionfacts.Read). No other kind of view reads a facts row, so a board that shows the
 		// issue is woken and every delivery view is left: the sweep rewrites every open issue's
 		// row every legionfacts.SweepEvery, and a timeline, measures or pipeline answer cannot
 		// move when one does.
 		return view.spec.kind == legionBoardView && view.showsIssue(change.Ref, false)
+	case "eval_readings", "eval_versions", "eval_days":
+		// One eval's readings, a new version of its definition, or its day rows: what the evals
+		// view of the eval's project reads (readEvalList), and what no other view reads at all.
+		// The change's repo holds that project (migrations 20261113082200 to 20261113082202).
+		//
+		// No other kind marks an evals view. A computed eval's value moves when the refresher
+		// rewrites its day rows, after its input's own change (a pull request, a run, a stored
+		// fact, a filing) was logged: a view woken by the input would read the rows before the
+		// rewrite, and the eval_days change of the rewrite is what wakes it.
+		return view.spec.kind == evalsView && view.spec.project == change.Repo
+	case "issue_filings":
+		// One filing of a Legion session. No view reads a filing: the refresher does, and
+		// rewrites the day's Legion rows, whose eval_days change marks the evals view; the
+		// Legion board reads the stored facts (legionfacts.Read) and the daemon's state; and
+		// the delivery views read the delivery rows alone.
+		return false
 	}
 	if !view.spec.classes().delivery {
 		// The view reads no delivery row at all: what moves a Legion board is a read of the
-		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked).
+		// daemon (legion.StateChannel) or a write of one of its issues (dirtyIssueLocked), and
+		// what moves an evals view is the eval kinds above.
 		return false
 	}
 	var times []time.Time

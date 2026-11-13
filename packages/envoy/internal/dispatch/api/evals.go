@@ -160,17 +160,26 @@ type evalItem struct {
 	Verdict    *evalVerdict       `json:"verdict"`
 }
 
+// evalListItem is one eval of the list read: its id, `<project_key>/<slug>` (the definition's
+// eval_id), and the eval as evalItem states it. The id is what a page and the live hub's evals
+// view (live_frames.go) tell the list's evals apart by, as every list a live view sends item by
+// item carries one; the detail read's items, versions of one eval, carry none.
+type evalListItem struct {
+	ID string `json:"id"`
+	evalItem
+}
+
 // evalListResponse is GET /api/v1/projects/{key}/evals and GET /api/v1/evals: one page of evals,
 // by project and then by slug, with the window and the compare range they were folded over and
 // how fresh the folded rows are.
 type evalListResponse struct {
-	Items     []evalItem    `json:"items"`
-	Total     int           `json:"total"`
-	Limit     int           `json:"limit"`
-	Offset    int           `json:"offset"`
-	Window    evalRange     `json:"window"`
-	Compare   *evalRange    `json:"compare"`
-	Freshness evalFreshness `json:"freshness"`
+	Items     []evalListItem `json:"items"`
+	Total     int            `json:"total"`
+	Limit     int            `json:"limit"`
+	Offset    int            `json:"offset"`
+	Window    evalRange      `json:"window"`
+	Compare   *evalRange     `json:"compare"`
+	Freshness evalFreshness  `json:"freshness"`
 }
 
 // evalDetailResponse is GET /api/v1/projects/{key}/evals/{slug}: one page of the eval's versions,
@@ -529,7 +538,7 @@ func (s *server) evalProjects(ctx context.Context, named []string) ([]string, er
 func (s *server) readEvalList(ctx context.Context, request evalListRequest, now time.Time) (evalListResponse, error) {
 	registry := s.registry()
 	answer := evalListResponse{
-		Items: []evalItem{}, Limit: request.limit, Offset: request.offset,
+		Items: []evalListItem{}, Limit: request.limit, Offset: request.offset,
 		Window: newEvalRange(request.ranges.window), Compare: evalCompareRange(request.ranges.compare),
 	}
 	var oldest *time.Time
@@ -552,7 +561,9 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 		if err != nil {
 			return evalListResponse{}, err
 		}
-		answer.Items = append(answer.Items, items...)
+		for _, item := range items {
+			answer.Items = append(answer.Items, evalListItem{ID: item.Definition.EvalID, evalItem: item})
+		}
 		oldest = olderOf(oldest, folded)
 	}
 	freshness, err := s.evalFreshness(ctx, registry, oldest, now)

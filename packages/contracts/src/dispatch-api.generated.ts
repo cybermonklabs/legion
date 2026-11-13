@@ -4579,10 +4579,17 @@ export interface components {
       label?: string;
       rel: string;
     };
+    EvalListItem: {
+      definition: components["schemas"]["EvalDefinition"];
+      id: string;
+      owner: components["schemas"]["EvalOwner"];
+      series: components["schemas"]["EvalSeriesValues"][] | null;
+      verdict: components["schemas"]["EvalVerdict"] | null;
+    };
     EvalListResponse: {
       compare: components["schemas"]["EvalRange"] | null;
       freshness: components["schemas"]["EvalFreshness"];
-      items: components["schemas"]["EvalItem"][] | null;
+      items: components["schemas"]["EvalListItem"][] | null;
       limit: number;
       offset: number;
       total: number;
@@ -14230,6 +14237,7 @@ export type EvalItemsResponse = components["schemas"]["EvalItemsResponse"];
 export type EvalJudge = components["schemas"]["EvalJudge"];
 export type EvalLink = components["schemas"]["EvalLink"];
 export type EvalLinkInput = components["schemas"]["EvalLinkInput"];
+export type EvalListItem = components["schemas"]["EvalListItem"];
 export type EvalListResponse = components["schemas"]["EvalListResponse"];
 export type EvalOwner = components["schemas"]["EvalOwner"];
 export type EvalRange = components["schemas"]["EvalRange"];

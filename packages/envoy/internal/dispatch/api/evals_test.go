@@ -83,13 +83,13 @@ type evalRefusal struct {
 	Rows  []evals.RowError `json:"rows"`
 }
 
-// findEval is the item of slug among items, failing where there is not exactly one.
-func findEval(t *testing.T, items []evalItem, project, slug string) evalItem {
+// findEval is the item of slug among a list read's items, failing where there is not exactly one.
+func findEval(t *testing.T, items []evalListItem, project, slug string) evalItem {
 	t.Helper()
 	var found []evalItem
 	for _, item := range items {
 		if item.Definition.ProjectKey == project && item.Definition.Slug == slug {
-			found = append(found, item)
+			found = append(found, item.evalItem)
 		}
 	}
 	if len(found) != 1 {

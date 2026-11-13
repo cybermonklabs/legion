@@ -1,0 +1,22 @@
+{
+  "type": "subscribe",
+  "sub": "evals-1",
+  "view": {
+    "kind": "evals",
+    "project": "ACME",
+    "window": {
+      "from": "2026-10-01T00:00:00Z",
+      "to": "2026-10-29T00:00:00Z"
+    },
+    "query": "compare_from=2026-09-03T00:00:00Z&compare_to=2026-10-01T00:00:00Z&kind=experiment&repo=acme/widgets"
+  },
+  "resume": {
+    "seq": "43",
+    "revs": {
+      "items": {},
+      "maps": {},
+      "counts": {},
+      "fields": {}
+    }
+  }
+}

@@ -17,10 +17,10 @@ import (
 func parseDeliveryLiveView(view DeliveryLiveView) (deliveryLiveSpec, *LiveError) {
 	classes, known := deliveryLiveKinds[view.Kind]
 	if !known {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline or legion")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "view.kind must be timeline, measures, pipeline, legion or evals")
 	}
 	if view.Project != nil && !classes.project {
-		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion view names a project")
+		return deliveryLiveSpec{}, invalidLiveView("INVALID_FRAME", "only a legion or an evals view names a project")
 	}
 	spec := deliveryLiveSpec{kind: view.Kind}
 	if refusal := classes.parse(&spec, view); refusal != nil {
@@ -38,29 +38,36 @@ func invalidLiveView(code, message string) *LiveError {
 // parseDeliveryWindowView reads a timeline or measures view: its window, and the query the
 // matching GET route reads everything but the window from.
 func parseDeliveryWindowView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
+	named, refusal := spec.readWindowAndQuery(view, "a "+view.Kind+" view")
+	if refusal != nil {
+		return refusal
+	}
+	spec.key = view.Kind + "|" + named + "|" + spec.query.Encode()
+	return nil
+}
+
+// readWindowAndQuery reads a view that names a window and a query, as what names it: its window
+// into spec, and its query without from and to, which the window names. It answers how the key
+// names the window (readWindow).
+func (spec *deliveryLiveSpec) readWindowAndQuery(view DeliveryLiveView, what string) (string, *LiveError) {
 	if view.At != nil {
-		return invalidLiveView("INVALID_FRAME", "a "+view.Kind+" view names a window, not an at")
+		return "", invalidLiveView("INVALID_FRAME", what+" names a window, not an at")
 	}
 	if view.Window == nil {
-		return invalidLiveView("INVALID_FRAME", "a "+view.Kind+" view names its window")
+		return "", invalidLiveView("INVALID_FRAME", what+" names its window")
 	}
 	spec.query = url.Values{}
 	if view.Query != nil {
 		query, err := url.ParseQuery(*view.Query)
 		if err != nil {
-			return invalidLiveView("INVALID_QUERY", "query does not parse: "+err.Error())
+			return "", invalidLiveView("INVALID_QUERY", "query does not parse: "+err.Error())
 		}
 		spec.query = query
 	}
 	// The window names from and to; the query is everything else the GET route reads.
 	spec.query.Del("from")
 	spec.query.Del("to")
-	named, refusal := spec.readWindow(view.Window)
-	if refusal != nil {
-		return refusal
-	}
-	spec.key = view.Kind + "|" + named + "|" + spec.query.Encode()
-	return nil
+	return spec.readWindow(view.Window)
 }
 
 // parsePipelineLiveView reads a pipeline view: it names its window as a timeline view does, or an
@@ -100,16 +107,49 @@ func parseLegionLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveErr
 	if view.Window != nil || view.At != nil || view.Query != nil {
 		return invalidLiveView("INVALID_FRAME", "a legion view names a project, not a window, an at or a query")
 	}
-	if view.Project == nil {
-		return invalidLiveView("INVALID_FRAME", "a legion view names its project")
-	}
-	project := strings.TrimSpace(*view.Project)
-	if !projectKeyPattern.MatchString(project) {
-		return invalidLiveView("INVALID_QUERY", projectKeyProblem("project", project))
+	project, refusal := readLiveProject(view, "a legion view")
+	if refusal != nil {
+		return refusal
 	}
 	spec.project = project
 	spec.key = legionBoardView + "|" + project + "|"
 	return nil
+}
+
+// parseEvalsLiveView reads an evals view: the project whose evals it shows, its window, as a
+// timeline view names one, and its query, the query string GET /api/v1/projects/{key}/evals
+// would be sent without from and to: the compare range (compare_from and compare_to), the
+// repositories (repo), the kind (kind) and the page (limit and offset). A query the route
+// refuses is refused here, by the route's own reading of it (parseEvalListQuery), before the
+// view is held.
+func parseEvalsLiveView(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError {
+	project, refusal := readLiveProject(view, "an evals view")
+	if refusal != nil {
+		return refusal
+	}
+	named, refusal := spec.readWindowAndQuery(view, "an evals view")
+	if refusal != nil {
+		return refusal
+	}
+	if _, err := parseEvalListQuery(spec.query); err != nil {
+		return invalidLiveView("INVALID_QUERY", err.Error())
+	}
+	spec.project = project
+	spec.key = evalsView + "|" + project + "|" + named + "|" + spec.query.Encode()
+	return nil
+}
+
+// readLiveProject reads the project a view names, as the project routes read the key in their
+// path, or answers the refusal of the view, which what names in its message.
+func readLiveProject(view DeliveryLiveView, what string) (string, *LiveError) {
+	if view.Project == nil {
+		return "", invalidLiveView("INVALID_FRAME", what+" names its project")
+	}
+	project := strings.TrimSpace(*view.Project)
+	if !projectKeyPattern.MatchString(project) {
+		return "", invalidLiveView("INVALID_QUERY", projectKeyProblem("project", project))
+	}
+	return project, nil
 }
 
 // readWindow reads a view's window into spec, as the GET routes read from and to, and answers how

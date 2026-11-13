@@ -19431,6 +19431,46 @@
         ],
         "type": "object"
       },
+      "EvalListItem": {
+        "properties": {
+          "definition": {
+            "$ref": "#/components/schemas/EvalDefinition"
+          },
+          "id": {
+            "type": "string"
+          },
+          "owner": {
+            "$ref": "#/components/schemas/EvalOwner"
+          },
+          "series": {
+            "items": {
+              "$ref": "#/components/schemas/EvalSeriesValues"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EvalVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "definition",
+          "owner",
+          "series",
+          "verdict"
+        ],
+        "type": "object"
+      },
       "EvalListResponse": {
         "properties": {
           "compare": {
@@ -19448,7 +19488,7 @@
           },
           "items": {
             "items": {
-              "$ref": "#/components/schemas/EvalItem"
+              "$ref": "#/components/schemas/EvalListItem"
             },
             "type": [
               "array",
