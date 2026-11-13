@@ -95,9 +95,12 @@ export function flagValue(argv: readonly string[], flags: readonly string[]): st
 
 /** The flags gh names a call's verb with, the flags it takes one field by, and those two with
  * the flag it reads a whole body from: the body of a call is its `--input` where it names one,
- * and its fields otherwise (`sentBody`). */
+ * and its fields otherwise (`sentBody`). Of the field flags, `-F` and `--field` are the typed
+ * ones, whose `@path` value gh reads out of the file at `path` (`@-`, its stdin); `-f` and
+ * `--raw-field` send `@path` as it is written. */
 const METHOD_FLAGS = ["-X", "--method"];
 export const FIELD_FLAGS = ["-f", "-F", "--field", "--raw-field"];
+const FILE_FIELD_FLAGS = ["-F", "--field"];
 const BODY_FLAGS = [...FIELD_FLAGS, "--input"];
 
 /** The verb gh sends `argv` with: the method it names when it names one — `-X POST`, `-XPOST`,
@@ -122,19 +125,101 @@ export function isPost(argv: readonly string[]): boolean {
   return methodOf(argv) === "POST";
 }
 
-/** Each field `argv` carries, as the key and the value its `key=value` names. The record keeps
- * the call as it was written, so a `-F key=@path`, whose value gh reads out of the file at
- * `path`, reads here as `@path`; that file's own text is recorded beside the argv, under its
- * path (gh-standin.ts). */
-function fieldsOf(argv: readonly string[]): Map<string, string> {
-  const fields = new Map<string, string>();
-  for (const index of argv.keys()) {
-    const pair = valueAt(argv, index, FIELD_FLAGS);
-    if (pair === undefined) continue;
-    const [key = "", ...value] = pair.split("=");
-    fields.set(key, value.join("="));
+/** A JSON object as a body's fields build it, with no prototype: a key the call names is the
+ * caller's text, and `__proto__[x]=y` must name a field and never the prototype of every object
+ * of this process. */
+type Fields = Record<string, unknown>;
+const fieldsObject = (): Fields => Object.create(null) as Fields;
+const isFields = (value: unknown): value is Fields =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** The keys gh nests a field's name into (`gh api --help`: "key[subkey]=value" for a nested
+ * object, "key[]=value" for an array): `comments[][path]` is `comments`, then `""` for an
+ * array, then `path`. A name with no bracket, or one that opens with one, is its own key. */
+function keyPath(name: string): string[] {
+  const open = name.indexOf("[");
+  if (open <= 0) return [name];
+  const inner = [...name.slice(open).matchAll(/\[([^\]]*)\]/g)].map((found) => found[1] ?? "");
+  return [name.slice(0, open), ...inner];
+}
+
+/** The object under `key` in `into`, made there when it holds none. */
+function objectUnder(into: Fields, key: string): Fields {
+  const found = into[key];
+  if (isFields(found)) return found;
+  const made = fieldsObject();
+  into[key] = made;
+  return made;
+}
+
+/** The object of the array under `key` in `into` that the field `next` goes into: the array's
+ * last object while that one has no `next` yet, and a new object at the array's end otherwise.
+ * This is how gh 2.98.0 builds `-f 'comments[][path]=a' -f 'comments[][body]=x' -f
+ * 'comments[][path]=b'` into two comments, `{path: a, body: x}` and `{path: b}`. */
+function objectInList(into: Fields, key: string, next: string): Fields {
+  const list = Array.isArray(into[key]) ? (into[key] as unknown[]) : [];
+  const last = list.at(-1);
+  into[key] = list;
+  if (isFields(last) && !Object.hasOwn(last, next)) return last;
+  const made = fieldsObject();
+  list.push(made);
+  return made;
+}
+
+/** Puts `value` at `keys` (`keyPath`) in `body`, as gh puts a field: under each key a nested
+ * object, under each `[]` an array, and a `key[]` with no `=` an empty array. A name with no
+ * `=` and no `[]` keeps the empty value it has always been read with here. */
+function place(body: Fields, keys: readonly string[], value: string | undefined): void {
+  let into = body;
+  let listed = false;
+  let key: string | undefined;
+  for (const next of keys) {
+    if (next === "") {
+      listed = true;
+      continue;
+    }
+    if (key !== undefined) {
+      into = listed ? objectInList(into, key, next) : objectUnder(into, key);
+      listed = false;
+    }
+    key = next;
   }
-  return fields;
+  if (key === undefined) return;
+  if (!listed) {
+    into[key] = value ?? "";
+    return;
+  }
+  const list = Array.isArray(into[key]) ? (into[key] as unknown[]) : [];
+  into[key] = value === undefined ? list : [...list, value];
+}
+
+/** The body the fields of `call` build, as gh sends it, or undefined when the call carries no
+ * field. Each `key=value` is placed where its key names (`keyPath`, `place`), so a review whose
+ * inline comments are written `-f 'comments[][path]=docs/cli.md' -f 'comments[][line]=5'` sends
+ * an array of comment objects, which is what GitHub creates the inline comments from; read as
+ * flat keys, that review carried no comment at all. A `-F key=@path` is the text of the file at
+ * `path` where the record holds it (gh-standin.ts records each file it reads, `@-` under `-`
+ * beside the stdin), and `@path` as written where it does not. */
+function fieldsOf(call: {
+  argv: readonly string[];
+  stdin?: string | undefined;
+  files?: Record<string, string> | undefined;
+}): Fields | undefined {
+  let body: Fields | undefined;
+  for (const index of call.argv.keys()) {
+    const pair = valueAt(call.argv, index, FIELD_FLAGS);
+    if (pair === undefined) continue;
+    body ??= fieldsObject();
+    const equals = pair.indexOf("=");
+    const name = equals < 0 ? pair : pair.slice(0, equals);
+    let value = equals < 0 ? undefined : pair.slice(equals + 1);
+    if (value?.startsWith("@") && valueAt(call.argv, index, FILE_FIELD_FLAGS) !== undefined) {
+      const source = value.slice(1);
+      value = call.files?.[source] ?? (source === "-" ? call.stdin : undefined) ?? value;
+    }
+    place(body, keyPath(name), value);
+  }
+  return body;
 }
 
 /** The JSON body `call` sent, or undefined when it sent none: the object `--input <file>` holds
@@ -154,7 +239,7 @@ function fieldsOf(argv: readonly string[]): Map<string, string> {
  * same way.
  *
  * The gh stand-in reads a create's body through this same function (gh-standin.ts's
- * `pendingReview`), since a create the world read as pending and the score read as a verdict —
+ * `reviewCreate`), since a create the world read as pending and the score read as a verdict —
  * or the other way round — is a run scored against a world that answered it something else. */
 export function sentBody(call: {
   argv: readonly string[];
@@ -162,21 +247,65 @@ export function sentBody(call: {
   files?: Record<string, string> | undefined;
 }): Record<string, unknown> | undefined {
   const input = flagValue(call.argv, ["--input"]);
-  const text = input === undefined ? undefined : input === "-" ? call.stdin : call.files?.[input];
-  const fields = fieldsOf(call.argv);
-  if (input === undefined && fields.size === 0) return undefined;
+  if (input === undefined) return fieldsOf(call);
+  const text = input === "-" ? call.stdin : call.files?.[input];
   let parsed: unknown;
   try {
     parsed = text === undefined ? {} : JSON.parse(text);
   } catch {
     parsed = {};
   }
-  const body: Record<string, unknown> =
-    typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
-      ? { ...(parsed as Record<string, unknown>) }
-      : {};
-  if (input === undefined) for (const [key, value] of fields) body[key] = value;
-  return body;
+  return isFields(parsed) ? { ...parsed } : {};
+}
+
+/** The state GitHub leaves a review in for each event it takes. */
+const SUBMITTED_STATE: Readonly<Record<string, string>> = {
+  APPROVE: "APPROVED",
+  REQUEST_CHANGES: "CHANGES_REQUESTED",
+  COMMENT: "COMMENTED",
+};
+
+/** The state GitHub leaves a review in for `event`, on a create and on a submit
+ * (`…/reviews/<id>/events`), and undefined for every value GitHub does not take as an event:
+ * `approve`, `PENDING` and a value that is no string among them. An own property alone, so an
+ * `event` named `toString` is no event either. */
+export function submittedState(event: unknown): string | undefined {
+  return typeof event === "string" && Object.hasOwn(SUBMITTED_STATE, event)
+    ? SUBMITTED_STATE[event]
+    : undefined;
+}
+
+/** The state the create of a review whose body is `body` leaves that review in, or undefined
+ * when GitHub refuses the create 422. GitHub's "Create a review for a pull request" takes the
+ * events `APPROVE`, `REQUEST_CHANGES` and `COMMENT`, and "by leaving this blank, you set the
+ * review action state to `PENDING`": so a body naming no `event`, one whose `event` is `null`
+ * or `""`, and a create that sends no body at all leave the review `PENDING`; any other event is
+ * refused; and the same page makes `body` required for `REQUEST_CHANGES` and `COMMENT`, so
+ * either with no body, or an empty one, is refused too.
+ *
+ * The gh stand-in answers a create by this (gh-standin.ts's `reviewCreate`) and score.ts reads
+ * the recorded create by it (`reviewOf`): they read `event: ""` two ways while each had a rule
+ * of its own, pending in the score and refused in the world. */
+export function createdState(body: Record<string, unknown>): string | undefined {
+  const event = body.event ?? "";
+  if (event === "") return "PENDING";
+  const state = submittedState(event);
+  if (state === undefined || event === "APPROVE") return state;
+  return typeof body.body === "string" && body.body !== "" ? state : undefined;
+}
+
+/** The head the create of a review whose body is `body` creates it at: the `commit_id` it names,
+ * and `tip`, the pull request's head when the create was made, where it names none (GitHub's
+ * page: "Defaults to the most recent commit in the pull request when you do not specify a
+ * value"). An empty `commit_id` names none. The stand-in passes the tip of the run's remote at
+ * the call, and the score the head the run's pushes had left the branch at when the call was
+ * recorded: with no tip of its own the score read such a create at `""`, so a two-step approval
+ * whose create named no head failed `namesHead` where the world had answered it at the head. */
+export function createdHead(
+  body: Record<string, unknown>,
+  tip: string | undefined
+): string | undefined {
+  return typeof body.commit_id === "string" && body.commit_id !== "" ? body.commit_id : tip;
 }
 
 /** One route of a world's `fixtures.json` (rig.sh's fixture_write), as far as choosing it and

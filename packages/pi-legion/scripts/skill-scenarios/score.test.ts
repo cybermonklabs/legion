@@ -3761,10 +3761,10 @@ const refusedRead = (run: string, at: string) => [
 ];
 // head-64 and head-65: the same route with the body on its other two carriers. head-64 pipes the
 // body in (`--input -`), which the stand-in records as the call's stdin, and head-65 writes the
-// verdict and the head as fields, which is every part of a review `-f` can carry — an inline
-// comment is an array of objects, which is why the prompt prescribes a body file. So head-64
-// passes as head-1 does and head-65 fails for its two uncommented findings, and a reader of
-// `--input <file>` alone would score either as a round that submitted nothing.
+// verdict, the head and the body as fields and no inline comment (head-123 writes those as
+// fields too, `comments[][path]=…`). So head-64 passes as head-1 does and head-65 fails for its
+// two uncommented findings, and a reader of `--input <file>` alone would score either as a round
+// that submitted nothing.
 reviewRun("reviewer-text-findings-text-only-head-64", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
@@ -4176,11 +4176,11 @@ reviewRun("reviewer-text-findings-text-only-head-115", {
 // head-116: the approval, and after it a POST on the reviews route whose last argument is a
 // bare `-f` with no `key=value` after it. The gh stand-in answers that call from the route and
 // records it as it records every other, so the row reads it: it carries no field this can read
-// and no input, so it submits nothing and the round's one submission is its approval. Catches:
-// a reader of
+// and no input, which is a create that sends no body — on GitHub, and in the stand-in that
+// answered it, a pending review at the pull request's head (gh-call.ts's `createdState`) — so
+// the round's verdict is still its approval, beside that pending review. Catches: a reader of
 // the fields that splits whatever follows the flag, which throws on the argument that is not
-// there and makes a rig error of a round whose verdict is known; and one that reads such a call
-// as a submission of its own, which would put a second submission carrying no event in the row.
+// there and makes a rig error of a round whose verdict is known.
 reviewRun("reviewer-text-findings-text-only-head-116", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
@@ -4191,6 +4191,94 @@ reviewRun("reviewer-text-findings-text-only-head-116", {
       argv: ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews", "-f"],
       exit: 0,
     },
+  ]),
+});
+// head-123 to head-125: the two-step route, with the create written the ways the gh stand-in
+// reads as GitHub does (gh-call.ts's `createdState`, `createdHead` and `sentBody`, which both
+// read the create by). head-123 writes the create's inline comments as fields —
+// `comments[][path]=…` and its friends, which gh sends as an array of comment objects — and
+// names no head, which GitHub and the stand-in take as the pull request's head when the create
+// was made; head-124's create sends no body at all, a pending review at that head, and the call
+// that submits it carries the verdict and the comments; head-125's create names `event: ""`,
+// which GitHub reads as no event. Each passes as head-67 does. Catches: comment fields read as
+// flat keys, which scored head-123 `doc=false workflow=false`; a create naming no head read at
+// `""`, which failed head-123 and head-124 on `namesHead` where the world had answered each at
+// the head; and a bodyless create read as no create, where the world kept a pending review.
+const fieldComments = findings.flatMap((finding) => [
+  "-f",
+  `comments[][path]=${finding.path}`,
+  "-F",
+  `comments[][line]=${finding.line}`,
+  "--raw-field",
+  `comments[][body]=${finding.body}`,
+]);
+/** The submit of the round's pending review, `-f event=APPROVE` unless `rest` says otherwise. */
+const submitPending = (...rest: string[]) => ({
+  at: "2026-09-30T17:29:30.000Z",
+  as: "gh",
+  argv: [
+    "api",
+    "--method",
+    "POST",
+    "repos/example/widgets/pulls/1001/reviews/6001/events",
+    ...(rest.length > 0 ? rest : ["-f", "event=APPROVE"]),
+  ],
+  exit: 0,
+});
+reviewRun("reviewer-text-findings-text-only-head-123", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      at: "2026-09-30T17:29:20.000Z",
+      as: "gh",
+      argv: [
+        "api",
+        "repos/example/widgets/pulls/1001/reviews",
+        "-f",
+        "body=The open threads are the work the merge waits for.",
+        ...fieldComments,
+      ],
+      exit: 0,
+    },
+    submitPending(),
+  ]),
+});
+reviewRun("reviewer-text-findings-text-only-head-124", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      at: "2026-09-30T17:29:20.000Z",
+      as: "gh",
+      argv: ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews"],
+      exit: 0,
+    },
+    {
+      ...submitPending("--input", "submit.json"),
+      files: {
+        "submit.json": JSON.stringify({
+          event: "APPROVE",
+          body: "The open threads are the work the merge waits for.",
+          comments: findings,
+        }),
+      },
+    },
+  ]),
+});
+reviewRun("reviewer-text-findings-text-only-head-125", {
+  "case.txt": "text-only\n",
+  "calls.jsonl": calls([
+    {
+      ...pendingReview,
+      files: {
+        "pending.json": JSON.stringify({
+          commit_id: head,
+          event: "",
+          body: "The open threads are the work the merge waits for.",
+          comments: findings,
+        }),
+      },
+    },
+    submitPending(),
   ]),
 });
 // head-74: the approval the rule asks for, and a `COMMENT` review after it, which leaves that
@@ -4504,10 +4592,12 @@ reviewRun("reviewer-text-findings-text-only-head-104", {
 });
 // head-105: two pending creates, the first at a head the round had before the implementer's
 // last push and carrying one of the two findings, the second at the world's head carrying both,
-// and then the submit of the verdict. Catches: a submit folded into the first pending create
-// rather than the last, which would read this round's approval at a head the pull request left
-// behind and with one finding written. The create the submit folds in is the last one before it
-// that named no event, which is the review the round was still writing.
+// and then the submit of the verdict. GitHub refuses the second, 422 "User can only have one
+// pending review per pull request", and so does the gh stand-in (gh-standin.ts's
+// `reviewCreate`), which records it with exit 1: the review the submit submits is the first,
+// at the head the pull request left behind and with one finding written, and the round fails.
+// Catches: a reader that counts the refused create, which read this round's approval as the
+// second create's — a pass on a review GitHub never created.
 reviewRun("reviewer-text-findings-text-only-head-105", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([
@@ -4522,7 +4612,7 @@ reviewRun("reviewer-text-findings-text-only-head-105", {
         }),
       },
     },
-    pendingReview,
+    { ...pendingReview, exit: 1 },
     {
       at: "2026-09-30T17:29:30.000Z",
       as: "gh",
@@ -4680,9 +4770,9 @@ reviewRun(
 // defect head-12: the change request the case asks for, written as fields with no `--method` at
 // all, which gh sends as a POST because the call carries them. Catches: a call with a field and
 // no method read as a GET, which would leave this round's one submission out of the row and
-// fail a control that caught the defect. The body is fields and no `--input`, which is why this
-// is the defect control's row and not the text-only arm's: a review's inline comments are a
-// list, which no field can carry.
+// fail a control that caught the defect. The body is fields and no `--input`, and it writes no
+// inline comment, which is why this is the defect control's row and not the text-only arm's,
+// whose approval needs one on each finding (head-123 writes those as fields).
 reviewRun(
   "reviewer-text-findings-defect-head-12",
   {
@@ -4773,6 +4863,40 @@ reviewRun(
   },
   [...header, ...turn]
 );
+// defect head-19 and head-20: a change request GitHub refuses to create — head-19's carries no
+// body, which GitHub requires for `REQUEST_CHANGES` and `COMMENT`, and head-20's names the event
+// in lower case, which is no event GitHub takes. GitHub refuses each 422, and the gh stand-in
+// refuses it with GitHub (gh-call.ts's `createdState`, which both read the create by), so the
+// round submitted nothing and the control fails. The stand-in records a call it refused with
+// exit 1, which no reader counts; these rows hold it with exit 0, so the score's own reading of
+// the create decides it. Catches: a score that reads a create GitHub refuses as the round's
+// verdict, or as a pending review, which passes a control whose change request never reached
+// the pull request or leaves it a review GitHub never created.
+for (const [name, fields] of [
+  ["head-19", ["-f", "event=REQUEST_CHANGES"]],
+  ["head-20", ["-f", "event=request_changes", "-f", "body=The blank-name guard is gone."]],
+] as const)
+  reviewRun(
+    `reviewer-text-findings-defect-${name}`,
+    {
+      "case.txt": "defect\n",
+      "calls.jsonl": calls([
+        {
+          at: "2026-09-30T17:29:30.000Z",
+          as: "gh",
+          argv: [
+            "api",
+            "repos/example/widgets/pulls/1001/reviews",
+            ...fields,
+            "-f",
+            `commit_id=${head}`,
+          ],
+          exit: 0,
+        },
+      ]),
+    },
+    [...header, ...turn]
+  );
 
 // The rig's two records of the case disagree, and a directory that names no case at all.
 reviewRun("reviewer-text-findings-defect-head-3", {
@@ -6128,6 +6252,48 @@ fixRun("threads-closed-text-fixes-head-96", {
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([completed, { ...completed, status: 409 }]),
 });
+// head-98: the reviewer's second approval on the two-step route, its create naming no head and
+// sending no body, after the implementer's push. GitHub creates that review at the pull
+// request's head when the create is made, which is the head the push left, and the gh stand-in
+// answers it there (gh-call.ts's `createdHead`, given its remote's tip at the call); the score
+// reads it at the head <run>/pushes.log had left the branch at when the call was recorded, so
+// the round approved the fix head and passes as head-1 does. Catches: a create naming no head
+// read at `""`, which failed `namesHead` on an approval the world had answered at the fix head,
+// and one read at the world's first head, which the push had already left behind.
+fixRun("threads-closed-text-fixes-head-98", {
+  "calls.jsonl": calls([
+    ...closedBoth.slice(0, 6),
+    {
+      at: "2026-09-30T17:37:50.000Z",
+      as: "gh",
+      by: "reviewer",
+      argv: ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews"],
+      exit: 0,
+    },
+    { ...submitPending(), at: "2026-09-30T17:38:00.000Z", by: "reviewer" },
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
+// head-99: the reviewer's second approval written `gh pr review 1001 --approve`, after the
+// implementer's push. The call names no head; GitHub takes it at the pull request's head when it
+// is made, which is the head the push left, and the gh stand-in answers it there (its remote's
+// tip at the call); the score reads it at the head <run>/pushes.log had left the branch at when
+// the call was recorded, so the round approved the fix head and passes as head-1 does. Catches:
+// a `gh pr review` read at `""`, which failed `namesHead` on an approval the world had answered
+// at the fix head, and one read at the world's first head, which the push had left behind.
+fixRun("threads-closed-text-fixes-head-99", {
+  "calls.jsonl": calls([
+    ...closedBoth.slice(0, 6),
+    {
+      at: "2026-09-30T17:38:00.000Z",
+      as: "gh",
+      by: "reviewer",
+      argv: ["pr", "review", "1001", "--approve", "--body", "The text fixes close both threads."],
+      exit: 0,
+    },
+  ]),
+  "pushes.log": pushed(fix.fixed),
+});
 // Catches: a reader of "one thread per call" that counts the ids a call names and lets a call
 // naming none through. head-64's reviewer resolved the first thread with the id in a file
 // (`-F id=@thread-id.txt`, which gh reads the value of from that file), so the call shows no
@@ -6926,13 +7092,16 @@ test("reviewer-text-findings, text-only: a resolveReviewThread in the call's bod
   expect(out).toMatch(/reviewer-text-findings-text-only-head-8\tpass=true\t.*resolveThread=1 /);
 });
 
-// Catches: a scorer that reads only `gh api`, so a `gh pr review` verdict goes unseen.
-test("reviewer-text-findings: a gh pr review carries its event in a flag, and no head or comment", () => {
+// Catches: a scorer that reads only `gh api`, so a `gh pr review` verdict goes unseen. The call
+// names no head and GitHub takes it at the pull request's head, which with no push is the
+// world's, so the row reads `head=true`, as the gh stand-in answered it; it carries no inline
+// comment, which is why the text-only approval fails.
+test("reviewer-text-findings: a gh pr review carries its event in a flag, is at the head, and carries no comment", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-6\tpass=false\t.*event=APPROVE head=false doc=false workflow=false /
+    /reviewer-text-findings-text-only-head-6\tpass=false\t.*event=APPROVE head=true doc=false workflow=false /
   );
   expect(out).toMatch(
-    /reviewer-text-findings-defect-head-1\tpass=true\t.*event=REQUEST_CHANGES head=false /
+    /reviewer-text-findings-defect-head-1\tpass=true\t.*event=REQUEST_CHANGES head=true /
   );
 });
 
@@ -6966,6 +7135,18 @@ test("threads-closed, text-fixes: the fix and its push, then the resolutions and
     /threads-closed-text-fixes-head-1\tpass=true\tref=false\tcase=text-fixes threads=2 replied=2 replyCalls=2 repliedCommit=2 fixResolves=0 pushes=1 fixed=true threadsLine=true toldReviewer=true aloneToReviewer=true listed=true resolved=2 resolveCalls=2 bulk=false approved=true toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none refusedCompletions=1/
   );
   expect(out).toContain('changed=[".github/workflows/greet.yml","docs/cli.md"]');
+});
+// Catches: the reviewer's approval of the fix head read at `""` or at the world's first head
+// where its create named no head: head-98's create, made after the push, is at the head the
+// push left, as the gh stand-in answered it.
+test("threads-closed, text-fixes: an approval whose create names no head is at the head the push left", () => {
+  expect(out).toMatch(/threads-closed-text-fixes-head-98\tpass=true\t.*approved=true /);
+});
+// Catches: a `gh pr review --approve` of the fix head read at `""` or at the world's first head:
+// head-99's call, made after the push, is at the head the push left, as the gh stand-in answered
+// it.
+test("threads-closed, text-fixes: a gh pr review --approve is at the head the push left", () => {
+  expect(out).toMatch(/threads-closed-text-fixes-head-99\tpass=true\t.*approved=true /);
 });
 
 // Catches: a scorer that counts resolutions and never reads the replies, or one blind to the
@@ -7495,13 +7676,37 @@ test("reviewer-text-findings: with --input, the fields beside it are no part of 
 });
 // Catches: a reader of the fields that reads whatever follows the flag, where head-116's
 // trailing `-f` with no `key=value` after it throws and makes a rig error of a round whose
-// verdict is known; and one that counts a POST carrying no readable body as a submission of its
-// own, which would put a second submission in the row beside the approval.
-test("reviewer-text-findings: a POST whose -f carries no value submits nothing and throws nothing", () => {
+// verdict is known. The call carries no body, so it is the create of a pending review, as the gh
+// stand-in answered it, and the approval before it is the verdict that stands.
+test("reviewer-text-findings: a POST whose -f carries no value throws nothing and leaves the approval standing", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-116\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 /
+    /reviewer-text-findings-text-only-head-116\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
   );
   expect(out).not.toContain("reviewer-text-findings-text-only-head-116\trig error");
+});
+// The two-step route with its create written as the gh stand-in reads it (gh-call.ts): comment
+// fields, no head, no body, and `event: ""`. Catches: a create read one way by the world and
+// another by the score — comment fields read as flat keys (`doc=false workflow=false`), a
+// create naming no head read at `""` (`head=false`), a bodyless create read as no create, and
+// `event: ""` read as an event.
+test("reviewer-text-findings: a create is read as the gh stand-in answered it", () => {
+  for (const name of ["head-123", "head-124", "head-125"])
+    expect(out).toMatch(
+      new RegExp(
+        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=1 `
+      )
+    );
+});
+// Catches: a create GitHub refuses read as the round's verdict or as a pending review. defect
+// head-19's change request carries no body and head-20's names an event GitHub does not take,
+// so GitHub created no review, and the control that caught the defect submitted nothing.
+test("reviewer-text-findings, defect: a change request GitHub refuses to create is no review", () => {
+  for (const name of ["head-19", "head-20"])
+    expect(out).toMatch(
+      new RegExp(
+        `reviewer-text-findings-defect-${name}\\tpass=false\\t.*event=none .*submissions=0 `
+      )
+    );
 });
 // The defect control's own verb row: head-12 writes its change request as fields with no method
 // at all, which gh sends as a POST. Catches: a call with a field and no method read as a GET,
@@ -7656,14 +7861,14 @@ test("reviewer-text-findings: the submit call's own head and comments stand over
 // than nothing at all. defect head-10 is `-r`, the flag the negative control turns on.
 test("reviewer-text-findings: gh pr review's short flags carry the event, and a call with none submits no verdict", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-85\tpass=false\t.*event=APPROVE head=false doc=false workflow=false /
+    /reviewer-text-findings-text-only-head-85\tpass=false\t.*event=APPROVE head=true doc=false workflow=false /
   );
   expect(out).toMatch(/reviewer-text-findings-text-only-head-86\tpass=false\t.*event=COMMENT /);
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-87\tpass=false\t.*event=none .*submissions=1 /
   );
   expect(out).toMatch(
-    /reviewer-text-findings-defect-head-10\tpass=true\t.*event=REQUEST_CHANGES head=false /
+    /reviewer-text-findings-defect-head-10\tpass=true\t.*event=REQUEST_CHANGES head=true /
   );
 });
 
@@ -7695,20 +7900,20 @@ test("reviewer-text-findings: the submit route takes a leading slash too", () =>
 });
 
 // Catches: a submit folded into the wrong create, which is what decides the head and the
-// findings the round's verdict carries. head-105 has two pending creates, and the one the
-// submit belongs to is the last — the review the round was still writing — not the first, whose
-// head the pull request had left behind and which carried one finding; head-106 has a pending
+// findings the round's verdict carries. head-105's second pending create was refused 422, as
+// GitHub refuses a second while one stands, so the submit is of the first — at the head the
+// pull request had left behind, with one finding — and the round fails; head-106 has a pending
 // create and a `COMMENT` review of its own after it, and the submit folds in the pending one,
 // since a review the round posted entire is no pending review; head-107 has two submits and no
 // create at all, where a submitted review is no pending review either, so the second call's own
 // empty head is the verdict's and the first call's head and comments are not folded into it.
-test("reviewer-text-findings: a submit folds in the last pending create, and no review that is not one", () => {
-  for (const name of ["head-105", "head-106"])
-    expect(out).toMatch(
-      new RegExp(
-        `reviewer-text-findings-text-only-${name}\\tpass=true\\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 `
-      )
-    );
+test("reviewer-text-findings: a submit folds in the pending create GitHub holds, and no review that is not one", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-105\tpass=false\t.*event=APPROVE head=false doc=true workflow=false .*submissions=1 /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-106\tpass=true\t.*event=APPROVE head=true doc=true workflow=true .*submissions=2 /
+  );
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-107\tpass=false\t.*event=APPROVE head=false doc=false workflow=false .*submissions=2 /
   );
@@ -7717,8 +7922,8 @@ test("reviewer-text-findings: a submit folds in the last pending create, and no 
 // Catches: a reader of `-f` alone among the four flags gh writes a field with. head-91 writes
 // the verdict with `--raw-field` and the head with `-F`, head-92 the verdict with `--field` and
 // the head with `-f`, and a reader short of any one of them loses the verdict or the head of a
-// round that wrote it that way. Both fail as head-65 does, for the findings a field cannot
-// carry.
+// round that wrote it that way. Both fail as head-65 does, for the findings they write no
+// inline comment for.
 test("reviewer-text-findings: a review written with --raw-field, -F or --field is read as one with -f", () => {
   for (const name of ["head-91", "head-92"])
     expect(out).toMatch(
@@ -7729,11 +7934,12 @@ test("reviewer-text-findings: a review written with --raw-field, -F or --field i
 });
 
 // Catches: a body parsed with the throw let out, which would make a rig error of a round whose
-// verdict is known. head-93's call went out and the stand-in took it, so the round submitted a
-// review this can read nothing in, and the row says so.
+// verdict is known. head-93's call went out and the stand-in took it as a create whose body it
+// can read nothing in — a pending review at the pull request's head, which is what it answered
+// (gh-call.ts's `createdState` and `createdHead`) — and the row says so.
 test("reviewer-text-findings: a submission whose body is no JSON is a submission carrying nothing", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-93\tpass=false\t.*event=none head=false doc=false workflow=false .*submissions=1 /
+    /reviewer-text-findings-text-only-head-93\tpass=false\t.*event=none head=true doc=false workflow=false .*submissions=1 /
   );
   expect(out).not.toContain("reviewer-text-findings-text-only-head-93\trig error");
 });

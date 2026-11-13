@@ -332,6 +332,22 @@ worker_key=''
 worker_repo=example/widgets
 worker_base=main
 
+# The developer every commit the rig writes into a run's repository is written by — the worker
+# world's (fixture_git), the issue workspace's working copy (fixture_workspace) and the brainstorm
+# run's to-do CLI — and the identity a worker agent's own jj commits carry (worker_boot). `git
+# log` is something the world writes and the agent reads, so this is a name and an address a
+# repository could hold, in no word of the rig's own: the world's commits were `Fixture`'s, the
+# brainstorm repository's `rig`'s and jj's `Rig Worker`'s (review 5887659447, finding 2), and
+# rig.test.ts's "no file, commit, commit identity or gh answer of a run's world holds a word of
+# the rig's" holds every world to that.
+world_author_name='Robin Hale'
+world_author_email=robin.hale@example.invalid
+# The login of the user whose token a run's gh calls are made with, which every answer of the
+# world that names a user carries (`gh api user`, the create of a review): a login a reviewer of
+# this repository could have, in no word of the rig's own — the world answered `rig[bot]` — and
+# the same rig.test.ts row reads every answer the world's routes serve for that.
+world_login='widgets-reviewer[bot]'
+
 note() { printf 'skill-scenarios: %s\n' "$*"; }
 fail() {
   echo "skill-scenarios: $*" >&2
@@ -1220,8 +1236,8 @@ Tasks live in `tasks.json` beside `todo.py`.
 MDEOF
   git -C "$R/cwd" init -q
   git -C "$R/cwd" add -A
-  git -C "$R/cwd" -c user.name=rig -c user.email=rig@example.invalid -c commit.gpgsign=false \
-    commit -qm "A tiny to-do CLI"
+  git -C "$R/cwd" -c user.name="$world_author_name" -c user.email="$world_author_email" \
+    -c commit.gpgsign=false commit -qm "A tiny to-do CLI"
   # shellcheck disable=SC2016 # the backticks are the prompt's own, a command name for the agent
   printf '/brainstorming a small feature: let a task in this to-do CLI carry an optional due date, and have `list` show overdue tasks first.\n' \
     >"$R/prompt.txt"
@@ -1794,6 +1810,7 @@ $entries"
     states=$(blocked_at "$C1")
   fi
   extra=$(jq -n --argjson resolve "$resolve_route" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
+    --arg login "$world_login" \
     --argjson threads "$threads" --argjson reviews "$reviews" --argjson protection "$protection" '$protection + [
     $resolve,
     {match:"^gh api .*addPullRequestReviewThreadReply",
@@ -1805,7 +1822,7 @@ $entries"
        nodes:[$threads[] | {id:.id, isResolved:false, path:.path, line:.line,
          comments:{nodes:[{author:{login:"legion-review[bot]"}, body:.body}]}}]}}}}}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), methods:["POST"],
-     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:"rig[bot]"}}},
+     stdout:{id:5002, html_url:($url+"#pullrequestreview-5002"), user:{login:$login}}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews/" + ($reviews[0].id|tostring) + "( |$)"),
      stdout:$reviews[0]},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews}
@@ -1837,10 +1854,12 @@ EOF
   printf '# widgets\n\nSmall CLI helpers.\n' >"$src/README.md"
 }
 
-# The fixture's git in $src: this world's date on every commit, and an identity of its own.
+# The world's git in $src: this world's date on every commit, and the world's own author
+# ($world_author_name).
 fixture_git() {
   GIT_AUTHOR_DATE=$when GIT_COMMITTER_DATE=$when \
-    git -C "$src" -c user.name=Fixture -c user.email=fixture@example.invalid -c commit.gpgsign=false "$@"
+    git -C "$src" -c user.name="$world_author_name" -c user.email="$world_author_email" \
+    -c commit.gpgsign=false "$@"
 }
 
 # docs/cli.md as it stands before the change this world's commit makes, which leaves it with one
@@ -1907,6 +1926,14 @@ fixture_round_files() {
 \`bun greet.ts <name>\` prints \`Hello, <name>!\`. $doc_line
 EOF
   mkdir -p "$src/.github/workflows"
+  # The workflow installs bun before it runs the tests: bun is on no GitHub runner, so without
+  # that step `bun` is absent and the job can never pass, which is a finding whose closing changes
+  # code that runs. The scenario's premise is a change carrying text findings and no behavioural
+  # one, so the world must not carry that defect; the comment on the file's first line, which
+  # names a trigger the file does not have, is the text finding the run is there to find. That
+  # is said here and never in the file: the file is the world's, and the same sentences written
+  # into it told every agent that read it what it was there to find (review 5887659447, finding
+  # 2).
   cat >"$src/.github/workflows/greet.yml" <<EOF
 # Runs the greet tests on every pull request$workflow_trigger.
 name: greet
@@ -1917,11 +1944,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # Bun is on no GitHub runner, so the job installs it: without this step \`bun\` is absent
-      # and the run below can never pass, which is a finding whose closing changes code that
-      # runs. The scenario's premise is a change carrying text findings and no behavioural one,
-      # so the world must not carry that defect; the comment above, which names a trigger this
-      # file does not have, is the text finding the run is there to find.
       - uses: oven-sh/setup-bun@v2
       - run: bun test greet.test.ts
 EOF
@@ -1972,11 +1994,13 @@ fixture_test_handoff() {
 # fixture_workspace clones the remote into $R/ws, the issue workspace every role of the run
 # shares. It is isolated from the operator's own jj configuration (fsmonitor.backend = "watchman"
 # on a devbox that runs it): a bare JJ_CONFIG naming only fsmonitor.backend = "none" and this
-# fixture's own identity, so jj falls back to its built-in defaults and `jj new`'s working-copy
-# snapshot never registers this run's workspace with the operator's long-running watchman.
+# fixture's own identity, the world's author ($world_author_name), so jj falls back to its
+# built-in defaults and `jj new`'s working-copy snapshot never registers this run's workspace
+# with the operator's long-running watchman.
 fixture_workspace() {
   local jj_setup_config=$R/jj-setup.toml
-  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[fsmonitor]\nbackend = "none"\n' >"$jj_setup_config"
+  printf '[user]\nname = "%s"\nemail = "%s"\n[fsmonitor]\nbackend = "none"\n' \
+    "$world_author_name" "$world_author_email" >"$jj_setup_config"
   JJ_CONFIG=$jj_setup_config jj git clone "$R/remote.git" "$R/ws" >/dev/null 2>&1
   (cd "$R/ws" && JJ_CONFIG=$jj_setup_config jj bookmark track "legion/$worker_key" --remote origin && JJ_CONFIG=$jj_setup_config jj new "legion/$worker_key") >/dev/null 2>&1
 }
@@ -2050,6 +2074,14 @@ $2
 # `--method=POST`, `-XPOST` or in lower case is the create `--method POST` is. Written out as
 # `(-X|--method) ?POST`, it sent each of those spellings to a GET route below it, which answered
 # a create with the list of reviews already there and left the run no pending review to submit.
+# Two writes have routes of their own ahead of it, since GitHub answers neither with what it
+# answers other creates with. The create of a review is answered with the review (id 6001, its
+# URL and the user whose token the run calls with), where a world names no create route of its
+# own; the stand-in adds the state and the head the call gives it, refuses the creates GitHub
+# refuses, and answers a later read of that review by its id (gh-standin.ts's `reviewCreate` and
+# `reviewRead`). A PATCH of the pull request is answered with the pull request, carrying the body
+# the PATCH left, as GitHub answers it: the write route answered it `{id:6001, html_url}`, and 23
+# recorded PATCH calls read `.body` back as null (review 5887659447, finding 6).
 #
 # fixture_write EXTRA DECISION REVIEWS [MERGE_STATES] writes MERGE_STATES, a JSON object from a
 # head's SHA to the merge state GitHub reports for the pull request while it is at that head
@@ -2059,6 +2091,7 @@ $2
 # record on it as main's engine moves on `record.MergeState` (daemon-standin.ts's `servedPhase`).
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
+    --arg login "$world_login" \
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson number "$worker_pr" --argjson extra "$1" \
     --argjson decision "$2" --argjson reviews "$3" --argjson runs "$(concluded_checks)" \
@@ -2074,6 +2107,9 @@ fixture_write() {
       {match:"^gh pr list", stdout:[$pr]},
       {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
       {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
+      {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews([ ?]|$)"), methods:["POST"],
+       stdout:{id:6001, html_url:($url+"#pullrequestreview-6001"), user:{login:$login}}},
+      {match:("^gh api .*pulls/" + ($number|tostring) + "([ ?]|$)"), methods:["PATCH"], stdout:$pr},
       {match:"^gh api ", methods:["POST","PATCH","PUT"], stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
       {match:("^gh api .*pulls/" + ($number|tostring) + "/(reviews|comments)"), stdout:[]},
       {match:("^gh api .*/rules/branches/" + $base), stdout:[]},
@@ -2085,7 +2121,7 @@ fixture_write() {
          protection_url:("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection")}},
       {match:"^gh api .*(check-runs|status)", stdout:{total_count:($runs|length), check_runs:$runs}},
       {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
-      {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
+      {match:"^gh (api user|auth status)", stdout:{login:$login}}
     ])}' >"$R/fixtures.json"
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson pr "$worker_pr" --arg head "$C1" \
@@ -2194,7 +2230,8 @@ worker_boot() {
   mkdir -p "$state/gh" "$state/secrets"
   chmod 0700 "$state/secrets"
   (umask 077 && openssl rand -hex 16 >"$state/secrets/boot")
-  printf '[user]\nname = "Rig Worker"\nemail = "rig@example.invalid"\n[ui]\npaginate = "never"\n' >"$R/jj.toml"
+  printf '[user]\nname = "%s"\nemail = "%s"\n[ui]\npaginate = "never"\n' \
+    "$world_author_name" "$world_author_email" >"$R/jj.toml"
   if [ -n "$booted" ]; then
     # The agent before this one has exited, and its stand-in goes with it: stopped here so no run
     # leaves one listening, and its log kept, so the port read below is this stand-in's own. The
@@ -2245,8 +2282,8 @@ worker_boot() {
     echo "DISPATCH_URL=http://127.0.0.1:$dispatch_port"
     echo "DISPATCH_TOKEN_FILE=$work/services/dispatch-token"
     echo "GIT_CONFIG_COUNT=0"
-    echo "JJ_USER=Rig Worker"
-    echo "JJ_EMAIL=rig@example.invalid"
+    echo "JJ_USER=$world_author_name"
+    echo "JJ_EMAIL=$world_author_email"
     echo "JJ_CONFIG=$R/jj.toml"
     echo "GH_REPO=$worker_repo"
     echo "SKILL_SCENARIO_AGENT=$role"

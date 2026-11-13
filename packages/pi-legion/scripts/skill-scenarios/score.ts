@@ -33,7 +33,15 @@ import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/a
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 // How gh reads a call's verb, its body and the two review endpoints, in the module the gh
 // stand-in answers that same call by (gh-call.ts).
-import { flagValue, isPost, reviewsRoute, sentBody, submitsReview } from "./gh-call";
+import {
+  createdHead,
+  createdState,
+  flagValue,
+  isPost,
+  reviewsRoute,
+  sentBody,
+  submitsReview,
+} from "./gh-call";
 import {
   CheckableFile,
   CheckableOutput,
@@ -925,11 +933,10 @@ const REVIEWER_CASES = ["text-only", "defect"];
  * false, and the workflow whose comment names a trigger the file does not carry. */
 const FINDING_DOC = "docs/cli.md";
 const FINDING_WORKFLOW = ".github/workflows/";
-/** A review submission as the reviewer's own prompt writes it: the head it reviewed, its verdict,
- * and one inline comment per finding. */
+/** The inline comments of a review submission, as the reviewer's own prompt writes them: one per
+ * finding, each on the file its `path` names. The head and the event of a create are read by the
+ * rules the gh stand-in answers the same call by (`reviewOf`). */
 const Review = z.looseObject({
-  commit_id: z.string().optional(),
-  event: z.string().optional(),
   comments: z.array(z.looseObject({ path: z.string().optional() })).optional(),
 });
 /** The event each `gh pr review` flag submits. */
@@ -956,34 +963,53 @@ type Submission = {
  * on the run's own repository and no other (`reviewsRoute`),
  * whose JSON body comes from `--input <file>` (the stand-in records the file it read),
  * `--input -` (its stdin) or its fields, read as the stand-in reads one (`sentBody`); or a
- * `gh pr review` of that same repository, which carries its event as a flag and can name
- * neither the head nor an inline
- * comment; or the call that submits a pending review (`submitsReview`), whose body carries the
- * verdict and whose create carries the rest (`reviewsIn`). A call on the reviews route that
- * carries no body submits nothing here: `gh api repos/…/pulls/<n>/reviews` is the read of the
- * reviews already there, which a round often makes after it submitted, and a POST that sends
- * nothing creates a review that names no head and no verdict, which is no verdict of the round.
- * Neither does a call that names the verb GET: `gh api repos/…/pulls/<n>/reviews --method GET
- * -f per_page=100` is that same read with its query's parameters written as fields, and a
- * reader that took those fields for a body made it the round's last submission, carrying no
- * event — the row of a round that submitted nothing, which is the one thing such a round did
- * not do. The verb is read in every
- * spelling gh takes it in and in any case (`isPost`), since a GET written `--method=GET` read as
- * a call naming none is that same false row.
+ * `gh pr review` of that same repository, which carries its event as a flag, names no head and
+ * can name no inline comment, and which GitHub takes at the pull request's head when the call is
+ * made — the gh stand-in answers it at its remote's tip at that call, and this reads it at
+ * `tipAt(call.at)` (`headAt`), where it once read it at `""` and failed `namesHead` on a review
+ * the world had answered at the head; or the call that submits a pending review
+ * (`submitsReview`), whose body carries the
+ * verdict and whose create carries the rest (`reviewsIn`). A call that names the verb GET submits
+ * nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews already there, which a
+ * round often makes after it submitted, and `gh api repos/…/pulls/<n>/reviews --method GET
+ * -f per_page=100` is that same read with its query's parameters written as fields; a reader
+ * that took those fields for a body made it the round's last submission, carrying no event — the
+ * row of a round that submitted nothing, which is the one thing such a round did not do. The verb
+ * is read in every spelling gh takes it in and in any case (`isPost`), since a GET written
+ * `--method=GET` read as a call naming none is that same false row.
+ *
+ * A create is read by the rules the gh stand-in answered it by (gh-call.ts's `createdState` and
+ * `createdHead`), so the world and the score read one call one way: a create GitHub refuses
+ * submits nothing; one naming no event — no `event`, `event: ""`, or no body at all — is a
+ * pending review, carrying the empty event; and one naming no head is at `headAt(call.at)`, the
+ * pull request's head when it was made, where the stand-in answered it at its remote's tip at
+ * that call. Each side once had a rule of its own: a bodyless create was no review here and a
+ * pending review at the head there, so the approval that submitted it named `""` and failed
+ * `namesHead`, and `event: ""` was pending here and no pending review there.
  *
  * The repository is read on both routes, since a review of another repository's pull request
  * approves nothing of this one and the stand-in answers such a call as GitHub would answer the
  * right one (`reviewsRoute`): `gh pr review -R other/repo --request-changes` is a review of
  * other/repo, and the repository rule covering the `gh api` route alone counted it as this
  * round's verdict. */
-function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefined {
+function reviewOf(
+  call: z.infer<typeof Call>,
+  repo: string,
+  tipAt: (at: string) => string
+): Submission | undefined {
   if (call.argv[0] === "pr" && call.argv[1] === "review") {
     // The repository the call names, which a call naming none leaves to the checkout it was made
     // in: the run's own clone of the world's repository.
     const named = flagValue(call.argv, ["-R", "--repo"]);
     if (named !== undefined && named !== repo) return undefined;
     const flag = call.argv.find((arg) => REVIEW_FLAGS[arg] !== undefined) ?? "";
-    return { at: call.at, event: REVIEW_FLAGS[flag] ?? "", head: "", comments: [], submits: false };
+    return {
+      at: call.at,
+      event: REVIEW_FLAGS[flag] ?? "",
+      head: tipAt(call.at),
+      comments: [],
+      submits: false,
+    };
   }
   // gh sends a call carrying a field as a POST and one carrying none as a GET, so the verb is
   // read to tell an explicit GET — a read of the route — from a submission, by the one reader
@@ -991,39 +1017,61 @@ function reviewOf(call: z.infer<typeof Call>, repo: string): Submission | undefi
   if (call.argv[0] !== "api" || !isPost(call.argv)) return undefined;
   const submits = call.argv.some((arg) => submitsReview(arg, repo) !== undefined);
   if (!submits && !call.argv.some((arg) => reviewsRoute(arg, repo))) return undefined;
-  const body = sentBody(call);
-  if (body === undefined) return undefined;
+  const sent = sentBody(call);
+  // A submit that sends nothing names no event, which GitHub refuses, and the stand-in with it.
+  if (submits && sent === undefined) return undefined;
+  const body = sent ?? {};
+  const state = submits ? "" : createdState(body);
+  if (state === undefined) return undefined;
   const read = Review.safeParse(body);
-  const review = read.success ? read.data : {};
+  const comments = read.success ? (read.data.comments ?? []) : [];
+  const named = typeof body.commit_id === "string" ? body.commit_id : "";
   return {
     // The time the stand-in recorded the call at, which is when the review was submitted: the
     // ordering of this loop's first message is read against it (`toldImplementer`).
     at: call.at,
-    event: review.event ?? "",
-    head: review.commit_id ?? "",
-    comments: (review.comments ?? []).map((comment) => comment.path ?? ""),
+    event: state === "PENDING" || typeof body.event !== "string" ? "" : body.event,
+    head: submits ? named : (createdHead(body, tipAt(call.at)) ?? ""),
+    comments: comments.map((comment) => comment.path ?? ""),
     submits,
+  };
+}
+
+/** The head the world's pull request was at when a call recorded at `at` began: the commit the
+ * last push onto the world's branch before that left there (<run>/pushes.log), or the world's
+ * own head before any. It is the tip a create naming no head is read at (`reviewOf`), as the gh
+ * stand-in reads it off its remote at the call. */
+function headAt(runDir: string, world: z.infer<typeof World>): (at: string) => string {
+  const pushes = pushesOf(runDir).filter((push) => push.ref === `refs/heads/${world.branch}`);
+  return (at) => {
+    const began = instant(at, "a gh call's time");
+    return pushes.findLast((push) => instant(push.at, "a push's time") <= began)?.sha ?? world.head;
   };
 }
 
 /** Every review `calls` submitted on `repo`'s pull request, in the order the gh stand-in recorded
  * them: a call that submitted none, and one that submitted to another repository, is no review of
- * this run (reviewOf).
+ * this run (reviewOf). A create naming no head is read at `tipAt(call.at)` (`headAt`).
  *
  * A call that submits a pending review and the create it submits are one submission and not two:
  * the create carries the head and the inline comments, the submit call carries the verdict, and
  * the pair takes the submit call's own place in the order, which is when the verdict was made.
- * The create it folds in is the last one before it that named no event, which is the only
- * pending review a run of this rig can have: each world answers every create of its own with
- * one id — `approved_world` 5002, from the reviews route of its own, and `review_world` 6001,
- * from the POST route every world shares (rig.sh's fixture_write) — so an id
- * names no particular review here. A create no submit
- * call follows stays as it is — a pending review is no verdict, and it scores as the empty event
- * it carries. */
-function reviewsIn(calls: z.infer<typeof Call>[], repo: string): Submission[] {
+ * The create it folds in is the last one before it that named no event, which is the one pending
+ * review a run can have: GitHub refuses the create of a second while one stands, and the stand-in
+ * with it (gh-standin.ts's `reviewCreate`), so the refused call exits 1, and every caller of this
+ * reads the calls that exited 0 alone. Each world answers every create of its own with one id —
+ * `approved_world` 5002, from the reviews route of its own, and every other world 6001, from the
+ * reviews route fixture_write shares (rig.sh) — so an id names no particular review here. A
+ * create no submit call follows stays as it is — a pending review is no verdict, and it scores as
+ * the empty event it carries. */
+function reviewsIn(
+  calls: z.infer<typeof Call>[],
+  repo: string,
+  tipAt: (at: string) => string
+): Submission[] {
   const found: Submission[] = [];
   for (const call of calls) {
-    const review = reviewOf(call, repo);
+    const review = reviewOf(call, repo, tipAt);
     if (review === undefined) continue;
     const pending = review.submits
       ? found.findLastIndex((earlier) => !earlier.submits && earlier.event === "")
@@ -1140,7 +1188,8 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   const calls = parsed(path.join(runDir, CALLS), Call);
   const reviews = reviewsIn(
     calls.filter((call) => call.as === "gh" && call.exit === 0),
-    world.repo
+    world.repo,
+    headAt(runDir, world)
   );
   const review = verdictOf(reviews) ?? reviews.at(-1);
   const resolves = calls.filter(resolvesAThread).length;
@@ -1669,8 +1718,9 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // head the push made, by SHA. A `COMMENT` review carries no verdict and withdraws none, so a
   // reviewer that approved the fix head and then posted one more reading has approved it, where
   // a reader of its last submission of any kind scored that round `approved=false`.
-  const submissions = reviewsIn(calls, world.repo);
-  const verdict = verdictOf(reviewsIn(reviewCalls, world.repo));
+  const tipAt = headAt(runDir, world);
+  const submissions = reviewsIn(calls, world.repo, tipAt);
+  const verdict = verdictOf(reviewsIn(reviewCalls, world.repo, tipAt));
   const approved =
     verdict?.event === "APPROVE" && tip !== undefined && namesHead(tip, verdict.head);
   // The body the stand-in kept last, which is the one a reader of the pull request would see:

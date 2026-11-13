@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { sentBody } from "./gh-call";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
 // has every pushing role read that head after its own push and stop when it is not its commit. A
@@ -63,11 +64,12 @@ function runDir(options: { fixture: boolean }): { dir: string; first: string; se
   // The routes rig.sh's fixture_write writes, in the shapes it writes them: the pull request as
   // one object for `gh pr view`, the same object in a list for `gh pr list`, which is GitHub's
   // answer to a listing of the open pull requests of a branch, the edit route a body edit
-  // needs a match of before the stand-in keeps the new body, and the route every call that
-  // creates something falls to, whose id is what a create's answer carries here — 6001, as in
-  // review_world, where approved_world routes a create of its own ahead of it with 5002. That
-  // route is chosen by the call's verb and by no regex of its own (`methods`), as fixture_write
-  // chooses it. No
+  // needs a match of before the stand-in keeps the new body, the create of a review, whose id is
+  // what a create's answer carries here — 6001, as in review_world, where approved_world routes a
+  // create of its own ahead of it with 5002 — the PATCH of the pull request, answered with the
+  // pull request, and the route every other call that creates something falls to. The last
+  // three are chosen by the call's verb and by no regex of their own (`methods`), as
+  // fixture_write chooses them. No
   // route for `gh pr diff`, as no world of rig.sh writes one (rig.sh's round_world): the diff is
   // the run's own remote's. No route for the submit of a review either, which no world routes
   // now: the stand-in answers that from what the run has already done (gh-standin.ts's
@@ -80,6 +82,16 @@ function runDir(options: { fixture: boolean }): { dir: string; first: string; se
         { match: "^gh pr view", stdout: pull },
         { match: "^gh pr list", stdout: [pull] },
         { match: "^gh pr edit", stdout: "https://example.invalid/pull/1001#issuecomment-1" },
+        {
+          match: "^gh api .*pulls/1001/reviews([ ?]|$)",
+          methods: ["POST"],
+          stdout: {
+            id: 6001,
+            html_url: "https://example.invalid/pull/1001#pullrequestreview-6001",
+            user: { login: "widgets-reviewer[bot]" },
+          },
+        },
+        { match: "^gh api .*pulls/1001([ ?]|$)", methods: ["PATCH"], stdout: pull },
         {
           match: "^gh api ",
           methods: ["POST", "PATCH", "PUT"],
@@ -264,7 +276,8 @@ test("a create is answered with the review's state and the head it was created a
   const pending = apiPost(dir, REVIEWS, "-f", `commit_id=${second}`);
   expect(JSON.parse(pending.stdout.toString())).toEqual({
     id: 6001,
-    html_url: "https://example.invalid/pull/1001#issuecomment-6001",
+    html_url: "https://example.invalid/pull/1001#pullrequestreview-6001",
+    user: { login: "widgets-reviewer[bot]" },
     state: "PENDING",
     commit_id: second,
   });
@@ -336,15 +349,31 @@ test("a submit of an id that is not the pending review's is refused", () => {
   });
 });
 
-// Catches: a stand-in that keeps the first create as the run's pending review, where a round
-// that read the head again and created a second review would have its submit answered at the
-// head it had before that reading. The pending review is the last create that named no event,
-// as it is on GitHub, where each create leaves a review of its own and this rig's worlds answer
-// every create with one id.
-test("two pending creates leave the last one, and the submit answers the head it carries", () => {
+// GitHub keeps one pending review per user and pull request, and refuses the create of a second
+// while one stands: 422, "User can only have one pending review per pull request". Catches: a
+// stand-in that takes the second create and makes it the pending review, which answered a round
+// that read the head again and created a second review 200, and then submitted the review
+// GitHub never created, at the head the second create named. The first stays the pending one
+// until it is submitted, and once it is the run has none and may create another.
+test("a second pending create while one stands is refused, and the first stays the pending one", () => {
   const { dir, first, second } = runDir({ fixture: true });
-  createPending(dir, { commit_id: second, body: "a first reading" });
   createPending(dir, { commit_id: first, body: "two findings" });
+  const again = ghCall(
+    dir,
+    "api",
+    "--method",
+    "POST",
+    REVIEWS,
+    "-f",
+    `commit_id=${second}`,
+    "-f",
+    "body=a second reading"
+  );
+  expect(again).toEqual({
+    code: 1,
+    out: "",
+    err: "gh: Unprocessable Entity (HTTP 422)\nUser can only have one pending review per pull request\n",
+  });
   const submitted = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=REQUEST_CHANGES");
   expect(submitted.exitCode).toBe(0);
   expect(JSON.parse(submitted.stdout.toString())).toEqual({
@@ -352,6 +381,194 @@ test("two pending creates leave the last one, and the submit answers the head it
     commit_id: first,
     state: "CHANGES_REQUESTED",
   });
+  expect(apiPost(dir, REVIEWS, "-f", `commit_id=${second}`).exitCode).toBe(0);
+});
+
+/** The stand-in's own sentences for the two creates GitHub refuses 422 on their body alone
+ * (gh-standin.ts's CREATE_EVENT and CREATE_BODY). */
+const CREATE_EVENT =
+  "gh: Unprocessable Entity (HTTP 422)\nA review is created with the event APPROVE, REQUEST_CHANGES or COMMENT, or with none to leave it pending.\n";
+const CREATE_BODY =
+  "gh: Unprocessable Entity (HTTP 422)\nA review with the event REQUEST_CHANGES or COMMENT is created with a body.\n";
+
+// GitHub's create takes the events APPROVE, REQUEST_CHANGES and COMMENT, or none, and requires a
+// body for the second and third (gh-call.ts's `createdState`). Catches: a stand-in that answers
+// any of these 200 with a review — an `approve` or a `PENDING` answered `{id, html_url}` and exit
+// 0, where GitHub answers 422 — and one that leaves a pending review behind a refused create, so
+// the submit after it was answered with a review GitHub never had. An APPROVE needs no body and a
+// COMMENT with one is taken.
+test("a create GitHub refuses is refused 422, and leaves no review", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const body = path.join(dir, "changes.json");
+  writeFileSync(body, JSON.stringify({ commit_id: first, event: "REQUEST_CHANGES" }));
+  for (const [fields, refusal] of [
+    [["-f", "event=approve", "-f", "body=looks good"], CREATE_EVENT],
+    [["-f", "event=PENDING"], CREATE_EVENT],
+    [["-f", "event=REQUEST_CHANGES"], CREATE_BODY],
+    [["-f", "event=COMMENT", "-f", "body="], CREATE_BODY],
+    [["--input", body], CREATE_BODY],
+  ] as const)
+    expect([fields, ghCall(dir, "api", "--method", "POST", REVIEWS, ...fields)]).toEqual([
+      fields,
+      { code: 1, out: "", err: refusal },
+    ]);
+  expect(recordedCalls(dir).map((call) => call.review)).toEqual(Array(5).fill(undefined));
+  const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
+  expect(submit.exitCode).toBe(1);
+  expect(submit.stderr.toString()).toContain("Can not submit a review that is not pending.");
+  const commented = ghCall(dir, "api", REVIEWS, "-f", "event=COMMENT", "-f", "body=a reading");
+  expect([commented.code, JSON.parse(commented.out).state]).toEqual([0, "COMMENTED"]);
+  const approved = ghCall(dir, "api", REVIEWS, "-f", "event=APPROVE");
+  expect([approved.code, JSON.parse(approved.out).state]).toEqual([0, "APPROVED"]);
+});
+
+// GitHub's create reads a blank event as none: "by leaving this blank, you set the review action
+// state to PENDING". Catches: an `event: ""` read as an event GitHub does not take — the stand-in
+// answered it with no state and left no pending review, so the submit after it was refused 422,
+// while the score read the same create as pending (gh-call.ts's `createdState`, which both read).
+test("a create whose event is empty is pending, as one naming none is", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const created = ghCall(dir, "api", REVIEWS, "-f", "event=", "-f", `commit_id=${first}`);
+  expect(created.code).toBe(0);
+  expect(JSON.parse(created.out)).toMatchObject({ state: "PENDING", commit_id: first });
+  const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
+  expect(submit.exitCode).toBe(0);
+  expect(JSON.parse(submit.stdout.toString())).toEqual({
+    id: 6001,
+    commit_id: first,
+    state: "APPROVED",
+  });
+});
+
+// GitHub answers `GET …/pulls/<n>/reviews/<id>` with that review as it stands. Catches: the read
+// of a review the run created answered by the routes — the list of reviews, or `[]` — which a
+// round reading its own review back with `--jq '{id,state,commit_id}'` got as `[]` and exit 1
+// (`text-only-head-3` and `defect-base-3` of review 5887659447); and a read that answers the
+// state the review was created in after it was submitted. The user and the URL are the world's
+// answer to the create; the state, the head and the body are the run's. An id this run did not
+// create is the routes' to answer.
+test("a GET of a review this run created answers that review as it stands", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const read = () =>
+    ghCall(dir, "api", `${REVIEWS}/6001`, "--jq", "{id,state,commit_id,user:.user.login,body}");
+  createPending(dir, { commit_id: first, body: "two findings" });
+  expect(JSON.parse(read().out)).toEqual({
+    id: 6001,
+    state: "PENDING",
+    commit_id: first,
+    user: "widgets-reviewer[bot]",
+    body: "two findings",
+  });
+  const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE", "-f", "body=ok");
+  expect(submit.exitCode).toBe(0);
+  expect([read().code, JSON.parse(read().out)]).toEqual([
+    0,
+    { id: 6001, state: "APPROVED", commit_id: first, user: "widgets-reviewer[bot]", body: "ok" },
+  ]);
+  expect(ghCall(dir, "api", `${REVIEWS}/5001`)).toEqual({ code: 0, out: "[]", err: "" });
+});
+
+// gh reads a `-F key=@path` field's value out of the file at `path`, and the review GitHub keeps
+// carries that text. Catches: a body reader that keeps `@path` as the value — the review read
+// back would carry the file's name as its body.
+test("a create's -F body=@file carries the file's text", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const notes = path.join(dir, "notes.md");
+  writeFileSync(notes, "two findings\n");
+  const created = ghCall(dir, "api", REVIEWS, "-f", `commit_id=${first}`, "-F", `body=@${notes}`);
+  expect(created.code).toBe(0);
+  expect(ghCall(dir, "api", `${REVIEWS}/6001`, "--jq", ".body")).toEqual({
+    code: 0,
+    out: "two findings",
+    err: "",
+  });
+});
+
+// gh sends `key[]=value`, `key[sub]=value` and `key[][sub]=value` fields as the nested body
+// `gh api --help` describes, and a `-F key=@path` field as the text of the file at `path` (its
+// stdin for `@-`), which the stand-in records beside the call. This is the reader both the
+// stand-in and the score read a create's body with (gh-call.ts's `sentBody`). Catches: a
+// reader that keeps `comments[][path]` as a flat key, which scored a review whose inline
+// comments were written as fields `doc=false workflow=false`, and one that reads `@path` as the
+// value. A `-f`/`--raw-field` value is sent as written, and a file the record does not hold
+// stays as written too.
+test("a body written as fields is gh's: nested keys, arrays of objects, and -F key=@file as the file's text", () => {
+  const comments = [
+    "-f",
+    "comments[][path]=docs/cli.md",
+    "-f",
+    "comments[][line]=5",
+    "--raw-field",
+    "comments[][body]=false sentence",
+    "--field",
+    "comments[][path]=.github/workflows/greet.yml",
+    "-f",
+    "comments[][body]=wrong trigger",
+  ];
+  expect(
+    sentBody({
+      argv: [
+        "api",
+        REVIEWS,
+        ...comments,
+        "-F",
+        "body=@notes.md",
+        "-f",
+        "labels[]=a",
+        "-f",
+        "labels[]=b",
+        "-f",
+        "empty[]",
+        "-f",
+        "nested[key]=v",
+        "-f",
+        "raw=@notes.md",
+        "-F",
+        "gone=@gone.md",
+      ],
+      files: { "notes.md": "two findings\n" },
+    })
+  ).toEqual({
+    comments: [
+      { path: "docs/cli.md", line: "5", body: "false sentence" },
+      { path: ".github/workflows/greet.yml", body: "wrong trigger" },
+    ],
+    body: "two findings\n",
+    labels: ["a", "b"],
+    empty: [],
+    nested: { key: "v" },
+    raw: "@notes.md",
+    gone: "@gone.md",
+  });
+  expect(sentBody({ argv: ["api", REVIEWS, "-F", "body=@-"], stdin: "from stdin" })).toEqual({
+    body: "from stdin",
+  });
+});
+
+// GitHub answers `PATCH repos/<o>/<r>/pulls/<n>` with the pull request as the PATCH left it.
+// Catches: the generic write route's `{id, html_url}` answered to it, which 23 recorded PATCH
+// calls read `.body` back from as null and one round exited 1 on (review 5887659447, finding 6);
+// and an answer carrying the body from before the edit, since the routes are read before it.
+test("a PATCH of the pull request's body answers the pull request, carrying the body it left", () => {
+  const { dir, first } = runDir({ fixture: true });
+  const pull = "repos/example/widgets/pulls/1001";
+  const patched = ghCall(dir, "api", "-X", "PATCH", pull, "-f", "body=the fixed body");
+  expect(patched.code).toBe(0);
+  expect(JSON.parse(patched.out)).toMatchObject({
+    number: 1001,
+    headRefOid: first,
+    body: "the fixed body",
+  });
+  const input = path.join(dir, "body.json");
+  writeFileSync(input, JSON.stringify({ body: "from a file" }));
+  expect(ghCall(dir, "api", "--method=patch", pull, "--input", input, "--jq", ".body")).toEqual({
+    code: 0,
+    out: "from a file",
+    err: "",
+  });
+  expect(ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe(
+    "from a file"
+  );
 });
 
 // The verb decides what the call is, in every spelling gh takes it in and by the reader the

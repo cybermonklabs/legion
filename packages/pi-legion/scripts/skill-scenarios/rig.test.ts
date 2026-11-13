@@ -3,6 +3,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
@@ -26,6 +27,34 @@ const withoutDocker = skipWithout("docker");
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
+const rigScript = readFileSync(path.join(import.meta.dir, "rig.sh"), "utf8");
+/** rig.sh's own top-level assignment of `name`, the line as the script writes it, so a harness
+ * that builds a world with the script's functions builds it with the script's own values. */
+function assignment(name: string): string {
+  const found = new RegExp(`^${name}=.*$`, "m").exec(rigScript);
+  if (found === null) throw new Error(`rig.sh assigns no ${name} at the start of a line`);
+  return found[0];
+}
+/** rig.sh's definition of `name`, from `name() {` to the `}` that closes it, with the lines of
+ * each here-document it holds skipped: `fn` ends a definition at the first line that is `}`
+ * alone, which a here-document's own text can be — fixture_cli writes greet.ts, whose functions
+ * end so. */
+function definition(name: string): string {
+  const lines = rigScript.split("\n");
+  const start = lines.indexOf(`${name}() {`);
+  if (start < 0) throw new Error(`rig.sh defines no ${name}()`);
+  let delimiter: string | undefined;
+  for (const [index, line] of lines.entries()) {
+    if (index <= start) continue;
+    if (delimiter !== undefined) {
+      if (line === delimiter) delimiter = undefined;
+    } else if (line === "}") return lines.slice(start, index + 1).join("\n");
+    else delimiter = /(?<!<)<<(?!<)-?\s*(['"]?)(\w+)\1/.exec(line)?.[2];
+  }
+  throw new Error(`rig.sh's ${name}() has no closing }`);
+}
+/** The login every answer of a world names a user by (rig.sh's `world_login`). */
+const WORLD_LOGIN = assignment("world_login").replace(/^world_login='(.*)'$/, "$1");
 const work = temporaryDirectory("skill-scenarios-rig");
 const operatorHome = path.join(work, "operator-home");
 // The home the probes must not reach, with the one thing they look for in it: a judge that could
@@ -856,6 +885,9 @@ describe("worker_boot", () => {
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "services_env=$R/services.env work=$R/work dispatch_port=1 profile=$R/p co=$R/c",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        assignment("world_login"),
         "fixture_write '[]' '\"\"' '[]'",
         'worker_boot the-run "$4" "$5" "$6"',
       ].join("\n"),
@@ -879,6 +911,24 @@ describe("worker_boot", () => {
       world: JSON.parse(readFileSync(path.join(dir, "world.json"), "utf8")),
     };
   }
+
+  // Catches: a rig word in the identity a worker agent's own jj commits carry, which its push puts
+  // into the history every later role reads (`Rig Worker`, as the pane once named it): it is the
+  // world's author, in the pane file `launch` hands the agent and in the jj configuration it
+  // names, and the class of what the rig writes into a repository holds it to no word of the
+  // rig's ("what the rig writes into a run's world" below).
+  test("the agent's jj identity is the world's author, in the pane and in its jj configuration", () => {
+    const { dir } = boot("implementer", "reviewing");
+    const pane = readFileSync(path.join(dir, "pane.env"), "utf8").split("\n");
+    const identity = pane.filter((line) => /^JJ_(USER|EMAIL)=/.test(line));
+    expect(identity).toEqual([
+      expect.stringMatching(/^JJ_USER=[A-Z][a-z]+ [A-Z][a-z]+$/),
+      expect.stringMatching(/^JJ_EMAIL=\S+@example\.invalid$/),
+    ]);
+    const config = readFileSync(path.join(dir, "jj.toml"), "utf8");
+    for (const line of identity) expect(config).toContain(`"${line.replace(/^JJ_\w+=/, "")}"`);
+    expect([...identity, config].filter((text) => /fixture|\brig\b/i.test(text))).toEqual([]);
+  });
 
   // Catches: the pane's own ENVOY_URL left in beside the batch's, which is one fact in two
   // lines of one file. `launch` runs the agent under `env -i` with those lines, so the address
@@ -1141,6 +1191,7 @@ describe("fixture_write", () => {
         fn("fixture_write"),
         fn("concluded_checks"),
         `R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=${base}`,
+        assignment("world_login"),
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
         "fixture_write '[]' '\"\"' '[]'",
@@ -1275,6 +1326,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
         "fixture_workspace() { :; }",
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        assignment("world_login"),
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
         `${world} 1 100 "$2"`,
       ].join("\n"),
@@ -1343,12 +1397,16 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     expect(answer(dir, ...reply, "--jq", ".id")).toEqual({ code: 0, out: "7001" });
     // The submission's route takes the verdict's `--method POST` on either side of the path, and
     // the read of the reviews already there takes neither: one route for the POST, one for the
-    // GET, and the POST's first.
+    // GET, and the POST's first. Each create carries its verdict, so neither is a pending review,
+    // which GitHub would refuse a second of while the first stands.
     for (const argv of [
       ["api", "--method", "POST", "repos/example/widgets/pulls/1001/reviews"],
       ["api", "repos/example/widgets/pulls/1001/reviews", "--method", "POST"],
     ])
-      expect(answer(dir, ...argv, "--jq", ".id")).toEqual({ code: 0, out: "5002" });
+      expect(answer(dir, ...argv, "-f", "event=APPROVE", "--jq", ".id")).toEqual({
+        code: 0,
+        out: "5002",
+      });
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", ".[0].state")
     ).toEqual({ code: 0, out: "APPROVED" });
@@ -1562,23 +1620,117 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     });
   });
 
-  // A round that created a review, read it again and created another has one pending review,
-  // the last: the first was replaced rather than kept. Catches: a stand-in that answers the
-  // submit with the head the round's first create named, which is the head it had before its
-  // last reading and the one GitHub would not carry.
-  test("two pending creates leave the last one, and the submit answers the head it was created at", () => {
-    const dir = built("review_world");
-    const head = headOf(dir);
-    createPending(dir, "7".repeat(40));
-    createPending(dir, head);
-    const submitted = submit(dir, 6001, "REQUEST_CHANGES");
-    expect(submitted.code).toBe(0);
-    expect(JSON.parse(submitted.out)).toEqual({
-      id: 6001,
-      commit_id: head,
-      state: "CHANGES_REQUESTED",
+  // The rows below ask each world rig.sh builds, through its own routes in the order the stand-in
+  // matches them, what gh-standin.test.ts asks of a run directory it writes itself: a world's
+  // route answering ahead of the stand-in is how the submit endpoint came to be answered
+  // `{id:6001}` with no head on it, so each answer is asked of both worlds, with the id each
+  // world's create answers.
+  const WORLD_IDS = [
+    ["review_world", 6001],
+    ["approved_world", 5002],
+  ] as const;
+  const REVIEWS = "repos/example/widgets/pulls/1001/reviews";
+
+  // GitHub keeps one pending review per user and pull request and refuses the create of a second
+  // while one stands. Catches: a world that takes the second create and makes it the pending
+  // review, which answered a round that read the head again and created a second review 200 and
+  // then submitted a review GitHub never created, at the head that second create named.
+  for (const [world, id] of WORLD_IDS)
+    test(`${world} refuses a second pending create while one stands, and submits the first`, () => {
+      const dir = built(world);
+      const head = headOf(dir);
+      createPending(dir, head);
+      const again = call(dir, "api", REVIEWS, "-f", `commit_id=${"7".repeat(40)}`, "-f", "body=b");
+      expect(again).toEqual({
+        code: 1,
+        out: "",
+        err: "gh: Unprocessable Entity (HTTP 422)\nUser can only have one pending review per pull request\n",
+      });
+      const submitted = submit(dir, id, "REQUEST_CHANGES");
+      expect(submitted.code).toBe(0);
+      expect(JSON.parse(submitted.out)).toEqual({
+        id,
+        commit_id: head,
+        state: "CHANGES_REQUESTED",
+      });
     });
-  });
+
+  // GitHub's create takes the events APPROVE, REQUEST_CHANGES and COMMENT, or none, and requires
+  // a body for the second and third. Catches: a world whose create route answers an `approve`, a
+  // `PENDING` or a bodyless change request 200 with an id, where GitHub answers 422 and creates
+  // nothing — so nothing is left pending for the submit after them either.
+  for (const [world, id] of WORLD_IDS)
+    test(`${world} refuses the creates GitHub refuses`, () => {
+      const dir = built(world);
+      for (const fields of [
+        ["-f", "event=approve", "-f", "body=looks good"],
+        ["-f", "event=PENDING"],
+        ["-f", "event=REQUEST_CHANGES", "-f", `commit_id=${headOf(dir)}`],
+      ]) {
+        const refused = call(dir, "api", "--method", "POST", REVIEWS, ...fields);
+        expect([fields, refused.code, refused.out, refused.err]).toEqual([
+          fields,
+          1,
+          "",
+          expect.stringContaining("gh: Unprocessable Entity (HTTP 422)\n"),
+        ]);
+      }
+      expect(submit(dir, id, "APPROVE").err).toContain(
+        "Can not submit a review that is not pending."
+      );
+    });
+
+  // GitHub answers `GET …/reviews/<id>` with that review as it stands. Catches: the read of the
+  // review the run itself created answered by a route — `[]` in review_world, the list of
+  // reviews in approved_world — which `text-only-head-3` and `defect-base-3` of review
+  // 5887659447 got for `--jq '{id,state,commit_id}'`, and exited 1 on.
+  for (const [world, id] of WORLD_IDS)
+    test(`${world} answers a GET of the review the run created with that review`, () => {
+      const dir = built(world);
+      const head = headOf(dir);
+      const read = () =>
+        answer(
+          dir,
+          "api",
+          `${REVIEWS}/${id}`,
+          "--jq",
+          "{id,state,commit_id,user:.user.login,body}"
+        );
+      createPending(dir, head);
+      const pending = read();
+      expect([pending.code, JSON.parse(pending.out)]).toEqual([
+        0,
+        { id, state: "PENDING", commit_id: head, user: WORLD_LOGIN, body: "two findings" },
+      ]);
+      expect(submit(dir, id, "APPROVE").code).toBe(0);
+      expect(JSON.parse(read().out)).toMatchObject({ id, state: "APPROVED", commit_id: head });
+    });
+
+  // GitHub answers `PATCH …/pulls/<n>` with the pull request as the PATCH left it. Catches: the
+  // generic write route's `{id:6001, html_url}` answered to it, which 23 recorded PATCH calls read
+  // `.body` back from as null (review 5887659447, finding 6).
+  for (const [world] of WORLD_IDS)
+    test(`${world} answers a PATCH of the pull request's body with the pull request`, () => {
+      const dir = built(world);
+      const patched = answer(
+        dir,
+        "api",
+        "-X",
+        "PATCH",
+        "repos/example/widgets/pulls/1001",
+        "-f",
+        "body=the fixed body",
+        "--jq",
+        "{number,body}"
+      );
+      expect([patched.code, JSON.parse(patched.out)]).toEqual([
+        0,
+        { number: 1001, body: "the fixed body" },
+      ]);
+      expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe(
+        "the fixed body"
+      );
+    });
 
   // The verb decides what the call is, in every spelling gh takes it in and by the reader the
   // score reads the same call with (`isPost`): a call naming GET is a read of that path
@@ -1710,7 +1862,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     expect(JSON.parse(created.out)).toEqual({
       id: 5002,
       html_url: "https://github.com/example/widgets/pull/1001#pullrequestreview-5002",
-      user: { login: "rig[bot]" },
+      user: { login: WORLD_LOGIN },
       state: "PENDING",
       commit_id: head,
     });
@@ -1753,6 +1905,210 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         (thread) => thread.id
       )
     ).toEqual(["PRRT_kwDOfix101"]);
+  });
+});
+
+// Everything the rig writes into a repository an agent of a run reads is the world's, and the
+// world says nothing of the rig: the measurement's own words in a world tell the agent what it is
+// being measured on. Measured in the batch review 5887659447 audited (finding 2): the heredoc
+// writing the world's `.github/workflows/greet.yml` carried the rig's explanation — "The
+// scenario's premise is a change carrying text findings … is the text finding the run is there
+// to find" — into all 20 reviewer-text-findings transcripts and 15 of the 20 threads-closed
+// ones, and agents reasoned from it. The commits carried rig words too (`Fixture`, `rig`, jj's
+// `Rig Worker`), and `git log` is something the world writes; so did gh's answers, whose user was
+// `rig[bot]`. So the row is over the class and not that one comment: it builds every world rig.sh
+// writes a repository for, for real, and reads every file of each repository's tree, its whole
+// history (`git log --all -p`, each commit's author, committer and message, and jj's for the
+// issue workspace), the hook the rig writes into the bare remote, and every answer the world's
+// gh routes serve (`fixtures.json`), with the run's own directory masked, since that path is the
+// operator's and no text of the rig's.
+describe("what the rig writes into a run's world", () => {
+  /** The rig's own vocabulary, which names the measurement and nothing a repository of the
+   * world would hold (the architect's ruling of round 15, item b). */
+  const RIG_WORDS = /scenario|premise|there to find|fixture|\bthe run\b|\brig\b/i;
+  /** jj's own record of each commit of the issue workspace: author, committer and message. */
+  const JJ_COMMITS =
+    'author.name() ++ " <" ++ author.email() ++ ">\\n" ++ committer.name() ++ " <" ++ committer.email() ++ ">\\n" ++ description ++ "\\n"';
+  /** Every text an agent can read in each of `repositories` under `dir`, by where it is: each
+   * file of its tree (`<repository>/<path>`), the whole of its history (`<repository> history`
+   * from git, `<repository> jj history` from jj), and, for a bare repository, which has no tree,
+   * each hook the rig wrote into it. A command that fails throws, so a repository the build did
+   * not make is no repository read as clean. */
+  function texts(dir: string, repositories: string[]): Map<string, string> {
+    const env = { ...childEnv, GIT_CONFIG_GLOBAL: "/dev/null", JJ_CONFIG: "/dev/null" };
+    const read = (cwd: string, ...argv: string[]) => {
+      const made = Bun.spawnSync(argv, { cwd, env });
+      if (made.exitCode !== 0) throw new Error(`${argv.join(" ")} in ${cwd}: ${made.stderr}`);
+      return made.stdout.toString();
+    };
+    const found = new Map<string, string>();
+    const keep = (where: string, text: string) => found.set(where, text.replaceAll(dir, "<run>"));
+    for (const repository of repositories) {
+      const at = path.join(dir, repository);
+      const jj = existsSync(path.join(at, ".jj"));
+      const bare = !jj && !existsSync(path.join(at, ".git"));
+      if (!jj || existsSync(path.join(at, ".git")))
+        keep(
+          `${repository} history`,
+          read(at, "git", "log", "--all", "-p", "--format=%an <%ae>%n%cn <%ce>%n%B")
+        );
+      if (jj)
+        keep(
+          `${repository} jj history`,
+          read(
+            at,
+            "jj",
+            "log",
+            "--ignore-working-copy",
+            "--no-graph",
+            "-r",
+            "all()",
+            "-T",
+            JJ_COMMITS
+          )
+        );
+      const files = bare
+        ? readdirSync(path.join(at, "hooks"))
+            .filter((hook) => !hook.endsWith(".sample"))
+            .map((hook) => path.join("hooks", hook))
+        : readdirSync(at, { recursive: true, encoding: "utf8" }).filter(
+            (name) => ![".git", ".jj"].includes(name.split(path.sep)[0] ?? "")
+          );
+      for (const name of files)
+        if (statSync(path.join(at, name)).isFile())
+          keep(`${repository}/${name}`, readFileSync(path.join(at, name), "utf8"));
+    }
+    return found;
+  }
+  /** WORLD built for real under a run directory of its own, with rig.sh's own functions and
+   * values: no step stubbed, the issue workspace cloned with jj, and fixture_cli read whole
+   * (`definition`). */
+  function builtWorld(world: string, guard: string): string {
+    const dir = freshDir(`world-words-${world}`);
+    const values = [
+      "worker_repo",
+      "worker_base",
+      "world_author_name",
+      "world_author_email",
+      "world_login",
+    ];
+    const result = bash(
+      [
+        ...[
+          "fail",
+          "fixture_open",
+          "fixture_git",
+          "fixture_docs_before",
+          "fixture_first_commit",
+          "fixture_round_files",
+          "fixture_head_commit",
+          "fixture_implement",
+          "fixture_test_handoff",
+          "fixture_workspace",
+          "fixture_checks",
+          "fixture_body",
+          "fixture_write",
+          "concluded_checks",
+          "resolution_protection_routes",
+          "blocked_at",
+          "round_world",
+          world,
+        ].map(fn),
+        definition("fixture_cli"),
+        ...[...values, "text_finding_doc_line", "text_finding_trigger"].map(assignment),
+        "R=$1 worker_key=LWEVAL-1",
+        `${world} 1 100 "$2"`,
+      ].join("\n"),
+      [dir, guard]
+    );
+    expect(result).toMatchObject({ code: 0, stderr: "" });
+    return dir;
+  }
+
+  // Catches: a sentence of the rig's in any file a world writes into a repository — the greet.yml
+  // comment that told every agent what it was there to find — a rig word in a commit's identity
+  // or message, which `git log` and `jj log` show the agent (the worker world's `Fixture`, the
+  // brainstorm repository's `rig` and the issue workspace's `Rig Worker`), and one in any answer
+  // the world's gh routes serve, which the agent reads as GitHub's: the world's user was
+  // `rig[bot]`, in `gh api user` and in each review the run created.
+  test("no file, commit, commit identity or gh answer of a run's world holds a word of the rig's", () => {
+    const read = new Map<string, string>();
+    for (const [world, guard] of [
+      ["tester_proof_world", ""],
+      ["review_world", ""],
+      ["review_world", "dropped"],
+      ["approved_world", ""],
+      ["approved_world", "dropped"],
+    ] as const) {
+      const name = `${world}${guard === "" ? "" : ` ${guard}`}`;
+      const dir = builtWorld(world, guard);
+      for (const [where, text] of texts(dir, ["src", "remote.git", "ws"]))
+        read.set(`${name}: ${where}`, text);
+      const { routes } = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8")) as {
+        routes: { match: string; stdout?: unknown; stderr?: string }[];
+      };
+      for (const [index, route] of routes.entries())
+        read.set(
+          `${name}: route ${index} (${route.match})`,
+          `${JSON.stringify(route.stdout ?? "")}\n${route.stderr ?? ""}`.replaceAll(dir, "<run>")
+        );
+    }
+    const brainstorm = freshDir("world-words-brainstorm");
+    mkdirSync(path.join(brainstorm, "cwd"));
+    const built = bash(
+      [
+        definition("run_brainstorm"),
+        "own_dispatch() { :; }",
+        "dispatch_session() { :; }",
+        assignment("world_author_name"),
+        assignment("world_author_email"),
+        "R=$1",
+        "run_brainstorm brainstorm-1",
+      ].join("\n"),
+      [brainstorm]
+    );
+    expect(built).toMatchObject({ code: 0, stderr: "" });
+    for (const [where, text] of texts(brainstorm, ["cwd"]))
+      read.set(`run_brainstorm: ${where}`, text);
+    // What was read: every repository of each world, its tree, its history and the remote's hook,
+    // so a build that left one out is no repository read as clean.
+    expect([...read.keys()]).toEqual(
+      expect.arrayContaining([
+        "approved_world: src/.github/workflows/greet.yml",
+        "approved_world: src/docs/cli.md",
+        "approved_world: src/greet.ts",
+        "approved_world: src history",
+        "approved_world: remote.git history",
+        "approved_world: remote.git/hooks/post-receive",
+        "approved_world: ws/.github/workflows/greet.yml",
+        "approved_world: ws jj history",
+        "review_world dropped: ws/docs/cli.md",
+        "tester_proof_world: ws/greet.test.ts",
+        "run_brainstorm: cwd/todo.py",
+        "run_brainstorm: cwd/README.md",
+        "run_brainstorm: cwd history",
+      ])
+    );
+    // And the gh answers: every world's routes, `gh api user` among them, so a world whose
+    // fixtures.json the walk did not read is no answer read as clean.
+    for (const world of ["tester_proof_world", "review_world", "approved_world dropped"])
+      expect([...read.keys()]).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(new RegExp(`^${world}: route \\d+ .*api user`)),
+        ])
+      );
+    for (const [where, text] of read)
+      if (where.endsWith("history"))
+        expect([where, text]).toEqual([where, expect.stringMatching(/@example\.invalid>/)]);
+    const words = [...read].flatMap(([where, text]) => {
+      const word = RIG_WORDS.exec(text);
+      return word === null
+        ? []
+        : [
+            `${where}: "${word[0]}" in "${text.slice(Math.max(0, word.index - 40), word.index + 40)}"`,
+          ];
+    });
+    expect(words).toEqual([]);
   });
 });
 
