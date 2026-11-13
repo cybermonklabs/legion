@@ -73,10 +73,10 @@ export const LONGEST_HOLD_MS = 20_000;
  * (`e2e/large-documents-page.ts`, the opening timeline), and the build after it is the page's
  * own thread. This one covers one step of that load, and the step it covers is a round trip:
  * the page has asked the server for the document over an open socket and is waiting for the
- * frame that carries it (`ProofDocument`'s `admit`, `onSynced`). Nothing of the page's own
- * work stands between the two, so a wait that long is a server that is not going to answer -
- * which is the state a held transport leaves a page in, and the one case the deadline above
- * cannot tell from a slow build.
+ * frame that carries it (`ProofDocument`'s `admitTheDocument`, `onSynced`). Nothing of the
+ * page's own work stands between the two, so a wait that long is a server that is not going
+ * to answer - which is the state a held transport leaves a page in, and the one case the
+ * deadline above cannot tell from a slow build.
  *
  * Ten seconds: twenty times the half-second R11 calls a freeze, and long enough that a phone
  * on a slow link still gets the hold it was measured for. What firing costs is what firing
@@ -123,8 +123,9 @@ export function theFirstBatchIsAwaited(next: boolean): void {
 
 /**
  * Whether the page is waiting on the server for the document itself: `true` when the document's
- * socket has been opened (`ProofDocument`'s `admit`), `false` when its state has been applied
- * and the editor is being built from it (`onSynced`), which is the step the batch comes out of.
+ * socket has been opened (`ProofDocument`'s `admitTheDocument`), `false` when its state has
+ * been applied and the editor is being built from it (`onSynced`), which is the step the batch
+ * comes out of.
  *
  * Said only by the surface whose document the page is (`page`), as every other report to this
  * gate is: a pane's document holds nothing of the page behind it.

@@ -32,8 +32,10 @@
 // `large-documents-build-serves.e2e.ts`, `large-documents-desktop-build.e2e.ts` and
 // `large-documents-long-build.e2e.ts`; what stands on the reader's screen while the editor is
 // built is in `large-documents-build.e2e.ts`; the draw the server sends, and the reads and the
-// chrome the page holds until the first batch, are in `large-documents-first-screen.e2e.ts`.
-// What the seven files share is `large-documents-rows.ts`.
+// chrome the page holds until the first batch, are in `large-documents-first-screen.e2e.ts`,
+// and where that chrome leaves the server's first block is in
+// `large-documents-fold.e2e.ts`. What the eight files share is
+// `large-documents-rows.ts`.
 import { MessageType } from "@hocuspocus/provider";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import { createDecoder, readVarUint } from "lib0/decoding";

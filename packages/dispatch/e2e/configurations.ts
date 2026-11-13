@@ -249,7 +249,7 @@ export function tagged(tag: string): RegExp {
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
  *  the six `-alone` projects below carry `default: false` and are outside it, measured at
- *  this head as 1,493 rows in 204 files against the whole suite's 1,552 in 210. Every
+ *  this head as 1,493 rows in 205 files against the whole suite's 1,552 in 211. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
@@ -475,7 +475,7 @@ export function phoneAloneSpecsNamed(...names: readonly string[]): RegExp {
  *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
  *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
  *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
- *  selection, 1,493 rows in 204 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
+ *  selection, 1,493 rows in 205 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
  *  the filter is dropped although `--output` swallowed the `--`, which `--list --output --
  *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
  *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What

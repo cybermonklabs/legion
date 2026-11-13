@@ -71,7 +71,7 @@ function documentOf(issue: IssueDetails, route: IssueRoute): Artifact | undefine
  * 4,725 ms to 6,505 ms on the 28-section document and from 5,166 ms to 7,794 ms on the
  * 140-section one (`e2e/large-documents.ts`). The reader reads that draw while they wait for
  * the editor, so the socket is opened by the page's admission as it always was
- * (`ProofDocument`'s `admit`, `packages/dispatch/AGENTS.md`).
+ * (`ProofDocument`'s `admitTheDocument`, `packages/dispatch/AGENTS.md`).
  */
 export function openDocumentEarly(client: QueryClient, pathname: string, search: string): void {
   const address = `${pathname}${search}`;
@@ -216,10 +216,11 @@ let openedAddress: string | undefined;
  * An admission connects only on a read it knows was made for this opening of this document - a
  * browser editor normalizes a tree it cannot represent and writes the result back, so the
  * server's answer to a read from some earlier minute says nothing about the tree it would be
- * admitted to now (`ProofDocument`'s `admit`). This read is one of those: it was made because
- * this address was opened, and the document mounting is what it was made for. Handing it over
- * rather than letting the admission make its own is what keeps a large document from being
- * downloaded twice for one opening - once for the reader to read, once for the socket.
+ * admitted to now (`ProofDocument`'s `admitTheDocument`). This read is one of those: it was
+ * made because this address was opened, and the document mounting is what it was made for.
+ * Handing it over rather than letting the admission make its own is what keeps a large
+ * document from being downloaded twice for one opening - once for the reader to read, once for
+ * the socket.
  *
  * So there is one, and it belongs to the navigation that made it: the next navigation drops
  * whatever is left of it, read or unread, before it starts its own. A reader who opens a

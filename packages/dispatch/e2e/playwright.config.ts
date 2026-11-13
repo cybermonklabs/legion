@@ -310,7 +310,7 @@ const readersPlaceRows =
 //
 // Those four are two projects and not one, so they are two files. The two measurements take
 // three readings each and hold the median of them to R11's targets, which is the protocol the
-// spec's Design paragraph names (`measuredReadings`, e2e/large-documents-page.ts), so each
+// spec's Design paragraph names (`measuredReadings`, e2e/large-documents-median.ts), so each
 // costs about three times the wall clock it cost when it took one reading, and on CI's own
 // figures the two of them are most of what their leg spends. They are
 // `large-documents-measured.e2e.ts`, which `iphone-measure-alone` below runs, a leg of its own

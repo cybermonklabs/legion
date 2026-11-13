@@ -560,7 +560,7 @@ writes any more. A fourth, `DISPATCH_E2E_STUB_ONLY=1`, is how the config carries
 the stubbed layer alone" to the rest of the run; set by hand it tells `globalSetup` to start no
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
-The suite has seventeen projects. `chromium` runs every spec except the two plain-HTTP specs,
+The suite has eighteen projects. `chromium` runs every spec except the two plain-HTTP specs,
 the six the `-alone` projects below take and the stubbed layer's own
 (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
 run). `iphone` runs, from those
@@ -574,7 +574,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the six `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no `-alone` row: that command names no project, and
 the six `-alone` projects are out of the default selection. Listed at this head, a deployed
-run holds 1,357 rows in 173 files, and the other 59 are an `-alone` run of its own, under the
+run holds 1,357 rows in 174 files, and the other 59 are an `-alone` run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --project=iphone-long-build-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has

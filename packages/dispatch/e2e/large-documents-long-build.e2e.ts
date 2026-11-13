@@ -32,8 +32,9 @@
 //
 // Every other row of what was one file reads an order, a place or a count rather than a clock,
 // and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
-// `large-documents-reader.e2e.ts` and `large-documents-first-screen.e2e.ts`, and what the seven
-// files share is `large-documents-rows.ts`.
+// `large-documents-reader.e2e.ts`, `large-documents-first-screen.e2e.ts` and
+// `large-documents-fold.e2e.ts`, and what the eight files share is
+// `large-documents-rows.ts`.
 import { type Browser, expect, type Page, test } from "@playwright/test";
 
 import { getArtifactText } from "./api";
@@ -199,13 +200,15 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
         "of the draw's own screenful and none of the build"
     ).toBe(false);
 
-    // The reader scrolls the document onto the screen, as a reader of this page on a phone must:
-    // the issue's header, its tabs and the document's own controls stand 706 px down a 664 px
-    // viewport, so at the top of the page no block of the document is on the screen at all - the
-    // blocks the server drew included. The measurement times the editor's first block where the
-    // reader can see it (`firstBlockSelector`, `e2e/large-documents-page.ts`), so with nobody
-    // scrolling it waits its whole wait out on a block 42 px under the fold and times none of
-    // the build this row is about.
+    // The reader scrolls the document's first drawn block onto the screen. At this head the
+    // scroll moves nothing: the document's own header is 168 px and the block the server drew
+    // first stands at 590..616 of a 664 px viewport, so the page opens with it on the screen,
+    // which is `large-documents-fold.e2e.ts`'s claim and fails there by name. The scroll stays
+    // because it keeps this row independent of the header's height. The measurement times the
+    // editor's first block where the reader can see it (`firstBlockSelector`,
+    // `e2e/large-documents-page.ts`), so a header grown past the fold again - as it stood before
+    // cb0c608e - would leave this row waiting its whole wait out on a block under the fold and
+    // timing none of the build it is about, red for a cause that is not its own.
     //
     // To the foot of the screen rather than to the top of it, and here rather than when the draw
     // first landed. Both are about where the browser keeps the reader while the build fills the

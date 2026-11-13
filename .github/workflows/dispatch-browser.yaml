@@ -275,10 +275,14 @@ jobs:
     # seventh to 361 - both 0.7 min off the critical path, for 2.3 and 4.7 more runner-minutes
     # - so five is where this stops.
     #
-    # Those are estimates and the budget below is not re-derived from them: the rule in this
-    # file's head reads measurements, and the rule's arithmetic on 404 s would give 8 minutes.
-    # The 9 minutes stays until the first green run at five legs measures the legs themselves,
-    # which is the reading that may lower it.
+    # Those were estimates, and the legs measured since then are not them: at head 1aaa9135
+    # (run 43421318396) the five browser steps took 433, 277, 329, 369 and 499 s, so the fifth
+    # leg cost 144 s more than the 355 s the fit gave it. The browser step's own comment below
+    # says what was in that leg and is not in it now, and projects the fifth leg at this head at
+    # about 372 s on that run's own cost per row; the first four were not re-projected, and
+    # their longest measurement is the first leg's 433 s. The budget below is not re-derived
+    # from either: the rule in this file's head reads measurements, and the next full-lane run
+    # at this head is the one that measures the projection.
     #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of commit
     # 47a222cd (run 42480325123, job 128730667606), and not on the digest this file pins, which
@@ -353,26 +357,29 @@ jobs:
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
-    # again at this branch's head, the suite holds 1,552 rows in 210 files, which is two
+    # again at this branch's head, the suite holds 1,552 rows in 211 files, which is two
     # listings rather than one: the six `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,493 rows in 204
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,493 rows in 205
     # files and one that names those six lists 59 more, in 7 files. One file is in both:
     # large-documents-long-build.e2e.ts, whose desktop half `chromium` runs and whose phone half
     # is `iphone-long-build-alone`'s; every other file of the second listing is a wall-clock
     # file that project selects whole since sjawhar/legion#2697. The ten projects this job's
-    # shard command names below hold 1,473 rows in 203 files; the four of those the
-    # pull-request lane names hold 1,372, of which that lane's `@pr` grep selects 286, 150 of
-    # them on the real stack. The two `visual` projects hold 20, which the visual job runs one
-    # row at a time, and the 59 rows of the alone job are 23, 13, 16, 2, 2 and 3. The
-    # 23 is `chromium-alone`'s 16 heavy-bodies rows, its two nested-directive rows, its four
-    # agent-workspace-timing rows and the one row of large-documents-desktop-build.e2e.ts;
-    # the 13 and the 16 are heavy-bodies.e2e.ts
-    # on `firefox-alone`, which inverts the three rows that read a reader's place, and whole on
+    # shard command names below hold 1,473 rows in 204 files; the four of those the
+    # pull-request lane names hold 1,372 in 202, of which that lane's `@pr` grep selects 286
+    # in 147 files, 150 of them on the real stack - exactly the 150 of `realStackBudget`
+    # (e2e/__tests__/pull-request-lane.test.ts), and the same 286 and 150 as at 1aaa9135:
+    # neither the reconnect row this round added to large-documents-reader.e2e.ts nor the three
+    # phone rows it moved to `iphone-long-build-alone` carries the tag, and no row of a
+    # `large-documents-*` file is in that grep. The two `visual` projects hold 20, which the
+    # visual job runs one row at a time, and the 59 rows of the alone job are 23, 13, 16, 2, 2
+    # and 3. The 23 is `chromium-alone`'s 16 heavy-bodies rows, its two nested-directive rows,
+    # its four agent-workspace-timing rows and the one row of
+    # large-documents-desktop-build.e2e.ts; the 13 and the 16 are heavy-bodies.e2e.ts on
+    # `firefox-alone`, which inverts the three rows that read a reader's place, and whole on
     # `webkit-alone`; the two 2s are the two rows of large-documents-build-serves.e2e.ts, the
     # timer row and the decision row, on `iphone-alone`, and the two measurements of
-    # large-documents-measured.e2e.ts on
-    # `iphone-measure-alone`; the 3 is large-documents-long-build.e2e.ts on
-    # `iphone-long-build-alone` (dispatch://INFRA-341).
+    # large-documents-measured.e2e.ts on `iphone-measure-alone`; the 3 is
+    # large-documents-long-build.e2e.ts on `iphone-long-build-alone` (dispatch://INFRA-341).
     #
     # Those 1,473 cut five ways, each leg listed at this head with the ten projects named below
     # and this job's own denominator (`--shard=<i>/5 --list`): 295, 295, 295, 294 and 294 rows,
@@ -537,17 +544,13 @@ jobs:
         #
         # The budget below is the 9 minutes the job's head derives from the four-leg head's own
         # runs, whose measured maximum was 419 s. It stays at nine now that the leg list is
-        # five, and is not re-derived: the five legs are expected to cost 404, 230, 335, 390 and
-        # 355 s, from the fit and the row-seconds the job's head gives, so the longest of them
-        # sits 136 s inside this 540 and the rule's own arithmetic on that estimate would give
-        # eight minutes. A prediction is not a measurement: the first green run at five legs is
-        # what may lower this.
-        #
-        # A later full-lane run measured more than the estimate, and the 540 s held with less
-        # room than it gave: at head 1aaa9135 (run 43421318396) the five browser steps took 433,
-        # 277, 329, 369 and 499 s, `shard (5)` holding 295 rows and 1,795.7 row-seconds by its
-        # own list reporter. Two things of this branch's own were in that last leg, and neither
-        # is in it now. 24 stub rows that open a document waited out the page's ten-second
+        # five, and is not re-derived. The fit the job's head gives predicted the five legs at
+        # 404, 230, 335, 390 and 355 s; what they measured is longer, and the 540 s held with
+        # less room than that prediction gave: at head 1aaa9135 (run 43421318396) the five
+        # browser steps took 433, 277, 329, 369 and 499 s, `shard (5)` holding 295 rows and
+        # 1,795.7 row-seconds by its own list reporter, 41 s inside this 540. Two things of
+        # this branch's own were in that last leg, and neither is in it now.
+        # 24 stub rows that open a document waited out the page's ten-second
         # wait for a document the stubbed layer has no server for
         # (`NO_DOCUMENT_SERVER_CLOSE_CODE`, packages/contracts; e2e/stub/stub-test.ts now
         # answers that socket with it): 337.8 row-seconds there, 323.7 of them the 23 that

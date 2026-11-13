@@ -23,10 +23,10 @@
 // parallel projects run.
 //
 // Every other row of what was one file reads an order, a place or a count rather than a clock:
-// they are in `large-documents-build.e2e.ts`, `large-documents-reader.e2e.ts` and
-// `large-documents-first-screen.e2e.ts`, and what the seven files share is
-// `large-documents-rows.ts`, which holds the probe this row reads a build through
-// (`whatTheBuildServes`).
+// they are in `large-documents-build.e2e.ts`, `large-documents-reader.e2e.ts`,
+// `large-documents-first-screen.e2e.ts` and `large-documents-fold.e2e.ts`, and what
+// the eight files share is `large-documents-rows.ts`, which holds the probe this row reads a
+// build through (`whatTheBuildServes`).
 import { expect, test } from "@playwright/test";
 
 import { documentNames, largeDocument } from "./large-documents";

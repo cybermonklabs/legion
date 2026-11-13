@@ -22,9 +22,11 @@
 // `large-documents-build-serves.e2e.ts`, `large-documents-desktop-build.e2e.ts` and
 // `large-documents-long-build.e2e.ts`; what stands on the reader's screen while the editor is
 // built is in `large-documents-build.e2e.ts`; what a reader does with a document whose editor
-// is still being built is in `large-documents-reader.e2e.ts`. What the seven files share is
+// is still being built is in `large-documents-reader.e2e.ts`; where the chrome these rows draw
+// leaves the server's first block, a place rather than an order, is in
+// `large-documents-fold.e2e.ts`. What the eight files share is
 // `large-documents-rows.ts`.
-import { type BrowserContext, expect, type Page, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
 import { LONGEST_HOLD_MS } from "../web/src/features/doc/first-batch";
 import { subscribeSession } from "./agents";
@@ -44,7 +46,7 @@ import {
   readTheReads,
   watchTheChrome,
   watchTheReads,
-} from "./large-documents-page";
+} from "./large-documents-after-the-batch";
 import { agent, seedDocument, shortDocument } from "./large-documents-rows";
 import { settledScrollTop, withoutScrollAnchoring } from "./mermaid-helpers";
 import { expectNoneOf } from "./none-of";
@@ -1344,135 +1346,6 @@ test("a reader with no pointer tabs into each held box and goes on into the chro
     ).toBe(true);
     // The whole of it was the reader's doing: no first batch ever landed behind them.
     expect((await readTheReads(page)).firstBatchMs).toBeUndefined();
-  } finally {
-    await alice.close();
-  }
-});
-
-// --- What the chrome leaves of the first screen ---------------------------------------------
-//
-// The rows above are about when each part of the page is drawn. This one is about where those
-// parts leave the document. The server's draw is the reader's first screen
-// (`internal/dispatch/pmdoc/first_screen.go`): it stands in the page's own bytes seconds before
-// the page's code has run, which is the whole of R11's point, and a draw the chrome above it
-// has pushed past the bottom of the viewport is a draw that reader never sees. What stands over
-// it is the shell's own header, the issue's header, the tab strip and the document's own
-// header, and the document's header is the one that grows: at 390 px its controls wrap, and
-// each line they wrap to is 44 px of touch-sized control (`web/src/styles.css`) and the gap
-// above it.
-//
-// Measured at this branch's merge head, with `Correct title` and `Remove` wrapping onto a line
-// of their own: `window.innerHeight` 664, the document's header 224 px, and the block the
-// server drew first standing at 646..672 - its first line of text cut by the fold, with 18 px
-// of a 26 px block on the screen and nothing of the document readable. With them packed into
-// the header's own row (`web/src/features/artifacts/ArtifactHeader.tsx`) the header is 168 px
-// and the block stands at 590..616, whole and above the fold.
-//
-// The row runs at both widths because the claim is the reader's at both: a document opened is a
-// document on the screen. The phone is where it failed, which is why it carries `@phone`.
-
-/** The id of the block the server drew first, read from the bytes the server sends rather than
- *  from the page built out of them: the page adopts the server's element about a second in and
- *  the editor swaps its own copy of that block in under the reader later
- *  (`web/src/features/doc/first-screen.ts`), so the server's own answer is the one reading of
- *  it that no code of the page can have moved. The row measures the block of this id, on
- *  whichever of the three surfaces is holding it when it measures. */
-async function theBlockTheServerDrewFirst(alice: BrowserContext, path: string): Promise<string> {
-  const sent = await alice.request.get(path);
-  expect(sent.ok(), `the server answered the document's address with ${sent.status()}`).toBe(true);
-  const drawn = /data-first-screen-address="[^"]*"[\s\S]*?data-block-id="([^"]*)"/u.exec(
-    await sent.text()
-  )?.[1];
-  expect(drawn, "the page the server sent carries no drawn first screen").toBeDefined();
-  return drawn ?? "";
-}
-
-/** What the opened page left the reader, read in one evaluate so every number is one layout. */
-interface TheOpenedPage {
-  /** The bottom of the block the server drew first, from the top of the viewport. */
-  readonly blockBottom: number;
-  /** Which of the document's surfaces is holding that block, for a failure to name. */
-  readonly blockOn: string;
-  /** The top of that block, from the top of the viewport: the number this row is about. */
-  readonly blockTop: number;
-  /** How tall the document's own header is, which is the box that grows with its controls. */
-  readonly headerHeight: number;
-  readonly innerHeight: number;
-  /** How far the page stands scrolled, which is nothing: the reader has only opened it. */
-  readonly scrolled: number;
-}
-
-/** Where the opened page leaves the block of `blockId`, with the fold it is measured against. */
-function theOpenedPage(page: Page, blockId: string): Promise<TheOpenedPage> {
-  return page.evaluate((id: string) => {
-    const block = document.querySelector(`[data-block-id="${CSS.escape(id)}"]`);
-    const box = block?.getBoundingClientRect();
-    const header = document
-      .querySelector('[data-testid="artifact-header"]')
-      ?.getBoundingClientRect();
-    return {
-      blockBottom: Math.round(box?.bottom ?? Number.NaN),
-      blockOn:
-        block === null
-          ? "no surface at all"
-          : block.closest(".proof-editor") !== null
-            ? "the editor"
-            : block.closest("#first-screen") !== null
-              ? "the server's own element"
-              : block.closest('[aria-label="Document text"]') !== null
-                ? "the page's own draw"
-                : "nothing of the document",
-      blockTop: Math.round(box?.top ?? Number.NaN),
-      headerHeight: Math.round(header?.height ?? Number.NaN),
-      innerHeight: window.innerHeight,
-      scrolled: Math.round(document.scrollingElement?.scrollTop ?? 0),
-    };
-  }, blockId);
-}
-
-test("a reader who opens a document has its first block inside the viewport, unscrolled @phone", async ({
-  browser,
-}) => {
-  test.setTimeout(300_000);
-  const { path } = await seedDocument("notes.md", shortDocument);
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const drewFirst = await theBlockTheServerDrewFirst(alice, path);
-    const page = await alice.newPage();
-    await page.goto(path);
-
-    // The page as the reader has it a moment later: the document's own header drawn, with both
-    // of its way-back controls on it, and the editor built. That is the page at its tallest
-    // above the document - nothing else of the chrome is still to arrive - and the place it
-    // leaves the first block is the place the reader is left in.
-    const header = page.getByTestId("artifact-header");
-    await expect(header).toBeVisible({ timeout: 120_000 });
-    await expect(header.getByRole("button", { exact: true, name: "Correct title" })).toBeVisible();
-    await expect(header.getByRole("button", { exact: true, name: "Remove" })).toBeVisible();
-    await expect(documentEditor(page)).toContainText("The lease ledger", { timeout: 120_000 });
-
-    const opened = await theOpenedPage(page, drewFirst);
-    const reading =
-      `the viewport is ${opened.innerHeight} px, the document's header ${opened.headerHeight} px, ` +
-      `and the block the server drew first stands at ${opened.blockTop}..${opened.blockBottom} px ` +
-      `on ${opened.blockOn}`;
-    test.info().annotations.push({ description: reading, type: "the document a reader opens" });
-    console.log(`the document a reader opens · ${reading}`);
-
-    // Nothing scrolled it there: the reader has pressed nothing and the row has scrolled
-    // nothing, so what the numbers above are of is the page as it opened.
-    expect(opened.scrolled, "the page was scrolled before the row read it").toBe(0);
-    expect(
-      opened.blockTop,
-      `the document's first block is above the top of the viewport: ${reading}`
-    ).toBeGreaterThanOrEqual(0);
-    expect(
-      opened.blockBottom,
-      "a reader who opened the document was left none of it to read: the chrome over the " +
-        "document is so tall that the fold cuts the first block of the server's own drawn " +
-        `first screen. ${reading}`
-    ).toBeLessThanOrEqual(opened.innerHeight);
   } finally {
     await alice.close();
   }

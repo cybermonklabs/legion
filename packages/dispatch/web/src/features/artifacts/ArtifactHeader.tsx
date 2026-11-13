@@ -300,7 +300,7 @@ export function ArtifactHeader({
                 // line of their document cut by the fold, which is the one thing that draw
                 // exists to prevent (dispatch://INFRA-341 R11; the row `a reader who opens a
                 // document has its first block inside the viewport, unscrolled` in
-                // `e2e/large-documents-first-screen.e2e.ts`). Packed into this row they take
+                // `e2e/large-documents-fold.e2e.ts`). Packed into this row they take
                 // two lines, the header is 168 px and the block stands at 590..616, whole and
                 // above the fold. At every width with room for the row on one line - 528 px
                 // of header card at 1280, measured - this lays out exactly as the box did,

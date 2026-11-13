@@ -1,4 +1,4 @@
-// What the rows of the seven `large-documents-*.e2e.ts` files share: the seed every one of them
+// What the rows of the eight `large-documents-*.e2e.ts` files share: the seed every one of them
 // writes, the readings the page leaves on `window` for them, the three surfaces a block of the
 // document can stand on, the other person who writes into the document while a reader's
 // editor is built (`theOtherPersonsPen`), and the probe a build is read through at the end of
@@ -8,19 +8,20 @@
 // They were one file until the `iphone` half of it cost a browser shard 610 s of a step that is
 // given 540 (dispatch://INFRA-341, run 42794865122's `shard (4)`), and Playwright hands a
 // file's rows to one shard, so a file larger than the budget fits in none of them. Three of
-// the seven are read from the wall clock, and each of those is one project's whole selection,
+// the eight are read from the wall clock, and each of those is one project's whole selection,
 // because a wall-clock project selects by file (`clockSpecNames`, e2e/configurations.ts):
 // `large-documents-measured.e2e.ts` (`iphone-measure-alone`: the two measurements R11's
 // targets are read from), `large-documents-build-serves.e2e.ts` (`iphone-alone`: what a build
 // serves the rest of the page while it runs) and `large-documents-desktop-build.e2e.ts`
-// (`chromium-alone`: the longest main-thread task of a build at a desktop width). The four the
+// (`chromium-alone`: the longest main-thread task of a build at a desktop width). The five the
 // parallel projects run are `large-documents-long-build.e2e.ts` (what a build of the larger
 // document costs the page, with no number read from the clock),
 // `large-documents-build.e2e.ts` (what stands on the reader's screen while
 // the editor is built), `large-documents-reader.e2e.ts` (what a reader does with a document
-// whose editor is still being built, and the rest of acceptance A7) and
+// whose editor is still being built, and the rest of acceptance A7),
 // `large-documents-first-screen.e2e.ts` (the draw the server sends, and the reads and the
-// chrome the page holds until the editor's first batch).
+// chrome the page holds until the editor's first batch) and
+// `large-documents-fold.e2e.ts` (where that chrome leaves the server's first block).
 //
 // The documents themselves are `large-documents.ts`, and what a page announces about its own
 // draw and its build is `large-documents-page.ts`.

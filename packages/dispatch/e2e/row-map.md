@@ -290,6 +290,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/large-documents-build.e2e.ts` | each row reads the document being built in its live editor, batch by batch, over the socket the server syncs it on |
 | `e2e/large-documents-desktop-build.e2e.ts` | it reads the longest main-thread task of a build the server's sync begins, over the draw that server sent, one row at a time in `chromium-alone` |
 | `e2e/large-documents-first-screen.e2e.ts` | the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server |
+| `e2e/large-documents-fold.e2e.ts` | the block it measures is the Go server's own draw, found by its id in the page that server sent for the document's address |
 | `e2e/large-documents-long-build.e2e.ts` | its rows read a build the server's sync begins over the document it drew into the page it sent, and the edit row writes as another person on the document socket |
 | `e2e/large-documents-measured.e2e.ts` | its two measurements are taken over a build the server's sync begins, in front of the draw that server sent, and run one row at a time in `iphone-measure-alone` |
 | `e2e/large-documents-reader.e2e.ts` | the document is read in its live editor and the decisions in it are answered against the asks the server records; the reconnect row reads the frames the document's room answers a SyncStep1 with, and an edit's arrival in the server's `/text` |

@@ -59,10 +59,10 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
     await alicePage.reload();
     // The editor's textbox role is written at the very end of the reload's admission chain - the
     // `/text` read, the transport chunk, the document socket, that socket's first sync, then the
-    // editor chunk (web ProofDocument's `admit` and its `onSynced`). One assertion on the
-    // editor's text spends a single expect budget on all of it and reports "element(s) not
-    // found" when any step of it is slow, so wait for the reload's own socket and for the editor
-    // that sync builds, each on its own budget.
+    // editor chunk (web ProofDocument's `admitTheDocument` and its `onSynced`). One assertion
+    // on the editor's text spends a single expect budget on all of it and reports "element(s)
+    // not found" when any step of it is slow, so wait for the reload's own socket and for the
+    // editor that sync builds, each on its own budget.
     await expect.poll(aliceSockets).toBe(2);
     await expect(documentEditor(alicePage)).toBeAttached();
     await expect(documentEditor(alicePage)).toContainText("Alice wrote this.");

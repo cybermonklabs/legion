@@ -19,7 +19,8 @@
 // `large-documents-long-build.e2e.ts`; what a reader does with a document whose editor is
 // still being built is in `large-documents-reader.e2e.ts`; the draw the server sends, and the
 // reads and the chrome the page holds until the first batch, are in
-// `large-documents-first-screen.e2e.ts`. What the seven files share is
+// `large-documents-first-screen.e2e.ts`, and where that chrome leaves the server's first block
+// is in `large-documents-fold.e2e.ts`. What the eight files share is
 // `large-documents-rows.ts`.
 import { setTimeout as sleep } from "node:timers/promises";
 

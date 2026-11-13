@@ -36,8 +36,12 @@
 // created the document, so no Node-side round trip is in any of them.
 // `large-documents-measured.e2e.ts` prints all five and asserts two of them against R11's
 // targets - the editor's first visible block and the longest main-thread task - and the line
-// it prints names which two those are.
-import { type Page, test } from "@playwright/test";
+// it prints names which two those are. How many readings it takes, the line each is printed
+// as and the median it holds to the targets are `large-documents-median.ts`; the recorders of
+// the page's reads and its deferred chrome, which the rows of
+// `large-documents-first-screen.e2e.ts` read the page's order by, are
+// `large-documents-after-the-batch.ts`.
+import type { Page } from "@playwright/test";
 
 declare global {
   interface Window {
@@ -78,15 +82,6 @@ declare global {
      *  screen: a block inside the document surface it renders, which is the preview's. Read
      *  against no target, and the number this rig used to read as the editor's. */
     __largeDocumentPageDrawnAt?: number;
-    /** `performance.now()` when the editor's first batch landed, which is the task its root
-     *  was given `data-write-path="live"` in. Undefined until one has (`watchTheReads`). */
-    __largeDocumentFirstBatchAt?: number;
-    /** When each part of the chrome the page defers was first drawn, by the name
-     *  `watchTheChrome` was given for it; `performance.now()` at that drawing's own task. */
-    __chromeDrawn?: Record<string, number>;
-    /** Every `/api/v1` request the page has made, by when it went out and the path it went
-     *  out on, which is how a row reads the order of the page's reads (`watchTheReads`). */
-    __largeDocumentReads?: { at: number; path: string }[];
     /** When each step of the document's own opening happened, on the page's own clock: the
      *  chain that begins once the issue page has rendered and `ProofDocument` admits
      *  (dispatch://INFRA-341, R11). Every field is `performance.now()` at that step, and each
@@ -248,7 +243,7 @@ export const scrollStepsMax = 120;
  *
  *  A build whose editor never carries the attribute draws no block this times, and the wait
  *  for it fails as the miss it is rather than quietly timing another surface's draw. */
-const liveEditorSelector = '.proof-editor[data-write-path="live"]';
+export const liveEditorSelector = '.proof-editor[data-write-path="live"]';
 const firstBlockSelector = `${liveEditorSelector} [data-block-id]`;
 
 /** The editor's root, whether or not its first batch has landed in it: `constructProofEditor`
@@ -593,83 +588,6 @@ export async function watchTheDocument(page: Page): Promise<Announcements> {
   };
 }
 
-/**
- * What the page asked Dispatch for and when, and when the editor's first batch landed: the two
- * facts the rows that read the order of the page's reads are built on (dispatch://INFRA-341,
- * R11, "the issue page's non-document panels are drawn after the editor's first batch").
- *
- * Both come from the page itself. Each read is a `resource` entry of the browser's own
- * timing, taken through a `PerformanceObserver` rather than off the buffer, which holds 250
- * entries by default and which a document page fills; `startTime` is when the request went
- * out, which is the number the order is read on. The first batch is the task the editor's root
- * is given `data-write-path="live"` in (`@legion/proof-editor`'s `progressive-build.ts`), read
- * through a `MutationObserver`, whose callback runs at that task's own microtask checkpoint.
- * It runs before the commit that draws the chrome and starts the reads the page held, because
- * the batch's own blocks go into the editor before that attribute is set and queue this
- * observer there, while the page lets those reads go only in the callback the batch answers
- * with, which the build calls after both (`web/src/features/doc/ProofDocument.tsx`'s
- * `onBatch`): React's own microtask is therefore queued behind this one, and a read made at
- * the batch is never timed as one made before it.
- */
-export interface PageRead {
-  /** `performance.now()` when the request went out, counted from the start of navigation. */
-  readonly at: number;
-  /** The path it went out on, under `/api/v1`, with its query. */
-  readonly path: string;
-}
-
-export interface ReadsOfThePage {
-  /** `performance.now()` when the editor's first batch landed; undefined where none has. */
-  readonly firstBatchMs: number | undefined;
-  /** Every `/api/v1` request the page has made, in the order the browser timed them. */
-  readonly reads: readonly PageRead[];
-}
-
-/** Installs those two recorders before the page's own scripts. Call it before the navigation
- *  whose reads the row is about; `readTheReads` reads what they recorded. */
-export async function watchTheReads(page: Page): Promise<void> {
-  await page.addInitScript(
-    ({ live }: { live: string }) => {
-      window.__largeDocumentReads = [];
-      new PerformanceObserver((entries) => {
-        for (const entry of entries.getEntries()) {
-          const url = new URL(entry.name, window.location.origin);
-          if (!url.pathname.startsWith("/api/v1/")) {
-            continue;
-          }
-          window.__largeDocumentReads?.push({
-            at: entry.startTime,
-            path: `${url.pathname.slice("/api/v1".length)}${url.search}`,
-          });
-        }
-      }).observe({ buffered: true, type: "resource" });
-      const noteTheFirstBatch = () => {
-        if (
-          window.__largeDocumentFirstBatchAt === undefined &&
-          document.querySelector(live) !== null
-        ) {
-          window.__largeDocumentFirstBatchAt = performance.now();
-        }
-      };
-      new MutationObserver(noteTheFirstBatch).observe(document, {
-        attributeFilter: ["data-write-path"],
-        attributes: true,
-        childList: true,
-        subtree: true,
-      });
-    },
-    { live: liveEditorSelector }
-  );
-}
-
-/** What the two recorders above have so far. */
-export async function readTheReads(page: Page): Promise<ReadsOfThePage> {
-  return await page.evaluate(() => ({
-    firstBatchMs: window.__largeDocumentFirstBatchAt,
-    reads: window.__largeDocumentReads ?? [],
-  }));
-}
-
 /** The two ends of a build, on the page's own clock: when its first batch landed and when the
  *  finished editor was named. A row that has to act inside a build acts between them. */
 export interface TheBuildsWindow {
@@ -753,45 +671,6 @@ export async function watchTheBuildsWindow(page: Page): Promise<TheBuildWatched>
         namedMs: window.__theBuildsWindow?.namedMs,
       })),
   };
-}
-
-/**
- * When each part of the chrome the page defers first stood in the page, on the page's own
- * clock: the shell's own parts and the issue page's header, tab strip and artifact chrome,
- * which are drawn after the editor's first batch (dispatch://INFRA-341 R11,
- * `web/src/features/doc/AfterTheFirstBatch.tsx`).
- *
- * Each part is named by what the reader sees - its own element in the page - never by a class
- * the build renames, and each is recorded in the `MutationObserver` callback the browser runs
- * at the drawing task's own microtask checkpoint, so a part drawn in the batch's own task is
- * never timed later than it.
- */
-export async function watchTheChrome(
-  page: Page,
-  parts: Readonly<Record<string, string>>
-): Promise<void> {
-  await page.addInitScript((watched: Readonly<Record<string, string>>) => {
-    const drawn: Record<string, number> = {};
-    window.__chromeDrawn = drawn;
-    const look = () => {
-      for (const [name, selector] of Object.entries(watched)) {
-        if (drawn[name] === undefined && document.querySelector(selector) !== null) {
-          drawn[name] = performance.now();
-        }
-      }
-    };
-    new MutationObserver(look).observe(document, {
-      attributes: true,
-      childList: true,
-      subtree: true,
-    });
-    look();
-  }, parts);
-}
-
-/** What `watchTheChrome` has recorded so far: the parts that have been drawn, by name. */
-export async function readTheChrome(page: Page): Promise<Record<string, number>> {
-  return await page.evaluate(() => window.__chromeDrawn ?? {});
 }
 
 /**
@@ -915,135 +794,4 @@ export async function measureDocument(
     windowClosedMs,
     opening,
   };
-}
-
-/** How many readings a measuring row takes of one document, and what its targets are then read
- *  against: the median of them. The protocol is the spec's own - "Each number is the median of
- *  3 runs" (dispatch://INFRA-341/spec, the Design paragraph R11 binds its targets to) - and
- *  what asks for it is this file's own spread: the same two rows at one head read 4,824 ms and
- *  8,311 ms on a first attempt and 3,838 ms and 5,105 ms on the retry
- *  (`e2e/playwright.config.ts`), so one reading held to a target is a target thrown dice for.
- *  An odd count, so the median is a reading the row really took rather than a mean of two that
- *  happened to neighbour it.
- *
- *  Each reading is a page of its own. `measureDocument` times one navigation, and a second
- *  `goto` in the same page would be timed against a browser that already holds the document's
- *  text, its chunks and its blocks - a faster number that is not the reader's first visit. */
-export const measuredReadings = 3;
-
-/** What the line below says about itself, for a reader who has not read this file: it is quoted
- *  in a pull request body and in a Dispatch check result, where the numbers have to tell
- *  themselves apart and say which of them a run is held to. */
-const measurementLegend =
-  "The first editable block is the editor's own first visible block, the first block a reader " +
-  'can type in (its root carries `data-write-path="live"`); the median of that number over a ' +
-  "row's readings, and the median of the longest main-thread task, are the two read against " +
-  "R11's targets. No reading is held to a target on its own - the median line below the " +
-  "readings is the one the row asserts - and the only thing the rows assert of a reading is " +
-  "that the page recorded a main-thread task at all, since a longest task read off nothing " +
-  "meets any target. " +
-  "First painted is the first block of the document on the screen from any draw, " +
-  "which is the server's own where it drew the document's opening blocks into the page it " +
-  "sent. The page's own draw is the first block the app itself put on the screen, in the " +
-  "read-only preview inside the document surface it renders: that one is the number this rig " +
-  "read as the editor's before INFRA-341 corrected it. Neither draw takes an edit. The " +
-  "opening is the document's own chain on the same clock, step by step: the text read the " +
-  "schema admission check is, the socket, its SyncStep1, the state frame back, and the " +
-  "editor's root in the page.";
-
-/** The opening timeline as one phrase of the line above: each step and when it happened, in
- *  the order they happen, with the steps that never happened named as such. */
-function openingLine(opening: DocumentOpening): string {
-  const steps: [string, number | undefined][] = [
-    ["text asked", opening.textAskedMs],
-    ["text answered", opening.textAnsweredMs],
-    ["socket created", opening.socketCreatedMs],
-    ["socket opened", opening.socketOpenedMs],
-    ["SyncStep1 out", opening.syncStep1Ms],
-    ["state frame in", opening.stateFrameMs],
-    ["editor created", opening.editorRootMs],
-  ];
-  return steps
-    .map(([step, at]) => `${step} ${at === undefined ? "never" : `${Math.round(at)} ms`}`)
-    .join(" / ");
-}
-
-/**
- * Puts one reading where the run's reader finds it: on the row's annotations, which the report
- * keeps with the result, and on stdout, which `--reporter line` prints as the row runs. Nothing
- * asserts the numbers on this line; `firstBlockTargetMs` is printed beside the first of them so
- * a reader sees what the row's median of these readings will be held to, and `reading` says
- * which of the row's readings this is.
- */
-export function printMeasurement(
-  what: string,
-  measured: DocumentMeasurement,
-  { firstBlockTargetMs, reading }: { firstBlockTargetMs: number; reading: number }
-): void {
-  const over = measured.longTasks.filter(({ ms }) => ms > longTaskTargetMs);
-  const line =
-    `${what}, reading ${reading} of ${measuredReadings}: ` +
-    `first editable block (this reading not asserted, the median's target ` +
-    `${firstBlockTargetMs} ms) ${Math.round(measured.firstBlockMs)} ms, ` +
-    `longest main-thread task (this reading not asserted, the median's target ` +
-    `${longTaskTargetMs} ms) ${Math.round(measured.longestTaskMs)} ms, ` +
-    `first painted (not asserted) ${measured.firstPaintedMs === undefined ? "never" : `${Math.round(measured.firstPaintedMs)} ms`}, ` +
-    `page's own draw (not asserted) ${measured.pageDrawnMs === undefined ? "never" : `${Math.round(measured.pageDrawnMs)} ms`}, ` +
-    `editor open (not asserted) ${measured.editorOpenedMs === undefined ? "never" : `${Math.round(measured.editorOpenedMs)} ms`}, ` +
-    `opening (not asserted) ${openingLine(measured.opening)}, ` +
-    `${measured.longTasks.length} main-thread task(s) over 50 ms and ${over.length} over ` +
-    `${longTaskTargetMs} ms` +
-    (over.length === 0
-      ? ""
-      : ` (${over.map(({ at, ms }) => `${Math.round(ms)} ms at ${Math.round(at)} ms`).join("; ")})`) +
-    `, over ${measured.scrollSteps} scroll steps in a ${Math.round(measured.windowClosedMs)} ms window. ` +
-    measurementLegend;
-  test.info().annotations.push({ description: line, type: "R11 measurement" });
-  console.log(`R11 measurement · ${line}`);
-}
-
-/** The two numbers a measuring row holds to its targets, each the median of its readings. */
-export interface MeasuredMedian {
-  /** The median first editable block, in milliseconds from the start of navigation. */
-  readonly firstBlockMs: number;
-  /** The median longest main-thread task of a reading's window, in milliseconds. */
-  readonly longestTaskMs: number;
-}
-
-/** The middle of an odd number of readings. */
-function middleOf(numbers: readonly number[]): number {
-  const sorted = [...numbers].sort((first, second) => first - second);
-  return sorted[(sorted.length - 1) / 2] ?? Number.NaN;
-}
-
-/**
- * The median of the readings a row took, printed beside every one of them and answered to the
- * row, which holds that median to the targets and the readings themselves to nothing. The
- * readings are printed by `printMeasurement` as each is taken, so this line is read under them
- * and says what the spread beneath it came to.
- */
-export function printTheMedian(
-  what: string,
-  readings: readonly DocumentMeasurement[],
-  firstBlockTargetMs: number
-): MeasuredMedian {
-  const firstBlocks = readings.map(({ firstBlockMs }) => firstBlockMs);
-  const longestTasks = readings.map(({ longestTaskMs }) => longestTaskMs);
-  const median = {
-    firstBlockMs: middleOf(firstBlocks),
-    longestTaskMs: middleOf(longestTasks),
-  };
-  const spread = (numbers: readonly number[]) =>
-    numbers.map((ms) => `${Math.round(ms)}`).join(", ");
-  const line =
-    `${what}: first editable block (asserted, target ${firstBlockTargetMs} ms) ` +
-    `${Math.round(median.firstBlockMs)} ms, the median of ${spread(firstBlocks)} ms; ` +
-    `longest main-thread task (asserted, target ${longTaskTargetMs} ms) ` +
-    `${Math.round(median.longestTaskMs)} ms, the median of ${spread(longestTasks)} ms. ` +
-    "Each reading is one navigation of a page of its own, printed in full above and held to " +
-    "nothing: what a reader of this line is owed is the spread the median came out of, which " +
-    "a single number hides.";
-  test.info().annotations.push({ description: line, type: "R11 median" });
-  console.log(`R11 median of ${readings.length} readings · ${line}`);
-  return median;
 }

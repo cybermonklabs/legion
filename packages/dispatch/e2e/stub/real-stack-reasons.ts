@@ -202,6 +202,8 @@ export const realStackReasons: Record<string, string> = {
     "it reads the longest main-thread task of a build the server's sync begins, over the draw that server sent, one row at a time in `chromium-alone`",
   "large-documents-first-screen.e2e.ts":
     "the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server",
+  "large-documents-fold.e2e.ts":
+    "the block it measures is the Go server's own draw, found by its id in the page that server sent for the document's address",
   "large-documents-long-build.e2e.ts":
     "its rows read a build the server's sync begins over the document it drew into the page it sent, and the edit row writes as another person on the document socket",
   "large-documents-measured.e2e.ts":

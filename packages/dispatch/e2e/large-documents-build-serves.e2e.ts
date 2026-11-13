@@ -28,9 +28,10 @@
 //
 // Every other row of what was one file reads an order, a place or a count rather than a clock,
 // and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
-// `large-documents-reader.e2e.ts` and `large-documents-first-screen.e2e.ts`, and what the seven
-// files share is `large-documents-rows.ts`, which holds the probe both rows below read a build
-// through (`whatTheBuildServes`).
+// `large-documents-reader.e2e.ts`, `large-documents-first-screen.e2e.ts` and
+// `large-documents-fold.e2e.ts`, and what the eight files share is
+// `large-documents-rows.ts`, which holds the probe both rows below read a build through
+// (`whatTheBuildServes`).
 import { expect, type Page, test } from "@playwright/test";
 
 import { listIssueAsks } from "./api";

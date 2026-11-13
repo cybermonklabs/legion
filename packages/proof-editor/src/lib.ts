@@ -445,7 +445,8 @@ function installSelfHealingParser(ctx: Ctx): void {
  * throttling, after the sync rather than beside it (dispatch://INFRA-341, R11). Every editor
  * Dispatch builds comes through here, a past version and the reading pane included
  * (`features/doc/editor.ts`'s `constructEditor`); `createProofEditor` is the two phases in one
- * call, which this package's own tests build with.
+ * call, which this package's own tests and Dispatch's `first-screen.live-editor.test.tsx` build
+ * with.
  *
  * The root is hidden for the whole of the construction, so the editor a host builds while its
  * reader is reading the document's own draw puts no empty document on the screen in front of

@@ -115,9 +115,9 @@ export const DEFAULT_ISSUE_READ_EVENTS = 10;
  *
  * It takes the whole answer rather than the field, since every caller holds one, and takes it
  * by the one property it reads rather than as an `AskAnswer`: a session answer and an ask's
- * answer carry `selected` under their own shapes. One member and not a union, so TypeScript's
- * weak-type check still refuses a value with no `selected` at all - against a union it makes no
- * such check, and a call that had drifted off the field would compile and answer `[]` for ever.
+ * answer carry `selected` under their own shapes. One member rather than a union of the two,
+ * though not for safety: both shapes refuse a value with no `selected`; the single member names
+ * the weak-type check in its error.
  */
 export function answerSelected(answer: {
   readonly selected?: readonly string[] | null | undefined;

@@ -17,7 +17,7 @@
 //
 // Each of those two numbers is the median of three readings, which is the protocol the spec's
 // own Design paragraph names: a row takes three, each a navigation of a page of its own, and
-// holds the median of them to the target (`measuredReadings` in `large-documents-page.ts` says
+// holds the median of them to the target (`measuredReadings` in `large-documents-median.ts` says
 // why three and why a page apiece). All three are printed beside the median and held to
 // nothing, so a reader of the line sees the spread the median came out of.
 //
@@ -39,8 +39,9 @@
 //
 // Every other row of what was one file reads an order, a place or a count rather than a clock,
 // and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
-// `large-documents-reader.e2e.ts` and `large-documents-first-screen.e2e.ts`, and what the seven
-// files share is `large-documents-rows.ts`.
+// `large-documents-reader.e2e.ts`, `large-documents-first-screen.e2e.ts` and
+// `large-documents-fold.e2e.ts`, and what the eight files share is
+// `large-documents-rows.ts`.
 import { expect, test } from "@playwright/test";
 
 import { documentEditor } from "./editor";
@@ -51,13 +52,11 @@ import {
   largeDocument,
   smallDocument,
 } from "./large-documents";
+import { measuredReadings, printMeasurement, printTheMedian } from "./large-documents-median";
 import {
   type DocumentMeasurement,
   longTaskTargetMs,
   measureDocument,
-  measuredReadings,
-  printMeasurement,
-  printTheMedian,
 } from "./large-documents-page";
 import { seedDocument } from "./large-documents-rows";
 import { expectNoneOf } from "./none-of";
@@ -144,7 +143,7 @@ for (const row of rows) {
     try {
       const what = `${row.what}, ${row.content.length} characters, ${row.diagrams} diagrams`;
       // The protocol the spec names: three readings of the one document and the targets read
-      // against the median of them (`measuredReadings` in `large-documents-page.ts`, which says
+      // against the median of them (`measuredReadings` in `large-documents-median.ts`, which says
       // why it is three and why each is a page of its own). Every reading is printed as it is
       // taken and held to nothing, so what a reader is shown is the spread the median came out
       // of rather than one number that hides it.
