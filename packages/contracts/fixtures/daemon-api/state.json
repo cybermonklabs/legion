@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 96,
-    "caller": 96
+    "daemon": 100,
+    "caller": 100
   },
   "admission": {
     "cap": 3,
@@ -244,6 +244,8 @@
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
       "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "phaseEntry": 4,
+      "givenEntry": 4,
       "treeMovedAt": "2026-09-22T09:17:12Z",
       "quietHours": 0.013333333333333334
     },
@@ -366,6 +368,8 @@
         "state": "claim_stopped",
         "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
       },
+      "phaseEntry": 2,
+      "givenEntry": 1,
       "treeMovedAt": "2026-09-21T09:18:00Z",
       "quietHours": 24
     },

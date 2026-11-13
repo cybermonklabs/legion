@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -563,10 +564,14 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// kind: a start of a phase worker that moves no issue. The silence repair (workflow's
 	// repairSilence) reads a worker that is up, between turns and holding no task, whose agent
 	// last stepped past the bound this deployment gives it, and writes again the start that sends
-	// it its phase's task, through the one function every start of a phase worker is written by
-	// (workflow.StartOrOwe). That start is the daemon re-asserting work the worker already holds,
-	// and R3 counts the daemon's own re-assertions as no movement (dispatch://INFRA-2560), as it
-	// counts the pod wake's start as none: the tree has stopped, and the resend is the daemon
+	// it its phase's task, built where every start of a phase worker is built (workflow's
+	// Engine.started, through workflow.StartOrOwe's own body). The claim here is level with the
+	// entry its phases row names, so the start is the phase's resume task at no entry of its own,
+	// the repair's own branch; a claim behind that entry is sent the entry's work through the one
+	// function every send of an owed entry is written by, which is the eighth kind below. Either
+	// start is the daemon re-asserting work the record already owes the worker, and R3 counts the
+	// daemon's own re-assertions as no movement (dispatch://INFRA-2560), as it counts the pod
+	// wake's start as none: the tree has stopped, and the resend is the daemon
 	// reacting to the stop. Marked, it would make the quiet time read the daemon's own repair as
 	// the tree moving again, and a tree whose worker the daemon kept resending to would never
 	// reach the bound the stalled-tree notice waits for. When the resend works, the worker's own
@@ -580,11 +585,12 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	// repair. The start row and the architect's `worker-silent` notice are what say the case
 	// drove the repair at all.
 	//
-	// The control is an ordinary start of the same issue a minute later: the admission's repair
-	// of a slot whose worker has no task (workflow's ResumeSlottedWorker), which goes through the
-	// same restart and the same start function as the resend and differs from it only in being
-	// news of the issue. It moves the record to its own moment, so a skip that took the mark off
-	// every start, rather than off the resend alone, fails this case there.
+	// The control is an ordinary start of the same issue a minute later: the promotion's start
+	// of a mid-phase worker (workflow's Engine.StartPromotedWorker), which is built by the same
+	// Engine.started and written by the same start function as the resend and differs from it
+	// only in being news of the issue, since it raises the entry it hands. It moves the record to
+	// its own moment, so a skip that took the mark off every start, rather than off the resend
+	// alone, fails this case there.
 	t.Run("the daemon's resend of a silent worker's task is no movement of its issue", func(t *testing.T) {
 		pool := migratedPool(t)
 		const issueKey = "LEGION-781"
@@ -635,17 +641,200 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 				issueKey, got.Format(time.RFC3339Nano), before.Format(time.RFC3339Nano))
 		}
 
-		// The control: an ordinary start of the same worker, through the same restart.
+		// The control: an ordinary start of the same worker, through the same Engine.started.
 		started := resent.Add(time.Minute)
 		now = started
 		inTx(t, pool, func(tx pgx.Tx) {
-			if err := engine.ResumeSlottedWorker(ctx, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
+			if err := engine.StartPromotedWorker(ctx, tx, issue(t, pool, issueKey), claim.RoleImplementer); err != nil {
 				t.Fatalf("start the implementer of %s again: %v", issueKey, err)
 			}
 		})
 		if got := movedAt(t, pool, issueKey); !got.Equal(started) {
 			t.Fatalf("after an ordinary start of %s's implementer the record says the issue last moved at %s, want %s, the moment of that start: only the resend is no movement",
 				issueKey, got.Format(time.RFC3339Nano), started.Format(time.RFC3339Nano))
+		}
+	})
+
+	// An owed entry the daemon sends, which is the eighth kind, and the fact that made it owed,
+	// which is its control. A transition raises the entry of the role it starts and writes that
+	// entry's work on the role's phases row in its own transaction (workflow's enter), and the
+	// daemon then closes any difference between that entry and the one the role's claim was
+	// given: every admission pass and a sweep of its own each minute (intake.EntrySweep) send
+	// the work of the entry to a role behind it (workflow's sendOwedEntry, through
+	// SendOwedEntry). Each such send is the daemon re-asserting work the record already owes,
+	// and R3 counts the daemon's own re-assertions as no movement (dispatch://INFRA-2560). The
+	// movement is the fact that created the entry, not each delivery of it: counting the sends
+	// would let the minute sweep reset a stuck tree's quiet time sixty times an hour, and the
+	// measure would never reach the bound on the stop it most needs to see.
+	//
+	// That reading is safe only while every fact that raises an entry marks a movement of its
+	// own, even where its delivery is left to the sweep, which is what the control pins: the
+	// tester sends the work back to implementing, which raises the implementer's entry, and its
+	// start is then finished without acting, as the outbox's fences or a lost lane leave one, so
+	// the only thing left to deliver that entry is the sweep. The record moved at the
+	// transition, and the sweep that delivers the entry later leaves it there. Making
+	// sendOwedEntry tell its start it is news of the issue fails this case at the sweep's
+	// assertion; a transition that marked nothing would fail it at the control's.
+	//
+	// Every clock is the engine's and stands past the record's own stamp, so a mark the sweep
+	// wrote would be newer than the one the record carries and this case would see it. The
+	// start row carrying the entry is what says the sweep drove a send at all.
+	t.Run("an owed entry the minute sweep sends is no movement of its issue", func(t *testing.T) {
+		pool := migratedPool(t)
+		const issueKey = "LEGION-782"
+		now := fixedNow
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+			Clock: func() time.Time { return now }}, nil)
+		admission := New(record.NewStore(), engine, 1, testProject, nil)
+		admission.now = func() time.Time { return fixedNow }
+
+		// A root testing in its own slot, whose tester is about to send the work back.
+		seedSlotted(t, pool, issueKey, "U")
+		stands := issue(t, pool, issueKey)
+		stands.Phase, stands.Status, stands.DispatchStatus, stands.LastDispatchSeq = phase.Testing, "testing", "testing", 1
+		putIssue(t, pool, stands)
+		before := movedAt(t, pool, issueKey)
+		if before.IsZero() {
+			t.Fatalf("the record of %s carries no movement before the transition: every row is stamped when it is written", issueKey)
+		}
+
+		// The control: the transition that raises the entry moves the record at its own moment.
+		transitioned := before.Add(time.Minute)
+		now = transitioned
+		applyMovement(t, pool, admission, engine, "api", "backward-move-"+issueKey, intake.BackwardMove{Issue: issueKey,
+			Requester: claim.RoleTester, To: phase.Implementing, Reason: "the tests need another round"})
+		entry, work := entryOf(t, pool, issueKey, claim.RoleImplementer)
+		if got := issue(t, pool, issueKey).Phase; got != phase.Implementing || entry == 0 || work == "" {
+			t.Fatalf("%s stands in %s with its implementer's row at entry %d naming %q, want implementing on a raised entry carrying its work: the fact must be the transition that creates the entry",
+				issueKey, got, entry, work)
+		}
+		if got := movedAt(t, pool, issueKey); !got.Equal(transitioned) {
+			t.Fatalf("after the transition that raised %s's implementer entry the record says the issue last moved at %s, want %s, the moment of that transition: the fact that creates an entry is the movement",
+				issueKey, got.Format(time.RFC3339Nano), transitioned.Format(time.RFC3339Nano))
+		}
+
+		// The transition's start is finished without acting, so its entry is owed and the sweep
+		// is all that is left to deliver it.
+		runStart(t, pool, issueKey)
+		if starts := startsOf(t, pool, issueKey); len(starts) != 0 {
+			t.Fatalf("the starts of %s = %+v, want none: the transition's start must be gone for the sweep to be the one that delivers the entry", issueKey, starts)
+		}
+
+		// The eighth kind: the minute sweep sends the owed entry, and the record stands where
+		// the transition left it.
+		now = transitioned.Add(time.Minute)
+		applyMovement(t, pool, admission, engine, "entry-sweep", "entry-sweep-"+issueKey, intake.EntrySweep{})
+		var sent bool
+		for _, row := range effects(t, pool) {
+			if payload, ok := row.payload.(record.SuperviseRequest); ok {
+				sent = sent || (row.issue == issueKey && payload.Op == "start" && payload.Role == claim.RoleImplementer &&
+					payload.Entry == entry && payload.Task == work)
+			}
+		}
+		if !sent {
+			t.Fatalf("the sweep left the outbox %#v, want the start that sends %s's implementer the work of entry %d: the sweep must send the owed entry, or this case proves nothing",
+				effects(t, pool), issueKey, entry)
+		}
+		if got := movedAt(t, pool, issueKey); !got.Equal(transitioned) {
+			t.Fatalf("after the minute sweep sent %s's implementer the entry it was owed the record says the issue last moved at %s, want %s still: the send is the daemon re-asserting work the record already owes, and marking it would let the sweep reset a stuck tree's quiet time every minute",
+				issueKey, got.Format(time.RFC3339Nano), transitioned.Format(time.RFC3339Nano))
+		}
+	})
+
+	// The listener's settlement of a commit while a head run is open and the settlement changes
+	// no judgement, which is the ninth kind: the pull request write it makes moves no issue. The
+	// listener settles every commit of the pull request, its head or not, and while a head run is
+	// open a settlement is recorded in that run whether it stands for the head or not
+	// (classify.ApplyCheckSettlement). Such a write records a fence the daemon read and decides
+	// nothing, so the workflow writes it straight to the store and not through the helper that
+	// marks a movement (workflow's checks, the `!applied` write, and putPullRequest).
+	//
+	// Every write of that shape but one carries nothing the helper's own test would call news
+	// (workflow's pullRequestNews): the judgement is unchanged and the run stays open. The one
+	// that does is the settlement that pushes the run past its bound of steps (classify's
+	// maxRunSteps), which folds the run into its anchor and closes it, so the head run's being
+	// open changes while the judgement does not. That is the write this case drives last, and
+	// the shape in which the direct write is the whole of what keeps the record still: sending
+	// that write through putPullRequest fails this case at its last assertion. The settlements
+	// before it, and a redelivery of the first of them, are the duplicates the listener sends as
+	// a matter of course, which a tree whose work has stopped would otherwise move on for ever.
+	//
+	// The engine's clock stands past the record's own stamp throughout, so a mark any of these
+	// writes left would be newer than the one the record carries and this case would see it.
+	// The run opening and closing is what says the case drove the writes it reads.
+	t.Run("the listener's settlement that decides nothing is no movement of its issue", func(t *testing.T) {
+		pool := migratedPool(t)
+		const issueKey = "LEGION-783"
+		now := fixedNow
+		engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
+			Clock: func() time.Time { return now }}, nil)
+		admission := New(record.NewStore(), engine, 1, testProject, nil)
+		admission.now = func() time.Time { return fixedNow }
+
+		seedSlotted(t, pool, issueKey, "U")
+		stands := issue(t, pool, issueKey)
+		stands.Phase, stands.Status, stands.DispatchStatus, stands.LastDispatchSeq = phase.Testing, "testing", "testing", 1
+		putIssue(t, pool, stands)
+		pullRequest := func() record.PullRequest {
+			t.Helper()
+			var got record.PullRequest
+			inTx(t, pool, func(tx pgx.Tx) {
+				pr, err := record.NewStore().PullRequest(ctx, tx, issueKey)
+				if err != nil || pr == nil {
+					t.Fatalf("read the pull request of %s = %+v, %v", issueKey, pr, err)
+				}
+				got = *pr
+			})
+			return got
+		}
+
+		// The pull request opens at a1, and a synchronize then names a2 as moved from a commit
+		// the record never held, so the head arrives before every push of its move and opens a
+		// head run (classify's replayRun).
+		base := movedAt(t, pool, issueKey).Add(time.Minute)
+		now = base
+		applyMovement(t, pool, admission, engine, "github", "pull-request-opened-"+issueKey, intake.PullRequestOpened{
+			Repo: "acme/widgets", Number: 8, Branch: claim.IssueBranch(issueKey), HeadSHA: "a1", UpdatedAt: base})
+		now = base.Add(time.Minute)
+		applyMovement(t, pool, admission, engine, "github", "pull-request-synchronized-"+issueKey, intake.PullRequestSynchronized{
+			Repo: "acme/widgets", Number: 8, Branch: claim.IssueBranch(issueKey), Before: "a0", Sender: "legion-implementer[bot]",
+			HeadSHA: "a2", UpdatedAt: base.Add(time.Minute)})
+		if pr := pullRequest(); pr.HeadSHA != "a2" || pr.Run == nil {
+			t.Fatalf("the synchronize left the pull request of %s at %s with a head run open %t, want a2 with one open: the settlements below are about a run that is open",
+				issueKey, pr.HeadSHA, pr.Run != nil)
+		}
+		moved := movedAt(t, pool, issueKey)
+
+		// The listener settles a1, which is no longer the head, so each settlement is a step of
+		// the run that stands for nothing; the first is then delivered again.
+		now = base.Add(time.Hour)
+		settle := func(n int) {
+			t.Helper()
+			applyMovement(t, pool, admission, engine, "github", fmt.Sprintf("checks-%s-%d", issueKey, n), intake.PullRequestChecks{
+				Repo: "acme/widgets", Number: 8, HeadSHA: "a1", Generation: 1, Snapshot: fmt.Sprintf("settled-a1-%d", n),
+				CheckRuns: []record.AttemptRun{{Name: "unit", ID: int64(80 + n)}}, Failing: []string{}, Cancelled: []string{}})
+		}
+		settle(1)
+		applyMovement(t, pool, admission, engine, "github", "checks-"+issueKey+"-1-redelivered", intake.PullRequestChecks{
+			Repo: "acme/widgets", Number: 8, HeadSHA: "a1", Generation: 1, Snapshot: "settled-a1-1",
+			CheckRuns: []record.AttemptRun{{Name: "unit", ID: 81}}, Failing: []string{}, Cancelled: []string{}})
+		if got := movedAt(t, pool, issueKey); !got.Equal(moved) {
+			t.Fatalf("after a settlement of %s that decides nothing, and its redelivery, the record says the issue last moved at %s, want %s still",
+				issueKey, got.Format(time.RFC3339Nano), moved.Format(time.RFC3339Nano))
+		}
+		for n := 2; pullRequest().Run != nil; n++ {
+			if n > 64 {
+				t.Fatalf("the head run of %s is still open after %d settlements: the case needs the write that closes it", issueKey, n)
+			}
+			settle(n)
+		}
+		if pr := pullRequest(); pr.HeadSHA != "a2" || pr.CheckedHead == "a1" {
+			t.Fatalf("the settlements left the pull request of %s at %s checked at %q, want a2 and no settlement of a1 standing: the write that closed the run must decide nothing",
+				issueKey, pr.HeadSHA, pr.CheckedHead)
+		}
+		if got := movedAt(t, pool, issueKey); !got.Equal(moved) {
+			t.Fatalf("after the settlement of %s that closed its head run and decided nothing the record says the issue last moved at %s, want %s still: the daemon recording a fence it read is no movement",
+				issueKey, got.Format(time.RFC3339Nano), moved.Format(time.RFC3339Nano))
 		}
 	})
 

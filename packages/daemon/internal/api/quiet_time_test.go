@@ -96,7 +96,7 @@ func TestAPodBelowTheQuietTimeContractIsServedNeitherKey(t *testing.T) {
 // quietTimeContract is the contract whose entry in version.go added the two fields, and this
 // daemon's own contract is never below it: a caller at this contract is served the measure.
 func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
-	const addedQuietTime = 96
+	const addedQuietTime = 100
 	if quietTimeContract != addedQuietTime {
 		t.Fatalf("quietTimeContract = %d, want %d, the contract whose entry in version.go added each issue's measure of its tree's quiet time",
 			quietTimeContract, addedQuietTime)
@@ -122,8 +122,8 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 // memory draw and the gated steps. The window is where the sentences that state the boundary
 // fall, and the exclusions are what let a field declared under a neighbour's paragraph be read
 // without reading that paragraph's number as this one's. Both forms are read because a passage
-// commonly writes the number twice — a headline "Daemon API contract 96:" and then "a caller
-// from a pod below 96 is served the state without the keys" — and a reader of the first form
+// commonly writes the number twice — a headline "Daemon API contract 100:" and then "a caller
+// from a pod below 100 is served the state without the keys" — and a reader of the first form
 // alone passes a text whose headline was corrected and whose boundary sentence was not. A file
 // that names no such pair is passed over, so a later text in another file is covered the moment
 // it names the two together.

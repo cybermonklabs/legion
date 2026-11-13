@@ -87,9 +87,12 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 // settlement one of the daemon's own passes rebuilt first, write those and nothing else; marked
 // as movements they would refresh the quiet time of a tree that has not moved since its work
 // ended, and that tree would never be found (record.QuietTrees). The daemon's own suites hold
-// that line: a late push webhook and a late settlement are each asserted to change nothing of
-// the issue record (internal/daemon's lateWebhookPushDecidesNothing and
-// lateSettlementChangesOnlyTheFence).
+// that line: a late push webhook is asserted to change nothing of the issue record
+// (internal/daemon's lateWebhookPushDecidesNothing), and a settlement that decides nothing —
+// the listener's redelivery and its settlement of a commit that is not the head while a head
+// run is open, the one that closes that run among them — is asserted to move no issue
+// (internal/admit's TestTheRecordKeepsWhenAnIssueLastMoved, its case of the listener's
+// settlement that decides nothing).
 //
 // A field added to record.PullRequest later is not news to this test until it is named here. The
 // direction that costs something is this one — an unnamed field that is news leaves a tree

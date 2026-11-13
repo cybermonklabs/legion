@@ -862,8 +862,8 @@ The admission pass that sees one of those four states deletes the slot row.
 An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
 A slot change stops no process, claim, session or pod:
 every worker of a waiting issue stays live in the issue's pod and answers questions until the issue closes.
-A transition applies at once — the phase, the Dispatch status, the new assignment and the notices — and only the outbox row that delivers the worker's start waits for a slot;
-when a second transition happens before the slot, its start replaces the first one, so one worker starts and a completion of the earlier assignment is refused.
+A transition applies at once — the phase, the Dispatch status, the role's phase entry raised by one with that entry's work written beside it, and the notices — and only the outbox row that delivers the worker's start waits for a slot;
+when a second transition happens before the slot, it writes a start of its own that takes the earlier row's place in the waiting line and takes that row out, so one worker starts and a completion of the earlier entry is refused.
 The waiting line is a line of issues:
 first the issues whose work came back, oldest first by the time it came back — one owed its worker a start, which holds no row and waits here for one, and two that hold the row they were started with: an answered `awaiting_person` root and a tree's own root at `admitted` whose design gate has opened;
 then the issues whose first phase can start, by the Dispatch rank of their tree's root and then by their own, most of which hold no row; two kinds hold one already, a root another tree handed over with the row it held there and a child the daemon started that a person set back to `todo`.

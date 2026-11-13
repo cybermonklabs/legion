@@ -684,12 +684,24 @@ const legionIssue = z.object({
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
+  /** The entry the role of the issue's current phase stands on, and the entry that role was last
+   * given a task of (contract 94). The daemon sends the entry's own work to a role whose given
+   * number is below the entry its row names, on every admission pass and on a sweep of its own
+   * each minute, so the two are equal for a role holding its work and differ for one the daemon
+   * has still to reach. Both are absent together for an issue whose current phase names no phase
+   * worker role — a root writing its design — and each is absent where it is 0, which is a role
+   * no entry has been raised for and one the daemon holds no claim row of; a daemon before
+   * contract 94 writes neither, and a caller in a pod whose plugin declares a contract below 94
+   * is served the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader
+   * takes both as optional. */
+  phaseEntry: z.number().int().nonnegative().optional(),
+  givenEntry: z.number().int().nonnegative().optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has
-   * been still at this read, in hours (contract 96). The pair is the tree's and not the issue's,
+   * been still at this read, in hours (contract 100). The pair is the tree's and not the issue's,
    * so every issue of one tree carries the same two values — an issue past its own review, which
    * holds no admission slot, and a done child recorded under a live tree among them. Both are
    * absent together for an issue whose tree is not live and for an issue the workflow does not
-   * record, and a daemon before contract 96 writes neither at all, which is why a reader takes
+   * record, and a daemon before contract 100 writes neither at all, which is why a reader takes
    * them as optional. A tree the record shows no movement for is measured from the zero time,
    * where the daemon's duration saturates, so `quietHours` reads 2562047.788 — 292 years, the
    * largest span it holds. That is "this tree has never moved", not a fault to refuse the body

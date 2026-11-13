@@ -534,7 +534,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, assignment from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -572,18 +572,26 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the backward move counts: %w", phase.Role, phase.Issue, err)
 		}
 	}
+	// entry_raised_at is the one nullable column of the row: a row no entry has been raised on
+	// has no moment to record, and the zero time would read as one.
+	var raisedAt any
+	if !phase.EntryRaisedAt.IsZero() {
+		raisedAt = phase.EntryRaisedAt
+	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, assignment)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		decision, completed_at, entry, entry_task, entry_raised_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
 		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
 		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
-		completed_at = excluded.completed_at, assignment = excluded.assignment`,
+		completed_at = excluded.completed_at,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
-		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.Assignment,
+		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
+		phase.Entry, phase.EntryTask, raisedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -595,9 +603,14 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
 	var decision, backwardMoves []byte
+	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
-		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.Assignment); err != nil {
+		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
+		&phase.Entry, &phase.EntryTask, &raisedAt); err != nil {
 		return PhaseRow{}, err
+	}
+	if raisedAt != nil {
+		phase.EntryRaisedAt = raisedAt.UTC()
 	}
 	phase.CompletedAt = phase.CompletedAt.UTC()
 	if decision != nil {
@@ -1282,14 +1295,17 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		"update pull_requests set " +
 			"head_run = null, planned_red = false, checked_head = '', failing = '[]'::jsonb, cancelled = '[]'::jsonb, " +
 			"check_runs = '[]'::jsonb where " + where,
-		// The assignment goes with the run too: the start that re-enters the phase mints the next
-		// one, and until it does the cleared row names none, which the completion route reads as
-		// nothing to compare rather than as a mismatch to refuse. The counts go with the rounds:
-		// the new generation counts its moves back from nothing, and the cap mark goes with them,
-		// so the architect is told again at the new generation's own first crossing of the cap.
+		// The entry's task goes with the run, and the entry itself stays where it stands: the
+		// number is never reset, so a worker still holding the old entry's task is behind the row
+		// rather than level with it, and the re-admitted tree's promotion raises the entry again
+		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The time
+		// the entry was raised stays with the number it belongs to. The counts go with the
+		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
+		// with them, so the architect is told again at the new generation's own first crossing of
+		// the cap.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, " +
-			"assignment = '' where " + where,
+			"entry_task = '' where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
@@ -2062,118 +2078,146 @@ func (s *Postgres) EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int
 
 // pendingPhaseStart is an issue's queued start of a phase worker: the supervise start row that
 // names a phase and carries that phase's task, which workflow.StartOrOwe alone writes and
-// refuses to write without either. $1 is the issue. It is the shape of the row this issue holds
-// one of, so it is what ReplaceOwedStart matches on; the slot mark cannot do that work any
-// more, since a start of a phase past its review carries none (PhaseKeepsSlot).
+// refuses to write without either. $1 is the issue. It is the shape of the row an issue holds
+// one of per wait, so it is what EnqueueStart takes out; the slot mark alone cannot do that work,
+// since a start of a phase past its review carries none (PhaseKeepsSlot).
 //
 // The issue's other supervise starts name no phase or carry no task — the tree architect's
 // (admit's promotion), the roles brought back beside a member's phase worker (admit's
 // startMidPhaseMembers), a production check's look, a pod wake and the resume of a cancelled
 // idle release — and each of them is a start of its own that must still run. None of them is
-// ever written over here, which is what the mark used to keep this statement from doing.
+// ever taken out here.
 const pendingPhaseStart = `issue = $1 and kind = 'supervise'
-			and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
+				and payload->>'op' = 'start' and payload ? 'task' and payload ? 'phase'`
 
-// ReplaceOwedStart writes row's payload over the start the issue already owes its worker — its
-// oldest pending start of a phase worker that no live lease holds and that waits for what row
-// waits for, the issue's admission slot or nothing — and says whether it found one. The caller
-// enqueues row itself when it did not (workflow.StartOrOwe), which is the back-to-back case the
-// daemon has always had: two transitions before the worker runs leave one start, the later one.
+// EnqueueStart writes a phase worker's start as a row of its own, in one statement that takes
+// out the start the issue already owes its worker for the same wait — its oldest pending start
+// of a phase worker (pendingPhaseStart) whose slot mark is the mark row carries and that no live
+// lease holds — and writes row in its place, carrying that row's attempts, next_at, last_error
+// and created_at. Where the issue owes no such row, row is written with its own values, which is
+// the first start of a phase. So two transitions before the worker runs leave one start, the
+// later one, and its caller (workflow.StartOrOwe) has one call to make either way.
 //
-// Two start rows of one issue that the outbox cannot tell apart start that issue's worker twice
-// for one assignment, and that is what this keeps to one row. The outbox's fences end a row
-// that serves a phase the issue has left or an older generation, and admission's repair takes
-// such a row away before the waiting line is judged (admit's finishFencedStarts); what no fence
-// reaches is two rows that serve the phase the issue stands in, at its own generation, which is
-// the pair an operator's retry of a held retro or merger writes while the first start is still
-// queued. The mark is no part of telling those two apart: a start of a phase past its review
-// carries none, and while every start carried one the mark could stand for the row's shape.
+// Two start rows of one issue the outbox cannot tell apart start that issue's worker twice for
+// one piece of work, and that is what this keeps to one row. The outbox's fences end a row that
+// serves a phase the issue has left, an older generation, or an entry a later entry of the same
+// role has passed; what no fence reaches is two rows that serve the phase the issue stands in,
+// at its own generation and at one entry, which is the pair the held phase's retry writes
+// (workflow's restart sends the entry its row already names, marked ResendEntry) while the
+// first start is still queued. While every start of a phase worker was marked for the slot, the
+// mark could stand for the row's shape; a start of a phase past its review carries none, so the
+// shape is read from the row itself, and a retro's or a merger's retry is written over the
+// queued row as an implementer's is.
 //
 // The mark is part of what the row must match, because a start that waits for a slot and one
-// that waits for none are two different waits and neither may be written over the other. A
-// start that waits for a slot takes its place in the waiting line from the row it is written
-// over — the line is ordered by that row's created_at and id (OwedStart) — and a start of a
-// phase past its review stands in no line at all (OwedStarts lists a marked row alone), so the
-// issue would wait from the moment a row it never waited on was queued, ahead of issues that
-// came to wait before it. The other way round, a start that waits for nothing is claimable at
-// once, so writing one over a row that is waiting would move the start ahead of anything its
-// lane has still to run behind that row, a close's suspend among them (admit's promotion of a
-// re-admitted tree queues its own start behind that suspend, so the worker comes back after the
-// stop rather than before it).
+// that waits for none are two different waits and neither may be taken out for the other. A
+// start that waits for a slot takes its place in the waiting line from the row it replaces —
+// the line is ordered by that row's created_at (OwedStart) — and a start of a phase past its
+// review stands in no line at all (OwedStarts lists a marked row alone), so an issue would wait
+// from the moment a row it never waited on was queued, ahead of issues that came to wait before
+// it. The other way round, a start that waits for nothing is claimable at once, so taking out a
+// row that is waiting would move the start ahead of anything its lane has still to run behind
+// that row, a close's suspend among them (admit's promotion of a re-admitted tree queues its own
+// start behind that suspend, so the worker comes back after the stop rather than before it). Two
+// rows can stand together only where they were written for different phases — the mark is read
+// from the phase (PhaseKeepsSlot) and every caller writes the phase on the record before it
+// calls — so the issue stands in the newer row's phase and the outbox's phase fence finishes the
+// older without acting, as admission's repair does where that row waits in the line.
 //
-// Two rows can stand together only where they were written for different phases: the mark is
-// read from the phase (PhaseKeepsSlot) and every caller writes the phase on the record before
-// it calls, so the issue stands in the newer row's phase and the older one serves a phase it
-// has left — which is exactly what the outbox's phase fence finishes without acting, and what
-// the repair takes away where the row waits in the line.
+// The row written carries the replaced row's created_at because the waiting line is ordered on
+// created_at before id (OwedStart): the issue queued when its work first came back, and a second
+// transition arriving while it waits is the same wait carrying a newer task, not a new turn at
+// the back of the line. The earlier task is already dead whichever path wrote it — the
+// transition raised the role's phase entry on its phases row in its own transaction, so a
+// completion of the earlier entry is refused against the entry the record now names — so no
+// information is lost with it.
 //
-// It updates the row it keeps in place rather than deleting it and inserting a fresh one because
-// the row's id and created_at are that ordering key: the issue queued when its work first came
-// back, and a second transition arriving while it waits is the same wait carrying a newer task,
-// not a new turn at the back of the line. The earlier task is already dead whichever path wrote
-// it — the transition minted a new assignment onto the role's phases row in its own transaction,
-// so a completion of the earlier one is refused HANDOFF_STALE_ASSIGNMENT — so no information is
-// lost with it.
+// Which row is the oldest is read the same way, created_at before id, and not by id alone: a row
+// written here carries a creation time from before its own id, so an issue owing two rows — one
+// this replaced and one written behind a lease that has since lapsed — would otherwise have the
+// younger of the two replaced next, and the oldest wait left carrying a task nothing would
+// replace again.
 //
-// A row under a live lease is not updated: a lane has it — it was claimable, which for a marked
-// row means its slot came — and the caller's own row is the next start. A lapsed lease is no lane
-// holding anything — the outbox's own due predicate reads it as free (outboxUnleasedDue) and only
-// a finished delivery takes the row away — so such a row is still the start this issue is owed
-// and is replaced like any other. The lease is tested in the update's own where clause and not
-// only in the sub-select that picks the row: a lane claiming the row while this statement waits
-// on its row lock would otherwise have the task under it changed, and deliver the earlier task
-// while the phases row already carries the later assignment. It is ClaimRow's own shape — one
-// conditional update, never a read and then a write — because Postgres rechecks the quals against
-// the row's new version once the lock is released, so the claim's lease is seen and nothing is
-// written. ClaimRow's advisory lock is for the one rule of its own the row lock does not cover, a
-// subquery over other rows; this statement's lease test is on the row it writes, so it needs none.
-// The moment the test is made against is the one the caller is acting at, which rides in on the
-// row it hands over (NewOutboxRow's nextAt), so one transition reads one clock throughout.
+// What the row written does not keep is its place among rows of the very same creation time,
+// which the line breaks by id (Waiting): such a tie is two rows written in one transaction's
+// now(), and the issue's own age, which is what the line is for, is unmoved.
 //
-// A row whose lease has lapsed takes a fresh lease token with its new payload, in the shape the
-// ready_merge conflict already uses: the lane that wrote the lapsed lease may be slow rather
-// than dead, and every move it has left is matched on the token it holds — RenewOutboxLease
-// renews by the token alone, and FinishOutbox deletes by the id and the token. Left in place,
-// that token would let such a lane renew its lease, deliver the earlier task it had already
-// read, and then finish the row now carrying the later one, which would delete the later task
-// with nothing to re-place it: the issue's pending delivery holds the resume pass off
-// (StillWorked) and every completion of it is refused HANDOFF_STALE_ASSIGNMENT. A row that has
-// never been leased keeps the empty token, which is what an unleased row carries.
+// The id is the one thing it may not keep, and that is what this function is: one outbox row is
+// one task. A claim gives its worker nothing from a row it has already queued a task from
+// (supervise.Claim.DeliveredRows), so that no retry of a row prompts the same work twice, and
+// that record is kept by the row alone. A row rewritten in place could therefore be one whose
+// earlier payload had already reached the claim — RetryOutbox clears the lease for any failure
+// that follows a delivery, and an unleased row is taken out like any other below — and the lane
+// running it then recognised the row and dropped the later task, finishing clean. What that left
+// was a phase with no task and nothing saying so: no error and no row behind it, a claim owing
+// no task of the new work, so every completion its worker reported was refused, and no restart
+// cured it, since the record a restart rebuilds the claim from carries that same row. Only a
+// start under a row of its own did (dispatch://INFRA-2800).
 //
-// The rewrite takes a fresh number from outbox_write_mark_seq, the sequence an insert takes one
-// from through the column's own default. The row keeps the id that holds its place in the line,
-// so its id says when the issue first came to wait and nothing about when this payload was
-// written; the write mark says the second, which is what the stop rule needs of it (admit's
-// stopOutlivedStart, and store's putClaim for what the sequence orders). A rewrite that left
-// the mark where it stood would hand that rule a start written after an operator's stop under
-// the number the row took before it, and the rule would end the start the retry had just
+// A row under a live lease is left where it is: its slot came, its lane has it, and the caller's
+// row is the next start, written beside it. A lapsed lease is no lane holding anything — the
+// outbox's own due predicate reads it as free (outboxUnleasedDue) and only a finished delivery
+// takes the row away — so such a row is still the start this issue is owed and is taken out like
+// any other. The lease is tested in the delete's own where clause and not only in the sub-select
+// that picks the row: a lane claiming the row while this statement waits on its row lock would
+// otherwise have the row taken from under it, and deliver the earlier task while the phases row
+// already names the later entry. It is ClaimRow's own shape — one conditional write, never a
+// read and then a write — because Postgres rechecks the quals against the row's new version once
+// the lock is released, so the claim's lease is seen and nothing is deleted. ClaimRow's advisory
+// lock is for the one rule of its own the row lock does not cover, a subquery over other rows;
+// this statement's lease test is on the row it takes out, so it needs none. The moment the test
+// is made against is the one the caller is acting at, which rides in on the row it hands over
+// (NewOutboxRow's nextAt), so one transition reads one clock throughout.
+//
+// A row whose lease has lapsed is taken out with the rest, which is stronger than the rotated
+// lease token a rewrite in place had to take: the lane that wrote that lease may be slow rather
+// than dead, and every move it has left is matched on the row it holds — RenewOutboxLease renews
+// by the id and the token, and FinishOutbox deletes by the id and the token — so with the row
+// gone it renews nothing and finishes nothing. Rewritten in place, that lane could renew its
+// lease, deliver the earlier task it had already read, and then finish the row now carrying the
+// later one, which would delete the later task with nothing to re-place it: the issue's pending
+// delivery holds the resume pass off (StillWorked) and every completion of it is refused.
+//
+// Every insert takes a fresh number from outbox_write_mark_seq through the column's own default.
+// A row written over the one an issue owed keeps the created_at that holds its place in the
+// line, so its created_at says when the issue first came to wait and nothing about when this
+// payload was written; the write mark says the second, which is what the stop rule needs of it
+// (admit's stopOutlivedStart, and store's putClaim for what the sequence orders). A row that
+// carried the earlier row's mark would hand that rule a start written after an operator's stop
+// under the number the row took before it, and the rule would end the start the retry had just
 // written.
+//
+// Everything else of the replaced row rides over unchanged — its attempts, when it is next due
+// and the error it last recorded — so a row backing off keeps its backoff and carries the later
+// task into it.
 //
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
-func (s *Postgres) ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRow) (bool, error) {
+func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error {
 	if !json.Valid(row.Payload) {
-		return false, fmt.Errorf("replace the owed start of %s: payload is not JSON", row.Issue)
+		return fmt.Errorf("enqueue the start of %s: payload is not JSON", row.Issue)
 	}
-	// The row this start may be written over is one that waits for what it waits for, which is
-	// read from the payload the caller hands over rather than asked of the caller again: a
-	// payload that names no mark carries the mark's zero (SuperviseRequest.NeedsSlot is
-	// omitempty), which is a start that waits for no slot.
-	tag, err := tx.Exec(ctx, `update outbox set payload = $2, lease_until = null,
-			write_mark = nextval('outbox_write_mark_seq'),
-			lease_token = case when lease_token = '' then '' else gen_random_uuid()::text end
-		where id = (select id from outbox
-			where `+pendingPhaseStart+`
-				and coalesce(payload->>'needsSlot', 'false') = coalesce(($2::jsonb)->>'needsSlot', 'false')
+	// The row taken out is one that waits for what row waits for, read from the payload the
+	// caller hands over rather than asked of the caller again: a payload that names no mark
+	// carries the mark's zero (SuperviseRequest.NeedsSlot is omitempty), which is a start that
+	// waits for no slot.
+	if _, err := tx.Exec(ctx, `with owed as (
+			delete from outbox where id = (select id from outbox
+				where `+pendingPhaseStart+`
+					and coalesce(payload->>'needsSlot', 'false') = coalesce(($2::jsonb)->>'needsSlot', 'false')
+					and (lease_until is null or lease_until <= $3)
+				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)
-			order by id limit 1)
-			and (lease_until is null or lease_until <= $3)`,
-		row.Issue, string(row.Payload), row.NextAt)
-	if err != nil {
-		return false, fmt.Errorf("replace the owed start of %s: %w", row.Issue, err)
+			returning attempts, next_at, last_error, created_at)
+		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+		select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
+			coalesce(owed.created_at, now()), '', null
+		from (values (1)) as caller(one) left join owed on true`,
+		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
+		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
 	}
-	return tag.RowsAffected() > 0, nil
+	return nil
 }
 
 // OwedStarts is every pending worker start of project's issues that waits for its issue's
@@ -2777,7 +2821,7 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
+	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
@@ -2802,7 +2846,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		// rule that reads them (workflow.SilentPhaseWorker).
 		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
-			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
+			&held.GivenEntry, &held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}

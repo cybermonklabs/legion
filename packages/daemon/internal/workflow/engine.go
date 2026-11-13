@@ -352,16 +352,22 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// those would make a stopped tree move for ever: nothing outside the daemon happened, and the
 	// daemon's own re-assertion would keep refreshing the mark of an issue nobody is working.
 	//
-	// Three other paths are deliberately left unmarked. The boot's read of the Dispatch listing
+	// Four other paths are deliberately left unmarked. The boot's read of the Dispatch listing
 	// records an observation of its own (admit.Admission.Reconcile and applySummary), which is
 	// the daemon catching up with what it already knew rather than news of the issue; it is the
 	// observation that is left unmarked, so a re-admission the same listing brings is marked
 	// all the same, at the write site in admit's readmit, since the generation it opens is news
 	// of the issue whatever read brought it. The status repair (statusRepairTick) queues the
-	// status of the phase the issue already stands in, so it writes no movement of its own. And a
+	// status of the phase the issue already stands in, so it writes no movement of its own. A
 	// claim's activity report or state change writes the claims table and never the issue: a
 	// session that is up is no proof that the issue it holds has moved, which is the whole of
-	// what this mark is for.
+	// what this mark is for. And the daemon's own sends of work the record already owes a phase
+	// worker are starts that mark nothing (startOrOwe's reassertion): every send of an owed
+	// entry — admission's sweep on every pass and each minute, its slot repair, readyWorkerTask,
+	// the boot's resume by rule and the silence repair (sendOwedEntry) — and the phase's resume
+	// task the boot's resume and the silence repair send a claim level with its entry. The
+	// movement is the fact that raised the entry, which the transition's phase write and its
+	// start mark below (Engine.transition, StartOrOwe), and not each delivery of it.
 	if !fact.DaemonActor {
 		if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
 			return intake.Result{}, err
@@ -763,7 +769,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return refused("HANDOFF_STALE_GENERATION", fmt.Sprintf("%s is on generation %d and this completion is generation %d's; the run it reports is over",
 			issue.Key, issue.Generation, fact.Generation)), nil
 	}
-	// RoleFor(accepting) is the architect, which accepts with sign_off: no completion of its own
+	// phase.RoleFor(accepting) is the architect, which accepts with sign_off: no completion of its own
 	// moves an issue, so an architect's is refused before the phase gate would pass it.
 	if fact.Role == claim.RoleArchitect {
 		return refused("ACCEPTANCE_IS_SIGN_OFF", fmt.Sprintf("the architect accepts %s with sign_off, not handoff_complete; this completion changed nothing", issue.Key)), nil
@@ -771,7 +777,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// A role can still be mid-turn in a phase the issue has left: the review event moves reviewing
 	// on, so a reviewer's own request for changes starts the implementer before the reviewer's
 	// handoff lands. Its completion is recorded on its own row and moves nothing (leftItsPhase).
-	current := RoleFor(issue.Phase) == fact.Role
+	current := phase.RoleFor(issue.Phase) == fact.Role
 	if !current {
 		left, err := e.leftItsPhase(ctx, tx, *issue, fact.Role, fact.Claim)
 		if err != nil {
@@ -941,7 +947,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	}
 	working := issue.WorkingPhase()
 	failure := noticeFailure(fact)
-	if RoleFor(working) != fact.Role {
+	if phase.RoleFor(working) != fact.Role {
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: failure,
 			Reason: fmt.Sprintf("the %s does not work %s's phase %s; nothing is held", fact.Role, issue.Key, working)})
 	}
@@ -1091,7 +1097,7 @@ func (e *Engine) restartPhase(ctx context.Context, tx pgx.Tx, fact intake.Restar
 		return intake.Result{}, err
 	}
 	working := issue.WorkingPhase()
-	if !InWorkflow(*issue) || RoleFor(working) != fact.Role {
+	if !InWorkflow(*issue) || phase.RoleFor(working) != fact.Role {
 		return refused("PHASE_NOT_RESTARTED", fmt.Sprintf("the %s does not work %s's phase %s, so nothing restarted it",
 			fact.Role, issue.Key, working)), nil
 	}
@@ -1171,7 +1177,7 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			reason += ": " + r.reason
 		}
 	}
-	return from, e.restart(ctx, tx, issue, RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession, newsOfTheIssue)
+	return from, e.restart(ctx, tx, issue, phase.RoleFor(from), task(issue, record.PhaseRow{}, pr, reason), freshSession)
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
@@ -1185,9 +1191,9 @@ func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) 
 	case !served:
 		return fmt.Sprintf("a backward move reaches an earlier phase, and no backward row of %s serves %s; the %s's move of %s changed nothing",
 			issue.Phase, fact.To, fact.Requester, issue.Key)
-	case RoleFor(issue.Phase) != fact.Requester:
+	case phase.RoleFor(issue.Phase) != fact.Requester:
 		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
-			issue.Phase, issue.Key, RoleFor(issue.Phase), fact.Requester, fact.To)
+			issue.Phase, issue.Key, phase.RoleFor(issue.Phase), fact.Requester, fact.To)
 	}
 	return ""
 }
@@ -1342,11 +1348,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: phase changed", "issue", issue.Key, "tree", issue.Tree, "from", from, "to", row.To, "trigger", trigger, "status", issue.Status)
-	if err := e.clearHandoff(ctx, tx, issue.Key, RoleFor(row.To)); err != nil {
+	if err := e.clearHandoff(ctx, tx, issue.Key, phase.RoleFor(row.To)); err != nil {
 		return err
 	}
 	// No transition stops a worker: the role whose phase this ends keeps its process, claim and
-	// session until its issue closes (leave), and its assignment ends here, not its process. The
+	// session until its issue closes (leave), and its phase entry ends here, not its process. The
 	// workspace passes to the next role at the completion this move records, which the worker reports
 	// once its handoff is committed and pushed, so the next role's start may run while that worker's
 	// turn is still finishing (the issue's lifecycle lane runs its supervise rows one at a time,
@@ -1359,7 +1365,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// records - the head started conflicting with its base while the tester tested, or the reviewer
 	// reviewed a round it had not completed - starts the next role the same way: that role keeps
 	// its turn, its jobs, its process and its session, and the start waits for none of them.
-	starting := RoleFor(row.To)
+	starting := phase.RoleFor(row.To)
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
 	// started for it and the merge closes the issue the moment it reaches merging. The close is
 	// closeMergedTelling's rather than a second transition's because a root's close waits for the
@@ -1409,7 +1415,7 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
-	return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 }
 
 // phaseEnded tells the role a conflicting-head transition out of from leaves with no phase that
@@ -1419,16 +1425,16 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 // the merge the daemon raises of its own leave a role that has just finished the work they report,
 // with no reason of the kind this message carries. A CI result moves no issue
 // (dispatch://INFRA-714 R1), so the trigger is a head that starts conflicting with its base.
-// The recipient is RoleFor(from) whenever that is a role other than the architect, read from the
-// transition alone rather than from what the role had done: the tester in testing, the reviewer in
-// reviewing whether or not it completed its round, the merger in merging, and the implementer in
+// The recipient is phase.RoleFor(from) whenever that is a role other than the architect, read from
+// the transition alone rather than from what the role had done: the tester in testing, the reviewer
+// in reviewing whether or not it completed its round, the merger in merging, and the implementer in
 // retro, which is also the role starting, told that its task for the new phase follows. Accepting
 // sends none — its role is the architect, which the conflict notice tells (noticeFor). Without the
 // message nothing tells that role: no transition stops a worker, and the daemon's next task for a
 // role is delivered only once that role's turn ends, while this message reaches its session at its
 // next model turn and ends a wait.
 func (e *Engine) phaseEnded(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, from, to phase.Phase, starting claim.Role, reason string) error {
-	ended := RoleFor(from)
+	ended := phase.RoleFor(from)
 	if trigger != TriggerConflict || ended == "" || ended == claim.RoleArchitect {
 		return nil
 	}
@@ -1522,17 +1528,17 @@ func (e *Engine) everyClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return nil
 }
 
+// phaseRow is role's phases row of issue (record.PhaseRowOf), and the zero row stamped with the
+// issue and the role where the record holds none: every caller that writes the row back writes
+// the row of that role, and a caller that only reads it reads the zero value of each field.
 func (e *Engine) phaseRow(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) (record.PhaseRow, error) {
 	rows, err := e.store.Phases(ctx, tx, issue)
 	if err != nil {
 		return record.PhaseRow{}, err
 	}
-	for _, row := range rows {
-		if row.Role == role {
-			return row, nil
-		}
-	}
-	return record.PhaseRow{Issue: issue, Role: role}, nil
+	row := record.PhaseRowOf(rows, role)
+	row.Issue, row.Role = issue, role
+	return row, nil
 }
 
 // issueForBranch is the issue whose branch (claim.IssueBranch) branch is, when it is recorded on

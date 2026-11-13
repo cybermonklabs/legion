@@ -66,8 +66,7 @@ func startPastReview(t *testing.T, pool *pgxpool.Pool, key string, stands phase.
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := workflow.StartOrOwe(context.Background(), tx, record.NewStore(), key, record.SuperviseRequest{Op: "start",
-			Tree: key, Role: role, Generation: 1, Phase: stands, Task: task,
-			Assignment: "assignment-" + key}, fixedNow); err != nil {
+			Tree: key, Role: role, Generation: 1, Phase: stands, Task: task, Entry: 1}, fixedNow); err != nil {
 			t.Fatalf("write the start of %s: %v", key, err)
 		}
 	})
@@ -195,12 +194,13 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	}
 
 	// An operator's retry of a worker held past its review writes a second start while the first
-	// is still queued and no lane holds it, and the two are one row: the retry is written over
+	// is still queued and no lane holds it, and the two are one row: the retry takes the place of
 	// the row the issue already holds, which waits for what it waits for — nothing
-	// (record.Store.ReplaceOwedStart). Two rows would start the worker twice for one assignment,
-	// and no fence of the outbox's would end the second — the phase and the generation fences
-	// end a row that serves a phase the issue has left or an older generation, and both of these
-	// serve the phase the issue stands in, at its own generation.
+	// (record.Store.EnqueueStart). Two rows would start the worker twice for one piece of work,
+	// and no fence of the outbox's would end the second — the phase, generation and entry fences
+	// end a row that serves a phase the issue has left, an older generation or an entry a later
+	// one has passed, and both of these serve the phase the issue stands in, at its own
+	// generation, and the retry sends the entry the row already names.
 	t.Run("a retry past the review is written over the queued start", func(t *testing.T) {
 		const retried = "LEGION-500"
 		pastReviewRoot(t, pool, retried, phase.Retro, "in_progress", "F")
@@ -243,7 +243,7 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 	// phase fence ends the one the issue has left; what writing over it would cost is the
 	// waiting line, whose place belongs to the row that waits, and the issue would stand in it
 	// from the moment a row it never waited on was queued, ahead of one that came to wait
-	// before it (record.Store.ReplaceOwedStart).
+	// before it (record.Store.EnqueueStart).
 	t.Run("a start that waits for a row is written over no queued one that waits for none", func(t *testing.T) {
 		const ahead, behind = "LEGION-520", "LEGION-530"
 		pastReviewRoot(t, pool, behind, phase.Retro, "in_progress", "H")
@@ -270,7 +270,9 @@ func TestAPhasePastReviewRunsWithNoSlot(t *testing.T) {
 // The repair of a worker that has lost its task reaches an issue standing past its review, which
 // holds no row to be found by (admit's resumeSlottedWorkers). The retro's implementer and the
 // merger are started again, exactly as a row holder's worker is, and nothing else would ever
-// start them: the start their transition wrote has been finished without acting.
+// start them: the start their transition wrote has been finished without acting, so the entry
+// their phases row names is one their claim was never given (workflow.OwedEntry), which is what
+// a worker that lost its task is on the entry model.
 //
 // What the repair does not reach is an issue at work that holds no row, because it waits in the
 // line for one and starting it would put a worker to work on an issue the cap has not admitted.
@@ -295,9 +297,16 @@ func TestTheRepairReachesAWorkerPastReview(t *testing.T) {
 	}
 	for _, row := range rows {
 		seedTreeAndMember(t, pool, row.root, row.key, row.stands, 1, false)
-		// A worker the daemon suspended holds no task it still works, which is the state this
-		// repair exists for.
-		putWorkerClaim(t, pool, row.root, row.key, row.role, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
+		// A worker the daemon suspended holds no task it still works, and its claim was queued no
+		// task of the entry its phases row names, which is the state this repair exists for.
+		token := putWorkerClaim(t, pool, row.root, row.key, row.role, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
+		inTx(t, pool, func(tx pgx.Tx) {
+			if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: row.key,
+				Role: row.role, Claim: token, Entry: seededEntry, EntryTask: seededEntryTask(row.key),
+				EntryRaisedAt: fixedNow}); err != nil {
+				t.Fatalf("record the %s's phases row of %s: %v", row.role, row.key, err)
+			}
+		})
 		if starts := startsOf(t, pool, row.key); len(starts) != 0 {
 			t.Fatalf("the starts of %s before the pass = %+v, want none: the row's own premise", row.key, starts)
 		}

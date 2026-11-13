@@ -48,7 +48,13 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 		// run and no outcome changed — so it is the daemon learning what it already knew, which
 		// is never a movement. Marking it would refresh a stopped tree's quiet time at every
 		// duplicate settlement the listener sends, and a tree that stopped with a settled head
-		// would never be found at all.
+		// would never be found at all. The write is made with the store's own PutPullRequest and
+		// not through putPullRequest, though that helper's own test would mark nothing for most
+		// writes of this shape: the settlement that pushes an open head run past its bound of
+		// steps closes the run and decides nothing, and the helper would read the run's closing
+		// as news. internal/admit's TestTheRecordKeepsWhenAnIssueLastMoved drives that write in
+		// its case of the listener's settlement that decides nothing, and fails where this write
+		// goes through the helper.
 		//
 		// A settlement that does not stand for the head tells nobody, and GitHub's merge state is
 		// read for the head all the same (Apply's askMergeState): a run GitHub counts for the head
