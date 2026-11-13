@@ -1,6 +1,6 @@
 # Legion on Kubernetes
 
-This runbook covers the worker image, the session store, the Kubernetes runtime, the operator-launched controller, and the one thing in it a role does for itself:
+This guide covers the worker image, the session store, the Kubernetes runtime, the operator-launched controller, and the one thing in it a role does for itself:
 running a workload in the cluster from a role ([Running a workload in the cluster from a role](#running-a-workload-in-the-cluster-from-a-role)).
 
 This file uses semantic line breaks: one sentence per line, and a long sentence may break after a clause.
