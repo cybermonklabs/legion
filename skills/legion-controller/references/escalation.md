@@ -99,15 +99,16 @@ for any failed role, and yours once the architect escalates the hold
 
 Before it replaces the pod, the daemon checks every workspace on the pod's disk for the issue's
 own work the remote lacks, a failed claim's included, and pushes it to the issue's one rescue
-branch, `legion/<KEY>-rescue`, which only moves forward. When it pushed work, it writes the
-issue a message: a short summary of each branch and its commits, and a link to an artifact of
-the issue with the full list, for the issue's roles to merge into the issue branch; that message
-asks nothing of you. A pod of an older image pushes to branches of its own,
-`legion/<KEY>-rescue-<pod>-<n>`, and its message says so in the same shape. When the check or a
-push fails for any workspace, the daemon does not replace the pod, and this wake's `reason` says
-that the check for unpushed work failed and names the claim the check ran through, each
-workspace and its error. Everything else of the pod's disk goes with the pod: the round's task
-tells each worker to put any scratch evidence it still needs on Dispatch before it answers.
+branch, `legion/<KEY>-rescue`, which only moves forward. When it found work the issue branch
+does not have, it writes the issue a message: a short summary of each branch and its commits,
+and a link to an artifact of the issue with the full list, for the issue's roles to merge into
+the issue branch; that message asks nothing of you. A pod of an older image pushes to branches
+of its own, `legion/<KEY>-rescue-<pod>-<n>`, and its message says so in the same shape. When
+the check or a push fails for any workspace, the daemon does not replace the pod, and this
+wake's `reason` says that the check for unpushed work failed and names the claim the check ran
+through, each workspace and its error. Everything else of the pod's disk goes with the pod: the
+round's task tells each worker to put any scratch evidence it still needs on Dispatch before it
+answers.
 One round wakes you once, however many sweeps find it open, so handle it when it arrives.
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
 nothing.
