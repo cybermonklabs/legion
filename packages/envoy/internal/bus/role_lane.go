@@ -11,13 +11,18 @@ import (
 
 // The role lane's pending limits: what nats.go queues for the lane's subscription before it drops
 // a message as a slow consumer. They are finite, so a publisher flood on notifications.role.> can
-// never grow the client's buffer without bound, and far above any backlog the lane's handler can
-// build: the handler hands each forward over and blocks only once 4,096 are open
-// (cmd/listener/role_lane.go roleForwardWaitLimit), and every open forward ends within its window
-// of 2 seconds, the wait for the stream's acknowledgement that it stored the forward, so at the
-// measured 40 role messages a second a blocked handler leaves about 80 messages queued, and the
-// 400-message silent-holder test never blocks it at all. Reaching
-// RoleLanePendingMsgs would take seven hours of arrivals at that rate with the handler blocked
+// never grow the client's buffer without bound, and far above the backlog the lane's handler
+// builds while the role bucket answers: the handler hands each forward over and blocks on them
+// only once 4,096 are open (cmd/listener/role_lane.go roleForwardWaitLimit), and every open
+// forward ends within its window of 2 seconds, the wait for the stream's acknowledgement that it
+// stored the forward, so at the measured 40 role messages a second a blocked handler leaves about
+// 80 messages queued, and the 400-message silent-holder test never blocks it at all. The handler
+// also waits on each message's read of the role's claim record from the role bucket, which it
+// makes before it hands the forward over (cmd/listener/delivery.go resolveCoreRoleHolder), for up
+// to 2 seconds when the bucket does not answer (roleHolderReadTimeout, which that read shares with
+// the holder's session read). That is one read per message, so while the bucket does not answer
+// the handler takes at most about one message every 2 seconds. Reaching RoleLanePendingMsgs would
+// take seven hours of arrivals at 40 a second with the handler blocked, or held on that read,
 // throughout; RoleLanePendingBytes, 1 GiB, is the same bound in memory for messages larger than a
 // kilobyte. Client.SlowConsumers counts any slow-consumer error the connection reports.
 const (

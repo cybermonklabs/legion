@@ -61,14 +61,14 @@ func (kv *countedKeyValue) Update(key string, value []byte, revision uint64) (ui
 func (kv *countedKeyValue) reads() int64 { return kv.gets.Load() }
 
 // countRoleReads puts a countedKeyValue in front of the registry's role bucket handle, the one
-// every claim read and write of the registry goes through (Registry.roles); the role claim
-// watcher reads through a handle of its own, so the copy goes on following the bucket.
-func countRoleReads(reg *Registry) *countedKeyValue {
-	reg.kvMu.Lock()
-	defer reg.kvMu.Unlock()
-	counted := &countedKeyValue{KeyValue: reg.roleKV.Legacy()}
-	reg.roleKV = bus.NewKeyValue(counted, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
-	return counted
+// every claim read and write of the registry goes through (Registry.roles), for the rest of the
+// test (swapRoleBucketHandle); the role claim watcher reads through a handle of its own, so the
+// copy goes on following the bucket.
+func countRoleReads(t *testing.T, reg *Registry) *countedKeyValue {
+	t.Helper()
+	return swapRoleBucketHandle(t, reg, func(legacy natsgo.KeyValue) *countedKeyValue {
+		return &countedKeyValue{KeyValue: legacy}
+	}, nil)
 }
 
 // countInterestReads puts a countedKeyValue in front of the registry's interest bucket handle,
@@ -403,7 +403,7 @@ func TestARenewalThatLandsClearsItsFailureRecord(t *testing.T) {
 	rig := newRepairRig(t, nil)
 	claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 	row := registered(t, rig.reg, holder)
-	roles := countRoleReads(rig.reg)
+	roles := countRoleReads(t, rig.reg)
 
 	roles.failGets.Store(true)
 	readFailedAt := beat(rig)
@@ -475,7 +475,7 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 	cached, _ := rig.reg.Cached(holder)
 	t.Logf("the copy gives %s %v and its cached row holds %v", holder, heldRoles(t, rig.reg, holder), cached.Topics)
 	interests := countInterestReads(t, rig.reg)
-	roles := countRoleReads(rig.reg)
+	roles := countRoleReads(t, rig.reg)
 
 	recorded := rig.clock.Now()
 	rig.reg.RecordRenewalFailures(holder, cause)
@@ -633,7 +633,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 						t.Fatalf("with the surplus claim in the copy, RolesHeldBy(%s) = %v, want [%s]", holder, got, role)
 					}
 					registered(t, rig.reg, holder, own)
-					claims := countRoleReads(rig.reg)
+					claims := countRoleReads(t, rig.reg)
 
 					if _, err := rig.reg.Remove(context.Background(), holder, nil, releasedByItsProcess); err != nil {
 						t.Fatalf("deregister %s: %v", holder, err)
@@ -722,7 +722,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 					if got := heldRoles(t, rig.reg, holder); !slices.Equal(got, []string{role}) {
 						t.Fatalf("with the surplus claim in the copy, RolesHeldBy(%s) = %v, want [%s]", holder, got, role)
 					}
-					claims := countRoleReads(rig.reg)
+					claims := countRoleReads(t, rig.reg)
 
 					requireLane(t, controllerRegistration(t, rig, holder, lane, own), lane, false, "the store's claim of "+role+" ("+name+") does not name "+holder)
 					if reads := claims.reads(); reads != 1 {
@@ -743,7 +743,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			if got := heldRoles(t, rig.reg, holder); len(got) != 0 {
 				t.Fatalf("with its claim taken out of the copy, RolesHeldBy(%s) = %v, want nothing", holder, got)
 			}
-			claims := countRoleReads(rig.reg)
+			claims := countRoleReads(t, rig.reg)
 
 			requireLane(t, controllerRegistration(t, rig, holder, lane, own), lane, true, "the store gives "+role+" to "+holder)
 			requireLane(t, controllerRegistration(t, rig, holder, own), lane, true, "the heartbeat's row holds the lane of a role the store gives "+holder)
@@ -770,7 +770,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 				row := registered(t, rig.reg, holder)
 				claimed := storedRoleClaim(t, rig.reg, role)
-				roles := countRoleReads(rig.reg)
+				roles := countRoleReads(t, rig.reg)
 				roles.failGets.Store(fails)
 				at := beat(rig)
 
@@ -809,7 +809,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				rig := newRepairRig(t, nil)
 				claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
 				claimed := storedRoleClaim(t, rig.reg, role)
-				claims := countRoleReads(rig.reg)
+				claims := countRoleReads(t, rig.reg)
 				claims.failGets.Store(fails)
 
 				_, err := rig.reg.Remove(context.Background(), holder, nil, releasedByItsProcess)
@@ -860,7 +860,7 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 				if err != nil {
 					t.Fatalf("read %s's interest record: %v", holder, err)
 				}
-				claims := countRoleReads(rig.reg)
+				claims := countRoleReads(t, rig.reg)
 				claims.failGets.Store(fails)
 				if !fails {
 					requireLane(t, controllerRegistration(t, rig, holder, lane, own), lane, true, "the claim read answered and names "+holder)

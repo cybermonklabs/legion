@@ -414,9 +414,9 @@ type RoleClaimRepairReport struct {
 	// Completed is how many whole reads of the bucket have completed since Open.
 	Completed int
 	// Age is how long before the report that read completed, on the registry's clock, and zero
-	// when no read has completed. It is the age RoleClaimRepairErr judges against
-	// RoleClaimRepairBound, so a reader that reports it beside that error (/healthz) reads the one
-	// clock the error was judged on.
+	// when no read has completed. It is the age Err judges against RoleClaimRepairBound, so a
+	// reader that reports it beside that error (/healthz) reports the very reading the error was
+	// judged on.
 	Age time.Duration
 }
 
@@ -441,16 +441,14 @@ func (r *Registry) RoleClaimRepair() RoleClaimRepairReport {
 	return report
 }
 
-// RoleClaimRepairErr is nil while the role claim watcher's last whole read of the bucket completed
-// no longer ago than RoleClaimRepairBound, on the registry's clock, and otherwise an error that says
-// no such read has completed, or how long ago the last one did. A copy past the bound may have lost
-// a claim, or kept one the bucket no longer holds, for longer than the live window leaves its holder
-// to renew it, so a caller that would decide on that copy reads this first. It is a report on the
-// repair, not on whether the view answers (RoleViewErr): a copy that goes on following its bucket
-// while no whole read completes - each scheduled read's setup failing, say - still answers
-// RolesHeldBy past the bound. It makes no bucket call.
-func (r *Registry) RoleClaimRepairErr() error {
-	report := r.RoleClaimRepair()
+// Err is nil while the read report names completed no longer ago than RoleClaimRepairBound, as of
+// the report, and otherwise an error that says no such read has completed, or how long ago the
+// last one did. A copy past the bound may have lost a claim, or kept one the bucket no longer
+// holds, for longer than the live window leaves its holder to renew it, so a caller that would
+// decide on that copy reads this first. It is a report on the repair, not on whether the view
+// answers (RoleViewErr): a copy that goes on following its bucket while no whole read completes -
+// each scheduled read's setup failing, say - still answers RolesHeldBy past the bound.
+func (report RoleClaimRepairReport) Err() error {
 	if report.Completed == 0 {
 		return errors.New("no whole read of the role claims has completed")
 	}
@@ -459,6 +457,13 @@ func (r *Registry) RoleClaimRepairErr() error {
 			report.Age.Round(time.Millisecond), RoleClaimRepairBound)
 	}
 	return nil
+}
+
+// RoleClaimRepairErr is the error of the role claim watcher's last whole read of the bucket, as
+// of now on the registry's clock (RoleClaimRepair, RoleClaimRepairReport.Err): nil while that
+// read completed no longer ago than RoleClaimRepairBound. It makes no bucket call.
+func (r *Registry) RoleClaimRepairErr() error {
+	return r.RoleClaimRepair().Err()
 }
 
 // setOwnRoleHolder records a claim write this registry made through a handle of epoch

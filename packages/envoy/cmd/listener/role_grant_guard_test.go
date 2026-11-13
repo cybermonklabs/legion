@@ -151,17 +151,25 @@ func (r *grantGuardRig) repair(t *testing.T) store.RoleClaimRepairReport {
 	return r.deps.registry.RoleClaimRepair()
 }
 
-// register is the heartbeat POST /v1/interests/subscribe a running client repeats, stating the
-// process making it and asking for the session's own consumer. It fails the test unless the
-// registration was answered 200: no renewal of any outcome may cost a session its registration.
-func (r *grantGuardRig) register(t *testing.T, sessionID, instance string) {
+// registerThrough is the heartbeat POST /v1/interests/subscribe a running client repeats, made
+// through the registration route subscribe, stating the process making it and asking for the
+// session's own consumer, as every registration this build stores does. It fails the test unless
+// the registration was answered 200: no renewal of any outcome may cost a session its
+// registration.
+func registerThrough(t *testing.T, subscribe http.Handler, sessionID, instance string) {
 	t.Helper()
 	body := fmt.Sprintf(`{"session_id":%q,"topics":["notifications.team.heartbeat"],"delivery":{"consumer":true,"epoch":"e"},"client_instance_id":%q}`, sessionID, instance)
 	recorder := httptest.NewRecorder()
-	r.subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
+	subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("registration of %s by process %q: status %d %s, want 200", sessionID, instance, recorder.Code, recorder.Body.String())
 	}
+}
+
+// register is registerThrough the rig's own registration route.
+func (r *grantGuardRig) register(t *testing.T, sessionID, instance string) {
+	t.Helper()
+	registerThrough(t, r.subscribe, sessionID, instance)
 }
 
 // claimThrough is a soft claim of role under sessionID by the process instance names, made through
@@ -174,6 +182,18 @@ func claimThrough(t *testing.T, set http.Handler, sessionID, role, instance stri
 	t.Logf("POST /v1/roles/set of %s under %s by process %s answered %d (Retry-After %q): %s",
 		role, sessionID, instance, recorder.Code, recorder.Header().Get("Retry-After"), strings.TrimSpace(recorder.Body.String()))
 	return recorder
+}
+
+// storedRoleClaim is role's claim as registry's role bucket holds it now.
+func storedRoleClaim(t *testing.T, registry *store.Registry, role string) store.RoleClaim {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	claim, err := registry.RoleClaim(ctx, role)
+	if err != nil {
+		t.Fatalf("read %s's claim: %v", role, err)
+	}
+	return claim
 }
 
 // claim is claimThrough the rig's own role route.
@@ -198,16 +218,10 @@ func (r *grantGuardRig) seed(t *testing.T, holder, role string) store.RoleClaim 
 	return r.storedClaim(t, role)
 }
 
-// storedClaim is role's claim as the bucket holds it now.
+// storedClaim is storedRoleClaim of the rig's own registry.
 func (r *grantGuardRig) storedClaim(t *testing.T, role string) store.RoleClaim {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	claim, err := r.deps.registry.RoleClaim(ctx, role)
-	if err != nil {
-		t.Fatalf("read %s's claim: %v", role, err)
-	}
-	return claim
+	return storedRoleClaim(t, r.deps.registry, role)
 }
 
 // liveWindow is the live window the role route weighs a claim's renewal against

@@ -550,7 +550,7 @@ func sessionHealthFields(sessions *session.SessionRegistry) map[string]interface
 // claims that read put back into the copy and took out of it (store.Registry.RoleClaimRepair). The
 // healthy answer carries it, and so does every degraded answer that keeps the healthy body's
 // fields, so a reader and an alert see how stale the copy is in either. A copy whose last whole
-// read is older than the bound (store.Registry.RoleClaimRepairErr) is 200 "degraded" with the
+// read is older than the bound (store.RoleClaimRepairReport.Err) is 200 "degraded" with the
 // error "role claim repair unavailable: …", keeping every other field. It is judged after the role
 // claim view and only while the view answers: a view that cannot answer refuses every read of the
 // copy whatever its last read's age, and is reported as itself. Degraded and never unhealthy,
@@ -633,15 +633,19 @@ func healthzHandler(deps *atomic.Pointer[listenerDeps]) http.HandlerFunc {
 		}
 		response["num_pending"] = consumerInfo.NumPending
 		response["num_ack_pending"] = consumerInfo.NumAckPending
-		response["role_claim_repair"] = roleClaimRepairHealthOf(d.registry.RoleClaimRepair())
 		// Last, so that no fault above is reported as this one: every check before it that can
 		// answer 503 has passed. The answer keeps the fields above it, so a reader of the counters
 		// loses none while the view fills or while its repair is late. A view that cannot answer
 		// is reported before a late repair, since it is what every read of the copy is refused by.
-		if err := d.registry.RoleViewErr(); err != nil {
+		// The repair is read once, and after the view: the field and the error are one reading,
+		// and a view that answers already has a completed whole read in that reading.
+		viewErr := d.registry.RoleViewErr()
+		repair := d.registry.RoleClaimRepair()
+		response["role_claim_repair"] = roleClaimRepairHealthOf(repair)
+		if viewErr != nil {
 			response["status"] = "degraded"
-			response["error"] = dependencyUnavailable("role claim view", err)
-		} else if err := d.registry.RoleClaimRepairErr(); err != nil {
+			response["error"] = dependencyUnavailable("role claim view", viewErr)
+		} else if err := repair.Err(); err != nil {
 			response["status"] = "degraded"
 			response["error"] = dependencyUnavailable("role claim repair", err)
 		}
@@ -660,7 +664,7 @@ type roleClaimRepairHealth struct {
 	// CompletedAt is when the read completed, RFC 3339 in UTC.
 	CompletedAt *string `json:"completed_at"`
 	// AgeSeconds is how long before the answer the read completed, on the registry's clock, the
-	// age store.Registry.RoleClaimRepairErr judges.
+	// age store.RoleClaimRepairReport.Err judges.
 	AgeSeconds *float64 `json:"age_seconds"`
 	// BoundSeconds is store.RoleClaimRepairBound, past which the answer is degraded.
 	BoundSeconds float64 `json:"bound_seconds"`

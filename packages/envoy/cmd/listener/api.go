@@ -2651,15 +2651,14 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// failed - before the answer, so a second process of the session is not granted a role
 		// whose renewal this listener could not make (store.Registry.RecordRenewalFailures,
 		// roleOwnSessionVerdict).
-		var entryErr *sessionEntryWriteError
-		if errors.As(err, &entryErr) {
-			d.registry.RecordRenewalFailures(body.SessionID, err)
-			logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", entryErr.cause.Error()))
-			writeStoreError(ctx, w, fmt.Errorf("session registry unavailable: %w", entryErr.cause), http.StatusServiceUnavailable)
-			return
-		}
 		if err != nil {
 			d.registry.RecordRenewalFailures(body.SessionID, err)
+			var entryErr *sessionEntryWriteError
+			if errors.As(err, &entryErr) {
+				logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", entryErr.cause.Error()))
+				writeStoreError(ctx, w, fmt.Errorf("session registry unavailable: %w", entryErr.cause), http.StatusServiceUnavailable)
+				return
+			}
 			logger.Warn("listener could not register the session's interest",
 				slog.String("session_id", body.SessionID),
 				slog.Any("topics", body.Topics),

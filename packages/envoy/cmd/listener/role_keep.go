@@ -503,9 +503,10 @@ func handOverKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, ro
 		backoff = roleKeepDrainBackoff(backoff)
 		pause = backoff
 	}
+	// shutDown reports whether the listener's shutdown, and not a deadline, ended ctx.
+	shutDown := func() bool { return errors.Is(ctx.Err(), context.Canceled) }
 	// retry is what a pass does with a read that did not answer: it writes line for that read and
 	// reports whether this handover reads again, which the rule above decides.
-	shutDown := func() bool { return errors.Is(ctx.Err(), context.Canceled) }
 	retry := func(line string, cause error) bool {
 		cfg.logger.LogEvent(slog.LevelDebug, line,
 			slog.String("role", role),

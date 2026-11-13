@@ -15,11 +15,11 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// rescanEvery is the scheduled read's interval these tests set (kvwatch.WithScheduledRead). No
+// scheduledEvery is the scheduled read's interval these tests set (kvwatch.WithScheduledRead). No
 // other wait the watcher arms has it as its delay -- a stream probe's 2 s, a re-read's 0 or 5 s, a
 // scan idle wait's 10 s, a repair wait's minute -- so a test finds the scheduled waits among those
 // a pending keeps by that delay alone.
-const rescanEvery = 45 * time.Second
+const scheduledEvery = 45 * time.Second
 
 // putKeys writes each of keys into the bucket kv is a handle on.
 func putKeys(t *testing.T, kv bus.KeyValue, keys ...string) {
@@ -71,11 +71,11 @@ func (s *seen) keyList() []string {
 	return keys
 }
 
-// rescansAre fails the test, naming when, unless the watcher has armed count scheduled reads in all
-// and has stopped every one of them, but the last when lastArmed.
-func rescansAre(t *testing.T, timers *pending, count int, lastArmed bool, when string) {
+// scheduledReadsAre fails the test, naming when, unless the watcher has armed count scheduled
+// reads in all and has stopped every one of them, but the last when lastArmed.
+func scheduledReadsAre(t *testing.T, timers *pending, count int, lastArmed bool, when string) {
 	t.Helper()
-	waits := timers.armed(rescanEvery)
+	waits := timers.armed(scheduledEvery)
 	if len(waits) != count {
 		t.Fatalf("%s: the watcher armed %d scheduled reads, want %d", when, len(waits), count)
 	}
@@ -183,15 +183,15 @@ func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
 		timers := &pending{}
 		first := newHeldEnd(t)
 		w := kvwatch.New("test cache", scripted(kv, first.step()).handle(), into, kvwatch.WithAfterFunc(timers.afterFunc()),
-			kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(rescanEvery))
+			kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(scheduledEvery))
 		t.Cleanup(w.Stop)
 		w.Start()
 
 		wait(t, first.reached, "the first read to deliver every record")
-		rescansAre(t, timers, 0, false, "while the first read is under way")
+		scheduledReadsAre(t, timers, 0, false, "while the first read is under way")
 		first.let()
 		eventually(t, "the first read's completion", w.Following)
-		rescansAre(t, timers, 1, true, "after the first read completed")
+		scheduledReadsAre(t, timers, 1, true, "after the first read completed")
 
 		// A Rewatch's install clears the wait, and its read's completion arms the next. The handle
 		// it moves to holds the end of the scheduled read's watch too.
@@ -200,45 +200,45 @@ func TestARescanIsArmedAtEachCompletedReadAndNeverDuringOne(t *testing.T) {
 			t.Fatalf("the rewatch: %v", err)
 		}
 		wait(t, rewatched.reached, "the rewatch's read to deliver every record")
-		rescansAre(t, timers, 1, false, "while the rewatch's read is under way")
+		scheduledReadsAre(t, timers, 1, false, "while the rewatch's read is under way")
 		rewatched.let()
 		eventually(t, "the rewatch's read's completion", w.Following)
-		rescansAre(t, timers, 2, true, "after the rewatch's read completed")
+		scheduledReadsAre(t, timers, 2, true, "after the rewatch's read completed")
 
 		// The scheduled read itself: a re-read through the current handle, whose install clears
 		// the wait that started it and whose completion arms the next.
-		timers.last(t, rescanEvery).fire()
+		timers.last(t, scheduledEvery).fire()
 		wait(t, scheduled.reached, "the scheduled read to deliver every record")
-		rescansAre(t, timers, 2, false, "while the scheduled read is under way")
+		scheduledReadsAre(t, timers, 2, false, "while the scheduled read is under way")
 		scheduled.let()
 		eventually(t, "the scheduled read's completion", w.Following)
-		rescansAre(t, timers, 3, true, "after the scheduled read completed")
+		scheduledReadsAre(t, timers, 3, true, "after the scheduled read completed")
 		if reads := into.reads(); len(reads) != 3 || reads[2].Recreated || reads[2].Epoch != 0 {
 			t.Fatalf("reads begun %+v; want the start's, the rewatch's and the scheduled one, none of a recreated bucket", reads)
 		}
 
 		// A disconnect clears it; the read the reconnect's Rewatch makes arms the next.
 		w.Disconnected()
-		rescansAre(t, timers, 3, false, "after a disconnect")
+		scheduledReadsAre(t, timers, 3, false, "after a disconnect")
 		ending, _ := bucket(t, uri)
 		if err := w.Rewatch(ending); err != nil {
 			t.Fatalf("the rewatch after the disconnect: %v", err)
 		}
 		eventually(t, "the read after the disconnect to complete", w.Following)
-		rescansAre(t, timers, 4, true, "after the read that followed the disconnect completed")
+		scheduledReadsAre(t, timers, 4, true, "after the read that followed the disconnect completed")
 
 		// The watcher's own end clears it: the connection it reads through closes.
 		ending.Close()
 		eventually(t, "the watcher's own end", func() bool { return w.Err() != nil })
-		rescansAre(t, timers, 4, false, "after the watcher ended on its own")
+		scheduledReadsAre(t, timers, 4, false, "after the watcher ended on its own")
 		if err := w.Rewatch(conn); err != nil {
 			t.Fatalf("the rewatch after the watcher's end: %v", err)
 		}
 		eventually(t, "the read after the watcher's end to complete", w.Following)
-		rescansAre(t, timers, 5, true, "after the read that repaired the watcher's end completed")
+		scheduledReadsAre(t, timers, 5, true, "after the read that repaired the watcher's end completed")
 
 		w.Stop()
-		rescansAre(t, timers, 5, false, "after Stop")
+		scheduledReadsAre(t, timers, 5, false, "after Stop")
 	})
 }
 
@@ -252,7 +252,7 @@ func TestARescanRepairsBothDirectionsOfTheCopy(t *testing.T) {
 	into := newSeen()
 	timers := &pending{}
 	w := kvwatch.New("test cache", kv, into, kvwatch.WithAfterFunc(timers.afterFunc()),
-		kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(rescanEvery))
+		kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(scheduledEvery))
 	t.Cleanup(w.Stop)
 	w.Start()
 	eventually(t, "the first read's completion", w.Following)
@@ -264,7 +264,7 @@ func TestARescanRepairsBothDirectionsOfTheCopy(t *testing.T) {
 			into.has("lost-by-the-copy"), into.has("gone-from-the-bucket"), w.Following())
 	}
 
-	timers.last(t, rescanEvery).fire()
+	timers.last(t, scheduledEvery).fire()
 	eventually(t, "the scheduled read's completion", w.Following)
 	if got, want := into.keyList(), bucketKeys(t, kv); !slices.Equal(got, want) {
 		t.Fatalf("after the scheduled read the copy holds %v, want the bucket's %v", got, want)
@@ -293,12 +293,12 @@ func TestARescanWhoseSetupFailsIsTriedAgainWhileTheOldWatcherFollows(t *testing.
 	// The start's watch is the bucket's own; the scheduled read's is refused.
 	handle := scripted(kv, nil, fails(errors.New("the watch was refused")))
 	w := kvwatch.New("test cache", handle.handle(), into, kvwatch.WithLogger(logger), kvwatch.WithAfterFunc(timers.afterFunc()),
-		kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(rescanEvery))
+		kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(scheduledEvery))
 	t.Cleanup(w.Stop)
 	w.Start()
 	eventually(t, "the first read's completion", w.Following)
 
-	timers.last(t, rescanEvery).fire()
+	timers.last(t, scheduledEvery).fire()
 	if got := handle.watches(); got != 2 {
 		t.Fatalf("the handle was watched %d times, want the start's and the scheduled read's", got)
 	}
@@ -324,7 +324,7 @@ func TestARescanWhoseSetupFailsIsTriedAgainWhileTheOldWatcherFollows(t *testing.
 	if done := len(into.completions()); done != 2 {
 		t.Fatalf("%d reads completed, want the start's and the retried one", done)
 	}
-	rescansAre(t, timers, 2, true, "after the retried read completed")
+	scheduledReadsAre(t, timers, 2, true, "after the retried read completed")
 }
 
 // An armed scheduled read is not a re-read already due: a probe that finds the bucket recreated
@@ -337,11 +337,11 @@ func TestARescanLeavesARecreatedBucketsReadToTheProbe(t *testing.T) {
 	putKeys(t, kv, "ghost")
 	into := newSeen()
 	timers := &pending{}
-	w := kvwatch.New("test cache", kv, into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithScheduledRead(rescanEvery))
+	w := kvwatch.New("test cache", kv, into, kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithScheduledRead(scheduledEvery))
 	t.Cleanup(w.Stop)
 	w.Start()
 	eventually(t, "the first read's completion", w.Following)
-	rescansAre(t, timers, 1, true, "after the first read completed")
+	scheduledReadsAre(t, timers, 1, true, "after the first read completed")
 
 	recreate(t, conn, "fresh")
 	timers.last(t, probeEvery).fire()
@@ -352,7 +352,7 @@ func TestARescanLeavesARecreatedBucketsReadToTheProbe(t *testing.T) {
 
 	timers.last(t, rereadNow).fire()
 	readWholeInEpochOne(t, w, into, "fresh", "ghost")
-	rescansAre(t, timers, 2, true, "after the recreated bucket's read completed")
+	scheduledReadsAre(t, timers, 2, true, "after the recreated bucket's read completed")
 }
 
 // A key written into the copy while the scheduled read is under way, after its scan passed that
@@ -369,13 +369,13 @@ func TestARepairMidScanKeepsAKeyWrittenAfterTheScanPassedIt(t *testing.T) {
 	held := newHeldEnd(t)
 	// The start's watch is the bucket's own; the scheduled read's holds its end.
 	w := kvwatch.New("test cache", scripted(kv, nil, held.step()).handle(), into, kvwatch.WithAfterFunc(timers.afterFunc()),
-		kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(rescanEvery))
+		kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(scheduledEvery))
 	t.Cleanup(w.Stop)
 	w.Start()
 	eventually(t, "the first read's completion", w.Following)
 	into.hold("gone-from-the-bucket")
 
-	timers.last(t, rescanEvery).fire()
+	timers.last(t, scheduledEvery).fire()
 	wait(t, held.reached, "the scheduled read to deliver every record")
 	// The write reaches the copy alone, as a write-through's result does: the bucket is not
 	// written, so no record the watcher delivers after the read can put the key back, and only the
@@ -415,7 +415,7 @@ func TestARepairOneReaderLeavesEveryKeyWhenARewatchRacesTheScheduledRead(t *test
 		into := newSeen()
 		timers := &pending{}
 		w := kvwatch.New("test cache", scripted(kv, append([]watchStep{nil}, steps...)...).handle(), into,
-			kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(rescanEvery))
+			kvwatch.WithAfterFunc(timers.afterFunc()), kvwatch.WithStreamProbeInterval(0), kvwatch.WithScheduledRead(scheduledEvery))
 		t.Cleanup(w.Stop)
 		w.Start()
 		eventually(t, "the first read's completion", w.Following)
@@ -460,7 +460,7 @@ func TestARepairOneReaderLeavesEveryKeyWhenARewatchRacesTheScheduledRead(t *test
 
 	t.Run("its wait fires while the rewatch's read is under way", func(t *testing.T) {
 		w, into, timers, kv := start(t)
-		scheduled := timers.last(t, rescanEvery)
+		scheduled := timers.last(t, scheduledEvery)
 		mid, handle := rewatchHeldMidScan(t, w, kv)
 		if !scheduled.stopped.Load() {
 			t.Fatal("the rewatch's install left the scheduled read armed")
@@ -477,7 +477,7 @@ func TestARepairOneReaderLeavesEveryKeyWhenARewatchRacesTheScheduledRead(t *test
 	t.Run("its watch is in flight when the rewatch installs", func(t *testing.T) {
 		inflight := newHeldCreate(t)
 		w, into, timers, kv := start(t, inflight.step())
-		scheduled := timers.last(t, rescanEvery)
+		scheduled := timers.last(t, scheduledEvery)
 		returned := make(chan struct{})
 		go func() {
 			defer close(returned)

@@ -7,12 +7,10 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -76,30 +74,16 @@ func (r *roleClaimRenewalRig) seed(role string, claim store.RoleClaim) store.Rol
 	return r.stored(role)
 }
 
-// stored is role's claim as the bucket holds it now.
+// stored is role's claim as the bucket holds it now (storedRoleClaim).
 func (r *roleClaimRenewalRig) stored(role string) store.RoleClaim {
 	r.t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	claim, err := r.registry.RoleClaim(ctx, role)
-	if err != nil {
-		r.t.Fatalf("read %s's claim: %v", role, err)
-	}
-	return claim
+	return storedRoleClaim(r.t, r.registry, role)
 }
 
-// register is the heartbeat POST /v1/interests/subscribe a running client repeats, stating the
-// process making it and asking for the session's own consumer, as every registration this build
-// stores does. It fails the test unless the registration was answered 200: no renewal of any
-// outcome may cost a session its registration.
+// register is registerThrough the rig's own registration route.
 func (r *roleClaimRenewalRig) register(sessionID, instance string) {
 	r.t.Helper()
-	body := fmt.Sprintf(`{"session_id":%q,"topics":["notifications.team.heartbeat"],"delivery":{"consumer":true,"epoch":"e"},"client_instance_id":%q}`, sessionID, instance)
-	recorder := httptest.NewRecorder()
-	r.subscribe.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", strings.NewReader(body)))
-	if recorder.Code != http.StatusOK {
-		r.t.Fatalf("registration of %s by process %q: status %d %s, want 200", sessionID, instance, recorder.Code, recorder.Body.String())
-	}
+	registerThrough(r.t, r.subscribe, sessionID, instance)
 }
 
 // lapsedClaim is the claim a session took an hour ago and has not answered for since, the record

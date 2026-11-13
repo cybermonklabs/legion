@@ -757,16 +757,16 @@ func TestAHandoverOfAClaimedRoleRetriesAHolderResolutionThatFailed(t *testing.T)
 	}
 }
 
-// sessionBucketThatFails is a session bucket no read of which answers: err is what each read
-// answers with, and before runs first, which is where a test ends the context of the handover
-// making that read.
-type sessionBucketThatFails struct {
+// bucketThatFails is a bucket no read of which answers: err is what each read answers with, and
+// before runs first, which is where a test ends the context of the handover making that read, or
+// counts the read (failRoleClaimReads).
+type bucketThatFails struct {
 	natsgo.KeyValue
 	before func()
 	err    error
 }
 
-func (kv sessionBucketThatFails) Get(string) (natsgo.KeyValueEntry, error) {
+func (kv bucketThatFails) Get(string) (natsgo.KeyValueEntry, error) {
 	if kv.before != nil {
 		kv.before()
 	}
@@ -837,11 +837,11 @@ func TestAHandoverReportsAHolderReadThatFailedAndNotOneItsShutdownCancelled(t *t
 			swapSessionBucket(t, harness.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
 				switch {
 				case test.shutdown:
-					return sessionBucketThatFails{KeyValue: kv, before: cancelHandover, err: context.Canceled}
+					return bucketThatFails{KeyValue: kv, before: cancelHandover, err: context.Canceled}
 				case test.stalled:
 					return &sessionBucketThatStalls{KeyValue: kv, done: handoverCtx.Done()}
 				}
-				return sessionBucketThatFails{KeyValue: kv, err: errors.New("the session bucket's read did not answer")}
+				return bucketThatFails{KeyValue: kv, err: errors.New("the session bucket's read did not answer")}
 			})
 
 			err := drainKeptRole(handoverCtx, harness.config, role, time.Now)

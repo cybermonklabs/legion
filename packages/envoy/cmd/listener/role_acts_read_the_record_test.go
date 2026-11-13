@@ -99,30 +99,24 @@ func requireDrift(t *testing.T, registry *store.Registry, role, copyNames, store
 	}
 }
 
-// errRoleBucketReadFailed is what every read of a roleBucketWhoseReadsFail answers.
+// errRoleBucketReadFailed is what every read answers through the role bucket handle
+// failRoleClaimReads installs.
 var errRoleBucketReadFailed = errors.New("the role bucket's read did not answer")
 
-// roleBucketWhoseReadsFail is a role bucket no Get of which answers, each counted in reads, and
-// which is otherwise the bucket itself: every claim record the registry reads through it fails,
-// while the role claim watcher, which reads through a handle of its own, goes on following the
-// bucket, so the copy still names the holder an act would forward to on its word.
-type roleBucketWhoseReadsFail struct {
-	natsgo.KeyValue
-	reads *atomic.Int64
-}
-
-func (kv roleBucketWhoseReadsFail) Get(string) (natsgo.KeyValueEntry, error) {
-	kv.reads.Add(1)
-	return nil, errRoleBucketReadFailed
-}
-
-// failRoleClaimReads puts a roleBucketWhoseReadsFail in front of registry's role bucket
-// (setRegistryRoleKV) and returns its count of reads, so a case shows its act made the read that
-// failed.
+// failRoleClaimReads puts a bucketThatFails in front of registry's role bucket
+// (setRegistryRoleKV), each of its reads counted and answered errRoleBucketReadFailed, and returns
+// its count of reads, so a case shows its act made the read that failed. Every claim record the
+// registry reads through it fails, while the role claim watcher, which reads through a handle of
+// its own, goes on following the bucket, so the copy still names the holder an act would forward
+// to on its word.
 func failRoleClaimReads(t *testing.T, registry *store.Registry) *atomic.Int64 {
 	t.Helper()
 	reads := &atomic.Int64{}
-	setRegistryRoleKV(t, registry, roleBucketWhoseReadsFail{KeyValue: registryRoleKV(t, registry), reads: reads})
+	setRegistryRoleKV(t, registry, bucketThatFails{
+		KeyValue: registryRoleKV(t, registry),
+		before:   func() { reads.Add(1) },
+		err:      errRoleBucketReadFailed,
+	})
 	return reads
 }
 

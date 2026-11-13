@@ -36,7 +36,7 @@ import (
 type RoleRenewal struct {
 	// Set is every role whose claim record the renewal read, sorted and without repeats: the
 	// role topics of the interest record it was given (rolesOfTopics) and the roles the role
-	// claim copy names for the session (RolesHeldBy) while that copy can be served.
+	// claim copy names for the session (RolesHeldBy) while that copy can be served (weighedRoles).
 	Set []string
 	// Renewed is the roles of Set whose claim the renewal wrote, sorted. A role of Set it did
 	// not renew is one whose claim record names another session, a process this registration is
@@ -98,7 +98,9 @@ type RoleRenewal struct {
 // context. A write ctx abandoned may still land after this answer, which is safe - it is
 // conditional on the revision it read and renews that claim alone.
 func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanceID string, record Interest) (RoleRenewal, error) {
-	renewal := RoleRenewal{Set: r.renewalSet(sessionID, record.Topics)}
+	// A view that cannot be served leaves the record's roles alone and is no failure of the renewal.
+	set, _ := r.weighedRoles(sessionID, record.Topics)
+	renewal := RoleRenewal{Set: set}
 	var failures []error
 	for _, role := range renewal.Set {
 		renewed, err := r.renewRoleClaim(ctx, role, sessionID, clientInstanceID)
@@ -113,37 +115,55 @@ func (r *Registry) RenewRoleClaims(ctx context.Context, sessionID, clientInstanc
 	return renewal, errors.Join(failures...)
 }
 
-// renewalSet is the roles a renewal of sessionID's claims weighs: the role topics of topics, an
-// interest record's, and the roles the role claim copy names for sessionID while it can be
-// served, sorted and without repeats. It reads nothing from either bucket. A copy that cannot be
-// served names no roles, which leaves the record's alone and is no error: the claim records
-// decide every role of the set.
-func (r *Registry) renewalSet(sessionID string, topics []string) []string {
-	set := rolesOfTopics(topics)
-	if held, err := r.RolesHeldBy(sessionID); err == nil {
-		set = append(set, held...)
+// weighedRoles is the roles an act on sessionID's claims weighs: the role topics of topics, an
+// interest record's (rolesOfTopics), and the roles the role claim view names for sessionID
+// (RolesHeldBy), sorted and without repeats. It reads nothing from either bucket. Each source only
+// names a claim to read, and the claim records decide every role of the set.
+//
+// A view that cannot be served (ErrRoleViewNotReady) names no roles, so the set is the record's
+// roles alone, and the view's refusal is returned beside it. A renewal weighs that set and reads
+// the refusal as no error (RenewRoleClaims, RecordRenewalFailures). A deregistration releases
+// that set and then falls back to the scan of the bucket the refusal calls for
+// (releaseAllRoleClaims), since a set without the view's roles is not every claim the session
+// holds.
+func (r *Registry) weighedRoles(sessionID string, topics []string) ([]string, error) {
+	roles := rolesOfTopics(topics)
+	held, err := r.RolesHeldBy(sessionID)
+	if err != nil {
+		return roles, err
 	}
-	slices.Sort(set)
-	return slices.Compact(set)
+	roles = append(roles, held...)
+	slices.Sort(roles)
+	return slices.Compact(roles), nil
 }
 
-// rolesOfTopics is the roles whose lane topics (contracts.RoleTopicPrefix) topics names, sorted
-// and without repeats: the roles an interest record says its session was given, since a grant
-// writes the role's lane topic into its holder's record beside the claim (SetRoleWithPrevious).
-// A lane topic whose role is empty, or holds a subscription wildcard (* or >), names no one role
-// and is left out. It is the one reading of a record's roles, so every act that takes roles from
-// an interest record reads them the same way.
+// rolesOfTopics is the roles whose lane topics topics names (roleOfTopic), sorted and without
+// repeats: the roles an interest record says its session was given, since a grant writes the
+// role's lane topic into its holder's record beside the claim (SetRoleWithPrevious). It is the
+// one reading of a record's roles, so every act that takes roles from an interest record reads
+// them the same way.
 func rolesOfTopics(topics []string) []string {
 	var roles []string
 	for _, topic := range topics {
-		role, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
-		if !ok || role == "" || strings.ContainsAny(role, "*>") {
-			continue
+		if role, ok := roleOfTopic(topic); ok {
+			roles = append(roles, role)
 		}
-		roles = append(roles, role)
 	}
 	slices.Sort(roles)
 	return slices.Compact(roles)
+}
+
+// roleOfTopic is the role whose lane topic (contracts.RoleTopicPrefix) topic is, and false for a
+// topic that is not a role lane's. A lane topic whose role is empty, or holds a subscription
+// wildcard (* or >), names no one role and answers false too. It is the one reading of a topic's
+// role, so a release of named topics (releaseRoleClaims) and a record's roles (rolesOfTopics)
+// read a topic the same way.
+func roleOfTopic(topic string) (string, bool) {
+	role, ok := strings.CutPrefix(topic, contracts.RoleTopicPrefix)
+	if !ok || role == "" || strings.ContainsAny(role, "*>") {
+		return "", false
+	}
+	return role, true
 }
 
 // renewRoleClaim writes role's claim back with its renewal moved to now, conditional on the very
@@ -355,7 +375,7 @@ func (r *Registry) pruneRenewalFailures(liveWindow time.Duration) {
 // registration whose store work failed before its renewal could run: the interest record's read
 // or write, or the session entry's write. Such a registration renews nothing, so every claim it
 // would have renewed goes unrenewed as surely as one whose own read failed. The roles are the ones
-// the renewal would have weighed but for the record it never got (renewalSet): the role claim
+// the renewal would have weighed but for the record it never got (weighedRoles): the role claim
 // copy's for sessionID while it can be served, and the role topics of the session's cached
 // interest row (Cached), so a role the copy lost still gets its record when the registration's
 // own read of the interest record is what failed. It reads nothing from either bucket, since the
@@ -365,7 +385,8 @@ func (r *Registry) RecordRenewalFailures(sessionID string, cause error) {
 	if row, ok := r.Cached(sessionID); ok {
 		topics = row.Topics
 	}
-	for _, role := range r.renewalSet(sessionID, topics) {
+	roles, _ := r.weighedRoles(sessionID, topics)
+	for _, role := range roles {
 		r.recordRenewalFailure(role, sessionID, fmt.Errorf("renew role %s's claim held by %s: the registration failed before its renewal: %w", role, sessionID, cause))
 	}
 }

@@ -15,13 +15,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // RoleReleaseAuthority is how a release of a session's role claims is authorised: the process
@@ -78,10 +75,10 @@ func (a RoleReleaseAuthority) frees(claim RoleClaim, sessionID string) bool {
 
 // releaseRoleClaims releases the claim of each role topic in topics, the topics a caller of
 // Registry.Remove named, that release authorises (RoleReleaseAuthority.frees), and leaves every
-// other topic alone: a topic that is not a role lane's, and a role name a subscription wildcard
-// reaches, which names no one role to free. A deregistration names no topic and does not come
-// here: the roles it releases are those its interest record and the role claim view name
-// together (releaseAllRoleClaims).
+// other topic alone (roleOfTopic): a topic that is not a role lane's, and a role name a
+// subscription wildcard reaches, which names no one role to free. A deregistration names no topic
+// and does not come here: the roles it releases are those its interest record and the role claim
+// view name together (releaseAllRoleClaims).
 //
 // It answers the lane topics it left standing: the ones whose claim still names sessionID and
 // which this release did not free. Those are the topics Registry.Remove keeps in the session's
@@ -99,11 +96,8 @@ func (a RoleReleaseAuthority) frees(claim RoleClaim, sessionID string) bool {
 func (r *Registry) releaseRoleClaims(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
 	var kept []string
 	for _, topic := range topics {
-		if !strings.HasPrefix(topic, contracts.RoleTopicPrefix) {
-			continue
-		}
-		role := strings.TrimPrefix(topic, contracts.RoleTopicPrefix)
-		if role == "" || strings.ContainsAny(role, "*>") {
+		role, ok := roleOfTopic(topic)
+		if !ok {
 			continue
 		}
 		stands, err := r.releaseRoleClaim(ctx, sessionID, role, release)
@@ -391,9 +385,9 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 // so a release that authorises none still reads each of those claims and frees none of them. The
 // roles weighed are the role topics of topics (rolesOfTopics), which are the topics of the
 // session's interest record as Registry.Remove read it from the bucket for this deregistration,
-// together with the roles the role claim view names sessionID the holder of (RolesHeldBy). They
-// are sorted and without repeats, so each claim is read once and released once
-// (releaseRoleClaim), on what its own claim record says.
+// together with the roles the role claim view names sessionID the holder of (RolesHeldBy), as
+// weighedRoles reads them. They are sorted and without repeats, so each claim is read once and
+// released once (releaseRoleClaim), on what its own claim record says.
 //
 // Neither source decides a release; each only names a claim to read. The record names a claim
 // the view has lost, because a grant writes the role's lane topic into its holder's record beside
@@ -427,21 +421,15 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 // scan releases each claim from the record it delivered rather than reading it again, and says
 // there what that costs.
 func (r *Registry) releaseAllRoleClaims(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) error {
-	roles := rolesOfTopics(topics)
-	held, viewErr := r.RolesHeldBy(sessionID)
-	if viewErr == nil {
-		roles = append(roles, held...)
-		slices.Sort(roles)
-		roles = slices.Compact(roles)
-	}
+	roles, viewErr := r.weighedRoles(sessionID, topics)
 	for _, role := range roles {
 		if _, err := r.releaseRoleClaim(ctx, sessionID, role, release); err != nil {
 			return err
 		}
 	}
-	// RolesHeldBy refuses only with ErrRoleViewNotReady - RoleViewErr's error is the one error it
-	// has - and the scan is the answer to any refusal, so no refusal leaves a claim the view would
-	// have named unreleased silently.
+	// weighedRoles returns only RolesHeldBy's refusal, which is only ErrRoleViewNotReady -
+	// RoleViewErr's error is the one error it has - and the scan is the answer to any refusal, so
+	// no refusal leaves a claim the view would have named unreleased silently.
 	if viewErr != nil {
 		return r.releaseAllRoleClaimsByScan(ctx, sessionID, viewErr, release)
 	}
