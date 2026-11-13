@@ -4,7 +4,7 @@ import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
-import { firstLineOf, type TreeNode } from "./issue-tree";
+import { firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
 import { PHONE_ONE_LINE_MEASURE, WIDE_ONE_LINE_MEASURE } from "./NodeRow";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
@@ -179,7 +179,7 @@ export function IssueTree({
         ...(node.author === undefined ? {} : { author: node.author.id }),
         id: node.id,
         ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
-        title: node.text === "" ? node.id : firstLineOf(node.text).line,
+        title: node.text === "" ? node.id : firstLineOf(nodeWords(node)).line,
         type: node.type,
       });
     },
@@ -340,7 +340,7 @@ export function IssueTree({
               type="button"
               {...authorText}
             >
-              {above.text === "" ? above.id : firstLineOf(above.text).line}
+              {above.text === "" ? above.id : firstLineOf(nodeWords(above)).line}
             </button>
           ))}
           <span {...pageChrome}>/</span>

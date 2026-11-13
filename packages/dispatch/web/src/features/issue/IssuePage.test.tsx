@@ -20,6 +20,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
+  ArtifactBlock,
   ArtifactText,
   ArtifactVersionText,
   Ask,
@@ -44,6 +45,7 @@ import { appKeymap } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { IssuePage } from "./IssuePage";
 import { HELP_LINES } from "./page-structure";
+import { EMPTY_STATE_LINES } from "./page-words";
 
 /** Where this browser keeps the conversation state the file's signed-in reader last picked. */
 const KEPT_STATE = userPreferenceStorageKey("alice", "issue.conversation-state");
@@ -3120,6 +3122,61 @@ test("IssuePage keeps a message typed under the collapsed margin when the margin
     expect(moved).toHaveValue("half a thought");
   } finally {
     view.unmount();
+    restore();
+  }
+});
+
+// R5: the head reads the spec's summary out of the tree, and the first load draws the tree
+// before the spec's blocks and their words have arrived. A summary not read yet is no spec
+// without a summary, so the head says nothing about one until those reads answer, and then says
+// what they held: the summary's sentences, or the page's line for a spec that carries none.
+test("IssuePage's head says nothing about the summary until the reads that carry it answer", async () => {
+  const restore = stubIssuePage(issue);
+  // The address the tree gives a block of the spec, which is what the batched read is asked for.
+  const summary = "dispatch://CORE-1/artifact/spec#b-summary";
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [
+      {
+        gone: false,
+        kind: "block",
+        name: ':::callout{#summary title="What this issue is"}\nThe page is one outline.\n:::',
+        ref: summary,
+      },
+    ],
+  });
+  const callout: ArtifactBlock = {
+    attributes: [],
+    from: 0,
+    id: "summary",
+    references: { asks: 0, comments: 0 },
+    to: 1,
+    token: "summary",
+    type: "callout",
+  };
+  try {
+    for (const { blocks, head } of [
+      { blocks: [callout], head: "The page is one outline." },
+      { blocks: [], head: EMPTY_STATE_LINES.spec_summary },
+    ]) {
+      const held = Promise.withResolvers<ArtifactBlock[]>();
+      const read = spyOn(api, "getArtifactBlocks").mockReturnValue(held.promise);
+      const view = renderIssuePage();
+      try {
+        const drawn = await screen.findByTestId("issue-three-things");
+        await waitFor(() => expect(read).toHaveBeenCalled());
+        expect(
+          drawn.textContent,
+          "the head says the spec has no summary before the spec's blocks were read"
+        ).not.toContain(EMPTY_STATE_LINES.spec_summary);
+        act(() => held.resolve(blocks));
+        await waitFor(() => expect(drawn.textContent).toContain(head));
+      } finally {
+        view.unmount();
+        read.mockRestore();
+      }
+    }
+  } finally {
+    names.mockRestore();
     restore();
   }
 });

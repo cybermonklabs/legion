@@ -1,7 +1,12 @@
-import { expect, test } from "bun:test";
-import { render } from "@testing-library/react";
+import { beforeAll, expect, spyOn, test } from "bun:test";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type RenderResult, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
+import { displayTree } from "../../__tests__/display-trees";
+import { api } from "../../api/client";
+import type { Artifact } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { TreeNode } from "./issue-tree";
 import { NodeRow, WIDE_ONE_LINE_MEASURE } from "./NodeRow";
 import type { GapKind, NodeType } from "./page-words";
@@ -31,30 +36,39 @@ function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): Tree
   };
 }
 
-/** One row, drawn with its body open, as the focused row draws it. */
-function renderRow(drawn: TreeNode) {
+/** One row, drawn with its body open, as the focused row draws it. `artifact` is the document
+ *  or image the node is, whose body draws the artifact itself. */
+function renderRow(drawn: TreeNode, artifact?: Artifact) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
-      <NodeRow
-        body
-        context={false}
-        focused={false}
-        indent={0}
-        isClosed={false}
-        level={1}
-        node={drawn}
-        oneLine={false}
-        oneLineMeasure={WIDE_ONE_LINE_MEASURE}
-        onFocus={() => {}}
-        onPin={() => {}}
-        onToggle={() => {}}
-        pinned={false}
-        rowKey="row"
-        tabStop={false}
-      />
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <NodeRow
+          artifact={artifact}
+          body
+          context={false}
+          focused={false}
+          indent={0}
+          isClosed={false}
+          level={1}
+          node={drawn}
+          oneLine={false}
+          oneLineMeasure={WIDE_ONE_LINE_MEASURE}
+          onFocus={() => {}}
+          onPin={() => {}}
+          onToggle={() => {}}
+          pinned={false}
+          rowKey="row"
+          tabStop={false}
+        />
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
+
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // R7: a node whose author the model holds says who made it by a word and a shape, never by
 // colour alone. One shape for an author, whoever they are: the node carries an author's id and
@@ -134,4 +148,129 @@ test("a result that records no negative control says so, in words", () => {
     chip: "No negative control",
     line: "This result records no negative control.",
   });
+});
+
+/** A stored text holding a heading, bold, a list item and a code span: every one of them a
+ *  symbol a reader must never see drawn as written. */
+const MARKED = "## Store the notices\n\nA **decided** thing.\n\n- one `code` item";
+
+/** What a reader reads of one drawn row: whether its words hold any symbol the author typed,
+ *  and what its body formats. */
+function drawnWords(view: RenderResult) {
+  const body = view.container.querySelector("[data-node-body]");
+  return {
+    bold: body?.querySelector("strong")?.textContent,
+    code: body?.querySelector("code")?.textContent,
+    firstLine: view.container.querySelector("[data-node-first-line]")?.textContent,
+    item: body?.querySelector("li")?.textContent,
+    symbols: /\*\*|##|`/u.test(view.container.querySelector("[data-node-row]")?.textContent ?? ""),
+  };
+}
+
+/** What `drawnWords` reads of a row drawn from the reading of `MARKED`. */
+const MARKED_DRAWN = {
+  bold: "decided",
+  code: "code",
+  firstLine: "Store the notices A decided thing.…",
+  item: "one code item",
+  symbols: false,
+};
+
+// R20, c-plain-words: a decision's text is stored markdown, and the decisions read sends the
+// server's reading of it (`Decision.text_tree`). The row draws that reading, so the reader sees
+// a heading, bold words and a list, never the `##`, `**` and `-` the author typed, and the
+// browser parses nothing to get there.
+test("a decision whose text holds bold draws no literal asterisks", () => {
+  const view = renderRow(
+    node({ id: "decisions-md#b-d1", text: MARKED, tree: displayTree(MARKED), type: "decision" })
+  );
+  try {
+    expect(drawnWords(view)).toEqual(MARKED_DRAWN);
+  } finally {
+    view.unmount();
+  }
+});
+
+// The same for every other kind whose read sends the server's reading of its text: an ask's
+// question (`question_tree`), a comment's and a message's body (`body_tree`).
+test("an ask, a comment and a message draw the server's reading of their text", () => {
+  for (const [type, id] of [
+    ["ask", "ask-1"],
+    ["comment", "comment-1"],
+    ["message", "message-1"],
+  ] as const) {
+    const view = renderRow(node({ id, text: MARKED, tree: displayTree(MARKED), type }));
+    try {
+      expect({ type, ...drawnWords(view) }).toEqual({ type, ...MARKED_DRAWN });
+    } finally {
+      view.unmount();
+    }
+  }
+});
+
+// R20: a node whose read sends no reading of its text - a requirement, a check, a result, and a
+// block of a document named by the batched reference read - draws the text as stored. The page
+// parses no stored markdown of its own to draw it otherwise.
+test("a node whose read sends no reading of its text draws the text as stored", () => {
+  const view = renderRow(node({ id: "spec#b-r1", text: MARKED, type: "requirement" }));
+  try {
+    const body = view.container.querySelector("[data-node-body]");
+    expect(body?.textContent).toContain("A **decided** thing.");
+    expect(body?.querySelector("strong")).toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// R9: the tree is one tab stop and nothing inside a row takes one; a key reaches a row's links
+// (`useTreeKeymap.ts`'s `rowLinks`). A body drawn from a reading holds real links, and each is
+// out of the tab order too.
+test("the links a body draws are out of the tab order", async () => {
+  const text =
+    "Read [the notes](https://example.com/notes) and [the plan](https://example.com/plan).";
+  const view = renderRow(node({ id: "comment-1", text, tree: displayTree(text), type: "comment" }));
+  try {
+    await waitFor(() => {
+      const links = [...view.container.querySelectorAll<HTMLElement>("[data-node-body] a[href]")];
+      expect(links.length).toBe(2);
+      expect(links.map((link) => link.tabIndex)).toEqual([-1, -1]);
+    });
+  } finally {
+    view.unmount();
+  }
+});
+
+// R16, R20: a document's node opens the document itself, read when the body opens; that read
+// sends the server's reading of the text (`ArtifactText.markdown_tree`), which the body draws.
+test("a document's body draws the server's reading of its text", async () => {
+  const read = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: MARKED,
+    markdown_tree: displayTree(MARKED),
+    token: "sha256:marked",
+    version: 1,
+  });
+  const document: Artifact = {
+    created_at: "2026-11-05T00:00:00Z",
+    created_by: { id: "alice", kind: "user" },
+    id: "artifact-notes",
+    issue_key: "CORE-1",
+    kind: "doc",
+    name: "notes.md",
+    primary: false,
+    project: "CORE",
+    ref_key: "artifact:artifact-notes",
+    session_id: null,
+    slug: "notes-md",
+    versions: [],
+  };
+  const view = renderRow(node({ id: "notes-md", text: "notes.md", type: "document" }), document);
+  try {
+    await waitFor(() => expect(drawnWords(view).bold).toBe("decided"));
+    const body = view.container.querySelector("[data-node-body]")?.textContent ?? "";
+    expect(body).not.toContain("**");
+    expect(body).not.toContain("##");
+  } finally {
+    view.unmount();
+    read.mockRestore();
+  }
 });

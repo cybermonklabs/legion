@@ -17,8 +17,9 @@ import { EMPTY_STATE_LINES } from "./page-words";
  */
 
 /** The spec's summary node, as the tree holds it: a `callout` whose text is the block's source,
- *  fence and all. */
-function summaryNode(text: string): TreeNode {
+ *  fence and all. `cut` leaves the closing fence off, which is how a summary longer than the
+ *  server's excerpt arrives: cut at `BlockExcerptRunes` wherever that falls. */
+function summaryNode(text: string, cut = false): TreeNode {
   return {
     alsoUnder: [],
     children: [],
@@ -29,15 +30,19 @@ function summaryNode(text: string): TreeNode {
     id: "spec#b-summary",
     question: false,
     replaced: false,
-    text: `:::callout{#summary title="What this issue is"}\n${text}\n:::`,
+    text: `:::callout{#summary title="What this issue is"}\n${text}${cut ? "" : "\n:::"}`,
     transcluded: false,
     type: "callout",
     waiting: false,
   };
 }
 
-/** The bullets the head draws, in order. */
-function bullets(summary: TreeNode | undefined): { lines: string[]; unmount: () => void } {
+/** The bullets the head draws, in order. `reading` is whether the reads that carry the summary
+ *  are still out. */
+function bullets(
+  summary: TreeNode | undefined,
+  reading = false
+): { lines: string[]; unmount: () => void } {
   const view = render(
     <MemoryRouter initialEntries={["/issues/CORE-1"]}>
       <IssueThreeThings
@@ -45,6 +50,7 @@ function bullets(summary: TreeNode | undefined): { lines: string[]; unmount: () 
         issueKey="CORE-1"
         plan={undefined}
         planTasks={0}
+        reading={reading}
         summary={summary}
       />
     </MemoryRouter>
@@ -113,6 +119,82 @@ test("a spec with no summary draws the page's own line and no bullet", () => {
     expect(screen.getByTestId("issue-three-things").textContent).toContain(
       EMPTY_STATE_LINES.spec_summary
     );
+  } finally {
+    unmount();
+  }
+});
+
+// The page's first load draws the tree before the spec's blocks and their words arrive, so the
+// summary node is missing, or there with no words yet. That is no spec without a summary, and
+// the head says nothing about one until the reads that carry it have answered.
+test("while the reads that carry the summary are out, the head says nothing about it", () => {
+  for (const summary of [undefined, { ...summaryNode(""), text: "" }]) {
+    const { lines, unmount } = bullets(summary, true);
+    try {
+      expect(lines).toEqual([]);
+      expect(screen.getByTestId("issue-three-things").textContent).not.toContain(
+        EMPTY_STATE_LINES.spec_summary
+      );
+    } finally {
+      unmount();
+    }
+  }
+});
+
+// A summary written as bullets is read as the sentences its items hold, each item one bullet
+// of the head whether or not its author ended it with a full stop: the item's own end is where
+// it stops, and the marker in front of it is the list's syntax, not the author's words.
+test("a summary written as bullets draws each item as a sentence", () => {
+  const { lines, unmount } = bullets(
+    summaryNode(
+      "- What: the page is one outline\n- Why: a reader finds the work\n- Done: it fits a phone"
+    )
+  );
+  try {
+    expect(lines).toEqual([
+      "What: the page is one outline",
+      "Why: a reader finds the work",
+      "Done: it fits a phone",
+    ]);
+  } finally {
+    unmount();
+  }
+});
+
+// A sentence in bold still ends at its full stop: the asterisks after it are the emphasis, and
+// they are neither the sentence's end nor words of it.
+test("a summary in bold, or ending in a bold sentence, draws that sentence", () => {
+  const whole = bullets(summaryNode("**The page is one outline.**"));
+  try {
+    expect(whole.lines).toEqual(["The page is one outline."]);
+  } finally {
+    whole.unmount();
+  }
+  const last = bullets(
+    summaryNode("The page is one outline. Nothing is lost. **It fits a phone.**")
+  );
+  try {
+    expect(last.lines).toEqual([
+      "The page is one outline.",
+      "Nothing is lost.",
+      "It fits a phone.",
+    ]);
+  } finally {
+    last.unmount();
+  }
+});
+
+// The excerpt is cut wherever `BlockExcerptRunes` falls, which can be inside the last item of
+// a list as well as inside a sentence; the words after the cut are no item anybody wrote.
+test("a bulleted summary cut inside its last item draws the whole items and not the fragment", () => {
+  const { lines, unmount } = bullets(
+    summaryNode(
+      "- What: the page is one outline\n- Why: a reader finds the work\n- Done: it fi",
+      true
+    )
+  );
+  try {
+    expect(lines).toEqual(["What: the page is one outline", "Why: a reader finds the work"]);
   } finally {
     unmount();
   }

@@ -173,7 +173,7 @@ test("the names already in hand stand while a tree that grew reads the new set",
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
   try {
-    const view = renderHook(() => useIssueTree(issue), { wrapper });
+    const view = renderHook(() => useIssueTree(issue).root, { wrapper });
     await waitFor(() => expect(taskWords(view.result.current)).toBe(TASK_WORDS));
 
     // A comment arrives: the tree holds one address more, so the names read is a key nobody

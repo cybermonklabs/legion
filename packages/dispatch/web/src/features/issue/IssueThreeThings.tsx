@@ -32,17 +32,24 @@ import {
  * with the query a reader is running over it.
  *
  * The sentences are the spec's summary, as the spec stores them: the summary node's own text,
- * split at its sentence ends and at nothing else, and at most the three the requirement names
- * - what this is, why it matters, and what is different when it is done. An author who wrote
- * two sentences gets two, with nothing drawn in the place of a third. The text is the node's
- * own (`specSummary`), which the tree the page already draws carries, so the head reads no
- * document and costs no request of its own (R20): the first load parses no stored markdown.
- * A text that ends mid-sentence - the node's text is the server's excerpt, cut at 240 runes
- * (`packages/envoy/internal/dispatch/refs/graph.go`) - ends in a fragment nobody wrote, and a
- * fragment is not a spoken sentence, so it is left undrawn rather than drawn cut off. Who
- * wrote the bullets and when they were last read back are dispatch://INFRA-1278 and the model
- * holds neither, so the head says so in two gaps and draws no author at all - it never guesses
- * one from the version the summary last changed in.
+ * read as the sentences it holds, and at most the three the requirement names - what this is,
+ * why it matters, and what is different when it is done. An author who wrote two sentences gets
+ * two, with nothing drawn in the place of a third. The text is the node's own (`specSummary`),
+ * which the tree the page already draws carries, so the head reads no document and costs no
+ * request of its own (R20). That text is the server's stored excerpt of the block, and no read
+ * the first load makes sends the server's reading of it (`ReferenceTarget` carries `name` and
+ * nothing beside it), so the head reads the excerpt's own characters for three things and no
+ * more: the block's fence, a list item's marker and the emphasis around words
+ * (`spokenSentences`). It parses no stored markdown. A text that ends mid-sentence - the
+ * excerpt is cut at `BlockExcerptRunes`, 480 runes (`packages/envoy/internal/dispatch/refs/excerpts.go`)
+ * - ends in a fragment nobody wrote, and a fragment is not a spoken sentence, so it is left
+ * undrawn rather than drawn cut off. Who wrote the bullets and when they were last read back are
+ * dispatch://INFRA-1278 and the model holds neither, so the head says so in two gaps and draws
+ * no author at all - it never guesses one from the version the summary last changed in.
+ *
+ * Until the reads that carry the summary answer, the head says nothing about it: the tree is
+ * drawn before the spec's blocks arrive, and its summary node before the batched reference read
+ * names it, and a summary not read yet is no spec without one.
  *
  * The two rows are the page's own words and hold no author's text, so the sentences above them
  * are the only thing a reader of the head quotes. Each names one source and no second: the
@@ -55,6 +62,7 @@ export function IssueThreeThings({
   issueKey,
   plan,
   planTasks,
+  reading,
   summary,
 }: {
   /** Every check of the issue, as the tree holds them: each one's state is its latest result. */
@@ -64,10 +72,17 @@ export function IssueThreeThings({
   plan: Artifact | undefined;
   /** How many plan tasks the Plan preset holds. */
   planTasks: number;
+  /** Whether the spec's blocks are still being read, which is what says whether the spec holds
+   *  a summary node at all. */
+  reading: boolean;
   /** The spec's summary node, or undefined for a spec that carries none. */
   summary: TreeNode | undefined;
 }): ReactNode {
   const sentences = spokenSentences(summary?.text ?? "");
+  // A summary node with no text is one whose words the batched reference read has not named
+  // yet - a stored block always holds its own fence - so it says no more than a summary whose
+  // blocks are still out.
+  const known = !reading && (summary === undefined || summary.text !== "");
   const states = Object.keys(NODE_STATE_WORDS.check).filter((state) =>
     checks.some((check) => check.state === state)
   ) as CheckState[];
@@ -77,11 +92,7 @@ export function IssueThreeThings({
       className={`mb-0.5 flex min-w-0 flex-col gap-1 border-b pb-0.5 ${borderDefault}`}
       data-testid="issue-three-things"
     >
-      {sentences.length === 0 ? (
-        <p className={`text-sm ${textMutedOnCanvas}`} {...pageChrome}>
-          {EMPTY_STATE_LINES.spec_summary}
-        </p>
-      ) : (
+      {sentences.length > 0 ? (
         <ul className="flex min-w-0 flex-col">
           {sentences.map((sentence) => (
             <li
@@ -93,7 +104,11 @@ export function IssueThreeThings({
             </li>
           ))}
         </ul>
-      )}
+      ) : known ? (
+        <p className={`text-sm ${textMutedOnCanvas}`} {...pageChrome}>
+          {EMPTY_STATE_LINES.spec_summary}
+        </p>
+      ) : null}
       {/* The two rows and the two gaps share one wrapping line. Each keeps its own box, because
           each names one source and no second (R5), but a line apiece cost the head 60 px before
           the tree and R6 puts the first open question on the first screen. The gap words are
@@ -169,30 +184,77 @@ const BULLETS = 3;
  *  text it was split out of stops mid-sentence. */
 const ENDS_A_SENTENCE = /[.!?][)\]"'\u201d\u2019]*$/u;
 
+/** The space after a sentence end, which is where a run of words is split into its sentences:
+ *  the end may carry a closing quote or bracket, and the emphasis that closes around it. */
+const SENTENCE_BREAK = /(?<=[.!?][)\]"'\u201d\u2019*_]*)\s+/u;
+
+/** Where a list item opens: its marker - `-`, `*` or `+`, or a number and `.` or `)` - and the
+ *  space after it. The marker is the list's syntax; the words after it are the item. */
+const LIST_ITEM = /^\s{0,3}(?:[-*+]|\d{1,9}[.)])\s+/u;
+
+/** The emphasis around an author's words: a run of `*` or `_` that opens a word or closes one.
+ *  One inside a word (`snake_case`), or standing between two spaces (`2 * 3`), is a character
+ *  the author wrote, and stays. */
+const EMPHASIS =
+  /(^|[\s([{"'\u201c\u2018])[*_]{1,3}(?=[^\s*_])|(?<=[^\s*_])[*_]{1,3}(?=$|[\s.,;:!?)\]}"'\u201d\u2019])/gu;
+
 /**
- * The sentences the head draws: the summary's own, split at their sentence ends, each one as it
- * was written with nothing added, removed or reflowed, and at most `BULLETS` of them (R5).
+ * The sentences the head draws: the summary's own, each one the words its author wrote, and at
+ * most `BULLETS` of them (R5).
  *
- * A trailing fragment is dropped. The summary node's text is the server's excerpt, cut at 240
- * runes wherever the summary is longer, so a text that stops mid-sentence ends in words no
- * author ever spoke as a sentence; it is left out rather than drawn as a bullet of its own.
+ * The text is the block's stored excerpt, which is its source, so three things in it are the
+ * document's syntax and no part of what anybody wrote: the `:::` fence around the block, the
+ * marker that opens a list item, and the `*` and `_` around emphasised words. Each is left out;
+ * nothing else is read, and nothing is added, reordered or reflowed. The words are read in the
+ * runs they were written in - each list item one, and each paragraph one - and each run is
+ * split at its sentence ends. A list item is a sentence of its own whether or not its author
+ * ended it with a full stop, because the item ends where the next one starts.
  *
- * A typed block's stored text is its source, so it arrives inside its own `:::` fence. The
- * fence is the document's syntax and no part of what anybody wrote, so it is dropped before
- * the split.
+ * A trailing fragment is dropped. The excerpt is cut at `BlockExcerptRunes` wherever the block
+ * is longer, so a text that stops mid-sentence ends in words no author ever spoke as a
+ * sentence; it is left out rather than drawn as a bullet of its own. A last list item is whole
+ * where the excerpt is - it holds the block's closing fence - and a fragment like any other
+ * where the cut fell inside it.
  */
 function spokenSentences(text: string): readonly string[] {
   const lines = text.split("\n");
   if (lines[0]?.startsWith(":::") === true) lines.shift();
-  if (lines.at(-1)?.trim() === ":::") lines.pop();
-  const sentences = lines
-    .join(" ")
-    .replace(/\s+/gu, " ")
-    .trim()
-    .split(/(?<=[.!?])\s+/u)
-    .filter((sentence) => sentence !== "");
-  const whole = ENDS_A_SENTENCE.test(sentences.at(-1) ?? "") ? sentences : sentences.slice(0, -1);
-  return whole.slice(0, BULLETS);
+  // The excerpt holds the closing fence exactly when it holds the whole block: a longer block
+  // is cut wherever `BlockExcerptRunes` falls, and its fence goes with the rest.
+  const whole = lines.at(-1)?.trim() === ":::";
+  if (whole) lines.pop();
+  // A line after a list item or a paragraph's line, with no blank line between, carries it on.
+  const runs: { readonly item: boolean; words: string }[] = [];
+  let open = false;
+  for (const line of lines) {
+    const marker = LIST_ITEM.exec(line);
+    const last = runs.at(-1);
+    if (marker !== null) {
+      runs.push({ item: true, words: line.slice(marker[0].length) });
+      open = true;
+    } else if (line.trim() === "") {
+      open = false;
+    } else if (open && last !== undefined) {
+      last.words = `${last.words} ${line}`;
+    } else {
+      runs.push({ item: false, words: line });
+      open = true;
+    }
+  }
+  const sentences = runs.flatMap(({ item, words }) =>
+    words
+      .replace(/\s+/gu, " ")
+      .trim()
+      .split(SENTENCE_BREAK)
+      .map((sentence) => sentence.replace(EMPHASIS, "$1").trim())
+      .filter((sentence) => sentence !== "")
+      .map((sentence) => ({ item, sentence }))
+  );
+  const last = sentences.at(-1);
+  const ended = last === undefined || ENDS_A_SENTENCE.test(last.sentence) || (whole && last.item);
+  return (ended ? sentences : sentences.slice(0, -1))
+    .slice(0, BULLETS)
+    .map(({ sentence }) => sentence);
 }
 
 /** The issue's summary: the first `callout` block of its spec, which is the nearest thing

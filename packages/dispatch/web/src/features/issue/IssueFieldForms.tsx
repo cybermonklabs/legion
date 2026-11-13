@@ -72,10 +72,17 @@ export function FormActions({
   cancel,
   saveLabel,
   saving,
+  waiting = false,
 }: {
   cancel: () => void;
   saveLabel: string;
+  /** Whether Save cannot be pressed: a save is out, or the value cannot be saved. */
   saving: boolean;
+  /** Whether the editor waits for the answer to a save that is out, and nothing closes it until
+   *  that lands: the blocked-by editor, whose refusal is drawn in it. Cancel is held with Save
+   *  then, drawn and announced as a control that cannot be pressed rather than one whose press
+   *  does nothing. */
+  waiting?: boolean;
 }): ReactNode {
   return (
     <>
@@ -88,7 +95,8 @@ export function FormActions({
         {saveLabel}
       </button>
       <button
-        className={`min-h-11 rounded border px-2 py-1 text-sm font-medium md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary}`}
+        className={`min-h-11 rounded border px-2 py-1 text-sm font-medium disabled:cursor-not-allowed md:min-h-8 ${borderTransparent} ${textMutedHoverToSecondary} ${secondaryButtonDisabledText}`}
+        disabled={waiting}
         onClick={cancel}
         type="button"
         {...pageChrome}

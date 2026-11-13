@@ -19,6 +19,17 @@ import {
   treeReferences,
 } from "./issue-tree";
 
+/** The issue's tree, and how far the reads it is built from have got. */
+export interface IssueTreeView {
+  /** Whether every document's blocks have been read. Until then a typed block - the spec's
+   *  summary among them - may be missing from `root` because it has not arrived rather than
+   *  because its document holds none, which is what the head waits on before it says a spec
+   *  has no summary (`IssueThreeThings.tsx`). A read that failed has not answered either: the
+   *  page cannot say what a document it could not read holds. */
+  readonly blocksRead: boolean;
+  readonly root: TreeNode;
+}
+
 /**
  * The issue's tree, from the page's reads (dispatch://INFRA-1196 R20). This hook is where the
  * reads are; `buildIssueTree` is pure and holds none of them, so the model is testable without a
@@ -41,7 +52,7 @@ import {
  * target's address and a block of a document carrying no words yet; on every read after the
  * first the names already in hand stand while the new set loads.
  */
-export function useIssueTree(issue: IssueDetails): TreeNode {
+export function useIssueTree(issue: IssueDetails): IssueTreeView {
   const key = issue.key;
   const coverage = useQuery(issueCoverageQuery(key));
   const decisions = useQuery(issueDecisionsQuery(key, true));
@@ -73,14 +84,16 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
   // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and
   // replaces it only when a document's own read changes, where a map over the results would be a
   // new array every render and build the tree again with it. It answers whether any of them is
-  // still waiting too, which is part of what holds the one batched name read back below.
+  // still waiting too, which is part of what holds the one batched name read back below, and
+  // whether every one has answered with its blocks (`IssueTreeView.blocksRead`).
   const documents = useQueries({
-    combine: (answers): { blocks: DocumentBlocks[]; pending: boolean } => ({
+    combine: (answers): { blocks: DocumentBlocks[]; pending: boolean; read: boolean } => ({
       blocks: answers.map((answer, index) => ({
         artifactId: documentIds[index] ?? "",
         blocks: answer.data ?? [],
       })),
       pending: answers.some((answer) => answer.isPending),
+      read: answers.every((answer) => answer.isSuccess),
     }),
     queries: documentIds.map((id) => artifactBlocksQuery(id)),
   });
@@ -154,8 +167,9 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
     [named]
   );
   usePublishReferenceNames(names);
-  return useMemo(
+  const root = useMemo(
     () => (named === undefined ? unnamed : buildIssueTree({ ...reads, targets: named })),
     [named, reads, unnamed]
   );
+  return useMemo(() => ({ blocksRead: documents.read, root }), [documents.read, root]);
 }

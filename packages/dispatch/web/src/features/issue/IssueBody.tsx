@@ -54,7 +54,7 @@ export function IssueBody({
 }): ReactNode {
   const navigate = useNavigate();
   const { hash, pathname, search } = useLocation();
-  const root = useIssueTree(issue);
+  const { blocksRead, root } = useIssueTree(issue);
   const counts = useMemo(
     () => presetCounts(root, address.filter, PRESET_ORDER),
     [address.filter, root]
@@ -127,6 +127,7 @@ export function IssueBody({
         issueKey={issue.key}
         plan={plan}
         planTasks={nodesOfType(root, "plan_task").length}
+        reading={!blocksRead}
         summary={specSummary(root, specSlug)}
       />
       <IssuePresets

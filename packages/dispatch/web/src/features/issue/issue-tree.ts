@@ -2,7 +2,10 @@ import type {
   Actor,
   ArtifactBlock,
   Ask,
+  AskWithTrees,
   Comment,
+  CommentWithTrees,
+  DisplayTree,
   IssueCheckResults,
   IssueCoverage,
   IssueDecisions,
@@ -11,6 +14,8 @@ import type {
   MessageRead,
   ReferenceTarget,
 } from "../../api/types";
+import type { TextSource } from "../refs/text-references";
+import { wordsOf } from "../refs/tree-fragment";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { type Draft, treeContext, treeDrafts } from "./tree-drafts";
 
@@ -136,11 +141,22 @@ export interface TreeNode {
   /** Whether the decision this node holds was replaced, which folds its branch to one line
    *  (R1). */
   readonly replaced: boolean;
+  /** The record `text` is, where it is one: an ask, a comment, a message, or the document a
+   *  decision is a block of. A body drawn from `tree` links what the text cites against it, as
+   *  every other surface drawing the same text does (`MarkdownBody`'s `source`). */
+  readonly source?: TextSource;
   /** How it stands, for a type the model gives a state: one of the states the page has a word
    *  for, so a row draws that word and never the token (`NodeState`, R21). */
   readonly state?: NodeState;
   /** The node's own whole text; `""` where the model holds none. */
   readonly text: string;
+  /** The server's reading of `text`, where the read that carried the text sends one: a
+   *  decision's (`Decision.text_tree`), an ask's question (`question_tree`), a comment's and a
+   *  message's body (`body_tree`). The row draws the node's words from it, so stored markdown
+   *  is drawn as what it says and the browser parses none of it (R20). Every other read sends
+   *  none - the coverage read's requirement, the results read's check and result, and the
+   *  batched reference read's block excerpt - and such a node draws `text` as stored. */
+  readonly tree?: DisplayTree;
   /** Whether this placement is a transclusion rather than the node's edited place. */
   readonly transcluded: boolean;
   readonly type: NodeType;
@@ -155,15 +171,19 @@ export interface DocumentBlocks {
   readonly blocks: readonly ArtifactBlock[];
 }
 
+/** An ask as the tree reads it: the issue read's open asks and the asks read both send the
+ *  server's reading of the question beside it, which `Ask` leaves out. */
+export type TreeAsk = Ask & Pick<AskWithTrees, "question_tree">;
+
 /** The page's reads, as one value. Every field but the issue is optional, because the tree draws
  *  from the reads that have answered rather than waiting for the last of them. */
 export interface IssueTreeReads {
   /** The issue's asks, from the conversation; merged with the issue read's open asks by id. */
-  readonly asks?: readonly Ask[];
+  readonly asks?: readonly TreeAsk[];
   readonly coverage?: IssueCoverage;
   readonly decisions?: IssueDecisions;
-  /** The issue's comments, each a node of the tree (`addTurns`). */
-  readonly comments?: readonly Comment[];
+  /** The issue's comments, each a node of the tree (`addTurns`), with each body's reading. */
+  readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
   /** One entry per document of the issue whose blocks the page has read. */
   readonly documents?: readonly DocumentBlocks[];
   readonly issue: IssueDetails;
@@ -201,6 +221,13 @@ export function firstLineOf(text: string): { readonly cut: boolean; readonly lin
   const lastSpace = window.lastIndexOf(" ");
   const line = lastSpace <= 0 ? window.slice(0, FIRST_LINE_LIMIT) : window.slice(0, lastSpace);
   return { cut: true, line };
+}
+
+/** The node's own words as a reader reads them: the words of the server's reading of its text
+ *  where its read sent one (`tree`), so its first line holds none of the symbols its body draws
+ *  as formatting, and its text as stored otherwise. */
+export function nodeWords(node: TreeNode): string {
+  return node.tree === undefined ? node.text : wordsOf(node.tree);
 }
 
 /** The issue's whole tree, from the reads it was given. */
@@ -282,9 +309,11 @@ function assemble(
       question: draft.question,
       ...(draft.reference === undefined ? {} : { reference: draft.reference }),
       replaced: draft.replaced,
+      ...(draft.source === undefined ? {} : { source: draft.source }),
       ...(draft.state === undefined ? {} : { state: draft.state }),
       text: draft.text,
       transcluded: parents.indexOf(parent) > 0,
+      ...(draft.tree === undefined ? {} : { tree: draft.tree }),
       type: draft.type,
       waiting: draft.waiting,
     };

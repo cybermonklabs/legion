@@ -10,6 +10,7 @@ import type {
   CheckResult,
   Comment,
   Decision,
+  DisplayTree,
   IssueCheckResults,
   IssueCoverage,
   IssueDecisions,
@@ -897,4 +898,77 @@ test("a check the server sends no pass_stands for says the page could not read i
     "unreadable"
   );
   expect(nodeStateWord("unreadable")).toBe("Could not read");
+});
+
+/** The server's reading of a text holding `words`, as one paragraph: the shape the reads send
+ *  beside a stored text (`DisplayTree`). */
+function readingOf(words: string): DisplayTree {
+  return {
+    content: [{ content: [{ text: words, type: "text" }], type: "paragraph" }],
+    type: "doc",
+  };
+}
+
+// R20: a read that sends the server's reading of a node's text hands that reading to the node,
+// which draws it (`NodeRow.tsx`); the record the text is goes with it, so its references link
+// as they do on every other surface. Every other read sends none, and its node holds none: the
+// page parses no stored markdown to make one up.
+test("a node holds the server's reading of its text where its read sends one", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const checks = artifact("artifact-verification", VERIFICATION, "verification.md");
+  const question: Ask = {
+    anchor: null,
+    answer: null,
+    author: { id: "planner", kind: "session" },
+    artifact_id: null,
+    asked_of: null,
+    asked_of_at: null,
+    asked_of_by: null,
+    block_id: null,
+    created_at: "2026-11-05T00:00:00Z",
+    edited_at: null,
+    id: "ask-1",
+    issue_key: KEY,
+    kind: "question",
+    multiple: false,
+    opened_event_id: 1,
+    options: [],
+    question: "Which **width**?",
+    state: "open",
+    urgency: "med",
+  };
+  const message = thread("m1", "2026-11-05T10:00:00Z");
+  const root = buildIssueTree({
+    asks: [{ ...question, question_tree: readingOf("ask") }],
+    comments: [{ ...comment("c1", "2026-11-05T09:00:00Z"), body_tree: readingOf("comment") }],
+    coverage: coverage([requirement("r1", "The **first**.")]),
+    decisions: {
+      ...decisions([{ ...decision("d1", "## Keep it", []), text_tree: readingOf("decision") }]),
+      document: "artifact-decisions",
+    },
+    issue: issueDetails([spec, checks]),
+    messages: [{ ...message, message: { ...message.message, body_tree: readingOf("message") } }],
+    results: checkedResults([{ blockId: "c1", results: [recorded("res-1", "A control.")] }]),
+  });
+
+  const held = (id: string) => {
+    const node = nodeOf(root, id);
+    return { source: node?.source, tree: node?.tree };
+  };
+  expect(held("decisions-md#b-d1")).toEqual({
+    source: { id: "artifact-decisions", kind: "artifact" },
+    tree: readingOf("decision"),
+  });
+  expect(held("ask-1")).toEqual({ source: { id: "ask-1", kind: "ask" }, tree: readingOf("ask") });
+  expect(held("c1")).toEqual({
+    source: { id: "c1", kind: "comment" },
+    tree: readingOf("comment"),
+  });
+  expect(held("m1")).toEqual({
+    source: { id: "m1", kind: "message" },
+    tree: readingOf("message"),
+  });
+  for (const id of [blockNodeId(SPEC, "r1"), blockNodeId(VERIFICATION, "c1"), "res-1"]) {
+    expect({ id, ...held(id) }).toEqual({ id, source: undefined, tree: undefined });
+  }
 });

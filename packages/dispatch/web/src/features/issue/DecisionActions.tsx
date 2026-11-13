@@ -11,6 +11,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { issueDecisionsQuery } from "../doc/spec-marks";
+import { wordsOf } from "../refs/tree-fragment";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -274,37 +275,6 @@ function anchorQuote(decision: Decision): string | undefined {
   }
   const first = (content as DisplayTree[]).find((node) => node.type !== "heading");
   return first === undefined ? undefined : wordsOf(first);
-}
-
-/** The words a node holds, its children's included: what `pmdoc.FindQuote` matches a quote
- *  against, since a quote names the document's text and never its markdown. The server writes
- *  one space wherever two text runs are not adjacent in the document's own positions
- *  (`pmdoc.buildFlattenedText`), which is wherever anything was entered, left or passed between
- *  them: the break inside a wrapped line, or the end of one list item and the start of the
- *  next. Two runs are adjacent only as consecutive children of one parent, so everything else
- *  this walk crosses opens the space the server wrote. */
-function wordsOf(node: DisplayTree): string {
-  let words = "";
-  let apart = false;
-  const read = (current: DisplayTree): void => {
-    if (typeof current.text === "string") {
-      words += apart && words !== "" ? ` ${current.text}` : current.text;
-      apart = false;
-      return;
-    }
-    // The node's own open position, and its close once its children are read; a leaf that is no
-    // text, a hard break among them, takes the one position it is.
-    apart = true;
-    const content = current.content;
-    if (Array.isArray(content)) {
-      for (const child of content as DisplayTree[]) {
-        read(child);
-      }
-      apart = true;
-    }
-  };
-  read(node);
-  return words;
 }
 
 /** The decision's first paragraph below its heading, as markdown: the quote of an answer that

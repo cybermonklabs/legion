@@ -27,6 +27,8 @@
  * component all read the same list.
  */
 
+import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
+
 import { ASK_RESOLUTION_WORDS } from "../refs/actor";
 import {
   freeze,
@@ -415,6 +417,40 @@ export const WAITING_LINES = freeze({
   chain:
     "Each requirement shows how many checks serve it, and Dispatch cannot yet say which checks those are.",
 } as const);
+
+/**
+ * What the blocked-by editor says when Dispatch refuses the list it saved
+ * (`BlockedByControl.tsx`), one sentence per refusal, in place of the server's message, which
+ * names the field by its wire token (`blocked_by issue CORE-9 not found`, R21). Each sentence is
+ * cut where the issue it is about goes: that key is the server's detail and the reader's own
+ * text, drawn between `before` and `after`. `BLOCKED_BY_INPUT` is three refusals, told apart by
+ * the key it names: no issue, the issue itself, or none at all for a list over the limit;
+ * `BLOCKED_BY_OUTSIDE_PROJECT` is one; and `DEPENDENCY_CYCLE` is two, the issue the list would
+ * make wait on itself, or none for a chain longer than Dispatch follows
+ * (`packages/envoy/internal/dispatch/api/issue_parent.go`).
+ */
+export const BLOCKED_BY_REFUSALS = freeze({
+  cycle: {
+    after:
+      " would then wait on itself, through the issues it waits on, its parent or its children.",
+    before: "",
+  },
+  itself: { after: " is this issue, and an issue cannot wait on itself.", before: "" },
+  not_found: { after: ".", before: "There is no issue " },
+  outside_project: {
+    after: " is in another project, and an issue can wait only on issues of its own project.",
+    before: "",
+  },
+  too_deep: {
+    after: "",
+    before:
+      "These issues wait on one another through more links than Dispatch follows, so it cannot check them for a loop.",
+  },
+  too_many: { after: "", before: `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.` },
+} as const);
+
+/** One refusal of a blocked-by list the page has a sentence for. */
+export type BlockedByRefusalWords = keyof typeof BLOCKED_BY_REFUSALS;
 
 /**
  * How a document of the issue stands with its reviewers, in words (R5): the head's "How it gets
@@ -848,6 +884,7 @@ const WORD_SOURCES: readonly unknown[] = [
   RESULT_CURRENCY_WORDS,
   RESULT_VERDICT_WORDS,
   WAITING_LINES,
+  BLOCKED_BY_REFUSALS,
   APPROVAL_STATE_WORDS,
   CONTROL_LABELS,
   PROPERTY_LABELS,

@@ -1,10 +1,11 @@
 import { parseBlockPointerValue } from "@legion/contracts";
 
-import type { Actor, ArtifactBlock, Ask, CheckBlock, Decision } from "../../api/types";
+import type { Actor, ArtifactBlock, Ask, CheckBlock, Decision, DisplayTree } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { buildDispatchReference, parseNodeReference } from "../refs/routes";
+import { type TextSource, textSourceOf } from "../refs/text-references";
 import { checkFacts, resultFacts, resultGaps } from "./check-facts";
-import type { IssueTreeReads, NodeChip, NodeCounts, NodeFact } from "./issue-tree";
+import type { IssueTreeReads, NodeChip, NodeCounts, NodeFact, TreeAsk } from "./issue-tree";
 import {
   type AskState,
   type CheckState,
@@ -30,7 +31,9 @@ import {
  * the results read for a check and its results, the decisions read for a decision, the
  * conversation for an ask, a comment and a message, and the one batched reference read for every
  * other block, whose `name` for a block is that block's stored excerpt. No document's text is
- * read, and no request is made per node.
+ * read, and no request is made per node. Where the read sends the server's reading of those
+ * words beside them - the decisions read and the conversation do - the draft keeps it with the
+ * record the words are, which is what the row draws (`TreeNode.tree`).
  */
 
 /** The id of the row of one block of one document, which is the block's own address inside the
@@ -58,8 +61,12 @@ export interface Draft {
   question: boolean;
   reference?: string;
   replaced: boolean;
+  /** The record `text` is, where the draft's read names one (`TreeNode.source`). */
+  source?: TextSource;
   state?: NodeState;
   text: string;
+  /** The server's reading of `text`, where the draft's read sends one (`TreeNode.tree`). */
+  tree?: DisplayTree;
   type: NodeType;
   /** Whether this decision waits for the reader's review (`Decision.waiting_review`). */
   waiting: boolean;
@@ -411,7 +418,7 @@ function addChildren(drafts: Map<string, Draft>, reads: IssueTreeReads): void {
  * rather than to the reasoning, so the tree draws none.
  */
 function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: TreeContext): void {
-  const asks = new Map<string, Ask>();
+  const asks = new Map<string, TreeAsk>();
   for (const ask of [...(reads.issue.open_asks ?? []), ...(reads.asks ?? [])]) {
     if (ask.kind === "question") asks.set(ask.id, ask);
   }
@@ -424,8 +431,10 @@ function addAsks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tre
     const draft = drafts.get(id) ?? add(drafts, blank(id, "ask", ROOT_ORDER.ask));
     draft.author = ask.author;
     draft.reference = buildDispatchReference({ id: ask.id, key: context.key, kind: "ask" });
+    draft.source = textSourceOf("ask", ask.id);
     draft.state = askState(ask);
     draft.text = ask.question;
+    draft.tree = ask.question_tree;
     // An open question is what the fold unfolds the path to, whatever its depth (R6).
     draft.question = ask.state === "open";
   }
@@ -453,6 +462,8 @@ interface Turn {
   readonly at: string;
   readonly author: Actor;
   readonly body: string;
+  /** The server's reading of `body`. */
+  readonly bodyTree?: DisplayTree;
   readonly id: string;
   readonly kind: "comment" | "message";
   /** The turn it answers, `null` for a root turn. */
@@ -490,6 +501,7 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
       at: comment.created_at,
       author: comment.author,
       body: comment.body,
+      bodyTree: comment.body_tree,
       id: comment.id,
       kind: "comment" as const,
       replyTo: comment.answers ?? comment.reply_to,
@@ -500,6 +512,7 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
         at: message.created_at,
         author: message.author,
         body: message.body,
+        bodyTree: message.body_tree,
         id: message.id,
         kind: "message" as const,
         replyTo: message.in_reply_to,
@@ -511,7 +524,9 @@ function addTurns(drafts: Map<string, Draft>, reads: IssueTreeReads, context: Tr
     draft.author = turn.author;
     draft.parents = turn.replyTo === null ? [] : [turn.replyTo];
     draft.reference = buildDispatchReference({ id: turn.id, key: context.key, kind: turn.kind });
+    draft.source = textSourceOf(turn.kind, turn.id);
     draft.text = turn.body;
+    draft.tree = turn.bodyTree;
   });
 }
 
@@ -552,7 +567,11 @@ function addDecisions(
     draft.pointers = held?.pointers ?? {};
     draft.reference = decision.ref;
     draft.replaced = decision.replaced;
+    // The words are a block of the decisions document, which is what their references resolve
+    // against (`TreeNode.source`).
+    draft.source = textSourceOf("artifact", reads.decisions?.document);
     draft.text = decision.text;
+    draft.tree = decision.text_tree;
     // How the decision stands with the reader, drawn as this node's own state word and shape
     // the way every other state is (R21). It is what the old Decisions tab's four sections
     // told a reader by grouping, and the one a reader looks for - what waits for their review

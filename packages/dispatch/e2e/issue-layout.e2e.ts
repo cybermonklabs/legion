@@ -932,12 +932,19 @@ test("the three things are at the head of every preset @phone", async ({ browser
           `the three things are not above the presets at ${size.width} px`
         ).toBeLessThanOrEqual((presets?.y ?? 0) + 1);
 
-        expect(
-          (await threeThingsSentences(page).allInnerTexts()).map((sentence) =>
-            sentence.replace(/\s+/g, " ").trim()
-          ),
-          `the ${PRESET_NAMES[preset]} preset does not draw the spec's own three sentences at ${size.width} px`
-        ).toEqual([...SUMMARY_SENTENCES]);
+        // The sentences are the summary node's words, which the batched reference read names
+        // last of the page's reads, so the reading waits for them rather than racing that read.
+        await expect
+          .poll(
+            async () =>
+              (await threeThingsSentences(page).allInnerTexts()).map((sentence) =>
+                sentence.replace(/\s+/g, " ").trim()
+              ),
+            {
+              message: `the ${PRESET_NAMES[preset]} preset does not draw the spec's own three sentences at ${size.width} px`,
+            }
+          )
+          .toEqual([...SUMMARY_SENTENCES]);
         expect(
           (await planRow(page).innerText()).replace(/\s+/g, " "),
           `the ${PRESET_NAMES[preset]} preset's head points at no Plan preset`
@@ -970,10 +977,13 @@ test("the three things are at the head of every preset @phone", async ({ browser
         `a spec with no summary draws no row in that same place at ${size.width} px`
       ).toBe(1);
       await expectIssuePageDrawn(page);
-      expect(
-        (await threeThings(page).innerText()).replace(/\s+/g, " ").trim(),
+      // The line waits on the spec's blocks read, which says whether the spec holds a summary
+      // node at all: until it answers the head says nothing about one
+      // (`web/src/features/issue/IssueThreeThings.tsx`), so the reading waits for the line.
+      await expect(
+        threeThings(page),
         "that row says something other than the page's own line for a spec with no summary"
-      ).toContain(EMPTY_STATE_LINES.spec_summary);
+      ).toContainText(EMPTY_STATE_LINES.spec_summary);
       expect(
         await threeThingsSentences(page).count(),
         "a spec with no summary draws sentences all the same"

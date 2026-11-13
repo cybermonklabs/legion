@@ -3,19 +3,15 @@ import { type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
-import {
-  borderDefault,
-  linkHoverText,
-  linkText,
-  textMutedOnCanvas,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { borderDefault, linkHoverText, linkText, textMutedOnCanvas } from "../../theme/classes";
 import { artifactVersionUrl, versionsNewestFirst } from "../artifacts/ArtifactHeader";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { pictureClassName } from "../refs/DispatchPicture";
 import { documentRoute } from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, EMPTY_STATE_LINES } from "./page-words";
+import { RowText } from "./RowText";
 
 /** How tall an artifact's own text or picture is drawn inside a row, which scrolls past it: a
  *  node's body is read at a 660 px measure and the row it opens has to fit the screen after
@@ -108,7 +104,8 @@ function DownloadVersion({
   );
 }
 
-/** A document node's own text, as the server holds it now. */
+/** A document node's own text, as the server holds it now, drawn from the server's reading of it
+ *  where the read sent one (`ArtifactText.markdown_tree`, `RowText.tsx`). */
 function ArtifactText({ artifact }: { artifact: Artifact }): ReactNode {
   const text = useQuery({
     queryKey: ["artifact", artifact.id, "text"],
@@ -122,12 +119,11 @@ function ArtifactText({ artifact }: { artifact: Artifact }): ReactNode {
     );
   }
   return (
-    <p
-      className={`whitespace-pre-wrap break-words ${ARTIFACT_MEASURE} overflow-y-auto ${textSecondaryOnCanvas}`}
-      tabIndex={-1}
-      {...authorText}
-    >
-      {text.data.markdown}
-    </p>
+    <RowText
+      markdown={text.data.markdown}
+      scrolls={`${ARTIFACT_MEASURE} overflow-y-auto`}
+      source={textSourceOf("artifact", artifact.id)}
+      tree={text.data.markdown_tree}
+    />
   );
 }

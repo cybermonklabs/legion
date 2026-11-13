@@ -16,7 +16,7 @@ import { buildReferencePath, parseNodeReference, shortForm } from "../refs/route
 import { DecisionActions } from "./DecisionActions";
 import { STAGE_IN_ROW, useDocumentStage } from "./document-stage";
 import { bringOnScreen } from "./identity-block";
-import { firstLineOf, type NodeChip, type TreeNode } from "./issue-tree";
+import { firstLineOf, type NodeChip, nodeWords, type TreeNode } from "./issue-tree";
 import { NodeArtifact } from "./NodeArtifact";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
@@ -29,6 +29,7 @@ import {
   NODE_TYPE_NAMES,
   nodeStateWord,
 } from "./page-words";
+import { RowText } from "./RowText";
 
 /**
  * One row of the issue's tree, and the body it opens on focus (dispatch://INFRA-1196 R1, R2,
@@ -134,14 +135,13 @@ export function NodeRow({
   // The node's own first line. Where the row wraps, it is the whole of `firstLineOf`'s line;
   // where the row is one line, it is cut again to what the words drawn beside it leave of the
   // measure its width band carries, at a word (R1). The count is no longer one of those words
-  // there - it is the body's - so it takes nothing from the line.
+  // there - it is the body's - so it takes nothing from the line. Both are cut from the node's
+  // words as its body draws them (`nodeWords`), so a line holds none of the symbols the body
+  // draws as formatting.
+  const words = nodeWords(node);
   const first = oneLine
-    ? oneLineFirstLine(node.text, oneLineMeasure, [
-        NODE_TYPE_NAMES[node.type],
-        node.author?.id,
-        state,
-      ])
-    : firstLineOf(node.text);
+    ? oneLineFirstLine(words, oneLineMeasure, [NODE_TYPE_NAMES[node.type], node.author?.id, state])
+    : firstLineOf(words);
   // THE CUT DECIDES THE WORDS AND THE BOX DECIDES THE FIT. They are two rules and the row needs
   // both (R1, R17).
   //
@@ -486,7 +486,7 @@ const BODY_MEASURE = 660;
  * was drawing it (`document-stage.tsx`), so the caret goes into the node's text where it
  * lives, with the collaborative cursors and the comment chord it has there. An artifact's node
  * draws the artifact itself (`NodeArtifact.tsx`). Every other node draws the text the model
- * holds for it.
+ * holds for it, from the server's reading of it where its read sent one (`RowText.tsx`).
  */
 function NodeBody({
   artifact,
@@ -524,9 +524,7 @@ function NodeBody({
     >
       {editing === undefined ? (
         artifact === undefined ? (
-          <p className={`whitespace-pre-wrap break-words ${textSecondaryOnCanvas}`} {...authorText}>
-            {node.text}
-          </p>
+          <RowText markdown={node.text} source={node.source} tree={node.tree} />
         ) : (
           <NodeArtifact artifact={artifact} />
         )

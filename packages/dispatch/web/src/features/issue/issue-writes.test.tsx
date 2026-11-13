@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
+import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -16,7 +17,8 @@ import { writesOf } from "../writes/write-store";
 import { blockedByControlName } from "./BlockedByControl";
 import { IssuePage } from "./IssuePage";
 import { PROPERTY_LABELS } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
+import { blockedByRefusal } from "./useIssueBlockedBy";
 import { issueUpdateLabel } from "./useIssueHeaderWrites";
 
 const issue: IssueDetails = {
@@ -1188,7 +1190,9 @@ test("a board move then a header status change land in press order after an outa
 // Development section (dispatch://INFRA-1196 R11), and a list Dispatch refuses - a key it does
 // not know, the issue itself, an issue in another project - is said there, over the list the
 // reader typed, so they mend it rather than retype it. It used to close at once and reach the
-// header as "Could not update this issue.", whose Retry sent the same refused list again.
+// header as "Could not update this issue.", whose Retry sent the same refused list again. What
+// it says is the page's own sentence with the key Dispatch named in it, never the server's
+// message, which names the field by its wire token (`blocked_by issue CORE-9 not found`, R21).
 test("the blocked-by editor stays open on a refusal and says what Dispatch refused", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -1213,7 +1217,11 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
         keyedAttempt
       )
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("blocked_by issue CORE-9 not found");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("There is no issue CORE-9.");
+    expect(alert).not.toHaveTextContent("blocked_by");
+    // The key is the reader's own text inside the page's sentence (c-plain-words).
+    expect(within(alert).getByText("CORE-9")).toHaveAttribute("data-author-text");
     expect(
       (screen.getByLabelText("Issues CORE-1 waits on") as HTMLInputElement).value,
       "the refused list is no longer in the box for the reader to mend"
@@ -1297,7 +1305,9 @@ test("the shell's indicator names the field a header write is saving", async () 
 });
 
 // The refusal is drawn in the editor and nowhere else, so a reader who closed the editor while
-// the save was out was shown no refusal at all. Cancel and Escape wait for the answer.
+// the save was out was shown no refusal at all. Cancel and Escape wait for the answer, and
+// Cancel says so: it is drawn and announced as held for as long as the save is out, rather than
+// as a control whose press does nothing.
 test("the blocked-by editor refuses Cancel and Escape while the save is out", async () => {
   const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
@@ -1315,7 +1325,12 @@ test("the blocked-by editor refuses Cancel and Escape while the save is out", as
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
 
-    await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
+    const cancel = screen.getByRole("button", { name: CONTROL_LABELS.cancel });
+    expect(
+      cancel,
+      "Cancel is drawn as a control while the save it would leave is out"
+    ).toBeDisabled();
+    await user.click(cancel);
     expect(
       screen.getByLabelText("Issues CORE-1 waits on"),
       "Cancel closed the editor over a save whose refusal it would have drawn"
@@ -1357,7 +1372,9 @@ test("the blocked-by editor opened again draws no refusal from the attempt befor
     await user.click(await screen.findByLabelText("Issues CORE-1 waits on"));
     await user.paste("CORE-9");
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.save_blocked_by }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("blocked_by issue CORE-9 not found");
+    expect(await screen.findByRole("alert")).toHaveTextContent("There is no issue CORE-9.");
+    // The answer gives Cancel back: the editor is the reader's to leave again.
+    expect(screen.getByRole("button", { name: CONTROL_LABELS.cancel })).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: CONTROL_LABELS.cancel }));
     await waitFor(() =>
@@ -1372,6 +1389,79 @@ test("the blocked-by editor opened again draws no refusal from the attempt befor
   } finally {
     unmount();
     restore();
+  }
+});
+
+// R21: each refusal of a blocked-by list is a sentence in the page's words, with the key the
+// refusal is about inside it as the reader's own text: a key Dispatch knows no issue for, the
+// issue itself, an issue of another project, and a list longer than an issue waits on.
+test("each refusal of a blocked-by list is the page's sentence about the key it names", () => {
+  const refused = (code: string, error: string) => new ApiError(400, { code, error });
+  expect(
+    blockedByRefusal(refused("BLOCKED_BY_INPUT", "blocked_by issue CORE-9 not found"), "CORE-1", [
+      "CORE-2",
+      "CORE-9",
+    ])
+  ).toEqual({ key: "CORE-9", words: "not_found" });
+  expect(
+    blockedByRefusal(refused("BLOCKED_BY_INPUT", "CORE-1 cannot be blocked by itself"), "CORE-1", [
+      "CORE-1",
+    ])
+  ).toEqual({ key: "CORE-1", words: "itself" });
+  expect(
+    blockedByRefusal(
+      refused("BLOCKED_BY_OUTSIDE_PROJECT", "blocked_by issue OPS-3 must be in the same project"),
+      "CORE-1",
+      ["OPS-3"]
+    )
+  ).toEqual({ key: "OPS-3", words: "outside_project" });
+  const many = Array.from({ length: MAX_ISSUE_BLOCKERS + 1 }, (_, index) => `CORE-${index + 2}`);
+  expect(
+    blockedByRefusal(
+      refused("BLOCKED_BY_INPUT", "blocked_by is 1 over the 20-item limit (21/20)"),
+      "CORE-1",
+      many
+    )
+  ).toEqual({ words: "too_many" });
+  // Any other answer is none of these refusals, and is said as it was before: the server's own
+  // words, or the page's line for a save that never reached it.
+  expect(
+    blockedByRefusal(new ApiError(500, { code: "INTERNAL", error: "boom" }), "CORE-1", ["CORE-2"])
+  ).toBeUndefined();
+});
+
+// R21: a list that would make the issue wait on itself through the issues it waits on, its
+// parent or its children is refused as `DEPENDENCY_CYCLE`, whose message names the field by its
+// wire token (`CORE-1 would wait on itself through blocked_by and parent links`). It is said in
+// the page's words as the other refusals are, with the issue the server names as the reader's
+// own text; a chain too long for the server to follow names none.
+test("a blocked-by list that would make a loop is the page's sentence about the issue it names", () => {
+  const refused = (error: string) => new ApiError(409, { code: "DEPENDENCY_CYCLE", error });
+  expect(
+    blockedByRefusal(
+      refused("CORE-1 would wait on itself through blocked_by and parent links"),
+      "CORE-1",
+      ["CORE-7"]
+    )
+  ).toEqual({ key: "CORE-1", words: "cycle" });
+  expect(
+    blockedByRefusal(refused("the dependency graph is deeper than 64 links"), "CORE-1", ["CORE-7"])
+  ).toEqual({ words: "too_deep" });
+
+  // Each sentence is the page's own: no wire token, and the key in it only where one goes.
+  const sentences = Object.values(BLOCKED_BY_REFUSALS).map(
+    ({ after, before }) => `${before}KEY${after}`
+  );
+  expect(sentences).toEqual([
+    "KEY would then wait on itself, through the issues it waits on, its parent or its children.",
+    "KEY is this issue, and an issue cannot wait on itself.",
+    "There is no issue KEY.",
+    "KEY is in another project, and an issue can wait only on issues of its own project.",
+    "These issues wait on one another through more links than Dispatch follows, so it cannot check them for a loop.KEY",
+    `An issue can wait on at most ${MAX_ISSUE_BLOCKERS} issues.KEY`,
+  ]);
+  for (const sentence of sentences) {
+    expect(sentence).not.toMatch(/blocked_by|_/u);
   }
 });
 

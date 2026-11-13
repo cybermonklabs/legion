@@ -15,7 +15,7 @@ import {
 import { buildIssuePath } from "../refs/routes";
 import { FormActions } from "./IssueFieldForms";
 import { authorText, HELP_LINES, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
 import { useIssueBlockedBy } from "./useIssueBlockedBy";
 
 /** The issues `value` names, in the order they were typed, with every repeat and blank dropped:
@@ -47,15 +47,15 @@ export function blockedByControlName(issueKey: string, blockerCount: number): st
  * five, so a set value can be changed and cleared and not only set once.
  *
  * The editor is here, where the value is, as the repository's and the components' are. It
- * stays open until Dispatch answers and says there what it refused - "blocked_by issue CORE-9
- * not found", "CORE-1 cannot be blocked by itself", a blocker in another project - with the
- * keys the reader typed still in the box, so a refused list is mended rather than retyped
- * (`useIssueBlockedBy.ts`).
+ * stays open until Dispatch answers and says there what it refused - a key it has no issue
+ * for, the issue itself, a blocker in another project - in the page's own sentence with the key
+ * in it (`BLOCKED_BY_REFUSALS`), with the keys the reader typed still in the box, so a refused
+ * list is mended rather than retyped (`useIssueBlockedBy.ts`).
  *
- * While that save is out nothing closes the editor: Cancel is refused and so is Escape, because
- * a reader who closed it a moment before the refusal landed would be shown no refusal at all.
- * Opening the editor forgets the last refusal, so the one drawn is always the one the reader
- * is looking at.
+ * While that save is out nothing closes the editor: Cancel is held, and drawn so, and Escape is
+ * refused, because a reader who closed it a moment before the refusal landed would be shown no
+ * refusal at all. Opening the editor forgets the last refusal, so the one drawn is always the
+ * one the reader is looking at.
  */
 export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode {
   const blockers = issue.blocked_by ?? [];
@@ -139,17 +139,27 @@ export function BlockedByControl({ issue }: { issue: IssueDetails }): ReactNode 
             cancel={close}
             saveLabel={write.pending ? CONTROL_LABELS.saving_field : CONTROL_LABELS.save_blocked_by}
             saving={write.pending}
+            waiting={write.pending}
           />
           {/* What the box takes, drawn rather than left to a placeholder a reader on the
               keyboard never hears (R11). */}
           <span className="sr-only" id="issue-blocked-by-help" {...pageChrome}>
             {HELP_LINES.blocked_by}
           </span>
-          {/* What Dispatch refused, where the reader is typing: the words are the server's and
-              no word of the page's own (R21). */}
-          {write.error === undefined ? null : (
+          {/* What Dispatch refused, where the reader is typing: the page's sentence, with the key
+              it is about as the reader's own text (R21); a refusal the page has no sentence for
+              is Dispatch's own words. */}
+          {write.error === undefined ? null : typeof write.error === "string" ? (
             <span className={`basis-full text-sm ${dangerText}`} role="alert" {...authorText}>
               {write.error}
+            </span>
+          ) : (
+            <span className={`basis-full text-sm ${dangerText}`} role="alert" {...pageChrome}>
+              {BLOCKED_BY_REFUSALS[write.error.words].before}
+              {write.error.key === undefined ? null : (
+                <span {...authorText}>{write.error.key}</span>
+              )}
+              {BLOCKED_BY_REFUSALS[write.error.words].after}
             </span>
           )}
         </form>
