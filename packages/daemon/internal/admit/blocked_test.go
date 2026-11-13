@@ -135,7 +135,7 @@ func TestTheRootIsAdmittedOnItsLastBlockersCloseExactlyAsAnUnblockedOneIs(t *tes
 	if got, want := effects(t, subject), effects(t, control); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admission of the unblocked root wrote %#v, want the rows a control admission writes, %#v", got, want)
 	}
-	if got, want := issue(t, subject, "LEGION-ROOT"), issue(t, control, "LEGION-ROOT"); !reflect.DeepEqual(got, want) {
+	if got, want := withoutMovement(issue(t, subject, "LEGION-ROOT")), withoutMovement(issue(t, control, "LEGION-ROOT")); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the admitted root = %#v, want the record a control admission leaves, %#v", got, want)
 	}
 	if got, want := slots(t, subject), slots(t, control); !reflect.DeepEqual(got, want) {
@@ -607,7 +607,7 @@ func TestAChildThatRanLabelledAsAnOrphanRootIsCheckedUnlessItCarriesItsRun(t *te
 			assertSlots(t, pool, nil)
 			assertWaiting(t, pool, []string{child})
 			inTx(t, pool, func(tx pgx.Tx) {
-				blocked, err := admission.blocked(context.Background(), tx)
+				_, blocked, _, err := admission.tickRows(context.Background(), tx)
 				if err != nil {
 					t.Fatalf("read what is blocked: %v", err)
 				}
@@ -736,7 +736,7 @@ func TestNoIssueIsBothUnstartedAndUnreported(t *testing.T) {
 	assertBlocked := func(when string) {
 		t.Helper()
 		inTx(t, pool, func(tx pgx.Tx) {
-			got, err := admission.blocked(context.Background(), tx)
+			_, got, _, err := admission.tickRows(context.Background(), tx)
 			if err != nil {
 				t.Fatalf("read what is blocked %s: %v", when, err)
 			}
@@ -778,7 +778,11 @@ func (s *countingStore) DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project
 }
 
 // Promotion judges every candidate from one read of the project's mirror, however many candidates
-// the waiting line holds: the rows are read before the loop, not inside it.
+// the waiting line holds: the rows are read before the loop, not inside it. The tick the test
+// drives judges the line twice and no more — promotion's own pass, and the one pass that builds
+// both lists the notice carries (Admission.tickRows) — whether or not a controller is registered
+// to be told, so it reads the mirror once for each judgement it makes and never once for each
+// candidate, which three blocked roots would show.
 func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T) {
 	pool := migratedPool(t)
 	store := &countingStore{Store: record.NewStore()}
@@ -795,8 +799,9 @@ func TestPromotionReadsTheMirrorOnceWhateverTheNumberOfBlockedRoots(t *testing.T
 		t.Fatalf("ApplyFact tick: %v", err)
 	}
 
-	if store.mirrorReads != 1 {
-		t.Fatalf("the mirror was read %d times for three blocked candidates, want exactly once per promotion", store.mirrorReads)
+	const judgements = 2
+	if store.mirrorReads != judgements {
+		t.Fatalf("the mirror was read %d times for three blocked candidates, want %d: once per judgement the tick makes", store.mirrorReads, judgements)
 	}
 	assertSlots(t, pool, nil)
 }

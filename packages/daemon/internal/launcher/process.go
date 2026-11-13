@@ -25,23 +25,42 @@ func signalGeneration(pid int, sig syscall.Signal) error {
 	return nil
 }
 
-// reapNamespace leaves each process of skip, a direct child exec.Cmd.Wait reads, to that wait.
-// Every other adopted child belongs to PID 1; Wait4 with WNOHANG reaps exited orphans without
-// delaying a resident worker's next turn, and never takes the exit status a generation's own wait
-// reports.
-func reapNamespace(skip ...int) (bool, error) {
-	entries, err := os.ReadDir("/proc")
+// procPIDs is every process the /proc mounted at root names, in the order os.ReadDir answers
+// them: /proc names a process by its decimal pid, so a numeric entry is a process and nothing
+// else there is one. The error is os.ReadDir's own, for each caller to word as its own failure,
+// and each keeps whatever further filtering it does of the pids.
+func procPIDs(root string) ([]int, error) {
+	entries, err := os.ReadDir(root)
 	if err != nil {
-		return false, fmt.Errorf("list role namespace processes: %w", err)
+		return nil, err
 	}
-	remaining := false
+	pids := make([]int, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
 		if name == "" || name[0] < '0' || name[0] > '9' {
 			continue
 		}
 		pid, err := strconv.Atoi(name)
-		if err != nil || pid <= 1 || slices.Contains(skip, pid) {
+		if err != nil {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids, nil
+}
+
+// reapNamespace leaves each process of skip, a direct child exec.Cmd.Wait reads, to that wait.
+// Every other adopted child belongs to PID 1; Wait4 with WNOHANG reaps exited orphans without
+// delaying a resident worker's next turn, and never takes the exit status a generation's own wait
+// reports.
+func reapNamespace(skip ...int) (bool, error) {
+	pids, err := procPIDs("/proc")
+	if err != nil {
+		return false, fmt.Errorf("list role namespace processes: %w", err)
+	}
+	remaining := false
+	for _, pid := range pids {
+		if pid <= 1 || slices.Contains(skip, pid) {
 			continue
 		}
 		reaped, err := syscall.Wait4(pid, nil, syscall.WNOHANG, nil)
@@ -55,15 +74,16 @@ func reapNamespace(skip ...int) (bool, error) {
 
 // reapOrphans is PID 1's reaper: on every SIGCHLD it reaps each exited process of the container's
 // PID namespace but the generations its managers run, whose exits their own waits read, and the
-// launcher's own children (the test database's script, pidGuard), whose exits their own waits read
-// too. Every manager's lock and the guard's are held across the pass, and a manager records its
-// generation's pid under its lock as it starts it, as the guard records its child's, so the reaper
-// never waits on a process it has not seen yet. In the controller's pod a pass that fails leaves
-// the role's namespace unobservable, so the launcher fails its container loudly. In an issue pod's
-// container the container's /proc still lists every role's processes, since a role's PID namespace
-// is nested in it, but none is the launcher's child except each role's role-init, which the pass
-// skips: the rest are their role-init's to reap, and Wait4 on them answers ECHILD. So a failed
-// pass costs no role anything, and it is logged and the next pass tries again.
+// launcher's own children (the test database's script and the put-back's jj and git, pidGuard),
+// whose exits their own waits read too. Every manager's lock and the guard's are held across the
+// pass, and a manager records its generation's pid under its lock as it starts it, as the guard
+// records its child's, so the reaper never waits on a process it has not seen yet. In the
+// controller's pod a pass that fails leaves the role's namespace unobservable, so the launcher
+// fails its container loudly. In an issue pod's container the container's /proc still lists every
+// role's processes, since a role's PID namespace is nested in it, but none is the launcher's child
+// except each role's role-init, which the pass skips: the rest are their role-init's to reap, and
+// Wait4 on them answers ECHILD. So a failed pass costs no role anything, and it is logged and the
+// next pass tries again.
 func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*manager, guard *pidGuard) {
 	for {
 		select {
@@ -94,6 +114,14 @@ func reapOrphans(ctx context.Context, signals <-chan os.Signal, managers []*mana
 	}
 }
 
+// namespaceReapPoll is how often a wait for a role's processes to go asks again: the span between
+// two passes of reapNamespace, here and in role-init's own drain (roleNamespaceDrain,
+// roleinit_linux.go). Ten milliseconds, because what either wait is there for is a git or a jj
+// that leaves on its SIGTERM in milliseconds, and a pass costs one read of /proc and one Wait4
+// per process: short enough that a teardown is not held past what its processes need, cheap
+// enough to run for the whole of a deadline nothing answers inside.
+const namespaceReapPoll = 10 * time.Millisecond
+
 // Cleanup finishes before the exit is reported, credentials are removed or a new generation is
 // admitted. A namespace whose processes cannot be observed is not safe to reuse: fail the launcher
 // loudly so Kubernetes replaces this container rather than reporting a false completed stop. Only
@@ -121,7 +149,7 @@ func (m *manager) cleanExitedGeneration() {
 			}
 			killed = true
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(namespaceReapPoll)
 	}
 }
 

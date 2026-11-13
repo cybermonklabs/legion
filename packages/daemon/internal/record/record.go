@@ -188,6 +188,31 @@ type Issue struct {
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
+	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
+	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
+	// its pull request, a phase change, a recorded handoff, a start or a completion (the write
+	// sites in internal/workflow). It is never zero: the column that carries it is not null, and
+	// the issue is stamped at the moment it is first recorded.
+	//
+	// Only Store.MarkIssueMoved writes it, and it writes it forwards alone, so a fact delivered
+	// late moves nothing backwards. PutIssue keeps the stored value, as it does for handout_seq,
+	// the declared pair and the memory draw: a copy of the issue read before a movement would
+	// otherwise write that movement away, and every one of the write sites holds a copy read
+	// before its own fact.
+	MovedAt time.Time
+	// TreeStalledToldAt is the movement the daemon has already told this tree's controller the
+	// tree stopped for: the newest movement of anything in the tree (TreeQuiet.MovedAt) at the
+	// moment the stalled-tree notice went into the outbox, nil for a tree no stall of which has
+	// been told. It is written on the tree's root alone, since the stall is the tree's and the
+	// notice names its root, and a child's row never carries one.
+	//
+	// It is what holds the daemon to one notice per stall: the rule tells a quiet tree only
+	// where its newest movement stands after this mark, so a tree that has stopped is told once
+	// however many passes read it, and a tree that moves and stops again is told anew
+	// (admit's tellStalledTrees). Only Store.MarkTreeStalledTold writes it, in the transaction
+	// that queues the notice, and PutIssue keeps the stored value as it does for moved_at: every
+	// pass that records an issue holds a copy read before its own telling.
+	TreeStalledToldAt *time.Time
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -487,17 +512,31 @@ type PhaseRow struct {
 	// ClearGeneration resets the row without it. Behind a completion an old daemon wrote, a stale time
 	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
-	// Assignment is the task the issue's current phase handed this role, the token the start that
-	// handed it minted (workflow.Engine.start), written here in the transition's own transaction
-	// and onto that start's payload. It is one half of what a completion is held to: the other is
-	// the assignment the claim's worker took (supervise.Claim.ServingAssignment), and a completion
-	// reported for an earlier one is refused (api/handoff.go, HANDOFF_STALE_ASSIGNMENT). Unlike
-	// HandoffCommit it is not cleared when the role starts again — the start that clears the
-	// handoff writes the new assignment here — and unlike the issue's generation it is new at every
-	// phase entry, which is what tells one testing phase from the next within one run. Empty on a
-	// row no start has stamped: a daemon upgraded in place, where both sides are empty and every
-	// completion is accepted, and a row ClearGeneration reset.
-	Assignment string
+	// Entry is the number of the phase entry this role's row is on: a transition's start of the
+	// phase the issue has moved into, and the promotion's start of a mid-phase worker a
+	// re-admitted tree brings back, raise it by one and write the two fields below beside it, in
+	// their own transaction (workflow's start and StartPromotedWorker). It is the finer of the
+	// two numbers a completion is held to: the issue's generation is the same for every entry of
+	// one run, where the entry is new at each one, which is what tells one testing phase from the
+	// testing phase a conflicting head sent the work back to (api/handoff.go). A start that hands
+	// the role no work it was not already on leaves it where it stands — the send of this entry's
+	// own work to a claim behind it, the held phase's retry, and every start of no entry
+	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
+	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
+	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
+	// in place that the upgrade found with no work handed out, which the completion route reads
+	// as nothing to compare.
+	Entry int64
+	// EntryTask is the work of that entry, the task text the role is told, written beside the
+	// number in the same transaction. It is what makes the work a durable fact of the record
+	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
+	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
+	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again.
+	EntryTask string
+	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
+	// what tells how long a role has been owed the work its entry names, for a reader weighing a
+	// difference that has stood. Zero on a row no entry has been raised on.
+	EntryRaisedAt time.Time
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit
@@ -1265,6 +1304,27 @@ type Store interface {
 	// spelling of the repository, one whose GitHub spelling names another repository, and one that
 	// would give a recorded issue another of any of them.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
+	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
+	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
+	// column nowhere, so no stale copy of an issue can write a movement away.
+	//
+	// It is monotone — a time at or before the recorded one writes nothing — because the facts
+	// that move an issue are not delivered in the order they were made: a GitHub webhook held up
+	// behind a redelivery, or a boot that applies a listing beside live events, would otherwise
+	// take the record back to an older moment and make a tree read as quieter than it is. An
+	// unrecorded key matches no row and writes nothing, which is what a fact of an issue the
+	// daemon does not run must do.
+	MarkIssueMoved(ctx context.Context, tx pgx.Tx, key string, at time.Time) error
+	// MarkTreeStalledTold records at as the movement the daemon has told root's tree stopped
+	// for (Issue.TreeStalledToldAt), the one writer of that column: the admission pass hands it
+	// the tree's newest movement in the transaction that queues the notice, and PutIssue names
+	// the column nowhere, so no stale copy of a root can write the mark away.
+	//
+	// It is not monotone, because it is not a movement of its own: it is the movement that was
+	// told about. The rule only ever tells a tree whose newest movement stands after the mark
+	// (admit's tellStalledTrees), so each write carries the row forwards anyway, and a key with
+	// no record matches no row and writes nothing.
+	MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root string, at time.Time) error
 	// UnfilledIssues is every record of the Dispatch project key project written before the record
 	// carried its repository, by key; FillIssueRepository fills one such record, once.
 	UnfilledIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
@@ -1335,6 +1395,13 @@ type Store interface {
 	// OpenPullRequestsOnBase is every open pull request of repo recorded on the base branch base,
 	// by issue: the pull requests one push onto that branch may have taken behind or dirty.
 	OpenPullRequestsOnBase(ctx context.Context, tx pgx.Tx, repo, base string) ([]PullRequest, error)
+	// PullRequestsOf is the pull request of each of issues, by issue key; an issue the record
+	// holds no pull request for has no entry, and no issues reads nothing. It is one query
+	// whatever the number of issues, for a caller that must name the pull request of every
+	// issue of a tree and may make no read per issue (admit's tellStalledTrees). It answers a
+	// merged and a closed pull request as well as an open one, which OpenPullRequests cannot:
+	// a tree that has stopped with its work merged is exactly the tree such a caller reports.
+	PullRequestsOf(ctx context.Context, tx pgx.Tx, issues []string) (map[string]PullRequest, error)
 	PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest) error
 	// ProductionCheck is issue's production check, nil for none; PutProductionCheck writes it,
 	// one per issue.
@@ -1350,6 +1417,25 @@ type Store interface {
 	// records. It is what tells a holder the daemon records in another tree from one it records
 	// nowhere, which SessionClaimsTree's one boolean cannot.
 	SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error)
+	// ProjectClaims is every claim of the project that stands on an issue, as the quiet measure
+	// reads one (TreeClaim): the issue, the claim's state and its two step times, in no order. It
+	// is what the admission pass's own measure reads (admit's quietTrees) — one read of what the
+	// agents of every tree are doing, for a pass that judges every tree of the project and may
+	// make no read per tree.
+	//
+	// It exists because no read of this shape does. The claims of a whole project are read in
+	// exactly one other place, the claim store's ClaimsTx (internal/store), which reads every
+	// claim of the database with no `where` clause at all and decodes every column of each,
+	// locators included — the state report's read, shared with it by the daemon alone. Every
+	// other claim read of this record is by token (RoleClaims) or by issue, and a pass that asked
+	// one of them per issue would make a query per issue of the project.
+	//
+	// project is the claim project token (claim.ProjectToken): `claims.project` holds the token,
+	// lowercased and alphanumeric, not the Dispatch project key the issue records carry (the
+	// claim store's IssueRunsElsewhere reads the same column the same way), so the caller
+	// converts. A claim on no issue — the project's own controller holds one — is left out by the
+	// query, since it stands in no tree and the measure could place it nowhere.
+	ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
@@ -1542,6 +1628,19 @@ type Store interface {
 	// rows, for a kind whose notice stands per claim (NoticePerClaim). A role of "" narrows
 	// nothing further, so an issue alone reads every role of that issue.
 	ControllerNoticePending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issue string, role claim.Role) (bool, error)
+	// ControllerNoticesPending is that same read made of many issues at once: the issues among
+	// issues whose own unpublished controller notice of kind the outbox of the Dispatch project
+	// key project still holds, as a set keyed by issue. It is the one statement above with the
+	// issue term taken as a list, in the caller's own transaction, so every issue's answer here is
+	// the answer ControllerNoticePending gives it; role narrows each issue's rows to that role
+	// exactly as it does there, and a role of "" narrows nothing. No issues at all reads nothing —
+	// the query is not made — and a wake about the project alone, which names no issue, is the
+	// single read's ask and not this one's.
+	//
+	// It is for the caller that must ask this of every root of one pass and may make no read per
+	// root: the stalled-tree rule asks it of the trees it is about to tell (admit's
+	// tellStalledTrees), on every fact, every tick and every boot.
+	ControllerNoticesPending(ctx context.Context, tx pgx.Tx, project string, kind NoticeKind, issues []string, role claim.Role) (map[string]struct{}, error)
 
 	// PersonHandoverPending says whether outbox still holds a dispatch_status row of issue whose
 	// kind is PersonHandoverStatusRow: a finished row is deleted, so any such row
@@ -1569,13 +1668,22 @@ type Store interface {
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
 	EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int64, error)
-	// ReplaceOwedStart writes row's payload over the issue's oldest supervise start that waits
-	// for the issue's admission slot (SuperviseRequest.NeedsSlot) and that no live lease holds,
-	// and says whether it found one, so two transitions before that slot leave exactly one
-	// start, the later one, in the place in the waiting line the first one took. A row a lane
-	// holds now is not touched, including one it takes while the call waits on its row lock; the
-	// caller then enqueues its own. A lapsed lease holds nothing and is replaced like any other.
-	ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRow) (bool, error)
+	// EnqueueStart writes a phase worker's start as a row of its own, taking out the issue's
+	// oldest pending start of a phase worker — the supervise start that names a phase and
+	// carries its task — that waits for what row waits for, the issue's admission slot
+	// (SuperviseRequest.NeedsSlot) or nothing, and that no live lease holds, so however many
+	// starts are written before the worker runs the issue holds one per wait, the later one, in
+	// the place in the waiting line the first one took: the row written carries the earlier
+	// row's creation time, its attempts, when it is next due and the error it last recorded, and
+	// its own values where the issue owed no such row. A start that waits for a slot takes out
+	// no start that waits for none, nor the other way round: the place in the line is the
+	// waiting row's own, and a start claimable at once may not pass what its lane has queued
+	// behind that row. It is never the earlier row rewritten — one outbox row is one task, which
+	// is what a claim's record of the rows it has taken a task from rests on. A row a lane holds
+	// now is not touched, including one it takes while the call waits on its row lock, and the
+	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
+	// other.
+	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among
 	// them, oldest first by creation time and then id — the waiting line's own ordering key for
@@ -1711,14 +1819,58 @@ type QueuedSupervise struct {
 }
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
-// is suspended, the newest start the outbox ran against it (last_start_row), the write mark its
-// retirement took (retired_at_write_mark), and the task it holds, nil for none, with the task's
-// generation, phase and confirmation.
+// is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
+// in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
+// it was last given work of (given_entry), the moment its agent last stepped (step_at,
+// turn_started_at), what its own session last reported it was doing (activity_at,
+// activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
+// task's generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
 	SuspendedBy  supervise.SuspendSource
 	LastStartRow int64
+	// UpdateRound is the round the claim is in, "" when none is open: a pod round over its pod
+	// or its own plugin round (supervise.Claim.UpdateRound). A rule over a run reads it to tell
+	// a worker the round itself prompts, whose replacement is what starts it again, from one
+	// nothing will prompt (workflow.SilentPhaseWorker).
+	UpdateRound string
+	// Step is the claim's record of its agent's last step as far as the two columns this read
+	// takes it: At from step_at and TurnStartedAt from turn_started_at, both of them the zero
+	// time where the column is null, and none of the call's own fields (supervise.StepRecord,
+	// whose other columns say which call was open and are no rule's to read). It is the whole
+	// record rather than one moment so that a reader asks it the one question the record
+	// answers, supervise.StepRecord.LastStep, as the daemon's stall backstop asks it, and so no
+	// second reading of "the last step" is written anywhere.
+	//
+	// What it is for: a rule over a run that must tell a worker still moving from one nothing
+	// will prompt (workflow.SilentPhaseWorker, whose lastStep this is) needs the moment from
+	// the record, because the one reader that has the live claim at hand is the sweep over the
+	// supervisor, and admission has no claim of that supervisor at all (admit's silentWorkers).
+	Step supervise.StepRecord
+	// ActivityAt, ActivityBackground and ActivityNextReminderAt are the activity report of the
+	// process this claim runs now (POST /legion/v1/claims/activity, store's PutClaimActivity):
+	// when that session read what it was doing, zero for one that has reported nothing; whether
+	// that reading found background work of the session's own running; and when the phase
+	// reminder armed in that session is due, zero when none was live. The kinds that report
+	// named (activity_kinds) are no part of this read: a rule over a run asks whether such work
+	// is running, never what it is, where the idle release names the kinds in the hold it
+	// records.
+	//
+	// A report an earlier process of this claim made is no report, and these three read as the
+	// zero values that say nothing has been reported: the launch that replaced that process
+	// cleared it (store's putClaim, which clears the four activity columns on every write that
+	// moves the claim's generation). So a worker whose pod was replaced while a background task
+	// of its own ran reads here as what it is — a session that has said nothing yet — rather
+	// than as one still waiting on work its replacement killed.
+	//
+	// What they are for: a worker that waits on its own async job or subagent, and one whose own
+	// phase reminder is still ahead of it, take no step and are no workers nothing will prompt
+	// (workflow.SilentPhaseWorker). The idle release holds a pod on these same two readings
+	// (workflow's IdleRelease, IdleHoldBackgroundWork and IdleHoldReminder).
+	ActivityAt             time.Time
+	ActivityBackground     bool
+	ActivityNextReminderAt time.Time
 	// RetiredAtWriteMark is the number outbox_write_mark_seq handed the write that recorded this
 	// claim's retirement (store's putClaim, whose doc holds what that sequence orders and what it
 	// does not), and 0 for a claim that has never retired and for one an earlier release retired,
@@ -1727,7 +1879,12 @@ type RoleClaim struct {
 	// already written when the stop was recorded (admit's stopOutlivedStart). It says nothing about
 	// a claim that is not retired now, which is the only state that reader looks at.
 	RetiredAtWriteMark int64
-	Pending            *supervise.Delivery
+	// GivenEntry is the phase entry of the last task this claim was queued
+	// (supervise.Claim.GivenEntry), and 0 for a claim that has been queued no task carrying one.
+	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
+	// row names — one owed that entry's work — from one already holding it.
+	GivenEntry int64
+	Pending    *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger
@@ -1738,9 +1895,43 @@ func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool
 	return root != nil && root.Lingers(), err
 }
 
+// PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that
+// role: a role no transition has ever handed work on, which stands on no entry, names no handoff
+// and holds no claim. Every reader of one role's row among an issue's picks it here — the state
+// the projection writes (projection.Project), the entry the admission pass weighs a claim against
+// (admit's resumeSlottedWorkers), the outbox's fence on a start whose entry its role has left
+// (internal/daemon's outbox), the completion route's position (api's handoffPosition) and the
+// engine's own read (workflow's phaseRow) — so that rule is stated once and read the same way by
+// all of them.
+func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
+	for _, row := range rows {
+		if row.Role == role {
+			return row
+		}
+	}
+	return PhaseRow{}
+}
+
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
 // re-admission clears it.
 func (i Issue) Lingers() bool { return i.LingerUntil != nil }
+
+// Lingering says whether the root's linger is still running at now: its deadline is set and now
+// is before it. It is not Lingers, which answers whether a deadline was ever armed and stays
+// true for ever after: nothing clears LingerUntil but a re-admission (admit's readmit), so a
+// tree whose linger expired long ago, and a root a person parked, each still answer Lingers.
+// Where a rule asks whether the tree is being torn down now, rather than whether it ever left
+// the workflow, it asks this: the held list's tree_closed word (HeldReasonOf), which reads a
+// parked root's member as tree_parked once that root's linger has run out, and the route that
+// takes a closed tree's member into a live tree (workflow's AdoptionRefusal), which C4 of
+// dispatch://INFRA-3107 opens only once no linger is left to run.
+//
+// The zero moment reads every armed linger as still running, which is the conservative answer: a
+// reader with no clock of its own leaves the member where it stands rather than reading its tree
+// as torn down already.
+func Lingering(issue Issue, now time.Time) bool {
+	return issue.LingerUntil != nil && now.Before(*issue.LingerUntil)
+}
 
 // LingersAt says whether the root lingers after the close of its generation: it lingers, and
 // re-admission has not moved it to a later generation. A row a linger's expiry wrote acts in that

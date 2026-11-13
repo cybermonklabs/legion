@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -30,8 +31,10 @@ import (
 // state is still one snapshot. Nil is nothing stranded. reports is each claim's latest
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
-// claim with none shows no capabilities. Nil is no reports. now is the instant the held rows are
-// read at (record.Store.HeldRows) and their waits are measured from.
+// claim with none shows no capabilities. Nil is no reports. The role whose phase entry and given
+// entry each issue's view carries is the role that works its current phase (phase.RoleFor). now
+// is the instant the held rows are read at (record.Store.HeldRows) and their waits are measured
+// from.
 func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
@@ -75,6 +78,17 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	checks := make(map[string]record.ProductionCheck, len(openChecks))
 	for _, check := range openChecks {
 		checks[check.Issue] = check
+	}
+
+	// The entry each claim was last queued a task of, by the issue and role the claim holds
+	// (supervise.Claim.GivenEntry): the number an issue's view shows beside the entry its phases
+	// row names. It is keyed by issue and role rather than by claim token because the token on
+	// the phases row can be empty, for a role no claim was ever created for, or stale, from a
+	// claim an earlier run retired, where the claim of this issue and this role is the one the
+	// admission pass weighs (admit's resumeSlottedWorkers).
+	givenEntries := make(map[issueRole]int64, len(claims))
+	for _, current := range claims {
+		givenEntries[issueRole{issue: current.Issue, role: current.Role}] = current.GivenEntry
 	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
@@ -180,6 +194,22 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			}
 			view.Workers[item.Role] = worker
 		}
+		// The entry the role of this issue's current phase stands on, and the entry that role was
+		// given: the pair a reader tells a role holding the work its row names from one the daemon
+		// has still to send that work to (api.Issue.PhaseEntry). A phase that names no phase worker
+		// role carries neither number — a root at admitted whose design gate has never opened is at
+		// work (record.AtWork) and phase.RoleFor names no role for that phase, so the admission
+		// pass passes it over and a difference written for it would stand for ever — and no row of
+		// a role the issue has moved past is read, since that role keeps its entry and is sent
+		// nothing.
+		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
+		// transition has ever handed work on, and it is read with the same call admit's
+		// owedEntryRoles reads for the same role from the same rows, so the state shows what the
+		// admission pass weighs a claim against.
+		if role := phase.RoleFor(issue.Phase); role != "" {
+			view.PhaseEntry = record.PhaseRowOf(phases, role).Entry
+			view.GivenEntry = givenEntries[issueRole{issue: issue.Key, role: role}]
+		}
 
 		pr, err := s.PullRequest(ctx, tx, issue.Key)
 		if err != nil {
@@ -281,7 +311,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
 	// the roots admission skips, the issues it holds back and the parents whose children go
 	// first.
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil)
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil, now)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -355,11 +385,55 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
+	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
+	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
+	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate
+	// no drop site saw, over the same facts and the same line these lists are built from, so one
+	// issue reads one word here and in the controller's tick.
+	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
 	// Why each issue that is not working now is not working, one rendered answer on its own view.
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the
 	// links and the children-first waits — which the published list has merged by now.
-	whyStates(&projected, own, stranded, rows, facts.ChildWaits)
+	//
+	// It reads the held list above for the sentence of most issues it answers, and it is not
+	// that list: the list says where every issue the daemon holds in the workflow stands and why
+	// nothing of it runs, and this answers why an issue is not working now. The two part at an
+	// issue whose work runs past its review, which the list names and this answers for not at
+	// all; where they part and why is written once, with the arm that parts them
+	// (atWorkPastReview).
+	//
+	// The running roots are the term that says an issue past its review is at work: it holds no
+	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
+	// on whether its tree runs at all (whyStates, atWorkPastReview). They are read from the
+	// records and the facts this pass already holds, so the reading costs no query, and they
+	// are the same roots record.LiveRoots is read from above — live is wider than running,
+	// and a parked root's tree is neither.
+	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
+	// Every issue of a live tree carries that tree's quiet time (contract 111): `treeMovedAt`,
+	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
+	// it has been still at the instant the rest of this state is measured at. The pair is the
+	// tree's, so every issue of one tree carries the same two values — a child past its own
+	// review, which holds no slot, and a done child recorded under the tree among them, since
+	// what has stopped is the tree and not the issue a reader happens to hold. A tree that is no
+	// longer live is measured for nobody: its root is in no `admission.trees` entry, there is
+	// nothing of the deployment's left to wait on, and each of its issues carries neither key.
+	//
+	// The measure is read once for the whole state (quietTrees), from the records and the claims
+	// this pass already holds, and a live root is always one of its trees whatever its own
+	// status says (record.QuietTrees), so the lookup below cannot miss.
+	quiet := quietTrees(own, claims, now)
+	for _, issue := range own {
+		if _, live := trees[issue.Tree]; !live {
+			continue
+		}
+		measure := quiet[issue.Tree]
+		movedAt, hours := measure.MovedAt, measure.Quiet.Hours()
+		view := projected.Issues[issue.Key]
+		view.TreeMovedAt, view.QuietHours = &movedAt, &hours
+		projected.Issues[issue.Key] = view
+	}
 	projected.PendingStatusWrites = make([]api.PendingStatusWrite, 0, len(pending))
 	for _, row := range pending {
 		if _, known := knownIssues[row.Issue]; !known {
@@ -386,6 +460,34 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	return projected, nil
 }
 
+// quietTrees is the state's measure of its trees: how long each tree the state's own records
+// name has been still and whether any claim of it is at work (record.QuietTrees). It makes no
+// query of its own. own is the project's records, the same list the waiting line and the live
+// roots are judged from; claims are the claims Project was handed, read in its one snapshot
+// with those records, which carry each agent's state and step times already
+// (record.TreeClaimsOf), so the state never reads the claims a second time; now is the instant
+// the rest of the state is measured at.
+//
+// Where it is called from: Project, just past the live roots the measure answers for, which
+// writes each live tree's measure onto every issue of that tree (`treeMovedAt`, `quietHours`).
+// It stays a function of its own rather than a line of Project because its three arguments are
+// the three facts the measure may read and no others: a later reader of the same question takes
+// it from here and cannot quietly read a fourth. The admission pass measures the same thing
+// with the same statement, over the claims its own read gives it (admit's quietTrees), so the
+// two read one statement of the measure and neither keeps a rule of its own.
+//
+// One statement is what they share, and not one answer: the records each is handed differ.
+// This one is given `own`, every record of the project the state holds, a done one included,
+// while the pass is given record.Store.LiveIssues, which leaves out a done record holding no
+// slot. A root is a member of its tree whatever its own status says (record.TreeMember), so a
+// tree whose root is done is measured here from that root and is no tree of the pass's at all,
+// and the two can read one tree from different members. Nothing rests on their agreeing: the
+// state reports what it measures, and the pass tells the controller only of the trees it runs
+// (record.RunningRoots), which are trees whose records the live read holds.
+func quietTrees(own []record.Issue, claims []supervise.Claim, now time.Time) map[string]record.TreeQuiet {
+	return record.QuietTrees(own, record.TreeClaimsOf(claims), now)
+}
+
 // memoryDraw is one tree's memory draw as its root's record holds it (record.Issue.MemoryGroup,
 // MemoryDrawMode, MemoryDrawnAt): the group the draw gave the tree, the project's mode it was
 // drawn under, and when.
@@ -393,6 +495,13 @@ type memoryDraw struct {
 	group string
 	mode  string
 	at    *time.Time
+}
+
+// issueRole is one issue and one of its roles, the pair a claim is held under (supervise.Claim's
+// Issue and Role): the key of the lookup that answers what each role was last given.
+type issueRole struct {
+	issue string
+	role  claim.Role
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check

@@ -27,8 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -37,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -94,7 +93,7 @@ type fleetRig struct {
 	s       *supervision
 	sup     *supervisor
 	rt      *fake.Runtime
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	records record.Store
 	clock   *heldClock
 	grants  *credential.Grants
@@ -103,12 +102,43 @@ type fleetRig struct {
 	// handoffs is the Dispatch that route reads a completion's handoff record back from.
 	handoffs *fleetHandoffs
 	tokens   map[fleetClaim]claim.Token
-	pods     map[string]string
+	// workers is the connection each claim's agent is reached over, which records every prompt
+	// the daemon sends it.
+	workers map[claim.Token]*fake.Conn
+	pods    map[string]string
 	// noPod is every issue whose claims a sweep reads as recording no pod (podless).
 	noPod map[string]bool
+	// wire is what the rig set on its supervisor's Deps before any machine was made
+	// (newWiredFleetRig), nil for none; a restart sets it again on the supervisor it builds.
+	wire fleetWiring
+}
+
+// fleetWiring sets a dependency of the daemon's on a fleet rig's supervisor before the rig
+// restores its claims. A machine takes its Deps when it is made (supervise.NewMachine), so a
+// dependency set after the rig is built reaches none of its machines.
+type fleetWiring func(sup *supervisor)
+
+// adoptingAsTheDaemonDoes wires the two dependencies the daemon gives its supervisor for the
+// working copy an issue's roles share (daemon.go): an App identity per role, under which a phase
+// task's send adopts that working copy first (supervise's adopts), and the daemon's own answer to
+// which claim of an issue is in a turn (claimInTurn), which holds such a send while another role
+// works there. The identity stands in for the one adoptIdentity mints, named for the role's App,
+// as newIssueRig's is.
+func adoptingAsTheDaemonDoes(sup *supervisor) {
+	sup.deps.Identity = func(_ context.Context, role claim.Role, _ string) (runtime.GitIdentity, error) {
+		return runtime.GitIdentity{Name: "legion-" + string(role) + "[bot]", Email: string(role) + "@example.invalid"}, nil
+	}
+	sup.deps.IssueInTurn = sup.claimInTurn
 }
 
 func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
+	t.Helper()
+	return newWiredFleetRig(t, nil, issues...)
+}
+
+// newWiredFleetRig is newFleetRig with wire set on the supervisor's Deps before the seeded claims
+// are restored, nil for nothing.
+func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fleetRig {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -162,6 +192,9 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 		PodUpdateRetask: podUpdateRetask,
 		RefreshGate:     supervise.NewRefreshGate(0),
 	}
+	if wire != nil {
+		wire(sup)
+	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
 	if err != nil {
@@ -170,13 +203,15 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 	if _, err := sup.restore(ctx, stored); err != nil {
 		t.Fatalf("restore the seeded claims: %v", err)
 	}
+	workers := map[claim.Token]*fake.Conn{}
 	for _, token := range tokens {
-		conns.Register(token, fake.NewConn())
+		workers[token] = fake.NewConn()
+		conns.Register(token, workers[token])
 	}
 	records := record.NewStore()
 	rig := &fleetRig{t: t, ctx: ctx, sup: sup, rt: rt, pool: pool, records: records, clock: clock,
 		grants: credential.New(nil), handoffs: &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}},
-		tokens: tokens, pods: pods, noPod: map[string]bool{}}
+		tokens: tokens, workers: workers, pods: pods, noPod: map[string]bool{}, wire: wire}
 	rig.s = &supervision{
 		cfg: config.Config{Project: "LEGION", PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
@@ -249,6 +284,11 @@ func (r *fleetRig) restart() *fleetRig {
 	sup := newSupervisor(r.ctx, st, podUpdateProject, r.t.TempDir(), quietLogger())
 	sup.deps = r.sup.deps
 	sup.deps.Runtime, sup.deps.Conns, sup.deps.Store = rt, conns, st
+	// The copy carries the first supervisor's wiring, whose answers read that supervisor's
+	// machines, so it is set again over this one's.
+	if r.wire != nil {
+		r.wire(sup)
+	}
 	r.t.Cleanup(sup.stop)
 	stored, err := sup.Claims(r.ctx)
 	if err != nil {
@@ -257,11 +297,14 @@ func (r *fleetRig) restart() *fleetRig {
 	if _, err := sup.restore(r.ctx, stored); err != nil {
 		r.t.Fatalf("restore the stored claims: %v", err)
 	}
+	workers := map[claim.Token]*fake.Conn{}
 	for _, token := range r.tokens {
-		conns.Register(token, fake.NewConn())
+		workers[token] = fake.NewConn()
+		conns.Register(token, workers[token])
 	}
 	next := &fleetRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
-		grants: r.grants, handoffs: r.handoffs, tokens: r.tokens, pods: r.pods, noPod: maps.Clone(r.noPod)}
+		grants: r.grants, handoffs: r.handoffs, tokens: r.tokens, workers: workers, pods: r.pods,
+		noPod: maps.Clone(r.noPod), wire: r.wire}
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
 		refreshGate: supervise.NewRefreshGate(0),
@@ -288,11 +331,7 @@ func (r *fleetRig) token(issue string, role claim.Role) claim.Token {
 // claimOf is the claim as its machine holds it, which is what the next tick reads from the store.
 func (r *fleetRig) claimOf(issue string, role claim.Role) supervise.Claim {
 	r.t.Helper()
-	m, ok := r.sup.Machine(r.token(issue, role))
-	if !ok {
-		r.t.Fatalf("%s's %s is not supervised", issue, role)
-	}
-	return m.Claim()
+	return r.machineOf(issue, role).Claim()
 }
 
 // round is the pod round the sweep opens over issue.
@@ -316,8 +355,8 @@ func (r *fleetRig) awaitRound(issue string, role claim.Role) supervise.Claim {
 // signal is the worker answering ready_for_update, as api's claims/ready-for-update posts it.
 func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 	r.t.Helper()
-	c := r.claimOf(issue, role)
-	m, _ := r.sup.Machine(c.Token)
+	m := r.machineOf(issue, role)
+	c := m.Claim()
 	if err := m.Handle(r.ctx, supervise.PodUpdateSignalled{
 		Claim: c.Token, Generation: c.Generation, Session: c.Session, Round: c.UpdateRound, Head: head,
 	}); err != nil {
@@ -325,10 +364,44 @@ func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 	}
 }
 
+// handle drives one event into the machine of issue's role and waits for its decision, as a
+// source that hands a machine its event directly does.
+func (r *fleetRig) handle(issue string, role claim.Role, ev supervise.Event) {
+	r.t.Helper()
+	if err := r.machineOf(issue, role).Handle(r.ctx, ev); err != nil {
+		r.t.Fatalf("%s's %s handled %T: %v", issue, role, ev, err)
+	}
+}
+
+// sent waits for every send the machine of issue's role has in flight to be over, the prompt's
+// acknowledgement or refusal decided with it. A decision that sends runs the prompt on a
+// goroutine of its own (supervise's startSend), so what the agent was sent is read only once this
+// has returned.
+func (r *fleetRig) sent(issue string, role claim.Role) {
+	r.t.Helper()
+	r.machineOf(issue, role).Wait()
+}
+
+func (r *fleetRig) machineOf(issue string, role claim.Role) *supervise.Machine {
+	r.t.Helper()
+	m, ok := r.sup.Machine(r.token(issue, role))
+	if !ok {
+		r.t.Fatalf("%s's %s is not supervised", issue, role)
+	}
+	return m
+}
+
+// prompts is every prompt the daemon sent the agent of issue's role, in order.
+func (r *fleetRig) prompts(issue string, role claim.Role) []fake.Prompt {
+	r.t.Helper()
+	return r.workers[r.token(issue, role)].Prompts()
+}
+
 // fleetHandoffs is the Dispatch the completion route reads a handoff record back from: the
 // records the rig's workers wrote with `dispatch handoff-write`, by id. Nothing else of Dispatch
 // is reached in a round, so every other read answers nothing.
 type fleetHandoffs struct {
+	noArtifacts
 	mu       sync.Mutex
 	handoffs map[string]dispatch.Handoff
 }
@@ -679,4 +752,111 @@ func TestPodUpdateRoundServesAWorkerOnItsPreviousContract(t *testing.T) {
 		t.Fatalf("%s after the completion the round let through = %s, want its phase moved on to implementing", fleetIssueB, got.Phase)
 	}
 	rig.assertNoRootLeftTheWorkflow(fleetIssueB)
+}
+
+// An update round's asks adopt nothing, so none of them waits on another role's turn or moves the
+// working copy under one. Every role of an issue works one jj workspace, and a task that adopts it
+// snapshots that workspace and then runs `jj metaedit --update-author` or `jj new` on its `@`
+// under whoever is working there, so the daemon adopts only for a task that names a phase and
+// holds such a task while another claim of the issue is in a turn (supervise's adopts
+// and sendPending). A round's ask names no phase — it asks a worker to push what it has and
+// answer, which commits nothing for a phase — at either place one is built: the sweep's ask to a
+// claim that holds nothing (askForUpdate) and the ask that takes the slot a turn's end frees
+// (takeSlotForUpdate). So with the implementer in the turn of its own phase task, the architect
+// and the planner are asked the moment the round opens and adopt nothing, and the implementer is
+// asked once that turn ends, with no adoption beyond the one its phase task made.
+//
+// The releases those projects' daemons ran, from before cybermonklabs/legion#2539, adopted before
+// every send and held none, which is the shape OSSV-343, OSSV-388, OSSV-400, BET-846 and
+// LINUX-1498 each recorded: a round opened while the implementer was mid-turn, and the other
+// roles' asks adopted the working copy under that turn (dispatch://INFRA-2695). The rig is wired
+// as the daemon wires its supervisor (adoptingAsTheDaemonDoes), so who is in a turn is the
+// daemon's own answer (claimInTurn), read from the machines the round posts to.
+func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testing.T) {
+	rig := newWiredFleetRig(t, adoptingAsTheDaemonDoes,
+		fleetIssue{key: fleetIssueA, phase: phase.Implementing, pod: fleetPodA,
+			roles: []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer}},
+	)
+	implementer := rig.token(fleetIssueA, claim.RoleImplementer)
+	others := []claim.Role{claim.RoleArchitect, claim.RolePlanner}
+
+	// The implementer is in the turn of its own phase task, as it is while it writes the plan's
+	// work. That task adopts the working copy under the implementer's App, and it is the one task
+	// here that may: no other claim of the issue was in a turn when it went. It is handed to the
+	// machine directly as setup, since the rig runs no outbox; what the test checks, the round's
+	// asks, the real sweep builds.
+	const phaseTask = "outbox:1"
+	rig.handle(fleetIssueA, claim.RoleImplementer, supervise.RequestDeliver{Claim: implementer,
+		Task: "implement the plan", ID: phaseTask, Phase: phase.Implementing, Generation: 1})
+	rig.sent(fleetIssueA, claim.RoleImplementer)
+	rig.handle(fleetIssueA, claim.RoleImplementer, supervise.StreamTurnStart{Claim: implementer})
+	if c := rig.claimOf(fleetIssueA, claim.RoleImplementer); c.State != supervise.StateWorking {
+		t.Fatalf("the implementer is %s once its turn started, want working", c.State)
+	}
+	own := adoptionsOf(rig.rt, implementer)
+	if len(own) != 1 || own[0] != "legion-implementer[bot]" {
+		t.Fatalf("the implementer's phase task adopted the working copy as %v, want once, as the implementer's App", own)
+	}
+
+	// One template change drifts the issue's pod, and the tick opens its round.
+	rig.drifts(fleetIssueA, fleetDrift)
+	rig.tick()
+	round := rig.round(fleetIssueA)
+	ask := "update:" + round + ":"
+
+	// The architect and the planner hold nothing of their own, so the tick asks each of them
+	// (askForUpdate), and the decision that queued the ask sends it rather than hold it behind the
+	// implementer's turn.
+	for _, role := range others {
+		c := rig.awaitRound(fleetIssueA, role)
+		if c.Pending == nil || !strings.HasPrefix(c.Pending.ID, ask) {
+			t.Fatalf("%s's %s holds %+v, want its round's ask", fleetIssueA, role, c.Pending)
+		}
+		rig.sent(fleetIssueA, role)
+		if prompts := rig.prompts(fleetIssueA, role); len(prompts) != 1 || prompts[0].DeliveryID != c.Pending.ID {
+			t.Errorf("%s's %s was prompted %+v while the implementer was in a turn, want its round's ask %s sent at once rather than held behind that turn",
+				fleetIssueA, role, prompts, c.Pending.ID)
+		}
+		if made := adoptionsOf(rig.rt, rig.token(fleetIssueA, role)); len(made) != 0 {
+			t.Errorf("%s's %s adopted the working copy as %v while the implementer was in a turn; the round's ask adopts nothing",
+				fleetIssueA, role, made)
+		}
+	}
+
+	// The implementer holds its own phase task, so the same tick asks it nothing: the round is
+	// recorded on it, and its ask waits for the slot that task holds.
+	testwait.Eventually(t, "the implementer to be in the round of "+fleetIssueA, func() bool {
+		return rig.claimOf(fleetIssueA, claim.RoleImplementer).UpdateRound == round
+	})
+	if c := rig.claimOf(fleetIssueA, claim.RoleImplementer); c.UpdateTaskedAt != nil || c.Pending == nil || c.Pending.ID != phaseTask {
+		t.Fatalf("the implementer in its turn was asked at %v and holds %+v, want it asked nothing yet and holding its own task",
+			c.UpdateTaskedAt, c.Pending)
+	}
+
+	// The turn ends as Oh My Pi reports it, through the inbox the worker's stream feeds: the
+	// agent_end, which the daemon tells the issue's other claims of (wakeIssue), and behind it the
+	// result of the prompt whose turn it was, which retires the phase task. The slot that frees is
+	// the round's (takeSlotForUpdate), and its ask goes with no adoption either.
+	rig.sup.post(implementer, supervise.StreamTurnEnd{Claim: implementer})
+	rig.sup.post(implementer, supervise.StreamPromptResult{Claim: implementer, DeliveryID: phaseTask, AgentInvoked: true})
+	testwait.Eventually(t, "the implementer's round ask to take the slot its turn freed", func() bool {
+		c := rig.claimOf(fleetIssueA, claim.RoleImplementer)
+		return c.Pending != nil && strings.HasPrefix(c.Pending.ID, ask) && c.UpdateTaskedAt != nil
+	})
+	rig.sent(fleetIssueA, claim.RoleImplementer)
+	if prompts := rig.prompts(fleetIssueA, claim.RoleImplementer); len(prompts) != 2 ||
+		prompts[0].DeliveryID != phaseTask || !strings.HasPrefix(prompts[1].DeliveryID, ask) {
+		t.Errorf("the implementer was prompted %+v by the end of its turn, want its phase task and then its round's ask", prompts)
+	}
+	if made := adoptionsOf(rig.rt, implementer); len(made) != 1 {
+		t.Errorf("the implementer adopted the working copy as %v by the time its round's ask was sent, want only the one adoption its phase task made",
+			made)
+	}
+	for _, role := range others {
+		rig.sent(fleetIssueA, role)
+		if made := adoptionsOf(rig.rt, rig.token(fleetIssueA, role)); len(made) != 0 {
+			t.Errorf("%s's %s adopted the working copy as %v by the end of the implementer's turn; the round's ask adopts nothing",
+				fleetIssueA, role, made)
+		}
+	}
 }

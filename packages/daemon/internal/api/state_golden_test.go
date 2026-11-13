@@ -102,6 +102,8 @@ github_apps:
     installations: {sjawhar: "2003"}
 linger_hours: 1.5
 production_check_hours: 240
+worker_silence_minutes: 45
+worker_background_hours: 6
 pod_update_max_open_rounds: 6
 pod_update_rounds_per_minute: 2
 review_round_cap: 4
@@ -268,6 +270,18 @@ func populatedState(t *testing.T) State {
 				{Issue: "LEGION-209", BlockedBy: []string{"LEGION-210", "LEGION-213"}},
 				{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}},
 			},
+			// The issues the record holds in the workflow that stand in neither list above, each
+			// with the one word for why. Both shapes of the row are here, and that is what the
+			// fixture is for: LEGION-209 is held by the issues `blocked` names, so its row
+			// carries `heldBy`, and LEGION-214, a root of its own tree whose record says the
+			// label is off (`label_off`), is held by no issue at all, so its row carries none. The contracts
+			// gate walks the keys the file holds (packages/contracts/src/legion-api.test.ts), so
+			// a list of one shape would prove nothing of the other — an absent `heldBy` is as
+			// much part of the row's schema as a filled one.
+			Held: []HeldIssue{
+				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
+				{Issue: "LEGION-214", Reason: record.HeldLabelOff},
+			},
 		},
 		Issues: map[string]Issue{
 			"LEGION-208": {
@@ -371,6 +385,12 @@ func populatedState(t *testing.T) State {
 						BackwardMoves: map[string]int{"reviewing-implementing": 1, "testing-implementing": 1},
 					},
 				},
+				// The implementer holds the work its phases row names: the two numbers are equal,
+				// which is every role the daemon has reached. LEGION-211 below is the other case,
+				// and LEGION-210, LEGION-212 and LEGION-207 carry neither number, since no phase
+				// worker role works held, awaiting_person or done.
+				PhaseEntry: 4,
+				GivenEntry: 4,
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
 					Number:         1247,
@@ -417,7 +437,10 @@ func populatedState(t *testing.T) State {
 					// moment, and the four counts it failed with, which a reader reads against
 					// the limits in `settings`. The pending cause beside it names the death whose
 					// refused relaunches spent that budget, and stands until the agent's ready or
-					// a retry clears it with the launch failures it is counted beside.
+					// a retry clears it with the launch failures it is counted beside. Beside them
+					// stands the sentence a launch try was refused with because the shared public
+					// leak check could not be installed in the pod, which this fixture carries with
+					// the other optional keys of the view at once, as operatorClaim does.
 					claim.RoleImplementer: {Claim: ClaimView{
 						Session: "ses_implementer_210",
 						State:   "failed",
@@ -427,7 +450,8 @@ func populatedState(t *testing.T) State {
 							At:       &implementerFailedAt,
 							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
 						},
-						PendingCause: supervise.CauseDied,
+						PendingCause:   supervise.CauseDied,
+						LeakCheckCause: "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found",
 					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
@@ -472,6 +496,12 @@ func populatedState(t *testing.T) State {
 				// ancestry hold is what keeps this root out of the line's front while that tree
 				// runs. Nothing else on this wire names the chain.
 				Ancestry: []string{"LEGION-209", "LEGION-208"},
+				// Its implementer was given the work of entry 1 and the transition that sent its
+				// work back raised the row to 2, so the two numbers differ: this is the role the
+				// daemon has still to send that entry's work to, and the line `legion state`
+				// prints names it.
+				PhaseEntry: 2,
+				GivenEntry: 1,
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
@@ -552,6 +582,24 @@ func populatedState(t *testing.T) State {
 					Index:      2,
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
 				},
+			},
+			// LEGION-214 is the fixture's one held row that names no issue holding it, which is
+			// what it is here for: the contracts gate walks the keys the file holds, so a held list
+			// of one shape would prove nothing of a row with no `heldBy`. It is a root of its own
+			// tree at admitted whose record says the Legion label is off, so the admission queue
+			// does not carry it, it stands in neither `active` nor `waiting`, and its word is
+			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
+			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
+			// no memory group.
+			"LEGION-214": {
+				Key:           "LEGION-214",
+				Generation:    1,
+				Phase:         phase.Admitted,
+				Status:        "todo",
+				Tree:          "LEGION-214",
+				Repo:          "zeta/tools",
+				DefaultBranch: "release/v7.1",
+				Workers:       map[claim.Role]PhaseView{},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
@@ -724,6 +772,37 @@ func populatedState(t *testing.T) State {
 		MemoryGroup:    string(memorygroup.GroupMemory),
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
+	}
+	// Every issue standing in a tree the admission block names carries that tree's quiet time,
+	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
+	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
+	// fixture, so neither of them is measured, which is what a reader is served for an issue no
+	// live tree holds. The four pairs are one reading, at quietReadAt, a little after the newest
+	// step record of this state.
+	//
+	// Each tree's movement is the newest fact the measure reads of it — the `MovedAt` of its
+	// members and the step times of their claims (record.QuietTrees) — and its hours are the
+	// reading less that movement, worked out here rather than written beside it: a second
+	// number can disagree with the first, and one did. LEGION-208's pair said the tree had been
+	// still for half an hour while its own implementer's step stood 48 seconds before the
+	// reading, so the fixture showed a pair no daemon would serve, which is why the movement of
+	// that tree is the step record itself. The other three trees hold no claim with a step, so
+	// each of them moves at a time of its own.
+	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
+	quietMoved := map[string]time.Time{
+		"LEGION-208": implementerStep.At,
+		"LEGION-210": time.Date(2026, 9, 22, 6, 18, 0, 0, time.UTC),
+		"LEGION-211": time.Date(2026, 9, 21, 9, 18, 0, 0, time.UTC),
+		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
+	}
+	for key, issue := range state.Issues {
+		movedAt, measured := quietMoved[issue.Tree]
+		if !measured {
+			continue
+		}
+		hours := quietReadAt.Sub(movedAt).Hours()
+		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
+		state.Issues[key] = issue
 	}
 	return state
 }
@@ -1144,7 +1223,9 @@ func TestForgetSessionOperatorClaimGolden(t *testing.T) {
 // What the list route answers: a queued claim carries no locator and no delivery yet. The
 // pod-update record is left out of the value this marshals, so the fixture is also the proof
 // that OperatorClaims.MarshalJSON writes the zero record for a nil field and the wire carries
-// the object either way.
+// the object either way. The third claim is between two launch tries the runtime refused
+// because the shared public leak check could not be installed in its pod: it is launching with
+// no process, its two refused tries charged, and the sentence of the latest beside them.
 func TestOperatorClaimsGolden(t *testing.T) {
 	golden(t, "operator-claims.json", OperatorClaims{Claims: []OperatorClaim{
 		{
@@ -1156,6 +1237,16 @@ func TestOperatorClaimsGolden(t *testing.T) {
 			State:      "queued",
 		},
 		operatorClaim(),
+		{
+			Token:          "legion-legion-legion-211-tester",
+			Tree:           "LEGION-211",
+			Issue:          "LEGION-211",
+			Role:           claim.RoleTester,
+			Generation:     3,
+			State:          "launching",
+			Budgets:        BudgetsView{LaunchFailures: 2},
+			LeakCheckCause: "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s",
+		},
 	}})
 }
 

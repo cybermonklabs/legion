@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -26,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
@@ -161,7 +161,7 @@ func TestOutboxStaleLeaseFinishLeavesNewLeaseRowUntouched(t *testing.T) {
 
 // claimDueOutboxRow leases the first row of the project due at now, as a lane does: listed, then
 // claimed by its id.
-func claimDueOutboxRow(t *testing.T, pool *pgxpool.Pool, records record.Store, now time.Time) record.OutboxRow {
+func claimDueOutboxRow(t *testing.T, pool *store.Pool, records record.Store, now time.Time) record.OutboxRow {
 	t.Helper()
 	var claimed record.OutboxRow
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
@@ -196,14 +196,14 @@ func mustOutboxRow(t *testing.T, issue string, payload record.OutboxPayload, now
 	return row
 }
 
-func enqueueOutbox(t *testing.T, pool *pgxpool.Pool, records record.Store, row record.OutboxRow) {
+func enqueueOutbox(t *testing.T, pool *store.Pool, records record.Store, row record.OutboxRow) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error { return records.Enqueue(context.Background(), tx, row) }); err != nil {
 		t.Fatalf("enqueue outbox row: %v", err)
 	}
 }
 
-func outboxRows(t *testing.T, pool *pgxpool.Pool) int {
+func outboxRows(t *testing.T, pool *store.Pool) int {
 	t.Helper()
 	var rows int
 	if err := pool.QueryRow(context.Background(), "select count(*) from outbox").Scan(&rows); err != nil {
@@ -215,9 +215,9 @@ func outboxRows(t *testing.T, pool *pgxpool.Pool) int {
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
 // template (testpg.ClonePool). The rigs' own stores share the package's run database instead
 // (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
-func isolatedOutboxPool(t *testing.T) *pgxpool.Pool {
+func isolatedOutboxPool(t *testing.T) *store.Pool {
 	t.Helper()
-	return testpg.ClonePool(t, "legion_outbox_test")
+	return store.NewPool(testpg.ClonePool(t, "legion_outbox_test"))
 }
 
 func outboxSuffix(t *testing.T) string {
@@ -230,6 +230,7 @@ func outboxSuffix(t *testing.T) string {
 }
 
 type blockingDispatch struct {
+	noArtifacts
 	mu      sync.Mutex
 	issue   dispatch.Issue
 	entered chan struct{}
@@ -424,6 +425,7 @@ func TestACredentialOrUncodedRefusalIsRiddenOutRatherThanDroppingTheWrite(t *tes
 // refusingDispatch answers SetStatus for a named status with a Dispatch refusal that will never
 // change, and takes every other status.
 type refusingDispatch struct {
+	noArtifacts
 	status string
 	reads  int
 	refuse map[string]*dispatch.Error
@@ -480,6 +482,7 @@ func (d *refusingDispatch) PutDesignGates(context.Context, string, []dispatch.De
 
 // boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
 type boardDispatch struct {
+	noArtifacts
 	status   string
 	failures int
 }
@@ -990,7 +993,7 @@ func (d *refusedOnceDispatch) SetStatusAt(ctx context.Context, issue dispatch.Is
 }
 
 // triageWakes counts the controller notices of kind triage the outbox holds for issue.
-func triageWakes(t *testing.T, pool *pgxpool.Pool, issue string) int {
+func triageWakes(t *testing.T, pool *store.Pool, issue string) int {
 	t.Helper()
 	var wakes int
 	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = $1 and issue = $2 and payload->>'kind' = $3`,

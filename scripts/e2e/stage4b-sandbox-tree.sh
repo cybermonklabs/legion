@@ -80,6 +80,15 @@
 #   session's Dispatch configuration resolves (DISPATCH_TOKEN_FILE, DISPATCH_TOKEN, or envoy.json's
 #   dispatch.token). Dispatch answers it as an agent session actor, which its HTTP routes and the
 #   document websocket require.
+# - LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE (required, no default) is the email of a person who has
+#   signed in to production Dispatch: the default assignee the run's project names when
+#   prerequisites creates it (ensure_project, lib/workflow.sh). Every project names the person its
+#   unowned work lands on, and that bearer acts for nobody, so Dispatch refuses its create naming
+#   none (400 INVALID_PROJECT) or naming somebody who never signed in (400 ASSIGNEE_NOT_ALLOWED),
+#   for a project that already exists too. The repository carries no person's email, and every
+#   refusal names the variable, never its value: the check before the call, and Dispatch's own
+#   answer, which names the email as the operator spelled it and which scrub (below) prints with
+#   the variable's name in its place.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
 # - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
@@ -116,7 +125,8 @@
 #   the deployment repository's infrastructure, not this one. LEGION_E2E_PROJECT need not already
 #   exist as a Dispatch project: prerequisites creates it before the lock when it is missing
 #   (ensure_project, lib/workflow.sh), a proof-human write like every other, over the agents'
-#   bearer and naming the proof human's session as its actor.
+#   bearer, naming the proof human's session as its actor and LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE
+#   as its default assignee.
 # - LEGION_E2E_POD_FILE, in a development run stopped at `deployment-pod-block` only, names a JSON
 #   file holding a deployment's own worker pod block (`runtime.kubernetes.pod`: service_account,
 #   env, volumes, volume_mounts), which the run's legion.yaml carries in place of the operator
@@ -171,6 +181,7 @@ runtime_kubeconfig=${LEGION_E2E_RUNTIME_KUBECONFIG:-$HOME/.kube/legion-daemon-pr
 runtime_context=${LEGION_E2E_RUNTIME_CONTEXT:-}
 image=${LEGION_E2E_IMAGE:-}
 dispatch_token_file=${LEGION_E2E_DISPATCH_TOKEN_FILE:-}
+dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}
 envoy_token_secret_id=${LEGION_E2E_ENVOY_TOKEN_SECRET_ID:-}
 until=${STAGE4B_UNTIL:-}
 skip_controller=${STAGE4B_SKIP_CONTROLLER:-}
@@ -242,27 +253,30 @@ pod_sessions_dir=/home/legion/.omp/profiles/legion/agent/sessions
 stream=ENVOY_NOTIFICATIONS
 # The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue the
 # daemon has started, a root or a child, so tree 1's children count against this cap as its root
-# does, and since INFRA-1909 an issue keeps that slot until it is done or leaves
-# the workflow. Four is the run's own peak under that rule, reached twice. At
-# issue-independence: tree 1's root and its two children beside tree 2's root, which is where the
-# cap stands full and tree 3, set todo there, waits for it. At children-first-acceptance: tree 1's
-# root, which keeps its slot in `accepting` now, beside tree 3 and children 3 and 4 — tree 2 has
-# left the workflow by then (issue-cap-moves) and child 2 is parked again (child-reentered), so
-# those four are the whole of it. Trees 3 and 4 each take a slot the issues before them leave:
-# tree 3 the one child 1's close and child 2's park free, tree 4 the one tree 3's own backlog
-# frees at controller-walk.
+# does, and since dispatch://INFRA-2560 an issue holds one of the cap's slots from the moment the
+# daemon starts it until its work is past its review — accepting, retro and merging hold
+# none — or until it is done or Dispatch takes it out of the workflow. Four is
+# the run's own peak under that rule, reached once, at issue-independence: tree 1's root and its
+# two children beside tree 2's root, which is where the cap stands full and tree 3, set todo
+# there, waits for it. The later gathering is three and not four: at children-first-acceptance
+# tree 1's root stands in accepting and holds no slot, so tree 3 and children 3 and 4 are the
+# whole of it — tree 2 has left the workflow by then (issue-cap-moves) and child 2 is parked again
+# (child-reentered). Trees 3 and 4 each take a slot the issues before them leave: tree 3 the one
+# child 1's close and child 2's park free, tree 4 the one tree 3's own backlog frees at
+# controller-walk.
 admission_cap=4
 # Tree 1's children that run at once: the two filed while its planner holds (issue-independence),
 # each in an issue pod of its own under tree 1's architect and each holding a slot of its own.
 # Children 3 and 4, filed at children-first-acceptance, run while the root stands in accepting
-# holding its own slot, and are parked there; with tree 2 gone and child 2 parked they raise no
+# holding no slot at all, and are parked there; with tree 2 gone and child 2 parked they raise no
 # peak either.
 tree1_children=2
 # The pods the run needs placed at once, every one an issue pod: the cap's issues, since an issue
 # the daemon has started runs in one pod of its own, and an issue keeps its pod past its slot — a
-# root in `awaiting_merge` holds none and keeps its pod. The peak of pods is the peak of slots
-# here: tree 1, tree 3 and children 3 and 4 at children-first-acceptance, and the four of
-# issue-independence before them. The run launches no controller pod: its controller starts from
+# root in a phase past its review holds none and keeps its pod. Four pods stand at each
+# gathering: the four slot holders of issue-independence, and, at children-first-acceptance, tree
+# 1 with its pod and no slot beside tree 3 and children 3 and 4, which is four pods against three
+# slots. The run launches no controller pod: its controller starts from
 # the operator shell (controller). preflight refuses, BLOCKED, a pool with room for fewer.
 run_pods_at_once=$admission_cap
 # The run's reservations: the cpu and memory every container of an issue pod carries as both its
@@ -1389,11 +1403,38 @@ read_bearers() {
   [ -s "$work/dispatch-token" ] || fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
   [ -s "$work/envoy-token" ] || fail "Secrets Manager returned an empty bearer for LEGION_E2E_ENVOY_TOKEN_SECRET_ID"
 }
-# scrub replaces each production service's host with the variable that names it: the run prints
-# none of them, and a tool's error (a refused connection, an unresolved name) may carry one. A host
-# is matched in any case, since address-moved-env-same-pod hands the Envoy host upper-cased.
+# scrub replaces each production service's host with the variable that names it, and the run's
+# default assignee with LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE: the run prints none of them, and a
+# tool's error (a refused connection, an unresolved name) may carry a host, and Dispatch's refusal
+# of the project create (ensure_project, lib/workflow.sh) the email. Each is matched in any case,
+# since address-moved-env-same-pod hands the Envoy host upper-cased. The email is replaced first,
+# so a host inside it cannot split it, and in three spellings, longest first: as Dispatch's
+# refusal writes it, the email Go-quoted (`%q`, `\` and `"` escaped with a backslash) and then
+# JSON-encoded (Go's encoding/json escaping `\` and `"` again, and `&`, `<` and `>` as `\u0026`,
+# `\u003c` and `\u003e`); as JSON-encoded alone; and as the operator wrote it. Each spelling has
+# every character sed's regular expression or the `#` delimiter reads as special escaped, since an
+# email may hold `.`, `#` and others; prerequisites refuses one holding whitespace, so it is one
+# line.
 scrub() {
   local args=() i names=(LEGION_E2E_DISPATCH_URL LEGION_E2E_ENVOY_URL LEGION_E2E_NATS_URL LEGION_E2E_MODEL_GATEWAY_URL) h
+  local person=${dispatch_default_assignee:-} spellings=() text spelling c
+  if [ -n "$person" ]; then
+    # The Go-quoted email, then each of the two as JSON writes it inside a string.
+    text=${person//'\'/'\\'}
+    text=${text//'"'/'\"'}
+    for spelling in "$text" "$person"; do
+      spelling=${spelling//'\'/'\\'}
+      spelling=${spelling//'"'/'\"'}
+      spelling=${spelling//'&'/'\u0026'}
+      spelling=${spelling//'<'/'\u003c'}
+      spellings+=("${spelling//'>'/'\u003e'}")
+    done
+    for spelling in "${spellings[@]}" "$person"; do
+      spelling=${spelling//'\'/'\\'}
+      for c in '[' '.' '*' '^' '$' '#'; do spelling=${spelling//"$c"/"\\$c"}; done
+      args+=(-e "s#$spelling#<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>#gI")
+    done
+  fi
   for i in "${!service_hosts[@]}"; do
     h=${service_hosts[$i]%%:*}
     [ -n "$h" ] && args+=(-e "s#${h//./\\.}#<${names[$i]}>#gI")
@@ -1448,6 +1489,10 @@ linger_hours: 0.5
 # fixture tells each look to ask for its next one an hour on, past this bound, so no look of the
 # agent's own comes between the first and the bound's last.
 production_check_hours: 0.25
+# The stalled-tree notice out of the run's reach (596 hours, the loader's maximum): daily-report
+# proves that the daemon's tick is the quiet day's only wake, and at the six-hour default a tree
+# of the run quiet through that window would add a tree-stalled wake to it.
+stalled_tree_notice_hours: 596
 controller_wake_interval_seconds: 60
 instructions: $work/instructions.md
 $(<"$work/github-apps.yaml")
@@ -3275,6 +3320,11 @@ case $dispatch_token_mode in
 esac
 [ -n "$(tr -d '[:space:]' <"$dispatch_token_file")" ] ||
   fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
+# The person the run's project names as its default assignee, an email Dispatch holds to somebody
+# who has signed in: refused here, unset or not shaped as an email, before ensure_project's create,
+# which Dispatch would otherwise refuse after the run had begun. The value is never printed.
+[[ $dispatch_default_assignee =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] ||
+  fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email: it names the person, by the email they signed in to production Dispatch with, whom the run's project names as its default assignee"
 [[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
   fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
 # Legion's two role Apps proved against GitHub before the run's first write anywhere
@@ -4792,8 +4842,9 @@ note "the reviewer approved pull request #$pr_number at its head; its thread the
 # the tree's architect, told by the reviewer's phase-finished notice, accepts with sign_off or sends
 # the issue back. The wait is for accepting itself, read within a poll of the reviewer's completion;
 # the architect acts on no notice under the proof's instructions, so the issue stands there until
-# children-first-acceptance's prompt. A root in accepting keeps the admission slot it took when
-# the daemon started it: no worker of it runs, and the slot is not a worker.
+# children-first-acceptance's prompt. A root in accepting holds no admission slot: its work is
+# past its review, so the daemon takes the row back there, while its tree stays live and its
+# architect keeps its pod.
 on_tree "$tree1" until_true 900 "$tree1 to leave reviewing for accepting" issue_phase "$tree1" accepting
 state_file accepting
 until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
@@ -4806,11 +4857,11 @@ pending_phase=$(claim_pending_phase "$tree1" implementer)
 [ "$pending_phase" != retro ] || fail "the implementer of $tree1 holds a retro task at accepting: the approval started a worker"
 jq -e --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)] | length == 0' "$evidence/accepting.json" >/dev/null ||
   fail "a status write is pending for $tree1 at accepting, which writes none: $(jq -c --arg issue "$tree1" '[.pendingStatusWrites[]? | select(.issue == $issue)]' "$evidence/accepting.json")"
-jq -e --arg issue "$tree1" '(.admission.active | index($issue)) != null and (.admission.trees | index($issue)) != null' "$evidence/accepting.json" >/dev/null ||
-  fail "$tree1 holds no admission slot at accepting, or its tree is not live: $(jq -c '{active: .admission.active, trees: .admission.trees}' "$evidence/accepting.json")"
+jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and (.admission.trees | index($issue)) != null' "$evidence/accepting.json" >/dev/null ||
+  fail "$tree1 still holds an admission slot at accepting, or its tree is not live: $(jq -c '{active: .admission.active, trees: .admission.trees}' "$evidence/accepting.json")"
 dispatch_status_is "$tree1" needs_review >/dev/null ||
   fail "Dispatch shows $tree1 $(dispatch_get "issues/$tree1" | jq -r .status) at accepting, want needs_review, which the move to accepting leaves alone"
-note "the reviewer's approval moved $tree1 to accepting (no worker started, the slot kept, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
+note "the reviewer's approval moved $tree1 to accepting (no worker started, the slot given back, the board still needs_review, the architect holding the reviewer's phase-finished notice)"
 pass
 
 begin children-first-acceptance
@@ -4825,9 +4876,10 @@ begin children-first-acceptance
 #
 # They are filed here, and nowhere earlier or later, for three reasons. They live through no
 # checkpoint that judges every live claim of tree 1 (the restart and both address moves all come
-# later). The root in accepting keeps its own slot, so it, tree 3 and these two children are the
-# four of admission_cap 4 — tree 2 left the workflow at issue-cap-moves and child 2 is parked
-# again — which keeps the run within the cap and within the pods preflight sized the pool for. And an issue
+# later). The root in accepting holds no slot of its own, so tree 3 and these two children are
+# three of admission_cap 4 — tree 2 left the workflow at issue-cap-moves and child 2 is parked
+# again — and the root's pod beside their three is the four pods preflight sized the pool
+# for. And an issue
 # may not enter a tree whose root is already accepted: from retro onwards the daemon holds such a
 # child at admitted and starts nothing for it (CHILD_UNDER_ACCEPTED_PARENT, record.Accepted),
 # so accepting is the last moment of tree 1's run at which a child of it still runs.
@@ -5961,7 +6013,8 @@ controller_launched_with_steps() {
 }
 controller_launched_with_steps || fail "no process in $work/controller-state/controller was launched with '$steps_line'"
 note "the controller's Oh My Pi was launched with '$steps_line'"
-# (2) With tree 3 out, a slot stands free (tree 1, in merging, holds the only one taken), so an unlabelled leaf set to
+# (2) With tree 3 out, a slot stands free — tree 1 stands in merging, past its review, and holds
+# none — so an unlabelled leaf set to
 # todo wakes the controller with `todo on <KEY>`. One issue can stand in both lists — an issue
 # holding a row waits in the line while its work comes back to it — so the waiting issues
 # subtracted here are the ones `admission.active` does not name: subtracting such an issue twice
@@ -6002,7 +6055,7 @@ begin daily-report
 # The controller's daily report runs by rule, not on a human's word, so the proof's instructions
 # exempt it from their wait for a targeted message and fit its day to this run: a report issue of
 # this run's own (so the skill's "no report message from today" guard starts fresh), posted on the
-# first turn a tick starts. With every slot taken, the tick is the quiet day's only wake.
+# first turn a tick starts. Nothing of the run moves in this window, so the tick is the quiet day's only wake.
 if [ -n "$skip_controller" ]; then
   skipped "STAGE4B_SKIP_CONTROLLER: no controller ran"
 else
@@ -6406,7 +6459,7 @@ closed_last=$(log_lines "workflow: a merged root closes once its last child left
 until_true 120 "the daemon's done status on the Dispatch board" dispatch_status_is "$tree1" "done"
 state_file merged-closed
 # No issue of tree 1 holds an admission slot once it closes: the root's row went when it reached
-# awaiting_merge, its children's at their parks, and the close frees whatever is left.
+# accepting, past its review, its children's at their parks, and the close frees whatever is left.
 jq -e --arg issue "$tree1" '(.admission.active | index($issue)) == null and ([.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key] | length) == 0' \
   "$evidence/merged-closed.json" >/dev/null ||
   fail "an issue of tree $tree1 holds an admission slot at its close: $(jq -c --arg issue "$tree1" '{active: .admission.active, slotted: [.issues | to_entries[] | select(.value.tree == $issue and .value.slot != null) | .key]}' "$evidence/merged-closed.json")"

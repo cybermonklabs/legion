@@ -17,7 +17,7 @@ Every path it cites is in cybermonklabs/legion.
   base. Otherwise, never reintegrate the base to pick up the default branch or refresh CI. Each
   merge is a new head, reruns CI and can void a review. A single failed CI job is re-run on its
   own (*Never waiting on CI* in `skill://legion-worker/references/pr-body.md`). After any forward merge, build the branch and
-  record the issue's checks again at the merge head, even with no text conflict: a clean merge once changed a
+  record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run), even with no text conflict: a clean merge once changed a
   function's arity under the branch's own callers. Before you race another tree's pull request on
   shared files, `envoy_publish` to its implementer's role topic, ask when its next push lands, and
   merge once, after it. A forward merge that leaves the branch's diff unchanged is a

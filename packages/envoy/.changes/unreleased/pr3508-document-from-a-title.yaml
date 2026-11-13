@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  A JSON create carrying a name and no content makes a document that holds nothing, so a person
+  names a document in Dispatch and writes the first word in it. A write with no content under a
+  name or slug the owner already holds is refused `400 ARTIFACT_INPUT`, naming the document that
+  holds the title, and one whose minted slug is a role slug is refused `400 ARTIFACT_ROLE_NAME`.
+
+  `PATCH /api/v1/artifacts/{id}` corrects a document's title without moving its slug, its
+  reference key or its role. `DELETE /api/v1/artifacts/{id}` removes a document of an issue that
+  is still untouched, and says which test a document that is not untouched failed. Both need the
+  person scope.

@@ -66,8 +66,9 @@ func xdgHome(stateDir string) string { return filepath.Join(stateDir, "home") }
 // A machine that carries none answers an error, which is no launch failure: the pane is told no
 // PUBLIC_LEAK_CHECK and every public write from it is refused with the setup error naming the
 // check, which is the honest answer on a machine that writes to public repositories with no
-// check. Legion installs none there — the pinned install is the pod's (leakguard.Install) — so
-// the cure is the check's own installer, on the machine the daemon runs on.
+// check. Legion installs none there: the pinned install is a pod's, which the pod's launcher makes
+// from the check the daemon reads at the worker image's pin and pushes to it. So the cure is the
+// check's own installer, on the machine the daemon runs on.
 func resolveLeakCheck(environ []string) (string, error) {
 	return leakguard.New(leakguard.Options{Env: environ}).Resolve()
 }

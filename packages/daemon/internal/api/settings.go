@@ -82,6 +82,27 @@ type Settings struct {
 	// check can drive each bound inside one run.
 	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
 	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// StalledTreeNoticeHours is `stalled_tree_notice_hours`, a decimal number of hours as the four
+	// above are: how long a tree this daemon runs may be quiet before the daemon tells the project's
+	// controller once for that tree. The daemon sends it only where nothing of the tree is at work,
+	// and either at least one quiet issue of it waits by no rule of the daemon's own or the
+	// project's line can no longer move: that line can still move while some issue of the project
+	// holds a slot and waits by no such rule, or some claim of the project is at work
+	// (dispatch://INFRA-2560 R5). No value turns that notice off, since the loader refuses zero for
+	// every key in hours; a deployment that wants fewer notices raises the number.
+	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
+	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
+	// phase worker's last recorded step may be in the past before the daemon reads that worker as
+	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
+	// five above are in hours, because the bound is tens of minutes and the file takes it that
+	// way (config's readMinutes).
+	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
+	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
+	// the background work a phase worker's own session reports may stand before the daemon names
+	// that worker to its architect, which it does once and with nothing sent. It is in hours,
+	// where the bound above is in minutes, because this bound is hours and the file takes it
+	// that way (config's readHours).
+	WorkerBackgroundHours float64 `json:"worker_background_hours"`
 	// PodUpdateMaxOpenRounds and PodUpdateRoundsPerMinute are `pod_update_max_open_rounds` and
 	// `pod_update_rounds_per_minute`: how many issues may hold an open update round at once, and
 	// how many rounds one sweep may open in a minute. Each is null, and neither is omitted, when
@@ -369,6 +390,9 @@ func SettingsOf(cfg config.Config) Settings {
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
 		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
 		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		StalledTreeNoticeHours:                  cfg.StalledTreeNotice.Hours(),
+		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
+		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,
 		PodUpdateRoundsPerMinute:                cfg.PodUpdateRoundsPerMinute,
 		ReviewRoundCap:                          cfg.ReviewRoundCap,

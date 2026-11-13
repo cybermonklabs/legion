@@ -41,7 +41,7 @@ type roleClaimHandBackRig struct {
 func newRoleClaimHandBackRig(t *testing.T, sessionID, role string) *roleClaimHandBackRig {
 	t.Helper()
 	registry, sessions := setupSessionsTest(t, nil, nil)
-	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions})
+	deps := withRoleClaimDrain(t, &listenerDeps{client: setupPublishTestClient(t), registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)})
 	routes := http.NewServeMux()
 	registerV1Routes(routes, deps, "test-machine", logging.New("test"))
 	return &roleClaimHandBackRig{
@@ -55,13 +55,14 @@ func newRoleClaimHandBackRig(t *testing.T, sessionID, role string) *roleClaimHan
 }
 
 // register is the heartbeat POST /v1/interests/subscribe a running client repeats, carrying the
-// topics it names and the process making it. Every client this listener serves sends a topic
-// list on it, and none of them names the role's own lane topic there: the lane topic reaches the
+// topics it names, the process making it and the ask for the session's own consumer, as every
+// registration this build stores does. Every client this listener serves sends a topic list on
+// it, and none of them names the role's own lane topic there: the lane topic reaches the
 // session's interest record from the claim (POST /v1/roles/set) and stays on it because a
 // registration merges its topics into the record rather than replacing them.
 func (r *roleClaimHandBackRig) register(instance string, topics string) {
 	r.t.Helper()
-	body := fmt.Sprintf(`{"session_id":%q,%s"self_subscribed":true,"client_instance_id":%q}`, r.session, topics, instance)
+	body := fmt.Sprintf(`{"session_id":%q,%s"self_subscribed":true,"delivery":{"consumer":true,"epoch":"e"},"client_instance_id":%q}`, r.session, topics, instance)
 	recorder := r.send(http.MethodPost, "/v1/interests/subscribe", body)
 	if recorder.Code != http.StatusOK {
 		r.t.Fatalf("registration of %s by process %q: status %d %s, want 200", r.session, instance, recorder.Code, recorder.Body.String())

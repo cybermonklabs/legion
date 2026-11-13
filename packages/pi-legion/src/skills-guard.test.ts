@@ -523,7 +523,7 @@ test("the worker skill tells a role to read the pull request's head after its ow
     "about ten seconds after your push, again about ten seconds later, and a last time about thirty seconds after that, with a read that gives the pushed commit ending the step there and only the last read deciding a mismatch",
     "This read is of the pull request's own head and of no check, so the wait it makes is not a wait on CI",
     "an empty one when your work is complete",
-    "A new head is a different commit, so record each `before_merge` check again at the new head; the one push of text fixes after an approval that left threads open is the exception its own rule gives (`skill://legion-worker/references/merge-gate.md`), where a passing result stays current across a diff that changes no code that runs.",
+    "A new head is a different commit, so record each `before_merge` check again at the new head; the one push of text fixes after an approval that left threads open is the exception its own rule gives (`skill://legion-worker/references/merge-gate.md`), where a passing result stays current across a diff that changes no code that runs. A check carrying `ci_check` is CI's, so skip it.",
     "tell your architect the commit you pushed, the head each read gave and the time of each, and end the turn with a WAITING line naming that answer rather than completing: a phase completed here hands the next role a commit the pull request does not name.",
     "The push you make to answer an update task is the exception: that task has you answer the daemon and end the turn at once, so make this read in your next turn, before your phase completes.",
     "The merger and the reviewer push nothing, so this step never falls to either; each reports a mismatch it sees to the architect.",
@@ -635,6 +635,84 @@ test("no Go file of the daemon reads a review thread's state", () => {
   // the same paths must find what the daemon does read of a review — its decision — so the
   // empty list above is an absence and not a search that reached nothing.
   expect(search("ReviewDecision").length).toBeGreaterThan(0);
+});
+
+// dispatch://INFRA-3204: a check carrying `ci_check` is proved by the CI run it names, so no role
+// runs it or records its result, and `dispatch results` derives that result. The worker skill's
+// page holds the whole rule, and each skill text that orders a check run, recorded or judged, or
+// lists a check's attributes, carries the exception in one phrase, counted once per file, as does
+// the worker prompt's copy of the push step above. The role prompt parts are pinned in
+// roles_test.go `TestEveryRolePartCarriesItsGuidanceRule`, and `dispatch-writing-specs` in the
+// Envoy plugin's guard.
+test("each text that orders a check run or recorded leaves out a check CI proves", () => {
+  countedOncePerFile("check carrying `ci_check` is CI's", [
+    "skills/legion-worker/references/ci-checks.md",
+    "skills/legion-worker/SKILL.md",
+    "skills/legion-worker/references/pr-body.md",
+    "skills/legion-worker/references/merge-gate.md",
+    "skills/legion-retro/SKILL.md",
+    "skills/legion-architect/SKILL.md",
+    "skills/legion-architect/references/design-gate.md",
+    "packages/daemon/internal/prompts/go/worker-common.md",
+  ]);
+});
+
+// The same rule where a text orders a check's evidence judged or recorded. Retro's trigger is met
+// by a derived result and names R5's three cases: a derived fail, or a run that concluded and
+// proved nothing, goes back to implementing; a run not concluded is waited for; and a name no run
+// answers is the architect's finding. The architect's last round records only the checks with no
+// `ci_check`, and the tester reads a `ci_check` job as that check's evidence, which its prompt's
+// core part says too.
+test("a derived result satisfies the passages that judge or record a check's evidence", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  expect(retro).toContain(
+    "A `ci_check` check has no pass standing at that head when its derived result is a fail, or its run concluded `skipped`, `neutral` or `cancelled`."
+  );
+  expect(retro).toContain(
+    "Wait for a run that has not concluded, and read again where GitHub could not be read."
+  );
+  expect(retro).toContain("Neither wait nor that finding moves the issue back.");
+  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
+    "run each check with no `ci_check` on the default branch and record each result"
+  );
+  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
+    "recorded for no later step, except a `ci_check` job"
+  );
+  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
+    "A name no run answers once the head's checks have settled goes to the architect as a finding."
+  );
+  expect(
+    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
+  ).toContain(
+    "record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run)"
+  );
+});
+
+// The architect writes a check as `ci_check` where a CI job on an ordinary pull request already
+// makes its proof, so the mechanism is used rather than only available (R5).
+test("the architect writes a check CI already proves as ci_check", () => {
+  expect(
+    collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"))
+  ).toContain(
+    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write that check as `ci_check` rather than as a command."
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
+    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write `ci_check` rather than a command."
+  );
+});
+
+// A `ci_check` that no run of its name answers is a defect of the check's words, which the
+// architect corrects, and no role sends that to an implementer who cannot cure it
+// (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass
+// back names that case and gives it to the architect, so the two texts say the same thing
+// (dispatch://INFRA-3204, tester round 5).
+test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  const sentences = retro.split(/(?<=\.)\s+/);
+  const absent = sentences.filter((sentence) => sentence.includes("`absent`"));
+  expect(absent.length).toBeGreaterThan(0);
+  expect(absent.some((sentence) => sentence.includes("architect"))).toBe(true);
+  expect(absent.some((sentence) => sentence.includes("to: implementing"))).toBe(false);
 });
 
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites

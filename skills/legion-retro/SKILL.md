@@ -45,12 +45,20 @@ for a finished retro only.
    at the version your task's `Handoff:` line names, `--phase review --version <n>`, the command
    that line quotes). A pass stands for every `before_merge` check of the issue at the approved
    head, from the implementer and from the tester alike, and the pull request
-   body's `Checks` block carries each of those lines. In
+   body's `Checks` block carries each of those lines. A check carrying `ci_check` is CI's: the
+   result that `dispatch results` derives is the pass it needs, and its CI job is its evidence
+   (`skill://legion-worker/references/ci-checks.md`). In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. When a check has no pass standing at that head, or its only evidence is a unit suite,
-   call the `legion` tool's `request_backward_move` with `to: implementing` for the implementer's
-   result or `to: testing` for the tester's, its `reason` naming the check by its block id. When
+   request. A `ci_check` check has no pass standing at that head when its derived result is a
+   fail, or its run concluded `skipped`, `neutral` or `cancelled`. Wait for a run that has not
+   concluded, and read again where GitHub could not be read. Send a name that no run answers
+   (`absent`) to the architect as a finding, because the words of the check are wrong. Neither
+   wait nor that finding moves the issue back. When a check has no pass standing at that head, or
+   a check with no `ci_check` has a unit suite as its only evidence, call the `legion` tool's
+   `request_backward_move` with `to: implementing` for the implementer's result or a `ci_check`
+   check, or `to: testing` for the tester's result, its `reason` naming the check by its block
+   id. When
    retro runs again, that gap is your first learning.
 2. **Get a second reading**, because a reader without your context sees what you stopped seeing.
    First list, in your session, the constraints the issue did not state, choices between two

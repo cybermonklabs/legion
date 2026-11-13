@@ -26,16 +26,59 @@ var ErrMalformedInterest = errors.New("malformed interest record")
 // it belongs to. A read of a bucket since recreated, or one the revision fence drops, is answered
 // but not cached: the new bucket's read delivers what it holds.
 func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) {
-	if item, ok := r.Cached(sessionID); ok {
-		return item, nil
+	item, _, err := r.getWithRevision(ctx, sessionID, false)
+	return item, err
+}
+
+// RefreshAt is Get read from the bucket and never from the cache, with the bucket revision the
+// row it answers was read at, for a caller whose answer must hold a write its own cache need not
+// hold yet: the listener's repair of a session's consumer, which filters it on the row of a
+// registration made on another listener (cmd/listener's registeredTarget, which reads that
+// session's record beside this row through session.SessionRegistry.Refresh). The row read is
+// cached as Get's own bucket read is, and a row this build cannot decode is ErrMalformedInterest
+// here too. The bucket read is a direct get: bus.KeyValue.Get states that limit and why this
+// build leaves it standing, and registeredTarget what it costs the repair reading this.
+//
+// The revision is what a write of the filter built from this row is fenced on (cmd/listener's
+// fenceFilterWrite): a row the bucket answers at a higher revision afterwards moved under that
+// write, so the filter it carries may be an older row's, over a newer registration's. A session
+// the bucket holds no row for answers revision 0 with nats.ErrKeyNotFound, and a row this build
+// cannot decode answers the revision a write of it is fenced on with ErrMalformedInterest.
+func (r *Registry) RefreshAt(ctx context.Context, sessionID string) (Interest, uint64, error) {
+	return r.getWithRevision(ctx, sessionID, true)
+}
+
+// getWithRevision is Get with the bucket revision the record it answers was read at: the revision
+// the copy's fence holds on a cache hit, the entry's own on a bucket read, and 0 for a session the
+// bucket holds no record for. A record this build cannot decode carries its revision too, since
+// the write that replaces it is conditional on it (putInterestAt). A cache hit whose fence belongs
+// to another epoch answers 0 as well (kvwatch.Copy.FenceFor): the write that names it then creates
+// the record, the bucket refuses it for a record it holds (ErrInterestPlanConflict), and the plan
+// made again over the bucket's own row carries the revision that write needs.
+//
+// fromBucket reads the bucket even when the cache holds the record, for a caller whose cache may
+// be behind a write its answer must hold: one whose compare-and-swap the bucket refused, since
+// the cache is then behind the row that refused it and a plan made from the cache would be
+// refused again (UpsertPlanned), and one reading the topics a registration on another listener
+// has just stored (RefreshAt).
+func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBucket bool) (Interest, uint64, error) {
+	if !fromBucket {
+		r.mu.RLock()
+		item, ok := r.cache.Get(sessionID)
+		_, cached := r.watcher.Handle()
+		revision := r.cache.FenceFor(cached, sessionID)
+		r.mu.RUnlock()
+		if ok {
+			return item, revision, nil
+		}
 	}
 	kv, epoch := r.watcher.Handle()
 	entry, answered, err := bus.Bounded(ctx, func() (nats.KeyValueEntry, error) { return kv.Get(sessionID) })
 	if !answered {
-		return Interest{}, fmt.Errorf("read %s's interest record: %w", sessionID, err)
+		return Interest{}, 0, fmt.Errorf("read %s's interest record: %w", sessionID, err)
 	}
 	if err != nil {
-		return Interest{}, err
+		return Interest{}, 0, err
 	}
 	var fresh Interest
 	if err := json.Unmarshal(entry.Value(), &fresh); err != nil {
@@ -44,12 +87,12 @@ func (r *Registry) Get(ctx context.Context, sessionID string) (Interest, error) 
 			slog.Uint64("revision", entry.Revision()),
 			slog.String("error", err.Error()),
 		)
-		return Interest{}, fmt.Errorf("%w: %w", ErrMalformedInterest, err)
+		return Interest{}, entry.Revision(), fmt.Errorf("%w: %w", ErrMalformedInterest, err)
 	}
 	r.mu.Lock()
 	r.cache.Put(r.watcher, epoch, sessionID, fresh, entry.Revision())
 	r.mu.Unlock()
-	return fresh, nil
+	return fresh, entry.Revision(), nil
 }
 
 // Cached returns sessionID's interest from the cache alone, with no bucket read on a miss, for a
@@ -66,19 +109,6 @@ func (r *Registry) Match(machineID string, topic string) []Interest {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.matchLocked(func(visit func(string)) { r.index.match(machineID, topic, visit) })
-}
-
-// MatchAll returns every cached interest whose topics match topic, on any machine, sorted by
-// SessionID for deterministic output: a sender that must confirm delivery to each subscribed
-// session needs them all, wherever each session registered.
-func (r *Registry) MatchAll(topic string) []Interest {
-	r.mu.RLock()
-	out := r.matchLocked(func(visit func(string)) { r.index.matchAll(topic, visit) })
-	r.mu.RUnlock()
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].SessionID < out[j].SessionID
-	})
-	return out
 }
 
 // matchLocked collects the cached interests walk visits, once each: a session's interest can hold

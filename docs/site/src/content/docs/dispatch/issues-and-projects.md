@@ -12,6 +12,9 @@ as `CORE`, and its issues are numbered under it: `CORE-1`, `CORE-2`.
 
 The sidebar lists every project with its count of open asks. You create a project in
 **Settings → Projects** with a key and a name, and an agent creates one with `dispatch project`.
+Every project also names a default assignee, the person its unowned work lands on: a project you
+create takes you, and an agent's `dispatch project --default-assignee <email>` names the person
+it is for.
 A key that is already taken is refused, whoever asks.
 
 A project page has up to three tabs:
@@ -151,12 +154,14 @@ Inbox row. Choose it and pick a value. Closed issues cannot change priority.
 ### Assignee
 
 The assignee is the person every ask on the issue waits on until somebody hands that ask to
-another person, and whose Inbox lists those asks.
+another person, and whose Inbox lists those asks. An issue nobody holds leaves its asks on the
+project's default assignee, so every ask reaches somebody.
 Change it from the issue header. The choices are **Unassigned** and every login allowed to sign in.
 An agent that creates an issue without naming one gets the person its token acts for, else the
 parent's assignee, else the project's default assignee: the person you name in the projects table
-in **Settings → Projects**, who takes every issue the chain leaves without an owner. Only a person
-sets a project's default; no agent command does.
+in **Settings → Projects**, who takes every issue the chain leaves without an owner. Every project
+names one, so every new issue has an assignee. A person moves a project's default on that page,
+and an agent names the first one in the call that creates the project.
 
 ### Labels
 

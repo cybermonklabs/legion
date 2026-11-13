@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import { lstat, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -374,16 +375,43 @@ const withoutJj = skipWithout("jj");
 restoreEnvironment(versionControlNames);
 
 /**
+ * A stand-in shared public leak check under `root`, whose path {@link isolatedHome} names: a
+ * script that reads its standard input, as the real check does, so nothing is left in a pipe when
+ * it exits, and clears the write it was asked about. It answers what a passing check answers, and
+ * nothing else.
+ *
+ * The first of the two rows below pushes, and a push runs under whatever `git` is first on
+ * `PATH`. In an issue pod that is Legion's wrapper (`/opt/legion/bin/git`), which points a push at
+ * a hook that runs the leak guard, and the guard refuses a push it can resolve no shared check
+ * for. With no check named, that push stops with `LEAK CHECK SETUP ERROR` and the row fails
+ * before it tests anything, while the same row passes on a runner whose git has no such wrapper.
+ * The stand-in makes the two one run.
+ */
+function passingLeakCheck(root: string): string {
+  const check = path.join(root, "public-leak-check.sh");
+  writeFileSync(check, "#!/bin/sh\ncat >/dev/null 2>&1\nexit 0\n", { mode: 0o700 });
+  return check;
+}
+
+/**
  * The environment this file's real jj and git run in, and the one it puts on the test process: the
  * shared isolation fixture over a home under `root`, so neither the developer's
  * `~/.jjconfig.toml`, nor their `~/.gitconfig`, nor the system gitconfig decides a result. It
  * reaches the test process too, because `pathJj` — the code under test — starts jj with the
  * process's own environment.
+ *
+ * The leak check is named for the children alone, not put on this process: it is a file under
+ * `root`, which this file's own cleanup removes, and a name left on the process would outlive it
+ * for whatever test file runs next.
  */
 function isolatedHome(root: string): Record<string, string> {
   const isolated = versionControlEnvironment(path.join(root, "home"));
   Object.assign(process.env, isolated);
-  return { PATH: process.env.PATH ?? "", ...isolated };
+  return {
+    PATH: process.env.PATH ?? "",
+    ...isolated,
+    PUBLIC_LEAK_CHECK: passingLeakCheck(root),
+  };
 }
 
 /** Runs jj in `cwd` with the test's own environment, failing on a non-zero exit. */
@@ -478,8 +506,10 @@ test.skipIf(withoutJj)(
 );
 
 // A git lock an interrupted git or jj left in the workspace fails every jj that snapshots a change
-// into the working copy (jj rewrites the git index then), and nothing under a running pod removes
-// it. The failure names the lock and its age, and the lock stays.
+// into the working copy (jj rewrites the git index then). In a pod the roles container's launcher
+// sweeps such a lock once it is more than 15 minutes old and no process of the container holds it
+// open, so the note tells the role to run the command again; this test removes nothing either.
+// The failure names the lock and its age, and the lock stays.
 test.skipIf(withoutJj)(
   "a jj that fails on a stale git lock names it, its age, and when it goes",
   async () => {
@@ -498,7 +528,7 @@ test.skipIf(withoutJj)(
     await expect(failure).rejects.toThrow("Could not acquire lock for index file");
     await expect(failure).rejects.toThrow(
       new RegExp(
-        `git lock ${lock.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")} was last written 31m\\d+s ago and blocks this command\\. Do not remove it while the issue's pod runs: .* Replacing the issue's pod removes it\\. Under the tmux runtime nothing removes it`
+        `git lock ${lock.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")} was last written 31m\\d+s ago and blocks this command\\. The launcher of the issue's pod removes a git lock .* Under the tmux runtime nothing removes it: .* Run the command again in about 16 minutes\\. If the lock is still there after that time, tell the issue's architect\\.`
       )
     );
     expect((await lstat(lock)).isFile()).toBe(true);

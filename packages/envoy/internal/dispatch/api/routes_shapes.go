@@ -146,8 +146,8 @@ type deliveryWindowQuery struct {
 // issueResultsQuery is GET /api/v1/issues/{key}/results's query.
 type issueResultsQuery struct {
 	// At replaces what every check of the issue is compared with by this one commit, 40
-	// lowercase hex characters, and makes no read of GitHub. Any other value is 400
-	// INVALID_QUERY.
+	// lowercase hex characters; any other value is 400 INVALID_QUERY. The only read of GitHub it
+	// leaves is the check runs of a check CI proves, read at the issue's newest pull request head.
 	At string `query:"at"`
 }
 
@@ -479,7 +479,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusOK, Response: markdownRoundTripResponse{}, Request: markdownRoundTripInput{},
 	},
 	"GET /api/v1/projects":  {Status: http.StatusOK, Response: []model.Project{}},
-	"POST /api/v1/projects": {Status: http.StatusCreated, Response: model.Project{}, Request: createProjectInput{}},
+	"POST /api/v1/projects": {Status: http.StatusCreated, Response: createdProject{}, Request: createProjectInput{}},
 	"GET /api/v1/projects/{key}/artifacts": {
 		Status: http.StatusOK, Response: []artifactRead{}, Params: projectArtifactsQuery{},
 	},
@@ -772,6 +772,10 @@ var routeShapes = map[string]routeShape{
 	"GET /api/v1/artifacts/{id}/subscribers":                 {Status: http.StatusOK, Response: []subscriber{}},
 	"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}": {Status: http.StatusNoContent},
 	"GET /api/v1/artifacts/{id}":                             {Status: http.StatusOK, Response: artifactRead{}},
+	"PATCH /api/v1/artifacts/{id}": {
+		Status: http.StatusOK, Response: model.Artifact{}, Request: renameArtifactInput{},
+	},
+	"DELETE /api/v1/artifacts/{id}": {Status: http.StatusNoContent},
 	"POST /api/v1/artifacts/{id}/rebuild": {
 		Status: http.StatusOK, Response: docs.RebuildReport{}, Request: rebuildArtifactInput{},
 	},
