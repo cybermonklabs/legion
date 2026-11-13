@@ -43,6 +43,8 @@ function describe(event: DispatchEvent): string | AgentPart[] {
       return "Thread read";
     case "decision.kept":
       return "Kept a decision";
+    case "priority.updated":
+      return `Priority ${event.payload.change}: ${event.payload.id}`;
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.answered":

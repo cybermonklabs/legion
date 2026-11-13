@@ -18,6 +18,7 @@ import {
   issueQuery,
   myRepliesCountQuery,
   prioritiesQuery,
+  priorityHistoryQuery,
   prioritySummaryQuery,
   projectArchitectureSourcesQuery,
   projectIssuesQuery,
@@ -148,6 +149,8 @@ const READS = {
   // The Priorities page's body and the rail's two counts: one key family, the summary under the
   // body's prefix.
   priorities: { key: prioritiesQuery().queryKey },
+  // One priority's page margin, its history, under the same prefix.
+  priorityHistory: { key: priorityHistoryQuery("linkage-closure").queryKey },
   prioritySummary: { key: prioritySummaryQuery().queryKey },
   projectInbox: { key: ["inbox", "CORE"] },
   projectList: { key: projectIssuesQuery("CORE", []).queryKey },
@@ -546,6 +549,29 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail"],
     spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
   },
+  "a priority write refreshes the priorities reads and every advances listing, and no other issue list":
+    {
+      event: event(
+        "priority.updated",
+        { change: "updated", id: "linkage-closure" },
+        {
+          actor: { id: "bob", kind: "user" },
+          issue_key: null,
+          notify: false,
+          project: undefined,
+          seq: 0,
+        }
+      ),
+      refreshes: ["priorities", "prioritySummary", "priorityHistory", "advancesWork", "parkedWork"],
+      spares: [
+        "detail",
+        "projectList",
+        "labelledProjectList",
+        "otherProjectList",
+        "pinned",
+        "inbox",
+      ],
+    },
   "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
     {
       event: event(
@@ -1237,6 +1263,37 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
   expect(refreshesCollaborators(reprioritised)).toBe(false);
 });
 
+// One drag on the Priorities page is one `priority.updated`, and every open page of every reader
+// refetches on it: exactly the priorities reads and the advances-filtered issue listings, so the
+// drag refetches no other issue list a reader holds. A delete moves parked work into the other
+// fault list, which is why the advances listings are in it at all.
+test("a priority.updated refreshes ['priorities'] and ['issues', 'advances'] and nothing else", () => {
+  for (const change of ["created", "updated", "deleted"]) {
+    const incoming = event(
+      "priority.updated",
+      { change, id: "linkage-closure" },
+      {
+        actor: { id: "bob", kind: "user" },
+        issue_key: null,
+        notify: false,
+        project: undefined,
+        seq: 0,
+      }
+    );
+    expect(eventRefreshTargets(incoming, "alice")).toEqual([
+      { queryKey: ["priorities"] },
+      { queryKey: ["issues", "advances"] },
+    ]);
+    expect(refreshedReads(incoming).sort()).toEqual([
+      "advancesWork",
+      "parkedWork",
+      "priorities",
+      "priorityHistory",
+      "prioritySummary",
+    ]);
+  }
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, DispatchEvent> = {
@@ -1302,6 +1359,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "message.answered": event("message.answered", { id: "message-2" }),
   "message.created": event("message.created", { id: "message-2" }),
   "message.delivery": event("message.delivery", { target: "session:planner" }),
+  "priority.updated": event(
+    "priority.updated",
+    { change: "updated", id: "linkage-closure" },
+    { issue_key: null, project: undefined }
+  ),
   "project.created": event("project.created", {}, { issue_key: null }),
   "project.updated": event("project.updated", {}, { issue_key: null }),
   "result.recorded": event("result.recorded", {

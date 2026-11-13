@@ -12,6 +12,7 @@ import type {
   ArchitectureSyncedEventPayload,
   ArchitectureSyncFailedEventPayload,
   DisplayTree,
+  PriorityUpdatedEventPayload,
   ProjectDefaultAssigneeUpdatedEventPayload,
   RepoProjectUpdatedEventPayload,
 } from "./dispatch-api-core";
@@ -141,6 +142,12 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "decision.kept";
       readonly payload: DecisionKeptEventPayload;
+    })
+  /** A priority's write: it names no owner, so `issue_key` is null and `project` empty, and it
+   *  never notifies. */
+  | (DispatchEventBase & {
+      readonly type: "priority.updated";
+      readonly payload: PriorityUpdatedEventPayload;
     })
   | (DispatchEventBase & { readonly type: "issue.created"; readonly payload: IssueEventPayload })
   | (DispatchEventBase & { readonly type: "issue.updated"; readonly payload: IssueEventPayload })

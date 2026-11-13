@@ -10,6 +10,9 @@ body: |-
   live priority with the work under it and the two faults.
   `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts` carry the five priority
   routes, `IssueAdvance`, and `advances` and `advances_revision` on every issue shape.
+  `DispatchEvent` carries `priority.updated` (`PriorityUpdatedEventPayload {id, change}`, with
+  `change` one of `created`, `updated` and `deleted`), the ownerless event each priority write
+  appends.
 time: 2026-11-12T06:49:30.000000000Z
 custom:
     Issue: pr3767

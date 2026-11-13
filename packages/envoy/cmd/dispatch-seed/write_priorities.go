@@ -109,8 +109,10 @@ var priorityMemberTerms = `stated as (
 // the relation before there was anything to state it about, and the priority's margin would read
 // backwards.
 //
-// No event is appended beside them: `events` takes one owner, an issue or a project, and a
-// priority is neither, which is what prioritystore.NoEvent says on every row it writes.
+// No event is appended beside them, as the seed appends none for any row it writes: the
+// `priority.updated` a priority route appends is for the pages other readers have open, which a
+// database being seeded has none of, and prioritystore.NoEvent on every row says no event
+// recorded it.
 func (r *seedRun) writePriorities(ctx context.Context) error {
 	priorities := r.priorityPlans()
 	if err := r.inBatches(ctx, "priorities", len(priorities), batchRows,

@@ -288,6 +288,100 @@ func TestPriorityGoneTakesNoWrite(t *testing.T) {
 	}
 }
 
+// TestPriorityWriteAppendsOneQuietOwnerlessEvent reads the event each priority write announces
+// itself with to every other reader's open page: a create, a rename, a rank move and a delete
+// each append exactly one `priority.updated` naming the priority and the write, with no owner,
+// since a priority belongs to no project, and `notify` false, so it wakes nobody. A write the
+// route refuses rolls its transaction back and appends none.
+func TestPriorityWriteAppendsOneQuietOwnerlessEvent(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	var cursor int64
+	if err := database.Pool.QueryRow(ctx, `select coalesce(max(id), 0) from events`).Scan(&cursor); err != nil {
+		t.Fatalf("read the last event id: %v", err)
+	}
+	// appended answers the priority.updated events written since the last call, oldest first.
+	appended := func(what string) []model.PriorityEventPayload {
+		t.Helper()
+		rows, err := database.Pool.Query(ctx, `
+			select id, type, issue_key, artifact_id::text, project_key, seq, notify, payload
+			from events where id > $1 order by id
+		`, cursor)
+		if err != nil {
+			t.Fatalf("%s: read the events: %v", what, err)
+		}
+		defer rows.Close()
+		var payloads []model.PriorityEventPayload
+		for rows.Next() {
+			var eventType string
+			var issueKey, artifactID, projectKey *string
+			var seq int
+			var notify bool
+			var payload model.PriorityEventPayload
+			if err := rows.Scan(&cursor, &eventType, &issueKey, &artifactID, &projectKey, &seq, &notify, &payload); err != nil {
+				t.Fatalf("%s: read an event: %v", what, err)
+			}
+			if eventType != "priority.updated" {
+				t.Fatalf("%s appended a %s event, want priority.updated alone", what, eventType)
+			}
+			if issueKey != nil || artifactID != nil || projectKey != nil || seq != 0 || notify {
+				t.Fatalf("%s appended an event with issue %v artifact %v project %v seq %d notify %t, want no owner, seq 0 and notify false",
+					what, issueKey, artifactID, projectKey, seq, notify)
+			}
+			payloads = append(payloads, payload)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("%s: read the events: %v", what, err)
+		}
+		return payloads
+	}
+	once := func(what string, want model.PriorityEventPayload) {
+		t.Helper()
+		if got := appended(what); len(got) != 1 || got[0] != want {
+			t.Fatalf("%s appended %+v, want the one %+v", what, got, want)
+		}
+	}
+	none := func(what string, response *httptest.ResponseRecorder) {
+		t.Helper()
+		if response.Code < 400 {
+			t.Fatalf("%s: status=%d body=%s, want a refusal", what, response.Code, response.Body.String())
+		}
+		if got := appended(what); len(got) != 0 {
+			t.Fatalf("%s (status=%d) appended %+v, want no event", what, response.Code, got)
+		}
+	}
+
+	createTestPriority(t, handler, map[string]any{"id": "ship-the-daemon", "title": "Ship the daemon"}, "alice")
+	once("a create", model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityCreated})
+	createTestPriority(t, handler, map[string]any{"id": "fix-the-rail", "title": "Fix the rail"}, "alice")
+	once("a second create", model.PriorityEventPayload{ID: "fix-the-rail", Change: model.PriorityCreated})
+
+	patchTestPriority(t, handler, "ship-the-daemon", map[string]any{"title": "Ship the daemon now"}, "alice")
+	once("a rename", model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged})
+	patchTestPriority(t, handler, "ship-the-daemon", map[string]any{"rank": map[string]any{"after": "fix-the-rail"}}, "alice")
+	once("a rank move", model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged})
+	if ids := listedPriorityIDs(t, handler); !slices.Equal(ids, []string{"fix-the-rail", "ship-the-daemon"}) {
+		t.Fatalf("the move left the order %v, want fix-the-rail then ship-the-daemon", ids)
+	}
+
+	if deleted := dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/fix-the-rail", nil, "alice"); deleted.Code != http.StatusNoContent {
+		t.Fatalf("delete a priority: status=%d body=%s", deleted.Code, deleted.Body.String())
+	}
+	once("a delete", model.PriorityEventPayload{ID: "fix-the-rail", Change: model.PriorityDeleted})
+
+	none("a create of the id none", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
+		map[string]any{"id": noAdvancesFilter, "title": "Whatever is left"}, "alice"))
+	none("a create of an id already written", dispatchRequest(t, handler, http.MethodPost, "/api/v1/priorities",
+		map[string]any{"id": "ship-the-daemon", "title": "Ship it twice"}, "alice"))
+	none("a rename of a gone priority", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/fix-the-rail",
+		map[string]any{"title": "Revived"}, "alice"))
+	none("a rank move of a gone priority", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/fix-the-rail",
+		map[string]any{"rank": map[string]any{"before": "ship-the-daemon"}}, "alice"))
+	none("a rank move beside a gone priority", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/priorities/ship-the-daemon",
+		map[string]any{"rank": map[string]any{"after": "fix-the-rail"}}, "alice"))
+	none("a second delete", dispatchRequest(t, handler, http.MethodDelete, "/api/v1/priorities/fix-the-rail", nil, "alice"))
+}
+
 // TestPriorityIDRefusesTheNoneKeyword reads that no priority takes the id `none`, given or
 // derived from its title: the issue listing reads `advances=none` as the work under no priority
 // (parseAdvancesFilter), so a priority of that id would have its own page and row list the work

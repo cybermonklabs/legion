@@ -236,10 +236,16 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityCreated))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.publish(r.Context(), event)
 	// The row the create wrote, built from what it wrote rather than read back: Create writes
 	// the state live, the time and the writer this handler handed it, and nothing else touches
 	// the row inside that transaction.
@@ -274,7 +280,8 @@ type patchPriorityInput struct {
 // its rank names, in one transaction. A priority whose state is `gone` takes neither: the store
 // writes the node row of a live priority alone (prioritystore's liveRow), so both calls answer
 // ErrNoPriority and this route answers 404 PRIORITY_NOT_FOUND, in the wording its page and its
-// history already answer. The transaction is rolled back, so a refused write appends no tuple.
+// history already answer. The transaction is rolled back, so a refused write appends no tuple
+// and no `priority.updated` (priorityEvent).
 func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 	var input patchPriorityInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -350,10 +357,16 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codePriorityNotFound, http.StatusNotFound, fmt.Sprintf("no priority of the id %q", id))
 		return
 	}
+	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityChanged))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusOK, priorityFrom(node))
 }
 
@@ -385,11 +398,32 @@ func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 		s.refusePriorityWrite(w, id, err)
 		return
 	}
+	event, err := s.appendEvent(r.Context(), tx, priorityEvent(actor, id, model.PriorityDeleted))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	s.publish(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// priorityEvent is the `priority.updated` each of the three writes appends in its own
+// transaction, after the store wrote the priority_nodes row, so a write the store refused rolls
+// back with no event. It names no owner: a priority belongs to no project, issue or document, and
+// the broker keys it by the priority (events.eventOwnerKey). So it wakes nobody and the outbox
+// publishes it nowhere (events.Quiet); what it is for is every other reader's open priorities
+// page, priority page and navigation rail, which the live socket carries it to and which refetch
+// on it (packages/dispatch/web/src/api/event-refresh.ts).
+func priorityEvent(actor model.Actor, id, change string) model.Event {
+	return model.Event{
+		Type:    "priority.updated",
+		Actor:   actor,
+		Payload: model.PriorityEventPayload{ID: id, Change: change},
+	}
 }
 
 // priorityHistory is GET /api/v1/priorities/{id}/history: every act stated about one priority,

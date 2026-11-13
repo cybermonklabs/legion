@@ -822,6 +822,14 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // thread - and either way every one of the viewer's thread reads is refreshed.
     return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
   }
+  if (event.type === "priority.updated") {
+    // A create, a rename, a move or a delete of a priority, by anybody: the Priorities page, a
+    // priority's own page and its history, and the rail's two fault counts (`["priorities"]`),
+    // and the issue listings an `advances` filter narrows (`["issues", "advances"]`), since a
+    // delete moves the work parked under that priority into the other fault list. Nothing wider,
+    // so one drag on the Priorities page refetches no other issue list the reader holds.
+    return [{ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] }];
+  }
   if (event.type === "subscription.remove_requested") {
     return [];
   }

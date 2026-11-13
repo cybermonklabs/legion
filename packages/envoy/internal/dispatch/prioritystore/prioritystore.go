@@ -69,9 +69,11 @@ const (
 	AttributeState       = "state"
 )
 
-// NoEvent is the SourceEvent of a write no event recorded, which is every write of this store:
-// `events` takes one owner, an issue or a project, and a priority is neither, so a priority write
-// appends no event row. `events.id` is a bigserial, so no event ever carries 0.
+// NoEvent is the SourceEvent of a write no event recorded, which is every write of this store.
+// This store appends no event row: a priority belongs to no project, so the route that writes one
+// appends an ownerless `priority.updated` of its own (api/priorities.go priorityEvent), after the
+// store wrote the node row and its tuples, so no tuple can name that event's id. `events.id` is a
+// bigserial, so no event ever carries 0.
 const NoEvent int64 = 0
 
 // The refusals a caller maps to an answer of its own.

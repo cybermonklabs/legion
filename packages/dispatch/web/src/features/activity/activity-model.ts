@@ -74,6 +74,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return "read a thread";
     case "decision.kept":
       return "kept a decision";
+    case "priority.updated":
+      return `${event.payload.change} priority ${event.payload.id}`;
     case "issue.created":
       return "created the issue";
     case "issue.updated":

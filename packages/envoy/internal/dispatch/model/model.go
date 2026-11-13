@@ -2828,6 +2828,26 @@ type UserAgentStateEventPayload struct {
 	SessionID string `json:"session_id"`
 }
 
+// PriorityEventPayload is `priority.updated`: one write of one priority committed, through
+// POST /api/v1/priorities or PATCH or DELETE /api/v1/priorities/{id} (api/priorities.go). It
+// names the priority and which of the three writes it was, and carries nothing else: a reader
+// refetches the priorities page, the priority's own page and the issue listings an `advances`
+// filter narrows, whatever moved. It names no owner, since a priority belongs to no project,
+// so the outbox publishes it nowhere and it never notifies (events.Quiet).
+type PriorityEventPayload struct {
+	ID string `json:"id"`
+	// Change is PriorityCreated, PriorityChanged or PriorityDeleted.
+	Change string `json:"change"`
+}
+
+// The Change of a PriorityEventPayload: a create, a PATCH of its attributes or its place in the
+// order, and a delete, which writes the state gone.
+const (
+	PriorityCreated = "created"
+	PriorityChanged = "updated"
+	PriorityDeleted = "deleted"
+)
+
 // UserThreadStateEventPayload is `user_thread_state.updated`: one viewer's read of the Inbox's
 // threads moved. It names the viewer so their other open tabs and devices drop the row, and the
 // thread when one thread was marked (PUT /api/v1/me/threads/{id}/read); a mark-all

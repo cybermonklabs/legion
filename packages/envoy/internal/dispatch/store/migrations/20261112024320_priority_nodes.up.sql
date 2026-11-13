@@ -19,10 +19,10 @@
 -- transaction moves both, so a read answers the row and a history answers the log.
 --
 -- `source_event` holds an `events.id` and is `not null`. It holds 0 for a write no event
--- recorded, which is every write here: `events` takes one owner, an issue or a project
--- (`0001_init.up.sql`), and a priority is neither, so a priority write appends no event row.
--- `events.id` is a `bigserial`, so no event ever carries 0, and the value reads as "no event
--- recorded this write" (the store's own `NoEvent`).
+-- recorded, which is every write here: the route that writes a priority appends an ownerless
+-- `priority.updated` event (`events_one_owner` admits an event with no owner) after these rows
+-- are written, so no row here can name its id. `events.id` is a `bigserial`, so no event ever
+-- carries 0, and the value reads as "no event recorded this write" (the store's own `NoEvent`).
 --
 -- `to_kind = 'value'` marks an attribute: `to_id` then holds the value itself rather than an
 -- address, and a value has no length bound (a priority's description is one). A btree key is

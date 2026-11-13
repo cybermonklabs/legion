@@ -52,11 +52,11 @@ type deliverySettingsInput struct {
 // scopes its event to the project it changes (projectOwner), but delivery_settings is a true
 // singleton with no project, issue, or artifact to own it, and events/broker.go's
 // eventOwnerKey refuses an event with none of those unless its payload names a specific session
-// target (the ownerless-event path exists for session-addressed messages, not settings) -- there
-// is no project-scoped equivalent for a cross-project configuration table, so this intentionally
-// does not force one. Production job names are required and stored trimmed; the production apply
-// step and the Pipeline page's three job names are optional, and absent, null or blank values store
-// null.
+// target or is a priority's write (the ownerless-event paths exist for session-addressed messages
+// and the cross-project priority node, not settings) -- there is no project-scoped equivalent for
+// a cross-project configuration table, so this intentionally does not force one. Production job
+// names are required and stored trimmed; the production apply step and the Pipeline page's three
+// job names are optional, and absent, null or blank values store null.
 func (s *server) putDeliverySettings(w http.ResponseWriter, r *http.Request) {
 	var input deliverySettingsInput
 	if err := decodeJSON(r, &input); err != nil {

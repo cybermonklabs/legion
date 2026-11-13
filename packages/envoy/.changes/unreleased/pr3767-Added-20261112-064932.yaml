@@ -15,6 +15,10 @@ body: |-
   advances no priority, counted by project, and the work that advances one and stands in
   `backlog` or `icebox`, counted by priority, each carrying its newest 50 rows. `?project=`,
   repeated, narrows the counts and the lists; `?summary=true` answers the two counts alone.
+  Each of the three writes appends one `priority.updated` event (`{id, change}`, `change` being
+  `created`, `updated` or `deleted`) in its own transaction, owned by nothing: it wakes nobody,
+  the outbox publishes it on no subject, and `/ws/live` carries it to every open page, which
+  refetches the priorities and the `advances` listings on it. A refused write appends none.
 time: 2026-11-12T06:49:32.000000000Z
 custom:
     Issue: pr3767

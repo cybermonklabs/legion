@@ -3806,6 +3806,8 @@ A snooze's payload is exactly `{login, changed: ["snoozed"]}`:
 every signed-in caller's event feed on the live socket replays it, so it names neither the ask nor the writer's issue state, and the writer's other tabs and devices refetch their whole Inbox.
 `user_thread_state.updated` says that one viewer's read of the Inbox's threads moved, and carries `thread_id` only when one thread was marked (`PUT /api/v1/me/threads/{id}/read`):
 a mark-all (`POST /api/v1/me/inbox/read`) and a dismissal (`POST /api/v1/me/inbox/dismiss`) each name none, since one event per project stands for every thread they changed there.
+`priority.updated` is each priority write's (`POST /api/v1/priorities`, `PATCH` and `DELETE /api/v1/priorities/{id}`), and carries exactly `{id, change}`, `change` being `created`, `updated` or `deleted`:
+a priority belongs to no project, so the event names no owner (`issue_key` null, `project` empty, `seq` 0), wakes nobody, and is published on no NATS subject; a reader refetches its priorities and its `advances` listings on it.
 `references_changed` names the targets whose inbound edges the write moved that a reader refreshes by name: an issue (`{kind:
 "issue", id}`), an ask (`{kind: "ask", id, issue_key?, artifact_id?}`, with the issue or document whose ask list holds its row) and a document or file (`{kind: "artifact", id, ref}`:
 its uuid, the node id `GET /api/v1/references` reports for it, and the `dispatch://` address its Referenced by panel is opened on, `ref` absent when its owner names no address), and a block of a document (`{kind: "block", id, ref, artifact_id}`:
