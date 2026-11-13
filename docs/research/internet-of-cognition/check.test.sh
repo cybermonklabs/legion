@@ -425,6 +425,20 @@ dir="$(fresh group-ends-in-failure)"
 plant_behaviour "$dir" "{ printf 'ran once\\n'; ls /nonexistent-ioc; } | cat" '{"contains":"ran once"}'
 case_result "a group whose last command is a read that failed fails the row" replay-command "$(fixture_run "$dir" --replay)"
 
+# 30. A program named by its path, or run through the command builtin, is still a program
+# the command runs. The header's first rule refuses "a non-zero status of any program the
+# command runs, wherever it stands", but only a bare word is wrapped in a recording
+# function and only the five program variables point at a shim. So at c1052427bf a read
+# that failed before || passed when its program was named /bin/cat, /usr/bin/python3 or
+# ./a-script, or came after `command`, which runs the program itself and not the
+# function. The same row with a bare `cat` fails, so the gap is how the program is named.
+for form in '/bin/cat /nonexistent-ioc' '/usr/bin/python3 -c "import sys; sys.exit(4)"' \
+    'command cat /nonexistent-ioc' './no-such-ioc-script.sh'; do
+    dir="$(fresh "named-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    plant_behaviour "$dir" "$form 2>/dev/null || printf 'ran once\\n'" '{"contains":"ran once"}'
+    case_result "a program named by its path or after command records its failed read: $form" replay-command "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
