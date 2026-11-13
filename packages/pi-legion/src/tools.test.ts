@@ -168,9 +168,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The daemon refuses " +
   "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
   "write this phase's handoff), " +
-  "HANDOFF_STALE_ASSIGNMENT (the issue left your phase and came back while your turn ran, so this completion is of the assignment before the one " +
-  "the phase hands you now: end the turn without completing; the task of the assignment it hands you now is work of its own, so do that work and " +
-  "complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
+  "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
+  "again while your turn ran, and nothing was recorded. End this turn without completing. The task of the entry the phase is on is owed to " +
+  "this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a " +
+  "handoff of its own, never this completion's record, commit or verdict), the implementer's completion of implementing with no open " +
   "pull request on `legion/<issue>` and none recorded " +
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +
@@ -194,9 +195,12 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "daemon's own log line for the release, and an escalation sends it to the controller with the hold. " +
   "sign_off is the architect's acceptance of an issue in accepting, moving it to retro; the daemon refuses it in every " +
   "other phase (SIGNOFF_OUTSIDE_ACCEPTING) and while an issue beneath it is still in the workflow " +
-  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: take each one " +
-  "to done, or out of the workflow with park_child, and sign off again. close_root is refused the same way and with the " +
-  "same code while an issue beneath the root is still in the workflow, since closing it would stop that work mid-turn. " +
+  "(SIGNOFF_CHILD_IN_WORKFLOW, naming each one), since a parent's head proves its children's merged work: run each one " +
+  "to done, and sign off again. " +
+  "Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is. " +
+  "Ask the person about a child that can reach neither done nor a park under that rule, and hold the acceptance until they answer. " +
+  "close_root is refused the same way and with the same code while an issue beneath the root is still in the workflow, " +
+  "since closing it would stop that work mid-turn: answer it the same way, park_child under the same rule included. " +
   "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
   "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
   "under it now: wait for the ancestor to close, then release it. " +
@@ -204,6 +208,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "capability, one line per recorded issue, and under each issue Legion still runs its slot, hold, gate and each claim's " +
   "state with its last turn times — and with issue, issues, phase or settings returns the full records it names; " +
   "set_status moves an issue to todo, backlog or icebox. " +
+  "Move an issue to backlog or icebox only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. " +
+  "Two writes are not that move: a root's restart, which sets backlog and then todo in the same turn, and the " +
+  "controller's report issue's icebox, because that issue holds no work. " +
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
   "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +

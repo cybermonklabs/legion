@@ -180,7 +180,7 @@ const legionStepView = z.object({
 });
 
 /** The two fields a wake the daemon's pacing holds carries: what kind of wake it is, and
- * `dueAt`, the moment the pacing gave it, which is when it runs (contract 89). The claim view's
+ * `dueAt`, the moment the pacing gave it, which is when it runs (contract 95). The claim view's
  * `wake` and `legionWakeWaiting` below carry the same wake, so both spread this one object and
  * cannot drift apart. The kind is read as a plain string, so a lane a later daemon adds is read
  * rather than refused. */
@@ -280,26 +280,26 @@ const legionClaimView = z.object({
   /** Why the daemon must replace this pod, as it found the drift, and absent while no round is
    * open: the worker answering a round is told to act on it. */
   updateReasons: nonEmptyString.optional(),
-  /** Where the claim's update round stands, read from the claim's own columns (contract 89):
+  /** Where the claim's update round stands, read from the claim's own columns (contract 95):
    * `none` when no round is open, `open` when a round is open and its task has not gone out,
    * `asked` when the round asked this worker, `push-check-reask` when the round means to ask a
    * second time because the pod's shim could not run the daemon's push check, and `answered`
    * once the worker answered. A reader takes this rather than spelling the same reading out of
    * `updateRound` and `updateHead`, which cannot tell a worker that answered with no head from
-   * one nobody asked. A caller in a pod whose plugin declares a contract below 89 is served the
+   * one nobody asked. A caller in a pod whose plugin declares a contract below 95 is served the
    * state with no such key at all (the daemon's `withoutClaimRoundReport`), so every reader
    * takes it as optional. */
   updateState: z.enum(["none", "open", "asked", "push-check-reask", "answered"]).optional(),
   /** Whether the open round has already asked this worker a second time for the daemon's push
-   * check (contract 89). The mark stands to the end of the round, so it is read beside whatever
+   * check (contract 95). The mark stands to the end of the round, so it is read beside whatever
    * state the claim has reached and never as the state itself. Absent where it is false, and
-   * absent altogether for a caller below 89 (`withoutClaimRoundReport`). */
+   * absent altogether for a caller below 95 (`withoutClaimRoundReport`). */
   updateReaskedForPushCheck: z.boolean().optional(),
   /** Whether a turn the daemon sends nothing for — an Envoy notice, a person's steer, a
    * background result — would take this claim's standing answer back and leave the round
-   * waiting again (contract 89). It answers for that turn alone: the round's own task's turn is
+   * waiting again (contract 95). It answers for that turn alone: the round's own task's turn is
    * the turn the worker answers in and takes nothing back. Absent where it is false, and absent
-   * altogether for a caller below 89 (`withoutClaimRoundReport`). */
+   * altogether for a caller below 95 (`withoutClaimRoundReport`). */
   unpromptedTurnTakesAnswerBack: z.boolean().optional(),
   /** How many turns of this claim ended in a provider error in a row, absent for a claim whose
    * last turn ended with none. It bounds nothing — a limit here would fail every claim of a
@@ -330,8 +330,8 @@ const legionClaimView = z.object({
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
   /** The wake the daemon's pacing holds for this claim, absent where it holds none: the same
-   * wake `wakesWaiting` names beside this claim (contract 89). The kinds are the daemon's three
-   * paced lanes, as `legionWakeWaiting` below names them. A caller below 89 is served no such
+   * wake `wakesWaiting` names beside this claim (contract 95). The kinds are the daemon's three
+   * paced lanes, as `legionWakeWaiting` below names them. A caller below 95 is served no such
    * key (`withoutClaimRoundReport`). */
   wake: z.object(legionPacedWake).optional(),
   /** Why the claim failed, and absent for a claim the daemon holds no cause and sentence for: one
@@ -729,6 +729,18 @@ const legionIssue = z.object({
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
+  /** The entry the role of the issue's current phase stands on, and the entry that role was last
+   * given a task of (contract 94). The daemon sends the entry's own work to a role whose given
+   * number is below the entry its row names, on every admission pass and on a sweep of its own
+   * each minute, so the two are equal for a role holding its work and differ for one the daemon
+   * has still to reach. Both are absent together for an issue whose current phase names no phase
+   * worker role — a root writing its design — and each is absent where it is 0, which is a role
+   * no entry has been raised for and one the daemon holds no claim row of; a daemon before
+   * contract 94 writes neither, and a caller in a pod whose plugin declares a contract below 94
+   * is served the state with neither (the daemon's `withoutPhaseEntries`), which is why a reader
+   * takes both as optional. */
+  phaseEntry: z.number().int().nonnegative().optional(),
+  givenEntry: z.number().int().nonnegative().optional(),
 });
 
 /** `api.DaemonInfo` — the running daemon: its project, its store's schema, and its boot history.
@@ -973,7 +985,7 @@ export const LegionStateResponse = z.object({
   settings: legionSettings.optional(),
   consumers: z.array(legionConsumerLag).optional(),
   // `lowestPluginContract` is the lowest contract among the claims of the project that hold a
-  // process and record one, absent where no claim does (contract 89). No plugin code reads the
+  // process and record one, absent where no claim does (contract 95). No plugin code reads the
   // value — it is a number for an operator and for the serving-down's own reckoning — so it is
   // optional here, and a reader that finds it absent learns that nothing of the project runs a
   // plugin it knows the contract of.
@@ -983,14 +995,14 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
-/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 89): one
+/** `api.Issue` again, as the body of `GET /legion/v1/issues/{key}/record` (contract 95): one
  * issue's record, equal field for field to the value the whole-project body holds under
  * `issues.<key>`. It is the very schema `LegionStateResponse` reads that value with, so the two
  * readers cannot drift apart. The daemon answers 404 with the code `RECORD_NOT_FOUND` for an
  * issue it records nothing of, which is the client's absent-record branch and no body at all. */
 export const LegionIssueRecordResponse = legionIssue;
 
-/** `api.Health`, the body of `GET /healthz` (contract 89): that the daemon is serving, and the
+/** `api.Health`, the body of `GET /healthz` (contract 95): that the daemon is serving, and the
  * project it serves. `project` is required because the controller's boot check reads it
  * (`packages/pi-legion/src/controller-session.ts`), which is the one word that read the whole
  * state before. `status` is a word for an operator: no plugin code takes its value. */

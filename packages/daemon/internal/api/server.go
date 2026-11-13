@@ -179,10 +179,9 @@ type Options struct {
 	// repository's recovery (the daemon's awaitRecovery), which tells the tree's architect of each
 	// such child it did not record. Nil leaves none.
 	AwaitRecovery func(repo, tree, child, parent string)
-	// RoleFor is the role that works a phase (the daemon's workflow.RoleFor, handed in because the
-	// workflow's tests import this package). The operator's retry of a failed phase worker applies
-	// its issue's held phase only when that phase's role is the claim's (retryClaim); nil retries no
-	// held phase, leaving every one to its architect.
+	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
+	// phase worker applies its issue's held phase only when that phase's role is the claim's
+	// (retryClaim); nil retries no held phase, leaving every one to its architect.
 	RoleFor func(phase.Phase) claim.Role
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an

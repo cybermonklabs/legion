@@ -405,11 +405,14 @@ its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregis
 
 ## A parked tree did not come back after a decision
 
-A root in `backlog` or `icebox` runs again when a person sets it to `todo`, or when the controller
-parked it for a hold of its own and judges that a person's decision gives its work a next step. The
-controller marks such a park with a comment on the root that begins `Parked by Legion while it
-waits on:`. First find whether the daemon relayed the decision. Its JSON log names the issue and
-the root on each of these lines:
+A root in `backlog` or `icebox` runs again when a person sets it to `todo` with its `legion` label
+on, when a person asks the controller to start it, when a person approves its spec and it keeps its
+`legion` label and has no parent (the daemon then sets it to `todo` itself; an approval Dispatch
+carries from an earlier one does not count), or, when the controller parked it for a hold of its
+own, once the controller judges that a person's decision gives its work a next step or its walk
+finds the hold's cause gone or its event happened. The controller marks such a park with a comment
+on the root that begins `Parked by Legion while it waits on:`. First find whether the daemon relayed
+the decision. Its JSON log names the issue and the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
@@ -447,15 +450,17 @@ the root on each of these lines:
   resolution on a parked tree is not relayed`, or `workflow: a session's decision on a tree waiting
   for its slot is not kept`: an agent wrote it. It stays on the ask for the person who asked.
 
-Then read the controller's comment that begins `Parked decision read:`, on the root and on the
-issue where the decision was made. For a question, it is a reply on the question's own ask, which
-answers it or says that `todo` on the root brings the architect back to answer. It says what the
-controller judged. The tree stays parked when the park is not the controller's own hold, the park
-with its `Parked by Legion while it waits on:` comment beside it: a person's park, another agent's
-session's, or an operator's `legion status` (the comment names who, and the tree runs when they set
-it to `todo`). It stays parked too when the decision is older than the park, when the root is
-`done` or `triage`, or when the decision only questions the work. When the controller was down,
-its next start walks the parked roots. That walk reads only the last 10 events of each issue.
+Then read the controller's comment that begins `Parked decision read:`, on the root and on the issue
+where the decision was made. For a question, it is a reply on the question's own ask, which answers
+it or says that `todo` on the root brings the architect back to answer. It says what the controller
+judged. The tree stays parked when the park is not the controller's own hold, the park with its
+`Parked by Legion while it waits on:` comment beside it: a person's park, another agent's session's,
+or an operator's `legion status` (the comment names who, and the tree runs when a person sets it to
+`todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
+parked too when the decision is older than the park, when the root is `done` or `triage`, or when
+the decision only questions the work. When the controller was down, its next start walks the parked
+roots. That walk reads only the last 10 events of each issue. The walk runs at each start and on
+each `tick`, and its `todo` on the controller's own hold comes with a comment that cites the mark.
 
 ## An issue is held
 
@@ -594,18 +599,19 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
 to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
 architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
-and the controller is woken to re-admit the tree. What brings the architect back depends on where
-its tree stands:
+and the controller is woken. Unless the root's `phase` is `done`, it restarts the tree when it
+finds no cause or the cause is gone, and asks a person whether to park it when the cause stays.
+What brings the architect back depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will
   wake` line names the architect under `failed, retry`. Retry it, as
   [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
   relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
   generation and phase it stands at.
-- **Its root is parked or lingers,** the controller's park for a re-admission included: leave the
-  claim as it is. The tree's re-admission retries it at a new generation; a retry by hand would run
-  it outside the admission cap, and it would be sent no catch-up. To re-admit the tree by hand, park
-  the root and admit it again:
+- **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
+  in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
+  generation; a retry by hand would run it outside the admission cap, and it would be sent no
+  catch-up. To restart the tree by hand, write the same pair:
 
   ```sh
   legion status <KEY> backlog --config legion.yaml --operator-token-file operator-token
@@ -632,7 +638,7 @@ admission line stay as they were. A person's move of the root to `todo` in the D
 and the controller's own `set_status` do the same, since all three write the one status the
 daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
 of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
-generation, which is what the park and the admission above do.
+generation, which is what the restart above does.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
@@ -813,8 +819,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
 - **`suspendedWorkers`** (a suspended phase worker): the move depends on who suspended it, which
   `legion claims list --json` shows as `suspendedBy`, and `legion state` points there too.
-  Only an architect is sent a catch-up, so a worker resumed with no task relaunches with nothing to
-  do, and once it runs the list stops naming it.
+  Only an architect is sent a catch-up; a worker resumed behind the entry its role's phases row
+  names is sent that entry's work, which the daemon does on every admission pass and on a sweep
+  each minute, and one already at that entry relaunches with nothing to do. Once it runs the list
+  stops naming it.
 
   - **`suspendedBy: unknown`** (suspended before this release recorded who did): let the
     workflow start it. Stop the project's daemon, mark the claim as the daemon's, and start the
@@ -895,7 +903,7 @@ The project's controller reads the same issue in the `silent` list of its period
 The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
 That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
 
-The daemon sends the worker its phase's task again, under the assignment the issue's phase row already names where it names one.
+The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
 The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
 A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
 
@@ -1161,19 +1169,25 @@ These arrive as messages on the Dispatch issue:
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
   the issue finds none open on the branch the architect is told
   ([An architect is told `pull-request-missing`](#an-architect-is-told-pull-request-missing)).
-- **A worker's completion refused `HANDOFF_STALE_ASSIGNMENT`.** The phase the completing turn was
+- **A worker's completion refused `HANDOFF_STALE_ENTRY`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, or the head started conflicting with its base while the
   tester tested, while the reviewer reviewed a round it had not completed, or while the merger
-  worked toward the merge. The daemon
-  ends no turn, so the turn reporting the completion is the earlier assignment's and nothing is
-  recorded. The refusal names the issue, the role and the phase: the worker ends that turn without
-  completing, and reports that work and that verdict no further. The phase was entered again, so
-  the task the daemon queued for the assignment it hands the role now — which arrives as the
-  session's next prompt — is work of its own: a testing assignment after such a move is for the
-  head the fix pushed, and the verdict on the head before it answers for nothing there. The worker
-  does that task's work, writes a handoff of its own for it, and completes in its turn. When no
-  such task is queued for it, the refusal says so and the worker tells its architect.
+  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
+  an entry behind the one the role's phases row names, and nothing is recorded. The refusal
+  names the issue, the role and the phase, the entry the completion is of and the entry the
+  role's phases row is on, and, when the task of that entry already waits on the claim, that the
+  turn began before it reached the session. It then tells the worker what to do in the same
+  words the `legion` tool's description gives for the code
+  (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
+  without completing; the task of the entry the phase is on is owed to the claim and the daemon
+  sends it by itself, which it does on every admission pass and on a sweep each minute; and that
+  task is work of its own, done at the head it names and completed with a handoff of its own,
+  never the refused completion's record, commit or verdict. A testing entry after such a move is
+  for the head the fix pushed, and the verdict on the head before it answers for nothing there.
+  The same code on a completion of an entry above the one the phases row names is one the
+  record never produces, since the daemon raises the row in the transaction that composes the
+  entry's task; that refusal tells the worker to end the turn and tell the architect.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
@@ -1182,11 +1196,11 @@ the issue back to the implementer with the base to merge forward and told the ar
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-assignment retro handed it while the phase holds the implementing one, so it is refused
-(`HANDOFF_STALE_ASSIGNMENT`), and the implementer merges the base forward in the implementing
+entry retro handed it while its phases row is on the implementing one, so it is refused
+(`HANDOFF_STALE_ENTRY`), and the implementer merges the base forward in the implementing
 task's own turn and completes that work with a handoff of its own, never retro's commit; the
-merger's row still names the assignment merging gave it, so a completion it sends for the phase it
-lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
+merger's phases row still names the entry merging gave it, so a completion it sends for the phase
+it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
 acceptance and retro to a new merge. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:

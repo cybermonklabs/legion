@@ -1345,7 +1345,7 @@ var (
 		"the design gate belongs to the tree root %s; register it there",
 		"the design gate belongs to the tree root %s; its root architect registers it"}
 	closeRootRoute = rootRoute{"ROOT_REQUIRED",
-		"close_root ends the tree root %s; a child leaves with park_child",
+		"close_root ends the tree root %s; a child leaves with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed",
 		"close_root ends the tree root %s; its root architect closes it"}
 )
 
@@ -1478,7 +1478,7 @@ func (s *server) rerunChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if child.Phase != phase.Done {
-		s.writeFailure(w, r, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s; park_child takes it out of the workflow before rerun_child runs it again", child.Key, child.Phase))
+		s.writeFailure(w, r, http.StatusConflict, "CHILD_RUNNING", fmt.Sprintf("%s is in phase %s; park_child takes it out of the workflow before rerun_child runs it again. That pair is the child's restart and not a park", child.Key, child.Phase))
 		return
 	}
 	members, err := s.treeMembers(r.Context(), child.Tree)

@@ -13,4 +13,4 @@ body: |-
   The `legion` tool gains `read_build`, which answers the plugin package and version this process
   loaded, the contract that build speaks, and the contract the daemon states. That contract is
   null where the daemon stated none or did not answer, and a note of its own says which.
-  The plugin declares daemon API contract 89.
+  The plugin declares daemon API contract 95.

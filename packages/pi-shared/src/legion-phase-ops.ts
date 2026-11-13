@@ -243,6 +243,19 @@ export const PHASE_OP_SENTENCES = {
 } as const;
 
 /**
+ * What a worker whose completion is refused HANDOFF_STALE_ENTRY does, word for word the text the
+ * daemon ends that refusal with (`staleEntryInstruction` in
+ * `packages/daemon/internal/api/handoff.go`), so the worker reads one instruction in its tool and
+ * in the refusal. The daemon's golden test writes its constant to
+ * `packages/contracts/fixtures/daemon-api/stale-entry.json`, and `legion-phase-ops.test.ts` holds
+ * the description below to that file.
+ */
+export const STALE_ENTRY_INSTRUCTION =
+  "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. " +
+  "That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's " +
+  "record, commit or verdict";
+
+/**
  * The `legion` tool's description on every host, one template: what the tool is, then `before`,
  * then `handoff_complete`'s contract, then `after`, then where a question for another role goes,
  * `envoyPublish` being the host's name for Envoy's publish tool. `before` and `after` are whole
@@ -276,9 +289,8 @@ export function legionToolDescription(host: {
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
-    "HANDOFF_STALE_ASSIGNMENT (the issue left your phase and came back while your turn ran, so this completion is of the assignment before the one " +
-    "the phase hands you now: end the turn without completing; the task of the assignment it hands you now is work of its own, so do that work and " +
-    "complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
+    "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
+    `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
