@@ -44,7 +44,7 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 
    Watch until GitHub merges the pull request or removes it from the queue. Do not use `gh pr view` for this watch. On the `gh` of your pod, `gh pr view` has no `isInMergeQueue` field.
 
-   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon also sends this message when it released your pod. GitHub's event names no reason for the removal. Read the removals with this command. It lists them newest last:
+   The daemon sends you a message when GitHub reports that the pull request left the merge queue at the head you hold. The daemon sends this message also when the idle release deleted your pod. Then the daemon starts your pod again for the message. GitHub's event names no reason for the removal. Read the removals with this command. It lists them newest last:
 
    ```bash
    gh api graphql -F number=<n> -f owner=<o> -f name=<r> -f query='query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){timelineItems(itemTypes:[REMOVED_FROM_MERGE_QUEUE_EVENT],last:20){nodes{... on RemovedFromMergeQueueEvent{createdAt reason actor{login} beforeCommit{oid}}}}}}}'

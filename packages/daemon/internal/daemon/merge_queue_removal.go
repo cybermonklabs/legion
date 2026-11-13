@@ -25,13 +25,16 @@ import (
 // Each attempt first reads the issue, its tree's root and its pull request record, and finishes
 // the row without reading GitHub once the issue has left merging at the row's head (mergingAt,
 // workflow.LeftMergingAt): nobody would be told of what the read says. Otherwise it reads the pull
-// request once, and logs one line for that read with what it came to. A merged answer applies the
-// merge as the webhook's merge would (intake.PullRequestMerged, which closes the issue, and changes
-// nothing when the merge is already recorded), and nothing is sent to the merger. A failed read is
-// read again after the runtime's wait (workflowRuntime.mergeStateWait), or after GitHub's
-// Retry-After when that is longer, up to mergeStateLadderReads reads in all, as the merge-state
-// ladder reads a state GitHub has not computed yet. Any other answer, or the last failed read,
-// applies intake.MergeQueueReadDone, whose transaction writes the merger's message
+// request once, bounded by issueRead as the per-issue read bounds its own, and logs one line for
+// that read with what it came to. The row's context has no deadline, and a running row renews its
+// lease, so a read GitHub never answered would hold the issue's role-message lane without end; a
+// read that runs out of issueRead is a failed read. A merged answer applies the merge as the
+// webhook's merge would (intake.PullRequestMerged, which closes the issue, and changes nothing when
+// the merge is already recorded), and nothing is sent to the merger. A failed read is read again
+// after the runtime's wait (workflowRuntime.mergeStateWait), or after GitHub's Retry-After when
+// that is longer, up to mergeStateLadderReads reads in all, as the merge-state ladder reads a state
+// GitHub has not computed yet. Any other answer, or the last failed read, applies
+// intake.MergeQueueReadDone, whose transaction writes the merger's message
 // (record.MergeQueueRemoval) while the issue still merges at that head, Unread when no read
 // succeeded. The read applies nothing else: no mergeability and no head move, since a fact of that
 // kind can move a phase (workflow's mergeability), and a removal moves none
@@ -55,7 +58,9 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 		return nil
 	}
 	read := row.Attempts + 1
-	pull, failed := r.readPullRequest(ctx, *pr)
+	bounded, cancel := context.WithTimeout(ctx, issueRead)
+	pull, failed := r.readPullRequest(bounded, *pr)
+	cancel()
 	attributes := []any{"row", row.ID, "issue", row.Issue, "pullRequest", payload.Number, "head", payload.Head, "read", read}
 	switch {
 	case failed == nil && pull.Merged:

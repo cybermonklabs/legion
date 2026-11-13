@@ -1845,7 +1845,7 @@ Rolling back afterwards needs nothing of those rows: the notice told an architec
 #### Rolling back the release that tells the merger of a merge-queue removal
 
 This release adds two outbox kinds, and its migration `20261113072437_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
-A `merge_queue_read` row is the daemon's one read of a pull request that GitHub reported out of the merge queue.
+A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
 
@@ -4589,7 +4589,7 @@ The wakes are these:
   It stands in for a wait that raises no event of its own: a Dispatch topic the role subscribed to, CI of a repository that is not the issue's, a deploy run, a Kubernetes Job.
   An architect gets no backstop, since every wake of an architect is a daemon task or notice or a message.
 
-The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge.
+The merge-queue removal message tells a merger that GitHub took its pull request out of the merge queue at the head the record holds, and that the daemon's read of the pull request found no merge, or that no read of it succeeded.
 While the root's design gate is closed, that message wakes no released merger, and it waits for the gate to open.
 The message can also wait for a merger that has no claim yet, because the merger's start is still owed.
 While it waits, the message holds the issue's pod, as any row of the role-message lane does.

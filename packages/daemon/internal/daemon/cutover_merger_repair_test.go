@@ -41,10 +41,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// cutoverRelease is the directory of what this test keeps of legion-v19.57.3, the release INFRA,
-// BET and OSSV run: migrations.txt, the name of every migration the tag embeds (jj file list -r
-// legion-v19.57.3 packages/daemon/internal/store/migrations), and the tag's own text of the four
-// migrations of that list whose text main has changed since (cutoverReleaseText).
+// cutoverRelease is the directory of what this test keeps of legion-v19.57.3, the release the
+// deployments ran when the cutover began: migrations.txt, the name of every migration the tag
+// embeds (jj file list -r legion-v19.57.3 packages/daemon/internal/store/migrations), and the
+// tag's own text of the four migrations of that list whose text main has changed since
+// (cutoverReleaseText).
 const cutoverRelease = "testdata/legion-v19.57.3"
 
 // cutoverReleaseText names the four migrations legion-v19.57.3 shares with this head whose text

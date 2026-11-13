@@ -210,8 +210,9 @@ func (e *Engine) sweepMerged(ctx context.Context, tx pgx.Tx) error {
 }
 
 // cutoverMergerTold is the Dispatch message the cutover's repair posts on each issue whose merger
-// it owed a start (cutoverMergerRepair), in the plain words of dispatch://INFRA-3274's plan,
-// Appendix C.
+// it owed a start (cutoverMergerRepair): the message dispatch://INFRA-3274/spec R2 asks for, which
+// says in plain words that the cutover left the merger stopped and that the boot gave it its
+// merging task.
 const cutoverMergerTold = "The Legion upgrade from a build with the phase `awaiting_merge` left the merger of this issue stopped. " +
 	"The idle release stopped the pod of the merger while the issue waited for its merge. " +
 	"Nothing would start the merger again. " +

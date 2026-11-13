@@ -94,11 +94,12 @@ type outbox struct {
 	backstop time.Duration
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}), and
 	// mergeStateWait is how long a merge-queue read waits after a failed read before it reads
-	// again (mergeQueueRead). Both are the workflow runtime's own (workflowRuntime.readPullRequest,
-	// workflowRuntime.mergeStateWait), set by attach after newOutbox, so the outbox reads GitHub
-	// as the per-issue read does and a whole-daemon test cuts the wait through the runtime's own
-	// field (mergeStateRetry). A test that builds the outbox by hand leaves both nil, and a
-	// merge-queue read then fails with an error that names the missing read.
+	// again (mergeQueueRead, whose every read is bounded by issueRead). Both are the workflow
+	// runtime's own (workflowRuntime.readPullRequest, workflowRuntime.mergeStateWait), set by
+	// attach after newOutbox, so the outbox reads GitHub as the per-issue read does and a
+	// whole-daemon test cuts the wait through the runtime's own field (mergeStateRetry). A test
+	// that builds the outbox by hand leaves both nil, and a merge-queue read then fails with an
+	// error that names the missing read.
 	readPullRequest func(context.Context, record.PullRequest) (githubPullRequest, error)
 	mergeStateWait  func() time.Duration
 	// now is the moment a row is listed, claimed, renewed and retried at; clock arms the lanes'
