@@ -27,6 +27,7 @@ import {
   syncArchitectureSource,
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { pressOnceTheShellListens } from "./keyboard";
 import {
   countParses,
   type ParseCounts,
@@ -275,8 +276,7 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "the search palette",
       show: async (page) => {
         await page.goto("/");
-        await page.locator("body").focus();
-        await page.keyboard.press("Control+k");
+        await pressOnceTheShellListens(page, "Control+k");
         const search = page.getByRole("combobox", { name: "Search" });
         await search.fill(searchTerm);
         await expect(
