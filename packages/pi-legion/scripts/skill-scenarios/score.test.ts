@@ -6534,8 +6534,8 @@ fixRun("threads-closed-text-fixes-head-81", {
 // head-82: the reviewer approved the head the approval before it was on, told the architect of
 // the head the fix landed on, and only then approved that head. Catches: a reader that asks
 // whether the architect was told and never when, which passes a wake reporting an approval
-// nobody had made yet — the architect's gate is the approval READY reads, and a message sent
-// before it is a message about a verdict the pull request did not carry.
+// nobody had made yet — the architect's gate is the reviewer's approval of the fix head, and a
+// message sent before it is a message about a verdict the pull request did not carry.
 fixRun("threads-closed-text-fixes-head-82", {
   "calls.jsonl": calls([
     ...closedBoth.slice(0, 6),
@@ -8496,7 +8496,7 @@ test("threads-closed, text-fixes: a wake naming both threads and no head fails",
 // orders that wake against the round's first approval rather than the verdict that stands.
 // head-82's reviewer approved the head of the approval before it, told the architect of the
 // fix head, and only then approved that head: the message reports an approval the pull request
-// did not yet carry, which is the architect's gate (READY reads the round's approval).
+// did not yet carry, and that approval is the architect's gate on the fix head.
 test("threads-closed, text-fixes: a wake of the architect sent between two approvals fails", () => {
   expect(out).toMatch(
     /threads-closed-text-fixes-head-82\tpass=false\t.*approved=true toldArchitectOfHead=false /

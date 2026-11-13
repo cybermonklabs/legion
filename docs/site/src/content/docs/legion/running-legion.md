@@ -932,12 +932,22 @@ Closing the terminal leaves the project without one, and the daemon logs
    sets `projects.<KEY>.review_workflows` is refused at load with
    `Unknown key "projects.<KEY>.review_workflows"`, by `legion start --check-config` and by the
    daemon's boot alike, so the daemon does not come up on it: delete the key before or with the
-   image pin (an empty list is refused too). A review bot's red is now CI like any other: it sends
-   the work back to the implementer, which answers or fixes the bot's threads and pushes, and the
-   bot runs again; the reviewer adjudicates each of those findings and resolves its thread in the
-   round that reads the fix, and re-runs nothing. Where the bot's threads must be closed before a
-   merge, make that the repository's own rule (a ruleset's "Require conversation resolution
-   before merging").
+   image pin (an empty list is refused too). A review bot's red is now CI like any other, and it
+   moves the issue nowhere: the daemon tells the architect, the worker of the issue's current
+   phase and the implementer what the checks concluded, and the implementer answers or fixes the
+   bot's threads and pushes, and the bot runs again; the reviewer adjudicates each of those
+   findings and resolves its thread in the round that reads the fix, and re-runs nothing. Where
+   the bot's threads must be closed before a merge, make that the repository's own rule (a
+   ruleset's "Require conversation resolution before merging"). That rule holds the review round
+   as well as the merge: GitHub reports a head `blocked` while one of its threads is open, and the
+   daemon moves an approved issue from `reviewing` to `accepting` only once GitHub reports the
+   approved head `clean`, `unstable` or `has_hooks`. So an approval that leaves text threads open
+   waits in `reviewing`, reported stuck on its merge state (`stuckMergeState` in
+   [`review.go`](https://github.com/cybermonklabs/legion/blob/main/packages/daemon/internal/workflow/review.go)),
+   until the implementer's text fix lands and the reviewer resolves the threads and approves the
+   head the fix made. The reviewer tells the implementer at its approval, so that is a wait and
+   not a deadlock. No daemon code reads the rule itself; it acts through the merge state GitHub
+   reports.
 
    **After the first upgrade to the release where an issue's disk dies with its pod,** the
    `runtime.kubernetes` block must name a `session_store` that keeps sessions in a database, with

@@ -82,17 +82,23 @@ own carry rule and the architect's acceptance, not a path test.
   Submit **one review per round**. A reviewer submits `REQUEST_CHANGES` only when a behavioural
   finding stands — one whose closing changes code that runs — and otherwise approves the head it
   read, named by SHA, leaving every text finding as the inline review thread it already writes.
-  While the round is open — a push between your approval and your completion, with the issue
-  still in `reviewing` — that push leaves the approval standing for nothing, since any push may
-  change code: the round goes stuck and your architect is told (`ApprovalStands` in
+  A push after your approval lands in one of two places. While GitHub has not yet reported the
+  approved head mergeable the issue is still in `reviewing`, and the push leaves the approval
+  standing for nothing, since any push may change code: the round goes stuck and your architect
+  is told (`ApprovalStands` and `ApprovalSetAside` in
   `packages/daemon/internal/classify/decisions.go`, `stuckApprovedOtherCode` in
-  `packages/daemon/internal/workflow/review.go`, and the cases "the approval, then a push" and "a
-  push, then the approval of the head before it" in
-  `packages/daemon/internal/workflow/review_test.go`). That is why the message starting the
-  text-fix loop goes only once your `read_record` shows the issue in `accepting`, and never with
-  the review: an accepted completion can land before the review's webhook, and the implementer's
-  push in that gap would move the head out from under the approval. The same sentence, with the
-  call to make, is in *After an approval that leaves text threads open* below. Carry every inline comment in that single
+  `packages/daemon/internal/workflow/review.go`). The case "a push since the approved head, then
+  an approval of the head" of `TestARoundItsApprovalCannotEndTellsTheArchitect` in
+  `packages/daemon/internal/workflow/review_test.go` asserts the state that push leaves: with your
+  completion in and your approval of a head a push has replaced, the issue stays in `reviewing`,
+  the architect is told once that the round is stuck at the new head, and an approval of the new
+  head moves the issue to `accepting` once GitHub reports it clean. Once GitHub
+  has reported the approved head mergeable, the approval has already ended the round and a push
+  finds the issue in `accepting`, which the case "the approval of the head, then a push: the
+  round had already ended" of `TestAnApprovalStandsOnlyForTheHeadItNames` asserts. The message
+  starting the text-fix loop goes at your approval either way: step 1 of *After an approval that
+  leaves text threads open* in `skill://legion-worker/references/review-threads.md` is that rule,
+  and says what each of the two asks of you. Carry every inline comment in that single
   call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
   with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
   Legion footer, which names the head the review read:
@@ -133,26 +139,23 @@ own carry rule and the architect's acceptance, not a path test.
   that the open threads are the work the merge waits for. Each of them stays the inline review
   thread you already wrote. The implementer fixes the text and pushes it, and you resolve the
   thread and approve the head that fix landed on, so you write no commit of your own for one.
-- **After an approval with text threads open.** The loop runs in `accepting`, where the daemon
-  starts no phase and records no review, so each step is carried by a message its own role
-  sends. That message is a step of its own, and the reviewer's round is not over until it is
-  sent: once the `legion` tool's `read_record` shows the issue in `accepting`, `envoy_publish` to the
-  implementer's role topic naming the approved head by SHA and each open thread by its node id:
-  nothing else tells it its turn began, and an accepted completion alone does not say the round
-  is over, since the round ends on the review fact as well. What to send when the record never
-  shows `accepting` is step 1 of `skill://legion-worker/references/review-threads.md`, which
-  states the phases that send it all the same and the phases that make the loop void.
-  It fixes the text in its own live session, makes one push of one commit,
-  replies on each thread, resolves none, and publishes the new head and its compare to your
-  topic. You then resolve each thread you opened, one call per thread, approve the head that
-  push made, by SHA, reading that head's checks as you read any head's, and `envoy_publish` to
-  the architect's role topic naming that head: no daemon check reads that approval, so that
-  message is the architect's gate and its acceptance is the one gate on the fix head
-  (`skill://legion-worker/references/review-threads.md` gives the loop and the calls). A thread
-  the fix cannot close, and a fix whose diff changes code that runs, take one route: tell the
-  architect, which moves the issue with `request_backward_move`, to `implementing` for the
-  thread and to `testing` for the stale results. Neither you nor the implementer moves the
-  issue, and a `REQUEST_CHANGES` there records the finding on GitHub and moves nothing.
+- **After an approval with text threads open.** The daemon starts no phase for the loop that
+  closes those threads, so each step is carried by a message its own role sends, and the first is
+  yours: at your approval, whatever phase the record shows, `envoy_publish` to the implementer's
+  role topic naming the approved head by SHA and each open thread by its node id, since nothing
+  else tells it its turn began. Step 1 of `skill://legion-worker/references/review-threads.md` is
+  that rule, and says what follows when the implementer's push lands in `reviewing` and when it
+  lands in `accepting`. The implementer fixes the text in its own live session, makes one push of
+  one commit, replies on each thread, resolves none, and publishes the new head and its compare
+  to your topic. You then resolve each thread you opened, one call per thread, approve the head
+  that push made, by SHA, reading that head's checks as you read any head's, and `envoy_publish`
+  to the architect's role topic naming that head: that message is the architect's gate and its
+  acceptance is the one gate on the fix head (`skill://legion-worker/references/review-threads.md`
+  gives the loop and the calls). A thread the fix cannot close, and a fix whose diff changes code
+  that runs, take one route: tell the architect, which moves the issue with
+  `request_backward_move`, to `implementing` for the thread and to `testing` for the stale
+  results. Neither you nor the implementer moves the issue (step 4 of that reference says when a
+  `REQUEST_CHANGES` records the finding and when you submit none).
 - **A text finding stays text where a test pins the sentence it fixes.** A check that is green at
   the approved head is not a `before_merge` check of the issue with no current passing result, so
   it asks for no changes; a text fix that breaks such a pin is caught at the head the fix made,
@@ -163,18 +166,21 @@ and takes this order: read CI as above; write the handoff and record it with
 `dispatch handoff-write`; submit the review of the head, by its SHA; then complete. A red at the
 code is a `REQUEST_CHANGES` naming the check, never an approval. A request for changes does not
 wait, since it stands whatever CI says and the issue leaves reviewing with it. The approval waits
-on nothing either: it ends the round whatever CI says at the head it names, since the round reads
-no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
+on no CI verdict either: what the head's checks concluded decides nothing in the round, and a
+settlement the daemon reads later — at that head or any above it — moves the
 issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
 in one message to the tree's architect, the worker of the issue's current phase and the
 implementer, and judges none of them: a red is the implementer's to fix or re-run, the
 architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
 it approves is the only read that decides anything. A review that names an older head reviews
-code the pull request no longer has. The daemon moves the issue once all three are in — the
-decision GitHub reports, your completion, in either order, and GitHub's own answer that the
-approved head is one the issue may advance on — so a review posted without a completion leaves
-the issue in reviewing until you finish, and an approved head GitHub answers `blocked` for leaves
-it there until that answer comes clean.
+code the pull request no longer has. The daemon moves the issue once two things are in — the
+approval GitHub reports, and GitHub's own answer that the approved head is one the issue may
+advance on (`clean`, `unstable` or `has_hooks`) — and your completion is no part of that: it
+records your round's handoff, whether it comes before the approval or after the issue has moved
+(`TestTheReviewEventDecidesAndTheCompletionRecordsItsFindings` in
+`packages/daemon/internal/workflow/review_test.go`). An approved head GitHub answers `blocked`
+for — a check the base requires still running or failed, or a required conversation resolution
+with threads open — leaves the issue in `reviewing` until that answer comes clean.
 
 ## The architect's acceptance
 

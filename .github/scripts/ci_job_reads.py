@@ -1077,7 +1077,7 @@ GATES = [
         ("packages/dispatch/e2e/**", "packages/pi-legion/scripts/skill-scenarios/seed.ts:96 imports packages/dispatch/e2e/api.ts (typecheck includes scripts/skill-scenarios/*.ts), and that program holds six of that directory's modules: api.ts, harness-ports.ts, harness-broker.ts, harness-processes.ts, harness-real-broker.ts and harness-signin.ts"),
         ("packages/dispatch/web/src/api/types.ts", "packages/dispatch/e2e/api.ts:51"),
         ("packages/dispatch/web/src/api/paths.ts", "packages/dispatch/e2e/api.ts:14 imports PathsOf, Op, PathParams, QueryParams, RequestBody, Query, Body and Answer from it, since that client is keyed on the generated document's path patterns"),
-        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:23,57,142; scripts/skill-scenarios/rig.test.ts:283-284,2059,2273; prepack stages skills"),
+        ("skills/**", "packages/pi-legion/src/skills-guard.test.ts:23,57,142; scripts/skill-scenarios/rig.test.ts's \"judge-omp\" rows run rig.sh judge-omp over the checkout's skills/asd-ste100, which \"ste runs omp in the directory on its prompt, no plugins, asd-ste100 alone, the pinned model\" reads back and \"fails, naming the rig's root, when the root is no checkout\" copies; prepack stages skills"),
         ("scripts/pi-plugin-prepack.sh", f"packages/pi-legion/package.json prepack ({at('pi-legion', 'Pack pi-legion')}); packages/pi-shared/test/skills-guard.ts:17"),
         ("scripts/third-party-notices.ts", "scripts/pi-plugin-prepack.sh:96"),
         (f"{DAEMON}/internal/**", "packages/pi-legion/src/skills-guard.test.ts:24 (prompts root) and :144 sweeps every .md/.go/.ts/.yaml/.yml/.example/.sh under packages/daemon/internal"),
@@ -1086,9 +1086,9 @@ GATES = [
         ("deploy/kubernetes/daemon/controller.yaml.example", "packages/pi-legion/src/skills-guard.test.ts:146"),
         ("AGENTS.md", "packages/pi-legion/src/skills-guard.test.ts:147"),
         ("README.md", "packages/pi-legion/src/skills-guard.test.ts:148"),
-        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:14,28,288,2278; rig.sh:385-386 sources scripts/e2e/lib/rig.sh"),
-        ("scripts/e2e/plan-pointer-drive.ts", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:2546-2571 typechecks it: no tsconfig of this repository covers scripts/e2e, and that drive composes a worker pane through this rig's own composer, so the row compiles the one file of the directory the rig's modules reach"),
-        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts:285,2273-2275 copies .omp-pin"),
+        ("scripts/e2e/lib/**", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts imports scripts/e2e/lib/script-functions, its \"a setup that fails after install_model_route\" rows copy install-key-file-model-route.sh and model-endpoint.sh from it, and its \"judge-omp\" row \"fails, naming the rig's root, when the root is no checkout\" copies the directory; rig.sh sources scripts/e2e/lib/rig.sh (its `. \"$root/scripts/e2e/lib/rig.sh\"` line)"),
+        ("scripts/e2e/plan-pointer-drive.ts", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts's row \"plan-pointer-drive.ts typechecks, claim and all\" typechecks it: no tsconfig of this repository covers scripts/e2e, and that drive composes a worker pane through this rig's own composer, so the row compiles the one file of the directory the rig's modules reach"),
+        (".omp-pin", "packages/pi-legion/scripts/skill-scenarios/rig.test.ts's \"judge-omp\" rows run rig.sh judge-omp, which copies the checkout's .omp-pin, and its row \"fails, naming the rig's root, when the root is no checkout\" copies .omp-pin"),
         ("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts", "writes the overlay and runs go run (:27)"),
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")

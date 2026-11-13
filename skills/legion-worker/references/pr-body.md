@@ -24,9 +24,9 @@ later phase keeps it current rather than replacing it:
 
 ## Verification
 
-**Threads:** <n> resolved, <n> unresolved. Each answered individually and resolved individually, never in bulk, by the reviewer that judged the finding (the implementer replies on each thread it answers and resolves none; the reviewer writes the unresolved count and one entry per open thread when it approves, and the implementer's fix and the reviewer's resolution bring both to zero):
-- Thread <node id>: fixed in <commit-sha> — <one line>; resolved at <head-sha>.
-- Thread <node id>: not a defect — <reason>; resolved at <head-sha>.
+**Threads:** <n> resolved, <n> unresolved. Each answered individually and resolved individually, never in bulk, by the reviewer that judged the finding (the implementer replies on each thread it answers, records it below at the head that answered it, and resolves none; the count is the reviewer's, which writes the unresolved count and one entry per open thread when it approves, and writes the count again once its resolutions bring it to zero):
+- Thread <node id>: fixed in <commit-sha> — <one line>; answered at <head-sha>.
+- Thread <node id>: not a defect — <reason>; answered at <head-sha>.
 - Thread <node id>: accepted by the reviewer — <its reason, one line>; resolved at <head-sha>.
 - Thread <node id>: still open — <what remains>; unresolved at <head-sha>.
 
@@ -91,12 +91,15 @@ longer describes the diff is a finding against the implementer, not a line the m
 
 When the reviewer approves with text threads open, it writes the `Threads:` count and one entry
 per open thread into that same body, in the form the template carries: `- Thread <node id>: still
-open — <what remains>; unresolved at <head-sha>.` The architect reads that section through the
-whole of `accepting`, and what the approval leaves there stands until the fix lands: the
-implementer, in its own live session, pushes one commit of the text fixes and rewrites each of
-those entries at the head that push made, and the reviewer, which resolves each thread it opened,
-writes `<n> resolved, 0 unresolved` into the approval of that head
-(`skill://legion-worker/references/review-threads.md` gives the loop). `Fast-follow:` stays
+open — <what remains>; unresolved at <head-sha>.` The architect reads that section until it
+accepts, and what the approval leaves there stands until the fix lands. The implementer, in its
+own live session, pushes one commit of the text fixes and rewrites each of those entries with its
+disposition at the head that push made (`fixed in <commit-sha> — <one line>; answered at
+<head-sha>`); it resolves nothing, so it leaves the count as the approval wrote it. The reviewer,
+which resolves each thread it opened, then writes the count again, `<n> resolved, 0 unresolved`,
+in the body before it approves the head the fix landed on
+(`skill://legion-worker/references/review-threads.md` gives the loop, and its *The PR body's
+`Threads` section* says who writes what there). `Fast-follow:` stays
 `none` for such a thread: its fix is in a file this pull request touches and is pushed before the
 merge, which is not what that line is for. An open text thread is not an unproven claim, so `Not
 proven / risk` gains nothing from it and the merger quotes nothing new.

@@ -40,7 +40,7 @@ Do not request `isolated` work, create a workspace, edit files, or create a comm
 6. When a merge fails, the decision is yours, and GitHub's own answer is the fact you decide on: quote it. Wait for what GitHub waits for (a required check still running, a required review only a person can give) and merge again; try the merge again at the head you re-read when a push moved it, or when GitHub refused while it was still computing mergeability; send the issue back with `request_backward_move` when the head itself must change (a conflict with the base, a check that failed); or tell the architect, with `envoy_publish` to its encoded role token, what no worker can do — a repository setting or an App permission only a person can change, naming the pull request, the head and GitHub's refusal. A merge you cannot make is never a rule to work around.
 7. Follow the deployment's instructions for anything they cover beyond this.
 
-You resolve no review thread: the reviewer's approval already judged them, and the merge needs no thread state beyond it. Where a repository sets GitHub's conversation-resolution rule on the base branch, GitHub refuses the merge of a pull request whose conversation is unresolved.
+You resolve no review thread: the reviewer's approval already judged them, and the merge needs no thread state beyond it. Where a repository sets GitHub's conversation-resolution rule on the base branch, it takes effect before you: GitHub reports the approved head `blocked` while a thread is open, so the issue waits in `reviewing` until the fix lands and the threads are resolved (`review.go`'s `stuckMergeState`), and GitHub refuses the merge of a pull request whose conversation is still unresolved.
 
 ## A closed design gate
 

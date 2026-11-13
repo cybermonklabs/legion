@@ -1177,11 +1177,14 @@ jobs:
               - 'docs/kubernetes.md'
               - 'docs/site/src/content/docs/**'
               - 'deploy/kubernetes/daemon/controller.yaml.example'
-              # scripts/skill-scenarios/rig.test.ts:14,28,288,2278 and rig.sh:385-386.
+              # scripts/skill-scenarios/rig.test.ts imports scripts/e2e/lib/script-functions, and
+              # its "a setup that fails after install_model_route" and "judge-omp" rows copy
+              # files of that directory; rig.sh sources scripts/e2e/lib/rig.sh.
               - 'scripts/e2e/lib/**'
               # The one file of scripts/e2e this job compiles: no tsconfig of the repository
-              # covers that directory, so scripts/skill-scenarios/rig.test.ts:2546-2571 typechecks
-              # this drive, which composes a worker pane through the rig's own composer.
+              # covers that directory, so scripts/skill-scenarios/rig.test.ts's row
+              # "plan-pointer-drive.ts typechecks, claim and all" typechecks this drive, which
+              # composes a worker pane through the rig's own composer.
               - 'scripts/e2e/plan-pointer-drive.ts'
               - *omp_install
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml

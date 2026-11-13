@@ -973,9 +973,10 @@ describe("worker_boot", () => {
 
   // Catches: an opening line the rig writes where no call of the run could have been recorded.
   // The record is opened by running the pane's own gh, so a wrapper that cannot start leaves no
-  // record at all, which score.ts's `unscored` reads as the rig error it is
-  // (score.test.ts:7838-7849), rather than a record holding the opening line alone, which it
-  // reads as the run that called nothing (score.test.ts:7858-7870).
+  // record at all, which score.ts's `unscored` reads as the rig error it is (score.test.ts's
+  // "reviewer-text-findings: a missing stand-in record is a rig error"), rather than a record
+  // holding the opening line alone, which it reads as the run that called nothing
+  // ("reviewer-text-findings: an empty stand-in record is a reading of the run, named in its row").
   test("a pane gh that cannot start opens no record, and the boot says so", () => {
     // A wrapper that cannot start: the interpreter it execs is not there, as a $R/bin/gh
     // written against a bun that has gone would be.

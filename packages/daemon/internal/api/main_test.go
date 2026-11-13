@@ -15,9 +15,7 @@ import (
 // pane's or a pod's own `gh` is the `legion gh` wrapper in front of it. Kept, the operator
 // commands of scripts/e2e/README.md still run under the guard. LEGION_TEST_PG_DSN and the four
 // LEGION_E2E_*_APP_* inputs the App lib reads need no entry: fixtureenv's own testInput keeps
-// every LEGION_TEST_ and LEGION_E2E name by prefix. The five LEGION_READY_SCOPE_* names went with
-// the proof that read them, TestRealGitHubReadyHoldsTheHeadToRetrosCommits, when READY stopped
-// comparing the head with the approved head (dispatch://INFRA-764).
+// every LEGION_TEST_ and LEGION_E2E name by prefix.
 var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH"}
 
 // guardedAtStart is what TestMain's own Guard kept, read before any test of this package ran.

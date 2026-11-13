@@ -32,16 +32,19 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 
 - The issue's Dispatch status stays `needs_review` in `accepting`; `sign_off` moves it to `retro`.
 - An approval may stand with text threads open, and then your acceptance is the only gate on the
-  head that closes them, since no daemon check reads that approval and no Legion check compares
-  the head that merges with the approved one. The reviewer leaves each text finding as the
-  inline review thread it already wrote, publishes that head and those threads to the
-  implementer's role topic once its own
-  `read_record` shows the issue in `accepting` — not merely once its completion is accepted,
-  since the round ends on the review fact too — the implementer fixes the text and pushes it
-  once in its own live session while you read the issue, and the reviewer then resolves each
-  thread, approves the head the fix landed on and publishes that head to your role topic.
-  **Hold `sign_off` until that message arrives**, and accept on that second approval, reading
-  it on GitHub yourself.
+  head that closes them, since no Legion check compares the head that merges with the approved
+  one. The reviewer leaves each text finding as the inline review thread it already wrote and
+  publishes that head and those threads to the implementer's role topic at its approval, whatever
+  phase the record shows; the implementer fixes the text and pushes it once in its own live
+  session, only while its own read of the record shows `reviewing` after that approval or
+  `accepting`; and the reviewer then resolves each thread, approves the head the fix landed on
+  and publishes that head to your role topic (steps 1 to 3 of
+  `skill://legion-worker/references/review-threads.md`). A fix pushed while the issue is still in
+  `reviewing` sets the first approval aside, so the `review-stuck` notice naming the fix head is
+  a step of that loop: ask the reviewer for the decision as for any such notice, and its approval
+  of the fix head ends the round once GitHub reports that head mergeable.
+  **Hold `sign_off` until the reviewer's message naming the fix head arrives**, and accept on
+  that second approval, reading it on GitHub yourself.
   Where you doubt the reviewer's call between a text and a behavioural finding, read the threads
   yourself and send the issue back with `request_backward_move` rather than accepting; a thread
   the fix cannot close reaches you the same way (*A review thread that cannot be closed*, below).
@@ -157,16 +160,17 @@ move and you tell it which; from `accepting` you send an issue back only to `imp
 
 ## A conflicting head
 
-What returns the tree to review is a changed diff: a conflict-resolution merge whose
-fingerprint (the unchanged-diff check,
-`skill://legion-worker/references/conflicts-and-rewrites.md`) differs from the approved head's.
-A conflict merge whose fingerprint is unchanged does not, and no Legion check compares the head
-that merges with the approved one: a repository that wants a later push reviewed says so in its
-own rulesets.
+What returns the tree to review is a changed diff: a conflict-resolution merge whose fingerprint
+(the unchanged-diff check, `skill://legion-worker/references/conflicts-and-rewrites.md`) differs
+from the approved head's goes back through a round, and a conflict-resolution merge whose
+fingerprint is unchanged needs no round of its own, since the reviewer's confirmation of the new
+head, naming both heads and the fingerprint, carries the approval across it. No Legion check
+compares the head that merges with the approved one: a repository that wants a later push
+reviewed says so in its own rulesets.
 A passing result carries across
 one push above the head the reviewer approved when that push's own diff changes no code that runs
 and the reviewer's approval of the new head states that reading — the diff it read, that it
-changes no code that runs, the head each result ran at and the head it approves. Anything else
+changes no code that runs, the head each result ran at and the head it approves. Any other push
 above the approved head goes back through the tester, by your `request_backward_move`.
 
 Make a conflict-resolution merge only when GitHub reports `CONFLICTING`
