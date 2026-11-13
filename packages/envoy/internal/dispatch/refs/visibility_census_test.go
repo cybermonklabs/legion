@@ -3,6 +3,11 @@ package refs
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"sort"
@@ -16,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // TestEveryNodeKindAnswersAVisibilityPredicate is the census of the visibility registry. It
@@ -27,6 +33,11 @@ import (
 // the view's own definition in the catalogue. A node kind a later migration adds to either is a
 // kind this test asks the registry for the day that migration lands, and one the registry holds
 // that neither names is a predicate nothing can bind.
+//
+// The reads it holds to the registry are every exported function of this package that reads
+// the graph for a viewer, and the test reads that list out of the package's own source, so a
+// read added later and left out of the census fails here, named. Each read is judged as a
+// whole: it fails, named, when no statement it issues binds a predicate of the registry's.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -54,34 +65,54 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 			strings.Join(problems, "\n  "), resolved, declared)
 	}
 
-	statements := graphReadStatements(t, ctx, database)
-	if len(statements) == 0 {
+	reads := graphReads(t, ctx, database)
+	if len(reads) == 0 {
 		t.Fatal("no read of the graph was recorded, so no statement was checked")
 	}
-	for name, statement := range statements {
-		marks := strings.Count(statement, VisibilityMarker)
-		tests := strings.Count(statement, ".visibility")
-		t.Logf("the %s read binds %d predicate of the registry's and makes %d test of `visibility`",
-			name, marks, tests)
-		// Equal counts alone prove nothing: a statement that binds no visibility rule at all
-		// makes zero of each, and zero equals zero, which is how such a read passed this check on
-		// 2026-11-12. Every read of the graph answers only what the acting person may see, so
-		// every statement binds at least one predicate.
-		switch {
-		case marks == 0 || tests == 0:
-			t.Errorf("the %s read binds %d predicate of the registry's and makes %d test of `visibility`: a read of the graph that binds no visibility rule answers every node to everyone\n%s",
-				name, marks, tests, statement)
-		case marks != tests:
-			t.Errorf("the %s read makes %d test of `visibility` and binds %d predicate of the registry's: a read states no visibility rule of its own\n%s",
-				name, tests, marks, statement)
+	recorded := map[string]bool{}
+	for _, read := range reads {
+		recorded[read.function] = true
+		var marks, tests int
+		for index, statement := range read.statements {
+			statementMarks := strings.Count(statement, VisibilityMarker)
+			statementTests := strings.Count(statement, ".visibility")
+			marks, tests = marks+statementMarks, tests+statementTests
+			// A statement may bind no predicate where another statement of its read filters
+			// its rows, but a test of `visibility` that no marker opens is a rule the
+			// statement wrote for itself rather than took from the registry.
+			if statementMarks != statementTests {
+				t.Errorf("statement %d of the %s read makes %d test of `visibility` and binds %d predicate of the registry's: a read states no visibility rule of its own\n%s",
+					index+1, read.call, statementTests, statementMarks, statement)
+			}
+			for _, kind := range markedKinds(statement) {
+				if kind == "every kind" || kind == "the row's own kind" {
+					continue
+				}
+				if !slices.Contains(declared, kind) {
+					t.Errorf("statement %d of the %s read binds a predicate for %q, which the registry does not hold", index+1, read.call, kind)
+				}
+			}
 		}
-		for _, kind := range markedKinds(statement) {
-			if kind == "every kind" || kind == "the row's own kind" {
-				continue
-			}
-			if !slices.Contains(declared, kind) {
-				t.Errorf("the %s read binds a predicate for %q, which the registry does not hold", name, kind)
-			}
+		t.Logf("the %s read binds %d predicate of the registry's and makes %d test of `visibility` over %d statements",
+			read.call, marks, tests, len(read.statements))
+		// Equal counts alone prove nothing: a read that binds no visibility rule at all makes
+		// zero of each, and zero equals zero, which is how such a read passed this check on
+		// 2026-11-12. Every read of the graph answers only what the acting person may see, so
+		// every read binds at least one predicate. The rule is the read's and not each
+		// statement's, because a read may filter one statement's rows by another's:
+		// BlockLinks lists its links out of block_refs with no predicate and keeps only those
+		// whose two blocks the block loader, which binds the block predicate, resolves for the
+		// viewer.
+		if marks == 0 || tests == 0 {
+			t.Errorf("the %s read binds %d predicate of the registry's and makes %d test of `visibility` in all of its %d statements: a read of the graph that binds no visibility rule answers every node to everyone\n%s",
+				read.call, marks, tests, len(read.statements), strings.Join(read.statements, "\n----\n"))
+		}
+	}
+	viewing := viewerReads(t)
+	t.Logf("the package's reads of the graph that take a viewer are %v", viewing)
+	for _, function := range viewing {
+		if !recorded[function] {
+			t.Errorf("%s reads the graph for a viewer and the census records no call of it, so no statement it issues was checked", function)
 		}
 	}
 }
@@ -173,13 +204,30 @@ func markedKinds(statement string) []string {
 	return kinds
 }
 
-// graphReadStatements is the SQL every read of the graph issues, named by the read that issued
-// it: the reads are run against the database through a queryer that records their statements,
-// so the test reads what Postgres was asked rather than a copy of it.
-func graphReadStatements(t *testing.T, ctx context.Context, database *store.Store) map[string]string {
+// graphRead is one call of a read of the graph: the exported function that made it, the call
+// as a failure names it, and every statement the call issued, in order.
+type graphRead struct {
+	function   string
+	call       string
+	statements []string
+}
+
+// graphReads calls every read of the graph that takes a viewer and records the SQL each call
+// issues: the reads are run against the database through a queryer that records their
+// statements, so the test reads what Postgres was asked rather than a copy of it.
+func graphReads(t *testing.T, ctx context.Context, database *store.Store) []graphRead {
 	t.Helper()
 	recorder := &recordingQueryer{inner: database.Pool}
 	who := model.Actor{Kind: "user", ID: "alice"}
+	var reads []graphRead
+	record := func(function, call string, run func() error) {
+		t.Helper()
+		start := len(recorder.statements)
+		if err := run(); err != nil {
+			t.Fatalf("run the %s read: %v", call, err)
+		}
+		reads = append(reads, graphRead{function: function, call: call, statements: slices.Clone(recorder.statements[start:])})
+	}
 	for _, query := range []Query{
 		{Direction: "in", Kind: "issue", ID: "CORE-1"},
 		{Direction: "out", Kind: "issue", ID: "CORE-1"},
@@ -191,23 +239,139 @@ func graphReadStatements(t *testing.T, ctx context.Context, database *store.Stor
 		{Direction: "in", Kind: "ask", ID: "00000000-0000-4000-8000-000000000003"},
 		{Direction: "out", Kind: "message", ID: "00000000-0000-4000-8000-000000000004"},
 	} {
-		if _, err := Edges(ctx, recorder, who, query); err != nil {
-			t.Fatalf("read the %s edges of %s %s: %v", query.Direction, query.Kind, query.ID, err)
-		}
+		record("Edges", fmt.Sprintf("Edges %s of %s %s (whole documents %t)", query.Direction, query.Kind, query.ID, query.WholeDocuments), func() error {
+			_, err := Edges(ctx, recorder, who, query)
+			return err
+		})
 	}
 	for _, kind := range nodeKinds {
-		if _, _, err := Node(ctx, recorder, who, kind, "no-such-node", true); err != nil {
-			t.Fatalf("read a %s node: %v", kind, err)
+		record("Node", "Node of kind "+kind, func() error {
+			_, _, err := Node(ctx, recorder, who, kind, "no-such-node", true)
+			return err
+		})
+		record("BacklinkCounts", "BacklinkCounts of kind "+kind, func() error {
+			_, err := BacklinkCounts(ctx, recorder, who, kind, []string{"no-such-node"}, nil)
+			return err
+		})
+		// The batched half queues its statement rather than issuing it on a queryer: the
+		// statement recorded is the one queued, and the batch is sent so Postgres runs it.
+		record("QueueBacklinkCounts", "QueueBacklinkCounts of kind "+kind, func() error {
+			batch := &pgx.Batch{}
+			if err := QueueBacklinkCounts(batch, who, kind, []string{"no-such-node"}, nil, map[string]int{}); err != nil {
+				return err
+			}
+			for _, queued := range batch.QueuedQueries {
+				recorder.statements = append(recorder.statements, queued.SQL)
+			}
+			return database.Pool.SendBatch(ctx, batch).Close()
+		})
+	}
+	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
+		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
+		return err
+	})
+	// A message's blocks record no revisions, so no block of one is ever removed and
+	// RemovedItemBlockNode refuses that kind; the two kinds it reads are read here.
+	for _, kind := range []ItemKind{ItemComment, ItemAsk} {
+		record("RemovedItemBlockNode", "RemovedItemBlockNode of a removed "+string(kind)+" block", func() error {
+			_, _, err := RemovedItemBlockNode(ctx, recorder, who, kind, "no-such-node", 2)
+			return err
+		})
+	}
+	linked := seedBlockLink(t, ctx, database)
+	record("BlockLinks", "BlockLinks within the linked document", func() error {
+		links, err := BlockLinks(ctx, recorder, who, linked, linked)
+		if err == nil && len(links) != 1 {
+			err = fmt.Errorf("the linked document lists %d block links, want its one: with no link to list the read never reaches the loader that binds its predicate", len(links))
 		}
-		if _, err := BacklinkCounts(ctx, recorder, who, kind, []string{"no-such-node"}, nil); err != nil {
-			t.Fatalf("count %s backlinks: %v", kind, err)
+		return err
+	})
+	return reads
+}
+
+// seedBlockLink indexes one document whose first block links to its second, and answers the
+// document's id. BlockLinks reads its links out of block_refs, a statement that binds no
+// predicate, and resolves the two blocks of each through the block loader, which binds the
+// block predicate: with no link to list it never reaches the loader, and the census would read
+// only the statement that binds none.
+func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) string {
+	t.Helper()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the block link seed: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	createReferenceProject(t, tx, "LINK")
+	artifact, _ := createReferenceArtifact(t, tx, "", "LINK", "links-md")
+	const source = "See dispatch://LINK/artifact/links-md#b-target.\n"
+	markdown := source + "The target.\n"
+	blocks := []model.ArtifactBlock{
+		{ID: "source", Type: "paragraph", From: 0, To: len(source)},
+		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
+	}
+	located := text.ExtractAt(markdown, "https://dispatch.example")
+	_, _, write, err := IndexBlocks(ctx, tx, artifact, 1, time.Now(), markdown, blocks, located, nil)
+	if err != nil {
+		t.Fatalf("index the linked document: %v", err)
+	}
+	if err := write.Caused(ctx, tx, graphstore.NoEvent); err != nil {
+		t.Fatalf("append what the linked document's index stated: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the block link seed: %v", err)
+	}
+	return artifact
+}
+
+// viewerReads is every exported function of this package that reads the graph for a viewer,
+// read out of the package's own source rather than kept as a list: one that takes a
+// model.Actor beside the Queryer it reads on, or beside the *pgx.Batch it queues its statement
+// in. A method is named by its receiver's type and its own name.
+func viewerReads(t *testing.T) []string {
+	t.Helper()
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("list the package's source: %v", err)
+	}
+	fileSet := token.NewFileSet()
+	var reads []string
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		parsed, err := parser.ParseFile(fileSet, file, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", file, err)
+		}
+		for _, declaration := range parsed.Decls {
+			function, ok := declaration.(*ast.FuncDecl)
+			if !ok || !function.Name.IsExported() {
+				continue
+			}
+			var viewer, queries bool
+			for _, parameter := range function.Type.Params.List {
+				switch types.ExprString(parameter.Type) {
+				case "model.Actor":
+					viewer = true
+				case "Queryer", "*pgx.Batch":
+					queries = true
+				}
+			}
+			if !viewer || !queries {
+				continue
+			}
+			name := function.Name.Name
+			if function.Recv != nil {
+				name = strings.TrimPrefix(types.ExprString(function.Recv.List[0].Type), "*") + "." + name
+			}
+			reads = append(reads, name)
 		}
 	}
-	statements := make(map[string]string, len(recorder.statements))
-	for index, statement := range recorder.statements {
-		statements[fmt.Sprintf("graph read %d", index+1)] = statement
+	if len(reads) == 0 {
+		t.Fatal("the package's source holds no read of the graph that takes a viewer, so the census could check none")
 	}
-	return statements
+	sort.Strings(reads)
+	return reads
 }
 
 // recordingQueryer is the Queryer a read runs on while this test reads the statements it issues.
