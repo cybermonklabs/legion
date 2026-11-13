@@ -1064,6 +1064,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
+  roles not given their phase entry: none
   pending Dispatch status writes: none
   held lifecycle rows: none
   claims nothing will wake: none

@@ -905,13 +905,14 @@ The reason is the first of these eleven words that is true of the issue, and the
 
 `heldBy` holds the issue or issues the reason names:
 the tree root for `tree_closed`, `tree_parked`, `design_gate` and `root_awaiting_person`;
-the live root the chain reaches for `ancestry`;
+every live root the chain reaches for `ancestry`, which can be more than one;
 the accepted ancestor for `accepted_ancestor`;
 the unfinished blockers for `dispatch_blocker`;
 and the open children for `children_first`.
 It is absent for `label_off`, `at_work` and `unclassified`.
 An issue in `admission.held` holds no admission slot, so the list changes no count against `admission_cap`.
-An issue in the phase `held` is in no held row: it keeps its slot, and `admission.active` names it.
+An issue in the phase `held` keeps its slot while its tree runs, and then `admission.active` names it and no held row does.
+Under a tree root that lingers or has closed, it holds no slot, and its held row reads `tree_closed`, or `tree_parked` once a parked root's linger has run out.
 The daemon starts no held issue while its word stands.
 The end of one hold starts nothing where a later word is true of the issue, since that word then holds it;
 once no word holds the issue, it goes into the waiting line, where it waits for a slot.
@@ -1001,9 +1002,10 @@ A `todo` root that never ran as a tree of its own (no slot reached it and it car
 It gets no architect and runs there as a `todo` child does: it waits in the line for a slot of its own, is held like any child while it waits on an unfinished Dispatch issue, and the tree's architect gets a `child-status` notice.
 A root that left another tree, handed over by its finished tree or admitted as an orphan, carried or not, stays its own tree (`record.Issue.HandedOverFrom`):
 admitting its old root again never takes it back, no other tree adopts it, and no live tree on its Dispatch chain holds it; it queues for a slot of its own.
-`release_children` adopts a joinable child the same way before it answers `released`, naming it under `held` when it waits on an unfinished issue, and refuses one it cannot, writing nothing:
+`release_children` adopts a joinable child the same way before it answers `released`, naming it under `held` when it waits on an unfinished issue, and refuses one it cannot, writing nothing.
+It refuses first, before it reads the child's record, a child Dispatch shows in any status but `triage`, `backlog`, `icebox` or `todo`, with `ISSUE_ALREADY_RELEASED`, so a member of another tree that is at work reads that refusal and neither of the two below;
 `CHILD_NOT_ADOPTABLE` for a root that ran as a tree of its own, carries a run of its own, or left another tree as a root of its own, and for a member of a closed tree that the rule below would adopt but that holds an admission slot;
-`CHILD_IN_OTHER_TREE` for every other member of another tree: a member of a live tree, which is another architect's work, a member of a parked tree, a member of a tree still in its linger, and a member in any phase past `admitted`.
+`CHILD_IN_OTHER_TREE` for every other member of another tree: a member of a live tree, which is another architect's work, a member of a parked tree, a member of a tree still in its linger, and a member past `admitted` that Dispatch shows in one of those four statuses.
 A child recorded in another tree is adopted instead only when it stands at the phase `admitted` and holds no admission slot, and its root's record says `done` with that root's linger ended:
 it joins the releasing tree with its repository unchanged and its generation raised by one, at `admitted` when its status is `todo`, and otherwise as a parked child at `done`, which a `todo` runs again.
 A labelled `todo` issue whose parent is not recorded, or is recorded as a root of its own, and whose Dispatch chain reaches a live tree (a child that tree's architect has not released, or a root parked under it) is held under that unreleased child, the ancestry hold:
