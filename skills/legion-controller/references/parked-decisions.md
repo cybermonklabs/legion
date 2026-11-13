@@ -12,9 +12,9 @@ not tell it.
 ## Backlog and icebox
 
 A park means "should not run now", and a parked root keeps its `legion` label. A parked root runs
-again when a person sets it to `todo`, when a wake tells you to re-admit it (`held`), or when it
-is your own hold (a park you marked `Parked by Legion while it waits on:`, step 2 of **Deciding**)
-and a person's decision after the park gives its work a next step, as below.
+again when a person sets it to `todo`, or when it is your own hold (a park you marked
+`Parked by Legion while it waits on:`, step 2 of **Deciding**) and a person's decision after the
+park gives its work a next step, as below.
 A parked root that is your own hold also runs again when you checked that the hold's cause or the
 architect's cause is gone, or that the event it waits on has happened, as the wakes reference
 says (the `held` and `worker-died` wakes, and
@@ -198,8 +198,8 @@ an approval of a document that is not the root's primary one.
 At every start (step 4 of the start procedure) and on each `tick`:
 
 1. List the parked roots: `dispatch issues --project <PROJECT> --status backlog --label legion
-   --limit 250 --offset 0`, then the same with `--status icebox`, each paged as
-   [At every start](skill://legion-controller/references/triage.md#at-every-start) pages triage.
+   --all`, then the same with `--status icebox`. `--all` reads every match in one request, as
+   [At every start](skill://legion-controller/references/triage.md#at-every-start) reads triage.
    Keep the rows that `read_state` records under `issues` at phase `done`.
 2. For each, read the root (`dispatch read --issue <root>`), then its children
    (`dispatch read --ref dispatch://<root>/children`) and each child (`dispatch read --issue
