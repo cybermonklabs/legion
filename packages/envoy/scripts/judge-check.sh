@@ -658,10 +658,12 @@ forge_judged_approval() { # <request id> <record id> <name bound to S>
 	SQL
 }
 
-# broker_log_holds reports whether any broker of this stack logged a line holding the text, and
-# leaves the last such line in BROKER_LOG_LINE.
-broker_log_holds() { # <text>
-	BROKER_LOG_LINE="$(grep -hF "$1" "${BROKER_LOGS[@]}" 2>/dev/null | tail -n 1 | tr -d '\n' || true)"
+# airlock_refusal_holds reports whether any broker of this stack wrote a refusal record of the
+# airlock's proxy port (`broker: answer refused` with caller_class airlock) whose reason field
+# holds the text, and leaves the last such record in BROKER_LOG_LINE. A line still being written
+# parses as nothing and is left out.
+airlock_refusal_holds() { # <text>
+	BROKER_LOG_LINE="$(jq -Rc --arg text "$1" 'fromjson? | select(.message == "broker: answer refused" and .caller_class == "airlock" and ((.reason // "") | contains($text)))' "${BROKER_LOGS[@]}" 2>/dev/null | tail -n 1 | tr -d '\n' || true)"
 	[ -n "$BROKER_LOG_LINE" ]
 }
 
@@ -1047,11 +1049,11 @@ check_k10c() {
 
 	local refusal="this grant's approval chain no longer verifies"
 	local logged=0
-	broker_log_holds "$refusal" || logged=1
+	airlock_refusal_holds "$refusal" || logged=1
 	observe "the forged record naming two secrets (grant $two_grant): the CLI exited ${K10C[two_secrets_exit]} — '${K10C[two_secrets_cli]}'; the call through its own placeholder answered ${K10C[two_secrets_proxy]} '${K10C[two_secrets_body]}'; S recorded ${K10C[two_secrets_recorded]} request(s)"
 	observe "the forged record carrying 1800 seconds, past the $AIRLOCK_JUDGE_SECONDS the entry allows the judge (grant $long_grant): the CLI exited ${K10C[long_ttl_exit]} — '${K10C[long_ttl_cli]}'; the call through its own placeholder answered ${K10C[long_ttl_proxy]} '${K10C[long_ttl_body]}'; S recorded ${K10C[long_ttl_recorded]} request(s)"
 	observe "the forged record whose reason names no issue (grant $no_issue_grant): the CLI exited ${K10C[no_issue_exit]} — '${K10C[no_issue_cli]}'; the call through its own placeholder answered ${K10C[no_issue_proxy]} '${K10C[no_issue_body]}'; S recorded ${K10C[no_issue_recorded]} request(s)"
-	observe "the broker's log: $(broker_log_holds "$refusal" && printf '%s' "$BROKER_LOG_LINE" | cut -c1-300 || echo 'no line naming the chain refusal')"
+	observe "the broker's log: $(airlock_refusal_holds "$refusal" && printf '%s' "$BROKER_LOG_LINE" | cut -c1-300 || echo 'no refusal record whose reason names the chain refusal')"
 	assert "$([ "${K10C[two_secrets_exit]}" != 0 ] && [ "${K10C[long_ttl_exit]}" != 0 ] && [ "${K10C[no_issue_exit]}" != 0 ] &&
 		[ "${K10C[two_secrets_recorded]}" = 0 ] && [ "${K10C[long_ttl_recorded]}" = 0 ] && [ "${K10C[no_issue_recorded]}" = 0 ] &&
 		[ "${K10C[two_secrets_proxy]}" = 403 ] && [ "${K10C[long_ttl_proxy]}" = 403 ] && [ "${K10C[no_issue_proxy]}" = 403 ] &&

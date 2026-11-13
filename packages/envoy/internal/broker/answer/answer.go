@@ -112,10 +112,11 @@ const (
 // counter's code label stays a small set.
 var codePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,63}$`)
 
-// NewAnswers registers broker_answers_total on r and answers it, for Middleware.
+// NewAnswers registers broker_answers_total on r and answers it, for Middleware and for the
+// airlock's proxy port, which count their answers on the one counter (Count, CountCarried).
 func NewAnswers(r *metrics.Registry) *metrics.Counter {
 	return r.NewCounter("broker_answers_total",
-		"Answers of the broker's API port, by outcome (served, refused, rate_limited, pending, failed), the code the answer named and the caller's class.")
+		"Answers of the broker's API and airlock ports, by outcome (served, refused, rate_limited, pending, failed), the code the answer named and the caller's class.")
 }
 
 // recorderKey carries the request's Recorder on its context.
@@ -157,7 +158,7 @@ type Recorder struct {
 // does not hold it.
 func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rec := &Recorder{ResponseWriter: w, id: newID(), correlation: correlationID(r), class: CallerPublic}
+		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), class: CallerPublic}
 		r = WithContext(r, context.WithValue(r.Context(), recorderKey{}, rec))
 		completed := false
 		defer func() {
@@ -395,7 +396,7 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 		}
 		slog.Warn(RefusalMessage, attrs...)
 	}
-	answers.Inc(outcome(result), code(answerCode), callerClass(class))
+	Count(answers, rec.status, answerCode, class)
 
 	if !rec.holding {
 		return
@@ -410,6 +411,26 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 	rec.Header().Del("Content-Length")
 	rec.ResponseWriter.WriteHeader(rec.status)
 	_, _ = rec.ResponseWriter.Write(body)
+}
+
+// Count counts one answer the broker wrote on answers (nil counts nothing): an answer of status
+// naming answerCode, which is HTTP_<status> when it names none codePattern accepts, for a caller
+// of class. Its outcome is read from the two (outcomeOf). It is the one rule of
+// broker_answers_total's labels: Middleware counts every answer of the API port by it, and the
+// airlock's proxy port every answer it writes itself.
+func Count(answers *metrics.Counter, status int, answerCode, class string) {
+	if !codePattern.MatchString(answerCode) {
+		answerCode = httpCode(status)
+	}
+	answers.Inc(outcome(outcomeOf(status, answerCode)), code(answerCode), callerClass(class))
+}
+
+// CountCarried counts one answer the broker carried rather than wrote: a call the airlock's
+// proxy port forwarded to a service, whose status is the service's own. It is served whatever
+// that status is, because the service chose it and the broker refused nothing, and its code is
+// HTTP_<status>.
+func CountCarried(answers *metrics.Counter, status int, class string) {
+	answers.Inc(outcome(outcomeServed), code(httpCode(status)), callerClass(class))
 }
 
 // The three labels of broker_answers_total, in the order every sample names them.
@@ -494,16 +515,18 @@ func withAnswerID(body []byte, id string) []byte {
 	return append(out, body[end:]...)
 }
 
-// newID is a fresh answer id: 16 random bytes, in hex.
-func newID() string {
+// NewID is a fresh answer id: 16 random bytes, in hex. Middleware mints one for each answer of
+// the API port, and the airlock's proxy port one for each of its own.
+func NewID() string {
 	var id [16]byte
 	_, _ = rand.Read(id[:])
 	return hex.EncodeToString(id[:])
 }
 
-// correlationID is the caller's X-Correlation-Id as the line keeps it: its printable ASCII, at
-// most fieldBytes of it.
-func correlationID(r *http.Request) string {
+// CorrelationID is the caller's X-Correlation-Id as a refusal's line keeps it: its printable
+// ASCII, at most fieldBytes of it. Middleware reads it for the API port, and the airlock's proxy
+// port for its own refusals.
+func CorrelationID(r *http.Request) string {
 	sent := r.Header.Get(correlationHeader)
 	kept := make([]byte, 0, min(len(sent), fieldBytes))
 	for i := 0; i < len(sent) && len(kept) < fieldBytes; i++ {

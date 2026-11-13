@@ -348,8 +348,11 @@ func TestTheThreeAWSShapesTheAirlockRefuses(t *testing.T) {
 			if seen := r.requests(); len(seen) != 0 {
 				t.Fatalf("the service was sent %d calls; want none", len(seen))
 			}
-			if line := r.logs.callsAtLeast(t, 1); len(line) != 1 || line[0].fields["allowed"] != false {
-				t.Errorf("the refusal logged %v; want one refused line", line)
+			if refusals := r.logs.refusals(); len(refusals) != 1 || refusals[0].fields["code"] != codeAWSSignature || !strings.Contains(fmt.Sprint(refusals[0].fields["reason"]), c.want) {
+				t.Errorf("the refusal recorded %v; want one record coded %s naming %q", refusals, codeAWSSignature, c.want)
+			}
+			if calls := r.logs.calls(); len(calls) != 0 {
+				t.Errorf("the refusal also logged the call lines %v; want its record alone", calls)
 			}
 		})
 	}

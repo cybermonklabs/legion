@@ -627,9 +627,10 @@ func main() {
 	// The answer recorder is outermost, outside the request deadline, so it sees every answer of
 	// this port, whichever writer wrote it: the API's routes, the OAuth provider's library, the
 	// approval page and the mux's own 404 and 405 (answer.Middleware). Its counter is built on the
-	// registry the metrics port serves.
+	// registry the metrics port serves, and the airlock's proxy port counts its answers on it too.
+	answers := answer.NewAnswers(registry)
 	srv := &http.Server{
-		Handler:           answer.Middleware(withRequestDeadline(mux, requestDeadline), answer.NewAnswers(registry)),
+		Handler:           answer.Middleware(withRequestDeadline(mux, requestDeadline), answers),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      writeTimeout,
@@ -646,6 +647,9 @@ func main() {
 			CA:     airlockCA,
 			Idle:   time.Duration(cfg.AirlockIdleSeconds) * time.Second,
 			Log:    slog.Default(),
+			// broker_answers_total, which counts the proxy's answers under caller class
+			// airlock beside the API port's.
+			Answers: answers,
 			// The local stack's four settings for the proxy, every one of them refused on a
 			// production start (refuseAirlockTestSettingsInProduction): where a name is, the
 			// addresses it may dial anyway, the roots it trusts upstream, and the two

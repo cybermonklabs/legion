@@ -328,6 +328,15 @@ logged_addr() { # <message> <log>
 	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
 }
 
+# bound_call_lines prints, one JSON object per line, every line the named broker logs hold for a
+# call through the airlock's proxy port: the call line of a call to a bound host the proxy
+# carried or failed (`airlock proxy: a call to a bound host`), and the refusal record of a call
+# it refused (`broker: answer refused` with caller_class airlock), which the proxy writes in the
+# call line's place. A line still being written parses as nothing and is left out.
+bound_call_lines() { # <log>...
+	jq -Rc 'fromjson? | select(.message == "airlock proxy: a call to a bound host" or (.message == "broker: answer refused" and .caller_class == "airlock"))' "$@" 2>/dev/null || true
+}
+
 # stack_facts reads the few settings a second broker and the fake store need and that the
 # banner does not name: the namespace prefix and key the brokers serve (their own /v1/settings
 # route), and the resolve and dial-allow lists, which are the stack's bound hosts on their own
@@ -642,7 +651,7 @@ check_k3() {
 	scoped_value="$(stored_value "${STACK_SECRETS_PREFIX}airlock-scoped-token")"
 	s_before="$(records_count s)"
 	t_before="$(records_count t)"
-	log_before="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log 2>/dev/null | wc -l)"
+	log_before="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
 
 	cat >"$WORK_DIR/k3-steps.sh" <<EOF
 set -u
@@ -720,18 +729,20 @@ EOF
 
 	# Thirteen of the fourteen requests this command makes reach the proxy on a CONNECT to a
 	# bound host and so log a line: the one that does not is the TLS-name mismatch, whose
-	# handshake fails before a request exists. The run also checks that both a carried and a
-	# refused call are among the lines, each with its reason.
+	# handshake fails before a request exists. A carried call logs its call line and a refused
+	# one its refusal record in that line's place, so the two are counted together
+	# (bound_call_lines). The run also checks that both a carried and a refused call are among
+	# them, the refused one with the reason its record names.
 	local log_after log_lines allowed refused
-	log_after="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log 2>/dev/null | wc -l)"
-	log_lines="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | tail -n 3 | sed 's/^/    /')"
-	allowed="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c '"allowed":true')"
-	refused="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c '"allowed":false.*"reason":')"
-	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run, $allowed of them allowed and $refused refused with a reason; the last three:"
+	log_after="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | wc -l)"
+	log_lines="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | tail -n 3 | sed 's/^/    /')"
+	allowed="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length')"
+	refused="$(bound_call_lines "$AIRLOCK_DIR"/broker*.log | jq -s '[.[] | select(.message == "broker: answer refused" and (.reason // "") != "")] | length')"
+	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run (call lines and the proxy's refusal records), $allowed of them allowed and $refused refused with a reason; the last three:"
 	observe "$log_lines"
 	judge "$([ "$((log_after - log_before))" -ge 13 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
 		"the broker's log has a line for each call to S, allowed or refused with its reason" \
-		"$((log_after - log_before)) lines for the 13 requests of this command that reached the proxy, $allowed allowed and $refused refused with a reason"
+		"$((log_after - log_before)) lines for the 13 requests of this command that reached the proxy, $allowed allowed and $refused refused with the reason their refusal record names"
 
 	# The negative control. The stack's AIRLOCK_DEMO_TOKEN entry is the scoped entry with its
 	# allow removed: the same host and the authorization header, and no allow list.
@@ -1554,13 +1565,14 @@ check_k7() {
 	observe "what each real service answered the fake value${refusals}"
 	observe "the gh consumer: $(printf '%s' "${K7[gh]-}" | head -c 300)"
 
-	# What the broker logged: one line per call to a bound host, which is how a call is known to
-	# have reached the proxy port and been decided there.
+	# What the broker logged: one line per call to a bound host - its call line, or the refusal
+	# record a refused call writes in that line's place (bound_call_lines) - which is how a call
+	# is known to have reached the proxy port and been decided there.
 	local logged swapped
-	logged="$(grep -c 'a call to a bound host' "$WORK_DIR/k7/broker.log" || true)"
-	swapped="$(grep -c 'a call to a bound host.*"allowed":true' "$WORK_DIR/k7/broker.log" || true)"
+	logged="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
+	swapped="$(bound_call_lines "$WORK_DIR/k7/broker.log" | jq -s '[.[] | select(.message == "airlock proxy: a call to a bound host" and .allowed == true)] | length')"
 	observe "this check's broker logged $logged calls to a bound host, $swapped of them allowed; the last three:"
-	observe "$(grep 'a call to a bound host' "$WORK_DIR/k7/broker.log" | tail -n 3 | sed 's/^/    /')"
+	observe "$(bound_call_lines "$WORK_DIR/k7/broker.log" | tail -n 3 | sed 's/^/    /')"
 	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \
 		"each call went through the proxy port and the broker swapped the fake value into the header that the consumer uses" \
 		"$logged calls to a bound host were logged by the proxy, $swapped of them allowed and so swapped"
@@ -1592,10 +1604,10 @@ check_k7() {
 	# released no value for a name the rules name, so nothing it runs reaches the proxy port.
 	fetch_old_cli
 	local before_control after_control old_out old_status
-	before_control="$(grep -c 'a call to a bound host' "$WORK_DIR/k7/broker.log" || true)"
+	before_control="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
 	old_out="$(AGENT_SECRETS_URL="$K7_API_URL" "$OLD_CLI" GITHUB_ADMIN_PAT -- sh -c 'curl -sS -o /dev/null -w %{http_code} https://api.github.com/user' 2>&1)"
 	old_status=$?
-	after_control="$(grep -c 'a call to a bound host' "$WORK_DIR/k7/broker.log" || true)"
+	after_control="$(bound_call_lines "$WORK_DIR/k7/broker.log" | wc -l)"
 	control "the last released agent-secrets ($OLD_CLI_TAG, the CLI without this change) exited $old_status saying '$(printf '%s' "$old_out" | tail -n 1)'"
 	control "the proxy logged $((after_control - before_control)) further calls to a bound host while it ran"
 	judge "$([ "$((after_control - before_control))" = 0 ] && echo 0 || echo 1)" \

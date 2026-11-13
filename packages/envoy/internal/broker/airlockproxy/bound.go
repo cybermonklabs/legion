@@ -21,6 +21,7 @@ import (
 	"golang.org/x/net/http/httpguts"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 )
 
@@ -208,7 +209,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	if !ok || info.target == "" {
 		// The connection was not registered, which only a drain racing a hand-over leaves.
 		// Nothing is forwarded: this request has no CONNECT target to check its Host against.
-		http.Error(w, "airlock: this connection's CONNECT target was lost, so nothing can be decided about this request", http.StatusInternalServerError)
+		fail(w, http.StatusInternalServerError, codeTargetLost, "this connection's CONNECT target was lost, so nothing can be decided about this request")
 		return
 	}
 	// The grant behind this connection's password, read again for this request. A grant that
@@ -225,8 +226,8 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// a read that did not happen is 503 and says nothing of why. The line is logged
 		// against the grant the connection was opened for, which is the only grant this
 		// request has a name for.
-		status, why := s.grantRefusal("connection", err)
-		s.refuse(w, info, r, pair{}, status, why)
+		status, code, why := s.grantRefusal("connection", err)
+		s.refuse(w, r, info.callFor(pair{}), status, code, why)
 		return
 	}
 	// Everything below reads the grant this request was decided for: the names it still
@@ -265,7 +266,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// name that did has been withheld or has ended since the CONNECT. Refused rather than
 		// forwarded, since a connection to a bound host that carries no name has no business
 		// on it.
-		s.refuse(w, info, r, pair{}, http.StatusForbidden, "no name of this grant is bound to "+info.host)
+		s.refuse(w, r, info.callFor(pair{}), http.StatusForbidden, codeNoBoundName, "no name of this grant is bound to "+info.host)
 		return
 	}
 	chosen := choosePair(candidates, info.grant, request)
@@ -296,13 +297,13 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// not say the grant has ended where the other says the broker could not read it: the
 		// full release checks ending a grant is 407, and a read of them that did not happen
 		// is 503 and carries none of its own words, which here would be the store's.
-		status, why := s.grantRefusal("values", err)
-		s.refuse(w, info, r, chosen, status, why)
+		status, code, why := s.grantRefusal("values", err)
+		s.refuse(w, r, info.callFor(chosen), status, code, why)
 		return
 	}
 	secret, ok := values[chosen.name]
 	if !ok {
-		s.refuse(w, info, r, chosen, http.StatusForbidden, "the broker released no value for "+chosen.name)
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker released no value for "+chosen.name)
 		return
 	}
 	value, held := secret.Slots[chosen.slot]
@@ -313,7 +314,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// slot, and this pod either holds the token already or exchanges for itself to get it.
 		value, err = s.azureAccess(r.Context(), info, chosen, secret)
 		if err != nil {
-			s.refuse(w, info, r, chosen, http.StatusForbidden, err.Error())
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeAccessToken, err.Error())
 			return
 		}
 	default:
@@ -321,7 +322,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// fills: a github-app whose installation on that owner has gone since the release.
 		// Refused rather than forwarded with the placeholder in it, which would read as the
 		// service's own refusal.
-		s.refuse(w, info, r, chosen, http.StatusForbidden, "the broker released no "+chosen.slot+" value for "+chosen.name)
+		s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNoValue, "the broker released no "+chosen.slot+" value for "+chosen.name)
 		return
 	}
 
@@ -332,7 +333,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	refused := func() bool {
 		allowed, why := airlock.Decide(s.rules, grant, value, request)
 		if !allowed {
-			s.refuse(w, info, r, chosen, http.StatusForbidden, why)
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeNotAllowed, why)
 		}
 		return !allowed
 	}
@@ -358,7 +359,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		if why != "" {
 			// A refusal gave back whatever of the hashing budget it took, so there is no
 			// release to defer here.
-			s.refuse(w, info, r, chosen, http.StatusForbidden, why)
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeAWSSignature, why)
 			return
 		}
 		// The body signAWS read to hash it is what this request serves upstream, so the
@@ -381,7 +382,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 			// Decide allowed what Rewrite refused, which the one decision behind both makes
 			// unreachable; refusing rather than forwarding is what keeps it unreachable and
 			// harmless if the two ever part.
-			s.refuse(w, info, r, chosen, http.StatusForbidden, "the swap refused a request the decision allowed")
+			s.refuse(w, r, info.callFor(chosen), http.StatusForbidden, codeSwapRefused, "the swap refused a request the decision allowed")
 			return
 		}
 		header = headerOf(rewritten.Headers)
@@ -392,7 +393,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 	header.Del("Proxy-Authorization")
 	header.Del("Proxy-Connection")
 
-	answer := &statusWriter{ResponseWriter: w}
+	served := &statusWriter{ResponseWriter: w}
 	proxy := &httputil.ReverseProxy{
 		Transport: s.upstream,
 		// -1: every write is flushed as it arrives, so a streamed answer - a long poll, a
@@ -415,6 +416,7 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// service - what it guards is what leaves, not what comes back.
 		ErrorHandler: s.badGateway(info.host, r.URL.Path),
 	}
+	id := answerOf(w).ID()
 	if decrypted, ok := r.Context().Value(decryptedKey{}).(net.Conn); ok && upgrading(r) {
 		// An upgrade is the one request whose connection outlives it. ReverseProxy joins the
 		// two connections inside the call below and copies bytes until one end closes, so no
@@ -423,10 +425,13 @@ func (s *Server) serveBound(w http.ResponseWriter, r *http.Request) {
 		// lasts, which is as long as ServeHTTP has not returned.
 		watching, stop := context.WithCancel(r.Context())
 		defer stop()
-		go s.watchJoined(watching, decrypted, info, r, chosen)
+		go s.watchJoined(watching, decrypted, info, r, chosen, id)
 	}
-	proxy.ServeHTTP(answer, r)
-	s.log.Info(callMessage, s.callFields(info, r, chosen, answer.status, "")...)
+	// The service's answer, which the proxy carries and does not write: counted served whatever
+	// its status, unless the service could not be reached (badGateway).
+	answerOf(w).carry()
+	proxy.ServeHTTP(served, r)
+	s.log.Info(callMessage, s.callFields(id, info.callFor(chosen), r, served.status, "")...)
 }
 
 // upgrading reports whether a request asks to leave HTTP behind: a Connection header naming the
@@ -446,7 +451,7 @@ const joinMessage = "airlock proxy: a joined connection its grant no longer carr
 // one, no request is read on them again, and the idle limit bounds nothing on a socket a service
 // pings. So the read every other request makes for itself runs here instead, on watchInterval,
 // until the caller's cancel ends it.
-func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connInfo, r *http.Request, chosen pair) {
+func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connInfo, r *http.Request, chosen pair, id string) {
 	ticker := time.NewTicker(s.watch)
 	defer ticker.Stop()
 	for {
@@ -459,7 +464,7 @@ func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connI
 		if why == "" {
 			continue
 		}
-		s.log.Info(joinMessage, s.callFields(info, r, chosen, status, why)...)
+		s.log.Info(joinMessage, s.callFields(id, info.callFor(chosen), r, status, why)...)
 		// The cut ends the copy in both directions, so the ServeHTTP this watcher was
 		// started for returns and the cancel there stops this goroutine.
 		cutJoined(info.cut, decrypted)
@@ -530,48 +535,117 @@ func (s *Server) joinRefusal(ctx context.Context, info connInfo, name string) (i
 // a github-app, google-login or azure-login name still carries every time its upstream has a
 // bad minute.
 func (s *Server) joinRead(read string, err error) (int, string) {
-	status, why := s.grantRefusal(read, err)
+	status, _, why := s.grantRefusal(read, err)
 	if status == http.StatusProxyAuthRequired || status == http.StatusForbidden {
 		return status, why
 	}
 	return 0, ""
 }
 
-// callMessage is the message of the one line a call to a bound host logs. Every such call logs
-// exactly one, allowed or refused.
+// callMessage is the message of the one line a call to a bound host logs that the airlock carried
+// or failed. A call it refused logs the refusal's line in its place (refuse), so every such call
+// still logs exactly one.
 const callMessage = "airlock proxy: a call to a bound host"
 
-// refuse answers a request the airlock will not carry and logs the same line a carried one logs.
-// Nothing reaches the service: the refusal is written here, on the connection the proxy opened.
-func (s *Server) refuse(w http.ResponseWriter, info connInfo, r *http.Request, chosen pair, status int, reason string) {
-	s.log.Info(callMessage, s.callFields(info, r, chosen, status, reason)...)
-	http.Error(w, "airlock: "+reason, status)
+// call is what is known of a call when the proxy answers it, for the answer's line: the grant
+// the proxy password proved (zero until one has), the host the call was for, and the (name,
+// slot) pair it was handled for (zero until one was chosen). A refusal of the outer server knows
+// the first two at most; a request on a decrypted connection knows its connection's
+// (connInfo.callFor).
+type call struct {
+	grant  requests.AirlockConnection
+	host   string
+	chosen pair
 }
 
-// callFields is what one call to a bound host logs: who made it, which secret it was handled
-// for, where it went, and how it ended. Never the placeholder and never the value - the airlock
-// exists so that neither is ever written down, and a log line is the first place one would
-// leak. The reason is there for a refusal alone, so a line reads as allowed or as refused and
-// why.
-func (s *Server) callFields(info connInfo, r *http.Request, chosen pair, status int, reason string) []any {
+// callFor is what a request on this connection knows of its call, once chosen is.
+func (info connInfo) callFor(chosen pair) call {
+	return call{grant: info.grant, host: info.host, chosen: chosen}
+}
+
+// refuse answers a call the airlock will not carry, and it is the one writer of this port's
+// refusals, refuseCredential's 407 among them. Nothing reaches the service: the answer is written
+// here, on the connection the proxy opened. c is what is known of the call, code names the
+// refusal, and reason is the broker's own words for it.
+//
+// A status from 400 to 499 is a refusal: one line under answer.RefusalMessage at WARN
+// (refusalFields), and then the answer, whose text body ends with its answer id, which its
+// X-Broker-Answer-Id header carries too. That line is a refused call's one line, written in
+// place of callMessage's. Any other status is a failure its callers pass here as well - an
+// exchange the token endpoint could not make, a grant read that did not happen, an endpoint's
+// own status that is no refusal - which keeps callMessage's line at INFO and writes no refusal
+// line.
+func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status int, code, reason string) {
+	rec := answerOf(w)
+	rec.note(code)
+	if !refusal(status) {
+		s.log.Info(callMessage, s.callFields(rec.ID(), c, r, status, reason)...)
+		http.Error(w, "airlock: "+reason, status)
+		return
+	}
+	s.log.Warn(answer.RefusalMessage, s.refusalFields(rec.ID(), c, r, status, code, reason)...)
+	http.Error(w, "airlock: "+reason+" (answer "+rec.ID()+")", status)
+}
+
+// refusalFields is what one refusal of this port logs: the fields of the API port's refusal line,
+// read for this port - no route, since it has no mux; caller class airlock, and the grant and
+// its enrollment as the caller once the proxy password has proved them; the name the call was
+// handled for as its secrets, once one was chosen - and beside them the host, the reason, the
+// path, and the issue the grant was given for. Never the placeholder and never the value, as
+// callFields: the reason is the broker's own words, which name neither.
+func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
+	secrets := []string{}
+	if c.chosen.name != "" {
+		secrets = append(secrets, c.chosen.name)
+	}
 	fields := []any{
-		"enrollment", info.grant.EnrollmentID,
-		"grant", info.grant.GrantID,
-		"secret", chosen.name,
-		"issue", info.grant.Issue,
-		"host", info.host,
+		"answer_id", id,
+		"status", status,
+		"code", code,
+		"method", r.Method,
+		"route", "",
+		"caller_class", answer.CallerAirlock,
+		"caller", callerOf(c.grant),
+		"secrets", secrets,
+		"host", c.host,
+		"reason", reason,
+		// The path alone, as callFields: a query can carry anything a command put in it.
+		"path", r.URL.Path,
+	}
+	if correlation := answer.CorrelationID(r); correlation != "" {
+		fields = append(fields, "correlation_id", correlation)
+	}
+	if c.grant.GrantID != "" {
+		fields = append(fields, "issue", c.grant.Issue)
+	}
+	if slot := c.chosen.namedSlot(); slot != "" {
+		fields = append(fields, "slot", slot)
+	}
+	return fields
+}
+
+// callFields is what one call to a bound host logs when it was carried or failed, and what the
+// end of a joined connection logs (watchJoined): its answer id, who made it, which secret it was
+// handled for, where it went, and how it ended. Never the placeholder and never the value - the
+// airlock exists so that neither is ever written down, and a log line is the first place one
+// would leak. The reason is there for a call that was not carried alone, so a line reads as
+// allowed, or as not and why.
+func (s *Server) callFields(id string, c call, r *http.Request, status int, reason string) []any {
+	fields := []any{
+		"answer_id", id,
+		"enrollment", c.grant.EnrollmentID,
+		"grant", c.grant.GrantID,
+		"secret", c.chosen.name,
+		"issue", c.grant.Issue,
+		"host", c.host,
 		"method", r.Method,
 		// The path alone: a query can carry anything a command put in it.
 		"path", r.URL.Path,
 		"status", status,
 		"allowed", reason == "",
 	}
-	if chosen.slot != "" && chosen.slot != requests.SlotValue {
-		// Which of the name's values the call used, where the name has more than one: a
-		// github-app secret holds one token per installation, and an operator reading this
-		// line has to know which account's token went to the service, not only which secret
-		// it came from. A name whose value is the one "value" slot says nothing by naming it.
-		fields = append(fields, "slot", chosen.slot)
+	if slot := c.chosen.namedSlot(); slot != "" {
+		fields = append(fields, "slot", slot)
 	}
 	if reason != "" {
 		fields = append(fields, "reason", reason)
@@ -585,6 +659,18 @@ func (s *Server) callFields(info connInfo, r *http.Request, chosen pair, status 
 // kind is the entry's own kind, read when the pair was made, so that the request this pair is
 // chosen for needs no second Lookup of the name.
 type pair struct{ name, slot, kind string }
+
+// namedSlot is the slot a line names: which of the name's values the call used, where the name
+// has more than one. A github-app secret holds one token per installation, and an operator
+// reading the line has to know which account's token went to the service, not only which secret
+// it came from. A name whose value is the one "value" slot says nothing by naming it, so that
+// slot, and none, is "".
+func (p pair) namedSlot() string {
+	if p.slot == requests.SlotValue {
+		return ""
+	}
+	return p.slot
+}
 
 // candidates is every (name, slot) pair of the grant whose name's entry binds the CONNECT host
 // on the port the CONNECT named, sorted by name and then by slot. Sorted because the choice
