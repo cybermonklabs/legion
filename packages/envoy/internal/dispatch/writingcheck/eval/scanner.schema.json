@@ -6,45 +6,77 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
-    "schema_version", "name", "use", "owner", "definition", "error_analysis", "eligible_population",
-    "bootstrap_seed", "serves_top", "bundle_digest", "manifests", "final_test", "baseline",
-    "repeatability", "comparability_bars", "audit_sample_size", "ceilings", "acceptance_bar",
-    "reader_model", "summarizer", "labellers", "validate_task", "reproduce_task", "kpi", "schedule",
+    "schema_version",
+    "name",
+    "use",
+    "owner",
+    "definition",
+    "error_analysis",
+    "eligible_population",
+    "bootstrap_seed",
+    "serves_top",
+    "bundle_digest",
+    "manifests",
+    "final_test",
+    "baseline",
+    "repeatability",
+    "comparability_bars",
+    "audit_sample_size",
+    "ceilings",
+    "acceptance_bar",
+    "reader_model",
+    "summarizer",
+    "labellers",
+    "validate_task",
+    "reproduce_task",
+    "kpi",
+    "schedule",
     "alert_route"
   ],
   "properties": {
-    "schema_version": {"const": 1},
-    "name": {"type": "string", "minLength": 1},
+    "schema_version": { "const": 1 },
+    "name": { "type": "string", "minLength": 1 },
     "use": {
       "type": "object",
       "additionalProperties": false,
       "required": ["purpose"],
       "properties": {
-        "purpose": {"enum": ["monitor", "triage", "gate"]},
-        "note": {"type": "string"}
+        "purpose": { "enum": ["monitor", "triage", "gate"] },
+        "note": { "type": "string" }
       }
     },
     "owner": {
       "$ref": "#/$defs/pendable",
-      "properties": {"pending": true, "reason": true, "name": {"type": "string"}},
+      "properties": { "pending": true, "reason": true, "name": { "type": "string" } },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["name"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["name"] }
     },
     "definition": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "frozen", "outcome", "proxy", "opportunity", "final_when", "decision_rule", "evidence_cutoff", "exclusions", "boundary_cases"],
+      "required": [
+        "version",
+        "frozen",
+        "outcome",
+        "proxy",
+        "opportunity",
+        "final_when",
+        "decision_rule",
+        "evidence_cutoff",
+        "exclusions",
+        "boundary_cases"
+      ],
       "properties": {
-        "version": {"type": "integer", "minimum": 1},
-        "frozen": {"type": "boolean"},
-        "outcome": {"type": "string", "minLength": 1},
-        "proxy": {"type": "string", "minLength": 1},
-        "opportunity": {"type": "string", "minLength": 1},
-        "final_when": {"type": "string", "minLength": 1},
-        "decision_rule": {"type": "array", "minItems": 1, "items": {"type": "string"}},
-        "evidence_cutoff": {"type": "string", "minLength": 1},
-        "exclusions": {"type": "array", "items": {"type": "string"}},
+        "version": { "type": "integer", "minimum": 1 },
+        "frozen": { "type": "boolean" },
+        "outcome": { "type": "string", "minLength": 1 },
+        "proxy": { "type": "string", "minLength": 1 },
+        "opportunity": { "type": "string", "minLength": 1 },
+        "final_when": { "type": "string", "minLength": 1 },
+        "decision_rule": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "evidence_cutoff": { "type": "string", "minLength": 1 },
+        "exclusions": { "type": "array", "items": { "type": "string" } },
         "boundary_cases": {
           "type": "array",
           "minItems": 5,
@@ -53,9 +85,9 @@
             "additionalProperties": false,
             "required": ["case", "ruling", "reason"],
             "properties": {
-              "case": {"type": "string"},
-              "ruling": {"type": "string"},
-              "reason": {"type": "string"}
+              "case": { "type": "string" },
+              "ruling": { "type": "string" },
+              "reason": { "type": "string" }
             }
           }
         }
@@ -64,13 +96,14 @@
     "error_analysis": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "sample_sha256": {"$ref": "#/$defs/sha256"},
-        "file": {"type": "string"},
-        "unit": {"type": "string"},
-        "size": {"type": "integer", "minimum": 1},
-        "sessions_or_issues": {"type": "integer", "minimum": 1},
-        "count_unit": {"enum": ["sessions", "issues"]},
+        "pending": true,
+        "reason": true,
+        "sample_sha256": { "$ref": "#/$defs/sha256" },
+        "file": { "type": "string" },
+        "unit": { "type": "string" },
+        "size": { "type": "integer", "minimum": 1 },
+        "sessions_or_issues": { "type": "integer", "minimum": 1 },
+        "count_unit": { "enum": ["sessions", "issues"] },
         "failure_kinds": {
           "type": "array",
           "minItems": 1,
@@ -79,234 +112,275 @@
             "additionalProperties": false,
             "required": ["code", "kind", "count"],
             "properties": {
-              "code": {"type": "string"},
-              "kind": {"type": "string"},
-              "count": {"type": "integer", "minimum": 0}
+              "code": { "type": "string" },
+              "kind": { "type": "string" },
+              "count": { "type": "integer", "minimum": 0 }
             }
           }
         },
-        "reads_since_last_new_kind": {"type": "integer", "minimum": 0}
+        "reads_since_last_new_kind": { "type": "integer", "minimum": 0 }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["sample_sha256", "size", "sessions_or_issues", "count_unit", "failure_kinds", "reads_since_last_new_kind"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": {
+        "required": [
+          "sample_sha256",
+          "size",
+          "sessions_or_issues",
+          "count_unit",
+          "failure_kinds",
+          "reads_since_last_new_kind"
+        ]
+      }
     },
     "eligible_population": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "description": {"type": "string"},
-        "labelable": {"type": "string"},
-        "pool_sha256": {"$ref": "#/$defs/sha256"},
-        "pool_writes": {"type": "integer", "minimum": 0},
-        "pool_groups": {"type": "integer", "minimum": 0}
+        "pending": true,
+        "reason": true,
+        "description": { "type": "string" },
+        "labelable": { "type": "string" },
+        "pool_sha256": { "$ref": "#/$defs/sha256" },
+        "pool_writes": { "type": "integer", "minimum": 0 },
+        "pool_groups": { "type": "integer", "minimum": 0 }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["description", "labelable"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["description", "labelable"] }
     },
     "bootstrap_seed": {
       "$ref": "#/$defs/pendable",
-      "properties": {"pending": true, "reason": true, "seed": {"type": "integer"}},
+      "properties": { "pending": true, "reason": true, "seed": { "type": "integer" } },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["seed"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["seed"] }
     },
     "serves_top": {
       "$ref": "#/$defs/pendable",
-      "properties": {"pending": true, "reason": true, "statement": {"type": "string"}},
+      "properties": { "pending": true, "reason": true, "statement": { "type": "string" } },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["statement"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["statement"] }
     },
     "bundle_digest": {
       "$ref": "#/$defs/pendable",
-      "properties": {"pending": true, "reason": true, "sha256": {"$ref": "#/$defs/sha256"}, "command": {"type": "string"}},
+      "properties": {
+        "pending": true,
+        "reason": true,
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "command": { "type": "string" }
+      },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["sha256"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["sha256"] }
     },
     "manifests": {
       "type": "object",
       "additionalProperties": false,
       "required": ["development", "calibration", "final_test"],
       "properties": {
-        "development": {"$ref": "#/$defs/manifest"},
-        "calibration": {"$ref": "#/$defs/manifest"},
-        "final_test": {"$ref": "#/$defs/manifest"}
+        "development": { "$ref": "#/$defs/manifest" },
+        "calibration": { "$ref": "#/$defs/manifest" },
+        "final_test": { "$ref": "#/$defs/manifest" }
       }
     },
     "final_test": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "run_id": {"type": "string"},
-        "run_time": {"type": "string", "format": "date-time"},
-        "set_sha256": {"$ref": "#/$defs/sha256"},
-        "outputs_sha256": {"$ref": "#/$defs/sha256"},
-        "seed": {"type": "integer"},
-        "figures": {"$ref": "#/$defs/test_figures"},
-        "baseline_figures": {"$ref": "#/$defs/test_figures"}
+        "pending": true,
+        "reason": true,
+        "run_id": { "type": "string" },
+        "run_time": { "type": "string", "format": "date-time" },
+        "set_sha256": { "$ref": "#/$defs/sha256" },
+        "outputs_sha256": { "$ref": "#/$defs/sha256" },
+        "seed": { "type": "integer" },
+        "figures": { "$ref": "#/$defs/test_figures" },
+        "baseline_figures": { "$ref": "#/$defs/test_figures" }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["run_id", "set_sha256", "figures", "baseline_figures"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["run_id", "set_sha256", "figures", "baseline_figures"] }
     },
     "baseline": {
       "type": "object",
       "additionalProperties": false,
       "required": ["description", "code"],
       "properties": {
-        "description": {"type": "string", "minLength": 1},
-        "code": {"type": "string", "minLength": 1}
+        "description": { "type": "string", "minLength": 1 },
+        "code": { "type": "string", "minLength": 1 }
       }
     },
     "repeatability": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "runs": {"type": "integer", "minimum": 2},
-        "disagreement": {"type": "object", "additionalProperties": {"type": "number", "minimum": 0, "maximum": 1}},
-        "bound": {"type": "number", "minimum": 0, "maximum": 1}
+        "pending": true,
+        "reason": true,
+        "runs": { "type": "integer", "minimum": 2 },
+        "disagreement": {
+          "type": "object",
+          "additionalProperties": { "type": "number", "minimum": 0, "maximum": 1 }
+        },
+        "bound": { "type": "number", "minimum": 0, "maximum": 1 }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["runs", "disagreement", "bound"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["runs", "disagreement", "bound"] }
     },
     "comparability_bars": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "insufficient_evidence_max": {"$ref": "#/$defs/share"},
-        "not_applicable_max": {"$ref": "#/$defs/share"},
-        "extraction_coverage_min": {"$ref": "#/$defs/share"},
-        "execution_coverage_min": {"$ref": "#/$defs/share"},
-        "note": {"type": "string"}
+        "pending": true,
+        "reason": true,
+        "insufficient_evidence_max": { "$ref": "#/$defs/share" },
+        "not_applicable_max": { "$ref": "#/$defs/share" },
+        "extraction_coverage_min": { "$ref": "#/$defs/share" },
+        "execution_coverage_min": { "$ref": "#/$defs/share" },
+        "note": { "type": "string" }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["insufficient_evidence_max", "not_applicable_max", "execution_coverage_min"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": {
+        "required": ["insufficient_evidence_max", "not_applicable_max", "execution_coverage_min"]
+      }
     },
     "audit_sample_size": {
       "$ref": "#/$defs/pendable",
-      "properties": {"pending": true, "reason": true, "size": {"type": "integer", "minimum": 1}},
+      "properties": {
+        "pending": true,
+        "reason": true,
+        "size": { "type": "integer", "minimum": 1 }
+      },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["size"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["size"] }
     },
     "ceilings": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "latency_seconds": {"type": "number", "exclusiveMinimum": 0},
-        "tokens": {"type": "integer", "minimum": 1}
+        "pending": true,
+        "reason": true,
+        "latency_seconds": { "type": "number", "exclusiveMinimum": 0 },
+        "tokens": { "type": "integer", "minimum": 1 }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["latency_seconds", "tokens"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["latency_seconds", "tokens"] }
     },
     "acceptance_bar": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "precision_floor": {"$ref": "#/$defs/share"},
-        "recall_floor": {"$ref": "#/$defs/share"},
-        "confidence": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
-        "note": {"type": "string"},
-        "bar_committed_at": {"type": "string", "format": "date-time"}
+        "pending": true,
+        "reason": true,
+        "precision_floor": { "$ref": "#/$defs/share" },
+        "recall_floor": { "$ref": "#/$defs/share" },
+        "confidence": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+        "note": { "type": "string" },
+        "bar_committed_at": { "type": "string", "format": "date-time" }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["precision_floor", "recall_floor", "confidence"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["precision_floor", "recall_floor", "confidence"] }
     },
     "reader_model": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "id": {"type": "string"},
-        "kind": {"type": "string"},
-        "deadline": {"type": "string"},
-        "max_output_tokens": {"type": "integer", "minimum": 1},
-        "effort": {"type": "string"},
-        "temperature": {"type": "number"},
-        "candidate_cap": {"type": "integer", "minimum": 1}
+        "pending": true,
+        "reason": true,
+        "id": { "type": "string" },
+        "kind": { "type": "string" },
+        "deadline": { "type": "string" },
+        "max_output_tokens": { "type": "integer", "minimum": 1 },
+        "effort": { "type": "string" },
+        "temperature": { "type": "number" },
+        "candidate_cap": { "type": "integer", "minimum": 1 }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["id"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["id"] }
     },
     "summarizer": {
       "type": "object",
       "additionalProperties": false,
       "required": ["used"],
       "properties": {
-        "used": {"type": "boolean"},
-        "note": {"type": "string"}
+        "used": { "type": "boolean" },
+        "note": { "type": "string" }
       }
     },
     "labellers": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
+        "pending": true,
+        "reason": true,
         "entries": {
           "type": "array",
           "minItems": 1,
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["model", "prompt_sha256", "rubric_sha256", "validation_run", "agree", "disagree", "bound", "confidence", "case_types"],
+            "required": [
+              "model",
+              "prompt_sha256",
+              "rubric_sha256",
+              "validation_run",
+              "agree",
+              "disagree",
+              "bound",
+              "confidence",
+              "case_types"
+            ],
             "properties": {
-              "model": {"type": "string"},
-              "prompt_sha256": {"$ref": "#/$defs/sha256"},
-              "rubric_sha256": {"$ref": "#/$defs/sha256"},
-              "validation_run": {"type": "string"},
-              "agree": {"type": "integer", "minimum": 0},
-              "disagree": {"type": "integer", "minimum": 0},
-              "bound": {"$ref": "#/$defs/share"},
-              "confidence": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
-              "case_types": {"type": "array", "items": {"type": "string"}}
+              "model": { "type": "string" },
+              "prompt_sha256": { "$ref": "#/$defs/sha256" },
+              "rubric_sha256": { "$ref": "#/$defs/sha256" },
+              "validation_run": { "type": "string" },
+              "agree": { "type": "integer", "minimum": 0 },
+              "disagree": { "type": "integer", "minimum": 0 },
+              "bound": { "$ref": "#/$defs/share" },
+              "confidence": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+              "case_types": { "type": "array", "items": { "type": "string" } }
             }
           }
         }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["entries"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["entries"] }
     },
-    "validate_task": {"type": "string", "minLength": 1},
-    "reproduce_task": {"type": "string", "minLength": 1},
+    "validate_task": { "type": "string", "minLength": 1 },
+    "reproduce_task": { "type": "string", "minLength": 1 },
     "kpi": {
       "$ref": "#/$defs/pendable",
-      "properties": {"pending": true, "reason": true, "name": {"type": "string"}},
+      "properties": { "pending": true, "reason": true, "name": { "type": "string" } },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["name"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["name"] }
     },
     "schedule": {
       "type": "object",
       "additionalProperties": false,
       "required": ["live", "note"],
       "properties": {
-        "live": {"type": "boolean"},
-        "note": {"type": "string", "minLength": 1}
+        "live": { "type": "boolean" },
+        "note": { "type": "string", "minLength": 1 }
       }
     },
     "alert_route": {
       "$ref": "#/$defs/pendable",
-      "properties": {"pending": true, "reason": true, "route": {"type": "string"}},
+      "properties": { "pending": true, "reason": true, "route": { "type": "string" } },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["route"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["route"] }
     },
     "rule_costs": {
       "type": "object",
       "additionalProperties": false,
       "required": ["manifest_sha256", "seed", "writes", "ceiling", "rules"],
       "properties": {
-        "manifest_sha256": {"$ref": "#/$defs/sha256"},
-        "seed": {"type": "integer"},
-        "writes": {"type": "integer", "minimum": 1},
-        "ceiling": {"$ref": "#/$defs/share"},
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "seed": { "type": "integer" },
+        "writes": { "type": "integer", "minimum": 1 },
+        "ceiling": { "$ref": "#/$defs/share" },
         "rules": {
           "type": "array",
           "items": {
@@ -314,9 +388,9 @@
             "additionalProperties": false,
             "required": ["id", "share", "enabled"],
             "properties": {
-              "id": {"type": "string"},
-              "share": {"$ref": "#/$defs/share"},
-              "enabled": {"type": "boolean"}
+              "id": { "type": "string" },
+              "share": { "$ref": "#/$defs/share" },
+              "enabled": { "type": "boolean" }
             }
           }
         }
@@ -324,35 +398,36 @@
     }
   },
   "$defs": {
-    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "share": {"type": "number", "minimum": 0, "maximum": 1},
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "share": { "type": "number", "minimum": 0, "maximum": 1 },
     "pendable": {
       "type": "object",
       "properties": {
-        "pending": {"type": "boolean"},
-        "reason": {"type": "string", "minLength": 1}
+        "pending": { "type": "boolean" },
+        "reason": { "type": "string", "minLength": 1 }
       },
-      "if": {"$ref": "#/$defs/is_pending"},
-      "then": {"required": ["reason"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "then": { "required": ["reason"] }
     },
-    "is_pending": {"required": ["pending"], "properties": {"pending": {"const": true}}},
+    "is_pending": { "required": ["pending"], "properties": { "pending": { "const": true } } },
     "manifest": {
       "$ref": "#/$defs/pendable",
       "properties": {
-        "pending": true, "reason": true,
-        "file": {"type": "string"},
-        "sha256": {"$ref": "#/$defs/sha256"},
-        "dataset_version": {"type": "string"},
-        "cases": {"type": "integer", "minimum": 0},
-        "writes": {"type": "integer", "minimum": 0},
-        "groups": {"type": "integer", "minimum": 0},
-        "group_key": {"type": "string"},
-        "label_source": {"type": "string"},
-        "label_revision": {"type": "string"}
+        "pending": true,
+        "reason": true,
+        "file": { "type": "string" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "dataset_version": { "type": "string" },
+        "cases": { "type": "integer", "minimum": 0 },
+        "writes": { "type": "integer", "minimum": 0 },
+        "groups": { "type": "integer", "minimum": 0 },
+        "group_key": { "type": "string" },
+        "label_source": { "type": "string" },
+        "label_revision": { "type": "string" }
       },
       "unevaluatedProperties": false,
-      "if": {"$ref": "#/$defs/is_pending"},
-      "else": {"required": ["file", "sha256", "label_source"]}
+      "if": { "$ref": "#/$defs/is_pending" },
+      "else": { "required": ["file", "sha256", "label_source"] }
     },
     "test_figures": {
       "type": "object",
@@ -364,8 +439,8 @@
           "additionalProperties": false,
           "required": ["refused", "false_positives"],
           "properties": {
-            "refused": {"type": "integer", "minimum": 0},
-            "false_positives": {"type": "integer", "minimum": 0}
+            "refused": { "type": "integer", "minimum": 0 },
+            "false_positives": { "type": "integer", "minimum": 0 }
           }
         },
         "recall": {
@@ -373,8 +448,8 @@
           "additionalProperties": false,
           "required": ["failures", "missed"],
           "properties": {
-            "failures": {"type": "integer", "minimum": 0},
-            "missed": {"type": "integer", "minimum": 0}
+            "failures": { "type": "integer", "minimum": 0 },
+            "missed": { "type": "integer", "minimum": 0 }
           }
         }
       }

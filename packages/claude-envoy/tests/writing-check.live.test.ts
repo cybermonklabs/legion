@@ -2,11 +2,11 @@
  * The plugin's own writes under Dispatch's writing check (INFRA-3231, R14; check 4370789f), in a
  * Claude Code session: the router of a person's messages (`../src/user-turn-router`) against a
  * real Dispatch server of this checkout with the check on. No model is configured, so the check
- * runs its structure rules alone: a sentence holding a semicolon breaks the `semicolon` rule, and
- * that sentence is what each row writes. The Claude Code side is a fake mod link; every Dispatch
- * request is the real server's. The server runs no Envoy listener, so a delivery attempt it
- * records names no session: each row binds its attempt to this session in the stack's own
- * database, the one state no route reaches.
+ * runs its structure rules alone: a sentence holding `spin up` breaks the `phrasal-verb` rule,
+ * which the bundle enables, and that sentence is what each row writes. The Claude Code side is a
+ * fake mod link; every Dispatch request is the real server's. The server runs no Envoy listener,
+ * so a delivery attempt it records names no session: each row binds its attempt to this session
+ * in the stack's own database, the one state no route reaches.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -35,8 +35,8 @@ import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user
 const SESSION = "ses_claude_check"
 const DIRECT = `notifications.agent.${SESSION}`
 const PERSON = "alice"
-const SENTENCE = "The cache was cold; the first read was slow."
-const REWRITTEN = "The cache was cold. The first read was slow."
+const SENTENCE = "We will spin up the server and read the logs."
+const REWRITTEN = "We will start the server and read the logs."
 
 const stackDirectory = useDispatchStackDirectory()
 
@@ -228,7 +228,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       expect(read.message.deliveries?.at(-1)?.error).toBe(WRITING_CHECK_ANSWER_WITHHELD)
       expect(JSON.stringify(read)).not.toContain(SENTENCE)
       expect(session.notices).toHaveLength(1)
-      expect(session.notices[0]).toContain("Rule semicolon")
+      expect(session.notices[0]).toContain("Rule phrasal-verb")
       expect(session.notices[0]).toContain(`--in-reply-to ${id}`)
     } finally {
       await rm(session.directory, { recursive: true, force: true })

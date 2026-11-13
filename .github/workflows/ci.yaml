@@ -469,7 +469,11 @@ jobs:
             # (INFRA-559, INFRA-555).
             # internal/roles and, through it, internal/store, internal/session and internal/kvwatch:
             # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395).
+            # internal/dispatch/writingcheck and its four leaf packages: cmd/dispatch builds the
+            # writing check (INFRA-3231), whose reader embeds reader/prompt.md and runs its model
+            # call through agentloop.
             dispatch_server: &dispatch_server
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
@@ -522,6 +526,11 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/texttreefill/*'
               - 'packages/envoy/internal/dispatch/texttrees/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/candidates/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/prose/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/reader/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/rules/*'
               - 'packages/envoy/internal/envconf/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -673,7 +682,10 @@ jobs:
             # cmd/dispatch/pod_grace_period_test.go:17 reads.
             # internal/roles and, through it, internal/store, internal/session and internal/kvwatch:
             # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395).
+            # agentloop: the model loop the writing check's reader (internal/dispatch/writingcheck)
+            # runs its call through (INFRA-3231).
             dispatch_command_tests: &dispatch_command_tests
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/dispatch/**'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
@@ -1659,6 +1671,14 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/migrations/**'
               - 'packages/envoy/internal/dispatch/text/**'
               - 'packages/envoy/internal/dispatch/texttrees/*'
+              # internal/dispatch/api runs the writing check (INFRA-3231), whose reader runs its
+              # model call through agentloop.
+              - 'packages/envoy/internal/dispatch/writingcheck/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/candidates/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/prose/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/reader/*'
+              - 'packages/envoy/internal/dispatch/writingcheck/rules/*'
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/logtest/*'
@@ -4896,7 +4916,7 @@ jobs:
       - name: Test what the race build cannot run at all or at full size
         run: |
           go test -count=1 -timeout 10m -run '^(TestHoldsSeedAllocatesAtMostOneCopyPerDecoding)$' ./internal/bus
-          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards)$' ./internal/dispatch/api
+          go test -count=1 -timeout 10m -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryFormValueTheUploadReadsIsMarked|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryRouteThatTakesABodyRefusesADecisionBlock|TestEveryRouteThatTakesProseReachesTheWritingCheck|TestTheDecisionBlockGuardSeesWhatItGuards|TestTheGuardReadsABodyStringOffARequestType|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheRegistryRoutesThatCarryProse|TestTheWritingCheckGuardFailsAnUncheckedProseRoute)$' ./internal/dispatch/api
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,

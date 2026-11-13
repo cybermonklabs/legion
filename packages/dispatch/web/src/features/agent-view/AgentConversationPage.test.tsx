@@ -565,11 +565,11 @@ test("a streamed user message tagged with a person's message but saying somethin
   ).toEqual(["Merge only after review.", "Merge now, skip review."]);
 });
 
-/** What the session publishes once a person's `!` line has run: their line, what the command
- *  printed as a fenced block, and how it ended (`shellCommandReport`,
+/** What the session publishes once a person's `!` line has run: their line and what the command
+ *  printed, each as a fenced block, and how it ended (`shellCommandReport`,
  *  `packages/pi-envoy/src/typed-shell.ts`). Spelt as the wire carries it. */
 const SHELL_REPORT =
-  "!cat missing.txt\n\n```\ncat: missing.txt: No such file or directory\n```\n\nThe command ended with exit status 1.";
+  "```\n!cat missing.txt\n```\n\n```\ncat: missing.txt: No such file or directory\n```\n\nThe command ended with exit status 1.";
 
 // R4. A person's `!command` is run by the session, which publishes the person's line, what the
 // command printed and how it ended as one user message tagged with that message's Dispatch id

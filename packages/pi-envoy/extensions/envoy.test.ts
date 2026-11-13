@@ -21414,19 +21414,20 @@ describe("consumer delivery", () => {
 
 // The plugin's own writes under Dispatch's writing check (INFRA-3231, R14; check 4370789f),
 // against a real Dispatch server of this checkout with the check on. No model is configured, so
-// the check runs its structure rules alone: a sentence holding a semicolon breaks the `semicolon`
-// rule, and that sentence is what each row writes. The frames reach the extension over this
-// file's NATS stand-in, and every Dispatch request it makes goes to the real server. The server
-// runs no Envoy listener, so a delivery attempt it records names no session; each row binds its
-// attempt to this session in the stack's own database, the one state no route reaches.
+// the check runs its structure rules alone: a sentence holding `spin up` breaks the
+// `phrasal-verb` rule, which the bundle enables, and that sentence is what each row writes. The
+// frames reach the extension over this file's NATS stand-in, and every Dispatch request it makes
+// goes to the real server. The server runs no Envoy listener, so a delivery attempt it records
+// names no session; each row binds its attempt to this session in the stack's own database, the
+// one state no route reaches.
 const writingCheckStackDirectory = useDispatchStackDirectory();
 
 describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own writes", () => {
   const SESSION = "ses_delivery";
   const PERSON = "alice";
   const PROJECT = "WCHK";
-  const SENTENCE = "The cache was cold; the first read was slow.";
-  const REWRITTEN = "The cache was cold. The first read was slow.";
+  const SENTENCE = "We will spin up the server and read the logs.";
+  const REWRITTEN = "We will start the server and read the logs.";
   let stack: DispatchStack | undefined;
   let database: SQL | undefined;
   const server = (): DispatchStack => {
@@ -21569,7 +21570,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(JSON.stringify(read)).not.toContain(SENTENCE);
     expect(prompts).toHaveLength(2);
     expect(prompts[1]).toContain("Dispatch's writing check refused your answer");
-    expect(prompts[1]).toContain("Rule semicolon");
+    expect(prompts[1]).toContain("Rule phrasal-verb");
     expect(prompts[1]).toContain(SENTENCE);
   }, 60_000);
 
@@ -21587,7 +21588,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(read.message.deliveries?.at(-1)?.error).toBe(WRITING_CHECK_ANSWER_WITHHELD);
     expect(JSON.stringify(read)).not.toContain(SENTENCE);
     await until(
-      () => fixture.deliveries.some((delivery) => delivery.content.includes("Rule semicolon")),
+      () => fixture.deliveries.some((delivery) => delivery.content.includes("Rule phrasal-verb")),
       "the findings to reach the main conversation",
       10_000
     );
@@ -21671,7 +21672,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(outcome.posted).toBe(false);
     if (outcome.posted) return;
     expect(outcome.refusal.findings).toEqual([
-      expect.objectContaining({ field: "error", rule: "semicolon", text: SENTENCE }),
+      expect.objectContaining({ field: "error", rule: "phrasal-verb", text: SENTENCE }),
     ]);
     // An agent's own choice to send it anyway, which the counts below tell from the plugin's.
     expect(
@@ -21724,7 +21725,8 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
   }, 60_000);
 
   // The negative control: the same report with its line bare, sent without the field, is
-  // refused, so it is the fence and the mark that let the plugin's report through.
+  // refused, so it is the fence and the mark that let the plugin's report through. The bare line
+  // holds the sentence, so it is read as prose and breaks `phrasal-verb`.
   test("a copy of the report without the fence, sent without the field, is refused", async () => {
     const line = `!printf '${SENTENCE}'`;
     const id = await directMessage(line, "steer");
@@ -21734,6 +21736,10 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       body: unfenced,
     });
     expect(outcome.posted).toBe(false);
+    if (outcome.posted) return;
+    expect(outcome.refusal.findings).toEqual([
+      expect.objectContaining({ field: "body", rule: "phrasal-verb" }),
+    ]);
   }, 60_000);
 
   // The day's counts tell the plugin's generated writes apart from the agent's own forced one.
