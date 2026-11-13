@@ -3108,7 +3108,11 @@ for budget in budgets:
                 "this budget and the sum they come from, and it matches a site by its file, "
                 "the verb it retries and the step where the site is written in a workflow, a "
                 "site inside a script being read with no step at all.")
-        continue
+    # No `continue` after the refusal above: an item whose bound is unread makes the step's own
+    # arithmetic None — arithmetic_of answers None for a site one_call cannot price and no
+    # declaration answers, and a script holding one answers None as a whole — so the test
+    # below already ends this step, and a `continue` there was a statement no input could tell
+    # from its absence (dispatch://INFRA-1545, round 32's mutation pass).
     if cost is None or not cost:
         continue
     if budget.minutes is None:
@@ -3207,9 +3211,13 @@ for path in sorted(set(budget.path for budget in budgets)):
     lines = Path(path).read_text().split("\n")
     number = 0
     while number < len(lines):
+        # A line that is not a comment is stepped over, and the block read next starts after
+        # it: empty when that line is not a comment either, and an empty block holds no figure,
+        # so the pairing below takes no key for it (it takes one key per figure). That is why
+        # nothing here skips an empty block: a skip would be a statement no input can tell from
+        # its absence (dispatch://INFRA-1545, round 32's mutation pass).
         if not lines[number].lstrip().startswith("#"):
             number += 1
-            continue
         # A comment block is read whole, because its figures are spread over its lines: one site
         # writes a step's own arithmetic on one line and the floor that overrides it on the next.
         first = number
@@ -3218,8 +3226,6 @@ for path in sorted(set(budget.path for budget in budgets)):
         block = " ".join(lines[index].lstrip().lstrip("#").strip()
                          for index in range(first, number))
         figures = [int(figure) for figure in PRICED.findall(block)]
-        if not figures:
-            continue
         # The keys this block prices are the ones written below it, at most one per figure the
         # block states: a block may derive two steps' budgets at once, as
         # `dispatch-browser-nightly.yaml` derives setup-bun's and the install's together, and
@@ -3267,11 +3273,17 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     clause cannot see them;
 #   - a sum that DOES NOT ADD UP (`1200 + 1281 = 1941 s`): it is passed over rather than
 #     refused, since a clause that recomputed a total it cannot trust would be guessing;
+#   - a sum with WORDS BETWEEN IT AND ITS ARROW (`2250 s, of which the key carries ... -> 30
+#     min`): the pattern ties a sum to a key only where the arrow follows the sum's `s` with
+#     nothing between them, so such a sum is no derivation here, and its key is read by the
+#     priced-comment clause alone, which checks the arrow against the key and no sum;
 #   - a job whose comment derives its key by a CONSTRUCTION rather than a sum: `tool-fallback`
 #     carries a position rule, and .github/ci-budgets.md's "The tool-fallback job's budget,
 #     part by part" states the construction its key comes from — `114 is the 104 this
 #     construction gives with ten minutes added`. A clause that refused that job would be a
 #     correct job refused, which is how a check gets silenced.
+# Each of the four has a harness case that pins it (round 32), so a change that starts or stops
+# reading one of them is one a reader sees in the harness rather than in the tree.
 # A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer
 # matches, which the priced-comment clause above refuses by name. Before that clause existed,
 # each of the nine keys this issue raised could be put back with its comment left alone and
@@ -3282,10 +3294,11 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
     lines = Path(path).read_text().split("\n")
     # The comment block this job's own key carries, and nothing else: upwards from the key line
     # while the lines are comments. A figure outside the block belongs to another job or another
-    # step and is never read here.
+    # step and is never read here. The walk needs no lower bound: the job's own id line is
+    # written above its key and is not a comment, so it always stops there, above line 0.
     index = row["line"] - 2
     block: list[str] = []
-    while index >= 0 and lines[index].lstrip().startswith("#"):
+    while lines[index].lstrip().startswith("#"):
         block.append(lines[index].lstrip().lstrip("#").strip())
         index -= 1
     stated = None
@@ -3309,7 +3322,10 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
                 "correct the derivation.")
         continue
     recomputed = measured + row["cost"]
-    if row["cost"] > term and allowed <= recomputed:
+    # No `row["cost"] > term` beside this comparison: the key already strictly exceeds
+    # measured + term here, so it can sit at or under measured + cost only when cost is the
+    # larger, and a test of that would be a condition no input can tell from its absence.
+    if allowed <= recomputed:
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
                 f"own comment derives {measured} + {term} = {total} s, but the slowest retried "
@@ -3387,7 +3403,8 @@ for entry in DECLARED_LOOPS:
                 f"the runner cuts inside the first ladder. Write {floor} s or more, or price "
                 f"the attempts the site actually makes. It said {entry.figure()}, because "
                 f"{entry.why}.")
-        continue
+    # An entry carrying `below` was matched, since arithmetic_of counts the entry as used before
+    # it records a floor, so the test here already ends it after the refusal above.
     if entry.used:
         continue
     problem(SELF, 1,
