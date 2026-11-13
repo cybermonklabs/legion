@@ -25,8 +25,10 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // implementer of it carries its issue's counts of the moves back, every root of it carries the
 // deployment's gated step, the two issues of its admission line carry their place in it with the
 // line's own fields beside that place, every issue of it that is not working now carries its
-// answer under `why`, and its two reviewing roots carry what their round waits on from GitHub, so
-// one state proves all fourteen downgrades and that they compose.
+// answer under `why`, the two issues whose current phase names a phase worker role carry the
+// entry that role stands on and the entry it was given, and its two reviewing roots carry what
+// their round waits on from GitHub, so one state proves all fifteen downgrades and that they
+// compose.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -98,28 +100,31 @@ var (
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the
-// last strict reader before it knows, and the rest of the body as it is. The fourteen downgrades
+// last strict reader before it knows, and the rest of the body as it is. The fifteen downgrades
 // compose, band by band: a pod at 46 to 48 is served the update rounds it reads and none of the
 // memory draws, the trees, the wakes the pacing holds, the gated steps, the retired stranded
 // entries, the step records, the places in the admission line, the counts of the moves back, the
 // count of claims the refresh lane has left, the failure record, the issues' answers, the leak
-// check's cause and the merge waits; a pod at 49 or 50 the memory draws as well, and still none
-// of the rest; a pod at 51 or 52 the trees too; a pod at 53 or 54 the wakes too; a pod at 55 the
-// steps too, and still none of the retired entries, the step records, the places, the counts of
-// the moves back, the refresh count, the failure record, the answers, the cause and the merge
-// waits; a pod at 56 the retired entries too; a pod at 57 the step records too; a pod at 58 to 61
-// the places too, and neither count nor the record nor the answers; a pod from 62 to 72 the
-// counts of the moves back too, and still no refresh count; a pod at 73 or 74 the refresh count
-// too, and none of the nine keys the decided record added; a pod from 75 to 84 those nine too,
-// and no issue's answer and no field of the line beside its place and its length; a pod from
-// whyAndLineFieldsContract (85) to one below leakCheckCauseContract (87) the answers and the
-// line's fields too, and no claim view's `leakCheckCause`; a pod from leakCheckCauseContract to
-// one below mergeWaitContract the cause too, and no merge wait; a pod below 46 none of the
-// fourteen; and a pod from mergeWaitContract up to this daemon's declared contract
+// check's cause, the two entry numbers and the merge waits; a pod at 49 or 50 the memory draws
+// as well, and still none of the rest; a pod at 51 or 52 the trees too; a pod at 53 or 54 the
+// wakes too; a pod at 55 the steps too, and still none of the retired entries, the step records,
+// the places, the counts of the moves back, the refresh count, the failure record, the answers,
+// the cause, the entry numbers and the merge waits; a pod at 56 the retired entries too; a pod
+// at 57 the step records too; a pod at 58 to 61 the places too, and neither count nor the record
+// nor the answers nor the cause nor the entry numbers nor the merge waits; a pod from 62 to 72
+// the counts of the moves back too, and still no refresh count; a pod at 73 or 74 the refresh
+// count too, and none of the nine keys the decided record added; a pod from 75 to 84 those nine
+// too, and no issue's answer, no field of the line beside its place and its length, no claim
+// view's `leakCheckCause`, neither entry number and no merge wait; a pod at 85 or 86 the answers
+// and the line's own fields too, and still no `leakCheckCause`, neither entry number and no
+// merge wait; a pod from leakCheckCauseContract (87) to one below phaseEntriesContract (94) the
+// cause too, and neither entry number nor merge wait; a pod from phaseEntriesContract to one
+// below mergeWaitContract the entry numbers too, and no merge wait; a pod below 46 none of the
+// fifteen; and a pod from mergeWaitContract up to this daemon's declared contract
 // (DaemonAPIVersion), a pod whose claims record no contract and a caller in no pod — the
-// operator's `legion state`, whose memory line reads the draws, whose queue line reads the wakes,
-// whose tool-call line reads the step records and whose merge-wait line reads the waits — are
-// served all of them.
+// operator's `legion state`, whose memory line reads the draws, whose queue line reads the
+// wakes, whose tool-call line reads the step records and whose merge-wait line reads the waits —
+// are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -179,13 +184,16 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// (leakCheckCauseContract, the contract that added it, 87), the sentence a launch try was
 		// refused with because the shared public leak check could not be installed.
 		leak bool
+		// entries is whether the caller is served each issue's `phaseEntry` and `givenEntry`
+		// (phaseEntriesContract, the contract that added them, 94).
+		entries bool
 		// wait is whether the caller is served what each reviewing issue's round waits on from
 		// GitHub (mergeWaitContract), the contract that added it, so a pod at it is served the
 		// object and every pod below it is not, whatever else the contracts it does reach give it.
 		wait bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
-		{name: "a pod below PodUpdateContract, below all fourteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "a pod below PodUpdateContract, below all fifteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
 		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
 		// is served and the two tree keys, `wakesWaiting`, the gated steps, the retired stranded
@@ -210,35 +218,45 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		{name: "a pod at retiredStrandedContract", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true},
 		// The band at 57 alone, from stallRecordContract to below waitingLineContract: the step
 		// record is served too, and the places in the admission line, the counts of the moves
-		// back and the count of claims the refresh lane has left are all held back.
+		// back, the count of claims the refresh lane has left, each issue's answer, the leak
+		// check's cause and the two entry numbers are all held back.
 		{name: "a pod at stallRecordContract", remote: statePodAddr + ":41000", claims: podClaims(stallRecordContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true},
 		// The band from waitingLineContract to below backwardMovesContract: the places in the
-		// admission line are served too, and neither the counts of the moves back nor the count
-		// of claims the refresh lane has left is.
+		// admission line are served too, and none of the counts of the moves back, the count of
+		// claims the refresh lane has left, each issue's answer, the leak check's cause and the
+		// two entry numbers is.
 		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
 		// The band from backwardMovesContract to below claimsToRefreshContract: the counts of
-		// the moves back are served too, and `claimsToRefresh` and the nine keys of the decided
-		// record are held back.
+		// the moves back are served too, and `claimsToRefresh`, the nine keys of the decided
+		// record, each issue's answer, the leak check's cause and the two entry numbers are held
+		// back.
 		{name: "a pod at backwardMovesContract", remote: statePodAddr + ":41000", claims: podClaims(backwardMovesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true},
 		// The band at 73 and 74, from claimsToRefreshContract to below recordFieldsContract: the
 		// count of claims the refresh lane has left is served too, and the nine keys of the
-		// decided record, the answers and the merge waits are held back.
+		// decided record, each issue's answer, the leak check's cause, the two entry numbers
+		// and the merge waits are held back.
 		{name: "a pod at claimsToRefreshContract", remote: statePodAddr + ":41000", claims: podClaims(claimsToRefreshContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true},
-		// The band from recordFieldsContract to below whyAndLineFieldsContract: the nine keys of
-		// the decided record are served too, and each issue's answer with the line's own fields,
-		// the leak check's cause and the merge waits are held back.
-		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true},
-		// The band from whyAndLineFieldsContract to below leakCheckCauseContract: the answers and the
-		// line's own fields are served too, and the claim views' `leakCheckCause` and the merge waits
+		// The band from 75 to 84, from recordFieldsContract to below whyAndLineFieldsContract:
+		// the nine keys of the decided record are served too, and each issue's answer with the
+		// line's own fields, the leak check's cause, the two entry numbers and the merge waits
 		// are held back.
+		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true},
+		// The band at 85 and 86, from whyAndLineFieldsContract to below
+		// leakCheckCauseContract: the answers and the line's fields are served too, and the
+		// claim views' `leakCheckCause`, the two entry numbers and the merge waits are held
+		// back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true},
-		// The band from leakCheckCauseContract to below mergeWaitContract, the last band under the
-		// declared contract: the leak check's cause is served too, and what a review round waits on
-		// from GitHub is the one key held back.
+		// The band from 87 to 93, from leakCheckCauseContract to below phaseEntriesContract:
+		// the claim views' `leakCheckCause` is served too, and the two entry numbers and the
+		// merge waits are held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true},
-		{name: "a pod at mergeWaitContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, wait: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, wait: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, wait: true},
+		// The band from phaseEntriesContract to below mergeWaitContract, the last band under
+		// the declared contract: the two entry numbers are served too, and what a review round
+		// waits on from GitHub is the one key held back.
+		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
+		{name: "a pod at mergeWaitContract, the newest the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(mergeWaitContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, wait: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, wait: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, wait: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -254,6 +272,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
 			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true, "LEGION-214": true, "LEGION-215": true}
 			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
+			// The two issues whose current phase names a phase worker role carry the entry
+			// numbers: LEGION-208, whose implementer holds the work its row names, and
+			// LEGION-211, whose implementer is behind it. The held, awaiting_person and done
+			// issues carry neither whoever asks.
+			entried := map[string]bool{"LEGION-208": true, "LEGION-211": true}
 			waits := map[string]bool{"LEGION-214": true, "LEGION-215": true}
 			for key, view := range issueViews(t, body) {
 				carries := view["memoryGroup"] != nil || view["memoryDrawMode"] != nil || view["memoryDrawnAt"] != nil
@@ -265,6 +288,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				}
 				if carries, want := view["waitingLine"] != nil, tc.line && lined[key]; carries != want {
 					t.Errorf("issue %s of %s carries a place in the waiting line = %v, want %v", key, body, carries, want)
+				}
+				carriesEntries := view["phaseEntry"] != nil || view["givenEntry"] != nil
+				if want := tc.entries && entried[key]; carriesEntries != want {
+					t.Errorf("issue %s of %s carries the two phase entry numbers = %v, want %v", key, body, carriesEntries, want)
 				}
 				if carries, want := view[MergeWaitField] != nil, tc.wait && waits[key]; carries != want {
 					t.Errorf("issue %s of %s carries what its round waits on from GitHub = %v, want %v", key, body, carries, want)
@@ -373,6 +400,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 							}
 						}
 					}
+				}
+				if !tc.entries {
+					delete(issue, "phaseEntry")
+					delete(issue, "givenEntry")
 				}
 				if !tc.wait {
 					delete(issue, MergeWaitField)

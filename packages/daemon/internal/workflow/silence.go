@@ -49,7 +49,7 @@ func (e *Engine) workerSilent(ctx context.Context, tx pgx.Tx, fact intake.Worker
 	if read.run.Claim.Step.LastStep().After(fact.LastStep) {
 		return intake.Result{}, nil
 	}
-	return intake.Result{}, e.repairSilence(ctx, tx, issue, read.row, fact, now)
+	return intake.Result{}, e.repairSilence(ctx, tx, issue, read.root, read.run, read.row, fact, now)
 }
 
 // phaseWorkerRecord reads what both silence facts are decided from: the issue, its tree root, the
@@ -108,40 +108,73 @@ type phaseWorkerReading struct {
 	row   record.PhaseRow
 }
 
-// repairSilence writes the start row that sends the phase's task again and the architect's
-// notice. ResumeSlottedWorker resumes under the assignment the row already names, or under none
-// where it names none: the completion fence compares only when both sides are set
-// (api/handoff.go), and a re-admitted tree's members all hold none (record.ClearGeneration). The
-// log line goes through warnOnCommit, so a fact that rolls back logs no repair.
-func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue record.Issue, row record.PhaseRow, fact intake.WorkerSilent, now time.Time) error {
-	if err := e.ResumeSlottedWorker(ctx, tx, issue, fact.Role); err != nil {
+// repairSilence writes the start row that sends the silent worker its work again and the
+// architect's notice, choosing that start by the entry the role's phases row names, as every
+// start path of a phase worker does (catch_up.go's readyWorkerTask, resume.go's booted). row is
+// that row, read once with the record the decision stands on (phaseWorkerRecord), below every
+// skip workerSilent makes, so the row the rule is weighed against is the row whose work is sent.
+//
+// A claim behind that entry — the entry it was given is under the row's, and no queued start
+// carries it (OwedEntry) — is sent the work of that entry at that entry (sendOwedEntry), the
+// task the transition wrote when it raised the number. It carries no mark (startMarks{}), as
+// admission's send of the same work does (SendOwedEntry): not resend, because the claim is
+// behind the entry and the machine's entry test passes the task on its own; not resumeTask,
+// because the task is that entry's own work rather than the phase's resume; and not ruleResume,
+// because the claim is live, so no launch budget of a claim the daemon suspended by rule is at
+// risk. The phase's resume task would be the wrong prompt there: it says to carry the existing
+// phase work on, and the completion it answered with would be refused as behind that entry.
+//
+// A claim level with that entry is sent the phase's resume task (ResumePhaseTask) at entry 0,
+// marked resumeTask, as readyWorkerTask's and the boot's level branches send it: entry 0 hands
+// the role no number the record does not already name and moves no phases row, and resumeTask
+// is what keeps the outbox from delivering a second prompt to a claim that holds its phase's
+// task by the time the start runs (record.SuperviseRequest.ResumeTask). It is built through
+// Engine.started, so it waits for the issue's admission slot as the boot's level start does.
+//
+// The log line goes through warnOnCommit, so a fact that rolls back logs no repair.
+func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root record.Issue, run record.RoleRun, row record.PhaseRow,
+	fact intake.WorkerSilent, now time.Time,
+) error {
+	given := run.Claim.GivenEntry
+	behind := OwedEntry(run, root, row.Entry)
+	if behind {
+		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
+			return err
+		}
+	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true}); err != nil {
 		return err
 	}
-	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), row.Assignment)
+	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))
 	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: workerSilentNotice, Role: fact.Role, Phase: issue.Phase, Reason: found}); err != nil {
 		return err
 	}
 	e.warnOnCommit(ctx, "workflow: a phase worker nothing will prompt was found silent; its architect is told",
-		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "record", found)
+		"issue", issue.Key, "role", fact.Role, "phase", issue.Phase, "entry", row.Entry, "given", given, "behind", behind, "record", found)
 	return nil
 }
 
-// workerSilentDid is what the notice says the daemon did. It names the start row and not a
-// prompt: a suspension held over the claim refuses the start when the outbox runs it
-// (supervise's RuleHolds), which no record this handler reads shows.
-func workerSilentDid(assignment string) string {
-	did := "the daemon wrote the start row that sends the phase's task again"
-	if assignment != "" {
-		did += ", under the assignment " + assignment + " its phase row already names"
+// workerSilentDid is what the notice says the daemon did: which work the start row sends, read
+// from the entry the phases row names (entry) and the one the claim was last given (given). It
+// names the start row and not a prompt: a suspension held over the claim refuses the start when
+// the outbox runs it (supervise's RuleHolds), which no record this handler reads shows.
+func workerSilentDid(behind bool, entry, given int64) string {
+	var did string
+	switch {
+	case behind:
+		did = fmt.Sprintf("the daemon wrote the start row that sends the work of phase entry %d its phase row names, which its claim, last given entry %d, never had", entry, given)
+	case entry > 0:
+		did = fmt.Sprintf("the daemon wrote the start row that sends the phase's task again, on phase entry %d its phase row names and its claim was already given", entry)
+	default:
+		did = "the daemon wrote the start row that sends the phase's task again"
 	}
 	return did + ". A suspension an operator holds over the claim refuses that start when the outbox runs it"
 }
 
-// workerSilentRecord is the notice's and the log line's text: what the daemon read, then
-// workerSilentDid.
-func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, assignment string) string {
+// workerSilentRecord is the notice's and the log line's text: what the daemon read, then did,
+// which workerSilentDid composes.
+func workerSilentRecord(issue record.Issue, role claim.Role, lastStep time.Time, silent time.Duration, did string) string {
 	return fmt.Sprintf("%s's %s is a phase worker nothing will prompt: its process is up and between turns, it holds no task of %s, and its agent last stepped at %s, %s ago, past the bound this deployment gives a phase worker (worker_silence_minutes), so %s.",
-		issue.Key, role, issue.Phase, lastStep.UTC().Format(time.RFC3339), silent.Round(time.Minute), workerSilentDid(assignment))
+		issue.Key, role, issue.Phase, lastStep.UTC().Format(time.RFC3339), silent.Round(time.Minute), did)
 }
 
 // workerBackgroundNotice is the notice of a worker waiting on background work of its own that

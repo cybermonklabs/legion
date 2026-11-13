@@ -74,7 +74,10 @@ as the fingerprint decides (*The reviewer*, below, and
   A required item with no run at the head at all is sorted below, with the reads that tell its
   cases apart, and in every case but the remedy's own you tell the architect, do not approve, and
   wait with a `WAITING` line naming what you wait on: never approve a head while a required item
-  has no run, since the daemon then waits on GitHub's merge state with no notice to anyone.
+  has no run, since GitHub will not merge it and an approval only moves the round to wait on
+  GitHub's merge state, which the daemon reports stuck once a CI settlement has brought it runs
+  on the head and every one of them has concluded, and of which it tells nobody while no run on
+  the head has settled.
   For such an item, what the base requires is more than its status checks: a `code_scanning` rule, which the read above prints under `code_scanning:`, requires an analysis no status-check list names, which is what held the six heads of dispatch://INFRA-3027 while every required status check was green.
   Count the head's runs: `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
   Read the merge state first where that count is zero (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.

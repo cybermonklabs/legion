@@ -487,17 +487,31 @@ type PhaseRow struct {
 	// ClearGeneration resets the row without it. Behind a completion an old daemon wrote, a stale time
 	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
-	// Assignment is the task the issue's current phase handed this role, the token the start that
-	// handed it minted (workflow.Engine.start), written here in the transition's own transaction
-	// and onto that start's payload. It is one half of what a completion is held to: the other is
-	// the assignment the claim's worker took (supervise.Claim.ServingAssignment), and a completion
-	// reported for an earlier one is refused (api/handoff.go, HANDOFF_STALE_ASSIGNMENT). Unlike
-	// HandoffCommit it is not cleared when the role starts again — the start that clears the
-	// handoff writes the new assignment here — and unlike the issue's generation it is new at every
-	// phase entry, which is what tells one testing phase from the next within one run. Empty on a
-	// row no start has stamped: a daemon upgraded in place, where both sides are empty and every
-	// completion is accepted, and a row ClearGeneration reset.
-	Assignment string
+	// Entry is the number of the phase entry this role's row is on: a transition's start of the
+	// phase the issue has moved into, and the promotion's start of a mid-phase worker a
+	// re-admitted tree brings back, raise it by one and write the two fields below beside it, in
+	// their own transaction (workflow's start and StartPromotedWorker). It is the finer of the
+	// two numbers a completion is held to: the issue's generation is the same for every entry of
+	// one run, where the entry is new at each one, which is what tells one testing phase from the
+	// testing phase a conflicting head sent the work back to (api/handoff.go). A start that hands
+	// the role no work it was not already on leaves it where it stands — the send of this entry's
+	// own work to a claim behind it, the held phase's retry, and every start of no entry
+	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
+	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
+	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
+	// in place that the upgrade found with no work handed out, which the completion route reads
+	// as nothing to compare.
+	Entry int64
+	// EntryTask is the work of that entry, the task text the role is told, written beside the
+	// number in the same transaction. It is what makes the work a durable fact of the record
+	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
+	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
+	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again.
+	EntryTask string
+	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
+	// what tells how long a role has been owed the work its entry names, for a reader weighing a
+	// difference that has stood. Zero on a row no entry has been raised on.
+	EntryRaisedAt time.Time
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit
@@ -1582,13 +1596,18 @@ type Store interface {
 	// EnqueueID enqueues row as Enqueue does and returns its id, for a row that claims what it names
 	// (ClaimKeptDecisions). It refuses a ready_merge row, whose insert may update another.
 	EnqueueID(ctx context.Context, tx pgx.Tx, row OutboxRow) (int64, error)
-	// ReplaceOwedStart writes row's payload over the issue's oldest supervise start that waits
-	// for the issue's admission slot (SuperviseRequest.NeedsSlot) and that no live lease holds,
-	// and says whether it found one, so two transitions before that slot leave exactly one
-	// start, the later one, in the place in the waiting line the first one took. A row a lane
-	// holds now is not touched, including one it takes while the call waits on its row lock; the
-	// caller then enqueues its own. A lapsed lease holds nothing and is replaced like any other.
-	ReplaceOwedStart(ctx context.Context, tx pgx.Tx, row OutboxRow) (bool, error)
+	// EnqueueStart writes a phase worker's start as a row of its own, taking out the issue's
+	// oldest supervise start that waits for the issue's admission slot
+	// (SuperviseRequest.NeedsSlot) and that no live lease holds, so two transitions before that
+	// slot leave exactly one start, the later one, in the place in the waiting line the first
+	// one took: the row written carries the earlier row's creation time, its attempts, when it
+	// is next due and the error it last recorded, and its own values where the issue owed no
+	// such row. It is never the earlier row rewritten — one outbox row is one task, which is
+	// what a claim's record of the rows it has taken a task from rests on. A row a lane holds
+	// now is not touched, including one it takes while the call waits on its row lock, and the
+	// caller's row is written beside it. A lapsed lease holds nothing and is taken out like any
+	// other.
+	EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) error
 	// OwedStarts is every pending worker start of the Dispatch project key project that waits for
 	// its issue's admission slot and that no live lease holds, a row whose lease has lapsed among
 	// them, oldest first by creation time and then id — the waiting line's own ordering key for
@@ -1725,10 +1744,11 @@ type QueuedSupervise struct {
 
 // RoleClaim is a claim as RoleRun reads it: its state, the tree it is in, who suspended it while it
 // is suspended, the newest start the outbox ran against it (last_start_row), the update round it is
-// in (update_round), the write mark its retirement took (retired_at_write_mark), the moment its
-// agent last stepped (step_at, turn_started_at), what its own session last reported it was doing
-// (activity_at, activity_background, activity_next_reminder_at), and the task it holds, nil for
-// none, with the task's generation, phase and confirmation.
+// in (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
+// it was last given work of (given_entry), the moment its agent last stepped (step_at,
+// turn_started_at), what its own session last reported it was doing (activity_at,
+// activity_background, activity_next_reminder_at), and the task it holds, nil for none, with the
+// task's generation, phase and confirmation.
 type RoleClaim struct {
 	State        supervise.ClaimState
 	Tree         string
@@ -1783,7 +1803,12 @@ type RoleClaim struct {
 	// already written when the stop was recorded (admit's stopOutlivedStart). It says nothing about
 	// a claim that is not retired now, which is the only state that reader looks at.
 	RetiredAtWriteMark int64
-	Pending            *supervise.Delivery
+	// GivenEntry is the phase entry of the last task this claim was queued
+	// (supervise.Claim.GivenEntry), and 0 for a claim that has been queued no task carrying one.
+	// Its reader is the admission pass, which tells a claim behind the entry its role's phases
+	// row names — one owed that entry's work — from one already holding it.
+	GivenEntry int64
+	Pending    *supervise.Delivery
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger
@@ -1792,6 +1817,23 @@ type RoleClaim struct {
 func TreeLingers(ctx context.Context, store Store, tx pgx.Tx, tree string) (bool, error) {
 	root, err := store.Issue(ctx, tx, tree)
 	return root != nil && root.Lingers(), err
+}
+
+// PhaseRowOf is role's row among rows, and the zero row where the record holds no row of that
+// role: a role no transition has ever handed work on, which stands on no entry, names no handoff
+// and holds no claim. Every reader of one role's row among an issue's picks it here — the state
+// the projection writes (projection.Project), the entry the admission pass weighs a claim against
+// (admit's resumeSlottedWorkers), the outbox's fence on a start whose entry its role has left
+// (internal/daemon's outbox), the completion route's position (api's handoffPosition) and the
+// engine's own read (workflow's phaseRow) — so that rule is stated once and read the same way by
+// all of them.
+func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
+	for _, row := range rows {
+		if row.Role == role {
+			return row
+		}
+	}
+	return PhaseRow{}
 }
 
 // Lingers says whether the root lingers after its close: its linger deadline is set, and
