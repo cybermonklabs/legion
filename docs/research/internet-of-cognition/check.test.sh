@@ -275,6 +275,19 @@ for form in '\\"$IOC_MASLAB_VENV\/bin\/pip\\" install rdflib' '\/usr\/bin\/pip i
     case_result "a runner named by its path or versioned name is held to its rule: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
 done
 
+# 21. The same rule for runners case 20 does not name: pip reached through a versioned
+# interpreter's -m, and npx through a path of its own. Each runner is matched by the one
+# rule that takes the program a word names, so a form no case lists is held to it too.
+for form in 'python3.12 -m pip install pkg' '\/opt\/x\/bin\/npx pkg'; do
+    dir="$(fresh "named-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || $form; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    grep -qF "$(printf '%s' "$form" | tr -d '\\')" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+        printf 'FAIL the form %s could not be planted\n' "$form"
+        exit 1
+    }
+    case_result "a runner is known by the program it names: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

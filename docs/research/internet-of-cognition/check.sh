@@ -590,6 +590,19 @@ github_budget() {
 # the program. A resolved word is held to every rule a literal is, so python code given
 # to $IOC_PY -c that starts a process is refused as python -c is. Any other variable, a
 # word built of several, and a command this reader cannot split are refused.
+#
+# A runner is known by the program a word names, not by how the word is spelled: the
+# resolved word, its last path element, with a version after the name taken off, so
+# /usr/bin/pip, "$IOC_MASLAB_VENV/bin/pip", pip3.12 and python3.12 -m pip are each pip and
+# held to the rule for pip, and every runner above is matched that one way.
+#
+# What this reader cannot see. It compares text, and it guards against an install someone
+# forgets to pin, not against one written to slip past it. A program that installs
+# packages under a name no rule here names (a renamed copy of a runner, a wrapper script
+# of the row's own, a script a row runs, or a binary that installs as a side effect) is
+# outside what a reader of command text can see, and no further rule of this kind closes
+# that. What covers it is a person reading every row at review, and env.sh, which pins
+# the interpreters and environments the rows run.
 unpinned_installs() {
     claims | python3 -c '
 import json, re, shlex, sys
@@ -688,6 +701,16 @@ def resolve(word):
     if m.group(3):
         return m.group(3).rsplit("/", 1)[-1]
     return RESOLVABLE[m.group(2)]
+
+def runner_name(word):
+    # The program a word names, as every runner rule below matches it: the resolved
+    # word, its last path element, with a version written after the name taken off, so
+    # /usr/bin/pip, "$IOC_MASLAB_VENV/bin/pip", pip3 and pip3.12 are all pip. A word
+    # this reader cannot resolve names no runner, and is refused in command position.
+    base = resolve(word)
+    if base is None:
+        return ""
+    return re.sub(r"[0-9][0-9.]*$", "", base)
 
 def command_words(w):
     # The indexes of the words of w that stand in command position: the first word of the
@@ -800,7 +823,8 @@ def read_command(command, depth=0):
             nxt = w[i + 1] if i + 1 < len(w) else ""
             after = w[i + 1:]
             base = resolve(word) or word.rsplit("/", 1)[-1]
-            if base in SHELLS:
+            name = runner_name(word)
+            if name in SHELLS:
                 j = i + 1
                 while j < len(w) and w[j].startswith("-") and "c" not in w[j].lstrip("-"):
                     j += 1
@@ -811,16 +835,16 @@ def read_command(command, depth=0):
                         found.append(base + " -c (no command this reader can find)")
             elif word == "eval":
                 found += read_command(" ".join(after), depth + 1)
-            elif re.match(r"python[0-9.]*$", base) and nxt == "-c" and i + 2 < len(w):
+            elif name == "python" and nxt == "-c" and i + 2 < len(w):
                 if PROCESS.search(w[i + 2]):
                     found.append(base + " -c (python code that starts a process, which this reader cannot open)")
-            elif word == "uvx":
+            elif name == "uvx":
                 found += read_runner("uvx", after, UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",))
-            elif word == "uv" and nxt == "tool" and i + 2 < len(w) and w[i + 2] in ("run", "install"):
+            elif name == "uv" and nxt == "tool" and i + 2 < len(w) and w[i + 2] in ("run", "install"):
                 found += read_runner("uv tool " + w[i + 2], w[i + 3:], UV_TOOL_VALUE, UV_TOOL_FLAG, py_ok, ("--from",))
-            elif word == "uv" and nxt == "tool":
+            elif name == "uv" and nxt == "tool":
                 found.append("uv tool " + (w[i + 2] if i + 2 < len(w) else "") + " (a uv tool form this reader does not read)")
-            elif word == "uv" and nxt == "run":
+            elif name == "uv" and nxt == "run":
                 # uv run fetches each --with, which every one of them must pin.
                 rest, j = w[i + 2:], 0
                 while j < len(rest):
@@ -837,21 +861,21 @@ def read_command(command, depth=0):
                     elif not rest[j].startswith("-"):
                         break
                     j += 1
-            elif word == "uv" and nxt == "add":
+            elif name == "uv" and nxt == "add":
                 found.append("uv add (a form that installs and that this reader does not read)")
-            elif word == "pipx" and nxt == "run":
+            elif name == "pipx" and nxt == "run":
                 found += read_runner("pipx run", w[i + 2:], PIPX_VALUE, PIPX_FLAG, py_ok, ("--spec",))
-            elif word == "pipx":
+            elif name == "pipx":
                 found.append("pipx " + nxt + " (a pipx form this reader does not read)")
-            elif word in ("bunx", "npx") or (word == "npm" and nxt == "exec"):
-                name, rest = (word, after) if word != "npm" else ("npm exec", w[i + 2:])
-                found += read_runner(name, rest, NODE_VALUE, NODE_FLAG, npm_ok, ("--package", "-p"))
-            elif word in ("npm", "bun", "yarn", "pnpm") and nxt in ("install", "i", "add", "dlx", "x"):
-                found.append(word + " " + nxt + " (a form that installs and that this reader does not read)")
-            elif word == "go" and nxt in ("run", "install"):
+            elif name in ("bunx", "npx") or (name == "npm" and nxt == "exec"):
+                label, rest = (name, after) if name != "npm" else ("npm exec", w[i + 2:])
+                found += read_runner(label, rest, NODE_VALUE, NODE_FLAG, npm_ok, ("--package", "-p"))
+            elif name in ("npm", "bun", "yarn", "pnpm") and nxt in ("install", "i", "add", "dlx", "x"):
+                found.append(name + " " + nxt + " (a form that installs and that this reader does not read)")
+            elif name == "go" and nxt in ("run", "install"):
                 found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, GO_FLAG, go_ok)
-            elif word == "install" and i > 0 and w[i - 1] in ("pip", "pip3"):
-                rest = w[i + 1:]
+            elif name == "pip" and nxt == "install":
+                rest = w[i + 2:]
                 if any(a in ("-c", "--constraint", "-r", "--requirement") or a.startswith(("--constraint=", "--requirement=")) for a in rest) or "$IOC_ENV_PY_PINS" in part:
                     continue
                 skip = False
