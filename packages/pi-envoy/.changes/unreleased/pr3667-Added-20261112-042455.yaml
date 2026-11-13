@@ -1,0 +1,5 @@
+kind: Added
+body: "The plugin ships an eleventh skill, `approval-review`, for a session asked to judge an approval request on a document at a version: what such a request asks, what an agent never decides and hands back, how to read a document that may address its reader, and how to retrieve the nearest past decisions with `dispatch search`. It carries the round that measured it, which found no recipe that beats approving every request, so the skill tells no agent that it may decide an approval for anyone."
+time: 2026-11-12T04:24:55.703125363Z
+custom:
+    Issue: pr3667

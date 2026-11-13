@@ -4,15 +4,16 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // theTag is the pin these tests install, spelled as the worker image spells one.
@@ -50,107 +51,61 @@ echo "LEAK CHECK ERROR: /usr/bin/python3 is missing or not executable, so the ch
 exit 2
 `
 
-// member is one file of the test's tarball.
-type member struct {
-	body string
-	mode int64
-}
-
-// tarball writes a gzipped tarball shaped like GitHub's tarball of the check's repository: every
-// member under one `<owner>-<repo>-<sha>` directory, the check's own files under that directory's
-// `leak-check`, and one file of the repository outside it. It answers its path.
-func tarball(t *testing.T, files map[string]member) string {
-	t.Helper()
-	var raw bytes.Buffer
-	zipped := gzip.NewWriter(&raw)
-	archive := tar.NewWriter(zipped)
-	const prefix = "theorem-labs-agent-infra-84d835ba5d00f97212253ffa221898f1f234a772/"
-	write := func(name string, m member) {
-		t.Helper()
-		if err := archive.WriteHeader(&tar.Header{Name: prefix + name, Mode: m.mode, Size: int64(len(m.body))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := archive.Write([]byte(m.body)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := archive.WriteHeader(&tar.Header{Name: prefix + checkDirectory, Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
-		t.Fatal(err)
-	}
-	write("README.md", member{body: "the rest of the repository\n", mode: 0o644})
-	for name, m := range files {
-		write(checkDirectory+"/"+name, m)
-	}
-	for _, closer := range []interface{ Close() error }{archive, zipped} {
-		if err := closer.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	path := filepath.Join(t.TempDir(), "tarball.tgz")
-	if err := os.WriteFile(path, raw.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-// wholeCheck is a tarball of a check that runs: the launcher, its python file, its fixture and a
+// theCheck is the members of a check that runs: the launcher, its python file, its fixture and a
 // nested directory.
-func wholeCheck(t *testing.T, launcher string) string {
-	t.Helper()
-	return tarball(t, map[string]member{
-		checkName:    {body: launcher, mode: 0o755},
-		theNeighbour: {body: "# the check itself\n", mode: 0o644},
-		theFixture:   {body: "a line the self-test must pass\n", mode: 0o644},
-		theNested:    {body: "# the revert gate\n", mode: 0o644},
-	})
-}
-
-// standInGh writes a `gh` on the install's PATH and answers the directory it is on and the file
-// each call appends its arguments to. script is the body after the recording line.
-func standInGh(t *testing.T, script string) (bin, record string) {
-	t.Helper()
-	bin = t.TempDir()
-	record = filepath.Join(bin, "calls")
-	body := "#!/bin/sh\necho \"$*\" >> " + record + "\n" + script
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(body), 0o700); err != nil {
-		t.Fatal(err)
+func theCheck(launcher string) map[string]leakguardtest.Member {
+	return map[string]leakguardtest.Member{
+		checkName:    {Body: launcher, Mode: 0o755},
+		theNeighbour: {Body: "# the check itself\n", Mode: 0o644},
+		theFixture:   {Body: "a line the self-test must pass\n", Mode: 0o600},
+		theNested:    {Body: "# the revert gate\n", Mode: 0o644},
 	}
-	return bin, record
 }
 
-// servesTheTarball is a stand-in gh that answers the fetch with path, after a pause: the pause is
-// what makes a second caller of one pod actually wait on the lease rather than race past it.
-func servesTheTarball(path string) string {
-	return "sleep 0.3\nexec cat " + path + "\n"
-}
-
-// calls is the argument lines the stand-in gh recorded, in order.
-func calls(t *testing.T, record string) []string {
+// wholeCheck is a tarball of a check that runs.
+func wholeCheck(t *testing.T, launcher string) []byte {
 	t.Helper()
-	body, err := os.ReadFile(record)
-	if os.IsNotExist(err) {
-		return nil
-	}
+	return leakguardtest.GitHubTarball(t, theCheck(launcher))
+}
+
+// served is what the daemon serves of a tarball: its leak-check directory, packed.
+func served(t *testing.T, raw []byte) []byte {
+	t.Helper()
+	body, err := PackTarball(bytes.NewReader(raw))
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("pack: %v", err)
 	}
-	return strings.Split(strings.TrimSuffix(string(body), "\n"), "\n")
+	return body
 }
 
-// installEnv is the environment an install runs under: the test's own, with the stand-in gh
-// first on PATH — ahead of the image's own directories, which the stand-in's `sh` needs for the
-// commands it runs — and the pin the worker image would carry.
-func installEnv(t *testing.T, bin, tag string) []string {
+// marked is answersItsHelp printing tag in its usage header, so a test reads which of two installs
+// is in place from the installed check itself.
+func marked(tag string) string {
+	return strings.Replace(answersItsHelp, "# Usage:", "# "+tag+" Usage:", 1)
+}
+
+// helpOf is what the check at dir prints for `--help`, which exits 1 as the real one does.
+func helpOf(t *testing.T, dir string) string {
 	t.Helper()
-	env := append(fixtureenv.Isolated(t.TempDir()), "PATH="+bin+":/usr/bin:/bin")
-	if tag != "" {
-		env = append(env, TagVariable+"="+tag)
+	printed, err := exec.Command(filepath.Join(dir, checkName), "--help").Output()
+	if err == nil {
+		t.Fatalf("the installed check exited 0 printing %q, want the usage header and exit 1", printed)
 	}
-	return env
+	return string(printed)
 }
 
-// leftovers is every entry beside the install directory, the lease file aside: a failed install
-// leaves none, since the directory is unpacked under a name of its own and renamed into place.
+// recordedTag is the tag file of the install at dir.
+func recordedTag(t *testing.T, dir string) string {
+	t.Helper()
+	recorded, err := os.ReadFile(filepath.Join(dir, tagFile))
+	if err != nil {
+		t.Fatalf("read the install's tag: %v", err)
+	}
+	return string(recorded)
+}
+
+// leftovers is every entry beside the install directory: an install leaves none, since the
+// directory is unpacked under a name of its own, renamed into place, and what it replaced removed.
 func leftovers(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(filepath.Dir(dir))
@@ -159,250 +114,387 @@ func leftovers(t *testing.T, dir string) []string {
 	}
 	var left []string
 	for _, entry := range entries {
-		if entry.Name() != filepath.Base(dir)+".lock" {
+		if entry.Name() != filepath.Base(dir) {
 			left = append(left, entry.Name())
 		}
 	}
 	return left
 }
 
-// The install fetches the pinned tag with the gh on its PATH, lands the check's whole directory,
-// and runs the installed check before anything may use it. A fetch that fails and an installed
-// check that does not answer each fail the install, and each leaves the install path absent and
-// nothing half-unpacked beside it: a role that finds the directory finds a whole install.
-func TestInstallLandsTheWholeCheckOrFailsWithNothingInPlace(t *testing.T) {
+// install is InstallServed of body at tag into dir, with every line it logs collected.
+func install(t *testing.T, dir, tag string, body []byte) ([]string, error) {
+	t.Helper()
+	var logged []string
+	err := InstallServed(bound(t), ServedInstall{Dir: dir, Tag: tag, Body: body, Log: func(format string, args ...any) {
+		logged = append(logged, format)
+	}})
+	return logged, err
+}
+
+// packedMember is one member of a packed body, as read back.
+type packedMember struct {
+	typeflag byte
+	mode     int64
+	body     string
+}
+
+func membersOf(t *testing.T, body []byte) map[string]packedMember {
+	t.Helper()
+	zipped, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("the packed body is no gzip stream: %v", err)
+	}
+	archive := tar.NewReader(zipped)
+	members := map[string]packedMember{}
+	for {
+		header, err := archive.Next()
+		if errors.Is(err, io.EOF) {
+			return members
+		}
+		if err != nil {
+			t.Fatalf("read the packed body: %v", err)
+		}
+		content, err := io.ReadAll(archive)
+		if err != nil {
+			t.Fatal(err)
+		}
+		members[header.Name] = packedMember{typeflag: header.Typeflag, mode: header.Mode, body: string(content)}
+	}
+}
+
+// The daemon serves the check's directory alone: the files of leak-check/ at the directory's own
+// paths, with their bytes and modes, and nothing of the rest of the repository nor its prefix.
+func TestThePackHoldsTheDirectoryAlone(t *testing.T) {
+	files := theCheck(answersItsHelp)
+	body, err := PackTarball(bytes.NewReader(leakguardtest.GitHubTarball(t, files)))
+	if err != nil {
+		t.Fatalf("pack: %v", err)
+	}
+	members := membersOf(t, body)
+	var names []string
+	for name := range members {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	want := []string{checkName, theFixture, theNeighbour, theNested}
+	slices.Sort(want)
+	if !slices.Equal(names, want) {
+		t.Fatalf("the pack holds %q, want the directory's own files alone, %q", names, want)
+	}
+	for name, m := range files {
+		got := members[name]
+		if got.typeflag != tar.TypeReg || got.body != m.Body || got.mode != m.Mode {
+			t.Errorf("the pack holds %s as (type %q, mode %o, %q), want a regular file of mode %o holding %q",
+				name, got.typeflag, got.mode, got.body, m.Mode, m.Body)
+		}
+	}
+}
+
+// A member of the directory that is neither a directory nor a regular file, one whose path leaves
+// the directory, a tarball that holds no such directory and one whose directory holds no file
+// are each refused by name.
+func TestThePackRefusesWhatIsNotTheCheck(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		gh      func(t *testing.T) string
-		want    string // the substring the failure names, empty for an install that must succeed
-		fetched bool   // whether gh was called at all
+		name string
+		raw  func(t *testing.T) []byte
+		want string
 	}{
 		{
-			name:    "a fetch that serves the tarball installs the check",
-			gh:      func(t *testing.T) string { return servesTheTarball(wholeCheck(t, answersItsHelp)) },
-			fetched: true,
+			name: "a member outside the directory",
+			raw: func(t *testing.T) []byte {
+				files := theCheck(answersItsHelp)
+				files["../escaped.sh"] = leakguardtest.Member{Body: "#!/bin/sh\n", Mode: 0o755}
+				return leakguardtest.GitHubTarball(t, files)
+			},
+			want: `holds the member "` + leakguardtest.TarballPrefix + `leak-check/../escaped.sh", which is no path inside leak-check/`,
 		},
 		{
-			name:    "a 404 of the tag fails the install",
-			gh:      func(*testing.T) string { return "echo 'gh: Not Found (HTTP 404)' >&2\nexit 1\n" },
-			want:    "exited 1",
-			fetched: true,
+			name: "a symbolic link",
+			raw: func(t *testing.T) []byte {
+				files := theCheck(answersItsHelp)
+				files["linked"] = leakguardtest.Member{Link: "/etc/passwd", Mode: 0o777}
+				return leakguardtest.GitHubTarball(t, files)
+			},
+			want: `holds the member "` + leakguardtest.TarballPrefix + `leak-check/linked", which is neither a directory nor a regular file`,
 		},
 		{
-			name:    "a fetched check that does not run fails the install",
-			gh:      func(t *testing.T) string { return servesTheTarball(wholeCheck(t, answersNothing)) },
-			want:    "names no check-public-text shape",
-			fetched: true,
+			name: "no leak-check directory",
+			raw: func(t *testing.T) []byte {
+				return leakguardtest.Tarball(t, map[string]leakguardtest.Member{
+					leakguardtest.TarballPrefix + "README.md":          {Body: "the rest of the repository\n", Mode: 0o644},
+					leakguardtest.TarballPrefix + "other/" + checkName: {Body: answersItsHelp, Mode: 0o755},
+				})
+			},
+			want: "holds no leak-check directory",
+		},
+		{
+			name: "a leak-check directory with no file",
+			raw: func(t *testing.T) []byte {
+				return leakguardtest.GitHubTarball(t, nil)
+			},
+			want: "holds a leak-check directory with no file",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			bin, record := standInGh(t, tc.gh(t))
-			dir := filepath.Join(t.TempDir(), "leak-check")
-			landed, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, theTag), Dir: dir})
-			check := filepath.Join(dir, checkName)
-
-			if tc.want != "" {
-				if got := setupFailure(t, err); !strings.Contains(got.Error(), tc.want) {
-					t.Errorf("install = %q, want it to name %q", got, tc.want)
-				}
-				if landed != "" {
-					t.Errorf("a failed install answered %q, want no check at all", landed)
-				}
-				if _, err := os.Stat(dir); !os.IsNotExist(err) {
-					t.Errorf("stat %s = %v, want the install path absent after a failed install", dir, err)
-				}
-				if left := leftovers(t, dir); left != nil {
-					t.Errorf("a failed install left %v beside the install path", left)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("install: %v", err)
-				}
-				if landed != check {
-					t.Errorf("the install answered %q, want the check it landed, %q", landed, check)
-				}
-				// The whole directory, because the launcher resolves its python file beside
-				// itself and its self-test reads the fixture from there.
-				for _, name := range []string{checkName, theNeighbour, theFixture, theNested} {
-					if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-						t.Errorf("the install is missing %s: %v", name, err)
-					}
-				}
-				if _, err := os.Stat(filepath.Join(dir, "README.md")); !os.IsNotExist(err) {
-					t.Errorf("stat the repository's own README in the install = %v, want nothing of the repository outside %s", err, checkDirectory)
-				}
-				// Installed and runnable: the same shape the install verified with.
-				printed, err := exec.Command(check, "--help").Output()
-				if err == nil || !strings.Contains(string(printed), "gh-guard") {
-					t.Errorf("the installed check answered %q (%v), want the usage header it was verified by", printed, err)
-				}
+			body, err := PackTarball(bytes.NewReader(tc.raw(t)))
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("pack = %v, want %q", err, tc.want)
 			}
-
-			made := calls(t, record)
-			if !tc.fetched {
-				if made != nil {
-					t.Errorf("gh was called %v, want no call at all", made)
-				}
-				return
-			}
-			if want := []string{"api repos/" + checkSlug + "/tarball/" + theTag}; !slices.Equal(made, want) {
-				t.Errorf("gh was called %v, want %v", made, want)
+			if body != nil {
+				t.Errorf("a refused pack answered %d bytes, want none", len(body))
 			}
 		})
 	}
 }
 
-// With no pin in the shim's environment the install does nothing and succeeds: that is a tmux
-// pane, whose machine carries the check through the check's own installer, and where it carries
-// none every entry point of this package refuses the write with a setup failure naming it.
-func TestWithNoPinTheInstallDoesNothing(t *testing.T) {
-	bin, record := standInGh(t, servesTheTarball(wholeCheck(t, answersItsHelp)))
+// The launcher's install lands the served files and the tag beside them, logs nothing of a fetch,
+// and replaces what the directory held: an install of another tag, and one of the same tag, which
+// is what a restarted launcher finds and installs over.
+func TestTheServedInstallLandsTheCheckAndReplacesWhatWasThere(t *testing.T) {
+	const newTag = "leak-check-v16"
 	dir := filepath.Join(t.TempDir(), "leak-check")
-	landed, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, ""), Dir: dir})
+
+	logged, err := install(t, dir, theTag, served(t, wholeCheck(t, marked(theTag))))
 	if err != nil {
 		t.Fatalf("install: %v", err)
 	}
-	if landed != "" {
-		t.Errorf("the install answered %q, want no check: a machine with no pin installs none", landed)
+	if logged != nil {
+		t.Errorf("an install into an empty place logged %q, want nothing", logged)
 	}
-	if _, err := os.Stat(dir); !os.IsNotExist(err) {
-		t.Errorf("stat %s = %v, want nothing installed", dir, err)
-	}
-	if made := calls(t, record); made != nil {
-		t.Errorf("gh was called %v, want no call at all", made)
-	}
-}
-
-// The six role shims of one pod start together and install once between them: the lease is taken
-// before the install is decided on, so the role that waits finds the check already there, fetches
-// nothing, and still returns to a whole install.
-func TestTwoShimsOfOnePodInstallOnce(t *testing.T) {
-	bin, record := standInGh(t, servesTheTarball(wholeCheck(t, answersItsHelp)))
-	dir := filepath.Join(t.TempDir(), "leak-check")
-	env := installEnv(t, bin, theTag)
-	var wait sync.WaitGroup
-	failures := make([]error, 2)
-	landed := make([]string, 2)
-	for shim := range failures {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			landed[shim], failures[shim] = Install(bound(t), InstallOptions{Env: env, Dir: dir})
-		}()
-	}
-	wait.Wait()
-	check := filepath.Join(dir, checkName)
-	for shim, err := range failures {
+	for name, m := range theCheck(marked(theTag)) {
+		info, err := os.Stat(filepath.Join(dir, name))
 		if err != nil {
-			t.Errorf("shim %d's install: %v", shim, err)
-		}
-		if landed[shim] != check {
-			t.Errorf("shim %d's install answered %q, want the installed check %q: the role that waited answers it too", shim, landed[shim], check)
-		}
-	}
-	if made := calls(t, record); len(made) != 1 {
-		t.Errorf("gh was called %d times (%v), want the pod's one fetch", len(made), made)
-	}
-	// Both callers saw the whole install, not a directory one of them was still filling.
-	for _, name := range []string{checkName, theNeighbour, theFixture, theNested} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("the install is missing %s: %v", name, err)
+			continue
+		}
+		if got := int64(info.Mode().Perm()); got != m.Mode {
+			t.Errorf("the install holds %s with mode %o, want %o", name, got, m.Mode)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "README.md")); !os.IsNotExist(err) {
+		t.Errorf("stat the repository's own README in the install = %v, want nothing of the repository outside %s", err, checkDirectory)
+	}
+	if got := recordedTag(t, dir); got != theTag+"\n" {
+		t.Errorf("the install recorded %q, want %q", got, theTag+"\n")
+	}
+	if got := helpOf(t, dir); !strings.Contains(got, theTag) || !strings.Contains(got, "gh-guard") {
+		t.Errorf("the installed check printed %q, want the first tag's usage header", got)
+	}
+
+	for _, tc := range []struct {
+		name, tag, marker string
+	}{
+		{"another tag", newTag, newTag},
+		{"the same tag", newTag, newTag + " again"},
+	} {
+		t.Run("over an install of "+tc.name, func(t *testing.T) {
+			logged, err := install(t, dir, tc.tag, served(t, wholeCheck(t, marked(tc.marker))))
+			if err != nil {
+				t.Fatalf("install: %v", err)
+			}
+			if got := helpOf(t, dir); !strings.Contains(got, "# "+tc.marker+" Usage:") {
+				t.Errorf("the installed check printed %q, want the served one's header", got)
+			}
+			if got := recordedTag(t, dir); got != tc.tag+"\n" {
+				t.Errorf("the install recorded %q, want %q", got, tc.tag+"\n")
+			}
+			if len(logged) != 1 {
+				t.Errorf("the replacing install logged %q, want its one line", logged)
+			}
+			for _, name := range []string{theNeighbour, theFixture, theNested} {
+				if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+					t.Errorf("the install that replaced another is missing %s: %v", name, err)
+				}
+			}
+			if left := leftovers(t, dir); left != nil {
+				t.Errorf("the replacing install left %v beside the install path, want the install alone", left)
+			}
+		})
+	}
+}
+
+// A served check that does not answer its --help, a body holding no file and a body that is no
+// tarball each fail the install, name what happened, and leave the directory as it was — an
+// absent one absent, and one holding an install with that install — with nothing beside it.
+func TestAServedCheckThatDoesNotAnswerLeavesTheDirectoryAsItWas(t *testing.T) {
+	refused := []struct {
+		name string
+		body func(t *testing.T) []byte
+		want string
+	}{
+		{
+			name: "a check whose --help names no shape",
+			body: func(t *testing.T) []byte { return served(t, wholeCheck(t, answersNothing)) },
+			want: "the served check did not answer: its --help names no check-public-text shape: " +
+				"LEAK CHECK ERROR: /usr/bin/python3 is missing or not executable, so the check could not start",
+		},
+		{
+			name: "a body holding no file",
+			body: func(t *testing.T) []byte { return leakguardtest.Tarball(t, nil) },
+			want: "the pod's launcher could not unpack the check the daemon served: it holds no file",
+		},
+		{
+			name: "a body that is no tarball",
+			body: func(*testing.T) []byte { return []byte("not a tarball") },
+			want: "the pod's launcher could not unpack the check the daemon served: gzip: invalid header",
+		},
+	}
+	for _, tc := range refused {
+		t.Run(tc.name+", into an empty place", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "leak-check")
+			if _, err := install(t, dir, theTag, tc.body(t)); err == nil || err.Error() != tc.want {
+				t.Fatalf("install = %v, want %q", err, tc.want)
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Errorf("stat %s = %v, want the install path absent after a failed install", dir, err)
+			}
+			if left := leftovers(t, dir); left != nil {
+				t.Errorf("a failed install left %v beside the install path", left)
+			}
+		})
+		t.Run(tc.name+", over an install", func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "leak-check")
+			if _, err := install(t, dir, theTag, served(t, wholeCheck(t, marked(theTag)))); err != nil {
+				t.Fatalf("the first install: %v", err)
+			}
+			if _, err := install(t, dir, "leak-check-v16", tc.body(t)); err == nil || err.Error() != tc.want {
+				t.Fatalf("install = %v, want %q", err, tc.want)
+			}
+			if got := helpOf(t, dir); !strings.Contains(got, theTag) {
+				t.Errorf("the installed check printed %q, want the install that was there", got)
+			}
+			if got := recordedTag(t, dir); got != theTag+"\n" {
+				t.Errorf("the install records %q, want the one that was there, %q", got, theTag+"\n")
+			}
+			if left := leftovers(t, dir); left != nil {
+				t.Errorf("a failed install left %v beside the install path", left)
+			}
+		})
+	}
+}
+
+// An install that names no directory is refused before anything is written: the caller names
+// where the check goes.
+func TestAnInstallNamingNoDirectoryIsRefused(t *testing.T) {
+	t.Chdir(t.TempDir())
+	_, err := install(t, "", theTag, served(t, wholeCheck(t, answersItsHelp)))
+	if want := "the pod's launcher named no directory to install the check into"; err == nil || err.Error() != want {
+		t.Fatalf("install = %v, want %q", err, want)
+	}
+	if entries, err := os.ReadDir("."); err != nil || len(entries) != 0 {
+		t.Fatalf("the refused install left %v (%v) in the working directory, want nothing", entries, err)
+	}
+}
+
+// The launcher that runs the install is the pod's first process and holds every role's launcher
+// token, so the one --help run is handed PATH, and HOME and TMPDIR set to the install's parent,
+// and nothing else of the process's environment. The stand-in check writes the environment it was
+// handed into its TMPDIR, and answers its help as the real one does.
+func TestTheHelpRunSeesOnlyPathHomeAndTmpdir(t *testing.T) {
+	t.Setenv("LEGION_LAUNCHER_TOKEN", "a token the check must never see")
+	t.Setenv("GH_TOKEN", "another")
+	printsItsEnvironment := strings.Replace(answersItsHelp, "echo '# Usage:", "env > \"$TMPDIR/help-env\"\necho '# Usage:", 1)
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "leak-check")
+	if _, err := install(t, dir, theTag, served(t, wholeCheck(t, printsItsEnvironment))); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	printed, err := os.ReadFile(filepath.Join(parent, "help-env"))
+	if err != nil {
+		t.Fatalf("the check wrote no environment under the install's parent: %v", err)
+	}
+	seen := map[string]string{}
+	for line := range strings.Lines(string(printed)) {
+		name, value, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "=")
+		seen[name] = value
+	}
+	// The shell the stand-in is sets these of its own: dash PWD, bash SHLVL and _ too.
+	for _, own := range []string{"PWD", "OLDPWD", "SHLVL", "_"} {
+		delete(seen, own)
+	}
+	want := map[string]string{"PATH": os.Getenv("PATH"), "HOME": parent, "TMPDIR": parent}
+	if len(seen) != len(want) {
+		t.Errorf("the --help run saw %q, want %q alone", seen, want)
+	}
+	for name, value := range want {
+		if seen[name] != value {
+			t.Errorf("the --help run saw %s=%q, want %q", name, seen[name], value)
 		}
 	}
 }
 
-// A directory that outlives a pin change — the controller's persistent volume, which is not the
-// pod-lived scratch every other role installs into — is installed over, and one that already
-// holds this pin's check is left alone. The install records the tag it landed beside the check
-// (tagFile) and reads it back, so the second install's one question is which tag is there, and
-// an install an earlier release made, which recorded no tag at all, is installed over once.
-func TestAnInstallOfAnotherTagIsInstalledAgainAndOneOfTheSameTagIsNot(t *testing.T) {
-	// The two tags' launchers differ in what they print, so the test reads which of the two is
-	// installed from the install itself rather than from the record of the fetch alone.
-	const newTag = "leak-check-v16"
-	marked := func(tag string) string {
-		return strings.Replace(answersItsHelp, "# Usage:", "# "+tag+" Usage:", 1)
-	}
-	// One stand-in gh serves whichever tarball the tag it is asked for names, so a second
-	// install's fetch is the second tag's and the first install's is the first's.
-	bin := t.TempDir()
-	record := filepath.Join(bin, "calls")
-	body := "#!/bin/sh\necho \"$*\" >> " + record + "\n" +
-		"case \"$*\" in\n" +
-		"  *" + theTag + ") exec cat " + wholeCheck(t, marked(theTag)) + " ;;\n" +
-		"  *" + newTag + ") exec cat " + wholeCheck(t, marked(newTag)) + " ;;\n" +
-		"esac\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n"
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(body), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	dir := filepath.Join(t.TempDir(), "leak-check")
-	check := filepath.Join(dir, checkName)
-	// installs is the tags gh was asked for, and answers what the installed check now prints.
-	installed := func(t *testing.T) string {
+// A role's shim reads the install and starts no agent unless it is the pin's: an absent check, an
+// install that records no tag and one of another tag are each refused naming the pin and what is
+// there. With no pin, which is every tmux pane, nothing is read and nothing refused.
+func TestInstalledAnswersTheCheckOfThePinAlone(t *testing.T) {
+	pinned := []string{"PATH=/usr/bin:/bin", TagVariable + "=" + theTag}
+	installedAt := func(t *testing.T) string {
 		t.Helper()
-		printed, err := exec.Command(check, "--help").Output()
-		if err == nil {
-			t.Fatalf("the installed check exited 0 printing %q, want the usage header and exit 1", printed)
+		dir := filepath.Join(t.TempDir(), "leak-check")
+		if _, err := install(t, dir, theTag, served(t, wholeCheck(t, answersItsHelp))); err != nil {
+			t.Fatalf("install: %v", err)
 		}
-		return string(printed)
+		return dir
 	}
 
-	if _, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, theTag), Dir: dir}); err != nil {
-		t.Fatalf("the first install: %v", err)
-	}
-	if got := installed(t); !strings.Contains(got, theTag) {
-		t.Fatalf("the installed check printed %q, want the first tag's", got)
-	}
-	if recorded, there := installedTag(dir); !there || recorded != theTag {
-		t.Errorf("the install recorded (%q, %v) beside itself, want the tag it landed, %q", recorded, there, theTag)
-	}
-
-	// The same pin again: nothing is fetched and the check stays the one that is there.
-	if _, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, theTag), Dir: dir}); err != nil {
-		t.Fatalf("the install of the tag already there: %v", err)
-	}
-	if made := calls(t, record); len(made) != 1 {
-		t.Errorf("gh was called %v, want the one fetch of the first install: a check of this tag is already there", made)
-	}
-
-	// A bumped pin: fetched again, and the directory now holds the new tag's check and its tag.
-	landed, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, newTag), Dir: dir})
-	if err != nil {
-		t.Fatalf("the install of the bumped pin: %v", err)
-	}
-	if landed != check {
-		t.Errorf("the install answered %q, want the check it landed, %q", landed, check)
-	}
-	if want := []string{"api repos/" + checkSlug + "/tarball/" + theTag, "api repos/" + checkSlug + "/tarball/" + newTag}; !slices.Equal(calls(t, record), want) {
-		t.Errorf("gh was called %v, want %v: the bumped pin is fetched and the repeated one is not", calls(t, record), want)
-	}
-	if got := installed(t); !strings.Contains(got, newTag) {
-		t.Errorf("the installed check printed %q, want the bumped tag's", got)
-	}
-	if recorded, there := installedTag(dir); !there || recorded != newTag {
-		t.Errorf("the install recorded (%q, %v) beside itself, want the bumped tag %q", recorded, there, newTag)
-	}
-	for _, name := range []string{theNeighbour, theFixture, theNested} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("the install that replaced another is missing %s: %v", name, err)
+	t.Run("the install of the pin", func(t *testing.T) {
+		dir := installedAt(t)
+		check, err := Installed(pinned, dir)
+		if err != nil || check != filepath.Join(dir, checkName) {
+			t.Fatalf("Installed = %q, %v; want %q", check, err, filepath.Join(dir, checkName))
 		}
+	})
+	t.Run("no pin", func(t *testing.T) {
+		check, err := Installed([]string{"PATH=/usr/bin:/bin"}, filepath.Join(t.TempDir(), "absent"))
+		if err != nil || check != "" {
+			t.Fatalf("Installed = %q, %v; want no check and no refusal", check, err)
+		}
+	})
+	for _, tc := range []struct {
+		name  string
+		spoil func(t *testing.T, dir string)
+		want  []string
+	}{
+		{
+			name:  "an absent check",
+			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, checkName)) },
+			want:  []string{TagVariable + "=" + theTag, "installed no check"},
+		},
+		{
+			name:  "an absent tag file",
+			spoil: func(t *testing.T, dir string) { remove(t, filepath.Join(dir, tagFile)) },
+			want:  []string{TagVariable + "=" + theTag, "records no tag"},
+		},
+		{
+			name: "another tag",
+			spoil: func(t *testing.T, dir string) {
+				if err := os.WriteFile(filepath.Join(dir, tagFile), []byte("leak-check-v14\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: []string{TagVariable + "=" + theTag, "is of leak-check-v14"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := installedAt(t)
+			tc.spoil(t, dir)
+			check, err := Installed(pinned, dir)
+			failed := setupFailure(t, err)
+			for _, want := range tc.want {
+				if !strings.Contains(failed.Error(), want) {
+					t.Errorf("Installed = %q, want it to name %q", failed, want)
+				}
+			}
+			if check != "" {
+				t.Errorf("a refused read answered %q, want no check", check)
+			}
+		})
 	}
-	// The replaced install is gone, not left beside the directory for the pod's disk to carry.
-	if left := leftovers(t, dir); !slices.Equal(left, []string{filepath.Base(dir)}) {
-		t.Errorf("the replacing install left %v beside the install path, want the install alone", left)
-	}
+}
 
-	// An install an earlier release made records no tag, so it is installed over once.
-	if err := os.Remove(filepath.Join(dir, tagFile)); err != nil {
+func remove(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := Install(bound(t), InstallOptions{Env: installEnv(t, bin, newTag), Dir: dir}); err != nil {
-		t.Fatalf("the install over one that recorded no tag: %v", err)
-	}
-	if made := calls(t, record); len(made) != 3 {
-		t.Errorf("gh was called %v, want a third fetch: an install that records no tag is one of no known tag", made)
-	}
-	if recorded, there := installedTag(dir); !there || recorded != newTag {
-		t.Errorf("the install recorded (%q, %v) beside itself, want %q", recorded, there, newTag)
 	}
 }

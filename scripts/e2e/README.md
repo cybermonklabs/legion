@@ -93,7 +93,8 @@ Each item below names a script, then what it proves.
   the published worker image's own `git` and `jj` refuse a push that names something private, driven as one Kubernetes Job on the image digest the caller names, under the rules of `docs/kubernetes.md`, "Running a workload in the cluster from a role":
   k1 of dispatch://INFRA-1527 — a commit whose message carries a refusable Tailscale MagicDNS host, one whose author identity carries it, one whose only hit is an added line of a tracked file, one whose only hit is the branch name, and a clean one — under `git push` and under `jj git push` in each shape jj's own help in that image enumerates (the bare shape, `--all`, `--change`, `--named` and `--deleted`, the last a ref change with no commit), with `git ls-remote` read before and after every push, the added-line case and the branch-name case reported as checks of their own, and the run failed outright where a shape the script drives is gone from jj;
   and k7's two shared-check failures at those same call sites, the stand-in check removed so that none resolves and a stand-in that exits 2 for an internal error, each of which must refuse under both commands and name the failure it met.
-  The Job holds no credential, so it writes its own stand-in shared check into its `emptyDir` and the rule file embedded in the image's `legion` decides every verdict;
+  The Job runs no launcher, so the daemon pushes it no shared check.
+  It writes its own stand-in shared check into its `emptyDir`, and the rule file embedded in the image's `legion` decides every verdict;
   k7's other two failures cannot be met in an image at all, since the rules are embedded in that binary and the engine is linked into it, which the Job says in its own log.
   The probe the Job runs is `leak-guard-image-probe.sh` beside the harness, which reads it in and writes it into the Job's command, since a Job holds no checkout to read it from, so the two files are one recipe and neither is changed without the other.
   Needs a pod whose projected credential may create a Job (`kubectl -n <namespace> auth can-i create jobs` answers `yes`), the image to prove by digest (`--image`, from the `Worker Image` run's `Record digest` step), and the deployment's compute class (`--node-selector`), whose value is in that deployment's own declaration and in no file of this repository.
@@ -296,7 +297,7 @@ Each item below names a script, then what it proves.
   no request at all reaches the refused model between the fifth minute and the cooldown's end at the tenth, which is the window a restore of Oh My Pi's own would show in;
   the first request after the cooldown goes to that model again;
   and the rate-limited pane comes back on the host's own suppression instead, about three minutes after its fallback.
-  Needs an Oh My Pi (`LEGION_OMP_PATH`) and about fifteen minutes of wall clock, longer than any job of `ci.yaml` holds
+  Needs an Oh My Pi (`LEGION_OMP_PATH`), `go` for the one NATS server it builds and starts, and about fifteen minutes of wall clock, longer than any job of `ci.yaml` holds
 
 - `handoff-records.sh`
 
@@ -323,8 +324,9 @@ Each item below names a script, then what it proves.
 - `envoy-session-delivery.sh`
 
   every Envoy event reaches a real Oh My Pi session and a real Claude Code session under `legion claude-bridge` exactly once
-  — agent sends and Dispatch messages, comments on a followed Dispatch issue (in their publish order), role publishes through the listener and core role publishes through the role lane
+  — agent sends and Dispatch messages, comments on a followed Dispatch issue (in their publish order), role publishes through the listener, core role publishes through the role lane, and a publish to the team topic both sessions follow
   — also when it was published while the session was killed and resumed, its NATS connection was cut, either of two listeners was killed, or Dispatch was SIGKILLed right after its writes, all built from the checkout and run in an issue pod;
+  and a message stored on a session's own agent subject before that session first registers reaches it once;
   with `--build-from` an earlier revision's listener and plugins show the losses under a session restart.
   Manual, never CI.
 
@@ -4311,15 +4313,16 @@ LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # 
 dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
 It is a script of its own because the window it measures is longer than any CI job holds:
 Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `ci.yaml`'s pi-legion job has `timeout-minutes: 10`, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
-It runs on any Linux host with `bash` and `bun` (after `bun install` at the checkout's root) — no PostgreSQL, no NATS server, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
+It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, as for [`provider-error-retry.sh`](#provider-error-retrysh), and the script prints which build it ran.
-It reaches no network and starts no server of its own:
-each pane's model gateway, the stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS address it hands the Envoy extension refuses every connection.
+It reaches no network:
+each pane's model gateway, the stand-in daemon and the stand-in Envoy listener are loopback servers of the driver's, and the NATS server the Envoy extension connects to is one the run builds and starts itself (`packages/envoy/internal/testnats/cmd/natsd`, on a port the kernel picks, logged to the evidence directory), since a session a listener can give no consumer receives nothing and its claim boot ends it.
 A whole run took 798 s measured in a Legion worker pod (omp/18.16.0), and a pane that never gets its model back holds one to about eighteen minutes.
 
 | check | what it holds |
 | :--- | :--- |
 | `prerequisites` | `bun` on PATH, the driver and the two packages' `node_modules`, and the Oh My Pi `LEGION_OMP_PATH` names, whose version is printed with the run's cooldown and drive times |
+| `nats` | the JetStream server the run builds and starts (`packages/envoy/internal/testnats/cmd/natsd`), whose URL the driver is given as `REFUSAL_FALLBACK_NATS_URL` |
 | `runs` | the driver (`packages/pi-legion/scripts/refusal-fallback-pane.ts`, run with `bun`), which prints one section per expectation of its own |
 
 Three Legion panes run at the same time, each the root architect of an issue of its own, each one real `omp --mode rpc` child of the pinned Oh My Pi with this checkout's `@sjawhar/pi-envoy` and `@sjawhar/pi-legion` loaded and an OpenAI-shaped model stand-in of its own, under a profile whose chain steps from `standin/strong-model` to `standin/weak-model` with `retry.fallbackRevertPolicy: never`, the shape a deployment's own operator overlay carries, and `retry.rateLimitWalksChain: true`, which Oh My Pi has off:
@@ -4341,8 +4344,9 @@ the first request after the cooldown goes to that model again (`<pane>-comes-bac
 and the rate-limited pane goes back about three minutes after its fallback, the 60 s suppression plus the gap between readings, rather than waiting the cooldown out (`rate-limited-comes-back-on-the-suppression`).
 Unlike a stage proof, a failed expectation does not stop the driver:
 the twelve minutes are already spent and every other measurement is evidence about the same run, so every expectation is reported and the run exits non-zero naming the first that failed.
-`REFUSAL_FALLBACK_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) holds the transcript and a copy of every pane's Oh My Pi transcript;
+`REFUSAL_FALLBACK_EVIDENCE_DIR` (default a fresh directory under `TMPDIR`, or `/tmp` when it is unset, kept and printed) holds the transcript, `logs/nats.log` of the JetStream server the run starts, and a copy of every pane's Oh My Pi transcript;
 each pane's scratch root is under `TMPDIR` too, since a pod's own disk is small and its `TMPDIR` names the issue's volume.
+The run's own scratch directory, which holds the natsd it built and that server's JetStream store, is removed at the end with the server, however the run ended; the evidence directory is never touched.
 
 ## handoff-records.sh
 
@@ -4513,8 +4517,8 @@ Two arms over a few runs are a reproduction and a control, not a rate.
 
 ## envoy-session-delivery.sh
 
-INFRA-594's live proof: every Envoy event reaches a real Oh My Pi session and a real Claude Code session exactly once, also when it was published while the session, its NATS connection, either listener or Dispatch was down.
-Manual, like `packages/pi-envoy/scripts/smoke-replay.sh`: it needs a model provider and is never wired into CI.
+INFRA-594's live proof: every Envoy event reaches a real Oh My Pi session and a real Claude Code session exactly once, also when it was published while the session, its NATS connection, either listener or Dispatch was down, and when it was stored for a session before that session first registered (INFRA-771).
+Manual: it needs a model provider and is never wired into CI.
 
 ```bash
 LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:<port>/postgres?sslmode=disable' \
@@ -4524,9 +4528,8 @@ LEGION_TEST_PG_DSN='postgres://postgres@127.0.0.1:<port>/postgres?sslmode=disabl
 … bash scripts/e2e/envoy-session-delivery.sh --build-from c3d09eec --expect-lost agent,issue,role
 … bash scripts/e2e/envoy-session-delivery.sh --build-from 926040d9048572765639e56d516226b822288b46 --expect-lost role
 
-# The two rollout states production meets first: this checkout on the listener grant a hub still
-# carries, and this checkout's hub with the plugins of the release before it.
-… bash scripts/e2e/envoy-session-delivery.sh --listener-grant before-session-consumers
+# The rollout state production meets first: this checkout's hub with the plugins of the release
+# before it.
 … bash scripts/e2e/envoy-session-delivery.sh --plugins-from origin/main
 
 # The upgrade: the sessions start on the plugins of <rev> and are resumed on this checkout's, so
@@ -4563,9 +4566,10 @@ Everything is built from the checkout:
 
 Each session reads an `envoy.json` naming listener `shared` and, as its only NATS server, a `socat` proxy of its own, which the script can cut, with Dispatch off.
 Dispatch reaches NATS through a proxy of its own too.
-Each session gets one setup prompt, which makes it follow `notifications.dispatch.issue.<KEY>.>` and hold a role of its own;
-the listener's registry is then read to show both.
-Then six windows run, each with one disruption, and every event of the window is published while the disruption holds:
+Each session gets one setup prompt, which makes it follow `notifications.dispatch.issue.<KEY>.>` and the run's own team topic `notifications.team.live-delivery-<run>`, and hold a role of its own;
+the listener's registry is then read to show them, and `GET /v1/sessions` to show each session's `delivery` reading `consumer` — read again with the table, and a failure either time
+— so every count below is a count of what a session's own consumer carried.
+Then eight windows run, each with one disruption, and every event of the window is published while the disruption holds:
 
 | window | disruption |
 | :--- | :--- |
@@ -4575,6 +4579,8 @@ Then six windows run, each with one disruption, and every event of the window is
 | d | listener `dispatch` SIGKILLed and restarted |
 | e | Dispatch's own NATS connection cut at its proxy, so its outbox cannot publish what the writes commit; Dispatch's writes made and Dispatch SIGKILLed right after they return; the proxy restored and Dispatch restarted, so events committed before the kill are published after the restart; the run prints the stream's stored time of each comment of the window beside the restart time |
 | f | none (the control) |
+| g | the Oh My Pi session stopped as a clean shutdown stops it, its stdin closed with no signal, so its plugin deregisters and the listener deletes its session consumer, and then resumed under the same id; the Claude Code session stays up |
+| h | the Claude Code session SIGKILLed and replaced by one whose id has never registered, with the window's one envelope published on that id's own agent subject, and stored, before it starts |
 
 Every server takes its port from [`lib/held-port.py`](#libheld-portpy), never a port picked free a moment earlier.
 natsd binds the client and monitor ports the kernel chooses (`-p -1 -m -1`), and the script reads both from its log.
@@ -4588,7 +4594,7 @@ A client of a server a window has stopped therefore waits rather than being refu
 Only a listener of a `--build-from` revision that takes no `ENVOY_LISTEN_FD` (`c3d09eec` and `926040d9` take none) binds a number:
 it can bind only the `PORT` it is given, so it gets a port picked free below the kernel's ephemeral range, and its restart binds the same number again.
 
-Every window publishes these events.
+Windows a to f publish these events.
 Each event carries a marker of its own in its text:
 
 | kind | events |
@@ -4596,6 +4602,14 @@ Each event carries a marker of its own in its text:
 | agent | `POST /v1/messages/send` to each session; a Dispatch message to each session (an aside from a session actor, on a second issue the sessions do not follow) |
 | issue | two Dispatch comments on the followed issue |
 | role | `POST /v1/messages/publish` to each session's role; a core NATS publish of an Envoy envelope on `notifications.role.<role>`, which the role lane forwards |
+| team | `POST /v1/messages/publish` to the team topic both sessions follow, one event counted in both of them; `notifications.team.>` is a stream subject, so the publish is stored and each session's own consumer holds it until that session is back: in window a, which SIGKILLs both sessions, the row must still read 1 for each |
+
+Window h publishes none of them.
+Its one event is a core NATS publish of an Envoy envelope on `notifications.agent.<the new Claude Code session id>`, counted in that session alone.
+It is a direct core publish rather than a `POST /v1/messages/send` because the listener refuses a send to a session it does not know, and that nothing knew the session yet is the whole case:
+the stream captures `notifications.agent.>`, so the envelope is stored while no session of that id exists, and the listener must give the session's consumer the first sequence the stream holds on its own agent subject when it first registers.
+An agent subject is one session's alone, so that start is never older than the session itself.
+This is what sjawhar/legion#2720's deleted replay sweep did for a brand-new session.
 
 The listener sends go to listener `dispatch`, and to listener `shared` in window d.
 In window d, Dispatch cannot reach its listener:
@@ -4603,7 +4617,9 @@ its lookup of the session (`GET /v1/registry/<id>`) gets no answer within its fi
 Nothing was published for them, and they are expected 0 times (`/0` in the table).
 
 After each window, the script waits up to `SESSION_DELIVERY_SETTLE_S` for every marker to reach its session, then `SESSION_DELIVERY_HOLD_S` more for a repeat.
-At the end it counts each marker in each transcript the event was meant for.
+At the end it counts each marker in every transcript the session the event was meant for has had.
+A session the run replaces writes a new transcript — window h replaces the Claude Code session — so the windows before the replacement are counted in the transcript it had then, and the run is judged as a whole.
+Each later transcript's lines are counted on from the one before it, which the session wrote earlier, so the issue-order comparison reads one rising line number per session.
 In the Oh My Pi session file it counts `envoy-message` cards and user messages.
 In the Claude Code transcript `<CLAUDE_CONFIG_DIR>/projects/*/<id>.jsonl` it counts user messages (no tool results, no meta lines) and the `queued_command` attachments of prompts Claude Code took during a turn.
 It does not count the assistant's replies, Claude Code's `queue-operation` and `api-request-blob` lines, or the plugins' own ledger entries.
@@ -4620,7 +4636,8 @@ claude-envoy is that tree's `scripts/build.ts --out` build when its `build.ts` t
 a revision whose `build.ts` does not (`c3d09eec` and `926040d9` among them) is from before pull requests stopped committing `dist/`, and its committed `dist/` and `legion/` are used.
 natsd and Dispatch stay this checkout's.
 The bridge's argv carries `--replay-user-messages` only when that revision's `claudelaunch.go` (or, before it existed, `runtime/tmux/claude.go`) does.
-`--expect-lost <kinds>` turns the run into a negative control: it exits 0 only when every event of those kinds in window a counted 0 in both sessions.
+`--expect-lost <kinds>` (`agent`, `issue`, `role`, `team`) turns the run into a negative control:
+it exits 0 only when every event of those kinds in window a counted 0 in both sessions.
 It prints the rest of the table and does not judge it.
 Main before sjawhar/legion#2228 (`c3d09eec`) loses agent, issue and role events under a session restart.
 The merge-forward head of #2228 (`926040d9`) recovers agent and issue events through `POST /v1/replay` and still loses role forwards.
@@ -4628,19 +4645,12 @@ The merge-forward head of #2228 (`926040d9`) recovers agent and issue events thr
 `--plugins-from <rev>` builds pi-envoy and claude-envoy from `<rev>`, as `--build-from` builds them, and leaves the listeners, natsd, Dispatch and the bridge this checkout's:
 the mixed rollout, a hub already updated serving a session that still runs the plugins of the release before it.
 `--build-from` and `--plugins-from` each name the tree the plugins come from, so the run takes one or the other.
-A plugin that asks for no session consumer is answered `core` with reason `not_requested` and runs the core path, which recovers an agent or issue event of a window through `POST /v1/replay` and a role forward not at all, as `--build-from 926040d9` shows.
+The listener this checkout builds refuses a registration it can give no session consumer before it writes anything, by the reason the canonical list holds (`ErrorWireSchema.reason`, `packages/envoy-client/src/transport.ts`), so `--plugins-from` names a tree whose plugins ask for one;
+a tree from before they did is run with `--build-from`, which serves it the listener of its own revision.
 
-`--listener-grant before-session-consumers` runs both listeners as a NATS user whose grant is the one a hub carries before session consumers, rendered by [`packages/envoy-client/test/listener-grant.ts`](../../packages/envoy-client/test/listener-grant.ts) (`infra/core.ListenerPermissions` without the session-consumer entries and without the shared `envoy-roles` queue), so every registration asking for a consumer is answered `core`/`no_grant` and every session runs the core path this release meets first.
-natsd then reads a configuration of the run's own, `nats.conf` in the evidence directory:
-one nkey user per listener, each with that grant and its seed in `seeds/<machine>.seed` (`NATS_NKEY_SEED_FILE`, never an argument and never printed), and `no_auth_user` for every other client
-— the sessions, Dispatch and the script's own NATS clients — which may publish and subscribe to anything.
-After the sessions have registered, and again with the table, the run prints and checks the four readings that say the core path is what ran:
-each listener's answer to a registration asking for a consumer (one the run makes itself, under a session id nothing else uses, removed again), which must be `core`/`no_grant`;
-each listener's `sessions stay on core delivery` line;
-the session entries, none recording consumer delivery; and the stream's consumers, the two listener durables and no `s-<session>`.
-The role lane falls back to the machine groups, since that grant carries no shared queue.
-
-`--disruptions a,c` runs only the windows named.
+`--disruptions a,c` runs only the windows named, any subset of `a` to `h`.
+A subset that publishes no comment of the followed issue (`h` alone) has no comment order to compare, and the run says so rather than judging it.
+It says so only on the evidence of its own `events.jsonl`, read back and holding no issue event: a record the run cannot read is named and fails the run, since it tells nothing about what was published.
 
 | input | default | meaning |
 | :--- | :--- | :--- |

@@ -192,15 +192,18 @@ func issuesOrNone(name string, issues []string) string {
 // writeClaimLine is the one line a claim prints as: token, role, issue, state, why it failed
 // (claimCauseWord), generation, the plugin contract its registration declared (0 when none is
 // recorded), the update round the claim is in with the head its worker reported when it
-// answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), and
-// the tool call its agent is in (openCallWord). A claim whose idle pod the daemon released
-// prints `suspended:released` for its state (claimStateWord): it is not a suspension anyone is
-// waiting to lift — its next delivery resumes it in a pod of its own — so an operator reading
-// the list must not read it as one.
+// answered (`-` for a claim in no round, and `-` for a head no worker has reported yet), the
+// tool call its agent is in (openCallWord), and last the sentence its latest launch try was
+// refused with because the shared public leak check could not be installed in its pod, quoted so
+// the line stays one line per claim (`-` for a claim no leak check refused). This listing is
+// where the controller's cause is read, since its claim is on no claim view of the state. A
+// claim whose idle pod the daemon released prints `suspended:released` for its state
+// (claimStateWord): it is not a suspension anyone is waiting to lift — its next delivery resumes
+// it in a pod of its own — so an operator reading the list must not read it as one.
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
-	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
+	fmt.Fprintf(w, "%s %s %s %s %s %d %d %s %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), orNone(claimCauseWord(c)),
 		c.Generation, c.PluginContract,
-		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)))
+		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)), quotedOrNone(c.LeakCheckCause))
 }
 
 // openCallWord is the tool call a claim's agent is in, as the line prints it: the tool, the call

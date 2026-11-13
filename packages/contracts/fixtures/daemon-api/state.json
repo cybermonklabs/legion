@@ -288,7 +288,8 @@
                 "promptRetires": 0
               }
             },
-            "pendingCause": "died"
+            "pendingCause": "died",
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1
@@ -796,6 +797,8 @@
     "production_check_hours": 240,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "worker_silence_minutes": 45,
+    "worker_background_hours": 6,
     "pod_update_max_open_rounds": 6,
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,

@@ -1242,6 +1242,33 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
 // 90: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
 // reaches a claim stored working that no process stands behind. Such a claim was refused
 // `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
@@ -1281,13 +1308,14 @@ package api
 // behaviour off a daemon that answers the new one. (This entry has taken four numbers, each read
 // the same way: 70 when the base carried 68, 76 at the forward merges of 2026-11-12 where main
 // declared 73 and then 75, 86 at the third, fbe970eef84d, where main declared 85, and 90 at the
-// fourth, a4c0ff994adc, which the pull request's own conflict forced and where main declares 86,
-// the entry right above this one. The reading at that merge, of `const DaemonAPIVersion` at
-// refs/pull/<n>/head for each of the 147 open pull requests of this repository and never of a
-// file list, gives 86 on #3534, #3573, #3677, #3708 and #3715, 87 on #3575, 88 on #3730 and 89
-// on #3519 and #3659, so 90 is the lowest free number above the base's, which is what the gate's
-// refusal names. Read the base's own number and every open pull request again at the next
-// forward merge rather than from this line, as
+// fourth, a4c0ff994adc, which the pull request's own conflict forced and where main declared 86.
+// It kept 90 at the fifth, 12ba4e6afa71, which the conflict forced again and where main declares
+// 87, the entry right above this one: the reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each of the 139 open pull requests of this repository, and never of a
+// file list, gives 88 on #3730, 89 on #3659, 91 on #3519, #3573 and #3712, 92 on #3715, 93 on
+// #3677 and #3937, 94 on #3708 and 95 on #3575, so 90 is still the lowest free number above the
+// base's, which is what the gate's refusal names. Read the base's own number and every open pull
+// request again at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 const DaemonAPIVersion = 90

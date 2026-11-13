@@ -12,6 +12,7 @@ import {
 import {
   type Block,
   type Cleanup,
+  deliveryFor,
   messageStream,
   ompRoot,
   type Request,
@@ -327,12 +328,17 @@ async function runSession(
         items: current.items,
       });
     }
-    // The Envoy listener: registration and any read answer with an interest.
+    // The Envoy listener: registration and any read answer with an interest, and a registration
+    // is answered the consumer the listener gave the session (`deliveryFor`), as every stand-in
+    // listener of this repository answers one: the client refuses a registration answered no
+    // delivery, which would leave this session's Envoy inbound unavailable.
+    const id = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
-      session_id: typeof body.session_id === "string" ? body.session_id : "",
+      session_id: id,
       machine_id: "session-answers-machine",
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, id),
     });
   });
   cleanup.push(async () => release.resolve());
