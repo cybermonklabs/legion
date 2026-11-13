@@ -2251,7 +2251,7 @@ func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
 		{
 			name: "one issue no word is true of",
 			held: `[{"issue":"LEGION-209","reason":"unclassified"}]`,
-			want: "admission.held: 1 issues — unclassified 1\n",
+			want: "admission.held: 1 issue — unclassified 1\n",
 		},
 		{name: "none", held: `[]`, want: "admission.held: none\n"},
 	} {

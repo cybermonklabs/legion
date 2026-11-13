@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `GET /legion/v1/state` carries `admission.held`: every issue the daemon's record holds in the
+  workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word
+  for why nothing of it runs and the issues that hold it, so the three lists together place every
+  issue of the workflow. The controller's tick notice carries the same rows, `legion state` prints
+  their counts, and an issue's `why` names the same cause. A caller from a pod below daemon API
+  contract 98 is served the state without the key.
+
+  An architect's `release_children` now takes a member of a closed tree into its own live tree, in
+  place of refusing it or leaving it to become a root of its own: the member must stand at
+  `admitted`, hold no admission slot, and belong to a tree whose root the daemon's record says is
+  `done` with no linger left to run. It keeps its repository, takes its next generation, and is
+  held on any blocker the release's own Dispatch read showed.

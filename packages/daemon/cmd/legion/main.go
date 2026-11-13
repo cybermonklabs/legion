@@ -703,7 +703,11 @@ func heldAdmissionSummary(held []api.HeldIssue) string {
 			words = append(words, fmt.Sprintf("%s %d", reason, count))
 		}
 	}
-	return fmt.Sprintf("admission.held: %d issues — %s", len(held), strings.Join(words, ", "))
+	noun := "issues"
+	if len(held) == 1 {
+		noun = "issue"
+	}
+	return fmt.Sprintf("admission.held: %d %s — %s", len(held), noun, strings.Join(words, ", "))
 }
 
 // waitingLineLines are the lines an operator reads for the issues waiting for an admission slot
