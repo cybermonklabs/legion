@@ -256,7 +256,7 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
     "package.json", "bun.lock", "patches/**",
 ]
 PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", "package.json", "bun.lock", "patches/**"]
-BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "cmd/broker", "cmd/agent-secrets")
+BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "internal/broker/airlockproxy", "cmd/broker", "cmd/agent-secrets")
 MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/lock_level_test.go's moduleSources walks every non-test .go file "
                                       "under packages/envoy (infra included); used by :75, event_insert_guard_test.go:32, "
                                       "review_write_guard_test.go:44")]
@@ -318,6 +318,9 @@ RULES = {
     # --- envoy
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
+    f"{ENVOY}/cmd/broker-refgen/recorder_test.go": [
+        Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/recorder_test.go:111,115 checkRefusalWrites(repo root) parses it")
+        for d in ("internal/broker/api", "internal/broker/approval", "internal/broker/airlockproxy")],
     f"{ENVOY}/cmd/broker/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/broker/main_test.go:344 sslrootcert=../../docker/rds-global-bundle.pem")),
     f"{ENVOY}/cmd/broker/outage_test.go": [
         run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
@@ -969,13 +972,14 @@ GATES = [
         (BUILD_BINARIES, f"docs/site/scripts/generate.ts:116 runs it ({at_docs('Build the docs site')})"),
         (RUN_SERVER, f"packages/dispatch/e2e/harness-listeners.ts's dispatchServer runs it ({at_docs('Take the screenshots')})"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds the server's port through it"),
-        # broker-refgen (docs/site/generators/broker-reference.sh:14) parses these at run time.
-        (f"{ENVOY}/internal/broker/api/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:15,173)"),
+        # broker-refgen (docs/site/generators/broker-reference.sh:15) parses these at run time.
+        (f"{ENVOY}/internal/broker/api/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:17,226)"),
         (f"{ENVOY}/internal/broker/config/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/config.go:11,36)"),
         (f"{ENVOY}/cmd/broker/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/config.go:12,40)"),
         (f"{ENVOY}/internal/broker/helper/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:16, codes.go:15)"),
         (f"{ENVOY}/cmd/agent-secrets/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/pages.go:17, codes.go:68)"),
-        (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:34,664)"),
+        (f"{ENVOY}/internal/broker/approval/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/routes.go:34,668)"),
+        (f"{ENVOY}/internal/broker/airlockproxy/*", "broker-refgen parses it (packages/envoy/cmd/broker-refgen/recorder.go:12,68)"),
     ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE) + biome(at_docs("Lint the docs site"))
       + bun_job(DOCS_JOB, DOCS_SITE) + CI_SELF + DOCS_SITE_SELF),
 

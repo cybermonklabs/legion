@@ -59,7 +59,7 @@ func apiPage(a *api) (string, error) {
 	g, routes, classes := a.g, a.routes, a.classes
 	var b strings.Builder
 	b.WriteString(frontMatter("HTTP API", "Every route the secrets broker serves, the credential each needs, and what each answers.", apiDir))
-	b.WriteString("The broker's API answers JSON. A refusal is `{\"code\": \"…\", \"error\": \"…\"}` with the HTTP status below, and a refusal that carries more lists its body under its route; the [error reference](/legion/broker/reference/errors/) lists every code. The broker's own approval page, whose routes take a broker sign-in session, answers a person's browser with HTML pages and redirects instead, listed by status.\n\n")
+	b.WriteString("The broker's API answers JSON. A refusal is `{\"code\": \"…\", \"error\": \"…\", \"answer_id\": \"…\"}` with the HTTP status below, and a refusal that carries more lists its body under its route; `answer_id` is the id the broker's own record of that answer names, which every answer, refused or not, carries in its `X-Broker-Answer-Id` header. The [error reference](/legion/broker/reference/errors/) lists every code. The broker's own approval page, whose routes take a broker sign-in session, answers a person's browser with HTML pages and redirects instead, listed by status.\n\n")
 
 	b.WriteString("## Authentication\n\nEach route takes one kind of credential, or none. These are the refusals the broker answers for the credential itself, before the route runs.\n\n")
 	b.WriteString("| Credential | Description | Refusals |\n| --- | --- | --- |\n")
@@ -266,7 +266,9 @@ func configPage(root string) (string, error) {
 }
 
 // errorsPage is every code a caller can meet: the HTTP API's, the host helper's, and the
-// agent-secrets CLI's exit codes.
+// agent-secrets CLI's exit codes. It refuses a code the page cannot list where that code is
+// produced: a helper refusal, a CLI exit code, and a refusal of the API or the airlock's proxy
+// port written outside the writers that name its code to its recorder (checkRefusalWrites).
 func errorsPage(root string, a *api) (string, error) {
 	type entry struct {
 		statuses, messages, where []string
@@ -295,11 +297,14 @@ func errorsPage(root string, a *api) (string, error) {
 
 	var b strings.Builder
 	b.WriteString(frontMatter("Error codes", "Every refusal code the secrets broker, its host helper and the agent-secrets CLI answer.", apiDir+", "+helperDir+" and "+cliDir))
-	b.WriteString("## Broker HTTP API\n\nThe broker refuses a request with an HTTP status and a JSON body `{\"code\": \"…\", \"error\": \"…\"}`. `agent-secrets` prints a refusal as `<error> (<code>)`. A message shown as an error's own text may arrive wrapped in more detail; " + varies + " marks a message built at run time.\n\n")
+	b.WriteString("## Broker HTTP API\n\nThe broker refuses a request with an HTTP status and a JSON body `{\"code\": \"…\", \"error\": \"…\", \"answer_id\": \"…\"}`, whose `answer_id` is the answer's own id, for a refused caller to quote. `agent-secrets` prints a refusal as `<error> (<code>) (answer <answer_id>)`. A message shown as an error's own text may arrive wrapped in more detail; " + varies + " marks a message built at run time.\n\n")
 	b.WriteString("| Code | Status | Message | Where |\n| --- | --- | --- | --- |\n")
 	for _, code := range sortedKeys(codes) {
 		e := codes[code]
 		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n", code, strings.Join(e.statuses, ", "), messages(e.messages), strings.Join(e.where, "<br>"))
+	}
+	if err := checkRefusalWrites(root); err != nil {
+		return "", err
 	}
 
 	helperCodes, err := docConsts(root, helperDir, "Code")
