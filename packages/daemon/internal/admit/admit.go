@@ -86,15 +86,26 @@ type Admission struct {
 	// it (ReportCapabilities), when a tick names none.
 	openCapabilities func() []string
 
+	// unclassifiedLogged is the generation at which the tick last logged each issue whose held
+	// row read unclassified (logUnclassified, C2 of dispatch://INFRA-3107). It is this daemon
+	// run's own memory and nothing durable, written and read inside the fact lock alone, so it
+	// takes none of the mutex above. A re-admission raises the generation and clears the phase,
+	// which is a state of that issue the log has not reported, so it is logged again; the
+	// generation is the value rather than half of the key because it never goes back for one
+	// record, which bounds the map at one entry per issue for the life of the run.
+	unclassifiedLogged map[string]uint64
+
 	// workerSilence is how long a phase worker's last recorded step may be in the past before
 	// the tick notice names its issue silent (config.Config.WorkerSilence,
-	// `worker_silence_minutes`), the one bound the sweep, the silence handler and this list are
+	// `worker_silence_minutes`), the one bound the sweep, the silence handler, this list and
+	// the stalled-tree measure's reading of a claim at work (workingTrees) are
 	// all read against (workflow.SilentPhaseWorker). workerBackground is how long a worker's own
 	// session's report of background work may stand before the tick names it all the same
 	// (config.Config.WorkerBackground, `worker_background_hours`,
 	// workflow.BackgroundStalledWorker). An admission nobody registered the bounds with holds
 	// zero for both, which only a test builds, and both rules answer false for every run of it,
-	// so such a tick names nothing silent.
+	// so such a tick names nothing silent and the stalled-tree measure reads every claim at work
+	// as work.
 	workerSilence    time.Duration
 	workerBackground time.Duration
 }
@@ -145,7 +156,8 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		coin: memorygroup.CryptoCoin, pending: make(map[string]intake.DispatchIssue)}
+		coin: memorygroup.CryptoCoin, pending: make(map[string]intake.DispatchIssue),
+		unclassifiedLogged: make(map[string]uint64)}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -189,10 +201,20 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		if err != nil {
 			return nil, nil, err
 		}
+		// What the project waits on, what nothing starts and whose phase worker nothing will
+		// prompt are read here, after the promotion this tick made, from one read of the
+		// project (tickRows): the first two are two assemblies of one judgement of the line, and they are built whether or not a controller is
+		// registered to be told. The wake carries them as it carries the open capabilities, and
+		// judges nothing a second time.
+		held, blocked, silent, err := a.tickRows(ctx, tx)
+		if err != nil {
+			return nil, nil, err
+		}
 		// The tick wakes the controller whatever the slots: with every slot taken, it is the only
 		// wake a tree waiting on a refused root claim gets, since only the controller's recheck of
 		// that claim moves it, and it is the turn that posts the day's report.
-		_, err = a.wakeController(ctx, tx, record.ControllerNotice{Kind: record.TickNotice}, a.project, a.now())
+		_, err = a.wakeController(ctx, tx,
+			record.ControllerNotice{Kind: record.TickNotice, Held: held, Blocked: blocked, Silent: silent}, a.project, a.now())
 		return returned, nil, err
 	}
 	if handover, ok := fact.(intake.Handover); ok {
@@ -401,7 +423,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 		return false, err
 	}
 	own := ownSlots(issues, slots)
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
 	if err != nil {
 		return false, err
 	}
@@ -418,17 +440,13 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // notice of the same kind still waits in the outbox, so a burst of events or ticks queues one
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
-// (ReportCapabilities), every issue Legion is waiting to start behind an unfinished Dispatch
-// issue (blockedFrom) and every issue whose phase worker nothing will prompt (silentWorkers), the
-// turn that posts the day's report. Every other kind is queued as the
-// caller built it, so a kind that says something of its own — the role and the reason of
-// TellController's — carries it here.
-//
-// The two lists a tick carries are derived from one read of the project's live issues and one
-// read of the line facts those issues are judged from, made here and handed to both: the tree
-// gates the silent list reads are the gates the blocked list is judged from (blockedFrom,
-// record.LineFacts.Gates), and a second read of them inside this one transaction would answer
-// the same thing at twice the cost.
+// (ReportCapabilities), which this adds, and the three lists the tick's own fact built from one
+// read of the project and put on the notice before it reached here (applyFact, tickRows): every
+// issue Legion is waiting to start behind an unfinished Dispatch issue, every issue nothing
+// starts at all, and every issue whose phase worker nothing will prompt (silentWorkers). So a
+// tick that wakes nobody has judged them all the same, and nothing here judges anything a second
+// time. Every other kind is queued as the caller built it, so a kind that says something of its
+// own — the role and the reason of TellController's — carries it here.
 //
 // Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
@@ -460,20 +478,8 @@ func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record
 	if err != nil || pending {
 		return false, err
 	}
-	if notice.Kind == record.TickNotice {
-		if a.openCapabilities != nil {
-			notice.OpenCapabilities = a.openCapabilities()
-		}
-		issues, facts, err := a.lineFacts(ctx, tx)
-		if err != nil {
-			return false, err
-		}
-		if notice.Blocked, err = a.blockedFrom(ctx, tx, issues, facts); err != nil {
-			return false, err
-		}
-		if notice.Silent, err = a.silentWorkers(ctx, tx, issues, facts); err != nil {
-			return false, err
-		}
+	if notice.Kind == record.TickNotice && a.openCapabilities != nil {
+		notice.OpenCapabilities = a.openCapabilities()
 	}
 	if err := a.enqueue(ctx, tx, issue, notice, dueAt); err != nil {
 		return false, err
@@ -521,39 +527,91 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	return nil
 }
 
-// lineFacts is the project's live issues and the facts the waiting line judges them from, read
-// once for a caller that needs both (wakeController, which hands them to blockedFrom and to
-// silentWorkers). Every reader of these two reads them in one transaction, so one read is one
-// snapshot and two reads would be the same snapshot read twice.
-func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx) ([]record.Issue, record.LineFacts, error) {
-	issues, err := a.store.LiveIssues(ctx, tx, a.project)
+// tickRows is what the tick controller notice carries beside the open capabilities: every issue
+// Legion is waiting to start that waits on something else (`blocked`), every issue the daemon's
+// own record holds in the workflow that stands in neither the active set nor the waiting line,
+// with the one word for why (`held`, C3 of dispatch://INFRA-3107), and every issue whose phase
+// worker nothing will prompt (`silent`, silentWorkers).
+//
+// The two are two assemblies of one judgement of the line, so they are built together here:
+// `blocked` is blockers.Blocked over the mirror rows and the line, `held` is record.HeldList
+// over the same line and the rows the pass left behind, and both read the judgement promotion
+// itself reads (blockers.JudgeLine). Built apart they cost the tick two judgements of the whole
+// project — the same four reads, and the mirror read twice in one transaction — and a reader of
+// either list could not say the two were made over one record.
+//
+// Each is built by the function the state builds the same list with, over this transaction's
+// own reads, so what the controller is told and what `legion state` shows for one issue agree:
+// one word in both, and one set of blocked rows in both. The rows are built whether or not a
+// controller is registered to be told, because the unclassified line is written from them
+// (logUnclassified), and that line is the daemon's own record of what the words miss.
+//
+// It makes no read of the line of its own: the three reads are the pass's (reread), and the
+// candidates are the live issues the daemon holds in the workflow, which record.HeldList takes
+// out of them itself (record.InWorkflow). The silent list is read from those same issues and
+// line facts, before the judgement adds to them, so its tree gates are the gates the blocked
+// list is judged from and nothing is read twice in this one transaction.
+func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue, []record.BlockedIssue, []record.SilentIssue, error) {
+	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
-		return nil, record.LineFacts{}, fmt.Errorf("list admission issues: %w", err)
+		return nil, nil, nil, err
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	silent, err := a.silentWorkers(ctx, tx, issues, facts)
 	if err != nil {
-		return nil, record.LineFacts{}, err
+		return nil, nil, nil, err
 	}
-	return issues, facts, nil
+	own := ownSlots(issues, slots)
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	held := record.HeldList(issues, own, line, dropped, facts)
+	a.logUnclassified(held, issues)
+	return held, blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), silent, nil
 }
 
-// blockedFrom is every issue Legion is waiting to start that waits on something else, as the
-// tick notice carries it: the candidates promotion passes over, the children the workflow holds
-// behind an unfinished Dispatch issue, and the parents whose own children are still open
-// (workflow.ChildWaitRows), judged from issues and facts the caller has already read and from
-// this transaction's own reads by the function the state's `blocked` is built with
-// (blockers.Blocked), so the controller is told exactly what `legion state` shows. The slots are
-// read here, because they are the one fact of the judgement no other reader of this pass wants.
-func (a *Admission) blockedFrom(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]record.BlockedIssue, error) {
-	slots, err := a.store.Slots(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("list admission slots: %w", err)
+// logUnclassified writes one line for each row the ladder could put no word to (C2), naming the
+// issue, the phase and the status a reader needs to see what the words miss, and writes it once
+// for that issue and this daemon run: a state nobody has closed would otherwise print a line at
+// every tick, for as long as the record stands. The line is the daemon's own record of a state
+// the state body already names in `admission.held`, so it earns no table and no migration —
+// unlike the children-first notice, which is durable because it reaches a person and must not be
+// told twice across restarts.
+//
+// The run is the daemon's own: the mark lives in memory and a restart logs each such issue once
+// more, which is what a reader of a fresh run's log wants. It is keyed by the issue's own
+// generation beside its key, so that a re-admission, which raises the generation and clears the
+// phase, is a new state of that issue and earns a line of its own.
+//
+// Every write of unclassifiedLogged happens here, inside the one fact lock each intake fact
+// holds (intake.ApplyFact), and nothing outside a fact reads it: it needs none of the mutex
+// above, which guards pending because the daemon's own poller reads that one outside any
+// transaction. The mark is written beside the line rather than after the commit because the line
+// is already written: a fact rolled back has still logged what it logged, and a second line for
+// the same issue would say nothing more.
+func (a *Admission) logUnclassified(rows []record.HeldIssue, issues []record.Issue) {
+	// The map is built on the first row that needs it: a project where every held issue reads a
+	// word of its own — which is every healthy project — builds none at all, and the tick runs
+	// this on each of its passes.
+	var byKey map[string]record.Issue
+	for _, row := range rows {
+		if row.Reason != record.HeldUnclassified {
+			continue
+		}
+		if byKey == nil {
+			byKey = make(map[string]record.Issue, len(issues))
+			for _, issue := range issues {
+				byKey[issue.Key] = issue
+			}
+		}
+		issue := byKey[row.Issue]
+		if logged, seen := a.unclassifiedLogged[row.Issue]; seen && logged == issue.Generation {
+			continue
+		}
+		a.unclassifiedLogged[row.Issue] = issue.Generation
+		a.log.Info("admission: the record holds an issue no held word is true of", "issue", row.Issue,
+			"phase", issue.Phase, "status", issue.Status, "reason", record.HeldUnclassified)
 	}
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
-	if err != nil {
-		return nil, err
-	}
-	return blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), nil
 }
 
 // phaseWorker is one candidate of a repair over phase workers: the issue, the root of its tree
@@ -1502,10 +1560,11 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, released, err
 		}
 	}
-	// The holds come back beside the line (blockers.JudgeLineHolds): why this pass starts no
-	// issue of the project, written by the walk that built the line and taken from it, so the
-	// stalled-tree measure below reads them rather than walking the project's issues again.
-	rows, facts, line, holds, err := blockers.JudgeLineHolds(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
+	// The rows the line left behind come back beside it (record.Waiting's second answer, through
+	// blockers.JudgeLine): each with the one word for why (record.HeldReason), written by the walk
+	// that built the line, so the stalled-tree measure below reads those words rather than
+	// walking the project's issues again.
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil, a.now())
 	if err != nil {
 		return 0, released, err
 	}
@@ -1517,7 +1576,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
-		if rows, facts, line, holds, err = blockers.JudgeLineHolds(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
+		if rows, facts, line, dropped, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return 0, released, err
 		}
 	}
@@ -1529,17 +1588,18 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	// what a blocker holds, what waits for its children, and the slot rows the line was judged
 	// from, which name every holder of the cap and not only the holders standing in the line —
 	// and no pass may read them twice. Why the daemon starts no issue of the project now is
-	// handed over with them, from the walk that built the line this pass judged above
-	// (blockers.JudgeLineHolds over record.WaitingAndHolds): the measure and the line are one
-	// reading of one project, so they cannot disagree about what holds an issue, and no pass
-	// walks the project's issues a second time to say it. The slots are what the rule's liveness
-	// clause is read from: a project is stopped for good when no slot holder of it can finish and
-	// no agent of it is at work, and a holder in a phase of its own stands in no line
-	// (lineCanMove). They are this pass's own rows, read again after every release it made, so
-	// the rule judges the slots the project holds now. It runs before the cap check below,
-	// because a deployment whose cap admits nothing still runs the trees it opened before and
-	// still owes its controller the news that one has stopped.
-	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, holds); err != nil {
+	// handed over with them, from the walk that built the line this pass judged above: the line
+	// itself and the rows it left behind with their words (record.Waiting through
+	// blockers.JudgeLine), so the measure and the line are one reading of one project, they
+	// cannot disagree about what holds an issue, and no pass walks the project's issues a second
+	// time to say it. The slots are what the rule's liveness clause is read from: a project is
+	// stopped for good when no slot holder of it can finish and no agent of it is at work, and a
+	// holder in a phase of its own stands in no line (lineCanMove). They are this pass's own
+	// rows, read again after every release it made, so the rule judges the slots the project
+	// holds now. It runs before the cap check below, because a deployment whose cap admits
+	// nothing still runs the trees it opened before and still owes its controller the news that
+	// one has stopped.
+	if err := a.tellStalledTrees(ctx, tx, issues, facts, slots, line, dropped); err != nil {
 		return 0, released, err
 	}
 	if a.cap <= 0 {
@@ -1788,7 +1848,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return admitted, released, err
 		}
-		if rows, facts, line, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
+		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return admitted, released, err
 		}
 	}

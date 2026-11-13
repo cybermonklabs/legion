@@ -1,5 +1,5 @@
 kind: Changed
-body: 'Declares daemon API contract 100, which adds `treeMovedAt` and `quietHours` to every issue of a live tree: when that tree last moved and how long it has been still.'
+body: 'Declares daemon API contract 101, which adds `treeMovedAt` and `quietHours` to every issue of a live tree: when that tree last moved and how long it has been still.'
 time: 2026-11-11T07:50:27.000000000Z
 custom:
     Issue: pr3573

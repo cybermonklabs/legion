@@ -874,7 +874,7 @@ func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session
 }
 
 // ProjectClaims reads the claims of one project as the quiet measure reads them, in one
-// statement and no order: the four columns TreeClaim holds, for every claim of the project that
+// statement and no order: the five columns TreeClaim holds, for every claim of the project that
 // stands on an issue. The two step columns are nullable — a claim whose agent has made no call
 // has no step_at, one whose agent has begun no turn has no turn_started_at — and each reads back
 // as the zero time, which moves no tree (QuietTrees).
@@ -882,7 +882,7 @@ func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session
 // project is the claim project token, the spelling `claims.project` holds, which the caller
 // converts to (the interface's own doc).
 func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string) ([]TreeClaim, error) {
-	rows, err := tx.Query(ctx, "select issue, state, step_at, turn_started_at from claims where project = $1 and issue <> ''", project)
+	rows, err := tx.Query(ctx, "select token, issue, state, step_at, turn_started_at from claims where project = $1 and issue <> ''", project)
 	if err != nil {
 		return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
 	}
@@ -891,12 +891,13 @@ func (s *Postgres) ProjectClaims(ctx context.Context, tx pgx.Tx, project string)
 	for rows.Next() {
 		var (
 			held                TreeClaim
-			state               string
+			token, state        string
 			stepAt, turnStarted *time.Time
 		)
-		if err := rows.Scan(&held.Issue, &state, &stepAt, &turnStarted); err != nil {
+		if err := rows.Scan(&token, &held.Issue, &state, &stepAt, &turnStarted); err != nil {
 			return nil, fmt.Errorf("read the claims of project %s: %w", project, err)
 		}
+		held.Token = claim.Token(token)
 		held.State = supervise.ClaimState(state)
 		if stepAt != nil {
 			held.StepAt = *stepAt

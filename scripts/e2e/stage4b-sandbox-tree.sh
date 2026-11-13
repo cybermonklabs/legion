@@ -80,6 +80,15 @@
 #   session's Dispatch configuration resolves (DISPATCH_TOKEN_FILE, DISPATCH_TOKEN, or envoy.json's
 #   dispatch.token). Dispatch answers it as an agent session actor, which its HTTP routes and the
 #   document websocket require.
+# - LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE (required, no default) is the email of a person who has
+#   signed in to production Dispatch: the default assignee the run's project names when
+#   prerequisites creates it (ensure_project, lib/workflow.sh). Every project names the person its
+#   unowned work lands on, and that bearer acts for nobody, so Dispatch refuses its create naming
+#   none (400 INVALID_PROJECT) or naming somebody who never signed in (400 ASSIGNEE_NOT_ALLOWED),
+#   for a project that already exists too. The repository carries no person's email, and every
+#   refusal names the variable, never its value: the check before the call, and Dispatch's own
+#   answer, which names the email as the operator spelled it and which scrub (below) prints with
+#   the variable's name in its place.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
 # - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
@@ -116,7 +125,8 @@
 #   the deployment repository's infrastructure, not this one. LEGION_E2E_PROJECT need not already
 #   exist as a Dispatch project: prerequisites creates it before the lock when it is missing
 #   (ensure_project, lib/workflow.sh), a proof-human write like every other, over the agents'
-#   bearer and naming the proof human's session as its actor.
+#   bearer, naming the proof human's session as its actor and LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE
+#   as its default assignee.
 # - LEGION_E2E_POD_FILE, in a development run stopped at `deployment-pod-block` only, names a JSON
 #   file holding a deployment's own worker pod block (`runtime.kubernetes.pod`: service_account,
 #   env, volumes, volume_mounts), which the run's legion.yaml carries in place of the operator
@@ -171,6 +181,7 @@ runtime_kubeconfig=${LEGION_E2E_RUNTIME_KUBECONFIG:-$HOME/.kube/legion-daemon-pr
 runtime_context=${LEGION_E2E_RUNTIME_CONTEXT:-}
 image=${LEGION_E2E_IMAGE:-}
 dispatch_token_file=${LEGION_E2E_DISPATCH_TOKEN_FILE:-}
+dispatch_default_assignee=${LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE:-}
 envoy_token_secret_id=${LEGION_E2E_ENVOY_TOKEN_SECRET_ID:-}
 until=${STAGE4B_UNTIL:-}
 skip_controller=${STAGE4B_SKIP_CONTROLLER:-}
@@ -1392,11 +1403,38 @@ read_bearers() {
   [ -s "$work/dispatch-token" ] || fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
   [ -s "$work/envoy-token" ] || fail "Secrets Manager returned an empty bearer for LEGION_E2E_ENVOY_TOKEN_SECRET_ID"
 }
-# scrub replaces each production service's host with the variable that names it: the run prints
-# none of them, and a tool's error (a refused connection, an unresolved name) may carry one. A host
-# is matched in any case, since address-moved-env-same-pod hands the Envoy host upper-cased.
+# scrub replaces each production service's host with the variable that names it, and the run's
+# default assignee with LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE: the run prints none of them, and a
+# tool's error (a refused connection, an unresolved name) may carry a host, and Dispatch's refusal
+# of the project create (ensure_project, lib/workflow.sh) the email. Each is matched in any case,
+# since address-moved-env-same-pod hands the Envoy host upper-cased. The email is replaced first,
+# so a host inside it cannot split it, and in three spellings, longest first: as Dispatch's
+# refusal writes it, the email Go-quoted (`%q`, `\` and `"` escaped with a backslash) and then
+# JSON-encoded (Go's encoding/json escaping `\` and `"` again, and `&`, `<` and `>` as `\u0026`,
+# `\u003c` and `\u003e`); as JSON-encoded alone; and as the operator wrote it. Each spelling has
+# every character sed's regular expression or the `#` delimiter reads as special escaped, since an
+# email may hold `.`, `#` and others; prerequisites refuses one holding whitespace, so it is one
+# line.
 scrub() {
   local args=() i names=(LEGION_E2E_DISPATCH_URL LEGION_E2E_ENVOY_URL LEGION_E2E_NATS_URL LEGION_E2E_MODEL_GATEWAY_URL) h
+  local person=${dispatch_default_assignee:-} spellings=() text spelling c
+  if [ -n "$person" ]; then
+    # The Go-quoted email, then each of the two as JSON writes it inside a string.
+    text=${person//'\'/'\\'}
+    text=${text//'"'/'\"'}
+    for spelling in "$text" "$person"; do
+      spelling=${spelling//'\'/'\\'}
+      spelling=${spelling//'"'/'\"'}
+      spelling=${spelling//'&'/'\u0026'}
+      spelling=${spelling//'<'/'\u003c'}
+      spellings+=("${spelling//'>'/'\u003e'}")
+    done
+    for spelling in "${spellings[@]}" "$person"; do
+      spelling=${spelling//'\'/'\\'}
+      for c in '[' '.' '*' '^' '$' '#'; do spelling=${spelling//"$c"/"\\$c"}; done
+      args+=(-e "s#$spelling#<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>#gI")
+    done
+  fi
   for i in "${!service_hosts[@]}"; do
     h=${service_hosts[$i]%%:*}
     [ -n "$h" ] && args+=(-e "s#${h//./\\.}#<${names[$i]}>#gI")
@@ -3282,6 +3320,11 @@ case $dispatch_token_mode in
 esac
 [ -n "$(tr -d '[:space:]' <"$dispatch_token_file")" ] ||
   fail "LEGION_E2E_DISPATCH_TOKEN_FILE names $dispatch_token_file, which holds no bearer"
+# The person the run's project names as its default assignee, an email Dispatch holds to somebody
+# who has signed in: refused here, unset or not shaped as an email, before ensure_project's create,
+# which Dispatch would otherwise refuse after the run had begun. The value is never printed.
+[[ $dispatch_default_assignee =~ ^[^[:space:]@]+@[^[:space:]@]+$ ]] ||
+  fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset or not an email: it names the person, by the email they signed in to production Dispatch with, whom the run's project names as its default assignee"
 [[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
   fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
 # Legion's two role Apps proved against GitHub before the run's first write anywhere

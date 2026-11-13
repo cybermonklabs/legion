@@ -311,7 +311,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// issues the line names. The deciders' own judgement (blockers.Blocked) then names exactly
 	// the roots admission skips, the issues it holds back and the parents whose children go
 	// first.
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil)
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, s, project, own, slots, facts, nil, now)
 	if err != nil {
 		return api.State{}, err
 	}
@@ -385,16 +385,24 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		projected.Issues[key] = view
 	}
 	projected.Admission.Blocked = blockers.Blocked(rows, own, line, record.ChildWaitRows(facts.ChildWaits))
+	// What the daemon runs nothing of and queues nowhere, beside the two lists above: every
+	// record of this project the daemon holds in the workflow (record.InWorkflow) that stands in
+	// neither the active set nor the line, with the one word for why (record.HeldList). The rows
+	// the pass itself left behind are its fourth answer, and the ladder answers for a candidate
+	// no drop site saw, over the same facts and the same line these lists are built from, so one
+	// issue reads one word here and in the controller's tick.
+	projected.Admission.Held = record.HeldList(own, slots, line, dropped, facts)
 	// Why each issue that is not working now is not working, one rendered answer on its own view.
 	// It is decided here, after the line and `blocked` are both in hand, because three of the four
 	// states are read off them, and from the two judgements this pass still holds apart — the
 	// links and the children-first waits — which the published list has merged by now.
 	//
-	// It is not the daemon's judgement of why it starts no issue (record.StartHold), and the two
-	// are kept apart on purpose: that set answers why the daemon has not started an issue, and
-	// this answers why an issue is not working now. Where the two questions meet, where they
-	// part and why neither answer is derived from the other is written once, with the set
-	// itself.
+	// It reads the held list above for the sentence of most issues it answers, and it is not
+	// that list: the list says where every issue the daemon holds in the workflow stands and why
+	// nothing of it runs, and this answers why an issue is not working now. The two part at an
+	// issue whose work runs past its review, which the list names and this answers for not at
+	// all; where they part and why is written once, with the arm that parts them
+	// (atWorkPastReview).
 	//
 	// The running roots are the term that says an issue past its review is at work: it holds no
 	// slot since dispatch://INFRA-2560, so no list of the three places it and the answer turns
@@ -403,7 +411,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// are the same roots record.LiveRoots is read from above — live is wider than running,
 	// and a parked root's tree is neither.
 	whyStates(&projected, own, record.RunningRoots(own, facts), stranded, rows, facts.ChildWaits)
-	// Every issue of a live tree carries that tree's quiet time (contract 100): `treeMovedAt`,
+	// Every issue of a live tree carries that tree's quiet time (contract 101): `treeMovedAt`,
 	// the newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long
 	// it has been still at the instant the rest of this state is measured at. The pair is the
 	// tree's, so every issue of one tree carries the same two values — a child past its own

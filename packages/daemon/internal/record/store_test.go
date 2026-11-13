@@ -2080,7 +2080,8 @@ func TestWaitingIncludesOnlySlotlessHandedOverTodoRootsAndOrphansInRankOrder(t *
 		{Key: "LEGION-214", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-212", Phase: phase.Admitted, Status: "todo", Rank: "00002"},
 		{Key: "LEGION-215", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-215", Phase: phase.Admitted, Status: "todo", Rank: "00000"},
 	}
-	got := WaitingIssues(Waiting(issues, nil, LineFacts{}))
+	line, _ := Waiting(issues, nil, LineFacts{})
+	got := WaitingIssues(line)
 	want := []Issue{issues[3], issues[2]}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Waiting = %#v, want %#v", got, want)

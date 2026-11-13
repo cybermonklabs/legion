@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -238,18 +239,21 @@ func Holds(rows map[string]Row, issue record.Issue) []string {
 	return Unfinished(rows, issue.Key)
 }
 
-// HeldIssues is the set of issues among issues that a blocker holds where they stand (Holds),
-// which is what the waiting line takes as record.LineFacts.Held: the line must not offer a slot
-// to an issue whose first phase an unfinished Dispatch issue holds, and it cannot judge that
-// itself, since internal/record may not read this package. Every caller that reads the line
-// therefore loads the mirror rows first (Load over Judged with no line) and fills the field from
-// here, which JudgeLine does for all of them, so the line, the promotion's own skip and the
-// state's `blocked` all answer from one judgement of one read.
-func HeldIssues(rows map[string]Row, issues []record.Issue) map[string]struct{} {
-	held := make(map[string]struct{})
+// HeldIssues is, for each issue among issues that a blocker holds where it stands, what holds it
+// (Holds), by issue key — what the waiting line takes as record.LineFacts.Held: the line must
+// not offer a slot to an issue whose first phase an unfinished Dispatch issue holds, and it
+// cannot judge that itself, since internal/record may not read this package. An issue nothing
+// holds is left out of the map rather than carried with an empty list, so a reader that asks
+// only whether the key is there asks the question the line asks. Every caller that reads the
+// line therefore loads the mirror rows first (Load over Judged with no line) and fills the field
+// from here, which JudgeLine does for all of them, so the line, the promotion's own skip, the
+// state's `blocked` and the word the held list gives such an issue
+// (record.HeldDispatchBlocker) all answer from one judgement of one read.
+func HeldIssues(rows map[string]Row, issues []record.Issue) map[string][]string {
+	held := make(map[string][]string)
 	for _, issue := range issues {
-		if len(Holds(rows, issue)) > 0 {
-			held[issue.Key] = struct{}{}
+		if holds := Holds(rows, issue); len(holds) > 0 {
+			held[issue.Key] = holds
 		}
 	}
 	return held
@@ -271,40 +275,29 @@ func HeldIssues(rows map[string]Row, issues []record.Issue) map[string]struct{} 
 // the keys it does not hold, so a pass that reads the line twice makes one mirror read in all.
 // The facts come back with the held set and the child waits filled, so the release, the
 // promotion, the architect's notice and the state's `blocked` all answer from the one judgement.
-// slots is the caller's own read of the slots table, which the line's own walk reads as the set
-// of issues already holding one (record.WaitingAndHolds).
+// slots is the caller's own read of the slots table, which record.Waiting reads as the set of
+// issues already holding one.
+//
+// The held rows are what the line left behind, with the word for why (record.Waiting's second
+// answer, which C2 of dispatch://INFRA-3107 asks the pass for, so that a reader cannot take a
+// candidate it left behind for a placed one). The pass builds a row at each of its fourteen
+// drop sites on every judgement, whoever asked for the line: the state and the controller's
+// tick read them, and so does the admission pass's stalled-tree measure (admit's
+// tellStalledTrees), which takes the words of this judgement rather than walking the project's
+// issues again; every other caller takes the value and ignores it. now is the caller's
+// own clock, and the one thing it decides is one of those words: the tree_closed word asks
+// whether a root's linger is still running at it (record.Lingering), so that a parked root's
+// member reads tree_parked once that root's linger has run out. It reaches the judgement as
+// record.LineFacts.Now, which the line's own placement reads nowhere.
 //
 // It is the one place the line is judged: admission's own pass (admit's promoteHolds), the
 // projected state and the controller tick's read of what the project waits on all come through
 // here, so no two of them can judge the line from different reads or leave a later hold out of
 // one of the three.
-//
-// JudgeLineHolds is this judgement with the holds that walk wrote beside the line. This is that
-// call with the holds dropped, for the callers that judge the line alone.
 func JudgeLine(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts, rows map[string]Row,
-) (map[string]Row, record.LineFacts, []record.LineEntry, error) {
-	rows, facts, line, _, err := JudgeLineHolds(ctx, tx, store, project, issues, slots, facts, rows)
-	return rows, facts, line, err
-}
-
-// JudgeLineHolds is that judgement and, beside the line, why the daemon starts no issue of the
-// project now (record.StartHold), by issue key: the holds the line's own walk writes as it
-// decides which issues the line offers a slot to (record.WaitingAndHolds). They cost this
-// judgement nothing — the walk writes them whether or not a caller takes them — so a caller
-// that needs both takes them from here rather than walking the project's issues a second time
-// to be told what this walk has already said.
-//
-// One walk, and not two, is the point. The admission pass judges the line and then measures the
-// trees that have stopped from the same facts (admit's promoteHolds, tellStalledTrees), and a
-// second walk of its own would both cost the pass a reading of every issue of the project on
-// every fact, tick and boot, and leave two answers that could disagree about why one issue
-// stands still (dispatch://INFRA-2560, R5). The holds belong to this line: they say which issues
-// it passed over and why, so a caller must read them beside the line they came with and never
-// beside a line judged from other rows.
-func JudgeLineHolds(ctx context.Context, tx pgx.Tx, store record.Store, project string, issues []record.Issue,
-	slots []record.Slot, facts record.LineFacts, rows map[string]Row,
-) (map[string]Row, record.LineFacts, []record.LineEntry, map[string]record.StartHold, error) {
+	slots []record.Slot, facts record.LineFacts, rows map[string]Row, now time.Time,
+) (map[string]Row, record.LineFacts, []record.LineEntry, []record.HeldIssue, error) {
+	facts.Now = now
 	if rows == nil {
 		rows = map[string]Row{}
 	}
@@ -316,9 +309,9 @@ func JudgeLineHolds(ctx context.Context, tx pgx.Tx, store record.Store, project 
 	if facts.ChildWaits, err = record.ChildWaitsOf(ctx, tx, store, project, issues, facts); err != nil {
 		return rows, facts, nil, nil, fmt.Errorf("read what the unstarted issues of %s wait on under them: %w", project, err)
 	}
-	line, holds := record.WaitingAndHolds(issues, slots, facts)
+	line, held := record.Waiting(issues, slots, facts)
 	rows, err = judgeAgain(ctx, tx, store, project, issues, line, rows)
-	return rows, facts, line, holds, err
+	return rows, facts, line, held, err
 }
 
 // judgeAgain adds to rows the mirror rows of every key the rebuilt line judges that the first

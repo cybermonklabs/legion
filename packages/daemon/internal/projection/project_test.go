@@ -872,7 +872,7 @@ func TestProjectShowsEachWorkerItsIssuesBackwardMoveCounts(t *testing.T) {
 	}
 }
 
-// Every issue of a live tree is served that tree's quiet time (contract 100): `treeMovedAt`, the
+// Every issue of a live tree is served that tree's quiet time (contract 101): `treeMovedAt`, the
 // newest movement the daemon has seen anywhere in the tree, and `quietHours`, how long the tree
 // has been still at the instant the state is measured at. The pair is the tree's, so the root
 // and a child of it past its own review carry the same two values, though that child holds no

@@ -61,7 +61,8 @@ func TestTheWaitingLineRunsReturnsFirstThenTheBoardsRank(t *testing.T) {
 
 	var got []string
 	var kinds []record.LineKind
-	for _, entry := range record.Waiting(issues, nil, facts) {
+	line, _ := record.Waiting(issues, nil, facts)
+	for _, entry := range line {
 		got = append(got, entry.Issue.Key)
 		kinds = append(kinds, entry.Kind)
 	}
@@ -80,7 +81,8 @@ func TestTheWaitingLineRunsReturnsFirstThenTheBoardsRank(t *testing.T) {
 	gate.ApprovedMark.At = fixedNow
 	facts.Gates["LEGION-10"] = record.TreeGate{Rows: map[record.DesignStep]record.DesignGate{record.DesignStepSpec: gate}}
 	got = nil
-	for _, entry := range record.Waiting(issues, nil, facts) {
+	reopened, _ := record.Waiting(issues, nil, facts)
+	for _, entry := range reopened {
 		got = append(got, entry.Issue.Key)
 	}
 	if want := []string{"LEGION-12", "LEGION-10", "LEGION-20", "LEGION-11", "LEGION-30"}; !reflect.DeepEqual(got, want) {
@@ -102,10 +104,11 @@ func TestTheWaitingLineLeavesOutAnIssueABlockerHolds(t *testing.T) {
 		Gates: map[string]record.TreeGate{
 			"LEGION-10": {Rows: map[record.DesignStep]record.DesignGate{record.DesignStepSpec: {Issue: "LEGION-10", Step: record.DesignStepSpec, LatestVersion: 1, ApprovedVersion: &approved, EverOpened: true}}},
 		},
-		Held: map[string]struct{}{"LEGION-11": {}},
+		Held: map[string][]string{"LEGION-11": {"LEGION-900"}},
 	}
 	var got []string
-	for _, entry := range record.Waiting(issues, nil, facts) {
+	line, _ := record.Waiting(issues, nil, facts)
+	for _, entry := range line {
 		got = append(got, entry.Issue.Key)
 	}
 	if want := []string{"LEGION-10"}; !reflect.DeepEqual(got, want) {

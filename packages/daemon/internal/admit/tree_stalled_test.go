@@ -50,6 +50,13 @@ nats_urls: [nats://127.0.0.1:4222]
 // its own and takes the loader's default.
 func deploymentBound(t *testing.T, lines string) time.Duration {
 	t.Helper()
+	return deployment(t, lines).StalledTreeNotice
+}
+
+// deployment is the configuration the daemon's own loader reads from the smallest file that
+// loads with lines added, for a test that runs under more than one of its numbers.
+func deployment(t *testing.T, lines string) config.Config {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "legion.yaml")
 	if err := os.WriteFile(path, []byte(minimalDeployment+lines), 0o600); err != nil {
 		t.Fatalf("write the deployment file: %v", err)
@@ -58,7 +65,7 @@ func deploymentBound(t *testing.T, lines string) time.Duration {
 	if err != nil {
 		t.Fatalf("load the deployment file: %v", err)
 	}
-	return cfg.StalledTreeNotice
+	return cfg
 }
 
 // quietRootRecord is the record of a root of a tree this daemon runs, standing in standing. A
@@ -132,28 +139,36 @@ func passFacts(t *testing.T, pool *pgxpool.Pool) (record.LineFacts, []record.Slo
 		if facts, err = record.ReadLineFacts(ctx, tx, records, testProject, issues, nil); err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		if _, facts, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil); err != nil {
+		if _, facts, _, _, err = blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil, fixedNow); err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
 	})
 	return facts, slots
 }
 
-// passHolds is why the daemon starts no issue of the project now, by issue key, read from the
-// one producer the admission pass reads it from (record.WaitingAndHolds) over the facts and the
-// slots passFacts gave. A case that says a member of a tree is held by one of the daemon's own
-// holds reads that hold here rather than assuming which of them its fixture built.
-func passHolds(t *testing.T, pool *pgxpool.Pool, facts record.LineFacts, slots []record.Slot) map[string]record.StartHold {
+// passWords is the one word the waiting line's own walk gives each issue it leaves behind, by
+// issue key (record.HeldReason, record.Waiting's second answer), read from the walk the
+// admission pass hands the measure (blockers.JudgeLine, tellStalledTrees) over the facts and the
+// slots passFacts gave. The walk can leave one issue behind at two of its sites, and the first
+// row of a key is the one kept, as record.HeldList and the measure keep it. A case that says a
+// member of a tree is held by one of the daemon's own waits reads the word here rather than
+// assuming which of them its fixture built.
+func passWords(t *testing.T, pool *pgxpool.Pool, facts record.LineFacts, slots []record.Slot) map[string]record.HeldReason {
 	t.Helper()
-	var holds map[string]record.StartHold
+	words := make(map[string]record.HeldReason)
 	inTx(t, pool, func(tx pgx.Tx) {
 		issues, err := record.NewStore().LiveIssues(context.Background(), tx, testProject)
 		if err != nil {
 			t.Fatalf("list the live issues: %v", err)
 		}
-		_, holds = record.WaitingAndHolds(issues, slots, facts)
+		_, dropped := record.Waiting(issues, slots, facts)
+		for _, row := range dropped {
+			if _, seen := words[row.Issue]; !seen {
+				words[row.Issue] = row.Reason
+			}
+		}
 	})
-	return holds
+	return words
 }
 
 // seedPullRequest records the pull request of issue in state, as a GitHub event records one.
@@ -711,17 +726,17 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		if !issue(t, pool, mixedAwaiting).AwaitingPerson() {
 			t.Fatalf("%s does not wait on a person: the mixed tree's premise is that its root does", mixedAwaiting)
 		}
-		// The premise of the two the daemon holds itself, read the same way and from the one
-		// producer of the holds (record.WaitingAndHolds, which the measure reads them from): each
-		// member stands in no entry of the line and holds none of the cap's rows, so no reading
-		// of the line can say what holds it, and the producer names the hold that does. Each case
-		// is driven by a hold of its own, so neither stands in for the other.
-		holds := passHolds(t, pool, facts, slots)
+		// The premise of the two the daemon holds itself, read the same way and from the one walk
+		// the measure reads (record.Waiting's second answer, passWords): each member stands in no
+		// entry of the line and holds none of the cap's rows, so no reading of the line can say
+		// what holds it, and the walk names the word that does. Each case is driven by a word of
+		// its own, so neither stands in for the other.
+		words := passWords(t, pool, facts, slots)
 		line := waitingLine(t, pool, testProject, nil)
 		for _, member := range []struct {
 			key  string
-			hold record.StartHold
-		}{{personChild, record.StartHoldRootPerson}, {gatedChild, record.StartHoldDesign}} {
+			word record.HeldReason
+		}{{personChild, record.HeldRootAwaitingPerson}, {gatedChild, record.HeldDesignGate}} {
 			if slices.Contains(line, member.key) {
 				t.Fatalf("%s stands in the waiting line %v: the daemon keeps it out of the line, which is why no entry of the line names what holds it",
 					member.key, line)
@@ -731,17 +746,20 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 					t.Fatalf("%s holds admission slot %d: a member the daemon keeps out of its line holds none", member.key, slot.Index)
 				}
 			}
-			if got := holds[member.key]; got != member.hold {
-				t.Fatalf("the daemon holds %s for %q, want %q: this case is driven by that hold and by no other", member.key, got, member.hold)
+			if got := words[member.key]; got != member.word {
+				t.Fatalf("the line leaves %s behind for %q, want %q: this case is driven by that word and by no other", member.key, got, member.word)
 			}
 		}
-		if got := holds[personRoot]; got != record.StartHoldPerson {
-			t.Fatalf("the daemon holds %s for %q, want %q: the tree is silent only while its root waits on the person as well",
-				personRoot, got, record.StartHoldPerson)
+		// The root waiting on the person is decided by that fact and its slot, not by a word:
+		// it holds one of the cap's rows, so the walk places it among the slot holders, and a
+		// slot holder waiting on a person is the one holder the measure counts as waiting.
+		if !issue(t, pool, personRoot).AwaitingPerson() || !slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == personRoot }) {
+			t.Fatalf("%s is not a slot holder waiting on a person (slots %#v): the tree is silent only while its root waits on the person as well",
+				personRoot, slots)
 		}
-		if got := holds[gatedRoot]; got != record.StartHoldDesign {
-			t.Fatalf("the daemon holds %s for %q, want %q: the tree is silent only while the closed gate holds its root as well",
-				gatedRoot, got, record.StartHoldDesign)
+		if got := words[gatedRoot]; got != record.HeldDesignGate {
+			t.Fatalf("the line leaves %s behind for %q, want %q: the tree is silent only while the closed gate holds its root as well",
+				gatedRoot, got, record.HeldDesignGate)
 		}
 
 		settled := settleMovements(t, pool, awaiting, blockedRoot, blockedChild, childrenFirst, owedStart,
@@ -859,6 +877,67 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 			t.Fatalf("the project with an agent at work was told of %v, want nothing: every tree of it waits by design and its line can still move", got)
 		}
 	})
+
+	// The liveness clause reads "at work" as R6 defines it (dispatch://INFRA-2560, R6, which the
+	// architect ruled reaches this clause too): a phase worker the daemon names silent — up
+	// between turns in ready, holding no task, its last step older than
+	// `worker_silence_minutes` (workflow.SilentPhaseWorker) — makes no phase change and no
+	// status change, so it gives no slot back and keeps the line moving no more than an idle
+	// claim does. silentWorkerProject seeds the deadlocked project above with one tree more: a
+	// root in merging, which holds no slot, as an issue past its review holds none, so no slot
+	// holder of the project is added, and whose merger is that worker, its last step two hours
+	// before the movement the clock is measured from. silence is the `worker_silence_minutes`
+	// the admission registers, zero for an admission that registers none.
+	const deadMerging = "LEGION-820"
+	silentWorkerProject := func(t *testing.T, silence, background time.Duration) (*pgxpool.Pool, *Admission) {
+		t.Helper()
+		silentPool, silentAdmission := deadlockedProject(t, supervise.StateIdle)
+		if silence > 0 {
+			silentAdmission.UseWorkerSilence(silence, background)
+		}
+		merging := seedQuietRoot(t, silentPool, deadMerging, "C", phase.Merging)
+		merger := putWorkerClaim(t, silentPool, deadMerging, deadMerging, claim.RoleMerger, merging.Generation,
+			supervise.StateReady, "")
+		if _, silentSlots := passFacts(t, silentPool); len(silentSlots) != 2 {
+			t.Fatalf("the project holds %#v, want the two slots of the deadlocked project alone: the root in merging must hold none", silentSlots)
+		}
+		silentSettled := settleMovements(t, silentPool, deadAwaiting, deadParent, deadChild, deadMerging)
+		steppedAt(t, silentPool, merger, silentSettled.Add(-2*time.Hour))
+		silentAdmission.now = func() time.Time { return silentSettled.Add(7 * time.Hour) }
+		return silentPool, silentAdmission
+	}
+
+	// 17. The deadlocked project whose one claim at work by its state is a merger the daemon
+	// names silent, under the shipped `worker_silence_minutes`. No slot holder keeps the line
+	// moving and that worker does not either, so every tree of it is named: the two that wait
+	// by design, and the tree of the silent merger, which nothing of it keeps at work.
+	t.Run("silent-worker-deadlocked", func(t *testing.T) {
+		shipped := deployment(t, "")
+		silentPool, silentAdmission := silentWorkerProject(t, shipped.WorkerSilence, shipped.WorkerBackground)
+
+		tick(t, silentPool, silentAdmission, "silent-worker-deadlocked")
+
+		want := []string{deadAwaiting, deadParent, deadMerging}
+		if got := stalledRoots(t, silentPool); !reflect.DeepEqual(got, want) {
+			t.Fatalf("the project whose only claim at work by its state is a silent merger was told of %v, want %v: a phase worker the daemon names silent is no work under way, so it keeps no line moving and every tree of a project no slot holder moves is named",
+				got, want)
+		}
+	})
+
+	// 18. The same project under an admission that registers no `worker_silence_minutes`, the
+	// setting off: no claim is named silent, so the merger in ready is work under way as its
+	// state says. Its tree is at work and is not named, and the project's line moves, so the two
+	// trees that wait by design are silenced, exactly as before R6.
+	t.Run("silent-worker-bound-zero", func(t *testing.T) {
+		offPool, offAdmission := silentWorkerProject(t, 0, 0)
+
+		tick(t, offPool, offAdmission, "silent-worker-bound-zero")
+
+		if got := stalledRoots(t, offPool); got != nil {
+			t.Fatalf("the project was told of %v with no silence bound registered, want nothing: with the setting off a claim in ready is work under way, its tree is not named and the line it keeps moving silences the waits",
+				got)
+		}
+	})
 }
 
 // Every claim state that is work under way keeps its tree out of the report, however long the
@@ -866,6 +945,12 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 // moves nowhere, so the quiet time alone would call its tree stopped. The four resting states
 // are the other half of the rule — an idle agent waits to be prompted, and a suspended, failed
 // or retired one is not coming back on its own — and a tree with nothing but those has stopped.
+//
+// R6 (dispatch://INFRA-2560) adds one exception, and the second pass below holds it with its
+// control: a phase worker the daemon itself names silent — up between turns in ready, holding
+// no task, its last step older than `worker_silence_minutes` (workflow.SilentPhaseWorker) — is
+// no work under way, so a tree whose only claim is that worker is named; the same tree with
+// that worker's last step inside the bound is working and is not.
 func TestAWorkingTreeIsNeverReportedStalled(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 9)
@@ -908,4 +993,52 @@ func TestAWorkingTreeIsNeverReportedStalled(t *testing.T) {
 		t.Fatalf("the controller was told of %v, want %v: a claim in any state but idle, suspended, failed or retired is work under way",
 			got, want)
 	}
+
+	// The second pass runs under a deployment whose `worker_silence_minutes` is longer than its
+	// `stalled_tree_notice_hours`, which the loader takes (the silence bound stands above its
+	// floor and the background bound above it). That is the only shape in which the control
+	// says anything: a step moves its tree as well (record.QuietTrees), so under the shipped
+	// bounds — half an hour of silence against six hours of quiet — a worker inside the silence
+	// bound keeps its whole tree inside the quiet bound, and the control would be unnamed for its
+	// quiet time alone, however the measure read a claim in ready. Here both trees are quiet
+	// for seven hours, past the six, and the two workers differ in the age of their last step
+	// alone: nine hours, past the eight, and seven and a half, inside it.
+	t.Run("silent phase worker", func(t *testing.T) {
+		silentPool := migratedPool(t)
+		cfg := deployment(t, "worker_silence_minutes: 480\nworker_background_hours: 12\n")
+		if cfg.WorkerSilence != 8*time.Hour || cfg.StalledTreeNotice != 6*time.Hour {
+			t.Fatalf("the deployment gives a silence bound of %s and a quiet bound of %s, want eight hours and six",
+				cfg.WorkerSilence, cfg.StalledTreeNotice)
+		}
+		silentAdmission := quiet(t, 2)
+		silentAdmission.UseStalledTreeNotice(cfg.StalledTreeNotice)
+		silentAdmission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
+		registerController(t, silentPool)
+
+		// A tree whose only claim is its implementer, up between turns in ready with no task,
+		// whose last step is past the silence bound: the worker the daemon names silent.
+		const silentReady = "LEGION-630"
+		silent := seedQuietRoot(t, silentPool, silentReady, "D", phase.Implementing)
+		silentToken := putWorkerClaim(t, silentPool, silentReady, silentReady, claim.RoleImplementer,
+			silent.Generation, supervise.StateReady, "")
+
+		// The control: the same tree, with that worker's last step inside the silence bound.
+		const steppedReady = "LEGION-640"
+		stepped := seedQuietRoot(t, silentPool, steppedReady, "E", phase.Implementing)
+		steppedToken := putWorkerClaim(t, silentPool, steppedReady, steppedReady, claim.RoleImplementer,
+			stepped.Generation, supervise.StateReady, "")
+
+		silentSettled := settleMovements(t, silentPool, silentReady, steppedReady)
+		steppedAt(t, silentPool, silentToken, silentSettled.Add(-2*time.Hour))
+		steppedAt(t, silentPool, steppedToken, silentSettled.Add(-30*time.Minute))
+		silentAdmission.now = func() time.Time { return silentSettled.Add(7 * time.Hour) }
+
+		tick(t, silentPool, silentAdmission, "silent-ready")
+
+		wantSilent := []string{silentReady}
+		if got := stalledRoots(t, silentPool); !reflect.DeepEqual(got, wantSilent) {
+			t.Fatalf("the controller was told of %v, want %v: a phase worker in ready that the daemon names silent is no work under way, and one whose last step is inside worker_silence_minutes is",
+				got, wantSilent)
+		}
+	})
 }

@@ -16,7 +16,14 @@ import (
 // own narrow read (Store.ProjectClaims), the state's projection from the claims it already holds
 // (TreeClaimsOf). Either step time the column holds as null reads as the zero time, which moves
 // no tree.
+//
+// Token is the claim's own name, which QuietTrees never reads. The admission pass reads it to
+// tell which claim at work is a phase worker the daemon names silent (admit's
+// workingTrees, dispatch://INFRA-2560, R6): that judgement is made over the role's run
+// (record.RoleRun), which is keyed by the token, and a claim of an issue is named by nothing
+// else the measure holds, since one issue carries a claim per role.
 type TreeClaim struct {
+	Token         claim.Token
 	Issue         string
 	State         supervise.ClaimState
 	StepAt        time.Time
@@ -57,6 +64,7 @@ func TreeClaimsOf(claims []supervise.Claim) []TreeClaim {
 	read := make([]TreeClaim, 0, len(claims))
 	for _, c := range claims {
 		read = append(read, TreeClaim{
+			Token:         c.Token,
 			Issue:         c.Issue,
 			State:         c.State,
 			StepAt:        c.Step.At,
