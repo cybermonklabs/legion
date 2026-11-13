@@ -15,7 +15,11 @@
 -- release put back over this one meets whatever rows it finds: a running copy left in
 -- workspace_bundles would read to that daemon as an unrestored release bundle and hold those pods
 -- for ever, with no code in it that could ever delete one. This table is read by no earlier daemon
--- at all, so the same rollback leaves its rows where they are and holds nothing.
+-- at all, so the same rollback leaves its rows holding nothing while that daemon runs. The
+-- rollback deletes them all the same (docs/kubernetes.md, "Rolling back the running copy"): no
+-- earlier daemon records a push, so a roll forward would find copies taken before the rollback and
+-- no record of the pushes made during it, and the push guard (20261113005308_issue_pushes) would
+-- have nothing to refuse them by.
 --
 -- The row carries the shape a runtime.WorkspaceBundle carries, as workspace_bundles holds it:
 -- bundle is the git bundle's bytes and size_bytes their length, at is when the shim took the copy,

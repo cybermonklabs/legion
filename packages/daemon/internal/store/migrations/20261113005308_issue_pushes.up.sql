@@ -26,7 +26,10 @@
 -- deployment meets the first time it runs this release: its pushes before the upgrade were never
 -- recorded, so the rows its earlier daemon saved are refused only once a push is recorded after
 -- them. A row outlives the issue's close, since the push it records happened and stays true; it is
--- one small row per issue.
+-- one small row per issue. For the same reason a rollback to an earlier daemon deletes the rows of
+-- workspace_running_copies (docs/kubernetes.md, "Rolling back the running copy"): that daemon
+-- records no push while it runs, so after a roll forward the copies taken before the rollback
+-- would be older than pushes this table never saw, and nothing here could refuse them.
 create table issue_pushes (
     issue     text        primary key,
     pushed_at timestamptz not null,
