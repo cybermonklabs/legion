@@ -25,12 +25,17 @@ import (
 // of its own, so the connection's reader never waits on the git and jj it starts, and counts it so
 // that Run waits for it before it returns (drainCommands). Every one of them is dispatched from
 // fromDaemon, which the reader calls one frame at a time, so a command is counted before the
-// frame after it is read.
+// frame after it is read. Two counts are kept: commandRuns, which the drain waits on, and
+// commandsInFlight, which says whether there is anything to wait for at all. The second is
+// lowered first, so a count of 0 means every command has returned and nothing but the
+// goroutines' own last line is left.
 func (s *shim) answer(command func()) {
 	s.commandStarted.Store(true)
+	s.commandsInFlight.Add(1)
 	s.commandRuns.Add(1)
 	go func() {
 		defer s.commandRuns.Done()
+		defer s.commandsInFlight.Add(-1)
 		command()
 	}()
 }
@@ -63,6 +68,17 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // removes the lock files it holds, and a SIGKILL for whatever outlived the grace
 // (internal/procgroup), and none of that runs once the shim has exited.
 //
+// A drain with nothing in flight waits for nothing and takes no wait on the shim's clock at all.
+// commandsInFlight is 0 once every command answered has returned, which is the ordinary end of
+// the daemon's `shutdown`: the commands are ended at the agent's SIGTERM and the agent then has
+// its whole grace, so an agent that spends the stop span below inside that grace leaves this
+// drain a bound of 0 as well. commandStarted cannot stand in for that count — it stays true for
+// every command ever answered, the working copy's adoption at the start of the pane included —
+// so a drain that took its select on that alone would be choosing between a timer of 0 that has
+// already fired and a goroutine that has not yet closed its channel. Such a select takes the
+// timer: the pane's last lines would say that a command the daemon asked for is still running,
+// seconds after it returned, which is the line a person reads while diagnosing that very stop.
+//
 // The wait is bounded by that stop's own span, procgroup.StopGrace plus the procgroup.WaitDelay
 // exec then waits for anything still holding the command's pipes — counted from the moment the
 // commands were ended, not from here. On the daemon's `shutdown` those are not the same moment:
@@ -80,13 +96,16 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // itself is taken from the shim's own clock (s.clock, which a test drives step by step), and
 // Clock hands out waits and has no reading of the time, so what the commands have already spent
 // is read from this process's monotonic clock instead — as an offset from s.started, which keeps
-// a wall clock stepped mid-stop from making that span negative (a wait longer than this bound
-// means) or enormous (no wait at all).
+// a wall clock stepped mid-stop from making that span negative, which would stretch this wait
+// past the bound it means to give, or enormous, which would leave no wait at all.
 func (s *shim) drainCommands() {
 	if !s.commandStarted.Load() {
 		return
 	}
 	s.endCommands()
+	if s.commandsInFlight.Load() == 0 {
+		return
+	}
 	returned := make(chan struct{})
 	go func() {
 		s.commandRuns.Wait()

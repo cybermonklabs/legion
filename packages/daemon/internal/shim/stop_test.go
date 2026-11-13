@@ -39,7 +39,7 @@ const (
 // left on context.Background() is simply outlived by the shim that started it, reading and
 // writing that shared clone for as much as its whole budget with nobody left to stop it.
 //
-// The last two cases are the stop the daemon sends rather than the signal this process gets:
+// The next two cases are the stop the daemon sends rather than the signal this process gets:
 // under the tmux runtime a pane is stopped with a `shutdown` frame first, and only what is left
 // of it once the stop grace is spent is killed (internal/runtime/tmux's stop). Nothing on that
 // path ends the context Run was given, so a command bound to that context alone runs on exactly
@@ -53,6 +53,17 @@ const (
 // only at that reaping, so a command left to the loop alone goes on reading and writing the
 // issue's shared clone for the whole of the agent's grace — five seconds with the shipped one —
 // after the daemon asked the shim to stop.
+//
+// The last case is that same shutdown once more, with the agent spending the whole of procgroup's
+// stop span inside its grace — two seconds, which a pod's agent spends on nothing unusual. The
+// commands are ended when the agent is told to stop, so by the time the drain runs they have been
+// ended for longer than the span that bounds it: its bound is 0, and the one command there ever
+// was answered and returned while the agent was still in its grace. The drain must then wait for
+// nothing at all, which is what the shim's clock reads here — a wait of 0 is still a wait, and it
+// is registered on that clock like any other. A drain that took it would be selecting between a
+// timer that has already fired and a goroutine that has not yet closed its channel, which picks
+// the timer, and the pane's last lines — the ones the daemon quotes when a container ends — would
+// say a command the daemon asked for is still running when none is.
 func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -120,10 +131,15 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 	})
 
 	t.Run("the daemon's shutdown, with an agent that takes its whole grace", func(t *testing.T) {
+		// This case's jj ignores its SIGTERM, so the command is still in flight when the drain is
+		// reached and the drain has a bound to read: one whose commands have all returned waits
+		// for nothing at all and takes no wait on the clock (drainCommands). What ends this jj is
+		// procgroup's SIGKILL at the end of the command's own grace, a whole second after the
+		// SIGTERM this case reads and well past the step below that reads the bound.
 		r, p, record, clock := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
 			ID: "adopt-3", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
 			TimeoutMs: int(commandBudget.Milliseconds()),
-		}, "FAKE_OMP_IGNORE_SIGTERM=1")
+		}, "FAKE_OMP_IGNORE_SIGTERM=1", "HANGING_JJ_IGNORE_SIGTERM=1")
 
 		started := time.Now()
 		p.send(t, shimwire.Shutdown{})
@@ -170,14 +186,68 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			t.Fatalf("the shim was still running %v after the agent was killed at the end of its grace; log:\n%s", stopLimit, r.log)
 		}
 	})
+
+	t.Run("the daemon's shutdown, with the commands' whole stop span spent inside the agent's grace", func(t *testing.T) {
+		r, p, _, clock := shimRunningACommand(t, t.TempDir(), shimwire.AdoptWorkingCopy{
+			ID: "adopt-4", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test",
+			TimeoutMs: int(commandBudget.Milliseconds()),
+		}, "FAKE_OMP_IGNORE_SIGTERM=1")
+
+		p.send(t, shimwire.Shutdown{})
+		// terminate ends the commands just before it signals the agent, so the agent's notice of
+		// that signal and the adoption's own answer — its jj is ended by that same cancellation —
+		// are both on their way, in either order. The answer is what this case waits for: the one
+		// command this shim ever answered has returned by the time it is sent, which is the drain
+		// this case is about.
+		for seen := false; !seen; {
+			switch frame := p.next(t).(type) {
+			case shimwire.Raw:
+				if frame.Type != "fake_sigterm" {
+					t.Fatalf("the shim sent a %s frame, want the agent's notice of its SIGTERM or the adoption's answer", frame.Type)
+				}
+			case shimwire.AdoptWorkingCopyResult:
+				if frame.ID != "adopt-4" {
+					t.Fatalf("the shim answered %#v, want the result of adopt-4", frame)
+				}
+				seen = true
+			default:
+				t.Fatalf("the shim sent %#v, want the agent's notice of its SIGTERM or the adoption's answer", frame)
+			}
+		}
+		answered := time.Now()
+
+		// What the drain subtracts from its bound is read on this process's monotonic clock
+		// (sinceCommandsEnded) and never on the shim's own, so it is real time the agent's grace
+		// has to hold open here — the `shutdown` whose agent takes two seconds or more of its
+		// grace. The commands were ended before the answer just read, so once procgroup's whole
+		// stop span has passed since that answer, the drain's bound is 0.
+		if left := procgroup.StopGrace + procgroup.WaitDelay - time.Since(answered); left > 0 {
+			time.Sleep(left)
+		}
+		clock.next(t, grace).elapse()
+		select {
+		case <-r.done:
+		case <-time.After(stopLimit):
+			t.Fatalf("the shim was still running %v after the agent was killed at the end of its grace; log:\n%s", stopLimit, r.log)
+		}
+
+		// Run has returned, so every wait it took is on the clock by now: a drain whose commands
+		// have all returned takes none, and a wait of 0 — which is the whole of the bound left
+		// here — is a wait like any other.
+		clock.idle(t)
+		if n := r.log.count("a command the daemon asked for is still running"); n != 0 {
+			t.Errorf("the shim logged %d time(s) that a command the daemon asked for is still running; the one command it answered returned while the agent was still in its grace; log:\n%s", n, r.log)
+		}
+	})
 }
 
 // shimRunningACommand is a shim the daemon has asked for one command, with that command's whole
 // process group up: the jj and the child the jj started are both running (hangingJJ), so a stop
-// that reaches the group reaches both. env is added to the agent's own environment, for a case
-// that needs an agent of a particular temper. It answers the shim, the daemon's side of its
-// stream, the record the jj and its child write, and the clock the shim's waits are taken from,
-// which is a case's way of holding the agent inside its grace.
+// that reaches the group reaches both. env is added to the environment the shim passes on, the
+// agent's and the command's jj's alike, for a case that needs one of them in a particular temper.
+// It answers the shim, the daemon's side of its stream, the record the jj and its child write,
+// and the clock the shim's waits are taken from, which is a case's way of holding the agent
+// inside its grace.
 func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame, env ...string) (*running, *peer, string, *fakeClock) {
 	t.Helper()
 	record := hangingJJ(t)
@@ -219,17 +289,20 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame,
 // machine with the stop these rows send: 3 of 60 stops of this shape left one behind, and 0 of
 // 60 of the loop below). A trap is then acted on within one sleep of its arrival, which is
 // milliseconds against the seconds every bound here allows, and each gives up after a minute, so
-// a run whose stop never comes leaves nothing behind for long.
+// a run whose stop never comes leaves nothing behind for long. HANGING_JJ_IGNORE_SIGTERM=1 keeps
+// both of them running once they have recorded that signal, for the one case that needs its
+// command still in flight when the shim drains: procgroup's SIGKILL at the end of the command's
+// own grace is then what ends them.
 func hangingJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-record")
 	bin := t.TempDir()
 	script := `#!/bin/sh
 if [ "$1" = "--the-jjs-own-child" ]; then
-  trap 'printf "its child caught SIGTERM\n" >>"$HANGING_JJ_RECORD"; exit 0' TERM
+  trap 'printf "its child caught SIGTERM\n" >>"$HANGING_JJ_RECORD"; [ "$HANGING_JJ_IGNORE_SIGTERM" = 1 ] || exit 0' TERM
   printf 'the child is running\n' >>"$HANGING_JJ_RECORD"
 else
-  trap 'printf "the jj caught SIGTERM\n" >>"$HANGING_JJ_RECORD"; exit 0' TERM
+  trap 'printf "the jj caught SIGTERM\n" >>"$HANGING_JJ_RECORD"; [ "$HANGING_JJ_IGNORE_SIGTERM" = 1 ] || exit 0' TERM
   "$0" --the-jjs-own-child &
   printf 'the jj is running\n' >>"$HANGING_JJ_RECORD"
 fi
