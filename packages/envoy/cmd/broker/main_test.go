@@ -23,8 +23,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strconv"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -329,10 +328,10 @@ func TestMainRefusesAnIAMURLThatDoesNotVerifyItsHost(t *testing.T) {
 	}
 }
 
-// signInLine matches the one line the broker logs at boot, before it reaches for AWS or the
-// database, naming how it signs in to its database: method rds-iam or password.
-func signInLine(method string) *regexp.Regexp {
-	return regexp.MustCompile(`(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} INFO database sign-in method=` + method + `$`)
+// signsInBy reports whether log holds the line the broker logs at boot, before it reaches for AWS
+// or the database, naming how it signs in to its database: method rds-iam or password.
+func signsInBy(log, method string) bool {
+	return len(recordsWith(log, "database sign-in", map[string]any{"severity": "INFO", "method": method})) != 0
 }
 
 // TestMainMintsTokensBeforeOpeningTheDatabase drives the real binary with a verified IAM-form
@@ -348,8 +347,8 @@ func TestMainMintsTokensBeforeOpeningTheDatabase(t *testing.T) {
 	if !strings.Contains(out, "needs an AWS region") {
 		t.Fatalf("broker refused, but not for the missing AWS region the token minter needs: %s", out)
 	}
-	if !signInLine("rds-iam").MatchString(out) || signInLine("password").MatchString(out) {
-		t.Fatalf("broker output has no line matching %s, or names the password method too:\n%s", signInLine("rds-iam"), out)
+	if !signsInBy(out, "rds-iam") || signsInBy(out, "password") {
+		t.Fatalf("broker output has no INFO %q line naming method rds-iam, or names the password method too:\n%s", "database sign-in", out)
 	}
 }
 
@@ -383,8 +382,8 @@ func TestMainSignsInToALocalPasswordlessURLAsGiven(t *testing.T) {
 	)})
 	addr, boot := broker.Addr, broker.Boot
 	requireHealthy(t, addr)
-	if !signInLine("password").MatchString(boot) || signInLine("rds-iam").MatchString(boot) {
-		t.Fatalf("boot log has no line matching %s, or names the rds-iam method too:\n%s", signInLine("password"), boot)
+	if !signsInBy(boot, "password") || signsInBy(boot, "rds-iam") {
+		t.Fatalf("boot log has no INFO %q line naming method password, or names the rds-iam method too:\n%s", "database sign-in", boot)
 	}
 }
 
@@ -467,7 +466,8 @@ func (p *brokerProcess) Log() string {
 // awaitTimeout bounds how long Await waits for the line it asks for.
 const awaitTimeout = 10 * time.Second
 
-// Await answers everything the broker has logged once a line carrying want has arrived. The
+// Await answers everything the broker has logged once a whole line carrying want has arrived, one
+// a newline closes, so a test that goes on to read that line's fields reads all of them. The
 // binary logs the rest of its boot — the state of its token exchange — after the bind line
 // startBroker synchronises on, so a test that reads one of those later lines asks Await for it
 // rather than reading Boot. It fails t if that line has not come within awaitTimeout.
@@ -476,11 +476,27 @@ func (p *brokerProcess) Await(t *testing.T, want string) string {
 	var text string
 	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
 		text = p.Log()
+		text = text[:strings.LastIndexByte(text, '\n')+1]
 		return strings.Contains(text, want)
 	}) {
 		t.Fatalf("the broker never logged a line carrying %q:\n%s", want, p.Log())
 	}
 	return text
+}
+
+// AwaitRecord answers the first line the broker has logged whose message is message and that
+// carries every field of fields (recordsWith), once one has arrived, and fails t if none has
+// within awaitTimeout. It is Await for a line whose fields a test reads.
+func (p *brokerProcess) AwaitRecord(t *testing.T, message string, fields map[string]any) map[string]any {
+	t.Helper()
+	var found []map[string]any
+	if !testwait.Holds(awaitTimeout, listeningPoll, func() bool {
+		found = recordsWith(p.Log(), message, fields)
+		return len(found) != 0
+	}) {
+		t.Fatalf("the broker never logged a %q line carrying %v:\n%s", message, fields, p.Log())
+	}
+	return found[0]
 }
 
 // listeningPoll is how often AwaitListening looks for the broker's listening line. The line is
@@ -520,23 +536,57 @@ func (p *brokerProcess) AwaitListening(t *testing.T, within time.Duration) {
 // listeningIn finds the broker's first "broker listening" line in log and answers the address it
 // names and the log up to the end of that line, which is the boot log: everything the broker
 // logged before it was serving.
-//
-// Only a line a newline closes counts. This reads a buffer the child's output is still being
-// copied into, and half a listening line would hand addrLogPattern half an address — 127.0.0.1:4
-// for a broker bound to port 41337 — and call it the one it bound.
 func listeningIn(log string) (addr, boot string, ok bool) {
-	complete := strings.LastIndexByte(log, '\n') + 1
-	for offset := 0; offset < complete; {
-		end := offset + strings.IndexByte(log[offset:], '\n') + 1
-		line := log[offset:end]
-		if strings.Contains(line, "broker listening") {
-			if m := addrLogPattern.FindStringSubmatch(line); m != nil {
-				return m[1], log[:end], true
+	end := 0
+	for line := range strings.Lines(log) {
+		end += len(line)
+		if record, isRecord := logRecord(line); isRecord && record["message"] == "broker listening" {
+			if addr, _ := record["addr"].(string); addr != "" {
+				return addr, log[:end], true
 			}
 		}
-		offset = end
 	}
 	return "", "", false
+}
+
+// logRecord reads one line of a broker's log as the JSON object logging.NewCloudHandler writes:
+// time, severity and message under those names, and each attribute a field of its own. A line
+// that is not one answers false, and so does a line still being copied out of the child, which
+// is no JSON object until it is whole: half a line never hands back half a value, an address of
+// 127.0.0.1:4 for a broker bound to port 41337 or a duration of 2.2s for one sized at 2.25s.
+func logRecord(line string) (map[string]any, bool) {
+	var record map[string]any
+	if err := json.Unmarshal([]byte(line), &record); err != nil || record == nil {
+		return nil, false
+	}
+	return record, true
+}
+
+// recordsWith is every line of log that logRecord reads whose message is message and that carries
+// every field of fields, in the order the broker wrote them; nil fields match every line of that
+// message. It is how a test in this package reads a broker binary's log.
+func recordsWith(log, message string, fields map[string]any) []map[string]any {
+	var found []map[string]any
+	for line := range strings.Lines(log) {
+		if record, ok := logRecord(line); ok && record["message"] == message && carries(record, fields) {
+			found = append(found, record)
+		}
+	}
+	return found
+}
+
+// carries reports whether record holds every field of fields, each compared as the JSON value the
+// line holds it as: an int a test names is the number JSON reads as a float64.
+func carries(record, fields map[string]any) bool {
+	for key, want := range fields {
+		if number, isInt := want.(int); isInt {
+			want = float64(number)
+		}
+		if got, ok := record[key]; !ok || !reflect.DeepEqual(got, want) {
+			return false
+		}
+	}
+	return true
 }
 
 // rereadRateLine is what one of a broker's "broker reread rate" lines says: the replica count
@@ -549,41 +599,22 @@ type rereadRateLine struct {
 	Burst    int
 }
 
-// rereadRatePattern reads a whole "broker reread rate" line: the message and the three values
-// that follow it, in the order api.RereadRate logs them.
-//
-// It matches the message and the first key together because the warning a count above
-// api.MaxSupportedReplicas logs opens with the same words and carries replicas too, and what
-// tells the two apart is that the warning's message goes on ("above the replica count this
-// sizing supports") where this one ends. The optional quote covers both handlers a broker can
-// be started with: cmd/broker logs through slog's default handler, which writes the message
-// bare, and a TextHandler writes it as msg="broker reread rate".
-//
-// every is whatever the handler wrote a time.Duration as (2.25s), which time.ParseDuration
-// reads back.
-var rereadRatePattern = regexp.MustCompile(`broker reread rate"? replicas=(\d+) every=(\S+) burst=(\d+)`)
-
-// rereadRateIn finds the last complete "broker reread rate" line in log and answers what it
-// says. Only a line a newline closes counts, for listeningIn's own reason: this reads a buffer
-// the child's output is still being copied into, and half a line would hand back half a
-// duration — 2.2s for a broker sized at 2.25s — as the rate it derived.
+// rereadRateIn finds the last "broker reread rate" line in log and answers what it says. The
+// message is matched whole because the warning a count above api.MaxSupportedReplicas logs opens
+// with the same words and carries replicas too, and what tells the two apart is that the
+// warning's message goes on ("above the replica count this sizing supports") where this one ends.
+// every is the duration string the broker's handler writes a time.Duration as (2.25s), which
+// time.ParseDuration reads back.
 func rereadRateIn(log string) (rate rereadRateLine, ok bool) {
-	complete := strings.LastIndexByte(log, '\n') + 1
-	for offset := 0; offset < complete; {
-		end := offset + strings.IndexByte(log[offset:], '\n') + 1
-		line := log[offset:end]
-		offset = end
-		m := rereadRatePattern.FindStringSubmatch(line)
-		if m == nil {
+	for _, record := range recordsWith(log, "broker reread rate", nil) {
+		replicas, replicasOK := record["replicas"].(float64)
+		text, _ := record["every"].(string)
+		every, everyErr := time.ParseDuration(text)
+		burst, burstOK := record["burst"].(float64)
+		if !replicasOK || everyErr != nil || !burstOK {
 			continue
 		}
-		replicas, replicasErr := strconv.Atoi(m[1])
-		every, everyErr := time.ParseDuration(m[2])
-		burst, burstErr := strconv.Atoi(m[3])
-		if replicasErr != nil || everyErr != nil || burstErr != nil {
-			continue
-		}
-		rate, ok = rereadRateLine{Replicas: replicas, Every: every, Burst: burst}, true
+		rate, ok = rereadRateLine{Replicas: int(replicas), Every: every, Burst: int(burst)}, true
 	}
 	return rate, ok
 }
@@ -620,9 +651,30 @@ func requireHealthy(t *testing.T, addr string) {
 	}
 }
 
-// addrLogPattern extracts the value of a slog key=value pair named addr. A bare host:port never
-// contains a space, so slog's TextHandler (which quotes only values that do) never quotes it.
-var addrLogPattern = regexp.MustCompile(`addr=(\S+)`)
+// refusedSecretEnv is what TestMainLogsRealBoundAddress and TestTheBinaryLogsOneJSONObjectPerLine
+// start a broker with: a database of its own, a port the kernel picks, and a fake Secrets Manager
+// holding one secret it serves, one whose owner tag names nobody, which it refuses
+// owner-tag-malformed at boot, and one owned by example-service, which BROKER_SERVICES registers.
+func refusedSecretEnv(t *testing.T) []string {
+	t.Helper()
+	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
+	const key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+	const fakeSecrets = `{"secrets": [
+		{"name": "example/agent-secrets/demo-key", "kms_key_id": "` + key + `", "tags": {"owner": "shared", "tier": "agent"}, "value": "demo"},
+		{"name": "example/agent-secrets/untagged-key", "kms_key_id": "` + key + `", "tags": {"owner": "sjawhar", "tier": "agent"}, "value": "nope"},
+		{"name": "example/agent-secrets/service-key", "kms_key_id": "` + key + `", "tags": {"owner": "example-service", "tier": "agent"}, "value": "service"}
+	]}`
+	if err := os.WriteFile(fakeSecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return []string{
+		"BROKER_DATABASE_URL=" + storetest.URL(t),
+		"BROKER_LISTEN_ADDR=127.0.0.1:0",
+		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
+		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SERVICES=example-service=system:serviceaccount:example:example-sa",
+	}
+}
 
 // TestMainLogsRealBoundAddress drives the REAL compiled binary with BROKER_LISTEN_ADDR=127.0.0.1:0
 // (dev-broker.sh's own setting after the bind fix) and BROKER_PUBLIC_URL=http://127.0.0.1:0
@@ -635,38 +687,19 @@ var addrLogPattern = regexp.MustCompile(`addr=(\S+)`)
 // synchronously before logging anything means the address this test reads can only ever name this
 // process's own listener.
 // It also holds a fake Secrets Manager with one secret whose owner tag names nobody, and asserts
-// the real binary refuses it at boot with the exact line the deployment's alarm filters on, while
-// still booting to serve the rest; and one owned by example-service, which BROKER_SERVICES
-// registers, and asserts the binary serves it: the policy loader main builds carries the
-// configured services.
+// the real binary refuses it at boot with the line the deployment's alarm filters on, at ERROR
+// with its name and reason, while still booting to serve the rest; and one owned by
+// example-service, which BROKER_SERVICES registers, and asserts the binary serves it: the policy
+// loader main builds carries the configured services.
 func TestMainLogsRealBoundAddress(t *testing.T) {
-	databaseURL := storetest.URL(t)
-
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	const key = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
-	const fakeSecrets = `{"secrets": [
-		{"name": "example/agent-secrets/demo-key", "kms_key_id": "` + key + `", "tags": {"owner": "shared", "tier": "agent"}, "value": "demo"},
-		{"name": "example/agent-secrets/untagged-key", "kms_key_id": "` + key + `", "tags": {"owner": "sjawhar", "tier": "agent"}, "value": "nope"},
-		{"name": "example/agent-secrets/service-key", "kms_key_id": "` + key + `", "tags": {"owner": "example-service", "tier": "agent"}, "value": "service"}
-	]}`
-	if err := os.WriteFile(fakeSecretsFile, []byte(fakeSecrets), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	broker := startBroker(t, brokerOptions{Env: []string{
-		"BROKER_DATABASE_URL=" + databaseURL,
-		"BROKER_LISTEN_ADDR=127.0.0.1:0",
-		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
-		"BROKER_SERVICES=example-service=system:serviceaccount:example:example-sa",
-	}})
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
 	addr, boot := broker.Addr, broker.Boot
-	refused := regexp.MustCompile(`(?m)^\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2} ERROR agent secret policy refused name=example/agent-secrets/untagged-key reason=owner-tag-malformed$`)
-	if !refused.MatchString(boot) {
-		t.Fatalf("boot log has no refusal line matching %s:\n%s", refused, boot)
+	refused := map[string]any{"severity": "ERROR", "name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed"}
+	if len(recordsWith(boot, policy.RefusedMessage, refused)) == 0 {
+		t.Fatalf("boot log has no %q line carrying %v:\n%s", policy.RefusedMessage, refused, boot)
 	}
-	if strings.Contains(boot, "name=example/agent-secrets/service-key") {
-		t.Fatalf("boot log refuses the secret example-service owns, which BROKER_SERVICES registers:\n%s", boot)
+	if served := recordsWith(boot, policy.RefusedMessage, map[string]any{"name": "example/agent-secrets/service-key"}); len(served) != 0 {
+		t.Fatalf("boot log refuses the secret example-service owns, which BROKER_SERVICES registers: %v", served)
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -692,6 +725,55 @@ func TestMainLogsRealBoundAddress(t *testing.T) {
 	}
 	if err := json.NewDecoder(reread.Body).Decode(&answer); err != nil || reread.StatusCode != http.StatusOK || !answer.Served {
 		t.Fatalf("reread SERVICE_KEY = status %d, %+v, %v; want served, its owner a service BROKER_SERVICES registers", reread.StatusCode, answer, err)
+	}
+}
+
+// TestTheBinaryLogsOneJSONObjectPerLine drives the REAL compiled binary on
+// TestMainLogsRealBoundAddress's fixture and reads two lines of its log as Cloud Logging reads
+// them: the boot's "broker listening" line at INFO and its refusal of the secret whose owner tag
+// names nobody at ERROR. Each is one JSON object, with time (RFC 3339, in UTC), severity and
+// message under those names and each of its attributes a field of its own, which is what makes
+// an entry's severity its level rather than the stream's. The lines are found by their text, not
+// through startBroker's read of the address, so a broker writing any other shape fails here,
+// naming the line, rather than in a wait for an address it never reads.
+func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
+	broker := startBroker(t, brokerOptions{NoWaitForListening: true, Env: refusedSecretEnv(t)})
+	log := broker.Await(t, "broker listening")
+	for _, want := range []struct {
+		message, severity string
+		fields            map[string]any
+	}{
+		{message: "broker listening", severity: "INFO"},
+		{message: policy.RefusedMessage, severity: "ERROR",
+			fields: map[string]any{"name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed"}},
+	} {
+		var line string
+		for candidate := range strings.Lines(log) {
+			if strings.Contains(candidate, want.message) {
+				line = candidate
+				break
+			}
+		}
+		if line == "" {
+			t.Fatalf("the broker logged no line carrying %q by its listening line:\n%s", want.message, log)
+		}
+		record, ok := logRecord(line)
+		if !ok {
+			t.Fatalf("the broker's %q line is not one JSON object:\n%s", want.message, line)
+		}
+		stamp, _ := record["time"].(string)
+		if at, err := time.Parse(time.RFC3339Nano, stamp); err != nil || at.Location() != time.UTC {
+			t.Errorf("the %q line's time is %q (%v); want RFC 3339 in UTC: %s", want.message, stamp, err, line)
+		}
+		if record["message"] != want.message || record["severity"] != want.severity || !carries(record, want.fields) {
+			t.Errorf("the %q line reads message %v, severity %v; want message %q, severity %s and the fields %v: %s",
+				want.message, record["message"], record["severity"], want.message, want.severity, want.fields, line)
+		}
+		if want.message == "broker listening" {
+			if addr, _ := record["addr"].(string); addr == "" {
+				t.Errorf("the %q line carries no addr field: %s", want.message, line)
+			}
+		}
 	}
 }
 
@@ -827,8 +909,8 @@ func TestMainRefusesAnAirlockRulesFileItCannotServe(t *testing.T) {
 		path string
 		want []string
 	}{
-		// The broker logs a refusal as slog's quoted error=…, so a quotation mark inside it
-		// comes out escaped; these rows look for the parts around it.
+		// The broker logs a refusal as a JSON string in its error field, so a quotation mark
+		// inside it comes out escaped; these rows look for the parts around it.
 		"an entry the airlock refuses": {
 			path: airlockRulesFile(t, `{"secrets": [{"name": "DEEL_API_KEY", "hosts": []}]}`),
 			want: []string{"secrets[0]", "DEEL_API_KEY", "no host"},

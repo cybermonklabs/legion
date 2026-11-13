@@ -151,15 +151,19 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	t.Run("the real binary boots on a fresh schema with its token exchange on", func(t *testing.T) {
 		// The binary logs the state of its exchange after the bind line startBroker synchronises
 		// on, so the boot is read once that line has arrived.
-		boot := broker.Await(t, "token exchange")
+		broker.AwaitRecord(t, "token exchange", nil)
+		boot := broker.Log()
 		t.Logf("the broker's own boot lines:\n%s", boot)
 		requireHealthy(t, addr)
-		for _, want := range []string{
-			"broker listening addr=" + addr,
-			"token exchange state=on kubernetes=true github=true accounts=2",
+		for _, want := range []struct {
+			message string
+			fields  map[string]any
+		}{
+			{"broker listening", map[string]any{"addr": addr}},
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2}},
 		} {
-			if !strings.Contains(boot, want) {
-				t.Fatalf("the boot log carries no %q; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers and the two listed accounts:\n%s", want, boot)
+			if len(recordsWith(boot, want.message, want.fields)) == 0 {
+				t.Fatalf("the boot log has no %q line carrying %v; the real binary must log the address it bound — the one that just answered /healthz — and report its token exchange on, with both issuers and the two listed accounts:\n%s", want.message, want.fields, boot)
 			}
 		}
 	})
@@ -467,16 +471,20 @@ func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
 	poolLive := newLiveBroker(broker.Addr, poolKey)
 
 	t.Run("the real binary boots with the machine entries its Google settings make", func(t *testing.T) {
-		boot := broker.Await(t, "token exchange")
+		broker.AwaitRecord(t, "token exchange", nil)
+		boot := broker.Log()
 		t.Logf("the broker's own boot lines:\n%s", boot)
 		requireHealthy(t, broker.Addr)
-		for _, want := range []string{
-			"token exchange state=on kubernetes=true github=true accounts=2 workflows=0 machines=2",
-			"google machine identity issuer=" + google.URL() + " audience=" + machineAudience +
-				" services=" + pinnedFleetService + "," + poolFleetService + " fleets=2",
+		for _, want := range []struct {
+			message string
+			fields  map[string]any
+		}{
+			{"token exchange", map[string]any{"state": "on", "kubernetes": true, "github": true, "accounts": 2, "workflows": 0, "machines": 2}},
+			{"google machine identity", map[string]any{"issuer": google.URL(), "audience": machineAudience,
+				"services": pinnedFleetService + "," + poolFleetService, "fleets": 2}},
 		} {
-			if !strings.Contains(boot, want) {
-				t.Fatalf("the boot log carries no %q; the binary must report the Google issuer it trusts and the machine entries its settings make:\n%s", want, boot)
+			if len(recordsWith(boot, want.message, want.fields)) == 0 {
+				t.Fatalf("the boot log has no %q line carrying %v; the binary must report the Google issuer it trusts and the machine entries its settings make:\n%s", want.message, want.fields, boot)
 			}
 		}
 	})

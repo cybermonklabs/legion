@@ -219,9 +219,11 @@ start_process broker setsid env -i PATH="$PATH" \
   BROKER_SIGNIN_CLIENT_SECRET_FILE="$signin_secret_file" \
   BROKER_SIGNIN_DOMAIN="$signin_domain" \
   "$work/bin/broker"
+# The broker logs one JSON object per line; its address is the addr field of its listening line,
+# waited for up to its closing quote so that half an address is never read as the whole one.
 await_start broker "$broker_pid" 60 "the broker to report its address" \
-  grep -q 'broker listening addr=' "$work/logs/broker.log"
-broker_url="http://$(sed -n 's/.*broker listening addr=\([^ ]*\).*/\1/p' "$work/logs/broker.log" | head -n1)"
+  grep -q '"message":"broker listening","addr":"[^"]*"' "$work/logs/broker.log"
+broker_url="http://$(sed -n 's/.*"message":"broker listening","addr":"\([^"]*\)".*/\1/p' "$work/logs/broker.log" | head -n1)"
 until_true 30 "the broker's health check" curl -sf "$broker_url/healthz"
 
 # --- Dispatch: the e2e harness's three servers, the server pointed at the broker. The fakes bind

@@ -317,8 +317,15 @@ start_extra_broker() { # <name> <VAR=value>...
 	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
-	await "the $name broker" 120 "$log" 'airlock proxy listening addr=' "$pid"
-	EXTRA_PROXY_ADDR="$(sed -n 's/.*airlock proxy listening addr=\([^ ]*\).*/\1/p' "$log" | head -n 1)"
+	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
+	EXTRA_PROXY_ADDR="$(logged_addr 'airlock proxy listening' "$log")"
+}
+
+# logged_addr answers the addr field of the first line of a broker's log whose message is the one
+# named, or nothing. The broker logs one JSON object per line, and a line still being written
+# parses as nothing, so half an address is never read as the whole one.
+logged_addr() { # <message> <log>
+	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
 }
 
 # stack_facts reads the few settings a second broker and the fake store need and that the
@@ -718,8 +725,8 @@ EOF
 	local log_after log_lines allowed refused
 	log_after="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log 2>/dev/null | wc -l)"
 	log_lines="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | tail -n 3 | sed 's/^/    /')"
-	allowed="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c 'allowed=true')"
-	refused="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c 'allowed=false.*reason=')"
+	allowed="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c '"allowed":true')"
+	refused="$(grep -h 'a call to a bound host' "$AIRLOCK_DIR"/broker*.log | grep -c '"allowed":false.*"reason":')"
 	observe "the brokers logged $((log_after - log_before)) lines for a call to a bound host during this run, $allowed of them allowed and $refused refused with a reason; the last three:"
 	observe "$log_lines"
 	judge "$([ "$((log_after - log_before))" -ge 13 ] && [ "$allowed" -gt 0 ] && [ "$refused" -gt 0 ] && echo 0 || echo 1)" \
@@ -1347,7 +1354,7 @@ k7_broker() {
 	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$d/broker.log" 2>&1 &
 	local started=$!
 	EXTRA_BROKER_PIDS+=("$started")
-	await "k7's broker" 120 "$d/broker.log" 'airlock proxy listening addr=' "$started"
+	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
 }
 
 # k7_names is the rules file and the fake secrets this check adds: one name per consumer, bound
@@ -1549,7 +1556,7 @@ check_k7() {
 	# have reached the proxy port and been decided there.
 	local logged swapped
 	logged="$(grep -c 'a call to a bound host' "$WORK_DIR/k7/broker.log" || true)"
-	swapped="$(grep -c 'a call to a bound host.*allowed=true' "$WORK_DIR/k7/broker.log" || true)"
+	swapped="$(grep -c 'a call to a bound host.*"allowed":true' "$WORK_DIR/k7/broker.log" || true)"
 	observe "this check's broker logged $logged calls to a bound host, $swapped of them allowed; the last three:"
 	observe "$(grep 'a call to a bound host' "$WORK_DIR/k7/broker.log" | tail -n 3 | sed 's/^/    /')"
 	judge "$([ "$logged" -ge 10 ] && [ "$swapped" -ge 10 ] && echo 0 || echo 1)" \

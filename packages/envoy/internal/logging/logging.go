@@ -25,6 +25,57 @@ func NewWithWriter(machineID string, w io.Writer) *Logger {
 	return &Logger{machineID: machineID, logger: slog.New(handler)}
 }
 
+// NewCloudHandler is the handler for a process whose stderr Cloud Logging reads, as the secrets
+// broker's is: one JSON object per line, at INFO and above, in the shape Cloud Logging turns into
+// a structured entry. The level is written as severity in Cloud Logging's LogSeverity names, so
+// an entry's severity is its level and not the stream's; the message is written as message; time
+// is RFC 3339 with nanoseconds, in UTC; and every attribute is a field of its own. A
+// time.Duration attribute is written as Go's duration string (1m30s), not as slog's integer
+// nanoseconds, so a reader of the log reads the duration a person would.
+func NewCloudHandler(w io.Writer) slog.Handler {
+	return slog.NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo, ReplaceAttr: cloudAttr})
+}
+
+// cloudAttr is NewCloudHandler's ReplaceAttr. The three built-in keys are renamed only outside a
+// group, where slog passes them, so an attribute of the same name inside a group is left alone.
+func cloudAttr(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 {
+		switch a.Key {
+		case slog.TimeKey:
+			if a.Value.Kind() == slog.KindTime {
+				a.Value = slog.TimeValue(a.Value.Time().UTC())
+			}
+			return a
+		case slog.LevelKey:
+			if level, ok := a.Value.Any().(slog.Level); ok {
+				return slog.String("severity", cloudSeverity(level))
+			}
+		case slog.MessageKey:
+			return slog.Attr{Key: "message", Value: a.Value}
+		}
+	}
+	if a.Value.Kind() == slog.KindDuration {
+		a.Value = slog.StringValue(a.Value.Duration().String())
+	}
+	return a
+}
+
+// cloudSeverity is the LogSeverity name of a slog level: each of slog's four levels has its own,
+// and a level between two of them takes the name of the one below it, as slog's own Level.String
+// does (INFO+2 is INFO, not WARNING).
+func cloudSeverity(level slog.Level) string {
+	switch {
+	case level < slog.LevelInfo:
+		return "DEBUG"
+	case level < slog.LevelWarn:
+		return "INFO"
+	case level < slog.LevelError:
+		return "WARNING"
+	default:
+		return "ERROR"
+	}
+}
+
 // Slog is this logger as a plain *slog.Logger carrying the machine id, to hand to a package that
 // takes one (store.WithLogger). Its records are the JSON the wrapper's own calls produce, so a
 // query keyed on msg or machine_id finds them both. It carries no ts attribute: the JSON handler
@@ -33,7 +84,8 @@ func NewWithWriter(machineID string, w io.Writer) *Logger {
 // It is not for slog.SetDefault. That would also route the stdlib log package into this handler,
 // and the deployed CloudWatch metric filters for publish failures, webhook refusals and dropped
 // stream subjects are space-delimited text patterns anchored on that package's date and time
-// prefix.
+// prefix. The handler for slog.SetDefault is NewCloudHandler's, which the secrets broker
+// installs, since Cloud Logging reads its stderr.
 func (l *Logger) Slog() *slog.Logger {
 	return l.logger.With(slog.String("machine_id", l.machineID))
 }

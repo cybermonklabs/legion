@@ -138,8 +138,8 @@ func TestTheBinaryWithNoMachineLoginURLServesNoDeviceGrant(t *testing.T) {
 		"BROKER_FAKE_SECRETS_FILE=" + emptySecretsFile(t),
 	}})
 	requireHealthy(t, broker.Addr)
-	if !strings.Contains(broker.Await(t, "machine login device grant"), "machine login device grant state=off") {
-		t.Fatalf("the boot log does not report the device grant off:\n%s", broker.Log())
+	if record := broker.AwaitRecord(t, "machine login device grant", nil); record["state"] != "off" {
+		t.Fatalf("the boot log does not report the device grant off: %v", record)
 	}
 
 	status, body := startDeviceAuthorization(t, broker.Addr, proofKey(t))

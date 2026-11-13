@@ -87,8 +87,8 @@
 # Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
 # that server through psql, and without it, it starts the dispatch-pg container through
 # dev-postgres.sh, which needs Docker. It builds the fake secrets file with jq -n and reads the
-# stand's report with jq -r, so a box without jq fails once Postgres is up and the six builds
-# have run.
+# stand's report and the broker's JSON log with jq, so a box without jq fails once Postgres is up
+# and the six builds have run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -439,15 +439,16 @@ die_if_broker_exited() {
 
 # --- Wait for the broker's own "broker listening" log line: only once Listen has
 # actually succeeded does the broker report an address, so this can only ever name this
-# instance's own listener, never a different, already-running one. ---
+# instance's own listener, never a different, already-running one. The broker logs one JSON
+# object per line, and the address is that line's addr field; a line still being written parses
+# as nothing, so half an address is never read as the whole one. ---
 BOUND_ADDR=""
 for _ in $(seq 1 30); do
   die_if_broker_exited
-  # `|| true`: under this script's own set -o pipefail, grep -o finding nothing yet (the normal
-  # case on every iteration before the broker has logged its bound address) exits 1, and since
-  # head/cut on empty input both exit 0, that 1 becomes the whole pipeline's status — which would
-  # trip this script's own errexit and abort before the loop ever gets to sleep and retry.
-  BOUND_ADDR="$(grep -o 'addr=[^ ]*' "$BROKER_LOG" 2>/dev/null | head -n1 | cut -d= -f2- || true)"
+  # `|| true`: under this script's own set -o pipefail, jq failing on a log it cannot read yet
+  # must not trip this script's own errexit and abort before the loop ever gets to sleep and
+  # retry; no line yet is the normal case on every iteration before the broker has bound.
+  BOUND_ADDR="$(jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$BROKER_LOG" 2>/dev/null || true)"
   if [ -n "$BOUND_ADDR" ]; then
     break
   fi

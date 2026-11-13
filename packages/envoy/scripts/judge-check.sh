@@ -334,9 +334,16 @@ start_extra_broker() { # <name> <VAR=value>...
 	"${BROKER_ENV[@]}" "${EXTRA_BROKER_BIN:-$BROKER_BIN}" >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
-	await "the $name broker" 120 "$log" 'airlock proxy listening addr=' "$pid"
-	EXTRA_API_ADDR="$(sed -n 's/.*broker listening addr=\([^ ]*\).*/\1/p' "$log" | head -n 1)"
-	EXTRA_PROXY_ADDR="$(sed -n 's/.*airlock proxy listening addr=\([^ ]*\).*/\1/p' "$log" | head -n 1)"
+	await "the $name broker" 120 "$log" '"message":"airlock proxy listening"' "$pid"
+	EXTRA_API_ADDR="$(logged_addr 'broker listening' "$log")"
+	EXTRA_PROXY_ADDR="$(logged_addr 'airlock proxy listening' "$log")"
+}
+
+# logged_addr answers the addr field of the first line of a broker's log whose message is the one
+# named, or nothing. The broker logs one JSON object per line, and a line still being written
+# parses as nothing, so half an address is never read as the whole one.
+logged_addr() { # <message> <log>
+	jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" || true
 }
 
 # front_backends points the stack's two fronts at the brokers the caller names, by writing the

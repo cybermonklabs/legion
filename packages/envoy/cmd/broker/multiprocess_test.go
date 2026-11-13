@@ -1446,17 +1446,6 @@ func sessionHolder(t *testing.T, conn *pgx.Conn, session string) (string, bool) 
 	return principal, fixed
 }
 
-// linesCarrying is every line of a process's log that carries want.
-func linesCarrying(log, want string) []string {
-	var lines []string
-	for line := range strings.Lines(log) {
-		if strings.Contains(line, want) {
-			lines = append(lines, strings.TrimSpace(line))
-		}
-	}
-	return lines
-}
-
 // TestAFixedSessionNameAcrossARollout drives a rollout that re-points a fixed session name, on
 // real broker processes and one database: the configuration of the process serving a claim
 // decides who the name is for, so no process reserving its own configuration's names at its first
@@ -1543,9 +1532,9 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 			}
 		}
 		for _, broker := range []rolloutBroker{old, twin} {
-			if took := linesCarrying(broker.process.Log(), takeoverWarning); len(took) != 0 {
-				t.Errorf("%s logged that it took a fixed name from its holder, where both processes fix it for the one entry they served:\n%s",
-					broker.name, strings.Join(took, "\n"))
+			if took := recordsWith(broker.process.Log(), takeoverWarning, nil); len(took) != 0 {
+				t.Errorf("%s logged that it took a fixed name from its holder, where both processes fix it for the one entry they served: %v",
+					broker.name, took)
 			}
 		}
 	})
@@ -1570,9 +1559,9 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		// The take is logged, naming both principals. This is also what makes the absence of the
 		// line anywhere else in this test mean something: it is the line a take logs.
 		next.process.Await(t, takeoverWarning)
-		if took := linesCarrying(next.process.Log(), takeoverWarning); len(took) != 1 ||
-			!strings.Contains(took[0], "from="+oldEntryPrincipal) || !strings.Contains(took[0], "to="+newEntryPrincipal) {
-			t.Fatalf("%s logged %d takeovers %q; want exactly one, from %s to %s", next.name, len(took), took, oldEntryPrincipal, newEntryPrincipal)
+		if took := recordsWith(next.process.Log(), takeoverWarning, nil); len(took) != 1 ||
+			!carries(took[0], map[string]any{"from": oldEntryPrincipal, "to": newEntryPrincipal}) {
+			t.Fatalf("%s logged %d takeovers %v; want exactly one, from %s to %s", next.name, len(took), took, oldEntryPrincipal, newEntryPrincipal)
 		}
 
 		restarted := start(t, "an old-configuration process restarted mid-rollout", oldEntryAccount)
@@ -1593,12 +1582,12 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 				restarted.name, next.name, oldEntryAccount, rolloutSession, status, body)
 		}
 		log := restarted.process.Log()
-		if took := linesCarrying(log, takeoverWarning); len(took) != 0 {
-			t.Errorf("%s logged that it took a fixed name from its holder:\n%s", restarted.name, strings.Join(took, "\n"))
+		if took := recordsWith(log, takeoverWarning, nil); len(took) != 0 {
+			t.Errorf("%s logged that it took a fixed name from its holder: %v", restarted.name, took)
 		}
-		if left := linesCarrying(log, leftWarning); len(left) != 1 ||
-			!strings.Contains(left[0], "holder="+newEntryPrincipal) || !strings.Contains(left[0], "entry="+oldEntryPrincipal) {
-			t.Errorf("%s logged %d names left with their holder %q; want exactly one, %s left with %s until %s claims it",
+		if left := recordsWith(log, leftWarning, nil); len(left) != 1 ||
+			!carries(left[0], map[string]any{"holder": newEntryPrincipal, "entry": oldEntryPrincipal}) {
+			t.Errorf("%s logged %d names left with their holder %v; want exactly one, %s left with %s until %s claims it",
 				restarted.name, len(left), left, rolloutSession, newEntryPrincipal, oldEntryPrincipal)
 		}
 	})
@@ -1637,14 +1626,14 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		// was expected shows up at the next count.
 		requireTakes := func(broker rolloutBroker, want int, from, to string) {
 			t.Helper()
-			var took []string
+			var took []map[string]any
 			testwait.Holds(awaitTimeout, listeningPoll, func() bool {
-				took = linesCarrying(broker.process.Log(), takeoverWarning)
+				took = recordsWith(broker.process.Log(), takeoverWarning, nil)
 				return len(took) >= want
 			})
 			if len(took) != want || want > 0 &&
-				(!strings.Contains(took[want-1], "from="+from) || !strings.Contains(took[want-1], "to="+to)) {
-				t.Fatalf("%s logged %d takeovers %q; want %d, the last from %s to %s", broker.name, len(took), took, want, from, to)
+				!carries(took[want-1], map[string]any{"from": from, "to": to}) {
+				t.Fatalf("%s logged %d takeovers %v; want %d, the last from %s to %s", broker.name, len(took), took, want, from, to)
 			}
 		}
 
@@ -1657,9 +1646,9 @@ func TestAFixedSessionNameAcrossARollout(t *testing.T) {
 		requireHolder(next.name+" served the new entry's first exchange there", newEntryPrincipal)
 		requireTakes(old, 0, "", "")
 		requireTakes(next, 0, "", "")
-		if left := linesCarrying(next.process.Log(), leftWarning); len(left) != 0 {
-			t.Fatalf("%s logged names left with another holder at its first exchange, the new entry's own on a name the new entry holds:\n%s",
-				next.name, strings.Join(left, "\n"))
+		if left := recordsWith(next.process.Log(), leftWarning, nil); len(left) != 0 {
+			t.Fatalf("%s logged names left with another holder at its first exchange, the new entry's own on a name the new entry holds: %v",
+				next.name, left)
 		}
 
 		const turns = 3

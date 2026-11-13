@@ -22,8 +22,8 @@
 # databases for the same reason.
 #
 # Every port is chosen by the kernel and read back from the process that holds it: the issuer's
-# "issuer listening url=", the broker's "broker listening addr=", natsd's "Listening for client
-# connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
+# "issuer listening url=", the broker's JSON "broker listening" addr, natsd's "Listening for
+# client connections on", the listener's JSON "envoy-listener listening" addr, and Dispatch's
 # "dispatch: listening" addr. So a URL this script prints can only ever name this run's own
 # process, never one left over from another. Two of the five are the exceptions to "bind, then
 # report", and both serve on a socket scripts/e2e/lib/held-port.py opened on a port the kernel
@@ -420,7 +420,7 @@ until_true() {
 }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
-broker_addr_in() { grep -o 'broker listening addr=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
+broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }
 nats_port_in() {
   grep -q 'Server is ready' "$1" || return 1
   sed -n 's/.*Listening for client connections on 127\.0\.0\.1:\([0-9][0-9]*\)$/\1/p' "$1" | head -n1

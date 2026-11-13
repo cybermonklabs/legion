@@ -1722,6 +1722,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'

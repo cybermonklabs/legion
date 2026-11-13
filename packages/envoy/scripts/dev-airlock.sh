@@ -342,6 +342,10 @@ await "dev-broker.sh" 300 "$DEV_BROKER_LOG" '^dev-broker: ready\.$' "$DEV_BROKER
 # `|| true`: under pipefail a grep that finds nothing would end the whole run before the
 # caller's own check could say what was missing.
 first_match() { grep -oEm1 "$1" "$2" 2>/dev/null | head -n1 || true; }
+# logged_addr is the addr field of the first line of a broker's log whose message is the one
+# named. The broker logs one JSON object per line, and a line still being written parses as
+# nothing, so half an address is never read as the whole one.
+logged_addr() { jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$2" 2>/dev/null || true; }
 
 BASE_DIR="$(first_match 'export DEV_BROKER_DIR=[^[:space:]]+' "$DEV_BROKER_LOG" | cut -d= -f2-)"
 if [ -z "$BASE_DIR" ] || [ ! -d "$BASE_DIR" ]; then
@@ -631,9 +635,9 @@ for n in $(seq 1 "$BROKER_COUNT"); do
   start_broker "$n" "$log"
 done
 for n in $(seq 1 "$BROKER_COUNT"); do
-  await "broker $n" 120 "${BROKER_LOGS[n]}" 'airlock proxy listening addr=' "${BROKER_PIDS[n]}"
-  BROKER_API_ADDRS[n]="$(first_match 'broker listening addr=[^[:space:]]+' "${BROKER_LOGS[n]}" | cut -d= -f2-)"
-  BROKER_PROXY_ADDRS[n]="$(first_match 'airlock proxy listening addr=[^[:space:]]+' "${BROKER_LOGS[n]}" | cut -d= -f2-)"
+  await "broker $n" 120 "${BROKER_LOGS[n]}" '"message":"airlock proxy listening"' "${BROKER_PIDS[n]}"
+  BROKER_API_ADDRS[n]="$(logged_addr 'broker listening' "${BROKER_LOGS[n]}")"
+  BROKER_PROXY_ADDRS[n]="$(logged_addr 'airlock proxy listening' "${BROKER_LOGS[n]}")"
   if [ -z "${BROKER_API_ADDRS[n]}" ] || [ -z "${BROKER_PROXY_ADDRS[n]}" ]; then
     echo "dev-airlock: broker $n logged no API or proxy address" >&2
     exit 1

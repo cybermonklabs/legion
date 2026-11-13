@@ -59,6 +59,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -118,6 +119,11 @@ const oauthSecretTimeout = 10 * time.Second
 const clientCheckInterval = time.Hour
 
 func main() {
+	// Every line this process writes is one JSON object on stderr, which Cloud Logging reads as
+	// an entry with its own severity, message and fields (logging.NewCloudHandler). It is the
+	// first thing main does, so a subcommand that opens the store logs the same shape, and the
+	// log package, which slog.SetDefault points at the same handler, writes no line of another.
+	slog.SetDefault(slog.New(logging.NewCloudHandler(os.Stderr)))
 	// A subcommand is read before flag.Parse, and serves nothing: it is the whole of what this
 	// process does. Reading it here is what makes an older image refuse `broker end-sessions`
 	// rather than fall through to serving - and so to migrating the database - when a

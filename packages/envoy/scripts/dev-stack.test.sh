@@ -10,7 +10,7 @@
 # driver's behaviour without depending on cmd/dispatch, cmd/broker or cmd/listener compiling.
 #
 # Each stub logs the line the real process logs once it is listening — the issuer's
-# "issuer listening url=", the broker's "broker listening addr=", natsd's "Listening for client
+# "issuer listening url=", the broker's JSON "broker listening", natsd's "Listening for client
 # connections on" and "Server is ready", the listener's JSON "envoy-listener listening" and
 # Dispatch's msg="dispatch: listening" addr= — with its own PID standing in for the port a real
 # Listen would report, since two concurrently running stubs always have distinct PIDs, and then
@@ -241,7 +241,7 @@ exit 1
 REFUSES
       else
         cat >>"$target" <<'LISTENS'
-echo "broker listening addr=127.0.0.1:$$" >&2
+printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 LISTENS
       fi
       ;;
@@ -361,7 +361,7 @@ dropped_databases() { grep -o 'drop database if exists dev_stack_[a-z0-9_]*' "$1
 banner_port_of() { grep -o "dev-stack: $2 [a-z]*://127\.0\.0\.1:[0-9]*" "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 # The port a process itself reported, from the log file dev-stack.sh gave that process alone.
 issuer_log_port() { grep -o 'issuer listening url=http://127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
-broker_log_port() { grep -o 'broker listening addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
+broker_log_port() { grep -o '"message":"broker listening","addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true; }
 nats_log_port() { grep -o 'Listening for client connections on 127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }
 listener_log_port() { grep -o '"addr":"127\.0\.0\.1:[0-9]*"' "$1" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true; }
 dispatch_log_port() { grep -o 'msg="dispatch: listening" addr=127\.0\.0\.1:[0-9]*' "$1" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true; }

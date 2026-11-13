@@ -191,7 +191,7 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	if _, err := db.Exec(ctx, `update enrollments set lease_expires_at = now() - interval '1 second' where id = $1`, lapsed.enrollmentID); err != nil {
 		t.Fatalf("set the lapsed pod's lease in the past: %v", err)
 	}
-	first.Await(t, "broker sweeper: ended an enrollment whose lease lapsed enrollment_id="+lapsed.enrollmentID)
+	first.AwaitRecord(t, "broker sweeper: ended an enrollment whose lease lapsed", map[string]any{"enrollment_id": lapsed.enrollmentID})
 
 	t.Log("--- the mismatch pod: enrolled, and served its secret once")
 	mismatch := broker.enroll(launcher, "mismatch-pod", podAccount)

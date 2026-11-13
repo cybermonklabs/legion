@@ -8,8 +8,8 @@
 # a tiny stub script at <path> instead of compiling (dev-broker.sh's own isolation logic lives
 # entirely in the shell driver, never in the Go binaries it starts, so a stub proves the driver's
 # behavior without depending on cmd/agent-secrets-devrelay or cmd/broker compiling or running for
-# real). The broker stub logs "broker listening addr=127.0.0.1:<its own PID>" exactly like the
-# real cmd/broker does once it binds — using its own PID as a stand-in for the
+# real). The broker stub logs the JSON "broker listening" line, addr 127.0.0.1:<its own PID>,
+# exactly like the real cmd/broker does once it binds — using its own PID as a stand-in for the
 # kernel-assigned port a real Listen would report, since two concurrently running stub processes
 # always have distinct PIDs.
 #
@@ -114,15 +114,15 @@ chmod +x "${fake_bin_dir}/psql"
 
 # --- Fake go: "go build -o <path> ./cmd/<pkg>" installs a stub executable at <path> instead of
 # compiling. The client stubs are never run by dev-broker.sh (it only prints their directory); the
-# broker stub logs the issuer, the callers and the sign-in client it was configured with, then a
-# "broker listening addr=..." line exactly like the real cmd/broker does once it binds — using its
-# own PID as a stand-in for the kernel-assigned port a real Listen would report, since two
-# concurrently running stub processes always have distinct PIDs — and then stays alive as the
-# backgrounded "server" process dev-broker.sh waits on and kills during cleanup. The
-# dev-oidc-issuer stub writes each --token's file, logs the --code-flow client, the mode of the
-# secret file it would read and the --sign-in-as person, then logs "issuer listening url=..." as
-# the real one does, its own PID standing in for its port the same way, and stays alive until
-# cleanup kills it. ---
+# broker stub logs the issuer, the callers and the sign-in client it was configured with, then the
+# JSON "broker listening" line with its addr field, exactly like the real cmd/broker does once it
+# binds — using its own PID as a stand-in for the kernel-assigned port a real Listen would
+# report, since two concurrently running stub processes always have distinct PIDs — and then
+# stays alive as the backgrounded "server" process dev-broker.sh waits on and kills during
+# cleanup. The dev-oidc-issuer stub writes each --token's file, logs the --code-flow client, the
+# mode of the secret file it would read and the --sign-in-as person, then logs "issuer listening
+# url=..." as the real one does, its own PID standing in for its port the same way, and stays
+# alive until cleanup kills it. ---
 cat >"${fake_bin_dir}/go" <<'EOF'
 #!/usr/bin/env bash
 out=""
@@ -230,7 +230,7 @@ if [[ $# -ne 0 ]]; then
 fi
 echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
-echo "broker listening addr=127.0.0.1:$$" >&2
+printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 exec sleep 999999
 BROKER
     ;;
@@ -311,10 +311,10 @@ created_database() {
 }
 
 logged_port() {
-  # The fake broker's own "broker listening addr=127.0.0.1:<port>" line, landing in the
+  # The fake broker's own JSON "broker listening" line, its addr 127.0.0.1:<port>, landing in the
   # instance's combined stdout/stderr log exactly as dev-broker.sh's own tee writes it.
   local log_file="$1"
-  grep -o 'addr=127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | sed -E 's/.*:([0-9]+)$/\1/' || true
+  grep -o '"message":"broker listening","addr":"127\.0\.0\.1:[0-9]\+"' "$log_file" | head -n1 | sed -E 's/.*:([0-9]+)"$/\1/' || true
 }
 
 curled_port() {

@@ -622,9 +622,10 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		if res.Status != http.StatusSeeOther || res.Header.Get("Location") != "/approve/"+recordC || res.Cookie(sessionCookieName) == nil {
 			t.Fatalf("process #2's callback = %d to %q, want 303 to /approve/%s with a session:\n%s", res.Status, res.Header.Get("Location"), recordC, res.Body)
 		}
-		const signedIn = "approval sign-in login=" + ada
-		if !strings.Contains(second.Log(), signedIn) || strings.Contains(first.Log(), signedIn) {
-			t.Fatalf("process #2 logged the sign-in %t, process #1 %t; want #2 alone", strings.Contains(second.Log(), signedIn), strings.Contains(first.Log(), signedIn))
+		signedIn := map[string]any{"login": ada}
+		if len(recordsWith(second.Log(), "approval sign-in", signedIn)) == 0 || len(recordsWith(first.Log(), "approval sign-in", signedIn)) != 0 {
+			t.Fatalf("process #2 logged the sign-in %v, process #1 %v; want #2 alone",
+				recordsWith(second.Log(), "approval sign-in", signedIn), recordsWith(first.Log(), "approval sign-in", signedIn))
 		}
 
 		for _, process := range []*brokerProcess{first, second} {
@@ -636,7 +637,7 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		third := f.start(t, shared, replicas.URL, f.signInEnv()...)
 		replicas.route(t, third)
 		b.Decide(t, recordC, true)
-		if !strings.Contains(third.Log(), "approval page decision login="+ada+" record="+recordC) {
+		if decided := (map[string]any{"login": ada, "record": recordC}); len(recordsWith(third.Log(), "approval page decision", decided)) == 0 {
 			t.Fatalf("process #3 did not log ada's decision of %s:\n%s", recordC, third.Log())
 		}
 		granted := pods.State(p, reply.RequestID)

@@ -18,7 +18,7 @@ set -euo pipefail
 # e2e/harness-listeners.ts matches to read its port from:
 #
 #   dev-oidc-issuer: issuer listening url=http://127.0.0.1:<port>
-#   <date> <time> INFO broker listening addr=127.0.0.1:<port>
+#   {"time":…,"severity":"INFO","message":"broker listening","addr":"127.0.0.1:<port>"}
 #
 # cmd/dev-oidc-issuer has no way to bind a given port, so DEV_OIDC_ISSUER_PORT set is refused for
 # the issuer rather than ignored, as e2e/run-signin-issuer.sh refuses its own. The broker half
