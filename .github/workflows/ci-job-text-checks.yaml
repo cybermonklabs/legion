@@ -80,6 +80,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # INFRA-1413 k7 probe, never merged: a step that leaves the runner-shutdown pair and 143.
+      - name: INFRA-1413 k7 probe - a runner shutdown
+        run: |
+          echo "::error::The runner has received a shutdown signal. This can happen when the runner service is stopped, or a manually started runner is canceled."
+          exit 143
       # All three modules pin the same Go in their go.mod, so one install serves the three
       # directories below; packages/envoy's is the one this reads.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
