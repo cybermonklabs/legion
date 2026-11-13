@@ -304,7 +304,7 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   ],
   [
     "packages/envoy/AGENTS.md",
-    "the person an ask on the issue waits on until somebody hands it on",
+    "the person an ask on the issue waits on until somebody hands it on, or, while the issue holds nobody, its project's default assignee",
   ],
   [
     "packages/envoy/AGENTS.md",

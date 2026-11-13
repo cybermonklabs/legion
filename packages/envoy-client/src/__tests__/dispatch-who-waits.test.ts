@@ -1,5 +1,5 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { runDispatchCli } from "../dispatch-cli";
@@ -460,12 +460,12 @@ test.each([
 });
 
 // The Legion texts that tell a person, or the controller writing to one, what becomes of the
-// questions of an issue nobody holds. Such an issue is still stored (a create that names a null
-// assignee, an issue-update that clears one), and its questions reach the project's default
-// assignee, so none of these texts may say they reach nobody, reach only the Inbox's Unassigned
-// filter, or that a project's default exists only where a person set one. Each phrase below is
-// the false claim one of these texts made before INFRA-3090, read over the text with its
-// whitespace collapsed as the dispatch pages above are.
+// questions of an issue nobody holds. Such an issue is still stored (an issue-update that clears
+// its assignee), and its questions reach the project's default assignee, so none of these texts
+// may say they reach nobody, reach only the Inbox's Unassigned filter, or that a project's default
+// exists only where a person set one. Each phrase below is the false claim one of these texts made
+// before INFRA-3090, read over the text with its whitespace collapsed as the dispatch pages above
+// are.
 const UNASSIGNED_REACHES_NOBODY_PHRASES = [
   "reach nobody's Inbox",
   "nobody's Inbox shows",
@@ -484,11 +484,12 @@ test.each([
 });
 
 // The texts the rows above name are the ones a reader is sent to; the replaced rule could stand in
-// any other. So this row reads the tree: every text file under the directories that say who a
-// question reaches (the contract, the command line, the server, the web app and its end-to-end
-// rows, the skills, the documentation site) and every `AGENTS.md` of the repository, and fails on
-// each sentence that states the two-step rule - the person the ask was handed to, else the issue's
-// assignee, with no project default after them - or says a question can reach nobody.
+// any other. So this row reads the tree: every text file git tracks under the directories that say
+// who a question reaches (the contract, the command line, the server, the web app and its
+// end-to-end rows, the skills, the documentation site) and every tracked `AGENTS.md` of the
+// repository, all but this file, and fails on each sentence that states the two-step rule - the
+// person the ask was handed to, else the issue's assignee, with no project default after them -
+// or says a question can reach nobody.
 //
 // A sentence is read as prose: each line loses its comment marker and the quotes of a string
 // concatenated across lines, so a phrase wrapped over two lines of a comment or a tool description
@@ -512,14 +513,12 @@ const OLD_RULE_ROOTS = [
   "docs/site/src",
 ];
 
-/** Directories no reader is sent to for the rule: dependencies, build output, recorded HTTP
- *  answers and the solutions log, a history of what was true when each was written. Every dot
- *  directory is passed over too: version control, tool state and the `.changes` notes. */
-const OLD_RULE_SKIPPED_DIRECTORIES: Record<string, true> = {
-  node_modules: true,
-  dist: true,
-  __recordings__: true,
-};
+/** Tracked paths no reader is sent to for the rule: recorded HTTP answers, the solutions log and
+ *  the changelogs with their `.changes` notes, each a history of what was true when it was
+ *  written. What git ignores (dependencies, build output, generated reference pages, test
+ *  results) is never listed. */
+const OLD_RULE_LEFT_OUT =
+  /(?:^|\/)(?:__recordings__|\.changes)\/|^docs\/solutions\/|(?:^|\/)CHANGELOG\.md$/;
 
 /** Wordings of the two-step rule. `sentence` is false for a wording that is the two-step rule on
  *  its own, whatever else its sentence says. */
@@ -652,36 +651,6 @@ const OLD_RULE_ALLOWED: readonly (readonly [string, string, string])[] = [
     "the person the ask was handed to, the assignee of its issue until somebody hands it on",
     "an excerpt that row matches in packages/envoy/AGENTS.md, whose sentence goes on to the default",
   ],
-  [
-    "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts",
-    "so no question reaches nobody",
-    "this file's header, stating the new rule",
-  ],
-  [
-    "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts",
-    "NO_PERSON_PHRASES are the ways a text says a question can reach nobody",
-    "names the wordings the rows above forbid",
-  ],
-  [
-    "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts",
-    "so none of these texts may say they reach nobody",
-    "names the wordings the rows above forbid",
-  ],
-  [
-    "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts",
-    "and fails on each sentence that states the two-step rule",
-    "this row's own description of what it forbids",
-  ],
-  [
-    "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts",
-    "since `reaches nobody` is also what this repository says of a frame",
-    "this row's own description of what it forbids",
-  ],
-  [
-    "packages/envoy-client/src/__tests__/dispatch-who-waits.test.ts",
-    "Wordings that say a question reaches nobody, counted",
-    "this row's own description of what it forbids",
-  ],
 ];
 
 interface OldRuleHit {
@@ -690,25 +659,20 @@ interface OldRuleHit {
   readonly sentence: string;
 }
 
-/** Every text file the scan reads, by its path from the repository root. */
+/** Every text file the scan reads, by its path from the repository root: what git tracks under
+ *  the roots, and every tracked `AGENTS.md`, less the paths no reader is sent to and this file,
+ *  whose allowlist quotes each sentence it allows a second time. */
 function oldRuleFiles(): string[] {
-  const files: string[] = [];
-  const walk = (dir: string, agentsOnly: boolean) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = join(dir, entry.name);
-      const path = relative(REPO_ROOT, full);
-      if (entry.isDirectory()) {
-        // Dot directories hold version control and tool state, never a text a reader is sent to.
-        if (entry.name.startsWith(".") || OLD_RULE_SKIPPED_DIRECTORIES[entry.name]) continue;
-        if (path === "docs/solutions") continue;
-        walk(full, agentsOnly && !OLD_RULE_ROOTS.includes(path));
-      } else if (entry.isFile() && entry.name !== "CHANGELOG.md") {
-        if (!agentsOnly || entry.name === "AGENTS.md") files.push(path);
-      }
-    }
-  };
-  walk(REPO_ROOT, true);
-  return files;
+  const listed = Bun.spawnSync(
+    ["git", "ls-files", "-z", "--", ...OLD_RULE_ROOTS, ":(glob)**/AGENTS.md"],
+    { cwd: REPO_ROOT, stdout: "pipe", stderr: "pipe" }
+  );
+  if (!listed.success) throw new Error(`git ls-files failed: ${listed.stderr.toString()}`);
+  const self = relative(REPO_ROOT, import.meta.path);
+  return listed.stdout
+    .toString()
+    .split("\0")
+    .filter((path) => path !== "" && path !== self && !OLD_RULE_LEFT_OUT.test(path));
 }
 
 /** A file's text as prose: each line without its comment marker or the quotes of a string that
@@ -779,17 +743,9 @@ test("no text states the old rule: a question reaches the project's default assi
     return oldRuleHitsIn(source, bytes.toString("utf8"));
   });
 
-  // The allowlist quotes an excerpt of each sentence it allows, so this file holds every one of
-  // them a second time, each excerpt a string standing alone; that quotation is not a text
-  // stating the rule. An excerpt of one of this file's own sentences is a part of it, never the
-  // whole, so the sentence itself is still read and still needs its entry.
-  const self = relative(REPO_ROOT, import.meta.path);
   const used = new Set<number>();
   const unexplained: string[] = [];
   for (const hit of hits) {
-    if (hit.source === self && OLD_RULE_ALLOWED.some(([, excerpt]) => excerpt === hit.sentence)) {
-      continue;
-    }
     const at = OLD_RULE_ALLOWED.findIndex(
       ([source, excerpt]) => source === hit.source && hit.sentence.includes(excerpt)
     );
@@ -825,7 +781,6 @@ test.each([
   const text = readFileSync(join(REPO_ROOT, path), "utf8").replace(/\s+/g, " ");
   const at = text.indexOf(opening);
   expect(at).toBeGreaterThanOrEqual(0);
-  const end = text.indexOf(". ", at);
-  const sentence = text.slice(at, end === -1 ? undefined : end + 1);
+  const sentence = sentenceAt(text, at);
   expect(sentence).toMatch(/default assignee/);
 });

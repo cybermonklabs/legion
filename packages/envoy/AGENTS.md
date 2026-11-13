@@ -2508,7 +2508,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - Every issue has a nullable claim: the session that intends to implement it (`issues.claimed_by` — the actor JSON
   — and `issues.claimed_at`, migration `0045`, both set or both null by `issues_claim_complete`).
-  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on).
+  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on, or, while the issue holds nobody, its project's default assignee).
   The whole rule lives in `api/issue_claim.go`.
   `POST /api/v1/issues/{key}/claim` (any authenticated actor) claims it:
   the claimant is the request's own actor, the same identity every other write carries
