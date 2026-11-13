@@ -361,7 +361,8 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 // calls — the fixture's noticeListener, which the daemon itself publishes its notices to, serves
 // the publish route alone and 404s the rest. It answers as the plugins' own pane harness does
 // (packages/pi-shared/test/omp-harness.ts, runLegionPane's stand-in): the session, a machine and
-// no topics, for every path.
+// no topics, for every path, and on `/v1/interests/subscribe` the consumer delivery too
+// (paneListenerDelivery), which the plugin refuses a registration without.
 //
 // Nothing the proof reads comes from here. What an architect or the controller is told is read
 // from the daemon's own listener, which is the fixture's and another server.
@@ -381,16 +382,39 @@ func newPaneListener(t *testing.T) string {
 		if dir == "" {
 			dir = "/"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		answer := map[string]any{
 			"session_id": sent.SessionID,
 			"machine_id": "live-agent-proof",
 			"dir":        dir,
 			"topics":     []string{},
-		})
+		}
+		if req.URL.Path == "/v1/interests/subscribe" {
+			answer["delivery"] = paneListenerDelivery(sent.SessionID)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+// paneListenerDelivery is the `delivery` the pane listener answers a registration with: the
+// session's own relay subject, as every stand-in listener of the plugins builds it
+// (packages/envoy-client/test/subscribe-answer.ts, consumerDelivery, with omp-harness.ts's
+// stream id). Since the core receive path was removed (#2603), the plugin refuses a registration
+// answered without one (packages/envoy-client/src/transport.ts, parseSubscribeAnswer), and the
+// claim boot that registration belongs to exits the pane before its claim is ready. The subject's
+// prefix is the listener's own (packages/envoy/internal/bus/stream.go, DeliverSubjectPrefix, and
+// the client's DELIVER_SUBJECT_PREFIX), written out because that package is internal to the
+// Envoy module. Nothing is published to the subject: what the proof reads comes from the
+// daemon's own listener.
+func paneListenerDelivery(sessionID string) map[string]any {
+	return map[string]any{
+		"mode":      "consumer",
+		"subject":   "notifications.envoy.deliver." + sessionID,
+		"stream_id": "standin-stream",
+		"gap":       false,
+	}
 }
 
 // ---- the model stand-ins -------------------------------------------------------------------------
