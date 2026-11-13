@@ -563,7 +563,8 @@ func TestAMergeStateReadForAHeadTheRecordHasMovedPastIsDropped(t *testing.T) {
 // classify.HeadRuns), and the architect is told nothing while GitHub holds the new head blocked
 // for checks still running there. A head test that counted the left head's runs would tell the
 // architect the new head is stuck while its CI runs, naming the old head's checks, and would
-// count them into mergeWait.checkRuns: the very reading this change exists to keep honest.
+// count them into the runs a round is judged by (classify.HeadRuns): this test holds that the
+// round on the new head is not reported stuck and that no notice names the left head's runs.
 func TestARoundOnANewHeadIsNotJudgedByTheRunsOfTheHeadItLeft(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergeStateRound(t, pool, record.MergeStateBlocked)

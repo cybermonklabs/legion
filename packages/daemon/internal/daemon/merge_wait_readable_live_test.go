@@ -10,10 +10,11 @@
 // were told the round was stuck at. scripts/e2e/merge-wait-readable.sh builds this driver with
 // `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
-// The step the whole change exists for is the second: a read that only confirms the state already
+// The step the proof exists for is the second: a read that only confirms the state already
 // recorded still moves `stateReadAt`, so a head read on every pass reads differently from one
-// nothing has read for a day. Before this change such a read applied nothing at all, and the two
-// were one picture.
+// nothing has read for a day. A daemon whose confirming read applied nothing would leave the two
+// one picture, which is what the proof's control (the early return in applyMergeability put back)
+// shows by failing at that step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
@@ -296,11 +297,11 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 // whatever the handler recorded), GitHub answers the same `blocked` about the same head, and the
 // only thing the record takes from that answer is when it was read.
 //
-// This is the sentence the whole change exists for, and the read is driven by a fact that moves
-// nothing else for that reason: the head stands, the round stands, GitHub's answer stands and the
-// base has not moved under the head, which is exactly the read the daemon dropped before this
-// change. A head read on every pass was then indistinguishable from one nothing had read for a
-// day.
+// This is the sentence the proof exists for, and the read is driven by a fact that moves nothing
+// else for that reason: the head stands, the round stands, GitHub's answer stands and the base has
+// not moved under the head, which is the read a daemon that applied only changing answers would
+// drop. A head read on every pass would then be indistinguishable from one nothing had read for a
+// day (dispatch://INFRA-3027).
 //
 // A moved stamp alone would not say which read moved it: a read step 1 asked for can reach the
 // record after this step samples the stamp, and the move would then be that older read's. So the
