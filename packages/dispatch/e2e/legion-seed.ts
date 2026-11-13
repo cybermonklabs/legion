@@ -85,7 +85,7 @@ const OBSERVATIONS: readonly Observation[] = [
  *  is where each card's title and priority come from. */
 export async function seedLegionProject(): Promise<void> {
   await sql(
-    `INSERT INTO projects (key, name) VALUES ('${LEGION_PROJECT}', 'Acme') ON CONFLICT DO NOTHING`,
+    `INSERT INTO projects (key, name, default_assignee) VALUES ('${LEGION_PROJECT}', 'Acme', 'alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO people (email) VALUES ('alice') ON CONFLICT DO NOTHING`,
     `INSERT INTO issues (key, project_key, number, title, status, priority, created_by, rank) VALUES
        ('ACME-1', '${LEGION_PROJECT}', 1, 'Ship the widgets', 'in_progress', 0, ${SEED_ACTOR}, 'U'),

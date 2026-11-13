@@ -260,7 +260,6 @@ func TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded(t *testing.T)
 	now := time.Now().UTC()
 	key := seedLegionIssue(t, database, "INFRA", 1, "An issue with a recorded verdict", "a", nil, "")
 	seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
-	seedLegionObservation(t, database, "INFRA", key, legion.FieldPullRequestState, `"open"`, now.Add(-time.Hour))
 	seedLegionObservation(t, database, "INFRA", key, "pull_request.checks_verdict", `"failing"`, now.Add(-time.Minute))
 	seedLegionRead(t, database, "INFRA", now, "")
 
@@ -365,8 +364,7 @@ const newAdmissionShapeState = `{
       "slot": {"index": 0, "admittedAt": "2026-11-03T10:00:00Z"}},
     "INFRA-2": {"key": "INFRA-2", "phase": "implementing", "status": "in_progress", "tree": "INFRA-1",
       "slot": {"index": 1, "admittedAt": "2026-11-03T10:05:00Z"},
-      "workers": {"implementer": {"claim": {"session": "s-1", "state": "working"}, "rounds": 1}},
-      "pullRequest": {"state": "open"}},
+      "workers": {"implementer": {"claim": {"session": "s-1", "state": "working"}, "rounds": 1}}},
     "INFRA-3": {"key": "INFRA-3", "phase": "admitted", "status": "todo", "tree": "INFRA-3"},
     "INFRA-4": {"key": "INFRA-4", "phase": "admitted", "status": "todo", "tree": "INFRA-1"}
   },

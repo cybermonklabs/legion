@@ -120,9 +120,8 @@ type Engine struct {
 	store record.Store
 	// readConfig is where a decision's configuration comes from: the value New was given, or the
 	// read of the daemon's settings holder NewReading was given. A decision-class setting — the
-	// review round cap, the fix attempts, the linger, the production-check bound, the design
-	// gate — is never copied into this struct, so a change of it takes effect at the next
-	// decision.
+	// review round cap, the linger, the production-check bound, the design gate — is never
+	// copied into this struct, so a change of it takes effect at the next decision.
 	readConfig func() Config
 	// settled is the one configuration this decision reads, read once as the decision began
 	// (decision); nil in the engine the daemon holds, which no decision is running on.
@@ -157,11 +156,11 @@ func NewReading(store record.Store, read func() Config, log *slog.Logger) *Engin
 // no decision's configuration — two facts are decided at once, each on its own — so this is a
 // copy of it, which is three fields and the one read.
 //
-// An engine that is already a decision's answers itself. Every exported method begins here, and
-// a decision calls them — Apply reaches ReenterChild, which reaches Ancestry, which reaches
-// NoteRepositoryKept, and AdoptionRefusal and Ancestry reach RanAsRoot — so without this the
-// decision would read the holder again partway through and finish on a configuration it did not
-// start on.
+// An engine that is already a decision's answers itself. Every exported method that reads the
+// configuration begins here, and a decision calls them — Apply reaches ReenterChild, which
+// reaches Ancestry, which reaches NoteRepositoryKept, and AdoptionRefusal and Ancestry reach
+// RanAsRoot — so without this the decision would read the holder again partway through and
+// finish on a configuration it did not start on.
 func (e *Engine) decision() *Engine {
 	if e.settled != nil {
 		return e
@@ -171,8 +170,8 @@ func (e *Engine) decision() *Engine {
 }
 
 // settings is the configuration this decision reads: the one place the engine asks for it. A
-// call outside a decision — the daemon's own reads of the engine, which are no fact's — reads
-// the holder as it stands now.
+// call outside a decision reads the holder as it stands now; the daemon's own reads of the
+// engine, which are no fact's, each begin a decision of their own all the same.
 func (e *Engine) settings() Config {
 	if e.settled != nil {
 		return *e.settled

@@ -989,12 +989,12 @@ func TestABackwardMovesTaskNamesThePullRequestAndTheReason(t *testing.T) {
 	}
 }
 
-// One decision reads the daemon's settings holder once. Every exported method of the engine
-// begins by taking the decision's configuration (decision), and a decision calls them: Apply
-// reaches ReenterChild, which reaches Ancestry and NoteRepositoryKept, and AdoptionRefusal and
-// Ancestry reach RanAsRoot. A second read inside one of those would finish the decision under a
-// configuration its earlier steps never saw — an operator's change of `gates.design` or
-// `linger_hours` applied between two steps of one fact.
+// One decision reads the daemon's settings holder once. Every exported method of the engine that
+// reads the configuration begins by taking the decision's configuration (decision), and a
+// decision calls them: Apply reaches ReenterChild, which reaches Ancestry and NoteRepositoryKept,
+// and AdoptionRefusal and Ancestry reach RanAsRoot. A second read inside one of those would
+// finish the decision under a configuration its earlier steps never saw — an operator's change of
+// `gates.design` or `linger_hours` applied between two steps of one fact.
 func TestADecisionReadsTheSettingsHolderOnce(t *testing.T) {
 	pool := migratedPool(t)
 	openTree(t, pool)
@@ -1017,6 +1017,54 @@ func TestADecisionReadsTheSettingsHolderOnce(t *testing.T) {
 
 	if reads != 1 {
 		t.Fatalf("one fact read the settings holder %d times, want once: every step of a decision reads the configuration that decision began on", reads)
+	}
+}
+
+// The exported methods a caller outside any fact reaches that read the configuration at more than
+// one step each begin a decision of their own, so each reads the settings holder once, as one
+// fact does: admission's start of a mid-phase worker (StartPromotedWorker), which stamps the
+// entry it raises and the start it writes with the clock; the daemon's judgement of a review it
+// read from GitHub's list (RefusesRound), which asks who wrote the review and then which head it
+// read; and admission's recording of a root (ResolveRepository), which reads the mapping and then
+// asks it.
+func TestAnExportedMethodCalledOutsideAFactReadsTheSettingsHolderOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		call func(t *testing.T, engine *Engine)
+	}{
+		{"StartPromotedWorker", func(t *testing.T, engine *Engine) {
+			pool := migratedPool(t)
+			issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION",
+				Title: "promoted", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U"}
+			seedIssue(t, pool, issue)
+			seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "claim"})
+			if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+				return engine.StartPromotedWorker(t.Context(), tx, issue, claim.RoleImplementer)
+			}); err != nil {
+				t.Fatalf("start the promoted implementer: %v", err)
+			}
+		}},
+		{"RefusesRound", func(_ *testing.T, engine *Engine) {
+			engine.RefusesRound(intake.PullRequestReview{Author: testReviewApp}, record.PullRequest{HeadSHA: "abc"}, "")
+		}},
+		{"ResolveRepository", func(t *testing.T, engine *Engine) {
+			if _, err := engine.ResolveRepository("acme/widgets"); err != nil {
+				t.Fatalf("resolve acme/widgets: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			reads := 0
+			settled := testEngine(config.DesignGateRootIssues, nil).settings()
+			engine := NewReading(record.NewStore(), func() Config {
+				reads++
+				return settled
+			}, nil)
+			tc.call(t, engine)
+			if reads != 1 {
+				t.Fatalf("%s read the settings holder %d times, want once: every step of one call reads the configuration the call began on", tc.name, reads)
+			}
+		})
 	}
 }
 

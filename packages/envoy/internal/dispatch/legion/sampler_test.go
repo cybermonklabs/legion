@@ -85,7 +85,7 @@ func configured(t *testing.T, daemonURL string) (*store.Store, *Sampler) {
 func seedLegionProject(t *testing.T, database *store.Store, project, daemonURL string) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(),
-		`insert into projects (key, name) values ($1, $1) on conflict do nothing`, project); err != nil {
+		`insert into projects (key, name, default_assignee) values ($1, $1, 'alice') on conflict do nothing`, project); err != nil {
 		t.Fatalf("seed project %s: %v", project, err)
 	}
 	if _, err := PutSettings(context.Background(), database.Pool, project, daemonURL,
@@ -324,7 +324,7 @@ func TestAPassPrunesTheReadsPastTheirRetention(t *testing.T) {
 	// left stay (DeleteSettings). It is here to prove the prune keeps a project's newest read
 	// however old it is, since that row is the freshness the board's header shows.
 	if _, err := database.Pool.Exec(t.Context(),
-		`insert into projects (key, name) values ('LINUX', 'LINUX')`); err != nil {
+		`insert into projects (key, name, default_assignee) values ('LINUX', 'LINUX', 'alice')`); err != nil {
 		t.Fatalf("seed project LINUX: %v", err)
 	}
 	aged := func(project string, age time.Duration) {

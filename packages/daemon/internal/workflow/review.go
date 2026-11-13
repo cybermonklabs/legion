@@ -317,6 +317,7 @@ func (e *Engine) byReviewer(review intake.PullRequestReview, reviewerSession str
 // (RoundRefusal.AtEveryHead): an account's standing and a session's claim are not things the
 // record's next head changes.
 func (e *Engine) DecidesRound(review intake.PullRequestReview, reviewerSession string) bool {
+	e = e.decision()
 	return e.byReviewer(review, reviewerSession) || review.AuthorCanWrite
 }
 
@@ -345,6 +346,7 @@ type RoundRefusal struct {
 // narrower rule than the other, and neither asks a second one to learn how long a refusal stands:
 // the answer carries that (RoundRefusal.AtEveryHead).
 func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullRequest, reviewerSession string) RoundRefusal {
+	e = e.decision()
 	if !e.DecidesRound(review, reviewerSession) {
 		if e.byReviewApp(review.Author) {
 			return RoundRefusal{Reason: "the review App submitted it from a session that is not the reviewer's", AtEveryHead: true}

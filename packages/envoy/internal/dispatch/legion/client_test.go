@@ -113,8 +113,7 @@ const newFieldsState = `{
       "tree": "INFRA-1",
       "slot": {"index": 0, "admittedAt": "2026-11-03T10:00:00Z"},
       "architect": {"session": "s-1", "state": "working", "pluginContract": 47},
-      "workers": {"implementer": {"claim": {"session": "s-2", "state": "working", "pluginContract": 47}, "rounds": 1}},
-      "pullRequest": {"repo": "acme/widgets", "number": 7, "head": "abc", "state": "open", "fixAttempts": 0}
+      "workers": {"implementer": {"claim": {"session": "s-2", "state": "working", "pluginContract": 47}, "rounds": 1}}
     },
     "INFRA-2": {
       "key": "INFRA-2", "generation": 1, "phase": "planning", "status": "doing",
@@ -154,10 +153,6 @@ func TestAStateWithTheNewAdmissionFieldsParses(t *testing.T) {
 	if child.Workers["planner"].Claim.State != "ready" {
 		t.Errorf("INFRA-2's planner = %v, want its claim state", child.Workers["planner"])
 	}
-	root := state.Issues["INFRA-1"]
-	if root.PullRequest == nil || root.PullRequest.State != "open" {
-		t.Errorf("INFRA-1's pull request = %+v, want its state", root.PullRequest)
-	}
 }
 
 // TestAStateFromTodaysDaemonParses: the same decode reads a daemon that carries none of those
@@ -167,8 +162,7 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 	  "admission":{"cap":4,"active":["INFRA-1"],"waiting":[],"blocked":[]},
 	  "issues":{"INFRA-1":{"key":"INFRA-1","phase":"reviewing","status":"doing",
 	    "slot":{"index":0,"admittedAt":"2026-11-03T10:00:00Z"},
-	    "workers":{"reviewer":{"claim":{"session":"s-9","state":"working"},"rounds":2}},
-	    "pullRequest":{"repo":"acme/widgets","number":7,"head":"abc","state":"open","fixAttempts":0}}}}`
+	    "workers":{"reviewer":{"claim":{"session":"s-9","state":"working"},"rounds":2}}}}}`
 	server := stateServer(t, today)
 
 	state, _, err := New(server.URL, "").State(t.Context())
@@ -178,9 +172,6 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 	issue := state.Issues["INFRA-1"]
 	if issue.Tree != nil {
 		t.Errorf("tree = %v, want none: this daemon sends no tree field", *issue.Tree)
-	}
-	if issue.PullRequest == nil || issue.PullRequest.State != "open" {
-		t.Errorf("pull request = %+v, want its state", issue.PullRequest)
 	}
 }
 

@@ -524,13 +524,10 @@ func TestADesignGateChangedThroughTheRouteReachesTheNextArchitectsLaunch(t *test
 	}
 }
 
-// The project block reaches the next launch too: the launch specs copy the project's Slack
-// channels into the controller's prompt and its commit trailer repositories into every pane's
-// environment, and the runtime hands the daemon-launched controller's pod the same channels, so
-// the row names the launch specs and the runtime beside them. The diff names `projects` whatever
-// member moved — the block is compared whole — so one change of any member, here the project's
-// production_check (Slack channels need a daemon-launched controller this harness does not
-// run), is what proves both were built again.
+// A change of the project block rebuilds the launch specs and the runtime: the diff names
+// `projects` whatever member moved, since the block is compared whole. So one change of any
+// member, here the project's production_check (Slack channels need a daemon-launched controller
+// this harness does not run), is what proves both were built again.
 //
 // The change carries `github_apps` beside it because the loader takes a `projects` block in no
 // file without one (config's resolveStage3), and a file holding neither is what this harness

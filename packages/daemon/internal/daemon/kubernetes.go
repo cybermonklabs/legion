@@ -233,10 +233,11 @@ func prepareSandbox(cfg config.Config, log *slog.Logger, o overrides, reads boot
 // refusals and the image probe. prepareSandbox hands both to the boot plan, and probe-boot
 // (probeBoot) runs them alone, so the two run one check and one probe by construction.
 type sandboxBoot struct {
-	// clusterCheck is the cluster's half of boot's refusals (plan.clusterCheck), each read-only:
-	// Agent Sandbox is installed, and no Sandbox of a layout before this runtime's remains in the
-	// namespace for the project. The census logs what it accepts but will not keep — an issue
-	// Sandbox whose next launch replaces its disk — to the runtime's own logger.
+	// clusterCheck is the cluster's half of boot's refusals (clusterFence, which boot runs at
+	// daemon.go's run), each read-only: Agent Sandbox is installed, and no Sandbox of a layout
+	// before this runtime's remains in the namespace for the project. The census logs what it
+	// accepts but will not keep — an issue Sandbox whose next launch replaces its disk — to the
+	// runtime's own logger.
 	clusterCheck func(context.Context) error
 	// probe is the image probe the runtime runs (sandbox.ImageProbe), over the references of the
 	// role prompts every worker pod is handed (prompts.RoleReferences).
@@ -559,9 +560,9 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // replacement pod's launcher is sent and what its restore drops, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
-// check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
-// one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
-// root ("" is https://api.github.com), which the shared public leak check is read under
+// check (clusterFence): Agent Sandbox is installed and no Sandbox of a layout before this one —
+// per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST root
+// ("" is https://api.github.com), which the shared public leak check is read under
 // (leakCheckSource).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string) runtimeFactory {

@@ -63,7 +63,7 @@ func terminalClaims(t *testing.T, project string, n int) []supervise.Claim {
 func TestTheBootsReplayOfAppliedTerminalFactsWaitsBehindNoLiveFact(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	handler := &outboxFactHandler{}
-	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger()}
+	w := &workflowRuntime{pool: pool, handlers: []intake.Handler{handler}, log: quietLogger(), limits: func() supervise.Limits { return replayLimits }}
 	claims := terminalClaims(t, "legion", 300)
 	if err := w.replayTerminal(context.Background(), claims, bootTimeout); err != nil {
 		t.Fatalf("the first replay: %v", err)

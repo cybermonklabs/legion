@@ -510,6 +510,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 // back into a phase is a transition with a task of its own. Its start carries no mark, which is
 // what a sweep's and a ready's start carry; a door that marks its start calls sendOwedEntry.
 func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow) error {
+	e = e.decision()
 	return e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{})
 }
 
@@ -539,6 +540,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // hands no second prompt to a claim that holds its phase's task
 // (record.SuperviseRequest.ResumeTask).
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
+	e = e.decision()
 	task := ResumePhaseTask(issue)
 	entry, err := e.enter(ctx, tx, issue, role, task)
 	if err != nil {

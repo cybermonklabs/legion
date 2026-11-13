@@ -23,10 +23,9 @@ func segmentHours(segments Segments, segment Segment) float64 {
 }
 
 // segmentOrder is the precedence as the spec writes it, less CI wait, which is not measured and
-// holds through no hour (TestCIWaitIsEmptyOnEveryReadEvenOneCarryingARequiredCheckMark): the four
-// segments the split walks, in order. The list is written out here rather than read from
-// `precedence`, so a reordering of the code's one list fails these cases instead of moving with
-// them.
+// holds through no hour (TestCIWaitIsEmptyOnEveryRead): the four segments the split walks, in
+// order. The list is written out here rather than read from `precedence`, so a reordering of the
+// code's one list fails these cases instead of moving with them.
 var segmentOrder = []Segment{
 	SegmentWaitingOnPerson, SegmentInATurn, SegmentWaitingOnChildren, SegmentIdle,
 }
@@ -123,23 +122,21 @@ func TestASegmentAloneClaimsItsHour(t *testing.T) {
 	}
 }
 
-// TestCIWaitIsEmptyOnEveryReadEvenOneCarryingARequiredCheckMark is segment 3 as the spec has it
-// since version 36: CI wait is not measured, and is empty on every bar, because no source carries
-// a required-check mark — cybermonklabs/legion#2539 stopped the daemon reading a base branch's
-// required checks and took `checksVerdict` out of its state. A read that still carries the old
-// mark is one only an old daemon or a fixture could send, and the spec's acceptance criterion A3
-// asks for no test of such a read, since it proves a path nothing runs. So this row hands the
-// computation the very fixture TestCIWaitNeedsAnOpenPullRequestARequiredCheckAndNoVerdict books
-// two CI-wait hours off, and asks for none: the bar's three hours are idle.
-func TestCIWaitIsEmptyOnEveryReadEvenOneCarryingARequiredCheckMark(t *testing.T) {
+// TestCIWaitIsEmptyOnEveryRead is segment 3 as spec version 38 has it: CI wait is not measured,
+// because cybermonklabs/legion#2539 took the required-check mark and the CI verdict out of the
+// daemon's state, so an issue whose pull request stands open the whole phase still books no
+// CI-wait hour, and the bar's three hours are idle.
+func TestCIWaitIsEmptyOnEveryRead(t *testing.T) {
 	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(3)).
 		observeString(legion.FieldPhase, hour(0), "implementing").
-		observeString(legion.FieldPhase, hour(3), "done").
-		observeString(legion.FieldPullRequestState, hour(1), "open").
-		observe(legion.FieldPullRequestRequiresChecks, hour(1), "true")
+		observeString(legion.FieldPhase, hour(3), "done")
+	// The one fact of a pull request the population holds is its merge (delivery_pull_requests):
+	// merged as the phase closes, it stood unmerged through the whole phase.
+	merged := hour(3)
+	root.MergedAt = &merged
 	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24)), "implementer")
 	if bar.Segments.CIWait != 0 {
-		t.Fatalf("CI wait = %g hours, want 0: spec version 37 has segment 3 empty on every read, and no source now carries a required-check mark: %+v", bar.Segments.CIWait, bar.Segments)
+		t.Fatalf("CI wait = %g hours, want 0: spec version 38 does not measure segment 3, so no read books a CI-wait hour: %+v", bar.Segments.CIWait, bar.Segments)
 	}
 }
 

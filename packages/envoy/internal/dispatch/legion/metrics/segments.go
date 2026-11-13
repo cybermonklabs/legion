@@ -15,7 +15,6 @@ type Segment string
 const (
 	SegmentWaitingOnPerson   Segment = "waiting_on_person"
 	SegmentInATurn           Segment = "in_a_turn"
-	SegmentCIWait            Segment = "ci_wait" // not measured: no rule claims it (precedence)
 	SegmentWaitingOnChildren Segment = "waiting_on_children"
 	SegmentIdle              Segment = "idle"
 )

@@ -83,8 +83,9 @@ type workflowRuntime struct {
 	// workflow engine (applyTerminal), which holds neither the claim nor the configuration and so
 	// has no other way to read them. It is read at each fact rather than copied at attach,
 	// because `launch_failure_limit` and its siblings are decision-class: a change of one reaches
-	// the next decision with nothing rebuilt (supervise.Settings). Nil before attach, where
-	// claimLimits answers the zero limits.
+	// the next decision with nothing rebuilt (supervise.Settings). Set at attach, which the boot
+	// runs before any claim's state can reach the workflow: attach registers the durable-state
+	// callback, and the boot's replay of the stored claims (replayTerminal) runs after it.
 	limits func() supervise.Limits
 	// bootID disambiguates this boot's synthetic Dispatch consumer position facts from another
 	// boot's, or another project's daemon: processed_events is keyed only on (source, event_id),
@@ -1183,12 +1184,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		w.repositories, supervision.plan.tools, w.log)
 	w.outboxWake.Store(w.outbox)
 	sup := supervision.supervisor
-	w.limits = func() supervise.Limits {
-		if sup.deps.Settings == nil {
-			return supervise.Limits{}
-		}
-		return sup.deps.Settings.Limits()
-	}
+	w.limits = func() supervise.Limits { return sup.deps.Settings.Limits() }
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
 	supervision.applySweepFacts = w.applySweepFacts
@@ -1349,7 +1345,7 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 	case supervise.StateFailed:
 		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
-			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.claimLimits()}
+			Cause: c.FailureCause, Budgets: c.Budgets, Limits: w.limits()}
 	default:
 		return fmt.Errorf("claim %s has non-terminal workflow state %s", c.Token, state)
 	}
@@ -1358,15 +1354,6 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 		return fmt.Errorf("apply %s for %s: %w", state, c.Token, err)
 	}
 	return nil
-}
-
-// claimLimits is the deployment's claim budgets as the supervisor's settings holder reads them
-// now, and the zero limits on a runtime attach has not wired, which carries no supervisor.
-func (w *workflowRuntime) claimLimits() supervise.Limits {
-	if w.limits == nil {
-		return supervise.Limits{}
-	}
-	return w.limits()
 }
 
 // terminalSource is the source a claim's ready or failure fact is applied under, and

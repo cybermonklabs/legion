@@ -3,6 +3,7 @@ package legion
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,10 +21,10 @@ func goldenStatePath() string {
 // golden, and every field the Legion view and the four metrics take from a read survives it — the
 // settings the settings control shows with the source of each (the spec's contract 4), the
 // admission block the view's header and queue draw, and each issue's phase and claims. Of the
-// pull request the decode keeps the state alone: cybermonklabs/legion#2539 (main's contract 86)
-// took the CI verdict out of the daemon's state and deleted the record its required-check mark
-// was read from, so metric 2's CI-wait segment is not measured and the Legion card shows no CI
-// verdict.
+// pull request the decode keeps nothing, though the golden carries one: cybermonklabs/legion#2539
+// (main's contract 86) took the CI verdict out of the daemon's state and deleted the record its
+// required-check mark was read from, so metric 2's CI-wait segment is not measured, the Legion
+// card shows no CI verdict, and no reader is left for the pull request's state.
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	body, err := os.ReadFile(goldenStatePath())
 	if err != nil {
@@ -55,7 +56,7 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	}
 
 	// The observations a read of this document writes: the three project rows the view's header
-	// and its settings control read, and a phase for each issue.
+	// and its settings control read, a phase for each issue, and nothing of the pull request.
 	fields := map[string]int{}
 	for _, observation := range state.Observations() {
 		fields[observation.Field]++
@@ -67,5 +68,10 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	}
 	if fields[FieldPhase] != len(state.Issues) {
 		t.Errorf("phase observations = %d, want one per issue (%d)", fields[FieldPhase], len(state.Issues))
+	}
+	for field := range fields {
+		if strings.HasPrefix(field, "pull_request") {
+			t.Errorf("a read of the golden observes %s, want nothing of the pull request: neither the board nor the metrics reads it", field)
+		}
 	}
 }

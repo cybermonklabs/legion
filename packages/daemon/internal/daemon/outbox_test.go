@@ -2142,7 +2142,7 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 	}
 
 	engine := workflow.New(records, workflow.Config{Project: issue.Project, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	restarted := &workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}
+	restarted := &workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Settings.Limits}
 	if err := restarted.replayTerminal(context.Background(), []supervise.Claim{persisted}, bootTimeout); err != nil {
 		t.Fatalf("replay persisted failure: %v", err)
 	}
@@ -2201,7 +2201,7 @@ func TestAProductionCheckLaunchFailureNotifiesTheArchitect(t *testing.T) {
 	moveBudgets(sup, func(l *supervise.Limits, _ *supervise.Timeouts) { l.LaunchFailures = 1 })
 	runtime.ScriptResume(fake.SpawnResult{Err: errors.New("workspace-init could not fetch the clone")})
 	engine := workflow.New(records, workflow.Config{Project: root.Project, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
-	active := &workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}
+	active := &workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger(), limits: sup.deps.Settings.Limits}
 	sup.OnDurableState(active.claimDurableState)
 	_, _ = suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
 	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), log: quietLogger(), now: time.Now}

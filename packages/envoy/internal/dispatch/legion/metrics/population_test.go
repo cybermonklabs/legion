@@ -34,7 +34,7 @@ func corpus(t *testing.T) *store.Store {
 			t.Fatalf("seed (%s): %v", sql, err)
 		}
 	}
-	exec(`insert into projects (key, name) values ('INFRA', 'INFRA')`)
+	exec(`insert into projects (key, name, default_assignee) values ('INFRA', 'INFRA', 'alice')`)
 	exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
 		values ('INFRA-1', 'INFRA', 1, 'The root', 'in_progress', 'm', '{"kind":"user","id":"alice"}'::jsonb, $1)`, after(-1))
 	exec(`insert into issues (key, project_key, number, title, status, rank, parent_key, created_by, created_at, closed_at)

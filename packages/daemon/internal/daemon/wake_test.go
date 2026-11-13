@@ -253,6 +253,7 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	sup := newSupervisor(ctx, w.idleStore, "legion", t.TempDir(), quietLogger())
+	sup.deps.Settings = supervise.FixedSettings(supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2}, supervise.Timeouts{})
 	w.attach(&supervision{supervisor: sup, log: quietLogger(), refreshGate: supervise.NewRefreshGate(0)})
 	hook := sup.durableState
 	if hook == nil {

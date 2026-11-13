@@ -43,6 +43,7 @@ const resolvesToNone = "its repository resolves to none"
 // ResolveRepository is the repository an issue resolving to resolved is recorded on, or why it is
 // not recorded. Admission records roots and orphans with it, as the engine records children.
 func (e *Engine) ResolveRepository(resolved string) (Resolution, error) {
+	e = e.decision()
 	if resolved == "" {
 		return Resolution{Refusal: resolvesToNone}, nil
 	}

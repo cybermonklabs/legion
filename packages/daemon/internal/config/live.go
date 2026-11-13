@@ -137,8 +137,9 @@ type Live struct {
 	// normalize is the caller's own fix of what the file says, run over every resolution before
 	// it settles (NewLive); nil fixes nothing.
 	normalize func(*Config) error
-	// mu orders the applies against each other and guards overlay and observers. An observer runs
-	// under it, in registration order, so no observer may call Apply, Snapshot excepted.
+	// mu orders the applies against each other and guards overlay, reading and observers. An
+	// observer runs under it, in registration order, so no observer may call Apply, Snapshot
+	// excepted.
 	mu sync.Mutex
 	// overlay is the stored route overlay, dotted path to the value the route asked for. The
 	// caller seeds it from its durable store; Apply keeps it current.

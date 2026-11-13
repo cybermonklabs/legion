@@ -251,7 +251,10 @@ func ArchitectHears(ctx context.Context, tx pgx.Tx, store record.Store, root rec
 // GatedSteps is the design-gate steps the deployment gates, in the order it names them, which
 // admission reads to decide a re-admitted root's kept approval (Admission.keepStaleApproval). It
 // is read from the settings holder at the call, so admission sees the gate the daemon decides by.
-func (e *Engine) GatedSteps() []record.DesignStep { return e.settings().Steps }
+func (e *Engine) GatedSteps() []record.DesignStep {
+	e = e.decision()
+	return e.settings().Steps
+}
 
 // stepRef is the Dispatch reference of the document a design-gate step reviews on issue key: the
 // issue's spec for the spec step, which is the reference every design decision carried before a
