@@ -1,5 +1,5 @@
 kind: Changed
-body: The `legion` tool reports the head its handoff record names as the completion's commit for every file-backed phase, read from Dispatch and not from the shared workspace. The implementer is refused when its record names no head, when the commit its workspace stands on is not on the issue branch at origin, or when its record's head is not that pushed commit. Daemon API contract 111.
+body: The `legion` tool reports the head its handoff record names as the completion's commit for every file-backed phase, read from Dispatch and not from the shared workspace. The implementer is refused when its record names no head, when the commit its workspace stands on is not on the issue branch at origin, or when its record's head is not that pushed commit. Daemon API contract 115.
 time: 2026-11-13T12:31:13.55591417Z
 custom:
     Issue: pr3793
