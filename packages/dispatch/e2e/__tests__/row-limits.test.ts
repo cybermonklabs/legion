@@ -409,12 +409,16 @@ test("a row that polls with whether or eventually states a rowLimit of the short
   const polling = realLimits.filter((limit) =>
     limit.waitsFor.some((wait) => wait.includes("`eventually`") || wait.includes("`whether`"))
   );
-  expect([...new Set(polling.map((limit) => limit.file))].sort()).toEqual([
-    "__tests__/bounded-subprocess.test.ts",
-    "__tests__/local-instance-support.test.ts",
-    "__tests__/psql-session.test.ts",
-    "__tests__/round-robin-proxy.test.ts",
-  ]);
+  // The files that poll hold at least these four; a correctly bounded polling row in a new file
+  // adds one and breaks nothing here.
+  expect([...new Set(polling.map((limit) => limit.file))]).toEqual(
+    expect.arrayContaining([
+      "__tests__/bounded-subprocess.test.ts",
+      "__tests__/local-instance-support.test.ts",
+      "__tests__/psql-session.test.ts",
+      "__tests__/round-robin-proxy.test.ts",
+    ])
+  );
   for (const limit of polling) expect(limit.stated?.fromBounds).toBe(true);
   expect(realRefused.filter((refusal) => polling.includes(refusal.limit))).toEqual([]);
 });

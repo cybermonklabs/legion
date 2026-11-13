@@ -55,7 +55,7 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
  *  first of them, the largest of the three, so every such sleep outlasts its own row. A sleep no
  *  stop ended is then still running at every read its row makes, and never meets a check that it
  *  is gone by ending on its own. */
-const outlastsRow = rowLimit("short", "short", "short", "short") / 1000;
+const outlastsRow = rowLimit("short", "short", "short", "short", "short") / 1000;
 
 /** Sends SIGKILL to `pid`, a process or, when negative, a process group, where it is still
  *  alive: what a stop under test left behind, so a failed row leaves no sleep running. */
@@ -70,6 +70,34 @@ function killLeft(pid: number): void {
 /** One macrotask turn: the runtime reports an unhandled rejection only after the microtask queue
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** A `Supervisor.stop` the row started and did not await. A stop that never sees a leader exit
+ *  never returns, so the row waits for `returned` with `eventually`, which fails naming the stop,
+ *  rather than awaiting a promise that only the runner's clock ends. The handlers below catch
+ *  every outcome, so the promise never rejects unhandled while the row fails on another line:
+ *  a stop that throws counts as returned, and `forced` throws what it threw. */
+function underway(stopping: Promise<boolean>): {
+  readonly returned: () => boolean;
+  readonly forced: () => boolean;
+} {
+  let outcome: { readonly forced: boolean } | { readonly error: unknown } | undefined;
+  stopping.then(
+    (forced) => {
+      outcome = { forced };
+    },
+    (error: unknown) => {
+      outcome = { error };
+    }
+  );
+  return {
+    returned: () => outcome !== undefined,
+    forced: () => {
+      if (outcome === undefined) throw new Error("the stop has not returned");
+      if ("error" in outcome) throw outcome.error;
+      return outcome.forced;
+    },
+  };
+}
 
 const supervisors: Supervisor[] = [];
 function supervisor(): Supervisor {
@@ -101,7 +129,16 @@ describe("Supervisor.stop", () => {
         expect(groupAlive(leader)).toBe(true);
         expect(groupAlive(quiet)).toBe(true);
 
-        await made.stop();
+        // The force-kill fires at half the short bound, inside the wait below: a stop that leaves
+        // one group to it rather than to SIGTERM returns in time and fails on `forced`.
+        const stop = underway(made.stop(30_000));
+        await eventually(
+          `the stop of the leader ${leader} and the quiet process ${quiet} to return`,
+          stop.returned
+        );
+        expect(stop.forced(), "the stop's force-kill ran: SIGTERM did not end every group").toBe(
+          false
+        );
 
         // A killed process still answers `kill(pid, 0)` as a zombie until its parent or init
         // reaps it, which raises no event here, so each is read until it is gone.
@@ -118,9 +155,9 @@ describe("Supervisor.stop", () => {
         if (grandchild !== undefined) killLeft(grandchild);
       }
     },
-    // Four waits this row ends at a bound itself, one after another: the grandchild's pid in its
-    // file, then the two groups and the grandchild leaving the process table.
-    rowLimit("short", "short", "short", "short")
+    // Five waits this row ends at a bound itself, one after another: the grandchild's pid in its
+    // file, the stop's return, then the two groups and the grandchild leaving the process table.
+    rowLimit("short", "short", "short", "short", "short")
   );
 
   test(
@@ -129,18 +166,23 @@ describe("Supervisor.stop", () => {
       const made = supervisor();
       const quiet = pidOf(made.start("quiet", ["sleep", `${outlastsRow}`], "/"));
       try {
-        const forced = await made.stop(30_000);
-        expect(forced, "the stop's force-kill ran: SIGTERM did not end the leader").toBe(false);
+        // The force-kill fires after the short bound, past the wait below, so a stop that waits
+        // for that delay rather than for the leader to exit fails on the wait, naming the stop.
+        const stop = underway(made.stop(2 * bounds.short));
+        await eventually(
+          `the stop of the quiet process ${quiet} to return before its force-kill`,
+          stop.returned
+        );
+        // The force-kill cannot have run inside the wait above, so this reads only whether the
+        // stop threw, which `forced()` rethrows.
+        stop.forced();
         expect(groupAlive(quiet), "the leader's group outlived the stop").toBe(false);
       } finally {
         killLeft(-quiet);
       }
     },
-    {
-      // This row drives a supervisor's stop, whose force-kill fires at 30 s; the limit outlasts
-      // it, so a stop that takes that path fails on the assertion and not on this clock.
-      timeout: 60_000,
-    }
+    // The wait for the stop's return, which the short bound of `eventually` ends.
+    rowLimit("short")
   );
 
   test(
@@ -154,17 +196,21 @@ describe("Supervisor.stop", () => {
         pid = await pidFrom(pidFile);
         made.interrupt();
         await expect(step).rejects.toBeInstanceOf(Interrupted);
-        const forced = await made.stop();
-        expect(forced, "the stop's force-kill ran: SIGTERM did not end the step").toBe(false);
+        // The force-kill fires at half the short bound, inside the wait below: a stop that leaves
+        // the step to it rather than to SIGTERM returns in time and fails on `forced`.
+        const stop = underway(made.stop(30_000));
+        await eventually(`the stop of the interrupted step ${pid} to return`, stop.returned);
+        expect(stop.forced(), "the stop's force-kill ran: SIGTERM did not end the step").toBe(
+          false
+        );
         expect(groupAlive(pid), "the interrupted step's group outlived the stop").toBe(false);
       } finally {
         if (pid !== undefined) killLeft(-pid);
       }
     },
-    // The wait for the step's pid in its file, which the short bound of `eventually` ends; the
-    // stop's force-kill, at 10 s, falls inside the headroom, so a stop that takes it fails on the
-    // assertion and not on this clock.
-    rowLimit("short")
+    // Two waits the short bound of `eventually` ends, one after the other: the step's pid in its
+    // file, then the stop's return.
+    rowLimit("short", "short")
   );
 });
 
