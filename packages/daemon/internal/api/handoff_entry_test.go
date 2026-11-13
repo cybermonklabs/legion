@@ -567,6 +567,44 @@ func TestTheCurrentEntrysTaskIsDroppedAfterAnAcceptedBehindCompletion(t *testing
 	}
 }
 
+// A completion the route has taken is sometimes sent again: pi-shared's
+// retryWhileDaemonRestarts sends handoff_complete once more when a connection dropped before the
+// daemon answered, on the contract that a repeat is answered HANDOFF_ALREADY_RECORDED or, once the
+// completion moved the issue, refused as no longer the role's phase. A level completion's repeat
+// is answered that way (HANDOFF_NOT_CURRENT_PHASE). A behind completion taken at the recorded head
+// leaves the claim serving the entry it was behind on, so its repeat meets the entry fence again,
+// in a phase the role does not work. It must still be answered as a repeat, and never with
+// HANDOFF_STALE_ENTRY, whose words tell the worker the current entry's task is owed to it and the
+// daemon sends it: that task was dropped when the issue left testing, so a worker that obeys
+// waits for a task that never comes, and tells its architect that a completion the daemon took
+// was refused.
+func TestARepeatOfAnAcceptedBehindCompletionIsAnsweredAsARepeat(t *testing.T) {
+	h, _, _ := newEntryHarness(t)
+	seedIssueAt(t, h, "LEGION-208", phase.Testing)
+	seedPullRequest(t, h, "LEGION-208", headSHA)
+	seedEntry(t, h, "LEGION-208", claim.RoleTester, 2)
+	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+	takeTask(t, h, tester.token, "outbox:77", "test LEGION-208", 1, 1)
+	request := HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}
+	completion(t, h.complete(request))
+	assertIssuePhase(t, h, phase.Reviewing)
+
+	request.GrantID = tester.grant(t)
+	recorder := h.complete(request)
+	if recorder.Code != http.StatusConflict {
+		t.Fatalf("the repeat = %d: %s, want 409: the first completion was taken and the issue has left testing", recorder.Code, recorder.Body)
+	}
+	var failure Failure
+	decodeInto(t, recorder, &failure)
+	switch failure.Code {
+	case "HANDOFF_ALREADY_RECORDED", "HANDOFF_NOT_CURRENT_PHASE":
+	default:
+		t.Fatalf("the repeat of a taken behind completion is refused %s (%q), want HANDOFF_ALREADY_RECORDED or HANDOFF_NOT_CURRENT_PHASE, as the repeat of a level completion is", failure.Code, failure.Error)
+	}
+	assertIssuePhase(t, h, phase.Reviewing)
+}
+
 // newEntryHarness serves the daemon's routes with the workflow deciding every fact they apply
 // (newWorkflowHarness), configured as a project that checks nothing in production.
 func newEntryHarness(t *testing.T) (*harness, *workflow.Engine, *factRecorder) {

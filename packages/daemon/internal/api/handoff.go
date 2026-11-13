@@ -262,13 +262,23 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	// exactly what must not stand in for. The record says which it was, written onto the entry
 	// by the transition that raised it, so the fence reads the move rather than guessing at it
 	// from the heads (record.PhaseRow.EntryMovedBack, which says why no count can tell it either).
+	//
+	// And one behind completion is no new report at all: one naming the very record the role's own
+	// row already holds is a second send of a completion this route took (a retry after a dropped
+	// connection, as pi-shared's retryWhileDaemonRestarts makes one), since that row records a
+	// completion's record only by taking it, and a later entry of the phase clears it. The fence
+	// lets that one through, so the engine answers it as it answers any repeat: already recorded,
+	// or no longer this role's phase once the taken completion moved the issue on. Refusing it
+	// here would tell a worker whose completion was taken that it was refused, and that a task is
+	// owed to it which the daemon dropped when the issue left the phase.
 	if entry != 0 && position.entry != 0 && entry != position.entry {
 		if entry > position.entry {
 			writeFailure(w, http.StatusConflict, staleEntryCode, unraisedEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry))
 			return
 		}
+		repeat := position.ownRecord != "" && req.HandoffID == position.ownRecord && req.HandoffVersion == position.ownVersion
 		head := recordedHead(position.pullRequest)
-		if position.entryMovedBack || !behindAtRecordedHead(recordBacked, req.Commit, head) {
+		if !repeat && (position.entryMovedBack || !behindAtRecordedHead(recordBacked, req.Commit, head)) {
 			writeFailure(w, http.StatusConflict, staleEntryCode,
 				staleEntry(grant.Issue, grant.Role, issue.Phase, position.entry, entry, c.Pending,
 					entryHeadClause(recordBacked, req.Commit, head, position.entryMovedBack)))
@@ -806,9 +816,11 @@ func (s *server) checkReport(w http.ResponseWriter, r *http.Request, grant crede
 // testing, and reviewing pass from the last — the handoff record the implementer last named for a
 // file-backed phase (record.PhaseRow.LastHandoff), the phase entry the completing role's current
 // phase is on (record.PhaseRow.Entry, 0 on a row no start has stamped) and whether the start
-// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), its pull request record
-// where this route has a reader for it (handoffPosition), nil where it has none and while none
-// is recorded, and its production check, nil while none was ever opened.
+// that raised it moved the issue back (record.PhaseRow.EntryMovedBack), the handoff record the
+// completing role's own row holds, the one a completion of its this route took named
+// (record.PhaseRow.HandoffRecord and HandoffVersion, "" and 0 while it holds none), its pull
+// request record where this route has a reader for it (handoffPosition), nil where it has none
+// and while none is recorded, and its production check, nil while none was ever opened.
 type completionPosition struct {
 	issue          *record.Issue
 	treeGeneration uint64
@@ -816,6 +828,8 @@ type completionPosition struct {
 	pass           int
 	entry          int64
 	entryMovedBack bool
+	ownRecord      string
+	ownVersion     int
 	lastHandoff    string
 	pullRequest    *record.PullRequest
 	check          *record.ProductionCheck
@@ -874,5 +888,6 @@ func (s *server) handoffPosition(ctx context.Context, key string, role claim.Rol
 		return completionPosition{}, err
 	}
 	return completionPosition{issue: issue, treeGeneration: root.Generation, lingers: root.Lingers(), pass: pass,
-		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack, pullRequest: pr, check: check}, tx.Commit(ctx)
+		lastHandoff: lastHandoff, entry: completing.Entry, entryMovedBack: completing.EntryMovedBack,
+		ownRecord: completing.HandoffRecord, ownVersion: completing.HandoffVersion, pullRequest: pr, check: check}, tx.Commit(ctx)
 }
