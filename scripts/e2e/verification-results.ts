@@ -1030,7 +1030,8 @@ The pre-merge check of the same unreadable repository.
 // request of its issue, open or merged, an `after_merge` check names the branch the merge went
 // to and the default branch, and a `default_branch` check names the default branch alone. A
 // commit named to the command (`--at`) or to the API (`?at=`) replaces all of them, for every
-// check of the issue, and Dispatch reads GitHub for none of it.
+// check of the issue. Dispatch then reads GitHub for nothing but the check runs of a check CI
+// proves, at the issue's newest pull request head as on every read.
 //
 // The case's negative control is the second open pull request: with no commit named, the result
 // at its head stands at that head, so a run that named one head alone would fail here.

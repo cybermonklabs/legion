@@ -774,7 +774,7 @@ func populatedState(t *testing.T) State {
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
 	// Every issue standing in a tree the admission block names carries that tree's quiet time,
-	// the two keys contract 101 added: the measure is the tree's, so each member of one tree
+	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
 	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
 	// fixture, so neither of them is measured, which is what a reader is served for an issue no
 	// live tree holds. The four pairs are one reading, at quietReadAt, a little after the newest

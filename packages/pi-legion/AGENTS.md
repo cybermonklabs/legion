@@ -94,15 +94,17 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 101 (dispatch://INFRA-2560:
+number is the one `DaemonAPIVersion` declares, last bumped by contract 111 (dispatch://INFRA-2560:
 every issue of a live tree carries `treeMovedAt`, when that tree last moved, and `quietHours`,
-how long it has been still, which a caller below 101 is served without), after contract 98's
-held list
+how long it has been still, which a caller below 111 is served without), after contract 104's
+claim recoveries (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no
+process stands behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming
+`fresh_session`, and no shape the plugin parses moves), after contract 98's held list
 (dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
 each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
 the daemon reads in one order, of which `at_work` names the issues past their review from
-contract 101 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
+contract 111 on (see `record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where
 no issue holds the one
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission

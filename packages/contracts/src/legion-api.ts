@@ -697,11 +697,11 @@ const legionIssue = z.object({
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
   /** When the daemon last saw anything of this issue's tree move, and how long that tree has
-   * been still at this read, in hours (contract 101). The pair is the tree's and not the issue's,
+   * been still at this read, in hours (contract 111). The pair is the tree's and not the issue's,
    * so every issue of one tree carries the same two values — an issue past its own review, which
    * holds no admission slot, and a done child recorded under a live tree among them. Both are
    * absent together for an issue whose tree is not live and for an issue the workflow does not
-   * record, and a daemon before contract 101 writes neither at all, which is why a reader takes
+   * record, and a daemon before contract 111 writes neither at all, which is why a reader takes
    * them as optional. A tree the record shows no movement for is measured from the zero time,
    * where the daemon's duration saturates, so `quietHours` reads 2562047.788 — 292 years, the
    * largest span it holds. That is "this tree has never moved", not a fault to refuse the body
@@ -1318,11 +1318,13 @@ export const LegionOperatorClaimResponse = z.object({
   sessionFile: z.string(),
   forgottenSession: nonEmptyString.optional(),
   forgottenSessionFile: nonEmptyString.optional(),
-  /** Why nothing restarted the claim's phase, on a `retry` that asked for a fresh session
-   * (`{"freshSession":true}`) and nowhere else: the claim is back in a new session owing no
-   * task, and the workflow refused the restart that would have handed it one. The claim started
-   * either way, which is why the refusal rides a successful answer; absent when the phase was
-   * restarted, and when no restart was due. */
+  /** What the request did to the claim that the claim itself does not record, on a `retry` that
+   * asked for a fresh session (`{"freshSession":true}`) and nowhere else: the claim is back in a
+   * new session owing no task and the workflow refused the restart that would have handed it
+   * one, or the request stopped the claim and a step that would have brought it back — the
+   * forget of its session, or its start — was refused, and the sentence names the state that
+   * left the claim in. Either rides a successful answer, because the request changed the claim;
+   * absent when the claim came back and nothing else is to be said. */
   phaseNotRestarted: nonEmptyString.optional(),
   locator: legionLocator.optional(),
   budgets: z.object({

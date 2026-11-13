@@ -369,7 +369,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// plugin is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 101 added, which is
+		// `treeMovedAt` and `quietHours` (quietTimeContract, the contract 111 added, which is
 		// this daemon's own), so the only pod served the measure is one at it. The two leave
 		// together (withoutQuietTime), so one column answers for both.
 		quiet bool
@@ -485,7 +485,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// sentence contract 87 added (withoutLeakCheckCause), with each issue's `phaseEntry`
 			// and `givenEntry` gone, the two keys contract 94 added (withoutPhaseEntries), with
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
-			// that half), and with the two keys contract 101 added gone, each issue of a live
+			// that half), and with the two keys contract 111 added gone, each issue of a live
 			// tree's `treeMovedAt` and `quietHours` (withoutQuietTime). Every row that reaches
 			// here is below all of them, so those sixteen strips take their keys whatever the row
 			// is.

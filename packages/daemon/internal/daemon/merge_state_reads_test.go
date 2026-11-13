@@ -8,12 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -35,7 +34,7 @@ func countingPullStandIn(t *testing.T, state string, reads *atomic.Int32) *httpt
 
 // clearCaptureMergeState puts CAPTURE-1's pull request back to a head GitHub's merge state has
 // never been read for, which is where a pull request whose head has just moved stands.
-func clearCaptureMergeState(t *testing.T, pool *pgxpool.Pool) {
+func clearCaptureMergeState(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), "update pull_requests set merge_state = '' where issue = 'CAPTURE-1'"); err != nil {
 		t.Fatalf("clear the recorded merge state: %v", err)
@@ -45,7 +44,7 @@ func clearCaptureMergeState(t *testing.T, pool *pgxpool.Pool) {
 // approvedCapture seeds CAPTURE-1 in reviewing with its reviewer's approval standing on the head
 // its pull request is at and no merge state read yet: an approval waiting on GitHub to report the
 // head one the issue may advance on (workflow's reviewRound).
-func approvedCapture(t *testing.T, pool *pgxpool.Pool) {
+func approvedCapture(t *testing.T, pool *store.Pool) {
 	t.Helper()
 	seedCapture(t, pool, phase.Reviewing, "needs_review",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim",

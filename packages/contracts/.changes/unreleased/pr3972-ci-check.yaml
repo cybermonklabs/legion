@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The Dispatch contracts carry a check's `ci_check`, the `ci` member (`CheckCI`) and the derived
+  result of a check CI proves, `block_type` on the `block.invalid` payload, and the codes
+  `CHECK_PROVED_BY_CI` and `INVALID_CI_CHECK` in the tool texts.

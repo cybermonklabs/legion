@@ -96,7 +96,7 @@ func TestAPodBelowTheQuietTimeContractIsServedNeitherKey(t *testing.T) {
 // quietTimeContract is the contract whose entry in version.go added the two fields, and this
 // daemon's own contract is never below it: a caller at this contract is served the measure.
 func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
-	const addedQuietTime = 101
+	const addedQuietTime = 111
 	if quietTimeContract != addedQuietTime {
 		t.Fatalf("quietTimeContract = %d, want %d, the contract whose entry in version.go added each issue's measure of its tree's quiet time",
 			quietTimeContract, addedQuietTime)

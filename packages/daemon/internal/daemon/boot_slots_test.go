@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -61,7 +60,7 @@ type bootAdmission struct {
 }
 
 // readBootAdmission reads a bootAdmission in one transaction, as the state route reads the state.
-func readBootAdmission(t *testing.T, pool *pgxpool.Pool) bootAdmission {
+func readBootAdmission(t *testing.T, pool *store.Pool) bootAdmission {
 	t.Helper()
 	ctx := context.Background()
 	var got bootAdmission
@@ -89,7 +88,7 @@ func readBootAdmission(t *testing.T, pool *pgxpool.Pool) bootAdmission {
 // deliverableStarts counts the start rows of issue that carry a task: the rows that deliver a
 // worker its work. A phase worker's start is one such row (workflow.StartOrOwe); a start with no
 // task is a role admission brings back beside it, which delivers nothing however often it runs.
-func deliverableStarts(t *testing.T, pool *pgxpool.Pool, issue string) int {
+func deliverableStarts(t *testing.T, pool *store.Pool, issue string) int {
 	t.Helper()
 	var count int
 	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where issue = $1 and kind = 'supervise'
@@ -368,7 +367,7 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 // project's slots, which the migration's grant continues from the highest one a pre-release
 // daemon left, so a slot granted to an issue at work sorts after the roots that already held one
 // however the keys run. What each assertion here means is which issues hold a slot.
-func slotHolders(t *testing.T, pool *pgxpool.Pool) []string {
+func slotHolders(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select issue from slots order by issue`)
 	if err != nil {
@@ -391,7 +390,7 @@ func slotHolders(t *testing.T, pool *pgxpool.Pool) []string {
 
 // finish closes key, where its worker has nothing left to do, as the completion that ends its
 // last phase would: the next admission pass takes its slot back.
-func finish(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) {
+func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -409,7 +408,7 @@ func finish(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) 
 }
 
 // tick applies the controller's tick, the admission pass that runs on no fact of its own.
-func tick(t *testing.T, pool *pgxpool.Pool, handlers []intake.Handler, eventID string) {
+func tick(t *testing.T, pool *store.Pool, handlers []intake.Handler, eventID string) {
 	t.Helper()
 	if _, err := intake.ApplyFact(context.Background(), pool, "controller", eventID, intake.ControllerTick{}, handlers...); err != nil {
 		t.Fatalf("apply %s: %v", eventID, err)

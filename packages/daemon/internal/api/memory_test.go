@@ -123,8 +123,8 @@ var (
 // still neither the cause, nor either entry number, nor the held list, nor the quiet time; a pod
 // from 87 to 93 the claim views' `leakCheckCause` too, and still neither entry number, nor the
 // held list, nor the quiet time; a pod from 94 to 97 the two entry numbers too, and still no held
-// list and no quiet time; a pod from 98 to 100 the held list too, and still no tree quiet time; a
-// pod below 46 none of the sixteen; and a pod at 101, this daemon's declared contract, a pod
+// list and no quiet time; a pod from 98 to 110 the held list too, and still no tree quiet time; a
+// pod below 46 none of the sixteen; and a pod at 111, this daemon's declared contract, a pod
 // whose claims record no contract and a caller in no pod — the operator's `legion state`, whose
 // memory line reads the draws, whose queue line reads the wakes and whose tool-call line reads
 // the step records — are served all of them, the quiet time of every live tree with the rest.
@@ -197,7 +197,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// at 98 or above is served the list and every older pod is not.
 		held bool
 		// quiet is whether the caller is served each issue's measure of its tree's quiet time,
-		// `treeMovedAt` and `quietHours` (quietTimeContract, 101, this daemon's own), so the
+		// `treeMovedAt` and `quietHours` (quietTimeContract, 111, this daemon's own), so the
 		// only pod served the measure is one at it. The two arrive and leave together
 		// (withoutQuietTime), so one column answers for both.
 		quiet bool
@@ -268,7 +268,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 94 to 97, from phaseEntriesContract to below heldContract: the two entry
 		// numbers are served too, and the held list and the tree quiet time are held back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
-		// The band from 98 to 100, from heldContract to below quietTimeContract, the last band
+		// The band from 98 to 110, from heldContract to below quietTimeContract, the last band
 		// under the declared contract: the held list is served too, and the tree quiet time is
 		// the one measure held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
