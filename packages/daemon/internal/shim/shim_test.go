@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -16,13 +15,14 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
@@ -576,93 +576,132 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 	}
 }
 
-// The pod's shared public leak check is installed before the harness is started, and a pod whose
-// check could not be installed runs no agent at all: the shim ends with that failure, exit 1, and
-// the daemon reads the failure as the shim's own. Every write path of such a role would refuse
-// anyway, and the rescue helper runs in this same shim — the daemon's frames are read only once
-// the spawn has returned — so a pod that started one would lose a dying pod's work for a reason
-// nobody could see.
-func TestTheLeakCheckIsInstalledBeforeTheHarnessStarts(t *testing.T) {
-	t.Run("the install runs before the child, with the shim's own environment", func(t *testing.T) {
-		path := socketPath(t)
-		daemon := listen(t, path)
-		child := newOMP(t)
-		cfg := config(t, path, child)
-		var installed atomic.Int32
-		var tooLate, wrongEnv atomic.Bool
-		cfg.InstallLeakCheck = func(_ context.Context, env []string) (string, error) {
-			installed.Add(1)
-			tooLate.Store(child.started())
-			wrongEnv.Store(!slices.Equal(env, cfg.Env))
-			return "", nil
-		}
-		sh := run(t, cfg, newClock())
+// theTag is the pin a pod's worker image carries, as these tests spell one.
+const theTag = "leak-check-v15"
 
-		daemon.accept(t).open(t)
-		if n := installed.Load(); n != 1 {
-			t.Errorf("the install ran %d times, want once before the one spawn; log:\n%s", n, sh.log)
-		}
-		if tooLate.Load() {
-			t.Error("the install ran with the harness already started")
-		}
-		if wrongEnv.Load() {
-			t.Error("the install was handed an environment that is not the shim's own")
-		}
+// installedCheck is the directory the pod's launcher installs the check the daemon served into,
+// made the way the launcher makes it: a GitHub-shaped tarball of a stand-in check whose --help
+// names both shapes (leakguardtest.AnswersHelp), packed (leakguard.PackTarball) and installed at
+// tag (leakguard.InstallServed).
+func installedCheck(t *testing.T, tag string) string {
+	t.Helper()
+	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
+		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
 	})
+	body, err := leakguard.PackTarball(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(t.TempDir(), "leak-check")
+	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
+	defer cancel()
+	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body}); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
 
-	t.Run("a failed install fails the launch and spawns nothing", func(t *testing.T) {
-		path := socketPath(t)
-		daemon := listen(t, path)
-		child := newOMP(t)
-		cfg := config(t, path, child)
-		const why = "LEAK CHECK SETUP ERROR: the pod's install of the shared public leak check: `gh api` exited 1"
-		cfg.InstallLeakCheck = func(context.Context, []string) (string, error) { return "", errors.New(why) }
-		sh := run(t, cfg, newClock())
-
-		p := daemon.accept(t)
-		p.expectHello(t)
-		p.send(t, shimwire.HelloAck{})
-		if !testwait.Holds(waitLimit, 5*time.Millisecond, sh.exited) {
-			t.Fatalf("the shim kept running after a failed install; log:\n%s", sh.log)
-		}
-		if sh.code != 1 || sh.err() != why {
-			t.Errorf("the shim ended %d, %q; want 1 and the install's own failure %q", sh.code, sh.err(), why)
-		}
-		if child.started() {
-			t.Error("the harness was started after an install that failed")
-		}
-	})
-
-	// A pod whose image carries the install but whose daemon predates it names no
-	// PUBLIC_LEAK_CHECK, and every write of that role's agent would be refused for a check the
-	// image did install. The shim names what it installed for the child it starts, and leaves a
-	// runtime's own value alone where there is one: the daemon decides wherever it says anything.
+// The pod's launcher installs the shared public leak check once for the pod, before any role
+// starts, and the shim only reads it. An install of the pin starts the agent, and the shim names
+// it in PUBLIC_LEAK_CHECK where the environment names none, leaving a runtime's own value alone
+// where there is one: the daemon decides wherever it says anything.
+func TestAnInstallOfThePinStartsTheAgent(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		already string // what the shim's own environment names, "" for none
-		want    string
+		want    func(dir string) string
 	}{
-		{"the environment names none, so the installed check is what the child is told", "", "/legion/scratch/leak-check/public-leak-check.sh"},
-		{"the environment names one, so the daemon's value is what the child is told", "/opt/another/public-leak-check.sh", "/opt/another/public-leak-check.sh"},
+		{"the environment names none, so the installed check is what the child is told", "",
+			func(dir string) string { return filepath.Join(dir, leakguardtest.CheckName) }},
+		{"the environment names one, so the daemon's value is what the child is told", "/opt/another/public-leak-check.sh",
+			func(string) string { return "/opt/another/public-leak-check.sh" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := socketPath(t)
 			daemon := listen(t, path)
-			child := newOMP(t)
-			cfg := config(t, path, child)
+			extra := []string{leakguard.TagVariable + "=" + theTag}
 			if tc.already != "" {
-				cfg.Env = append(slices.Clone(cfg.Env), "PUBLIC_LEAK_CHECK="+tc.already)
+				extra = append(extra, leakguard.CheckVar+"="+tc.already)
 			}
-			cfg.InstallLeakCheck = func(context.Context, []string) (string, error) {
-				return "/legion/scratch/leak-check/public-leak-check.sh", nil
-			}
+			child := newOMP(t, extra...)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = installedCheck(t, theTag)
 			sh := run(t, cfg, newClock())
 
 			daemon.accept(t).open(t)
-			if got := child.environment(t)["PUBLIC_LEAK_CHECK"]; got != tc.want {
-				t.Errorf("the child was told PUBLIC_LEAK_CHECK=%q, want %q; log:\n%s", got, tc.want, sh.log)
+			if got, want := child.environment(t)[leakguard.CheckVar], tc.want(cfg.LeakCheckDir); got != want {
+				t.Errorf("the child was told %s=%q, want %q; log:\n%s", leakguard.CheckVar, got, want, sh.log)
+			}
+			line := "[worker-shim] the shared public leak check " + theTag + " the pod's launcher installed is at " +
+				filepath.Join(cfg.LeakCheckDir, leakguardtest.CheckName)
+			if sh.log.count(line) != 1 {
+				t.Errorf("the shim did not log %q once; log:\n%s", line, sh.log)
 			}
 		})
+	}
+}
+
+// A role whose environment carries the pin and whose pod holds no install of it runs no agent at
+// all: the shim ends with exit 1 and the read's own refusal. Every write path of such a role would
+// refuse anyway, and the rescue helper runs in this same shim — the daemon's frames are read only
+// once the spawn has returned — so a pod that started one would lose a dying pod's work for a
+// reason nobody could see.
+func TestAnInstallThatIsNotThePinsStartsNoAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		dir  func(t *testing.T) string
+		want []string
+	}{
+		{"an absent install", func(t *testing.T) string { return filepath.Join(t.TempDir(), "leak-check") },
+			[]string{"LEAK CHECK SETUP ERROR", leakguard.TagVariable + "=" + theTag, "installed no check"}},
+		{"an install of another tag", func(t *testing.T) string { return installedCheck(t, "leak-check-v14") },
+			[]string{"LEAK CHECK SETUP ERROR", leakguard.TagVariable + "=" + theTag, "is of leak-check-v14"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := socketPath(t)
+			daemon := listen(t, path)
+			child := newOMP(t, leakguard.TagVariable+"="+theTag)
+			cfg := config(t, path, child)
+			cfg.LeakCheckDir = tc.dir(t)
+			sh := run(t, cfg, newClock())
+
+			p := daemon.accept(t)
+			p.expectHello(t)
+			p.send(t, shimwire.HelloAck{})
+			if !testwait.Holds(waitLimit, 5*time.Millisecond, sh.exited) {
+				t.Fatalf("the shim kept running with no install of its pin; log:\n%s", sh.log)
+			}
+			if sh.code != 1 {
+				t.Errorf("the shim ended %d, want 1", sh.code)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(sh.err(), want) {
+					t.Errorf("the shim ended with %q, want it to name %q", sh.err(), want)
+				}
+			}
+			if child.started() {
+				t.Error("the agent was started with no install of the pin")
+			}
+		})
+	}
+}
+
+// A tmux pane's environment carries no pin, and its shim reads no install at all: the agent
+// starts where no install exists, and the shim names no check of its own for it.
+func TestWithNoPinTheAgentStartsWithNoInstall(t *testing.T) {
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.LeakCheckDir = filepath.Join(t.TempDir(), "leak-check")
+	sh := run(t, cfg, newClock())
+
+	daemon.accept(t).open(t)
+	if got, ok := child.environment(t)[leakguard.CheckVar]; ok {
+		t.Errorf("the child was told %s=%q, want no check named by the shim; log:\n%s", leakguard.CheckVar, got, sh.log)
+	}
+	if sh.log.count("the shared public leak check") != 0 {
+		t.Errorf("the shim logged an install with no pin; log:\n%s", sh.log)
 	}
 }
 

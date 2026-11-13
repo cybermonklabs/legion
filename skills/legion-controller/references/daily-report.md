@@ -71,6 +71,13 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
+- **Phase workers nothing will prompt.** Each entry of the tick's `silent` list, with the role whose
+  claim is silent and how long it has been quiet (`skill://legion-controller/references/wakes.md`).
+  That list arrives on the tick wake alone and is in no `read_state` field, so the report names the
+  most recent tick's list and says nothing of them on a day no tick carried one.
+  An entry with `backgroundSince` is a worker whose own background work has stood past `worker_background_hours`,
+  which the daemon does not prompt.
+  Name it with how long that work has stood, counted from `backgroundSince`.
 - **Waiting on a person.** Each tree whose next step waits on a person's answer, with that ask's
   `dispatch://` reference, while the ask is open. Each row of the weekly plan that moved nothing,
   because no person's request stands behind it, with its deferral ask's `dispatch://` reference,
