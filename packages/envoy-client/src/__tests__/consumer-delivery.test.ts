@@ -733,7 +733,7 @@ describe("frames already written", () => {
   // removing that one alone leaves the row green.
   test("a copy of a frame received but not yet written is written once and answered on every inbox", async () => {
     const clock = { now: T0 };
-    const ledger = replayEngine(clock);
+    const ledger = deliveryLedger(clock);
     const writes: number[] = [];
     const { delivery, handed, replies, state, settled } = setup({ clock, ledger });
     const write = Promise.withResolvers<void>();

@@ -3,7 +3,6 @@ package store
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -302,19 +301,20 @@ func (r *Registry) interestRow(cur Interest, getErr error, item Interest, plan I
 	if err != nil {
 		return Interest{}, nil, false, err
 	}
-	buf, err = json.Marshal(merged)
+	buf, err = encodeInterest(merged)
 	if err != nil {
 		return Interest{}, nil, false, err
 	}
 	if getErr == nil && now-cur.UpdatedAt < InterestRefreshAge.Milliseconds() {
 		// What the skip asks is whether this write would store the row it holds, so it compares
 		// the encoding of merged with that of the current row rather than the fields one by one:
-		// a field added to Interest, and the difference between a null and an empty topic list,
-		// are then covered by the encoding itself. The current row is stamped with merged's
-		// UpdatedAt, the one field a write of an unchanged row would move.
+		// a field added to Interest, a key only a newer build knows (Interest.unknown), and the
+		// difference between a null and an empty topic list are then covered by the encoding
+		// itself. The current row is stamped with merged's UpdatedAt, the one field a write of an
+		// unchanged row would move.
 		stored := cur
 		stored.UpdatedAt = merged.UpdatedAt
-		encoded, err := json.Marshal(stored)
+		encoded, err := encodeInterest(stored)
 		if err != nil {
 			return Interest{}, nil, false, err
 		}
@@ -620,7 +620,7 @@ func (r *Registry) removeInterestTopics(ctx context.Context, sessionID string, t
 			continue
 		}
 		item.UpdatedAt = r.now().UnixMilli()
-		buf, err := json.Marshal(item)
+		buf, err := encodeInterest(item)
 		if err != nil {
 			return err
 		}

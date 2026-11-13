@@ -199,8 +199,11 @@ func TestAHeartbeatAndARoleSetKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 	registry, sessions := setupSessionsTest(t, nil, nil)
 	client := setupPublishTestClient(t)
 	// The role set below lands, and a claim that lands hands its role's kept lane a drain
-	// (runKeptRoleDrain), so these deps carry the delivery configuration that drain runs on.
-	d := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+	// (runKeptRoleDrain), so these deps carry the delivery configuration that drain runs on. A
+	// heartbeat asks for the session's own consumer, as every registration must since #2603
+	// (2af83d53fc) refused one without delivery.consumer (deliveryReasonNotRequested), so they
+	// carry the session consumers too.
+	d := withRoleClaimDrain(t, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)})
 	const sessionID = "ses_newer_build"
 	bucket := func(name string) nats.KeyValue {
 		t.Helper()
@@ -257,7 +260,7 @@ func TestAHeartbeatAndARoleSetKeepFieldsThisBuildDoesNotKnow(t *testing.T) {
 
 	recorder := httptest.NewRecorder()
 	subscribeHandler(d, "test-machine", logging.New("test")).ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
-		strings.NewReader(`{"session_id":"ses_newer_build","topics":["notifications.team.example"],"dir":"/work"}`)))
+		strings.NewReader(`{"session_id":"ses_newer_build","topics":["notifications.team.example"],"dir":"/work","delivery":{"consumer":true,"epoch":"e"}}`)))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("heartbeat: status %d %s, want 200", recorder.Code, recorder.Body.String())
 	}

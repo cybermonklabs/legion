@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -80,8 +79,8 @@ func (r *Registry) getWithRevision(ctx context.Context, sessionID string, fromBu
 	if err != nil {
 		return Interest{}, 0, err
 	}
-	var fresh Interest
-	if err := json.Unmarshal(entry.Value(), &fresh); err != nil {
+	fresh, err := decodeInterestValue(entry.Value())
+	if err != nil {
 		r.logger().Warn("registry read an interest record it cannot decode",
 			slog.String("session_id", sessionID),
 			slog.Uint64("revision", entry.Revision()),

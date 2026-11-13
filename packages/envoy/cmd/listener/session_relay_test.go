@@ -1175,15 +1175,15 @@ func TestSessionConsumerWithoutTheGrantProbesItOncePerTenMinutes(t *testing.T) {
 // of its own, so a listener that cannot open that connection would refuse every registration: it
 // ends its start instead, exits 1 and says why, as the live topics lane's failure does
 // (TestAListenerWhoseGrantRefusesEveryTopicEndsItsStart). The connection is refused here by the
-// account's connection limit, two: the main client and the role lane take them both, and the
-// session consumers' is the third.
+// account's connection limit, three: the main client, the delivery lease's own connection
+// (openDeliveryLease) and the role lane take them all, and the session consumers' is the fourth.
 func TestAListenerThatCannotOpenItsSessionConsumersEndsItsStart(t *testing.T) {
 	config := `jetstream {}
 accounts {
   LISTENER: {
     jetstream: enabled
     users: [ { user: listener, password: listener } ]
-    limits: { max_connections: 2 }
+    limits: { max_connections: 3 }
   }
 }
 `
