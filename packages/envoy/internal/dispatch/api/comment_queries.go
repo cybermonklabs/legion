@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,21 +16,120 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
+// listComments answers an issue's comment list, scoped by ?artifact= to the comments anchored in
+// one of its documents.
 func (s *server) listComments(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	comments, err := s.loadOwnerComments(
-		r.Context(),
-		s.deps.Store.Pool,
+	s.answerCommentList(
+		w, r,
 		issueOwner(r.PathValue("key")),
 		strings.TrimSpace(r.URL.Query().Get("artifact")),
+		r.PathValue("key"),
 	)
+}
+
+// answerCommentList answers one comment list - an issue's (listComments) or an unlinked
+// document's (listArtifactComments) - in the order the activity feed answers a page of events
+// (listIssueEvents): the validator is read first, in one statement over metadata, and the
+// comments are loaded only for a reader that neither holds that validator nor can be written the
+// bytes this server kept under it (list_answers.go). A warm read therefore builds nothing - no
+// comment row, no mention, no delivery attempt, no display tree, no encode, no compression -
+// which is what a validator over the answer's own bytes could never do, since the answer had to
+// exist before its key was known.
+//
+// The validator stands on the list's watermark: a counter per comment-list owner that three
+// deferred constraint triggers raise for every write of comments, comment_mentions and
+// comment_deliveries (migration 20261106020619). It cannot stand on the issue's last_seq the way
+// the feed's does, because a delivery claim and the resolution recorded before a send write a
+// delivery row and append no event at all (comment_delivery.go), and a reader whose list now
+// shows that attempt would be answered 304. Deferred to commit, the counter rises inside the
+// writing transaction, so a reader sees the new rows and the new counter together or neither.
+//
+// last_seq is hashed in beside it for the one part of the answer those three tables do not
+// decide: a reply that answers a block carries that block's reference, built from the owner's
+// project key and the document's slug (refs.ReplyBlocks), and a rename of either moves the
+// owner's event sequence without touching a comment row. The owner and the ?artifact= scope are
+// in the hash too, so no two lists of one deploy can be given one validator.
+//
+// name is the owner as the request spells it: the key the kept answer is filed under beside its
+// ETag, and the subject the display tree read is logged against.
+func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner owner, artifactFilter, name string) {
+	watermark, lastSeq, ownerHeld, err := s.commentListWatermark(r.Context(), owner)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, comments)
+	trees := wantsDisplayTrees(r)
+	etag := s.commentListETag(owner, artifactFilter, watermark, lastSeq, trees)
+	if answerNotModified(w, r, etag) {
+		return
+	}
+	key := listAnswerKeyFor(r, commentListRoute, name, etag)
+	if s.listAnswers.answer(w, key) {
+		return
+	}
+	comments, err := s.loadOwnerComments(r.Context(), s.deps.Store.Pool, owner, artifactFilter)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	reader := s.readDisplayTrees(r.Context(), trees)
+	reads := shapedComments(comments, reader)
+	reader.resolve()
+	encoded, err := encodeListAnswer(reads)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.writeListAnswer(w, key, encoded, ownerHeld)
+}
+
+// commentListWatermark is the pair a comment list's validator is built on, read in one statement
+// with whether the owner holding it is there at all: the list's own watermark, and the newest
+// event sequence of its owner. Each counter reads 0 where no row answers - an owner nothing has
+// written carries no counter, and a key no issue holds answers the empty list rather than a
+// refusal, as this route has always done - so a list that has never been written and one whose
+// owner does not exist are one case in the answer, as they have always been. They are two cases
+// for the server's own keeping: the empty list of an owner no row holds is kept under no key,
+// since that key is the path the caller spelled (writeListAnswer).
+func (s *server) commentListWatermark(ctx context.Context, owner owner) (int64, int64, bool, error) {
+	var query, value string
+	switch {
+	case owner.IssueKey != nil:
+		query, value = `
+			select coalesce((select seq from comment_watermarks where issue_key = $1), 0),
+			       coalesce((select last_seq from issues where key = $1), 0),
+			       exists(select 1 from issues where key = $1)
+		`, *owner.IssueKey
+	case owner.ArtifactID != nil:
+		query, value = `
+			select coalesce((select seq from comment_watermarks where artifact_id = $1), 0),
+			       coalesce((select max(seq) from events where artifact_id = $1), 0),
+			       exists(select 1 from artifacts where id = $1)
+		`, *owner.ArtifactID
+	default:
+		return 0, 0, false, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
+	}
+	var watermark, lastSeq int64
+	var ownerHeld bool
+	if err := s.deps.Store.Pool.QueryRow(ctx, query, value).Scan(&watermark, &lastSeq, &ownerHeld); err != nil {
+		return 0, 0, false, fmt.Errorf("read the comment list's watermark: %w", err)
+	}
+	return watermark, lastSeq, ownerHeld, nil
+}
+
+// commentListETag is a comment list answer's validator: the list it is of, the watermark every
+// write the list shows raises, and the owner's event sequence, closed with the lines both lists'
+// ETags carry (listETag). It is referencesETag's shape - one line per part, then the hash of them
+// - and, unlike the feed's, it names its owner, so two lists standing at one count never share a
+// validator.
+func (s *server) commentListETag(owner owner, artifactFilter string, watermark, lastSeq int64, trees bool) string {
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "issue=%s\nartifact=%s\nfilter=%s\nwatermark=%d\nlast_seq=%d\n",
+		deref(owner.IssueKey), deref(owner.ArtifactID), artifactFilter, watermark, lastSeq)
+	return s.listETag(hash, trees)
 }
 
 func (s *server) loadOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
@@ -75,8 +175,8 @@ func commentHasOwner(comment model.Comment, owner owner) bool {
 
 // commentRead is the body GET /api/v1/comments/{id} answers.
 type commentRead struct {
-	Comment model.Comment   `json:"comment"`
-	Replies []model.Comment `json:"replies"`
+	Comment shapedComment   `json:"comment"`
+	Replies []shapedComment `json:"replies"`
 }
 
 func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
@@ -103,7 +203,12 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, commentRead{Comment: comments[0], Replies: replies})
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	read := commentRead{Replies: shapedComments(replies, reader)}
+	read.Comment.Comment = comments[0]
+	read.Comment.shape(reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, read)
 }
 
 // replyChainQuery is every comment transitively replying to the row(s) matching

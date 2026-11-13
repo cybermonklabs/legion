@@ -632,7 +632,7 @@ func (s *server) dismissInbox(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(events...)
+	s.publish(r.Context(), events...)
 	WriteJSON(w, http.StatusOK, inboxDismissResponse{Dismissed: dismissed})
 }
 

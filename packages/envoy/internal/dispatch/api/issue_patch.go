@@ -487,7 +487,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// stored before this transaction's: every event the write phase appends on the issue is still
 	// queued, the asks' and the ones their document writes queued beside them alike, so the
 	// response's last_seq and the status event's payload are filled in from what those appends
-	// took (issueLastSeq, model.IssueEventPayload.WithOwnerLastSeq) rather than counted here.
+	// took (appendedIssueLastSeq, model.IssueEventPayload.WithOwnerLastSeq) rather than counted
+	// here.
 	after, err := s.loadIssue(r.Context(), tx, key)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -610,12 +611,12 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	after.LastSeq = issueLastSeq(key, appended)
+	after.LastSeq = appendedIssueLastSeq(key, appended)
 	// A change of closed_at reaches the document rooms of every process, this one's included, from
 	// the commit itself: migration 20261101181500's trigger notifies, and each process closes its
 	// rooms of the issue's documents so their browsers reconnect with the scope the issue now
 	// allows.
-	s.publish(appendedEvents(appended...)...)
+	s.publish(r.Context(), appendedEvents(appended...)...)
 	if closing {
 		// The commit's notification closes the issue's rooms on every process; the sweep catches
 		// the ask blocks written since the close forked each document (sweepClosedIssueAsks).
@@ -625,13 +626,13 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, withAdvice(after, advice))
 }
 
-// issueLastSeq is the issue's last_seq once the write phase has run: the sequence of the last
-// event it appended on the issue's own owner row, which that insert took from the row and wrote
-// back to it. It is read from the events rather than counted, because a count of what the route
-// queued misses what the asks' document writes queued beside them - the anchor refreshes of a
-// document a close or a reopen rewrote - which the same owner row numbers too (INFRA-636).
+// appendedIssueLastSeq is the issue's last_seq once the write phase has run: the sequence of the
+// last event it appended on the issue's own owner row, which that insert took from the row and
+// wrote back to it. It is read from the events rather than counted, because a count of what the
+// route queued misses what the asks' document writes queued beside them - the anchor refreshes of
+// a document a close or a reopen rewrote - which the same owner row numbers too (INFRA-636).
 // appended holds the events as the write phase left them, so this runs after Commit.
-func issueLastSeq(key string, appended []*model.Event) int {
+func appendedIssueLastSeq(key string, appended []*model.Event) int {
 	last := 0
 	for _, event := range appended {
 		if event.IssueKey != nil && *event.IssueKey == key && event.Seq > last {

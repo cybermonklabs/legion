@@ -6081,6 +6081,7 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	var evicted atomic.Int32
+	reached := make(chan struct{})
 	service.afterSettleWarm = func(room string) {
 		if room != artifactID || !evicted.CompareAndSwap(0, 1) {
 			return
@@ -6088,13 +6089,16 @@ func TestSettleSurvivesEvictionBetweenWarmAndTreeRead(t *testing.T) {
 		if err := service.Evict(ctx, room); err != nil {
 			t.Errorf("evict mid-settle: %v", err)
 		}
+		close(reached)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	deadline := time.Now().Add(3 * time.Second)
-	for evicted.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if evicted.Load() == 0 {
+	// The settlement runs on a timer of its own, so this waits for the hook itself rather than
+	// polling a clock: a box running several packages at once took longer than the three seconds
+	// a poll allowed and failed a row whose subject is not timing at all. The ceiling is a
+	// ceiling, not a duration - a settlement that lands at once ends the wait at once.
+	select {
+	case <-reached:
+	case <-time.After(30 * time.Second):
 		t.Fatal("settlement never reached the hook")
 	}
 	// The hook is one-shot through the CAS above; leaving it in place avoids racing the settle

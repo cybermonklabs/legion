@@ -260,6 +260,19 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 // attributes, and both trees render through pmdoc.RenderWithBlockOffsets - so either is the very
 // string the render would make. A fork no rendering is known for is rendered here.
 func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.Actor, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
+	return s.applyLiveWritten(ctx, artifactID, actor, nil, mutate)
+}
+
+// applyLiveWritten is applyLive for a write that renders the tree it is about to write before it
+// writes it, an upload being the one such write (ReplaceText): written is that tree with the
+// rendering the write made of it, which this operation takes for the fork it leaves rather than
+// rendering the same text over again, and only where the fork reads back as that very tree,
+// block ids and marks included (writtenRendering). A warm operation hands the room's update
+// observer the rendering it leaves with the layout of the same render (publishedRendering), so
+// such a write records its rendering's layout too (renderTreeWithLayout). A write that put
+// another tree in the fork - an upload that marked its replacement with the anchors it carried
+// over - renders the fork here, as every other write does. written is nil for applyLive itself.
+func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor model.Actor, written *renderedTree, mutate func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error) error {
 	op, err := s.openLiveOperation(ctx, artifactID)
 	if err != nil {
 		return err
@@ -325,11 +338,7 @@ func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.
 	var layout *pmdoc.Layout
 	// Only a warm operation's layout is ever taken (publishedRendering below).
 	if err == nil {
-		if op.read.warm {
-			markdown, offsets, layout, err = documentRenderingValidWithLayout(tree)
-		} else {
-			markdown, offsets, err = documentMarkdownValidWithOffsets(tree)
-		}
+		markdown, offsets, layout, err = writtenRendering(written, op.read.warm, tree)
 	}
 	if err != nil {
 		return joinedSchemaError(err, start)
@@ -398,6 +407,31 @@ func (s *Service) applyLive(ctx context.Context, artifactID string, actor model.
 		mergeInto(&op.write.addedAskBlockIDs, added)
 	}
 	return nil
+}
+
+// writtenRendering is the rendering of tree, the fork as an operation left it, with the
+// pmdoc.Layout a warm operation hands the room's update observer with it: the rendering the write
+// made of the tree it wrote (applyLiveWritten's written), where the fork reads back as that very
+// tree - its content, its structure, its block ids, its attributes and its marks
+// (pmdoc.Node.EqualWithBlockIDs) - and a render of the fork otherwise. Rendering is deterministic
+// over one tree, so the write's rendering of an equal tree is the very string, the very offsets
+// and the very layout this render would make.
+//
+// Only a warm operation's rendering is ever taken from here (publishedRendering), and the replica
+// that takes it splices later updates into the layout beside its markdown (renderedReplica.keep),
+// so a warm fork takes the write's rendering only with the layout that render recorded
+// (renderTreeWithLayout) and renders the fork for one otherwise. A cold fork needs none: no
+// replica is offered its rendering.
+func writtenRendering(written *renderedTree, warm bool, tree pmdoc.ValidDocument) (string, []pmdoc.BlockOffset, *pmdoc.Layout, error) {
+	if written != nil && written.tree != nil && (written.layout != nil || !warm) &&
+		written.tree.EqualWithBlockIDs(tree.Node()) {
+		return written.markdown, written.offsets, written.layout, nil
+	}
+	if warm {
+		return documentRenderingValidWithLayout(tree)
+	}
+	markdown, offsets, err := documentMarkdownValidWithOffsets(tree)
+	return markdown, offsets, nil, err
 }
 
 // applyMargin writes record as markID's margin record - a comment's or suggestion's, which a
@@ -627,7 +661,14 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 	var canonical string
 	var read pmdoc.WrittenReadBack
 	var unchanged bool
-	err = s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	// The rendering of the replacement, which this write makes to tell whether the upload changes
+	// the document and answers its caller with: the write leaves that very tree in the fork,
+	// unless it has anchors to carry over, so applyLive takes this rendering for the fork it
+	// leaves rather than rendering the same text again (writtenRendering). It is rendered with
+	// its layout, which a warm operation hands the room's update observer with it
+	// (replicaRendering), so taking it costs the observer no render either.
+	var written renderedTree
+	err = s.applyLiveWritten(ctx, artifactID, actor, &written, func(doc *crdt.Doc, start pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		valid, err := startTree(start, doc)
 		current := valid.Node()
@@ -662,9 +703,12 @@ func (s *Service) ReplaceText(ctx context.Context, artifactID, markdown string, 
 		} else if err := refuseChangedAsks(current, target, readWrittenAskBlockStrictly, newAskMarkdown()); err != nil {
 			return &ErrInvalidAskBlock{Reason: err}
 		}
-		if canonical, err = renderTree(target); err != nil {
+		var offsets []pmdoc.BlockOffset
+		var layout *pmdoc.Layout
+		if canonical, offsets, layout, err = renderTreeWithLayout(target); err != nil {
 			return err
 		}
+		written = renderedTree{tree: target, markdown: canonical, offsets: offsets, layout: layout}
 		if !repairing && currentMarkdown == canonical {
 			unchanged = true
 			return nil
@@ -926,8 +970,15 @@ func (s *Service) Text(ctx context.Context, artifactID string) (string, error) {
 }
 
 // TextWithToken returns canonical markdown and a token over its full Proof tree,
-// including inline marks that canonical Markdown does not render.
+// including inline marks that canonical Markdown does not render. It answers the markdown and
+// the token the document's latest version stored, without reading the document, where that
+// version is still the document's state (storedText); otherwise it reads the document and
+// renders it.
 func (s *Service) TextWithToken(ctx context.Context, artifactID string) (string, string, error) {
+	markdown, token, served, err := s.storedText(ctx, artifactID)
+	if err != nil || served {
+		return markdown, token, err
+	}
 	read, tree, err := s.readDocument(ctx, artifactID)
 	switch {
 	case err != nil:
@@ -1140,6 +1191,7 @@ func renderedBlocks(tree pmdoc.ValidDocument, rows map[string][]pmdoc.TableRow) 
 		return renderedDocument{}, documentSchemaError(tokens.blocksErr)
 	}
 	markdown, offsets, err := tree.RenderWithBlockOffsets()
+	countDocumentRender(markdown)
 	if err != nil {
 		return renderedDocument{}, documentSchemaError(err)
 	}
@@ -2138,14 +2190,22 @@ type versionWriteResult struct {
 // renderedTree is a document tree with its canonical markdown and each identified block's byte
 // range in that markdown, all from one render (pmdoc.RenderWithBlockOffsets), so a version write
 // stores the markdown and indexes its blocks and cuts its mentions' excerpts from that render
-// rather than rendering the tree again for them. An upload that changes the document still renders
-// it twice: ReplaceText renders the replacement to tell whether it changes anything, and applyLive
-// renders the fork it leaves; the blocks and excerpts are cut from applyLive's render, which
+// rather than rendering the tree again for them. An upload that changes the document renders it
+// twice: ReplaceText renders the document as it stands, to tell whether the upload changes it,
+// and renders the replacement it parsed, which it answers its caller with; applyLive takes that
+// second rendering for the tree the write left, where the fork reads back as that very tree
+// (writtenRendering), and the blocks and excerpts are cut from it, which
 // IndexDocumentReferences checks is the version's markdown.
+//
+// layout is the pmdoc.Layout of that same render, recorded only by a write that hands its
+// rendering to the operation it writes through (applyLiveWritten's written), since a warm
+// operation offers the room's update observer a rendering and its layout together
+// (replicaRendering); every other rendered tree leaves it nil.
 type renderedTree struct {
 	tree     *pmdoc.Node
 	markdown string
 	offsets  []pmdoc.BlockOffset
+	layout   *pmdoc.Layout
 	// head is the head of the document's stored history the capture read the tree at under the
 	// document's advisory lock (captureLiveTextAndAuthors without a write of its own), which the
 	// version records as its update cursor; nil when the capture read none.
@@ -2171,10 +2231,16 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		return versionWriteResult{}, s.refreshAnchors(ctx, tx, artifactID, tree, actor)
 	}
 
-	version, err := queueVersionInsert(ctx, tx, artifactID, markdown, spec.authors, spec.named, spec.summary, spec.docUpdateVersion)
+	// What the version's markdown was rendered from, so a text read of a document still standing
+	// there serves it rather than rendering the document again (storedText).
+	version, err := queueVersionInsert(ctx, tx, artifactID, markdown, spec.authors, spec.named, spec.summary, spec.docUpdateVersion, renderStampOf(artifactID, tree))
 	if err != nil {
 		return versionWriteResult{}, err
 	}
+	// The markdown this row holds is a stored text, so its display tree is stored once the
+	// transaction commits (collectVersionText): every version write passes here, and the routes
+	// above hold the version's number rather than its text.
+	collectVersionText(ctx, artifactID, markdown)
 	// The version's tree is the one the issue's task counts are read from, so they are written
 	// with it (LEGION-542).
 	if err := RecordTaskProgress(ctx, tx, artifactID, tree); err != nil {
@@ -2228,7 +2294,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 // the version as it will stand, so the reads that follow in this transaction take it from there
 // rather than from a table that holds the row only once the write phase has run (latestVersion,
 // PendingVersionMarkdown).
-func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown string, authors []model.Actor, named bool, summary *string, docUpdateVersion *int64) (model.Version, error) {
+func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown string, authors []model.Actor, named bool, summary *string, docUpdateVersion *int64, stamp RenderStamp) (model.Version, error) {
 	number, createdAt, err := versionSlot(ctx, tx, artifactID)
 	if err != nil {
 		return model.Version{}, err
@@ -2239,7 +2305,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 	} else if cursor, err = transactionHead(ctx, tx, artifactID); err != nil {
 		return model.Version{}, err
 	}
-	version, insert, err := versionInsert(artifactID, markdown, authors, number, createdAt, named, summary, cursor)
+	version, insert, err := versionInsert(artifactID, markdown, authors, number, createdAt, named, summary, cursor, stamp)
 	if err != nil {
 		return model.Version{}, err
 	}
@@ -2253,8 +2319,12 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 }
 
 // versionInsert is a document version's row as its insert leaves it - its size is its markdown's
-// (model.VersionSize), its authors what they decode to - and the step that inserts it.
-func versionInsert(artifactID, markdown string, authors []model.Actor, number int, createdAt time.Time, named bool, summary *string, docUpdateVersion int64) (model.Version, WriteStep, error) {
+// (model.VersionSize), its authors what they decode to - and the step that inserts it. stamp is
+// what the markdown was rendered from, stored with the head this insert meets, so a text read of
+// a document still standing there serves the stored markdown rather than rendering the document
+// again (storedText): the head and the transaction standing at it are read in the insert itself,
+// which the write phase runs after the appends this transaction queued before it.
+func versionInsert(artifactID, markdown string, authors []model.Actor, number int, createdAt time.Time, named bool, summary *string, docUpdateVersion int64, stamp RenderStamp) (model.Version, WriteStep, error) {
 	encodedAuthors, err := json.Marshal(authors)
 	if err != nil {
 		return model.Version{}, nil, fmt.Errorf("encode document version authors: %w", err)
@@ -2264,10 +2334,10 @@ func versionInsert(artifactID, markdown string, authors []model.Actor, number in
 	if err := json.Unmarshal(encodedAuthors, &version.Authors); err != nil {
 		return model.Version{}, nil, fmt.Errorf("decode document version authors: %w", err)
 	}
-	return version, execStep("write document version", `
-		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
-	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt), nil
+	return version, execStep("write document version", RenderStampHead+`
+		insert into artifact_versions (artifact_id, number, markdown, authors, named, summary, doc_update_version, created_at, `+RenderStampColumns+`)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, `+RenderStampValues+`, $9, $10)
+	`, artifactID, number, markdown, encodedAuthors, named, summary, docUpdateVersion, createdAt, stamp.Token, stamp.Renderer), nil
 }
 
 // versionSlot numbers and dates the next version of artifactID tx writes: through the ledger tx's

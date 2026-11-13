@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { FakeNatsServer } from "./fake-nats-server"
 
 const entry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
@@ -27,6 +28,10 @@ test("a hangup from the Claude process group deregisters the session before the 
           machine_id: "test",
           dir: "/tmp",
           topics: body.topics,
+          // Every stand-in listener answers the session's own consumer
+          // (`@legion/envoy-client/test/subscribe-answer`): one that answers no delivery leaves
+          // its session refused inbound, which is a state of its own and not this case's.
+          delivery: consumerDelivery(body.session_id),
         })
       }
       if (request.method === "DELETE") return new Response(null, { status: 200 })

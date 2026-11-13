@@ -269,7 +269,7 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(appended)
+	s.publish(ctx, appended)
 	WriteJSON(w, http.StatusOK, acceptedDelivery{MessageDelivery: accepted, Body: message.Body})
 }
 
@@ -507,7 +507,7 @@ func (s *server) recordPendingMessageDelivery(
 		return pendingMessageDelivery{}, err
 	}
 	if superseded != nil {
-		s.publish(*superseded)
+		s.publish(ctx, *superseded)
 	}
 	return pending, nil
 }
@@ -992,7 +992,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body != nil && followUp, plan)
+		read, posted, err := s.replyAfterAnswer(r.Context(), tx, answer, actor, input.Body != nil && followUp, plan, wantsDisplayTrees(r))
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1005,6 +1005,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
+			// The hydration wrote the block into the row the shape stands in front of, so the
+			// shape is taken again over it (display_trees.go).
+			shapeBuilt(wantsDisplayTrees(r), read.shape)
 		}
 		response = read
 		if posted != nil {
@@ -1052,13 +1055,13 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
-		response, events, status = replyRead{Message: reply}, append(events, answered), http.StatusCreated
+		response, events, status = replyRead{shapedMessage: newShapedMessage(reply, wantsDisplayTrees(r))}, append(events, answered), http.StatusCreated
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(events...)
+	s.publish(r.Context(), events...)
 	WriteJSON(w, status, response)
 }
 
@@ -1074,10 +1077,10 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 // (messageReplyPlan).
 func (s *server) replyAfterAnswer(
 	ctx context.Context, tx pgx.Tx, answer model.Message, actor model.Actor, post bool,
-	plan messageReplyPlan,
+	plan messageReplyPlan, trees bool,
 ) (replyRead, *model.Event, error) {
 	if !post {
-		return replyRead{Message: answer, Duplicate: true}, nil, nil
+		return replyRead{shapedMessage: newShapedMessage(answer, trees), Duplicate: true}, nil, nil
 	}
 	posted, err := scanMessage(tx.QueryRow(ctx, `
 		select `+messageColumns+`
@@ -1087,7 +1090,7 @@ func (s *server) replyAfterAnswer(
 		order by created_at desc limit 1
 	`, answer.ID, plan.body, actor.ID))
 	if err == nil {
-		return replyRead{Message: posted, Duplicate: true}, nil, nil
+		return replyRead{shapedMessage: newShapedMessage(posted, trees), Duplicate: true}, nil, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return replyRead{}, nil, err
@@ -1096,7 +1099,7 @@ func (s *server) replyAfterAnswer(
 	if err != nil {
 		return replyRead{}, nil, err
 	}
-	return replyRead{Message: followUpReply}, &event, nil
+	return replyRead{shapedMessage: newShapedMessage(followUpReply, trees)}, &event, nil
 }
 
 // replyRead is what the reply route answers with a message: the message, and `duplicate` when
@@ -1104,7 +1107,7 @@ func (s *server) replyAfterAnswer(
 // attempt's stored reply, or a follow-up whose text the session already posted). A caller cannot
 // otherwise tell a resend from a send, since both carry the message it asked for.
 type replyRead struct {
-	model.Message
+	shapedMessage
 	Duplicate bool `json:"duplicate,omitempty"`
 }
 

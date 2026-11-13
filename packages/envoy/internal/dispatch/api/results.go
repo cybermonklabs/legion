@@ -209,7 +209,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// the pull request row landed would show this result standing at no basis until something
 	// else happened.
 	s.readThroughPullRequests(r.Context(), check.IssueKey, written.result.CommitSHA, checkRepo)
-	s.publish(written.event)
+	s.publish(r.Context(), written.event)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		// The check as the transaction that wrote the row saw it, which after a redo is not the
 		// one resolveCheck read: the line names the `when` the result was judged by.

@@ -311,7 +311,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 	if err := ledger.Commit(ctx); err != nil {
 		return IssueAskRepair{}, err
 	}
-	s.publish(appendedEvents(events...)...)
+	s.publish(ctx, appendedEvents(events...)...)
 	if repair.Changed() {
 		slog.Info("dispatch: repaired the asks of an issue", append([]any{"issue", issueKey}, repair.LogArgs()...)...)
 	}

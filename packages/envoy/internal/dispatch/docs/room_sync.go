@@ -59,6 +59,12 @@ const (
 	// issueOpenChangedChannel carries the key of an issue that was closed or reopened, sent by the
 	// trigger migration 20261101181500 puts on issues.closed_at (Service.issueOpenChanged).
 	issueOpenChangedChannel = "dispatch_issue_open_changed"
+	// documentRemovedChannel carries the bare id of a document a removal has just deleted, sent
+	// inside that removal's own transaction (AnnounceDocumentRemoved), so every process closes
+	// its room of it (Service.documentRemoved). It is a close, not a change: the row has gone,
+	// and documentHeadChannel would announce a head of 0, which a catch-up reads as a room
+	// already at the stored head and closes nothing.
+	documentRemovedChannel = "dispatch_doc_removed"
 	// documentQueryChannel carries one process's question about a room to every other member,
 	// and documentAnswerChannel each member's answer to it; room_query.go has their wire format.
 	documentQueryChannel  = "dispatch_doc_query"
@@ -185,7 +191,11 @@ func (s *Service) RegisterRoomSync(hub *pglisten.Hub) (run func(ctx context.Cont
 // the catch-up's lane, because the follower tells a write's bare announcement from an old build's
 // by the head announcement right before it (roomCatchUps.changed). The issue-open lane re-reads
 // the issue of every resident room after each LISTEN (Service.recheckResidentIssues), since a
-// close or a reopen notified while the hub had no connection reached nobody.
+// close or a reopen notified while the hub had no connection reached nobody. The removal lane is
+// its own, because closing a room of a row that has gone (Service.documentRemoved) must not wait
+// behind a catch-up reading another document's stored history; it reads the rows of this
+// process's rooms after each LISTEN too (Service.recheckRemovedRooms), since a removal notified
+// while the hub had no connection reached nobody and nothing announces it again.
 func (r *roomSync) handlers() []roomSyncHandler {
 	catchUps := r.service.catchUps
 	return []roomSyncHandler{
@@ -203,6 +213,10 @@ func (r *roomSync) handlers() []roomSyncHandler {
 		{
 			channels:  []roomSyncChannel{{name: issueOpenChangedChannel, notified: r.service.issueOpenChanged}},
 			connected: r.service.recheckResidentIssues,
+		},
+		{
+			channels:  []roomSyncChannel{{name: documentRemovedChannel, notified: r.service.documentRemoved}},
+			connected: r.service.recheckRemovedRooms,
 		},
 		{channels: []roomSyncChannel{{name: documentQueryChannel, notified: r.service.roomQueries.query}}},
 		{channels: []roomSyncChannel{{name: documentAnswerChannel, notified: r.service.roomQueries.answer}}},
@@ -499,4 +513,33 @@ func announceDocumentChange(ctx context.Context, tx pgx.Tx, room, processID stri
 // batch of the transaction that made the change, after the writes it announces.
 func queueAnnounceDocumentChange(b *store.WriteBatch, room, processID string) {
 	b.Queue("announce the document's change", announceDocumentChangeStatement, room, room, processID)
+}
+
+// announceDocumentRemovedStatement announces the removal of the document $1 (text) on
+// documentRemovedChannel. The channel is named in the statement, not passed, so the statement
+// reads as what it is, as announceDocumentHead's does.
+const announceDocumentRemovedStatement = `select pg_notify('` + documentRemovedChannel + `', $1::text)`
+
+// AnnounceDocumentRemoved tells every envoy-dispatch process to close its room of artifactID, the
+// document whose row tx has just deleted. The removal's transaction is package api's
+// (removeArtifact), so this is the seam it sends through: a package function taking that
+// transaction, as the other document work a removal or an upload runs inside its own transaction
+// is (MoveApprovalAsk, WriteAskResolution, RecordTaskProgress). It needs no room and no state of
+// this process, which is what the API interface's methods are for.
+//
+// Inside that transaction, for the first of the two reasons announceDocumentChange gives:
+// Postgres delivers a notification only if the transaction that sent it commits, so a removal a
+// test refused, or one whose commit failed, closes nobody's room - nothing announces the removal
+// of a document the store still holds.
+//
+// The removing process hears its own announcement, and that is wanted rather than merely
+// tolerated: it needs no process id in the payload and no filter, and the removal evicts its own
+// room after the commit anyway (removeArtifact), which is the ordering the person at that process
+// is owed. Whichever close runs second finds the name holding no room and closes nothing
+// (Service.documentRemoved).
+func AnnounceDocumentRemoved(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	if _, err := tx.Exec(ctx, announceDocumentRemovedStatement, artifactID); err != nil {
+		return fmt.Errorf("announce the document's removal: %w", err)
+	}
+	return nil
 }

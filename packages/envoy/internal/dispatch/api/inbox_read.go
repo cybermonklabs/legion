@@ -394,7 +394,7 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(events...)
+	s.publish(r.Context(), events...)
 	WriteJSON(w, http.StatusOK, inboxReadResponse{Marked: marked})
 }
 

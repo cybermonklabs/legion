@@ -62,7 +62,10 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifacts)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reads := artifactReads(artifacts, reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 type artifactUploadInput struct {
@@ -71,8 +74,11 @@ type artifactUploadInput struct {
 	contentType string
 	summary     string
 	supplied    *model.Actor
-	inline      bool
-	blank       bool
+	// blank reports a JSON body that carries no content, or whose content is blank: such a
+	// body makes a new document holding nothing, and storeArtifact refuses it where the name
+	// already names a document or gives the slug of one Dispatch makes itself. A multipart
+	// upload always carries its bytes, so it never sets this.
+	blank bool
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -98,11 +104,20 @@ func (target artifactTarget) refPrefix() string {
 
 type jsonArtifactUpload struct {
 	Name string `json:"name" required:"true"`
-	// Content is required of a JSON upload, which is always a markdown document: a body with
-	// no content, or whose content is blank, is refused (400 ARTIFACT_INPUT, uploadArtifactFor).
+	// Content is what a JSON upload stores, which is always a markdown document. A body with
+	// no content, or whose content is blank, makes a new document holding nothing, which a
+	// person then writes in Dispatch. It is refused only where the name, or the slug that name
+	// gives, is a document the owner already holds (400 ARTIFACT_INPUT, storeArtifact), or
+	// where that slug is one of the documents Dispatch makes itself (400 ARTIFACT_ROLE_NAME).
 	// A multipart upload sends its bytes as the `file` part instead and carries no content at
 	// all, which is a body of its own (openAPIMultipartSchema).
-	Content *string         `json:"content" required:"true"`
+	//
+	// Content of whitespace alone is carried to the store as it was typed, and the store makes
+	// it empty: the write parses the markdown into the document and stores what that document
+	// renders back (Docs.SeedText, storeArtifact), and whitespace alone is no block, so the
+	// version holds an empty markdown of size 0. Such a document is as removable as one made
+	// with no content at all, measured on 2026-11-11 through the route itself.
+	Content *string         `json:"content"`
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
 	Actor   *model.Actor    `json:"actor"`
@@ -212,10 +227,6 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		writeError(w, "INVALID_ARTIFACT", http.StatusBadRequest, "artifact name is required")
 		return
 	}
-	if input.inline && input.blank {
-		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "inline artifact content is required")
-		return
-	}
 	if len(input.content) > maxArtifactBlobSize {
 		s.writeHandlerError(w, errUploadTooLarge)
 		return
@@ -289,7 +300,6 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		contentType: "text/markdown; charset=utf-8",
 		summary:     strings.TrimSpace(body.Summary),
 		supplied:    body.Actor,
-		inline:      true,
 		blank:       blank,
 	}, true
 }
@@ -386,7 +396,10 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 // taken here (gen_random_uuid, which assigns no transaction id), in the statement that reads its
 // created_at, the column's default, the transaction's now(), which the insert writes explicitly;
 // its ref_key is the one the 0071 trigger fills in, the target's owner key and the slug
-// (artifactTarget.refPrefix).
+// (artifactTarget.refPrefix). role is the part the new document plays, which its slug decided
+// (documentRole), read once by the caller, which refuses a blank create that takes one: the row
+// the insert leaves carries it, so the reads this transaction makes of the artifact it just
+// created see it as every later reader will.
 func (s *server) queueNewArtifact(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -394,16 +407,13 @@ func (s *server) queueNewArtifact(
 	target artifactTarget,
 	project, session *string,
 	slug, name, kind string,
+	role *string,
 	actor model.Actor,
 ) (model.Artifact, error) {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	// The part the new document plays, which its slug decides and which is written with the row,
-	// once (documentRole): the row the insert leaves carries it, so the reads this transaction
-	// makes of the artifact it just created see it as every later reader will.
-	role := documentRole(target, kind, slug)
 	artifact := model.Artifact{
 		IssueKey: target.IssueKey, Project: deref(project), SessionID: session,
 		RefKey: target.refPrefix() + "/" + slug, Slug: slug, Name: name, Kind: kind, Role: deref(role),
@@ -555,7 +565,15 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, refusal)
 			return
 		}
-		artifact, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, actor)
+		// The role the insert below writes, which the minted slug decides. A create with no
+		// content takes none of the documents Dispatch makes itself, so every spelling of the
+		// name that gives one of their slugs is refused.
+		role := documentRole(target, kind, slug)
+		if input.blank && role != nil {
+			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
+			return
+		}
+		artifact, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -565,6 +583,9 @@ func (s *server) storeArtifact(
 		return
 	} else if artifact.Kind != kind {
 		s.writeHandlerError(w, artifactKindMismatch(input.name, artifact, kind))
+		return
+	} else if input.blank {
+		s.writeHandlerError(w, blankWriteToADocumentThatExists(input.name, artifact))
 		return
 	}
 	// A document the release before this one created during the rolling deploy carries no role:
@@ -627,8 +648,10 @@ func (s *server) storeArtifact(
 			return
 		}
 		// The version credits the uploader alone, and holds the upload's write to the document,
-		// which clears the credit of every edit that write read when it changed the document.
-		ledger.WroteVersion(artifact.ID, version)
+		// which clears the credit of every edit that write read when it changed the document. It
+		// carries the markdown it stored, whose display tree the commit stores
+		// (Ledger.storeVersionTrees), since this route writes the row itself.
+		ledger.WroteVersion(artifact.ID, version, documentMarkdown)
 		documentReadBack = ledger.ReadBackOf(artifact.ID, documentMarkdown)
 		// The count is queued after the version's insert, so it names that version (LEGION-542).
 		if err := recordDocumentTaskProgress(documentCtx, tx, artifact.ID, documentReadBack, documentMarkdown); err != nil {
@@ -740,7 +763,7 @@ func (s *server) storeArtifact(
 		// document's ask blocks are indexed and its block ids repaired.
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
-	s.publish(appendedEvents(published...)...)
+	s.publish(r.Context(), appendedEvents(published...)...)
 	var blocks *documentBlocks
 	if kind == "doc" {
 		blocks = documentBlocksFor(documentReadBack, documentMarkdown)
@@ -780,7 +803,11 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	// The artifact detail is the artifact. Its inbound edges are the graph's to read
 	// (`GET /api/v1/references?to=`, and `GET /api/v1/artifacts/{id}/references` for agents),
 	// so this read does not pay for them.
-	WriteJSON(w, http.StatusOK, artifact)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	read := artifactRead{Artifact: artifact}
+	read.shape(reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, read)
 }
 
 // artifactText is the body GET /api/v1/artifacts/{id}/text,
@@ -788,10 +815,13 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 // GET /api/v1/projects/{key}/artifacts/{slug}/text answer. Blocks is absent unless the request
 // asked for it with ?blocks=true.
 type artifactText struct {
-	Markdown string                 `json:"markdown"`
-	Token    string                 `json:"token"`
-	Version  *int                   `json:"version"`
-	Blocks   *[]model.ArtifactBlock `json:"blocks,omitempty"`
+	Markdown string `json:"markdown"`
+	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	MarkdownTree model.DisplayTree      `json:"markdown_tree,omitempty"`
+	Token        string                 `json:"token"`
+	Version      *int                   `json:"version"`
+	Blocks       *[]model.ArtifactBlock `json:"blocks,omitempty"`
 }
 
 func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
@@ -821,7 +851,20 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks})
+	answer := artifactText{Markdown: markdown, Token: token, Version: version, Blocks: blocks}
+	// The tree is built only for a caller that asked for one: the command line and the agent
+	// clients read this route for its markdown, and a tree they discard would cost them the
+	// read and evict from the cache what a browser is reading.
+	//
+	// This markdown is a document version's own text, which the ledger stored the tree of behind
+	// the commit that wrote it (docs.Ledger.storeVersionTrees), so a browser opening a document
+	// this process has not served since it started copies those bytes.
+	if wantsDisplayTrees(r) {
+		reader := s.readDisplayTrees(r.Context(), true)
+		reader.text(&answer.MarkdownTree, markdown)
+		reader.resolve()
+	}
+	WriteJSON(w, http.StatusOK, answer)
 }
 
 // artifactTextBody is the markdown and the token the three text routes answer, with the blocks
@@ -968,6 +1011,9 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 // answers, on all three artifact patterns.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
+	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	model.Version
 }
 
@@ -995,7 +1041,20 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
-		WriteJSON(w, http.StatusOK, artifactVersionText{Markdown: markdown, Version: version})
+		// A past version's text is read in the version mode: the attributes the server wrote
+		// into that text are part of what that version said (pmdoc.DisplayVersion).
+		//
+		// No write stores that mode - every writer stores the latest one, and the two modes read
+		// one text into two different trees - so this read is where a version's tree first
+		// reaches the table: it reads the table, and stores what the table did not hold on a
+		// goroutine of its own, beside the rest of the request. A version is read again far
+		// more often than it is written, which is what makes the first read's store worth its
+		// one statement.
+		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r))
+		answer := artifactVersionText{Markdown: markdown, Version: version}
+		reader.text(&answer.MarkdownTree, markdown)
+		reader.resolve()
+		WriteJSON(w, http.StatusOK, answer)
 		return
 	}
 	var content []byte
@@ -1108,7 +1167,7 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(*event)
+	s.publish(r.Context(), *event)
 	WriteJSON(w, http.StatusCreated, version)
 }
 
@@ -1270,7 +1329,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	if edit.Applied > 0 {
 		s.deps.Docs.ScheduleSettlement(artifact.ID)
 	}
-	s.publish(appendedEvents(published...)...)
+	s.publish(r.Context(), appendedEvents(published...)...)
 	unchanged := edit.Unchanged
 	if unchanged == nil {
 		unchanged = []int{}
@@ -1288,7 +1347,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	// code and containers, which a caller's own reading of that markdown would only approximate.
 	blocks := &editBlocks{
 		DecisionBlocksAdded: len(edit.AddedAskBlocks),
-		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor),
+		DecisionBlockChecks: s.decisionBlockChecks(r.Context(), artifact, edit.AddedAskBlocks, actor, wantsDisplayTrees(r)),
 	}
 	if artifact.IssueKey == nil || advice == nil {
 		WriteJSON(w, http.StatusOK, withRawAdvice(responsePayload, documentWriteAdvice{
@@ -1413,8 +1472,9 @@ func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
 
 // loadArtifactDetails sends queueArtifactDetails's statements as a batch of their own on q, for a
 // read that queues nothing else: an issue's artifacts (loadArtifacts), a project's
-// (listProjectArtifacts) and one artifact read by id or by ref_key (loadArtifactRow). The batch
-// holds q's connection until its results close, so nothing else reads the database in between.
+// (listProjectArtifacts), one artifact read by id (loadArtifact) and one read by ref_key or as
+// an issue's spec (loadArtifactRow). The batch holds q's connection until its results close, so
+// nothing else reads the database in between.
 func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
 	apply := queueArtifactDetails(batch, artifacts)
@@ -1705,15 +1765,17 @@ func documentReferenceLabels(documents []model.Artifact) string {
 	return strings.Join(labels, ", ")
 }
 
+// loadArtifact reads one artifact by id, with the details every artifact read carries: the row
+// loadArtifactRowByID finds, and then its versions and its approval (loadArtifactDetails).
 func (s *server) loadArtifact(ctx context.Context, q queryer, id string) (model.Artifact, error) {
-	parsed, err := parseArtifactID(id)
+	artifact, err := loadArtifactRowByID(ctx, q, id)
 	if err != nil {
 		return model.Artifact{}, err
 	}
-	return s.loadArtifactRow(ctx, q, q.QueryRow(ctx, `
-		select `+artifactColumns+`
-		from artifacts where id = $1
-	`, parsed))
+	if err := loadArtifactDetails(ctx, q, []*model.Artifact{&artifact}); err != nil {
+		return model.Artifact{}, err
+	}
+	return artifact, nil
 }
 
 func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey string) (model.Artifact, error) {
@@ -1723,14 +1785,12 @@ func (s *server) loadArtifactByRefKey(ctx context.Context, q queryer, refKey str
 	`, refKey))
 }
 
-// loadArtifactRow reads one artifact from the row a lookup by id or by ref_key returns, with the
-// details every artifact read carries - its versions, and its approval when it is a document - in
-// one batch (loadArtifactDetails), so the read costs that lookup and one round trip more.
+// loadArtifactRow reads one artifact from the row a lookup by ref_key or by any other column
+// returns, with the details every artifact read carries - its versions, and its approval when it
+// is a document - in one batch (loadArtifactDetails), so the read costs that lookup and one
+// round trip more.
 func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (model.Artifact, error) {
-	artifact, err := scanArtifact(row)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
-	}
+	artifact, err := scanArtifactOrNotFound(row)
 	if err != nil {
 		return model.Artifact{}, err
 	}
@@ -1738,6 +1798,38 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 		return model.Artifact{}, err
 	}
 	return artifact, nil
+}
+
+// scanArtifactOrNotFound reads the artifact's own row, answering the 404 every artifact read
+// answers for a row that is not there, the one idRoutes names for these routes. It is the step
+// both reads of an artifact share: the one that goes on to carry the versions and the approval
+// (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
+func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
+	artifact, err := scanArtifact(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.Artifact{}, errorf(http.StatusNotFound, "ARTIFACT_NOT_FOUND", "artifact not found")
+	}
+	if err != nil {
+		return model.Artifact{}, err
+	}
+	return artifact, nil
+}
+
+// loadArtifactRowByID reads one artifact's own row by id, without the versions and the approval
+// loadArtifactRow carries: a write to one artifact reads neither, before its owner's lock or
+// under it (beginArtifactWrite), so each of its two reads costs one round trip rather than two.
+// The id is a whole one: the prefix layer resolved a short one into the path before the handler
+// saw it (resolveIDPrefixes), and parseArtifactID answers the same 404 as a row that is not
+// there for anything that is no uuid.
+func loadArtifactRowByID(ctx context.Context, q queryer, id string) (model.Artifact, error) {
+	parsed, err := parseArtifactID(id)
+	if err != nil {
+		return model.Artifact{}, err
+	}
+	return scanArtifactOrNotFound(q.QueryRow(ctx, `
+		select `+artifactColumns+`
+		from artifacts where id = $1
+	`, parsed))
 }
 
 // scanArtifact reads artifactColumns. A session-owned artifact's project is "".
@@ -2038,6 +2130,27 @@ func artifactKindMismatch(name string, artifact model.Artifact, kind string) err
 		name, artifact.Slug, artifact.Name, artifact.Kind, kind)
 }
 
+// blankWriteToADocumentThatExists is the 400 refusing a write with no content under name, which
+// names artifact, the document the name or the slug finds. A write with no content makes a new
+// document; under a name a document already holds it would store a version holding nothing over
+// the text that document has, which no caller means by typing a title.
+func blankWriteToADocumentThatExists(name string, artifact model.Artifact) error {
+	return errorf(http.StatusBadRequest, "ARTIFACT_INPUT",
+		"%q names artifact %s (%s), which exists; a write with no content makes no document and writes no version: edit it with dispatch doc-edit, or give the new document another name",
+		name, artifact.Slug, artifact.Name)
+}
+
+// createRoleNameRefusal is the 400 refusing a create with no content whose minted slug is the
+// slug of one of the documents Dispatch makes itself (roleSlugs): a person who types `Plan.md`
+// as a title means that document, which Dispatch writes with its own content. The slug is read,
+// not the title, so every spelling that gives it reads the same refusal, and a title whose slug
+// the owner already holds - which mints `plan-md-2` - is a document of its own.
+func createRoleNameRefusal(name, slug, role string) error {
+	return errorf(http.StatusBadRequest, "ARTIFACT_ROLE_NAME",
+		"%q gives the slug %s, the slug of the issue's %s document, which Dispatch makes itself; give this document another name",
+		name, slug, role)
+}
+
 // newArtifactNameRefusal is the 400 refusing a new artifact's name past maxNewArtifactKeyBytes,
 // or nil. An upload naming an artifact that already exists is never held to it.
 func newArtifactNameRefusal(name string) error {
@@ -2073,6 +2186,65 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 		return fmt.Errorf("lock the project's documents: %w", err)
 	}
 	return nil
+}
+
+// beginArtifactWrite opens the transaction a write to one artifact runs in: it reads the
+// artifact the request names, takes its owner's lock and reads the row again under that lock. It
+// is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
+// and each of them holds only its own refusals after it.
+//
+// Both writes are mounted on /api/v1/artifacts/{id} alone (routes_table.go), so the id the
+// request names is what each read takes, and each takes the row alone (loadArtifactRowByID): the
+// versions and the approval an artifact read carries cost a second round trip, and neither
+// handler reads them.
+//
+// The owner's own refusals come first, as every write to an owner takes them: a closed issue is
+// refused once the document's row says which owner it hangs from, and before anything else of
+// the document is read. An agent's conversation takes no lock because it holds no document
+// (uploadArtifactFor), so the handler's own kind refusal is every answer an artifact of a
+// conversation gets.
+//
+// The row is read again under that lock, so every refusal of the handler, and the document its
+// event carries, read the row as it is now: the first read ran before the lock and a correction
+// or a removal of the same document may have committed since.
+//
+// The caller rolls back the transaction it is answered, as it commits it; a preamble that
+// refuses rolls its own transaction back and writes the refusal itself.
+func (s *server) beginArtifactWrite(w http.ResponseWriter, r *http.Request) (pgx.Tx, model.Artifact, artifactTarget, bool) {
+	ctx := r.Context()
+	artifact, err := loadArtifactRowByID(ctx, s.deps.Store.Pool, r.PathValue("id"))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, model.Artifact{}, artifactTarget{}, false
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return nil, model.Artifact{}, artifactTarget{}, false
+	}
+	refused := func(err error) (pgx.Tx, model.Artifact, artifactTarget, bool) {
+		_ = tx.Rollback(ctx)
+		s.writeHandlerError(w, err)
+		return nil, model.Artifact{}, artifactTarget{}, false
+	}
+	var target artifactTarget
+	switch {
+	case artifact.IssueKey != nil:
+		target = artifactTarget{IssueKey: artifact.IssueKey}
+		if _, err := s.requireOpenOwnerStatus(ctx, tx, issueOwner(*artifact.IssueKey)); err != nil {
+			return refused(err)
+		}
+	case artifact.Project != "":
+		target = artifactTarget{Project: artifact.Project}
+		if err := lockProjectArtifacts(ctx, tx, artifact.Project); err != nil {
+			return refused(err)
+		}
+	}
+	locked, err := loadArtifactRowByID(ctx, tx, artifact.ID)
+	if err != nil {
+		return refused(err)
+	}
+	return tx, locked, target, true
 }
 
 func (s *server) nextArtifactSlug(ctx context.Context, q queryer, target artifactTarget, name string) (string, error) {

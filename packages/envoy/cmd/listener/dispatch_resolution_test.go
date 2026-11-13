@@ -144,12 +144,12 @@ func startListenerDelivery(t *testing.T, d *listenerDeps) {
 	// The connection carries the threshold the listener's own windows derive, as main opens it
 	// (inactiveThresholdFor): nothing here waits one out, but no rig creates a consumer under a
 	// threshold the deployment would not.
-	delivery := connectSessionDelivery([]string{testnats.URL(t)},
+	delivery, err := connectSessionDelivery([]string{testnats.URL(t)},
 		inactiveThresholdFor(d.sessions, defaultSessionReapInterval, defaultSessionConsumerSweepInterval), config.logger)
-	t.Cleanup(delivery.close)
-	if delivery.consumers == nil {
-		t.Fatal("the session-consumer connection did not open")
+	if err != nil {
+		t.Fatalf("the session-consumer connection did not open: %v", err)
 	}
+	t.Cleanup(delivery.close)
 	relays, err := startSessionRelays(delivery, config)
 	if err != nil {
 		t.Fatalf("start the session relays: %v", err)

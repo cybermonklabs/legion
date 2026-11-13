@@ -299,7 +299,10 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, reviews)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reads := artifactReviewReads(reviews, reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 // createArtifactReviewInput is the body of POST /api/v1/artifacts/{id}/reviews.
@@ -410,7 +413,13 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(appendedEvents(appended...)...)
+	s.publish(r.Context(), appendedEvents(appended...)...)
+	// The reason the review gave, which every read of the document's reviews is shown
+	// (artifactReviewReads). A review that gave none - an approval with nothing written beside
+	// it - stores nothing, as an empty text has no tree.
+	if reason != nil {
+		s.storeDisplayTrees(r.Context(), artifact.ID, *reason)
+	}
 	WriteJSON(w, http.StatusCreated, *review)
 }
 
@@ -475,10 +484,10 @@ type approvalRequestInput struct {
 
 // approvalRequestResponse is the body POST /api/v1/artifacts/{id}/approval-requests answers.
 type approvalRequestResponse struct {
-	Ask        *model.Ask             `json:"ask"`
-	ArtifactID string                 `json:"artifact_id"`
-	Version    int                    `json:"version"`
-	Approval   model.ArtifactApproval `json:"approval"`
+	Ask        *shapedAsk           `json:"ask"`
+	ArtifactID string               `json:"artifact_id"`
+	Version    int                  `json:"version"`
+	Approval   artifactApprovalRead `json:"approval"`
 	// Coverage is one line per requirement of the spec with no check, as the approver reads
 	// them (coverage.go); never a missing plan task, since the plan comes after the
 	// approval, and empty for any document that is not an issue's spec. A gap refuses
@@ -588,6 +597,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
+	trees := wantsDisplayTrees(r)
 	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -601,8 +611,12 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if settled {
+		// The approval's reason is read where it stands: this answer carries what the request
+		// has just written, and the write beside it stored the tree.
 		WriteJSON(w, http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
-			Approval: *artifact.Approval, Coverage: coverage, CoverageUnread: coverageUnread})
+			Approval:       newArtifactApprovalRead(*artifact.Approval, trees),
+			Coverage:       coverage,
+			CoverageUnread: coverageUnread})
 		return
 	}
 	// The open request is found by any document this one names, not by the named document
@@ -643,7 +657,12 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		// The id of the event that opened the request is known once the write phase has run.
 		ask.OpenedEventID = &opened.ID
 	}
-	s.publish(appendedEvents(appended...)...)
+	s.publish(r.Context(), appendedEvents(appended...)...)
+	// The question this request wrote: the one it opened the approval ask with, or the rewording
+	// a renewal left on the open ask (renewApprovalAsk).
+	if ask != nil {
+		s.storeDisplayTrees(r.Context(), ask.ID, ask.Question)
+	}
 	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
 	// open request already stood as asked. A rewording is never this route's only write: the
 	// hand-back that follows it appends an event of its own, which is published here, while the
@@ -652,8 +671,18 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	if len(appended) > 0 {
 		status = http.StatusCreated
 	}
-	WriteJSON(w, status, approvalRequestResponse{Ask: ask, ArtifactID: artifact.ID, Version: version,
-		Approval: approval, Coverage: coverage, CoverageUnread: coverageUnread})
+	var askAnswer *shapedAsk
+	if ask != nil {
+		read := newShapedAsk(*ask, trees)
+		askAnswer = &read
+	}
+	// The reason, like the question above, is read where it stands: the write beside it stored
+	// its tree. The approval is the one this request's queued writes leave
+	// (approvalAfterRequest), which no read of this transaction could answer from the rows.
+	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
+		Approval:       newArtifactApprovalRead(approval, trees),
+		Coverage:       coverage,
+		CoverageUnread: coverageUnread})
 }
 
 // approvalAfterRequest is the document's approval as this request's writes leave it: the approval
@@ -1031,6 +1060,6 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(*reviewEvent)
+	s.publish(r.Context(), *reviewEvent)
 	WriteJSON(w, http.StatusCreated, review)
 }

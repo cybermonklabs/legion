@@ -189,8 +189,8 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		Key: held, Tree: root, Project: "OTHER", Title: "the held child", Parent: &parent,
 		Phase: phase.AwaitingPerson, Generation: 3, Status: "in_progress", Rank: "00042",
 		LingerUntil: &lingerUntil, Hold: &record.Hold{From: phase.Implementing, Reason: record.HoldEscalated},
-		LastDispatchSeq: 91, ReadyPending: &record.ReadyPending{Step: record.DesignStepSpec, Version: 7},
-		HandedOver: true, TakenBack: true, DispatchStatus: "needs_review",
+		LastDispatchSeq: 91,
+		HandedOver:      true, TakenBack: true, DispatchStatus: "needs_review",
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
 		Ancestry: []string{parent, "LEGION-300"}, HandedOverFrom: "LEGION-200",
 		Awaiting: &record.Awaiting{
@@ -247,6 +247,16 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		UpdateToldAt:            &answeredAt,
 		UpdateAnsweredByTurnEnd: true, UpdateReaskedForPushCheck: true, UpdateLeftRound: "pod:older",
 		ProviderErrorRun: 6,
+		LastTurnStart:    projectedAt.Add(-2 * time.Minute),
+		LastTurnEnd:      projectedAt.Add(-30 * time.Second),
+		LastReady:        projectedAt.Add(-3 * time.Minute),
+		LastDeathCause:   "the pod was evicted",
+		LastStartFailure: "the launcher refused the start",
+		TurnOutcomes: []supervise.TurnOutcome{{
+			Generation: 3, Sequence: 2, Refused: true, Message: "the provider refused this turn",
+		}},
+		Abandoned:   supervise.AbandonedSession{Session: "ses_implementer_499", Why: "the provider refused every turn of it"},
+		SessionLost: true,
 		Step: supervise.StepRecord{
 			At: projectedAt.Add(-time.Minute), TurnStartedAt: projectedAt.Add(-2 * time.Minute),
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
@@ -255,7 +265,7 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 	}
 
 	state, err := Project(context.Background(), nil, projectionStore{issues: []record.Issue{tree, issue}},
-		"LEGION", nil, []supervise.Claim{current}, nil, projectedAt)
+		"LEGION", nil, []supervise.Claim{current}, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -280,6 +290,13 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			"updateHead":        current.UpdateHead,
 			"updateReasons":     current.UpdateReasons,
 			"providerErrorRun":  current.ProviderErrorRun,
+			// The turn times and the two causes, with the ready that dates them: the view
+			// carries each as the record holds it.
+			"lastTurnStart":    current.LastTurnStart,
+			"lastTurnEnd":      current.LastTurnEnd,
+			"lastReady":        current.LastReady,
+			"lastDeathCause":   current.LastDeathCause,
+			"lastStartFailure": current.LastStartFailure,
 			// The pending task reduced to the five facts a reader decides on, and never its
 			// text: that one is held, which the key's presence says, its phase, when it was
 			// queued, how many sends failed and the last send error.
