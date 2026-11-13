@@ -227,15 +227,26 @@ test("a refused press brings the rows and the counts back and says nothing was m
   // An old server mid-deploy has no such route, which is a failed request like any other.
   marked.mockRejectedValue(new ApiError(404, { error: "not found" }));
   renderBar([replyRow("c1"), replyRow("c2")], 2);
+  // The count the refusal reads again: nothing was marked, so it is still two.
+  const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+    ...threadsRead([]),
+    total: 2,
+  });
 
-  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  try {
+    await user.click(screen.getByRole("button", { name: "Mark all read" }));
 
-  const alert = await screen.findByRole("alert");
-  expect(alert.textContent).toBe(MARK_ALL_REFUSED_TEXT);
-  expect(MARK_ALL_REFUSED_TEXT).toBe("Nothing was marked read.");
-  // The sidebar's Inbox count and the compact header's Inbox link hold their pre-click number
-  // again, and the rows are back in the list with the button over them.
-  expect(inboxCount()).toBe("2");
-  expect(unread()).toBe("2");
-  expect(listed()).toBe("2");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(MARK_ALL_REFUSED_TEXT);
+    expect(MARK_ALL_REFUSED_TEXT).toBe("Nothing was marked read.");
+    // The sidebar's Inbox count and the compact header's Inbox link hold their pre-click number
+    // again, and the rows are back in the list with the button over them.
+    expect(inboxCount()).toBe("2");
+    expect(unread()).toBe("2");
+    expect(listed()).toBe("2");
+    await waitFor(() => expect(listMyReplies).toHaveBeenCalledTimes(1));
+    expect(inboxCount()).toBe("2");
+  } finally {
+    listMyReplies.mockRestore();
+  }
 });

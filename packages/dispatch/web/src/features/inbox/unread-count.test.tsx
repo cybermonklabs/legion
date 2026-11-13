@@ -161,6 +161,32 @@ test("a Mark all read refused while a Dismiss is out gives back its own rows alo
   await waitFor(() => expect(listMyReplies).toHaveBeenCalled());
 });
 
+// A press made while an earlier one is out has left by the time the earlier one is refused, so
+// the count it goes back to still holds the made press's rows: the refusal reads the count again,
+// and Dispatch's answer, which counts the made press, is the count.
+test("a Dismiss refused after a later Mark all read was made reads the count again", async () => {
+  const user = userEvent.setup();
+  const { dismissed, listMyReplies, read } = renderPresses();
+
+  await user.click(screen.getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(inboxCount()).toBe("4"));
+  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  await waitFor(() => expect(inboxCount()).toBe("2"));
+
+  // From here Dispatch counts the two rows Mark all read marks and not the Dismiss's row: three.
+  listMyReplies.mockImplementation(async (page) =>
+    page.limit === 1 ? { ...threadsRead([]), total: COUNT - 2 } : threadsRead(ROWS)
+  );
+  read.resolve({ marked: 2 });
+  await waitFor(() => expect(inboxCount()).toBe("3"));
+
+  const reads = listMyReplies.mock.calls.length;
+  dismissed.reject(refusal());
+  await screen.findByText("Could not dismiss 1 thread: not found.");
+  await waitFor(() => expect(inboxCount()).toBe("3"));
+  expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads);
+});
+
 // R7 under two presses: a read of the count that lands while both are out may count neither,
 // one, or both, and each is held at five less the three rows the two take - lowered once, never
 // twice. One that lands between the presses and already counts the first is not lowered twice by
