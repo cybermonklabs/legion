@@ -105,7 +105,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	managers, err := newManagers(cfg)
+	// The guard comes before the managers: the pod's put-back of a released workspace starts its
+	// jj and git through it (newManagers), as the test database's script starts through it below.
+	guard := &pidGuard{}
+	managers, err := newManagers(cfg, guard)
 	if err != nil {
 		return err
 	}
@@ -114,7 +117,6 @@ func Run(ctx context.Context, cfg Config) error {
 	// of their own, whose init reaps theirs, but anything else started in the container (a
 	// `kubectl exec` and what it leaves behind) is this process's. The reaper never waits on a
 	// generation's own process, whose exit its manager reads.
-	guard := &pidGuard{}
 	if os.Getpid() == 1 {
 		exits := make(chan os.Signal, 1)
 		signal.Notify(exits, syscall.SIGCHLD)
@@ -148,11 +150,14 @@ func Run(ctx context.Context, cfg Config) error {
 
 // newManagers is one manager per role the launcher serves, each with its own token, private
 // directory, launcher id and, in an issue pod's container, its own prefix in the container's log.
-func newManagers(cfg Config) ([]*manager, error) {
+// guard holds the launcher's own children out of PID 1's reaper (pidGuard).
+func newManagers(cfg Config, guard *pidGuard) ([]*manager, error) {
 	// One restore per pod: the daemon sends the released workspace's bundle to whichever role's
 	// connection it reaches, and the first role to start applies it for the pod, with every other
-	// role's start waiting on that one restore.
-	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}}
+	// role's start waiting on that one restore. Its jj and git start through the guard: they are
+	// this process's children, and the reaper would otherwise take an exit before the restore's
+	// own wait read it, which then fails with `waitid: no child processes` and puts nothing back.
+	restore := &bundleRestore{results: map[string]shimwire.LauncherBundleResult{}, start: guard.starter()}
 	// One install of the shared public leak check per launcher process, for the pin of its own
 	// environment: the daemon pushes it to whichever role's connection it starts first, and
 	// every other role's connection finds it installed.

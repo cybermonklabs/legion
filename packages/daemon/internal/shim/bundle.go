@@ -109,7 +109,7 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 	defer cancel()
 	env, started := s.cfg.Env, time.Now()
 	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, budget, started, env, dir, stdin, args)
+		return workspace.RunCommand(ctx, nil, budget, started, env, dir, stdin, args)
 	}
 	read := func(revset string) ([]string, error) {
 		out, err := run(nil, jj, "log", "-R", dir, "--ignore-working-copy", "-r", revset, "--no-graph", "-T", `commit_id ++ "\n"`)
