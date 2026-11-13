@@ -56,15 +56,21 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
      catch-up reads that reply as done.
 3. Admit it (`set_status` to `todo`) only when you labelled it at a person's request, you filed it
    yourself (for a person, or for a clear defect no tree owns), or a person answered `Admit it`,
-   unless the request, the weekly plan or the deployment instructions say to wait or put it out of
-   scope:
-   `legion({ op: "set_status", issue: "<issue>", status: "todo" })`.
-4. When one of those says to wait, park it with `set_status` to `backlog`, or `icebox` when the
-   request asks for a longer deferral, instead of leaving it in `triage`; the label stays. Never
-   park a root for lack of a free slot, because in `todo` the daemon's waiting line already holds
-   it until a slot frees.
+   unless a person's request says to wait or puts it out of scope:
+   `legion({ op: "set_status", issue: "<issue>", status: "todo" })`. The operator's deployment
+   instructions are such a request. A line of your own weekly plan is not, unless that line names
+   the person's request behind it.
+4. When a person's request says to wait, park it with `set_status` to `backlog`, or `icebox` when
+   the request asks for a longer deferral, instead of leaving it in `triage`; the label stays.
+   Park a root only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+   Never park a root for lack of a free slot, because in `todo` the daemon's waiting line already
+   holds it until a slot frees: admit it as step 3 says, and report the capacity to the person in
+   the day's report.
 5. For a root you admitted or parked, comment on the issue (`dispatch comment`) what you decided
-   and why. For a root you admitted, say in that comment who will be asked: `Assigned to <login>,
+   and why. For a root you parked, cite in that comment why: the person's request behind the park
+   (the deployment instructions as that file, or the request the plan's line names), or that the
+   work is done, folded into another issue (name it) or no longer needed.
+   For a root you admitted, say in that comment who will be asked: `Assigned to <login>,
    who will get this tree's questions and its design approval`, or, when `Assignee:` says
    `unassigned`, `Unassigned — this tree's questions and its design approval go to the project's
    default assignee until someone takes it from the issue header (Assignee, beside Priority)`.
