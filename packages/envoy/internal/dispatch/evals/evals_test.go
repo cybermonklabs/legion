@@ -108,21 +108,6 @@ func (r rig) document(t *testing.T) (string, []model.ArtifactBlock) {
 	return text, blocks
 }
 
-// hasBlock reports whether blocks holds the block id names, at any depth.
-func hasBlock(blocks []model.ArtifactBlock, id string) bool {
-	for _, block := range blocks {
-		if block.ID == id {
-			return true
-		}
-		for _, descendant := range block.DescendantIDs {
-			if descendant == id {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // headings counts the lines of text that are the `##` heading of slug.
 func headings(text, slug string) int {
 	n := 0

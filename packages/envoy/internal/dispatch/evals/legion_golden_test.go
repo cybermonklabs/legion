@@ -59,51 +59,12 @@ const (
 // are no folds: each is compared with the stored rows of the window and cut, which the items route
 // answers. Then one day's rows are deleted, and the same comparison must find numbers that moved.
 func TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports(t *testing.T) {
-	files, err := filepath.Glob(goldenComputeFiles)
-	if err != nil || len(files) == 0 {
-		t.Fatalf("list %s: %d files, %v", goldenComputeFiles, len(files), err)
-	}
-	windows := make([]goldenReports, 0, len(files))
-	for _, file := range files {
-		raw, err := os.ReadFile(file)
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		var window goldenReports
-		if err := json.Unmarshal(raw, &window); err != nil {
-			t.Fatalf("decode %s: %v", file, err)
-		}
-		if len(windows) > 0 && window.Spec != windows[0].Spec {
-			t.Fatalf("%s was recorded over %+v and %s over %+v, want one history", file, window.Spec, files[0], windows[0].Spec)
-		}
-		windows = append(windows, window)
-	}
-	spec := windows[0].Spec
-
 	r := newRig(t)
 	ctx := t.Context()
-	pool := r.database.Pool
-	fixture := legiontest.Seed(t, pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
-	project := fixture.Project
-	rows, err := legionfacts.ComputeProject(ctx, pool, project, spec.Now)
-	if err != nil {
-		t.Fatalf("compute the facts of %s: %v", project, err)
-	}
-	if _, err := legionfacts.WriteProject(ctx, pool, legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
-		t.Fatalf("write the facts of %s: %v", project, err)
-	}
-	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: project, Filings: projectFilings(t, project, spec.Now, r), Whole: true}); err != nil {
-		t.Fatalf("write the filings of %s: %v", project, err)
-	}
-	since, err := r.registry.ReadLegionSince(ctx, project)
-	if err != nil {
-		t.Fatalf("read the first observations of %s: %v", project, err)
-	}
+	windows, project, since := seedGoldenLegionHistory(t, r)
+	spec := windows[0].Spec
 
-	first, last := windows[0].Window.From, windows[0].Window.To
-	for _, window := range windows {
-		first, last = minTime(first, window.Window.From), maxTime(last, window.Window.To)
-	}
+	first, last := goldenLegionDays(windows)
 	days := 0
 	for day := first; day.Before(last); day = day.AddDate(0, 0, 1) {
 		if err := r.registry.WriteLegionDay(ctx, project, day, since, testBuild); err != nil {
@@ -139,6 +100,62 @@ func TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports(t *testing.T)
 	}
 	t.Logf("negative control: %d rows of %s deleted, %d of %d numbers differ, the first: %s", deleted, control.Format(time.DateOnly),
 		len(moved.differ), moved.folded+moved.listed, firstOf(moved.differ))
+}
+
+// seedGoldenLegionHistory writes into r's database the history the golden reports were recorded
+// over, with its facts and filings stored as the facts consumer stores them, and answers the
+// golden windows, the history's project and its first observations.
+func seedGoldenLegionHistory(t *testing.T, r rig) ([]goldenReports, string, LegionSince) {
+	t.Helper()
+	files, err := filepath.Glob(goldenComputeFiles)
+	if err != nil || len(files) == 0 {
+		t.Fatalf("list %s: %d files, %v", goldenComputeFiles, len(files), err)
+	}
+	windows := make([]goldenReports, 0, len(files))
+	for _, file := range files {
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		var window goldenReports
+		if err := json.Unmarshal(raw, &window); err != nil {
+			t.Fatalf("decode %s: %v", file, err)
+		}
+		if len(windows) > 0 && window.Spec != windows[0].Spec {
+			t.Fatalf("%s was recorded over %+v and %s over %+v, want one history", file, window.Spec, files[0], windows[0].Spec)
+		}
+		windows = append(windows, window)
+	}
+	spec := windows[0].Spec
+
+	ctx := t.Context()
+	pool := r.database.Pool
+	fixture := legiontest.Seed(t, pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
+	project := fixture.Project
+	rows, err := legionfacts.ComputeProject(ctx, pool, project, spec.Now)
+	if err != nil {
+		t.Fatalf("compute the facts of %s: %v", project, err)
+	}
+	if _, err := legionfacts.WriteProject(ctx, pool, legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
+		t.Fatalf("write the facts of %s: %v", project, err)
+	}
+	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: project, Filings: projectFilings(t, project, spec.Now, r), Whole: true}); err != nil {
+		t.Fatalf("write the filings of %s: %v", project, err)
+	}
+	since, err := r.registry.ReadLegionSince(ctx, project)
+	if err != nil {
+		t.Fatalf("read the first observations of %s: %v", project, err)
+	}
+	return windows, project, since
+}
+
+// goldenLegionDays is the first day of the golden windows and the end of the last.
+func goldenLegionDays(windows []goldenReports) (first, last time.Time) {
+	first, last = windows[0].Window.From, windows[0].Window.To
+	for _, window := range windows {
+		first, last = minTime(first, window.Window.From), maxTime(last, window.Window.To)
+	}
+	return first, last
 }
 
 // projectFilings is every filing a Legion session of project made, as the facts consumer's whole

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -39,6 +41,91 @@ func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
 	}, "alice")
 	if duplicate.Code != http.StatusConflict || !strings.Contains(duplicate.Body.String(), `"code":"PROJECT_EXISTS"`) {
 		t.Fatalf("duplicate project: status=%d body=%s", duplicate.Code, duplicate.Body.String())
+	}
+}
+
+// seededSlugs is every eval of the seeded catalogue (dispatch://INFRA-2916/artifact/plan-md, "The
+// seeded catalogue").
+var seededSlugs = []string{
+	evals.SlugDeployFrequency, evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugMergeToProduction,
+	evals.SlugFirstCommitToProduction, evals.SlugOpenToProduction, evals.SlugPROpenToMerge, evals.SlugDeployRunSuccess,
+	evals.SlugUnownedP0, evals.SlugReworkShare, evals.SlugPRCI, evals.SlugStagingE2E, evals.SlugStagingDeploy,
+	evals.SlugProductionDeploy, evals.SlugLegionWorkTime, evals.SlugLegionPhaseTime, evals.SlugLegionIdleTime,
+	evals.SlugLegionSlotWait, evals.SlugLegionRework, evals.SlugLegionSplitting,
+}
+
+// A project created through the API holds the seeded catalogue as it is created (R5): its
+// evals-md, read through the project's artifact route, holds one section per seeded eval, and the
+// registry holds version 1 of each, written by the seed, computed with no number rule, whose
+// doc_block is a block of that document, with its series. A second create of the same key is
+// refused and writes no eval or section.
+func TestCreatingAProjectSeedsItsEvalsAndItsEvalsDocument(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "SEED", "name": "Seeded",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	read := func() (string, []model.ArtifactBlock, []evals.Entry) {
+		t.Helper()
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/projects/SEED/artifacts/"+evals.DocumentSlug+"/text?blocks=true", nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("read the project's %s: status=%d body=%s", evals.DocumentSlug, response.Code, response.Body.String())
+		}
+		document := decodeBody[struct {
+			Markdown string                `json:"markdown"`
+			Blocks   []model.ArtifactBlock `json:"blocks"`
+		}](t, response)
+		page, err := evals.New(database, nil, nil).Current(t.Context(), "SEED", "", 100, 0)
+		if err != nil {
+			t.Fatalf("read the project's evals: %v", err)
+		}
+		return document.Markdown, document.Blocks, page.Items
+	}
+	markdown, blocks, entries := read()
+	if len(entries) != len(seededSlugs) {
+		t.Fatalf("the new project holds %d evals, want the %d seeded ones", len(entries), len(seededSlugs))
+	}
+	held := func(id string) bool {
+		for _, block := range blocks {
+			if block.ID == id || slices.Contains(block.DescendantIDs, id) {
+				return true
+			}
+		}
+		return false
+	}
+	series := 0
+	for _, entry := range entries {
+		definition := entry.Definition
+		if !slices.Contains(seededSlugs, definition.Slug) || definition.Version != 1 || definition.WrittenVia != evals.ViaSeed ||
+			!definition.Computed() || definition.NumberRule != "" || len(entry.Series) == 0 {
+			t.Errorf("the new project holds %+v with %d series, want version 1 of a seeded computed eval with no number rule", definition, len(entry.Series))
+		}
+		if !held(definition.DocBlock) {
+			t.Errorf("%s: doc_block %q is no block of the project's %s", definition.EvalID, definition.DocBlock, evals.DocumentSlug)
+		}
+		if sections := strings.Count(markdown, "\n## "+definition.Slug+"\n"); sections != 1 {
+			t.Errorf("the project's %s holds %d sections of %s, want one", evals.DocumentSlug, sections, definition.Slug)
+		}
+		series += len(entry.Series)
+	}
+	var created int
+	if err := database.Pool.QueryRow(t.Context(), `
+		select count(*) from events e join artifacts a on a.id = e.artifact_id
+		where e.type = 'artifact.created' and a.project_key = 'SEED' and a.slug = $1
+	`, evals.DocumentSlug).Scan(&created); err != nil || created != 1 {
+		t.Fatalf("the %s document's artifact.created events: %d, %v, want one", evals.DocumentSlug, created, err)
+	}
+	t.Logf("project SEED created with %d evals, %d series and %d blocks in its %s", len(entries), series, len(blocks), evals.DocumentSlug)
+
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "SEED", "name": "Seeded again",
+	}, "alice"); response.Code != http.StatusConflict {
+		t.Fatalf("create the project again: status=%d body=%s, want 409", response.Code, response.Body.String())
+	}
+	again, _, entriesAgain := read()
+	if again != markdown || len(entriesAgain) != len(entries) {
+		t.Fatalf("a refused create changed the project's evals (%d) or its %s", len(entriesAgain), evals.DocumentSlug)
 	}
 }
 

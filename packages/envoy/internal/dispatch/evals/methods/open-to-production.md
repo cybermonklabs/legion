@@ -1,0 +1,5 @@
+**How it is measured.** For each UTC day, `measures.OpenToProductionDay` takes the population pull requests that merged that day. For each one that deployed, it takes the minutes from the moment GitHub records for its opening to its deploy. The deploy is the completion of the production job of the first deploy run, created after the merge, that applies the pull request (`delivery.ContainingRun`). `measures.FoldLeadTime` merges the minutes of every day in a window. It answers their count, median, 90th percentile and maximum (`measures.Quantile`), and never the mean of the daily medians.
+
+A population pull request is a merged pull request that the delivery measures count (`delivery.IsPopulationPR`): its author is a population author, its repository is not an excluded one, and it is not a task pull request of the deploy repository. It counts for the project of the issue it names, or else for the project of its repository.
+
+**What it does not count.** Pull requests that have not deployed, and pull requests outside the population.

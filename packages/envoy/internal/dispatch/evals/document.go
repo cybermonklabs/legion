@@ -68,15 +68,15 @@ func findDocument(ctx context.Context, w *writeTx) (evalsDocument, bool, error) 
 }
 
 // createDocument creates the project's `evals-md` as actor, its text the paragraph that says what
-// the document is and then firstSection, and appends its `artifact.created` event, as an upload
-// of a new project document does (docs.CreateDocument). The first section is in the seeded text
-// rather than added by an edit after it: an edit reads a document no room holds from the store
-// (docs' coldFork, through its own connection), where a seed this transaction has not committed
-// is not yet.
-func (s *Store) createDocument(ctx context.Context, w *writeTx, firstSection string, actor model.Actor) error {
+// the document is and then sections, and appends its `artifact.created` event, as an upload of a
+// new project document does (docs.CreateDocument). The sections are in the seeded text rather
+// than added by an edit after it: an edit reads a document no room holds from the store (docs'
+// coldFork, through its own connection), where a seed this transaction has not committed is not
+// yet.
+func (s *Store) createDocument(ctx context.Context, w *writeTx, sections string, actor model.Actor) error {
 	artifact, written, err := docs.CreateDocument(ctx, s.documents, docs.NewArtifact{
 		Project: &w.project, Slug: DocumentSlug, Name: DocumentName, CreatedBy: actor,
-	}, documentIntroduction(w.project, w.projectName)+"\n"+firstSection)
+	}, documentIntroduction(w.project, w.projectName)+"\n"+sections)
 	if err != nil {
 		return fmt.Errorf("create the %s document of %s: %w", DocumentSlug, w.project, err)
 	}
@@ -119,11 +119,8 @@ func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blo
 	if !found {
 		return s.createDocument(ctx, w, sectionMarkdown(slug, blockID, method), actor)
 	}
-	// The document's owner row is locked before the edit takes its room, as the edit route
-	// locks it (requireOpenOwnerStatus), so this write takes the two in the order every other
-	// writer of the document does.
-	if _, err := w.Exec(ctx, `select true from artifacts where id = $1 and issue_key is null for no key update`, document.id); err != nil {
-		return fmt.Errorf("lock the %s document of %s: %w", DocumentSlug, w.project, err)
+	if err := lockDocumentOwner(ctx, w, document); err != nil {
+		return err
 	}
 	present := false
 	if oldBlock != "" {
@@ -131,9 +128,7 @@ func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blo
 		if err != nil {
 			return fmt.Errorf("read the blocks of the %s document of %s: %w", DocumentSlug, w.project, err)
 		}
-		present = slices.ContainsFunc(blocks, func(block model.ArtifactBlock) bool {
-			return block.ID == oldBlock || slices.Contains(block.DescendantIDs, oldBlock)
-		})
+		present = hasBlock(blocks, oldBlock)
 	}
 	ops := []model.EditOp{{Op: "insert", After: "end", Markdown: sectionMarkdown(slug, blockID, method)}}
 	if present {
@@ -143,6 +138,24 @@ func (s *Store) writeMethod(ctx context.Context, w *writeTx, slug, oldBlock, blo
 		}
 	}
 	return s.editDocument(ctx, w, document, ops, actor)
+}
+
+// lockDocumentOwner locks the document's owner row before an edit takes its room, as the edit
+// route locks it (requireOpenOwnerStatus), so a registry write takes the two in the order every
+// other writer of the document does.
+func lockDocumentOwner(ctx context.Context, w *writeTx, document evalsDocument) error {
+	if _, err := w.Exec(ctx, `select true from artifacts where id = $1 and issue_key is null for no key update`, document.id); err != nil {
+		return fmt.Errorf("lock the %s document of %s: %w", DocumentSlug, w.project, err)
+	}
+	return nil
+}
+
+// hasBlock reports whether blocks holds the block id names, at any depth: whether the document
+// those blocks are of still holds an eval's method block.
+func hasBlock(blocks []model.ArtifactBlock, id string) bool {
+	return slices.ContainsFunc(blocks, func(block model.ArtifactBlock) bool {
+		return block.ID == id || slices.Contains(block.DescendantIDs, id)
+	})
 }
 
 // editDocument applies ops to the document as one batch and, where the batch changed it, writes

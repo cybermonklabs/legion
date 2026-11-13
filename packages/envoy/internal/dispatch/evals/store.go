@@ -72,27 +72,43 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 	defer tx.Rollback(ctx)
 	documentCtx, ledger := s.documents.Join(ctx, tx)
 	defer ledger.Discard()
-	w := &writeTx{Tx: tx, project: project}
-	if err := tx.QueryRow(ctx, `select name, now() from projects where key = $1`, project).Scan(&w.projectName, &w.now); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return refusal(CodeProjectNotFound, "no project has the key %q", project)
-		}
-		return fmt.Errorf("read project %s: %w", project, err)
+	w, err := openWrite(ctx, tx, project)
+	if err != nil {
+		return err
 	}
-	w.now = w.now.UTC()
 	if err := fn(documentCtx, w); err != nil {
 		return err
 	}
 	if err := ledger.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval write: %w", err)
 	}
+	s.committed(w)
+	return nil
+}
+
+// openWrite is a registry write of project in tx: the project's name and the transaction's own
+// now() read, refused PROJECT_NOT_FOUND when tx holds no such project.
+func openWrite(ctx context.Context, tx pgx.Tx, project string) (*writeTx, error) {
+	w := &writeTx{Tx: tx, project: project}
+	if err := tx.QueryRow(ctx, `select name, now() from projects where key = $1`, project).Scan(&w.projectName, &w.now); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, refusal(CodeProjectNotFound, "no project has the key %q", project)
+		}
+		return nil, fmt.Errorf("read project %s: %w", project, err)
+	}
+	w.now = w.now.UTC()
+	return w, nil
+}
+
+// committed is what w's commit owes, paid once its transaction has committed: the settlement of
+// each document it wrote is scheduled, and the document events it appended are published.
+func (s *Store) committed(w *writeTx) {
 	for _, artifactID := range w.settle {
 		s.documents.ScheduleSettlement(artifactID)
 	}
 	for _, event := range w.events {
 		s.events.Publish(event)
 	}
-	return nil
 }
 
 // lockEval serialises, for the rest of tx, every write of one eval's versions and series: the
@@ -102,11 +118,14 @@ func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context
 // version would not do that: a statement that waited for it still answers the row its snapshot
 // read, the version before the one that writer added.
 func lockEval(ctx context.Context, tx pgx.Tx, evalID string) error {
-	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('eval:' || $1))`, evalID); err != nil {
+	if _, err := tx.Exec(ctx, lockEvalStatement, evalID); err != nil {
 		return fmt.Errorf("lock eval %s: %w", evalID, err)
 	}
 	return nil
 }
+
+// lockEvalStatement takes the lock of the eval $1 names (lockEval).
+const lockEvalStatement = `select pg_advisory_xact_lock(hashtext('eval:' || $1))`
 
 // definitionColumns is the column list scanDefinition reads from eval_versions or evals_current,
 // its nullable text columns read as "".
@@ -274,35 +293,11 @@ func currentSeries(ctx context.Context, q pgx.Tx, evalID string) (map[string]Ser
 // version someone else wrote first a no-op, answered inserted false: a readings write's first
 // registration of a slug, which two first readings may make at once.
 func insertDefinition(ctx context.Context, tx pgx.Tx, definition Definition, onConflictNothing bool) (Definition, bool, error) {
-	failureModes, err := json.Marshal(nonNil(definition.FailureModes))
+	statement, args, err := definitionInsert(definition, onConflictNothing)
 	if err != nil {
-		return Definition{}, false, fmt.Errorf("encode failure modes: %w", err)
+		return Definition{}, false, err
 	}
-	links, err := json.Marshal(nonNil(definition.Links))
-	if err != nil {
-		return Definition{}, false, fmt.Errorf("encode links: %w", err)
-	}
-	writtenBy, err := json.Marshal(definition.WrittenBy.Recorded())
-	if err != nil {
-		return Definition{}, false, fmt.Errorf("encode the writer: %w", err)
-	}
-	conflict := ""
-	if onConflictNothing {
-		conflict = ` on conflict (eval_id, version) do nothing`
-	}
-	stored, err := scanDefinition(tx.QueryRow(ctx, `
-		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision,
-			doc_block, failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person,
-			issue_key, kind, source, state, replaced_by, links, written_via, written_by)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14, $15, $16, $17,
-			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25)`+conflict+`
-		returning `+definitionColumns,
-		definition.EvalID, definition.Version, definition.ProjectKey, definition.Slug, definition.Name,
-		definition.Question, definition.NumberRule, definition.Decision, definition.DocBlock, failureModes,
-		definition.Unit, definition.Direction, definition.Target, definition.TargetInclusive,
-		nonNil(definition.TargetJudges), definition.OwnerRole, definition.Person, definition.IssueKey,
-		definition.Kind, definition.Source, definition.State, definition.ReplacedBy, links,
-		definition.WrittenVia, writtenBy))
+	stored, err := scanDefinition(tx.QueryRow(ctx, statement+` returning `+definitionColumns, args...))
 	if onConflictNothing && errors.Is(err, pgx.ErrNoRows) {
 		return Definition{}, false, nil
 	}
@@ -312,21 +307,49 @@ func insertDefinition(ctx context.Context, tx pgx.Tx, definition Definition, onC
 	return stored, true, nil
 }
 
+// definitionInsert is the statement that writes definition as a new version, and its arguments;
+// onConflictNothing makes it a no-op where that version exists.
+func definitionInsert(definition Definition, onConflictNothing bool) (string, []any, error) {
+	failureModes, err := json.Marshal(nonNil(definition.FailureModes))
+	if err != nil {
+		return "", nil, fmt.Errorf("encode failure modes: %w", err)
+	}
+	links, err := json.Marshal(nonNil(definition.Links))
+	if err != nil {
+		return "", nil, fmt.Errorf("encode links: %w", err)
+	}
+	writtenBy, err := json.Marshal(definition.WrittenBy.Recorded())
+	if err != nil {
+		return "", nil, fmt.Errorf("encode the writer: %w", err)
+	}
+	conflict := ""
+	if onConflictNothing {
+		conflict = ` on conflict (eval_id, version) do nothing`
+	}
+	return `
+		insert into eval_versions (eval_id, version, project_key, slug, name, question, number_rule, decision,
+			doc_block, failure_modes, unit, direction, target, target_inclusive, target_judges, owner_role, person,
+			issue_key, kind, source, state, replaced_by, links, written_via, written_by)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, nullif($12, ''), $13, $14, $15, $16, $17,
+			nullif($18, ''), $19, $20, $21, nullif($22, ''), $23, $24, $25)` + conflict, []any{
+		definition.EvalID, definition.Version, definition.ProjectKey, definition.Slug, definition.Name,
+		definition.Question, definition.NumberRule, definition.Decision, definition.DocBlock, failureModes,
+		definition.Unit, definition.Direction, definition.Target, definition.TargetInclusive,
+		nonNil(definition.TargetJudges), definition.OwnerRole, definition.Person, definition.IssueKey,
+		definition.Kind, definition.Source, definition.State, definition.ReplacedBy, links,
+		definition.WrittenVia, writtenBy,
+	}, nil
+}
+
 // insertSeries writes series as a new version of that series, or nothing where that version
 // exists already (a concurrent first reading registered the series first), answered inserted
 // false.
 func insertSeries(ctx context.Context, tx pgx.Tx, series Series) (Series, bool, error) {
-	links, err := json.Marshal(nonNil(series.Links))
+	statement, args, err := seriesInsert(series)
 	if err != nil {
-		return Series{}, false, fmt.Errorf("encode links: %w", err)
+		return Series{}, false, err
 	}
-	stored, err := scanSeries(tx.QueryRow(ctx, `
-		insert into eval_series (eval_id, series, version, unit, role, is_primary, min_n, listed, agg, links)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		on conflict (eval_id, series, version) do nothing
-		returning `+seriesColumns,
-		series.EvalID, series.Series, series.Version, series.Unit, series.Role, series.IsPrimary, series.MinN,
-		series.Listed, series.Agg, links))
+	stored, err := scanSeries(tx.QueryRow(ctx, statement+` returning `+seriesColumns, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Series{}, false, nil
 	}
@@ -334,6 +357,22 @@ func insertSeries(ctx context.Context, tx pgx.Tx, series Series) (Series, bool, 
 		return Series{}, false, fmt.Errorf("write version %d of series %s of %s: %w", series.Version, series.Series, series.EvalID, err)
 	}
 	return stored, true, nil
+}
+
+// seriesInsert is the statement that writes series as a new version of that series, or nothing
+// where that version exists already, and its arguments.
+func seriesInsert(series Series) (string, []any, error) {
+	links, err := json.Marshal(nonNil(series.Links))
+	if err != nil {
+		return "", nil, fmt.Errorf("encode links: %w", err)
+	}
+	return `
+		insert into eval_series (eval_id, series, version, unit, role, is_primary, min_n, listed, agg, links)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		on conflict (eval_id, series, version) do nothing`, []any{
+		series.EvalID, series.Series, series.Version, series.Unit, series.Role, series.IsPrimary, series.MinN,
+		series.Listed, series.Agg, links,
+	}, nil
 }
 
 // nonNil is values, or an empty list where values is nil, so a list column stores [] rather

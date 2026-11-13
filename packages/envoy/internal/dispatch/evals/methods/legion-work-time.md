@@ -1,0 +1,7 @@
+**How it is measured.** The eval counts the project's issues that finished in the window. An issue finished when it closed with Legion phase work: an event for its own key by a session titled `Legion <role> · <KEY>`, or a handoff. Its work time is the hours from its first worker event to its close, less the hours it sat parked in `backlog` or `icebox`, and less the hours it sat back in the queue after its work started. The first worker event is the first event of such a session, or the first handoff of an issue whose Legion work is handoffs alone.
+
+`legionfacts` computes the work time of each issue by the rules of `legion/metrics`, and stores it in `issue_facts`. For each UTC day, `metrics.WorkTimeDay` takes the work time of each issue that closed that day. `metrics.FoldWorkTime` merges the hours of a window's days. It answers their count, median and 90th percentile (`measures.Quantile`), rounded to four decimals, and never the mean of the daily medians. The Legion section of the Delivery page and this eval call the same fold.
+
+The eval has three series, cut by the stored root flag: `hours` holds every issue, `hours:roots` the issues that are the root of their tree, and `hours:children` every other issue.
+
+**What it does not count.** Open issues, issues that closed with no Legion phase work, hours in `backlog` or `icebox`, hours back in the queue after the work started, and hours before the first worker event. No hour of slot wait is in it.

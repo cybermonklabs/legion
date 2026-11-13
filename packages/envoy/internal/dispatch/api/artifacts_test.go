@@ -582,8 +582,10 @@ func TestMissingDocumentOnABusyOwnerNamesTheClosestAndCountsTheRest(t *testing.T
 				"; GET /api/v1/issues/" + issue.Key + "/artifacts lists them all",
 		},
 		{
+			// The project holds its seeded evals-md beside the eleven runbooks (dispatch://INFRA-2916,
+			// R5); it is not among the closest names.
 			target: "/api/v1/projects/TEST/artifacts/Runbook-2-md",
-			want: `document "Runbook-2-md" not found by slug; this project's 11 documents include: ` +
+			want: `document "Runbook-2-md" not found by slug; this project's 12 documents include: ` +
 				"runbook-2-md (runbook-2.md), " + newest("runbook", 9, 3) +
 				"; GET /api/v1/projects/TEST/artifacts?unlinked=true lists them all",
 		},

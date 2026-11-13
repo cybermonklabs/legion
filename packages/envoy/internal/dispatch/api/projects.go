@@ -7,6 +7,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -100,6 +101,11 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	// The project's evals and its `evals-md` (dispatch://INFRA-2916, R5) are written in the
+	// transaction that creates it, which the document service joins, so no reader ever sees the
+	// project without them and a refused create leaves neither.
+	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
+	defer ledger.Discard()
 	var project model.Project
 	if err := tx.QueryRow(r.Context(), `
 		insert into projects (key, name) values ($1, $2) returning key, name, gated_steps, created_at
@@ -116,11 +122,17 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	seeded, err := evals.New(s.deps.Store, s.deps.Docs, s.deps.Events).EnsureTx(documentCtx, tx, project.Key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	s.publish(event)
+	seeded.Committed()
 	WriteJSON(w, http.StatusCreated, project)
 }
 

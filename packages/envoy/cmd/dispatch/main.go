@@ -42,6 +42,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
@@ -608,8 +609,10 @@ func main() {
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
 	//   - boot passes, which run once at start: the embedding coverage pass (embedqueue.Run starts
-	//     it, and repeats only its identity steps while another identity's rows remain) and the
-	//     task progress reconciliation (retrying, briefly, rows another writer held).
+	//     it, and repeats only its identity steps while another identity's rows remain), the
+	//     task progress reconciliation (retrying, briefly, rows another writer held) and the eval
+	//     seed (evals.Store.SeedEveryProject), which takes the eval-seed lease with no period and,
+	//     like the two leased woken loops, retries until a pass of its own runs.
 	//   - timers that stay, because GitHub has no feed of what they would miss - a webhook that
 	//     never arrived, a delivery that failed, a source's branch head: the delivery reconcile
 	//     and the architecture import every 5 minutes, each starting after a random delay within
@@ -963,6 +966,13 @@ func main() {
 		Observations: factsStateWake,
 		Deliveries:   factsChangesWake,
 	})
+	// dispatch://INFRA-2916: every project holds the computed evals of the catalogue, each with
+	// its section of the project's evals-md. A project created through the API is seeded in its
+	// own transaction (api's createProject); this boot pass seeds every project, which covers one
+	// made by SQL and writes what this build's catalogue changed. It takes the eval-seed lease,
+	// so two processes booting together write each project once, and a process that finds the
+	// lease held seeds again once it is free, with its own build's catalogue.
+	go evals.New(database, documentService, broker).SeedEveryProject(ctx, leases)
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because
