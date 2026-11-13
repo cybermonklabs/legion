@@ -182,7 +182,7 @@ Every move to `todo` you make is one of these:
 - an issue a person asks you to start, a parked one included, because that request is the
   person's own (`skill://legion-controller/references/triage.md#label-an-issue-for-a-person`);
 - a root still in the workflow (its `phase` is not `done`) whose architect failed or which is held,
-  once you checked its cause is gone, or because a person asks;
+  once you found no cause or checked that its cause is gone, or because a person asks;
 - a tree you parked for a hold, for a failed architect, or while it waits on an event outside
   Legion (`Parked by Legion while it waits on:`), once you checked that its cause is gone or that
   its event has happened, with a comment on the root that cites that mark and says what you

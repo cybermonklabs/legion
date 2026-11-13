@@ -167,8 +167,9 @@ resumes.
   way finishes what it was doing. To keep Legion off it for good, also take the `legion` label off;
   taking the label off alone does not stop a tree that has started.
 - **To run it again**, set it back to `todo` with the label on, or approve its spec: a person's
-  approval of a parked labelled issue's spec is queued by the daemon, and the issue moves to `todo`
-  itself. The tree starts over as a new generation, from its architect.
+  approval of a parked labelled issue's spec is queued by the daemon when the issue has no
+  parent, and the issue moves to `todo` itself. The tree starts over as a new generation, from its
+  architect.
 - **To close it without a change**, tell the architect at the design gate that no change is needed;
   it closes the issue with that reason. You can also close the issue yourself from the dashboard.
 

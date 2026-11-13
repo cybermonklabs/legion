@@ -4,10 +4,10 @@ A parked tree is a root handed to Legion (the `legion` label) whose Dispatch sta
 or `icebox` and whose `issues.<KEY>.phase` in `read_state` is `done`. Its architect is suspended
 or gone, so nobody inside the tree hears what a person says on it. The Go daemon sends you each
 such decision as `parked-decision on <KEY>`; the walk below finds one sent while no controller
-ran. You decide whether the tree runs again, unless the park is not your own hold. When it
-runs, its architect's start task, or the catch-up of a later launch, names each decision the
-daemon relayed, and both spec versions when the approved one is not the current one, so you need
-not tell it.
+ran. When the park is your own hold, you decide whether the tree runs again; whoever made the
+park, you start the tree when a person asks you to. When it runs, its architect's start task, or
+the catch-up of a later launch, names each decision the daemon relayed, and both spec versions
+when the approved one is not the current one, so you need not tell it.
 
 ## Backlog and icebox
 
@@ -59,10 +59,12 @@ A person's own approval of a parked root's own spec (its primary document), when
 live, is no notice either: it is that person's handover, and the daemon sets the root `todo`
 itself, whoever parked it (`admission: queued a person's handover`, `source=approval`). Two
 approvals of a root's spec are not that handover and still come as notices: a carried approval,
-which Dispatch writes in the person's name when their answer to a decision block was the whole
-change since the version they approved, and an approval on a root that keeps a Dispatch parent,
-as a child a linger handed to Legion does. The other spec notices are a request for changes and
-an approval of a document that is not the root's primary one.
+which Dispatch writes in the person's name with a reason that begins
+`Carried forward from the approval of version`, when their answer to a decision block was the
+whole change since the version they approved or when a later version's text is the text of the
+version they approved, and an approval on a root that keeps a Dispatch parent, as a child a linger
+handed to Legion does. The other spec notices are a request for changes and an approval of a
+document that is not the root's primary one.
 
 ## Deciding
 

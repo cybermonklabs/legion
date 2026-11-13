@@ -405,11 +405,14 @@ its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregis
 
 ## A parked tree did not come back after a decision
 
-A root in `backlog` or `icebox` runs again when a person sets it to `todo`, or when the controller
-parked it for a hold of its own and judges that a person's decision gives its work a next step. The
-controller marks such a park with a comment on the root that begins `Parked by Legion while it
-waits on:`. First find whether the daemon relayed the decision. Its JSON log names the issue and
-the root on each of these lines:
+A root in `backlog` or `icebox` runs again when a person sets it to `todo`, when a person asks the
+controller to start it, when a person approves its spec and it has no parent (the daemon then
+sets it to `todo` itself; an approval Dispatch carries from an earlier one does not count), or,
+when the controller parked it for a hold of its own, once the controller judges that a person's
+decision gives its work a next step or its walk finds the hold's cause gone or its event happened.
+The controller marks such a park with a comment on the root that begins
+`Parked by Legion while it waits on:`. First find whether the daemon relayed the decision. Its
+JSON log names the issue and the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
