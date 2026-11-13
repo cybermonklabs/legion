@@ -1152,7 +1152,7 @@ The merge carries a message the merger writes itself, `--subject '<pull request 
 `enqueuePullRequest` can pass no message, so on a merge-queue base whose setting reads `COMMIT_MESSAGES` the merger enqueues nothing and tells the architect, since only a person can change that setting.
 The merger's completion records its phase row and moves nothing; what closes the issue is the daemon's own reading of the merged pull request.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
-A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's architect, the worker of the issue's current phase and the implementer, and judges none of them.
+A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message each to the tree's architect, the worker of the issue's current phase and the implementer, and judges none.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 

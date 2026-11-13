@@ -128,8 +128,8 @@ round. Neither decision waits on CI: a request for changes stands whatever CI sa
 leaves reviewing with it, and the approval ends the round at the head it names, since the round
 reads no CI verdict, and a settlement the daemon reads later — at that head or any above it —
 moves the issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub
-gave it, in one message to the tree's architect, the worker of the issue's current phase and the
-implementer, and judges none of them: a red is the implementer's to fix or re-run, the
+gave it, in one message each to the tree's architect, the worker of the issue's current phase
+and the implementer, and judges none: a red is the implementer's to fix or re-run, the
 architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
 it approves is the only read that decides anything. A review that names an older head reviews
 code the pull request no longer has. The daemon moves the issue on the decision GitHub reports,
