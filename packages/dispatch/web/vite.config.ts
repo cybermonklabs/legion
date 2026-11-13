@@ -344,6 +344,9 @@ export default defineConfig({
         new URL("../../contracts/src/repo.ts", import.meta.url)
       ),
       "@legion/contracts": fileURLToPath(new URL("../../contracts/src/index.ts", import.meta.url)),
+      "@legion/proof-editor/document-json": fileURLToPath(
+        new URL("../../proof-editor/src/document-json.ts", import.meta.url)
+      ),
       "@legion/proof-editor/headless": fileURLToPath(
         new URL("../../proof-editor/src/lib-headless.ts", import.meta.url)
       ),

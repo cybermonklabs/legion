@@ -103,6 +103,9 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from, which main holds in its own
+	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
+	BuildCommit string
 	// FirstScreenBudget is AppContext's firstScreenBudget (above): a test's own, zero everywhere
 	// else.
 	FirstScreenBudget time.Duration
@@ -228,6 +231,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
+		BuildCommit:            opts.BuildCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -691,7 +695,7 @@ func isRetainedAssetPath(normalized string) bool {
 // the request until that read ends: a client that abandons each request the moment it reaches
 // the store cannot hold more store reads at once than the cap has room for.
 func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, key string) {
-	if asset, ok := r.assets.get(key); ok {
+	if asset, ok := r.assets.Get(key); ok {
 		writeRetainedAsset(w, req, key, asset)
 		return
 	}
@@ -752,7 +756,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-chan singleflight.Result, error) {
 	read := r.assets.reads.DoChan(key, func() (any, error) {
 		// A read that finished between this request's cache miss and its flight answers it.
-		if asset, ok := r.assets.get(key); ok {
+		if asset, ok := r.assets.Get(key); ok {
 			return asset, nil
 		}
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedAssetFetchTimeout)
@@ -761,7 +765,7 @@ func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-c
 		if err != nil {
 			return nil, err
 		}
-		r.assets.put(key, asset)
+		r.assets.Put(key, asset)
 		return asset, nil
 	})
 	select {

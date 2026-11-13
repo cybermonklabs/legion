@@ -9,12 +9,15 @@ import type { AgentPart } from "../refs/AgentName";
 import { ActivityLine } from "./ActivityLine";
 import { activityDescription } from "./activity-model";
 
-const uploaded: Artifact = {
+// This document is carried by an `artifact.created` frame below as well as read as a route's
+// answer, and a frame's payload states the kinds Dispatch writes where the route states a plain
+// string. It is written as the literal it is, so both readings take it.
+const uploaded = {
   created_at: "2026-09-15T00:00:00Z",
-  created_by: { id: "session-1", kind: "session" },
+  created_by: { id: "session-1", kind: "session" } as const,
   id: "artifact-2",
   issue_key: "OPS-52",
-  kind: "doc",
+  kind: "doc" as const,
   name: "cu-update-2026-09-15.md",
   primary: false,
   project: "OPS",
@@ -22,7 +25,7 @@ const uploaded: Artifact = {
   session_id: null,
   slug: "cu-update-2026-09-15-md",
   versions: [],
-};
+} satisfies Artifact;
 
 const issue: IssueDetails = {
   route_status: null,

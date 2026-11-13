@@ -48,6 +48,9 @@ import (
 // because a row says the daemon has started that one issue and nothing about the tree: a root
 // that arrived from another tree carries one while the tree of its own has still to be opened
 // (record.KeepsSlot).
+// A phase its own terminating fact has already met is given no owner either (PhaseFinished): a
+// merged root stands in merging for as long as the rest of its tree runs, and resuming its merger
+// there would hand it the same phase again at every boot, for days.
 // Accepting's owner is the tree's architect, which admission starts with the tree, so no issue
 // there is given one. Each owner is given the start admission gives a re-admitted tree's
 // mid-phase child, through the outbox's start like every other start (StartOrOwe): one row that
@@ -97,6 +100,13 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if _, runs := running[root.Key]; !runs {
 			continue
 		}
+		finished, err := e.phaseFinished(ctx, tx, issue)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if finished {
+			continue
+		}
 		project, err := claim.ProjectToken(issue.Project)
 		if err != nil {
 			return intake.Result{}, err
@@ -114,12 +124,8 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 			!StartFor(run, root, issue.Generation, issue.Phase) {
 			continue
 		}
-		task, err := ResumeTask(ctx, e.store, tx, issue, role)
-		if err != nil {
-			return intake.Result{}, err
-		}
 		if err := StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-			Generation: issue.Generation, Phase: issue.Phase, Task: task, ResumeTask: true, RuleResume: true}, e.now()); err != nil {
+			Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(issue), ResumeTask: true, RuleResume: true}, e.now()); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,

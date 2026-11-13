@@ -103,6 +103,16 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `recorded the ${event.payload.phase} handoff, version ${event.payload.version}`;
     case "artifact.created":
       return ["added ", { artifact: event.payload.artifact.name }];
+    case "artifact.renamed":
+      // The new title is the part, and the old one stays text: the line names the document
+      // twice, and it is the new title that has the page (`ActivityLine`'s `LinkedName`).
+      return [
+        `renamed ${event.payload.previous_name} to `,
+        { artifact: event.payload.artifact.name },
+      ];
+    case "artifact.removed":
+      // A removed document has no page, so its name is text and nothing links it.
+      return `removed ${event.payload.artifact.name}`;
     case "artifact.version":
       return ["saved ", { artifact: event.payload.name }, ` v${event.payload.version.number}`];
     case "artifact.human_edited":

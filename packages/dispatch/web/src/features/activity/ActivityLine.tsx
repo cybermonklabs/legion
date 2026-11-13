@@ -35,7 +35,9 @@ export function LineParts({
  *  upload from the Conversation instead of hunting for it on the Artifacts tab. The name is a
  *  part of its own (`{ artifact }`, from `activityDescription`), so the link is that part: the
  *  sentence's text is never searched for the name, which a quoted question in the same line
- *  could otherwise hold. */
+ *  could otherwise hold, and a correction's line - `renamed <old> to <new>` - names the
+ *  document twice but makes a part of the new title alone, which is the one that has the
+ *  page. */
 function LinkedName({
   description,
   to,
@@ -97,7 +99,12 @@ export function ActivityLine({
   issueKey: string;
 }): ReactNode {
   switch (event.type) {
+    // The slug does not move with a correction, so the new title links to the page the old one
+    // did, which is the page a creation links to. A removed document has no page at all, so
+    // `artifact.removed` takes the plain line the default below renders: a link to a gone
+    // document would answer "No artifact … on …".
     case "artifact.created":
+    case "artifact.renamed":
       return (
         <LinkedName
           description={description}

@@ -189,14 +189,14 @@ test(
 const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>> = {
   "chromium-alone": {
     "agent-workspace-timing.e2e.ts": 4,
-    "heavy-bodies.e2e.ts": 17,
+    "heavy-bodies.e2e.ts": 16,
     "large-documents-desktop-build.e2e.ts": 1,
     "nested-directive.e2e.ts": 2,
   },
-  "firefox-alone": { "heavy-bodies.e2e.ts": 14 },
+  "firefox-alone": { "heavy-bodies.e2e.ts": 13 },
   "iphone-alone": { "large-documents-build-serves.e2e.ts": 2 },
   "iphone-measure-alone": { "large-documents-measured.e2e.ts": 2 },
-  "webkit-alone": { "heavy-bodies.e2e.ts": 17 },
+  "webkit-alone": { "heavy-bodies.e2e.ts": 16 },
 };
 
 // What a wall-clock row's quiet machine rests on, now that the file is the selector: that each

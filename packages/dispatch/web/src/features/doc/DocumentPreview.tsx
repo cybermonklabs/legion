@@ -277,22 +277,30 @@ export function DocumentPreview({
   // The document's own parse policies, which are this hook's defaults: a single newline inside a
   // paragraph is a space (hard-wrapped Markdown is one paragraph), and a line of raw HTML leaves
   // the source to the literal-text fallback rather than drawing as text.
-  const { isFallback, isPending, portals } = useRenderedMarkdown(root, source ?? "", paintBlock, {
-    holding,
-    onRendered: () => {
-      drawn.current = source;
-      setDrawnOnce(true);
-    },
-    paintInSlices: paintBlockInSlices,
-    // The one surface that draws a whole document rather than a body: what it holds while the
-    // worker owes it, what becomes of a parse it has moved on from, and whether it takes a
-    // parse made on the reader's own thread are all that policy's (`MARKDOWN_POLICIES`).
-    policy: "document",
-    // The draw the editor replaces links nothing: what this document's text cites is drawn by
-    // the editor itself, over the blocks it builds (`features/doc/document-references.tsx`),
-    // and reading 400,000 characters of it for a link pass twice is the reader's own thread.
-    references: NOTHING_TO_LINK,
-  });
+  // The document's own text is drawn from its markdown: the preview holds the text the socket
+  // carried, which no answer of the server's sent a tree for.
+  const { isFallback, isPending, portals } = useRenderedMarkdown(
+    root,
+    source ?? "",
+    undefined,
+    paintBlock,
+    {
+      holding,
+      onRendered: () => {
+        drawn.current = source;
+        setDrawnOnce(true);
+      },
+      paintInSlices: paintBlockInSlices,
+      // The one surface that draws a whole document rather than a body: what it holds while the
+      // worker owes it, what becomes of a parse it has moved on from, and whether it takes a
+      // parse made on the reader's own thread are all that policy's (`MARKDOWN_POLICIES`).
+      policy: "document",
+      // The draw the editor replaces links nothing: what this document's text cites is drawn by
+      // the editor itself, over the blocks it builds (`features/doc/document-references.tsx`),
+      // and reading 400,000 characters of it for a link pass twice is the reader's own thread.
+      references: NOTHING_TO_LINK,
+    }
+  );
 
   return (
     <div

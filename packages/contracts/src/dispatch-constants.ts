@@ -130,6 +130,11 @@ export function answerSelected(answer: {
  *  (`features/refs/routes.ts`), as `dispatch-tools.ts` reads it for `z.enum`. */
 export const ASK_URGENCIES = ["low", "med", "high", "blocking"] as const;
 
+/** Who holds the turn on an open ask after a reply: `human` when the human needs to act,
+ *  `agent` when the asking agent still owes the next move (a progress note). */
+export const ASK_TURNS = ["human", "agent"] as const;
+export type AskTurn = (typeof ASK_TURNS)[number];
+
 /**
  * The closed list of targeted-delivery modes a session can advertise as
  * capabilities on the Envoy listener (`/v1/interests/subscribe`) and that
@@ -362,6 +367,49 @@ export const DELIVERY_DUPLICATE_WINDOW_MS = 72 * 60 * 60 * 1000;
 export const RECEIPT_TIMEOUT_CAUSE =
   "The listener didn't answer within the send window; the message may already have been delivered.";
 
+/** `SearchResponse.degraded`'s one value today: meaning search could not run for this request (no
+ * embedder configured, the query's own embedding timed out, or the model service answered an
+ * error) and search fell back to keyword-only ranking. Generated into Go as
+ * `contracts.SearchDegradedEmbedderUnavailable` so the string Dispatch writes and the string
+ * `search-answer.ts` compares against cannot drift apart. */
+export const SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE = "embedder_unavailable";
+
+/** The operator forms `GET /api/v1/search` reads in the words a person wrote: a `"phrase"` in
+ *  quotes, the `OR` between two words, and a `-word` the search leaves out. Each is generated
+ *  into Go as `contracts.SearchOperatorPhrase`, `SearchOperatorOr` and `SearchOperatorExclude`,
+ *  so the string Dispatch answers and the string a client reads it by cannot drift apart. */
+export const SEARCH_OPERATOR_PHRASE = "phrase";
+export const SEARCH_OPERATOR_OR = "or";
+export const SEARCH_OPERATOR_EXCLUDE = "exclude";
+export const SEARCH_OPERATORS = [
+  SEARCH_OPERATOR_PHRASE,
+  SEARCH_OPERATOR_OR,
+  SEARCH_OPERATOR_EXCLUDE,
+] as const;
+export type SearchOperator = (typeof SEARCH_OPERATORS)[number];
+
+/** What a `SessionAnswer` is to the session Dispatch delivered it to, one snake_case wire value per
+ *  relation, each spelling the phrase a reader prints: a person answered the session's ask,
+ *  declined to answer it, replied in its ask's thread, replied in a comment thread it wrote in,
+ *  commented on a document it wrote, commented on an issue routed to it, mentioned it, sent it a
+ *  message (direct, on an issue, or a broadcast's copy), or replied to its message. A decline is
+ *  the item of the new kind `declined`, whose `text` is the person's own note and whose
+ *  `dispatch_words` is what Dispatch wrote beside it, so a reader draws the two apart. Mirrored in
+ *  Go as the `model.SessionAnswerRelation*` constants, in this order. */
+export const SESSION_ANSWER_RELATIONS = [
+  "answered_your_ask",
+  "declined_your_ask",
+  "replied_on_your_ask",
+  "replied_in_a_comment_thread",
+  "commented_on_a_document",
+  "commented_on_an_issue",
+  "mentioned_you",
+  "sent_you_a_message",
+  "replied_to_your_message",
+] as const;
+
+export type SessionAnswerRelation = (typeof SESSION_ANSWER_RELATIONS)[number];
+
 /** The code of the `401` Dispatch itself answers a caller it cannot resolve to a person - no
  *  session cookie, one it cannot read, one whose generation it has revoked, or a membership the
  *  sign-in issuer no longer confirms (`identity.WriteError`). A `401` without it came from
@@ -423,3 +471,16 @@ export function everyBuildReadsSearch(request: object): boolean {
     ([member, value]) => value === undefined || read.includes(member)
   );
 }
+
+/**
+ * The subject Dispatch announces its server fleet's build on, directly on the bus rather than
+ * through the outbox (it is no issue's, document's or project's event), as an Envoy envelope with
+ * `source` `dispatch` whose payload is `DispatchServerStartedPayload`. One envelope each time the
+ * commit every live Dispatch server process serves changes: a rolling update is announced once its
+ * last process of the build before has gone, a restart on the announced build is not announced, and
+ * a rollback to an earlier build is announced again. Its event id, source event id and dedupe key
+ * are `dispatch-server-started-<commit>-<seq>`, `seq` being the announcement's own number. Mirrored
+ * by `startup.Subject` in `packages/envoy/internal/dispatch/startup`. The Legion daemon's intake
+ * matches no subject to it: an envelope on it is no fact.
+ */
+export const DISPATCH_SERVER_STARTED_SUBJECT = "notifications.dispatch.server.started";

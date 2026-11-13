@@ -278,11 +278,11 @@ const multiprocessProjects = [
 ];
 
 // The three rows of `heavy-bodies.e2e.ts` that read where a reader's place ends up once a long
-// body formats under them. The compensation they measure is layout Chromium and WebKit anchor
+// body fills under them. The compensation they measure is layout Chromium and WebKit anchor
 // differently, and those are the two engines it was ever measured on, so `firefox-alone` below
 // inverts them. Each fragment names one row of that file and no other.
 const readersPlaceRows =
-  /a long comment above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long comment/;
+  /a long message arriving above the reader|a reader who scrolls while a long body|Jump to latest keeps a newest long turn/;
 
 // The five rows read from the wall clock over a large document are three files of their own,
 // one per project, and the `-alone` projects below select them by file: every parallel project

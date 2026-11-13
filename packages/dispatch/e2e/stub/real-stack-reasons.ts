@@ -103,6 +103,12 @@ export const realStackReasons: Record<string, string> = {
   "conversation.e2e.ts":
     "names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked",
   "coverage.e2e.ts": "coverage flags are the server's computation, cleared by a write",
+  "create-document-refusals.e2e.ts":
+    "every row reads a refusal: the taken title the control checks against the owner's own list, the role slug and the duplicate the server refuses in its own words, and the closed issue's one sentence; each then reads the issue's documents again to prove nothing was written",
+  "create-document.e2e.ts":
+    "makes a document and then reads its own write - the versions it holds, the list it is listed in and the line typed into its live editor after a reload; the double press is answered by the server's idempotency key",
+  "create-issue-decision-claim.e2e.ts":
+    "the server's search answers the typed title, and the answered ask it lists is its ranking",
   "create-issue-related.e2e.ts": "the server's similar-issue search answers the typed title",
   "decision-records.e2e.ts":
     'Keep and Change are writes, and "out of date" is the server\'s judgement',
@@ -114,6 +120,8 @@ export const realStackReasons: Record<string, string> = {
   "doc-reload-line.e2e.ts": "the read-only admission is decided at socket open",
   "doc.e2e.ts": "every row lives in the live document room, its connections and versions",
   "document-and-comment-read-alike.e2e.ts": "each row asserts inside the live spec editor",
+  "document-way-back.e2e.ts":
+    "a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true",
   "document.e2e.ts": "collaboration, uploads, marks, and the live connection dot",
   "editor-paste.e2e.ts": "pastes into the live editor, read back after a reload",
   "email-links.e2e.ts": "asserts in the live editor before the past version",
@@ -222,6 +230,8 @@ export const realStackReasons: Record<string, string> = {
     "its claim is a wall-clock time, so it runs one row at a time in chromium-alone and in no other",
   "offline-edits.e2e.ts": "document transport, IndexedDB recovery and read-only admissions",
   "overlapping-marks.e2e.ts": "two readers' marks and the server's anchor refresh",
+  "parse-count.e2e.ts":
+    "every row counts what the browser parsed while the page drew a text the live server stored, which is the whole claim: a recording would answer the trees a recording holds rather than the trees this server sends, and its first row seeds the texts the rest of the file counts over, which only a live server does",
   "paste-recovery.e2e.ts": "pastes into the live document",
   "phone-conversation.e2e.ts":
     "sends held, refused and retried, and read marks written from a thread",
@@ -256,6 +266,8 @@ export const realStackReasons: Record<string, string> = {
   "smoke.e2e.ts":
     "the reader nobody signed in, where the stubbed layer's page is always signed in because its recording answers /auth/whoami",
   "spec-suggestion-decoration.e2e.ts": "reads the decoration's DOM inside the live editor",
+  "stored-text-reading.e2e.ts":
+    "each row reads a body the live server stored and drew as its own tree, and the server's reading is what the row compares against the browser's: a recording would answer a tree recorded elsewhere rather than the one this server sends for those bytes",
   "task-items.e2e.ts": "asserts inside the live document editor",
   "text-typed-blocks.e2e.ts": "the live document editor, including typing a new option",
   "threads-order.e2e.ts":

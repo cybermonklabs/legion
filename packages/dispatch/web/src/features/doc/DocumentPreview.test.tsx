@@ -47,7 +47,7 @@ function paragraphs(container: HTMLElement): number {
  *  document and asks the worker for nothing. */
 function alreadyParsed(markdown: string): { cached: boolean; cancel: () => void } {
   const seen: MarkdownRendering[] = [];
-  const cancel = renderWithEngine(markdown, "space", "refuse", (rendering) => {
+  const cancel = renderWithEngine(markdown, undefined, "space", "refuse", (rendering) => {
     seen.push(rendering);
   });
   return { cached: seen[0]?.pending === false && seen[0]?.parsed !== undefined, cancel };

@@ -23,6 +23,7 @@
 
 import { BLOCK_ID_DOM_ATTR, blockIdOf, blockIdPlugins } from './editor/schema/block-ids';
 import { withoutLeafMarks } from './editor/schema/leaf-marks';
+import { documentFromJSON, type DocumentJSON } from './document-json';
 import { blockSchemaPlugins, type BlockSchema, type HostBlockRenderer } from './block-schema';
 import { createTypedBlockCommands, type TypedBlockCommands } from './typed-block-commands';
 import {
@@ -127,6 +128,7 @@ export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOu
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
 export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
 export type { BlockMark } from './editor-highlights';
+export type { DocumentJSON, DocumentMarkJSON } from './document-json';
 export type {
   BlockAttributeKind,
   BlockAttributeSchema,
@@ -248,6 +250,12 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   getMarkdown(): string;
   /** Replace the current document with parsed markdown. */
   setMarkdown(markdown: string): void;
+  /** Replace the current document with `tree`, a document another reader of the same text has
+   *  already built - Dispatch's Go reader of a stored text (`pmdoc.ReadForDisplay`) - as JSON,
+   *  so no parser of this editor's runs. Tolerant of the attributes those readers write, where
+   *  `Schema.nodeFromJSON` is not (./document-json.ts); throws for a node or mark type this
+   *  editor has no schema for, which the host draws in place of the document. */
+  setDocumentJSON(tree: DocumentJSON): void;
   /** Top offset of each mark's first span relative to the library root, when `placed`; with
    *  `placed` false each answers 0, so a host that places nothing against those pixels still
    *  reads which marks the document draws without a forced layout of the whole document. */
@@ -691,6 +699,15 @@ async function theConstruction(
       const parsed = withoutLeafMarks(importParser(markdown));
       const { state } = view;
       view.dispatch(state.tr.replaceWith(0, state.doc.content.size, parsed.content));
+    },
+    setDocumentJSON(tree: DocumentJSON): void {
+      // No parser runs: the tree is a document already, and this only rebuilds it against this
+      // editor's own schema (./document-json.ts). It is an import all the same, so the rule
+      // every import seam applies holds here too: no inline leaf of the document carries a mark
+      // (./editor/schema/leaf-marks.ts).
+      const document = withoutLeafMarks(documentFromJSON(editor.ctx.get(schemaCtx), tree));
+      const { state } = view;
+      view.dispatch(state.tr.replaceWith(0, state.doc.content.size, document.content));
     },
     markOffsets(placed: boolean): Map<string, number> {
       const offsets = new Map<string, number>();

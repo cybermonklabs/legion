@@ -14,7 +14,6 @@ import {
   documentEditor,
   markSpan,
   selectEditorText,
-  typeAtEnd,
 } from "./editor";
 import { askCard as inboxAskCard, inboxRow } from "./inbox-pane";
 import { navigateInApp } from "./sends";
@@ -41,12 +40,21 @@ test("documentCollaborationLive", async ({ browser }, testInfo) => {
     const artifact = await getProjectArtifact("CORE", "design-notes");
     const bobPage = await bob.newPage();
     await bobPage.goto("/projects/CORE/documents/design-notes");
-    await expect(documentEditor(alicePage)).toContainText("Design notes");
-    await expect(documentEditor(bobPage)).toContainText("Design notes");
+    // The create sends the title alone, so the document opens empty under the title Alice typed:
+    // the heading the list used to write into it is gone. The title is the page's, not the text's.
+    await expect(alicePage.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(bobPage.getByRole("heading", { name: "Design notes" })).toBeVisible();
+    await expect(documentEditor(alicePage)).toBeAttached();
+    await expect(documentEditor(bobPage)).toBeAttached();
+    await expect(documentEditor(alicePage)).toHaveText("");
+    await expect(documentEditor(bobPage)).toHaveText("");
     await expect(connectedDot(alicePage)).toHaveText("connected");
     await expect(connectedDot(bobPage)).toHaveText("connected");
 
-    await typeAtEnd(alicePage, "Alice wrote this.");
+    // An empty document holds no text a caret can enter, so the first word is typed where the
+    // click puts the caret rather than after text (`typeAtEnd`).
+    await documentEditor(alicePage).click();
+    await alicePage.keyboard.type("Alice wrote this.");
     await expect(documentEditor(bobPage)).toContainText("Alice wrote this.");
     await alicePage.reload();
     // The editor's textbox role is written at the very end of the reload's admission chain - the

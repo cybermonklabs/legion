@@ -9,6 +9,7 @@ import type {
   Ask,
   AskAnswer,
   AskRead,
+  AskWithTrees,
   Comment,
   CreateCommentInput,
 } from "../../api/types";
@@ -28,7 +29,7 @@ import { invalidateOwnerReads } from "./owner-reads";
 import { isQuestionShapedAnswer } from "./question-shaped-answer";
 
 interface UseAskAnswerFormOptions {
-  ask: Ask;
+  ask: AskWithTrees;
   answer: (id: string, input: AnswerAskInput, bounds: WriteBounds) => Promise<Ask>;
   createReply: (
     issueKey: string,

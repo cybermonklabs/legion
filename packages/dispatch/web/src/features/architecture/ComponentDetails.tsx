@@ -4,8 +4,8 @@ import { Link } from "react-router-dom";
 
 import { issueQuery } from "../../api/queries";
 import type {
+  ArchitectureComponentRead,
   ArchitectureTree,
-  ArchitectureTreeComponent,
   ArchitectureTreeIssue,
 } from "../../api/types";
 import { ChevronIcon, DisclosureToggle } from "../../components/DisclosureToggle";
@@ -58,7 +58,7 @@ export function ComponentDetails({
   rowSearch,
   tree,
 }: {
-  component: ArchitectureTreeComponent;
+  component: ArchitectureComponentRead;
   project: string;
   rowSearch: (id: string) => string;
   tree: ArchitectureTree;
@@ -177,7 +177,7 @@ export function ComponentDetails({
         <p className={`mt-1 text-sm ${textMutedOnSurface}`}>No description in the model.</p>
       ) : (
         <div className={`mt-1 text-sm ${textSecondaryOnSurface}`}>
-          <MarkdownBody markdown={component.prose} />
+          <MarkdownBody markdown={component.prose} tree={component.prose_tree} />
         </div>
       )}
       <dl

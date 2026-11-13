@@ -553,9 +553,20 @@ type SearchIssue struct {
 type SearchAsk struct {
 	// State is "open", "answered" or "resolved": it is the asks row's own state, which
 	// asks_state_check holds to those three (migration 0007_ask_resolution).
-	State      string         `json:"state" enum:"open,answered,resolved"`
-	Answer     *AskAnswer     `json:"answer,omitempty"`
-	Resolution *AskResolution `json:"resolution,omitempty"`
+	State      string             `json:"state" enum:"open,answered,resolved"`
+	Answer     *AskAnswerWithTree `json:"answer,omitempty"`
+	Resolution *AskResolution     `json:"resolution,omitempty"`
+}
+
+// AskAnswerWithTree is an answer a read gives with the tree of its text. It is the read's own
+// shape rather than a field on AskAnswer itself: the answer is an event payload's shape, and no
+// payload gains a tree field. A search hit's ask and a person's answer history both answer with
+// it.
+type AskAnswerWithTree struct {
+	AskAnswer
+	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`.
+	TextTree DisplayTree `json:"text_tree,omitempty"`
 }
 
 // SearchResult is one ranked Dispatch search hit.
@@ -575,8 +586,11 @@ type SearchResult struct {
 	// which matched the item's whole text rather than one of its windows.
 	BlockID *string `json:"block_id,omitempty"`
 	Snippet string  `json:"snippet"`
-	Rank    float64 `json:"rank"`
-	Href    string  `json:"href"`
+	// SnippetTree is the ProseMirror tree the snippet is shown as, with the match marked
+	// (pmdoc.DisplaySnippetJSON): present only for a caller that sent `Dispatch-Trees: 1`.
+	SnippetTree DisplayTree `json:"snippet_tree,omitempty"`
+	Rank        float64     `json:"rank"`
+	Href        string      `json:"href"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
@@ -709,26 +723,23 @@ type DuplicateCandidate struct {
 	Href        string `json:"href"`
 }
 
-// WriteSuggestion is one item the related-item check judges like what was just filed:
-// a search hit over the same project. Ask is where an ask item stands (its latest answer, who gave
-// it, when and the options chosen; or its resolution; or open). AnsweredBy and AnsweredAt repeat
-// the answer's user and time on the ask Suggestions.Decision names, for clients built before Ask.
+// WriteSuggestion is one item the related-item check judges like what was just filed: a search
+// hit of the asking project in Suggestions.Related, and of another project in
+// Suggestions.OtherProjects. Ask is where an ask item stands (its latest answer, who gave
+// it, when and the options chosen; or its resolution; or open).
 type WriteSuggestion struct {
-	Kind       string          `json:"kind"`
-	Owner      SearchOwner     `json:"owner"`
-	Artifact   *SearchArtifact `json:"artifact,omitempty"`
-	ID         string          `json:"id"`
-	Snippet    string          `json:"snippet"`
-	Href       string          `json:"href"`
-	Ask        *SearchAsk      `json:"ask,omitempty"`
-	AnsweredBy string          `json:"answered_by,omitempty"`
-	AnsweredAt *time.Time      `json:"answered_at,omitempty"`
+	Kind     string          `json:"kind"`
+	Owner    SearchOwner     `json:"owner"`
+	Artifact *SearchArtifact `json:"artifact,omitempty"`
+	ID       string          `json:"id"`
+	Snippet  string          `json:"snippet"`
+	Href     string          `json:"href"`
+	Ask      *SearchAsk      `json:"ask,omitempty"`
 }
 
 // Suggestions is the related-item check's result on a newly created issue or ask: the
-// three items most like it (Related, one per owner) and, when an answered ask already settles the
-// same question, that decision (Decision). The check never refuses the write; it waits at most
-// five seconds, and says what it did.
+// three items most like it (Related, one per owner). The check never refuses the write; it waits
+// at most five seconds, and says what it did.
 //
 // Outcome is "found" (Related holds at least one item), "none" (it searched and found nothing) or
 // "not_made" (it did not search to the end). Search is how it searched, "meaning_and_keywords" or
@@ -743,13 +754,19 @@ type WriteSuggestion struct {
 // why, exactly when the near-copy check before the create did not answer, so a filer knows the
 // create went in unchecked; it is absent on every other write, which runs no such check.
 // Related is always an array, never null.
+//
+// OtherProjects rides beside Related, never inside it: a write that asks a person a question -
+// an ask create, a new decision block, and `dispatch related` - also carries the answered
+// questions of the other projects that stand closest to it in meaning. Each item is one such
+// answered question, and its Owner.Project names the project that holds it. Every other write
+// leaves it empty.
 type Suggestions struct {
 	Outcome         string               `json:"outcome"`
 	Search          string               `json:"search,omitempty"`
 	SearchNote      string               `json:"search_note,omitempty"`
 	SearchQuery     string               `json:"search_query,omitempty"`
 	Related         []WriteSuggestion    `json:"related"`
-	Decision        *WriteSuggestion     `json:"decision,omitempty"`
+	OtherProjects   []WriteSuggestion    `json:"other_projects,omitempty"`
 	Missing         string               `json:"missing,omitempty"`
 	TitleMatches    []DuplicateCandidate `json:"title_matches,omitempty"`
 	LikelyDuplicate *DuplicateCandidate  `json:"likely_duplicate,omitempty"`
@@ -766,20 +783,28 @@ type Suggestions struct {
 // searched by meaning and keywords). Each map holds only the values seen, and is {} for none.
 // Completed is the checks that searched to the end (found or none, whatever the search mode),
 // SkippedForTime those not made because the search ran out of time (reason timeout).
+//
+// OtherProjectOffers is how many writes of the same window offered an answered question of
+// another project: one per write, whatever number of questions it offered. It is read from
+// write_suggestions, the table that records each item a check offered, under the same window,
+// project and source-kind filters; every other count here is read from related_checks, which
+// holds no key of that table. Only an ask create records such a row (api.persistSuggestions), so
+// the count is zero under any other source kind.
 type RelatedChecksReport struct {
-	Project        *string            `json:"project"`
-	SourceKind     *string            `json:"source_kind"`
-	From           *time.Time         `json:"from"`
-	To             *time.Time         `json:"to"`
-	Total          int                `json:"total"`
-	BySourceKind   map[string]int     `json:"by_source_kind"`
-	ByOutcome      map[string]int     `json:"by_outcome"`
-	BySearch       map[string]int     `json:"by_search"`
-	ByReason       map[string]int     `json:"by_reason"`
-	Completed      int                `json:"completed"`
-	SkippedForTime int                `json:"skipped_for_time"`
-	KeywordMS      RelatedCheckTiming `json:"keyword_ms"`
-	TotalMS        RelatedCheckTiming `json:"total_ms"`
+	Project            *string            `json:"project"`
+	SourceKind         *string            `json:"source_kind"`
+	From               *time.Time         `json:"from"`
+	To                 *time.Time         `json:"to"`
+	Total              int                `json:"total"`
+	BySourceKind       map[string]int     `json:"by_source_kind"`
+	ByOutcome          map[string]int     `json:"by_outcome"`
+	BySearch           map[string]int     `json:"by_search"`
+	ByReason           map[string]int     `json:"by_reason"`
+	Completed          int                `json:"completed"`
+	SkippedForTime     int                `json:"skipped_for_time"`
+	OtherProjectOffers int                `json:"other_project_offers"`
+	KeywordMS          RelatedCheckTiming `json:"keyword_ms"`
+	TotalMS            RelatedCheckTiming `json:"total_ms"`
 }
 
 // RelatedCheckTiming summarizes one of related_checks' millisecond columns over the checks that
@@ -1794,22 +1819,28 @@ type OpenAskDocument struct {
 type MyAnswerReply struct {
 	ID   string `json:"id"`
 	Body string `json:"body"`
+	// BodyTree is the ProseMirror tree Body is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`.
+	BodyTree DisplayTree `json:"body_tree,omitempty"`
 }
 
 // MyAnswerRow is one answer or reply written by the caller, newest first.
 type MyAnswerRow struct {
-	Kind     string         `json:"kind"`
-	At       time.Time      `json:"at"`
-	AskID    string         `json:"ask_id"`
-	Ref      string         `json:"ref"`
-	Question string         `json:"question"`
-	AskKind  string         `json:"ask_kind"`
-	AskState string         `json:"ask_state"`
-	EditedAt *string        `json:"edited_at"`
-	Owner    OpenAskOwner   `json:"owner"`
-	Answer   *AskAnswer     `json:"answer,omitempty"`
-	Current  bool           `json:"current"`
-	Reply    *MyAnswerReply `json:"reply,omitempty"`
+	Kind     string    `json:"kind"`
+	At       time.Time `json:"at"`
+	AskID    string    `json:"ask_id"`
+	Ref      string    `json:"ref"`
+	Question string    `json:"question"`
+	// QuestionTree is the ProseMirror tree Question is shown as, present only for a caller that
+	// sent `Dispatch-Trees: 1`.
+	QuestionTree DisplayTree        `json:"question_tree,omitempty"`
+	AskKind      string             `json:"ask_kind"`
+	AskState     string             `json:"ask_state"`
+	EditedAt     *string            `json:"edited_at"`
+	Owner        OpenAskOwner       `json:"owner"`
+	Answer       *AskAnswerWithTree `json:"answer,omitempty"`
+	Current      bool               `json:"current"`
+	Reply        *MyAnswerReply     `json:"reply,omitempty"`
 }
 
 // MyAnswersResponse is a page of the caller's answers and ask replies.
@@ -2890,10 +2921,14 @@ type DecisionLink struct {
 // sum of Text, which a Keep carries back to say which text it agreed with. WaitingReview is an
 // agent's decision, not replaced, whose text nobody has kept as it stands.
 type Decision struct {
-	BlockID        string         `json:"block_id"`
-	Heading        string         `json:"heading"`
-	Ref            string         `json:"ref"`
-	Text           string         `json:"text"`
+	BlockID string `json:"block_id"`
+	Heading string `json:"heading"`
+	Ref     string `json:"ref"`
+	Text    string `json:"text"`
+	// TextTree is the ProseMirror tree Text is shown as, present only for a caller that sent
+	// `Dispatch-Trees: 1`. A view that lays the decision out paragraph by paragraph takes those
+	// paragraphs from this tree's own top-level blocks, so no reader splits the markdown again.
+	TextTree       DisplayTree    `json:"text_tree,omitempty"`
 	TextSHA256     string         `json:"text_sha256"`
 	Kind           string         `json:"kind"`
 	Unsure         bool           `json:"unsure"`
@@ -2926,6 +2961,12 @@ type Event struct {
 	Notify     bool      `json:"notify"`
 	CreatedAt  time.Time `json:"created_at"`
 	Payload    any       `json:"payload"`
+	// Trees is the ProseMirror tree of every stored text the payload carries, keyed by that
+	// text's path in the envelope ("payload.body", "payload.options.0.label"). It rides beside
+	// the payload rather than in it so each payload keeps the type its readers know, and it is
+	// filled only for a caller that sent `Dispatch-Trees: 1` and on every /ws/live event frame,
+	// where a browser can set no header.
+	Trees map[string]json.RawMessage `json:"trees,omitempty"`
 }
 
 // EditPrecondition asks Dispatch to apply document operations only against the

@@ -1,13 +1,14 @@
 // How a whole parsed body is painted into an element: in one go, and a piece at a time for a
-// body the parse worker parsed. Both painters live beside each other, and apart from the
-// surfaces that use them, because three surfaces now share them: `MarkdownBody`, which draws a
-// comment, ask or message body, and `features/doc/DocumentPreview.tsx`, which draws a whole
-// document before its editor exists (dispatch://INFRA-341, R11).
+// body of more nodes than one task puts into the page. Both painters live beside each other,
+// and apart from the surfaces that use them, because three surfaces now share them:
+// `MarkdownBody`, which draws a comment, ask or message body, and
+// `features/doc/DocumentPreview.tsx`, which draws a whole document before its editor exists
+// (dispatch://INFRA-341, R11).
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 
 import type { MarkdownEngine } from "./markdown-engine";
 import { drawTaskCheckboxes } from "./task-checkboxes";
-import type { PaintMarkdown, SliceYield } from "./useRenderedMarkdown";
+import { ATTACH_BATCH, type PaintMarkdown, type SliceYield } from "./useRenderedMarkdown";
 
 /**
  * The two passes over a whole painted body, after its nodes are in it and before anything reads
@@ -33,9 +34,11 @@ export const paintBlock: PaintMarkdown = (element, parsed, serializer) => {
 /**
  * One node into `parent`, yielding where the work can be cut: a node holding several block
  * children - a list, a quote, the document itself - is opened with its own `toDOM`, as the
- * serializer would, and its children go in one at a time; everything else, a textblock and its
- * marks included, goes in whole, since splitting inline content would split a mark across
- * elements.
+ * serializer would, and its children go in one at a time; everything else goes in whole. A
+ * textblock and its marks do, since splitting inline content would split a mark across
+ * elements, and so does a node holding one child or none, which has no second child to cut
+ * between - a quote around an 8,000-item list is one such node, and serialises in the one piece
+ * its own child is.
  *
  * An opened node is opened exactly as `DOMSerializer.serializeNode` opens it: its attributes go
  * to `renderSpec` as the guard wants them, and its own marks wrap what comes back, outermost
@@ -76,19 +79,6 @@ function* appendNode(
     yield* appendNode(contentDOM, node.child(child), engine);
   }
 }
-
-/**
- * How many nodes of the built body one task puts into the page. What an engine spends on a batch
- * is the style and layout of what has just arrived, in the rendering update after that task, so
- * the batch is what one such pass costs. Measured on this pod against the dashboard's own
- * stylesheet (sjawhar/legion#2519), an 8,000-item list: put in with one `replaceChildren` the
- * thread runs no task for 918-971 ms in WebKit, 211 ms in Chromium and 173 ms in Firefox; put in
- * 500 nodes at a time, 72 ms, 124 ms and 39 ms, because each engine then lays out only the items
- * of the batch. WebKit is why the batch exists at all: it spends ~700 ms on a pass over 16,000
- * freshly attached nodes whether their boxes are laid out or skipped, so nothing but splitting
- * the attach brings it under the second a reader may wait.
- */
-const ATTACH_BATCH = 500;
 
 /** How many nodes `node` holds, itself included, counted no further than `limit`: a subtree
  *  bigger than a batch answers `limit` or a little more, which is all a batch needs to know. */
@@ -136,10 +126,10 @@ function* attachNode(parent: Node, node: Node, batch: { left: number }): Generat
 }
 
 /**
- * `paintBlock`, a piece at a time (`PaintMarkdownInSlices`), for a body the parse worker parsed:
- * the 16,000 elements of an 8,000-item list are built across several tasks rather than in one,
- * and then put into the page a batch at a time (`ATTACH_BATCH`), so no single task holds the
- * reader's thread while the body lands.
+ * `paintBlock`, a piece at a time (`PaintMarkdownInSlices`), for a body of more nodes than one
+ * task puts into the page (`paintsAcrossTasks`): the 16,000 elements of an 8,000-item list are
+ * built across several tasks rather than in one, and then put into the page a batch at a time
+ * (`ATTACH_BATCH`), so no single task holds the reader's thread while the body lands.
  *
  * The build is off the page, exactly as `paintBlock` serializes a body off the page: a tree
  * built in the page would be styled and laid out again for every piece, and everything watching

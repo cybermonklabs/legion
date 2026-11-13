@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
-import type { Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
+import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSending } from "../../hooks/useSending";
@@ -46,7 +46,7 @@ function AskReply({
   markRef,
   owner,
 }: {
-  comment: Comment;
+  comment: CommentWithTrees;
   current?: boolean;
   markRef?: DwellRef;
   /** The project document that owns a reply with no issue, so the reply can name its own
@@ -62,7 +62,11 @@ function AskReply({
       ref={markRef}
     >
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody markdown={comment.body} source={textSourceOf("comment", comment.id)} />
+        <MarkdownBody
+          markdown={comment.body}
+          source={textSourceOf("comment", comment.id)}
+          tree={comment.body_tree}
+        />
       </div>
       <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p

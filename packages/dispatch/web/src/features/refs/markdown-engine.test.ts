@@ -26,7 +26,8 @@ function parseThroughSharedEngine(
   rawHtml: RawHtml = "refuse"
 ): Promise<string | undefined> {
   const { promise, resolve } = Promise.withResolvers<string | undefined>();
-  renderWithEngine(markdown, "space", rawHtml, ({ engine }) => {
+  // A text Dispatch does not store carries no tree, so this is the parsing path.
+  renderWithEngine(markdown, undefined, "space", rawHtml, ({ engine }) => {
     const doc = engine?.parse(markdown, "space", rawHtml);
     resolve(doc === undefined ? undefined : doc.textBetween(0, doc.content.size, " ", " "));
   });
@@ -106,9 +107,15 @@ describe("the parse worker's threshold", () => {
     const overThreshold = "x".repeat(markdownWorkerThreshold + 1);
 
     const onThePage: MarkdownRendering[] = [];
-    const cancelOnThePage = renderWithEngine(atThreshold, "space", "refuse", (rendering) => {
-      onThePage.push(rendering);
-    });
+    const cancelOnThePage = renderWithEngine(
+      atThreshold,
+      undefined,
+      "space",
+      "refuse",
+      (rendering) => {
+        onThePage.push(rendering);
+      }
+    );
     try {
       // The engine is loaded, so this body is answered in the caller's own commit, parsed, the
       // way every body was before the worker: nothing about it is pending.
@@ -124,9 +131,15 @@ describe("the parse worker's threshold", () => {
     }
 
     const inTheWorker: MarkdownRendering[] = [];
-    const cancelInTheWorker = renderWithEngine(overThreshold, "space", "refuse", (rendering) => {
-      inTheWorker.push(rendering);
-    });
+    const cancelInTheWorker = renderWithEngine(
+      overThreshold,
+      undefined,
+      "space",
+      "refuse",
+      (rendering) => {
+        inTheWorker.push(rendering);
+      }
+    );
     try {
       // One character more, and the body is answered at once as pending, with no document: the
       // literal text is what a surface paints until the worker answers.
@@ -166,7 +179,7 @@ describe("the answer cache and the raw-HTML policy", () => {
     expect(parsesInTheWorker(body)).toBe(true);
 
     const asDocument: MarkdownRendering[] = [];
-    const cancelAsDocument = renderWithEngine(body, "space", "refuse", (rendering) => {
+    const cancelAsDocument = renderWithEngine(body, undefined, "space", "refuse", (rendering) => {
       asDocument.push(rendering);
     });
     try {
@@ -182,7 +195,7 @@ describe("the answer cache and the raw-HTML policy", () => {
     }
 
     const asBody: MarkdownRendering[] = [];
-    const cancelAsBody = renderWithEngine(body, "space", "text", (rendering) => {
+    const cancelAsBody = renderWithEngine(body, undefined, "space", "text", (rendering) => {
       asBody.push(rendering);
     });
     try {
@@ -278,7 +291,7 @@ describe("a body parsed ahead of the render", () => {
       expect(parsed.at(-1)).toBe(body);
 
       const renderings: MarkdownRendering[] = [];
-      const cancel = renderWithEngine(body, "space", "refuse", (rendering) =>
+      const cancel = renderWithEngine(body, undefined, "space", "refuse", (rendering) =>
         renderings.push(rendering)
       );
       try {

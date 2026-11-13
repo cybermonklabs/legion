@@ -1471,14 +1471,14 @@ func (r *keptRun) park() {
 		mode == keptParkOverAMergeReadyChild, r.root.issue.Generation, r.lastRow())
 }
 
-// awaitTheChildsMerge puts the child one merge from landing: it stands at phase.AwaitingMerge with
+// awaitTheChildsMerge puts the child one merge from landing: it stands at phase.Merging with
 // an open pull request recorded, which is the member a close under a root that is not done hands
 // to Legion and the only one it does (workflow's unfinishedHandOvers). Only a merger's READY arms
 // that merge, and the linger the park begins disarms it, so nothing of this tree would ever land
 // it; handed over, the child carries the pull request into a tree of its own, and what a person
 // decided on it is owed to the architect of that tree.
 func (r *keptRun) awaitTheChildsMerge() {
-	r.child.issue.Phase = phase.AwaitingMerge
+	r.child.issue.Phase = phase.Merging
 	r.putIssue(r.child.issue)
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: keptChild,
@@ -1610,14 +1610,14 @@ func keptCount(kept *record.KeptDecisions) int {
 // still stands in the root's tree, in the workflow, and the root lingers, under whichever of the
 // two rules the root's own status picks (workflow's unfinishedHandOvers). A root that stayed done
 // hands over every such member, whatever phase it stands in (handsOverEveryMember). A root a
-// person parked hands over only a member standing at phase.AwaitingMerge whose pull request is
+// person parked hands over only a member standing at phase.Merging whose pull request is
 // still open: a re-admission of that root resumes a member of any other phase where it stood, and
 // the one thing it cannot do is arm again the merge the park disarmed.
 func (r *keptRun) handOverEnabled(member *keptTree) bool {
 	if member.handed || !r.root.issue.Lingers() || record.OutOfWorkflow(member.issue.Status) {
 		return false
 	}
-	return r.handsOverEveryMember() || (member.issue.Phase == phase.AwaitingMerge && r.pullRequestOpen(member.key))
+	return r.handsOverEveryMember() || (member.issue.Phase == phase.Merging && r.pullRequestOpen(member.key))
 }
 
 // handsOverEveryMember is whether the close of the root's linger hands over every member it
@@ -1691,8 +1691,8 @@ func (r *keptRun) handOverMemberErr(member *keptTree, parent string, withRun boo
 			Generation: r.root.issue.Generation}); err != nil {
 			return err
 		}
-		row, err := record.NewOutboxRow(member.key, record.StatusWrite{Status: "todo", ObservedStatus: member.issue.Status,
-			HandOver: true, HandOverTree: r.root.issue.Tree, HandOverLinger: r.root.issue.Generation}, now)
+		row, err := record.NewOutboxRow(member.key, record.HandOverStatusWrite("todo", member.issue.Status,
+			r.root.issue.Tree, r.root.issue.Generation), now)
 		if err != nil {
 			return err
 		}
@@ -1968,7 +1968,7 @@ func (r *keptRun) owedOfTheClosingTree() []string {
 func (r *keptRun) handedOverByTheClose(key string) bool {
 	var queued bool
 	if err := r.pool.QueryRow(r.ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
-		and (payload->>'handOver')::boolean)`, key, string(record.OutboxKindDispatchStatus)).Scan(&queued); err != nil {
+		and payload->>'kind' = $3)`, key, string(record.OutboxKindDispatchStatus), string(record.HandOverStatusRow)).Scan(&queued); err != nil {
 		r.fatalf("read whether the close handed %s to Legion: %v", key, err)
 	}
 	return queued
@@ -2352,8 +2352,9 @@ func keptClaimState(state supervise.ClaimState) supervise.ClaimState {
 }
 
 // claimFailed tells the workflow that an architect's claim spent its launch budget, as the
-// daemon's terminal hook does (workflowRuntime.applyTerminal): the engine writes the tree's
-// worker-died notice, which goes to that same architect and waits ahead of its catch-ups.
+// daemon's terminal hook does (workflowRuntime.applyTerminal), carrying the same cause, counters
+// and limits that hook carries: the engine writes the tree's worker-died notice, which goes to
+// that same architect and waits ahead of its catch-ups.
 func (r *keptRun) claimFailed(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2361,7 +2362,8 @@ func (r *keptRun) claimFailed(tree *keptTree) {
 	}
 	held := machine.Claim()
 	if _, err := intake.ApplyFact(r.ctx, r.pool, terminalSource, terminalEventID(held, supervise.StateFailed),
-		intake.ClaimFailed{Issue: tree.key, Role: claim.RoleArchitect, Reason: held.Failure}, r.engine); err != nil {
+		intake.ClaimFailed{Issue: tree.key, Role: claim.RoleArchitect, Reason: held.Failure,
+			Cause: held.FailureCause, Budgets: held.Budgets, Limits: r.sup.deps.Limits}, r.engine); err != nil {
 		r.fatalf("apply the failure of %s's architect at launch %d: %v", tree.key, held.Generation, err)
 	}
 	r.tracef("claim-failed tree=%s launch=%d refusals=%d notice-row=%d", tree.key, held.Generation, r.rt.refused(), r.lastRow())
