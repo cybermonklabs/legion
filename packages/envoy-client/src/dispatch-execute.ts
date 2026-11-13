@@ -497,6 +497,9 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_limits: true,
   dispatch_inbox: true,
   dispatch_architecture_sync: true,
+  // A session's own conversation belongs to no issue: the call names none, and its strict
+  // schema refuses the one LEGION_ISSUE would add.
+  dispatch_send_to_agent: true,
 };
 
 function canonicalExternalIssueRef(value: string): string {
@@ -3774,7 +3777,8 @@ function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
     `${error.code}: ${error.message}${joined}`,
     error.candidates,
     error.current,
-    error.mismatches
+    error.mismatches,
+    error.findings
   );
 }
 
@@ -4096,6 +4100,15 @@ export async function executeDispatchTool(
     };
   }
   const args = checked.args;
+  // The writing check's override on every write whose text Dispatch reads: the agent's own call
+  // to send a refused text through (`--override-writing-check`), always as "agent". This executor
+  // never sends "generated", the plugins' mark for text they generate themselves. A resend under
+  // the override is a new call, so it carries a new Idempotency-Key (`DispatchClient`'s `#send`
+  // mints one per call): the refusal Dispatch stored under the old key is not replayed to it.
+  const writingOverride =
+    optionalBoolean(args, "override_writing_check") === true
+      ? ({ override_writing_check: "agent" } as const)
+      : {};
   const actor = toolActor(await resolveOrigin(env, exec, input.cwd), input);
   const client = dispatchClient();
   const { owner, documentOwner, resolveDocument } = await documentTargets(client, ownerArguments);
@@ -4183,6 +4196,7 @@ export async function executeDispatchTool(
           ...(components === undefined ? {} : { components }),
           ...(repo === undefined ? {} : { repo }),
           ...(Array.isArray(labels) ? { labels: labels as string[] } : {}),
+          ...writingOverride,
           actor,
         });
         refuseUnsavedRepository(created.created ? "created" : "already holds", created, repo);
@@ -4290,7 +4304,11 @@ export async function executeDispatchTool(
       let closingNote: { readonly id: string; readonly ref: string } | undefined;
       if (reason !== undefined) {
         try {
-          const message = await client.message(issueKey, { body: reason, actor });
+          const message = await client.message(issueKey, {
+            body: reason,
+            ...writingOverride,
+            actor,
+          });
           closingNote = {
             id: message.id,
             ref: dispatchChildRef(dispatchIssueRef(issueKey), "message", message.id),
@@ -4349,6 +4367,7 @@ export async function executeDispatchTool(
           ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
           ...(sentLinks === undefined ? {} : { external_links: sentLinks }),
           ...(rank === undefined ? {} : { rank }),
+          ...writingOverride,
           actor,
         });
       } catch (error) {
@@ -4679,6 +4698,7 @@ export async function executeDispatchTool(
       const ask = await client.resolveAsk(id, {
         kind,
         reason: stringArg(args, "reason"),
+        ...writingOverride,
         actor,
       });
       if (ask.resolution === undefined) throw new Error("resolved ask is missing its resolution");
@@ -4744,6 +4764,7 @@ export async function executeDispatchTool(
         ...(multiple === undefined ? {} : { multiple }),
         ...(urgency === undefined ? {} : { urgency }),
         ...(anchored === undefined ? {} : { anchor: anchored }),
+        ...writingOverride,
         actor,
       };
       const ask =
@@ -4798,6 +4819,7 @@ export async function executeDispatchTool(
           : {}),
         ...(multiple === undefined ? {} : { multiple }),
         ...(urgency === undefined ? {} : { urgency }),
+        ...writingOverride,
         actor,
       });
       return {
@@ -4838,6 +4860,7 @@ export async function executeDispatchTool(
         ...(replyToBlock === undefined ? {} : { reply_to_block: replyToBlock }),
         ...(replyToAsk === undefined ? {} : { ask_id: replyToAsk }),
         ...(requestedTurn === undefined ? {} : { turn: requestedTurn }),
+        ...writingOverride,
         actor,
       };
       const comment =
@@ -4905,6 +4928,7 @@ export async function executeDispatchTool(
         ...(body === undefined ? {} : { body }),
         anchor: anchored,
         replace_with: stringArg(args, "replace_with"),
+        ...writingOverride,
         actor,
       };
       const comment =
@@ -4948,7 +4972,7 @@ export async function executeDispatchTool(
         // frame handed to the session twice cannot post a second answer.
         const reply = await client.messageReply(
           inReplyTo,
-          { body, attempt: 1, actor },
+          { body, attempt: 1, ...writingOverride, actor },
           { followUp: true }
         );
         // Text this session already posted in the conversation (its first reply or an earlier
@@ -5001,6 +5025,7 @@ export async function executeDispatchTool(
         body,
         ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
         ...(target?.block === undefined ? {} : { in_reply_to_block: target.block }),
+        ...writingOverride,
         actor,
       });
       const messageRef = dispatchChildRef(dispatchIssueRef(issueKey), "message", message.id);
@@ -5022,11 +5047,19 @@ export async function executeDispatchTool(
       const inReplyTo = optionalString(args, "in_reply_to");
       // The route answers once the first attempt has settled, so its state is what says whether
       // the session has the words or whether Dispatch is still trying.
-      const message = await client.agentMessage(session, {
-        body: stringArg(args, "body"),
-        delivery: stringArg(args, "delivery") as MessageDeliveryMode,
-        ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
-      });
+      // The send is the person's route, so it names this session (`?session=`), as every other
+      // write names it in its actor: the act Dispatch records, and its writing check reads, is
+      // this session's.
+      const message = await client.agentMessage(
+        session,
+        {
+          body: stringArg(args, "body"),
+          delivery: stringArg(args, "delivery") as MessageDeliveryMode,
+          ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
+          ...writingOverride,
+        },
+        input.sessionId?.trim()
+      );
       // Go marshals an empty delivery slice as `null`, so the route table's type is nullable;
       // either way there is no attempt to read, which the `undefined` branch below already says.
       const attempt = message.deliveries?.at(-1);
@@ -5060,6 +5093,7 @@ export async function executeDispatchTool(
         ops,
         ...(summary === undefined ? {} : { summary }),
         ...(precondition === undefined ? {} : { precondition }),
+        ...writingOverride,
         actor,
       });
       const retyped = ops.filter((operation) => operation.op === "retype").length;
@@ -5256,6 +5290,7 @@ export async function executeDispatchTool(
         actor,
         summary: stringArg(args, "summary"),
         ...(includeVerification ? { include_verification: true } : {}),
+        ...writingOverride,
       });
       // One line per requirement of the spec with no check, or the one line saying the spec
       // marks none, as Dispatch names them; never a missing plan task, since the plan comes
@@ -5345,6 +5380,7 @@ export async function executeDispatchTool(
         verdict: stringArg(args, "verdict") as "pass" | "fail",
         commit: stringArg(args, "commit"),
         ...optional,
+        ...writingOverride,
       });
       return {
         text: `Recorded ${recorded.result.verdict} for check ${recorded.result.check_block_id} of ${recorded.result.check_issue_key} at ${recorded.result.commit_sha}, as ${recorded.result.role}.\n\nPull request body line:\n${recorded.line}`,
@@ -5382,12 +5418,14 @@ export async function executeDispatchTool(
                       type: Bun.file(resolvePath(input.cwd, stringArg(args, "path"))).type,
                     }),
               ...(summary === undefined ? {} : { summary }),
+              ...writingOverride,
               actor,
             }
           : {
               name,
               content,
               ...(summary === undefined ? {} : { summary }),
+              ...writingOverride,
               actor,
             };
       const artifactOwner = documentOwner();

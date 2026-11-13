@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
+import { SHELL_COMMAND_REPORT_SEPARATOR, shellCommandLine } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { procmgr } from "@oh-my-pi/pi-utils";
 
@@ -390,9 +390,12 @@ function fenced(output: string): string {
 /**
  * The person's line, what the command printed and how it ended: the one text the live view, the
  * reply on Dispatch and the agent's transcript all carry. A command that printed nothing says so,
- * so every `!` message has an answer. The person's line is the first paragraph and the separator
- * follows it, which is the rule the Agents page reads this text back by
- * (`isShellCommandReport`, `@legion/contracts`).
+ * so every `!` message has an answer. The person's line, fenced (`shellCommandLine`), is the
+ * first paragraph and the separator follows it, which is the rule the Agents page reads this text
+ * back by (`isShellCommandReport`, `@legion/contracts`). The line is code, not prose, so the
+ * fence keeps Dispatch's writing check from reading `!a; b` as a sentence (INFRA-3231); the
+ * report is the plugin's own text, and its reply is sent `override_writing_check: "generated"`
+ * (`postTypedInputReply` in `extensions/envoy.ts`).
  *
  * `line` is that message as the person sent it and as Dispatch stored it, the mark and every
  * space around it kept: `! ls` opens with `! ls` and `!ls\t` with `!ls\t`, while `ls` is what
@@ -401,7 +404,10 @@ function fenced(output: string): string {
  * and the view draws the person's line twice.
  */
 export function shellCommandReport(line: string, result: ShellCommandResult): string {
-  const parts = [line, result.output === "" ? NOTHING_PRINTED : fenced(result.output)];
+  const parts = [
+    shellCommandLine(line),
+    result.output === "" ? NOTHING_PRINTED : fenced(result.output),
+  ];
   if (result.cut) parts.push(`The output was cut at ${SHELL_OUTPUT_MAX} characters.`);
   if (result.status !== undefined) parts.push(result.status);
   return parts.join(SHELL_COMMAND_REPORT_SEPARATOR);
@@ -432,11 +438,11 @@ export function shellCommandMessage(report: string): string {
   return `${SHELL_COMMAND_HEADING}${SHELL_COMMAND_REPORT_SEPARATOR}${report}`;
 }
 
-/** The answer a `!` nothing ran for: the person's line as they sent it, the separator, and the
- *  one sentence saying why nothing ran. The three refusals below are this text and a reason, so
- *  the shape a refusal has is written here alone. */
+/** The answer a `!` nothing ran for: the person's line as they sent it, fenced as a report's is,
+ *  the separator, and the one sentence saying why nothing ran. The three refusals below are this
+ *  text and a reason, so the shape a refusal has is written here alone. */
 function shellCommandRefusal(line: string, why: string): string {
-  return `${line}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: ${why}`;
+  return `${shellCommandLine(line)}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: ${why}`;
 }
 
 /** The answer a `!` gets while this session still runs one: the line, and the command it waits

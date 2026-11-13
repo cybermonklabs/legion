@@ -48,6 +48,7 @@ import type {
   WhoamiAgent,
   WhoamiUser,
   WriteAdvice,
+  WritingCheckFinding,
 } from "./dispatch-api.generated";
 import type { ASK_URGENCIES, ISSUE_COMPONENTS_MODES, ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
 import type { GATED_STEPS } from "./legion-roles";
@@ -1434,6 +1435,9 @@ interface CreateArtifactOptions {
   readonly name: string;
   readonly summary?: string;
   readonly actor?: Actor;
+  /** The writing check's override, sent as the JSON upload's field or, with a file, as the
+   *  multipart form value of the same name. */
+  readonly override_writing_check?: WritingCheckOverride;
 }
 
 export type CreateArtifactInput = CreateArtifactOptions &
@@ -1503,12 +1507,32 @@ export interface IDCandidate {
   readonly first_line?: string;
 }
 
+/**
+ * The values `override_writing_check` takes on every write whose prose Dispatch's writing check
+ * reads (INFRA-3231), which the OpenAPI document widens to `string`: `agent` sends a write the
+ * check refused through as the agent's own judgement, which only an agent's explicit choice sends
+ * (`dispatch <command> --override-writing-check`), and `generated` sends text a plugin generated
+ * rather than an agent wrote, which no agent and no CLI call ever sends. Any other value is
+ * `400 INVALID_WRITING_CHECK_OVERRIDE`.
+ */
+export const WRITING_CHECK_OVERRIDES = ["agent", "generated"] as const;
+
+export type WritingCheckOverride = (typeof WRITING_CHECK_OVERRIDES)[number];
+
+/** The code of the `422` Dispatch answers a write its writing check refused: nothing was written,
+ *  and the refusal's `findings` name each sentence, the rule it breaks and how to fix it. */
+export const WRITING_CHECK_REFUSED = "WRITING_CHECK_REFUSED";
+
 export interface DispatchServiceErrorShape {
   readonly error?: string;
   readonly code?: string;
   readonly candidates?: TargetCandidate[] | DuplicateCandidate[] | IDCandidate[];
   readonly current?: EditPreconditionCurrent;
   readonly mismatches?: EditPreconditionMismatch[];
+  /** A `WRITING_CHECK_REFUSED` refusal's findings, in the order the refused text holds them. */
+  readonly findings?: WritingCheckFinding[] | null;
+  /** A `WRITING_CHECK_REFUSED` refusal's name of the field that sends the write through. */
+  readonly override_field?: string;
 }
 
 /**

@@ -549,6 +549,9 @@ describe("running a person's command", () => {
 describe("the texts a command becomes", () => {
   /** The person's line, as they sent it and as Dispatch stored it. */
   const line = "!printf hi";
+  /** The person's line as every text opens with it: fenced, since a command line is code and
+   *  Dispatch's writing check reads no code (INFRA-3231). */
+  const opening = (sent: string) => `\`\`\`\n${sent}\n\`\`\``;
   const ran = {
     cut: false,
     output: "hi",
@@ -556,7 +559,14 @@ describe("the texts a command becomes", () => {
   };
 
   test("carry the person's line and what the command printed, fenced", () => {
-    expect(shellCommandReport(line, ran)).toBe("!printf hi\n\n```\nhi\n```");
+    expect(shellCommandReport(line, ran)).toBe("```\n!printf hi\n```\n\n```\nhi\n```");
+  });
+
+  // A line holding a run of backticks keeps it inside a longer fence of its own.
+  test("fence the person's line past a run of backticks it holds", () => {
+    expect(shellCommandReport("!echo ```x```", { ...ran, output: "" })).toBe(
+      "````\n!echo ```x```\n````\n\nThe command printed nothing."
+    );
   });
 
   // Every surface this text reaches reads it as Markdown, so output nobody fenced is read as
@@ -564,7 +574,7 @@ describe("the texts a command becomes", () => {
   test("fence output Markdown would otherwise read as its own", () => {
     const printed = "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one *two*\n+one _two_";
     expect(shellCommandReport("!git diff", { ...ran, output: printed })).toBe(
-      `!git diff\n\n\`\`\`\n${printed}\n\`\`\``
+      `${opening("!git diff")}\n\n\`\`\`\n${printed}\n\`\`\``
     );
   });
 
@@ -573,13 +583,13 @@ describe("the texts a command becomes", () => {
   test("grow the fence past a run of backticks in the output", () => {
     const printed = "```sh\nprintf hi\n```\n````\nouter\n````";
     expect(shellCommandReport("!cat note.md", { ...ran, output: printed })).toBe(
-      `!cat note.md\n\n\`\`\`\`\`\n${printed}\n\`\`\`\`\``
+      `${opening("!cat note.md")}\n\n\`\`\`\`\`\n${printed}\n\`\`\`\`\``
     );
   });
 
   test("say so for a command that printed nothing, so every message has an answer", () => {
     expect(shellCommandReport("!true", { ...ran, output: "" })).toBe(
-      "!true\n\nThe command printed nothing."
+      `${opening("!true")}\n\nThe command printed nothing.`
     );
   });
 
@@ -590,12 +600,14 @@ describe("the texts a command becomes", () => {
         output: "",
         status: "The command ended with exit status 3.",
       })
-    ).toBe("!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.");
+    ).toBe(
+      `${opening("!exit 3")}\n\nThe command printed nothing.\n\nThe command ended with exit status 3.`
+    );
   });
 
   test("tell the agent whose command it was before the command itself", () => {
     expect(shellCommandMessage(shellCommandReport(line, ran))).toEndWith(
-      "\n\n!printf hi\n\n```\nhi\n```"
+      "\n\n```\n!printf hi\n```\n\n```\nhi\n```"
     );
     expect(shellCommandMessage(shellCommandReport(line, ran))).toStartWith(
       "A person ran this shell"
@@ -610,18 +622,18 @@ describe("the texts a command becomes", () => {
     const message = shellCommandMessage(
       shellCommandReport("!cat note", { ...ran, output: printed })
     );
-    expect(message).toEndWith(`!cat note\n\n\`\`\`\n${printed}\n\`\`\``);
+    expect(message).toEndWith(`${opening("!cat note")}\n\n\`\`\`\n${printed}\n\`\`\``);
   });
 
   test("name the command still running when one already runs", () => {
     expect(shellCommandBusyReport(line, "sleep 600")).toBe(
-      "!printf hi\n\nThe command was not run: this session is still running !sleep 600."
+      `${opening(line)}\n\nThe command was not run: this session is still running !sleep 600.`
     );
   });
 
   test("say a session shutting down ran nothing, so that message is answered too", () => {
     expect(shellCommandShutdownReport(line)).toBe(
-      "!printf hi\n\nThe command was not run: this session is shutting down."
+      `${opening(line)}\n\nThe command was not run: this session is shutting down.`
     );
   });
 
@@ -632,13 +644,13 @@ describe("the texts a command becomes", () => {
   // opens with the person's line, so the view reads it back as this message's own report.
   test("say the agent was handed no output, keeping the person's line at the opening", () => {
     expect(shellCommandWithheldReport(shellCommandReport(line, ran))).toBe(
-      "!printf hi\n\n```\nhi\n```\n\nThe agent was not handed this output: this session is no longer the one open here."
+      `${opening(line)}\n\n\`\`\`\nhi\n\`\`\`\n\nThe agent was not handed this output: this session is no longer the one open here.`
     );
     for (const sent of ["!ls", "! ls", "!  git status", "!ls\t"]) {
       const withheld = shellCommandWithheldReport(
         shellCommandReport(sent, { ...ran, output: "one.txt" })
       );
-      expect(withheld).toStartWith(`${sent}\n\n\`\`\`\none.txt\n\`\`\`\n\n`);
+      expect(withheld).toStartWith(`${opening(sent)}\n\n\`\`\`\none.txt\n\`\`\`\n\n`);
       expect(isShellCommandReport(withheld, sent)).toBe(true);
     }
   });
@@ -653,13 +665,15 @@ describe("the texts a command becomes", () => {
       const busy = shellCommandBusyReport(sent, "sleep 600");
       const shutdown = shellCommandShutdownReport(sent);
       const moved = shellCommandMovedReport(sent);
-      expect(report).toBe(`${sent}\n\n\`\`\`\none.txt\n\`\`\``);
+      expect(report).toBe(`${opening(sent)}\n\n\`\`\`\none.txt\n\`\`\``);
       expect(busy).toBe(
-        `${sent}\n\nThe command was not run: this session is still running !sleep 600.`
+        `${opening(sent)}\n\nThe command was not run: this session is still running !sleep 600.`
       );
-      expect(shutdown).toBe(`${sent}\n\nThe command was not run: this session is shutting down.`);
+      expect(shutdown).toBe(
+        `${opening(sent)}\n\nThe command was not run: this session is shutting down.`
+      );
       expect(moved).toBe(
-        `${sent}\n\nThe command was not run: this session is no longer the one open here.`
+        `${opening(sent)}\n\nThe command was not run: this session is no longer the one open here.`
       );
       expect(isShellCommandReport(report, sent)).toBe(true);
       expect(isShellCommandReport(busy, sent)).toBe(true);

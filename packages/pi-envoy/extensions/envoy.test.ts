@@ -28,22 +28,34 @@ import {
 } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
-import { dispatchIssueSubject, type SessionAnswer } from "@legion/contracts";
+import { dispatchIssueSubject, type SessionAnswer, shellCommandLine } from "@legion/contracts";
 import {
   askgateState,
   MARKER_MAX_AGE_MS,
   STORE_BEAT_MS,
 } from "@legion/envoy-client/askgate-marker";
+import { bearerCredential } from "@legion/envoy-client/bearer";
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential";
 import { RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import {
+  type DispatchDelivery,
+  postDeliveryReply,
+  WRITING_CHECK_ANSWER_WITHHELD,
+} from "@legion/envoy-client/delivery";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
-import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
+import { DispatchClient, forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { machineID } from "@legion/envoy-client/machine";
 import { renderSessionAnswers } from "@legion/envoy-client/session-answers";
+import {
+  type DispatchStack,
+  dispatchStackEnabled,
+  startDispatchStack,
+  useDispatchStackDirectory,
+} from "@legion/envoy-client/test/dispatch-stack";
 import {
   type EnvoyStack,
   envoyStackEnabled,
@@ -78,6 +90,7 @@ import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensib
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
 import { nkeys, connect as realConnect } from "nats";
+import { SQL } from "bun";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
@@ -85,13 +98,14 @@ import {
   REPLAY_DELIVERED_ENTRY,
   REPLAY_STATE_ENTRY,
 } from "../src/missed-messages";
-import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
+import { SHELL_OUTPUT_MAX, shellCommandReport } from "../src/typed-shell";
 import {
   type CommandContext,
   createStandInHost,
   type SessionContext,
   type TestPi,
 } from "../test/stand-in-host";
+import { createDecisionRecorder } from "./askgate/decision-record";
 
 /** A message's headers, as nats.js's `MsgHdrs` reads them: a missing one reads `""`. */
 type MessageHeaders = { readonly get: (name: string) => string };
@@ -778,6 +792,9 @@ function targetedCommentEnvelope(
 }
 
 const DIRECT_MESSAGE_ID = "44444444-4444-4444-8444-444444444444";
+/** The writing check's mark on every reply text the plugin generates itself - a `!command`'s
+ *  report, a command's output, its own error - which Dispatch never refuses (INFRA-3231). */
+const GENERATED = { override_writing_check: "generated" } as const;
 const DIRECT_MESSAGE_BODY = "Where is the dashboard?";
 /** Another direct message from the same person: their next Send, not a retry of the first. */
 const NEXT_MESSAGE_ID = "55555555-5555-4555-8555-555555555555";
@@ -13198,7 +13215,12 @@ console.log(JSON.stringify(args));
 
           expect(replies).toEqual([
             {
-              body: { actor: { id: "ses_delivery", kind: "session" }, attempt: 1, body: reply },
+              body: {
+                actor: { id: "ses_delivery", kind: "session" },
+                attempt: 1,
+                body: reply,
+                ...GENERATED,
+              },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
           ]);
@@ -13242,6 +13264,7 @@ console.log(JSON.stringify(args));
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 2,
                 body: "/new runs only in the session's own terminal; nothing was sent.",
+                ...GENERATED,
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -13338,6 +13361,7 @@ console.log(JSON.stringify(args));
             actor: { id: "ses_delivery", kind: "session" },
             attempt: 1,
             body: "/compact was not run: compaction is already running",
+            ...GENERATED,
           },
         ]);
       });
@@ -13361,6 +13385,7 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "/compact was not run: sync failure",
+          ...GENERATED,
         });
         expect(
           envoyPluginInterface()
@@ -13389,6 +13414,7 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "/new runs only in the session's own terminal; nothing was sent.",
+          ...GENERATED,
         });
       });
 
@@ -13437,6 +13463,7 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "The message was not sent: this session is no longer the one open here.",
+          ...GENERATED,
         });
         expect(inputs).toEqual([]);
       });
@@ -13475,6 +13502,7 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "The message was not sent: this session is no longer the one open here.",
+          ...GENERATED,
         });
         expect(inputs).toEqual([]);
       });
@@ -13724,13 +13752,13 @@ console.log(JSON.stringify(args));
         expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
         expect(frames[0]?.message.id).toEndWith(`:${DIRECT_MESSAGE_ID}`);
         expect(frames[0]?.message.parts).toEqual([
-          { text: "!printf hi\n\n```\nhi\n```", type: "text" },
+          { text: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``, type: "text" },
         ]);
 
         // The agent: read at its next turn, with no turn started for it.
         expect(sends).toEqual([
           {
-            content: expect.stringContaining("!printf hi\n\n```\nhi\n```"),
+            content: expect.stringContaining(`${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``),
             options: { deliverAs: "nextTurn", triggerTurn: false },
           },
         ]);
@@ -13741,7 +13769,8 @@ console.log(JSON.stringify(args));
             body: {
               actor: { id: "ses_delivery", kind: "session" },
               attempt: 1,
-              body: "!printf hi\n\n```\nhi\n```",
+              body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+              ...GENERATED,
             },
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
@@ -13766,7 +13795,8 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: `!pwd -P\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
+          body: `${shellCommandLine("!pwd -P")}\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
+          ...GENERATED,
         });
       }, 20_000);
 
@@ -13783,7 +13813,8 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toEqual({
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
-          body: "!true\n\nThe command printed nothing.",
+          body: `${shellCommandLine("!true")}\n\nThe command printed nothing.`,
+          ...GENERATED,
         });
       }, 20_000);
 
@@ -13798,7 +13829,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         const answer =
-          "!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.";
+          `${shellCommandLine("!exit 3")}\n\nThe command printed nothing.\n\nThe command ended with exit status 3.`;
         expect(streamFrames()[0]?.message.parts).toEqual([{ text: answer, type: "text" }]);
         expect(replies[0]?.body).toMatchObject({ body: answer });
       }, 20_000);
@@ -13814,7 +13845,8 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: "!printf early; sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
+          body: `${shellCommandLine("!printf early; sleep 600")}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
+          ...GENERATED,
         });
       }, 20_000);
 
@@ -13833,11 +13865,11 @@ console.log(JSON.stringify(args));
         await replied(2);
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
-          body: "!printf hi\n\nThe command was not run: this session is still running !sleep 600.",
+          body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is still running !sleep 600.`,
         });
         expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toMatchObject(
           {
-            body: "!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
+            body: `${shellCommandLine("!sleep 600")}\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.`,
           }
         );
       }, 20_000);
@@ -13854,7 +13886,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
             new RegExp(
-              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
+              `^\`\`\`\\n!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\`\`\`\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
             )
           ),
         });
@@ -13873,7 +13905,7 @@ console.log(JSON.stringify(args));
 
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
-            /^!!printf hi\n\n```\n.*!printf.*\n```\n\nThe command ended with exit status 127\.$/s
+            /^```\n!!printf hi\n```\n\n```\n.*!printf.*\n```\n\nThe command ended with exit status 127\.$/s
           ),
         });
         // Nothing is hidden from the model: it reads the same report.
@@ -13894,7 +13926,10 @@ console.log(JSON.stringify(args));
         await delivered(1);
         await replied(1);
 
-        expect(replies[0]?.body).toMatchObject({ body: "!printf 'a\\0b'\n\n```\nab\n```" });
+        expect(replies[0]?.body).toMatchObject({
+          body: `${shellCommandLine("!printf 'a\\0b'")}\n\n\`\`\`\nab\n\`\`\``,
+          ...GENERATED,
+        });
         expect(JSON.stringify(replies[0]?.body)).not.toContain("\\u0000");
         expect(JSON.stringify(streamFrames()[0]?.message.parts)).not.toContain("\\u0000");
         await until(
@@ -14058,7 +14093,7 @@ console.log(JSON.stringify(args));
           await replied(1);
 
           expect(replies[0]?.body).toMatchObject({
-            body: "!printf hi\n\nThe command was not run: this session is no longer the one open here.",
+            body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is no longer the one open here.`,
           });
           // No command ran, so no report reached any of the three surfaces.
           expect(streamFrames()).toEqual([]);
@@ -14126,7 +14161,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: "!touch ran\n\nThe command was not run: this session is no longer the one open here.",
+          body: `${shellCommandLine("!touch ran")}\n\nThe command was not run: this session is no longer the one open here.`,
         });
         // Nothing ran: neither directory holds the file the command would have written.
         expect(existsSync(join(other, "ran"))).toBe(false);
@@ -14424,7 +14459,8 @@ console.log(JSON.stringify(args));
             body: {
               actor: { id: "ses_delivery", kind: "session" },
               attempt: 1,
-              body: "!printf hi\n\n```\nhi\n```",
+              body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+              ...GENERATED,
             },
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
@@ -14549,7 +14585,8 @@ console.log(JSON.stringify(args));
               body: {
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 1,
-                body: "!printf hi\n\n```\nhi\n```",
+                body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+                ...GENERATED,
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -14635,7 +14672,8 @@ console.log(JSON.stringify(args));
               body: {
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 1,
-                body: "!printf hi\n\nThe command was not run: this session is no longer the one open here.",
+                body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is no longer the one open here.`,
+                ...GENERATED,
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -14704,7 +14742,8 @@ console.log(JSON.stringify(args));
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toEqual({
           actor: { id: "ses_after_shell", kind: "session" },
           attempt: 1,
-          body: "!touch ran; printf second\n\n```\nsecond\n```",
+          body: `${shellCommandLine("!touch ran; printf second")}\n\n\`\`\`\nsecond\n\`\`\``,
+          ...GENERATED,
         });
         expect(existsSync(join(other, "ran"))).toBe(true);
         expect(existsSync(join(work, "ran"))).toBe(false);
@@ -14717,7 +14756,8 @@ console.log(JSON.stringify(args));
         expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toEqual({
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
-          body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
+          body: `${shellCommandLine("!touch running; until [ -f go ]; do sleep 0.05; done; printf first")}\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
+          ...GENERATED,
         });
       }, 20_000);
 
@@ -14744,7 +14784,7 @@ console.log(JSON.stringify(args));
         writeFileSync(join(work, "go"), "");
         await replied(1);
 
-        const report = `!touch running; until [ -f go ]; do sleep 0.05; done; printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
+        const report = `${shellCommandLine("!touch running; until [ -f go ]; do sleep 0.05; done; printf hi")}\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
         expect(replies[0]?.body).toMatchObject({ body: report });
         const frames = streamFrames();
         expect(frames).toHaveLength(1);
@@ -14793,7 +14833,7 @@ console.log(JSON.stringify(args));
         // is the end of the command, and its words are the stop rather than an exit status.
         await replied(1);
         expect(replies[0]?.body).toMatchObject({
-          body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
+          body: `${shellCommandLine("!echo $$ > pid; exec sleep 600")}\n\nThe command printed nothing.\n\nThe command was stopped.`,
         });
       }, 20_000);
 
@@ -14810,7 +14850,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: "!printf hi\n\nThe command was not run: this session is shutting down.",
+          body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is shutting down.`,
         });
         expect(sends).toEqual([]);
         expect(streamFrames()).toEqual([]);
@@ -15131,7 +15171,9 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(accepts.map((accept) => accept.body)).toEqual([{ actor }]);
-        expect(replies).toEqual([{ body: { actor, attempt: 1, body: notSent }, path: replyPath }]);
+        expect(replies).toEqual([
+          { body: { actor, attempt: 1, body: notSent, ...GENERATED }, path: replyPath },
+        ]);
         expect(inputs).toEqual([]);
         expect(fixture.userMessages).toEqual([]);
         expect(sends.filter((send) => String(send.content).includes(DIRECT_MESSAGE_BODY))).toEqual(
@@ -15180,7 +15222,7 @@ console.log(JSON.stringify(args));
             "envoy: a reply is signed as the session its message reached, which is closed"
           );
           expect(replies).toEqual([
-            { body: { actor, attempt: 1, body: notSent }, path: replyPath },
+            { body: { actor, attempt: 1, body: notSent, ...GENERATED }, path: replyPath },
           ]);
           // And signed as that session: the accept and the refusal both presented the token the
           // broker minted for ses_delivery, and the broker was asked for no other session.
@@ -15312,7 +15354,9 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(moved).toBe(true);
-        expect(replies).toEqual([{ body: { actor, attempt: 1, error: notSent }, path: replyPath }]);
+        expect(replies).toEqual([
+          { body: { actor, attempt: 1, error: notSent, ...GENERATED }, path: replyPath },
+        ]);
         expect(prompts).toEqual([]);
       });
 
@@ -15390,6 +15434,7 @@ console.log(JSON.stringify(args));
           body: expect.stringMatching(
             /^\/compact was not run: this session's agent, version \S+, cannot run commands sent from Dispatch; nothing was sent\.$/
           ),
+          ...GENERATED,
         },
       ]);
     });
@@ -15433,6 +15478,7 @@ console.log(JSON.stringify(args));
         actor: { id: "ses_delivery", kind: "session" },
         attempt: 1,
         body: "The message was not sent: this session is no longer the one open here.",
+        ...GENERATED,
       });
       expect(fixture.userMessages).toEqual([]);
       const message = { content: [{ text: body, type: "text" }], role: "user", timestamp: 10 };
@@ -17070,6 +17116,7 @@ console.log(JSON.stringify(args));
         actor: { id: "ses_delivery", kind: "session" },
         attempt: 1,
         error: "No active model on session",
+        ...GENERATED,
       },
     ]);
     expect(fixture.deliveries).toEqual([]);
@@ -17132,7 +17179,7 @@ console.log(JSON.stringify(args));
     expect(sideTurns).toBe(3);
     const actor = { id: "ses_delivery", kind: "session" };
     expect(replies).toEqual([
-      { actor, attempt: 1, error: "No API key for provider: openai" },
+      { actor, attempt: 1, error: "No API key for provider: openai", ...GENERATED },
       { actor, attempt: 1, body: "Answer 2" },
       { actor, attempt: 1, body: "Answer 3" },
     ]);
@@ -17180,6 +17227,7 @@ console.log(JSON.stringify(args));
         actor: { id: "ses_delivery", kind: "session" },
         attempt: 1,
         error: "This OMP session is shutting down",
+        ...GENERATED,
       },
     ]);
     expect(calls).toEqual([]);
@@ -17236,6 +17284,7 @@ console.log(JSON.stringify(args));
         actor: { id: "ses_delivery", kind: "session" },
         attempt: 1,
         error: "Invalid Dispatch targeted delivery frame",
+        ...GENERATED,
       },
     ]);
   });
@@ -23905,4 +23954,341 @@ describe("a body an event carried only in part", () => {
       `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
     );
   });
+});
+
+// The plugin's own writes under Dispatch's writing check (INFRA-3231, R14; check 4370789f),
+// against a real Dispatch server of this checkout with the check on. No model is configured, so
+// the check runs its structure rules alone: a sentence holding a semicolon breaks the `semicolon`
+// rule, and that sentence is what each row writes. The frames reach the extension over this
+// file's NATS stand-in, and every Dispatch request it makes goes to the real server. The server
+// runs no Envoy listener, so a delivery attempt it records names no session; each row binds its
+// attempt to this session in the stack's own database, the one state no route reaches.
+const writingCheckStackDirectory = useDispatchStackDirectory();
+
+describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own writes", () => {
+  const SESSION = "ses_delivery";
+  const PERSON = "alice";
+  const PROJECT = "WCHK";
+  const SENTENCE = "The cache was cold; the first read was slow.";
+  const REWRITTEN = "The cache was cold. The first read was slow.";
+  let stack: DispatchStack | undefined;
+  let database: SQL | undefined;
+  const server = (): DispatchStack => {
+    if (stack === undefined) throw new Error("the Dispatch stack did not start");
+    return stack;
+  };
+
+  /** A person's own request, which the server's header identity takes as that person. */
+  const asPerson = async <T>(method: string, route: string, body?: unknown): Promise<T> => {
+    const answer = await originalFetch(`${server().url}${route}`, {
+      method,
+      headers: { "Content-Type": "application/json", "X-Dispatch-User": PERSON },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    const text = await answer.text();
+    if (!answer.ok) throw new Error(`${method} ${route}: ${answer.status} ${text}`);
+    return JSON.parse(text) as T;
+  };
+
+  /** A person's direct message to this session, its first attempt bound to this session. */
+  const directMessage = async (body: string, delivery: "btw" | "steer"): Promise<string> => {
+    const sent = await asPerson<{ readonly id: string }>(
+      "POST",
+      `/api/v1/agents/${SESSION}/messages`,
+      { body, delivery }
+    );
+    if (database === undefined) throw new Error("the stack's database is not open");
+    await database`update message_deliveries set session_id = ${SESSION}, state = 'pending', error = null where message_id = ${sent.id}`;
+    return sent.id;
+  };
+
+  interface Thread {
+    readonly message: {
+      readonly deliveries?: readonly { readonly state: string; readonly error?: string | null }[];
+    };
+    readonly replies?: readonly { readonly body: string }[];
+  }
+  const thread = (id: string): Promise<Thread> => asPerson<Thread>("GET", `/api/v1/messages/${id}`);
+  /** Waits until the message's thread holds a reply or its attempt failed, and answers it. */
+  const answered = async (id: string): Promise<Thread> => {
+    const deadline = performance.now() + 20_000;
+    for (;;) {
+      const read = await thread(id);
+      if ((read.replies ?? []).length > 0) return read;
+      if (read.message.deliveries?.some((attempt) => attempt.state === "failed")) return read;
+      if (performance.now() > deadline) throw new Error(`message ${id} was never answered`);
+      // A real server writes the reply on its own clock and signals nothing this process can
+      // await, so the thread is read again after a short pause.
+      await Bun.sleep(50);
+    }
+  };
+
+  /** This session booted against the real server, its host answering as each row says. */
+  const boot = async (
+    query: string,
+    host: {
+      readonly sideTurn?: (prompt: string) => Promise<string>;
+      readonly sendUserInput?: () => Promise<UserInputResult>;
+    }
+  ) => {
+    process.env.DISPATCH_URL = server().url;
+    process.env.DISPATCH_TOKEN = server().token;
+    const origin = new URL(server().url).origin;
+    globalThis.fetch = async (input, init) =>
+      new URL(input.toString()).origin === origin
+        ? originalFetch(input, init)
+        : responseWithRegistration(input, init, {});
+    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+    const fixture = createPi();
+    envoyExtension({
+      ...fixture.pi,
+      getCommands: () => [],
+      ...(host.sendUserInput !== undefined && { sendUserInput: host.sendUserInput }),
+    });
+    const work = mkdtempSync(join(tmpdir(), "envoy-writing-check-"));
+    const prompts: string[] = [];
+    const sideTurn = host.sideTurn;
+    await fixture.handlers.get("session_start")?.(
+      {},
+      {
+        ...sessionContext(SESSION),
+        cwd: work,
+        ...(sideTurn !== undefined && {
+          runEphemeralTurn: async ({ promptText }: { readonly promptText: string }) => {
+            prompts.push(promptText);
+            return { replyText: await sideTurn(promptText) };
+          },
+        }),
+      }
+    );
+    const agent = natsState.controls.get(`notifications.agent.${SESSION}`);
+    if (agent === undefined) throw new Error("agent subject was not subscribed");
+    return { agent, fixture, prompts, work };
+  };
+
+  /** A delivery of message `id`'s first attempt, as the plugin posts its reply to it. */
+  const deliveryOf = (id: string, body: string): DispatchDelivery => ({
+    resource: "message",
+    id,
+    attempt: 1,
+    mode: "btw",
+    replyPath: `/api/v1/messages/${id}/reply`,
+    replyFields: {},
+    issueKey: null,
+    body,
+  });
+  const config = () => ({ url: server().url, credential: bearerCredential(server().token) });
+  // Every row of this file starts on a stand-in fetch (the file's `beforeEach`); a row that
+  // writes to the real server itself, with no extension booted, writes through the real one.
+  beforeEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  beforeAll(async () => {
+    stack = await startDispatchStack({
+      work: writingCheckStackDirectory,
+      env: { DISPATCH_WRITING_CHECK: "on", DISPATCH_TEST_HOOKS: "1" },
+    });
+    database = new SQL(stack.databaseUrl);
+    await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: "Writing check" });
+  }, 600_000);
+  afterAll(async () => {
+    await database?.close();
+    await stack?.stop();
+  }, 60_000);
+
+  // A side turn's answer is the agent's words: refused, it goes back into a side turn holding
+  // the findings, and that answer is posted in its place. Nothing quoting the refused answer
+  // reaches Dispatch.
+  test("a side turn's refused answer goes back to a side turn, whose answer is posted", async () => {
+    const id = await directMessage("Why was the first read slow?", "btw");
+    const answers = [SENTENCE, REWRITTEN];
+    const { agent, prompts } = await boot("writing-check-side-turn", {
+      sideTurn: async () => answers.shift() ?? "",
+    });
+    agent.push(directDispatchEnvelope("btw", "writing-check-side-turn", { messageID: id }));
+
+    const read = await answered(id);
+    expect(read.replies?.map((reply) => reply.body)).toEqual([REWRITTEN]);
+    expect(JSON.stringify(read)).not.toContain(SENTENCE);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain("Dispatch's writing check refused your answer");
+    expect(prompts[1]).toContain("Rule semicolon");
+    expect(prompts[1]).toContain(SENTENCE);
+  }, 60_000);
+
+  // Refused twice, the findings reach the main conversation as a turn of its own, and the
+  // attempt is settled with an error that quotes none of the refused text.
+  test("a side turn refused twice hands the main turn the findings, and posts no quote", async () => {
+    const id = await directMessage("Why was the first read slow?", "btw");
+    const { agent, fixture } = await boot("writing-check-main-turn", {
+      sideTurn: async () => SENTENCE,
+    });
+    agent.push(directDispatchEnvelope("btw", "writing-check-main-turn", { messageID: id }));
+
+    const read = await answered(id);
+    expect(read.replies ?? []).toEqual([]);
+    expect(read.message.deliveries?.at(-1)?.error).toBe(WRITING_CHECK_ANSWER_WITHHELD);
+    expect(JSON.stringify(read)).not.toContain(SENTENCE);
+    await until(
+      () => fixture.deliveries.some((delivery) => delivery.content.includes("Rule semicolon")),
+      "the findings to reach the main conversation",
+      10_000
+    );
+    const notice = fixture.deliveries.find((delivery) => delivery.content.includes(SENTENCE));
+    expect(notice?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
+    expect(notice?.content).toContain(`--in-reply-to ${id}`);
+  }, 60_000);
+
+  // A side turn that fails is answered with the host's failure, the plugin's own error reply:
+  // generated, so written whatever it says.
+  test("a plugin's own error reply is written as generated", async () => {
+    const id = await directMessage("Why was the first read slow?", "btw");
+    const { agent } = await boot("writing-check-error-reply", {
+      sideTurn: async () => {
+        throw new Error(SENTENCE);
+      },
+    });
+    agent.push(directDispatchEnvelope("btw", "writing-check-error-reply", { messageID: id }));
+
+    const read = await answered(id);
+    expect(read.message.deliveries?.at(-1)?.error).toBe(SENTENCE);
+  }, 60_000);
+
+  // A person's `!command` whose line holds the sentence: the report fences the line, and is sent
+  // generated, so it is written.
+  test("a person's !command report is written, its line fenced", async () => {
+    const line = `!printf '${SENTENCE}'`;
+    const id = await directMessage(line, "steer");
+    const { agent } = await boot("writing-check-shell", {
+      sendUserInput: async () => ({ handled: "prompt" }),
+    });
+    agent.push(directDispatchEnvelope("steer", "writing-check-shell", { messageID: id, body: line }));
+
+    const read = await answered(id);
+    expect(read.replies?.map((reply) => reply.body)).toEqual([
+      `${shellCommandLine(line)}\n\n\`\`\`\n${SENTENCE}\n\`\`\``,
+    ]);
+  }, 60_000);
+
+  // A slash command's output, and the host's own error for one it could not run: both the
+  // plugin's text, sent generated.
+  test("a slash command's output and the host's error for one are written as generated", async () => {
+    const printed = await directMessage("/status", "steer");
+    const first = await boot("writing-check-slash-output", {
+      sendUserInput: async () => ({ handled: "command", output: SENTENCE }),
+    });
+    first.agent.push(
+      directDispatchEnvelope("steer", "writing-check-slash-output", {
+        messageID: printed,
+        body: "/status",
+      })
+    );
+    expect((await answered(printed)).replies?.map((reply) => reply.body)).toEqual([SENTENCE]);
+
+    const failed = await directMessage("/status", "steer");
+    const second = await boot("writing-check-slash-error", {
+      sendUserInput: async () => {
+        throw new Error(SENTENCE);
+      },
+    });
+    second.agent.push(
+      directDispatchEnvelope("steer", "writing-check-slash-error", {
+        messageID: failed,
+        body: "/status",
+      })
+    );
+    expect((await answered(failed)).replies?.map((reply) => reply.body)).toEqual([
+      `/status was not run: ${SENTENCE}`,
+    ]);
+  }, 60_000);
+
+  // A reply's `error` is prose the check reads: an agent's words there, sent without the field,
+  // are refused like a body's.
+  test("a delivery reply whose error holds the sentence, without the field, is refused", async () => {
+    const id = await directMessage("Why was the first read slow?", "btw");
+    const outcome = await postDeliveryReply(config(), SESSION, deliveryOf(id, "Why?"), {
+      error: SENTENCE,
+    });
+    expect(outcome.posted).toBe(false);
+    if (outcome.posted) return;
+    expect(outcome.refusal.findings).toEqual([
+      expect.objectContaining({ field: "error", rule: "semicolon", text: SENTENCE }),
+    ]);
+    // An agent's own choice to send it anyway, which the counts below tell from the plugin's.
+    expect(
+      await postDeliveryReply(config(), SESSION, deliveryOf(id, "Why?"), {
+        body: SENTENCE,
+        override: "agent",
+      })
+    ).toEqual({ posted: true });
+  }, 60_000);
+
+  // AskGate's decision record, and the document header its create writes, are the plugin's own:
+  // sent generated, so the record is written whatever it holds.
+  test("an AskGate decision record holding the sentence is written as generated", async () => {
+    const recorder = createDecisionRecorder({
+      env: { OMP_ASKGATE_RECORD_PROJECT: PROJECT },
+      now: () => Date.now(),
+      dispatchClient: (_directory, signal) => ({
+        client: new DispatchClient(
+          server().url,
+          bearerCredential(server().token),
+          originalFetch,
+          signal
+        ),
+      }),
+    });
+    expect(
+      await recorder.record({
+        entry: {
+          tool: "dispatch_ask",
+          decision: "allow",
+          outcome: "allowed",
+          verdictMode: "block",
+          ruleOutcome: "error",
+          ruleError: SENTENCE,
+        },
+        sessionId: SESSION,
+        directory: "/tmp",
+        id: "call-writing-check",
+      })
+    ).toBeUndefined();
+    const document = await asPerson<{ readonly id: string }>(
+      "GET",
+      `/api/v1/projects/${PROJECT}/artifacts/askgate-decisions-${SESSION}.md`
+    );
+    const text = await asPerson<{ readonly markdown: string }>(
+      "GET",
+      `/api/v1/artifacts/${document.id}/text`
+    );
+    expect(text.markdown).toContain(SENTENCE);
+  }, 60_000);
+
+  // The negative control: the same report with its line bare, sent without the field, is
+  // refused, so it is the fence and the mark that let the plugin's report through.
+  test("a copy of the report without the fence, sent without the field, is refused", async () => {
+    const line = `!printf '${SENTENCE}'`;
+    const id = await directMessage(line, "steer");
+    const report = shellCommandReport(line, { cut: false, output: SENTENCE, status: undefined });
+    const unfenced = report.replace(shellCommandLine(line), line);
+    const outcome = await postDeliveryReply(config(), SESSION, deliveryOf(id, line), {
+      body: unfenced,
+    });
+    expect(outcome.posted).toBe(false);
+  }, 60_000);
+
+  // The day's counts tell the plugin's generated writes apart from the agent's own forced one.
+  test("the day's counts show the generated writes apart from the agent's", async () => {
+    const counts = await asPerson<{
+      readonly outcomes: Readonly<Record<string, number>>;
+      readonly overrides: Readonly<Record<string, number>>;
+    }>("GET", "/api/v1/writing-check/counts");
+    expect(counts.overrides.agent).toBe(1);
+    // The shell report, the slash output, the host's error, the side turn's error, the withheld
+    // answer's error, and the decision record's create and append.
+    expect(counts.overrides.generated ?? 0).toBeGreaterThanOrEqual(7);
+    expect(counts.outcomes.forced ?? 0).toBeGreaterThanOrEqual(4);
+    expect(counts.outcomes.refused ?? 0).toBeGreaterThanOrEqual(5);
+  }, 60_000);
 });

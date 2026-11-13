@@ -369,9 +369,16 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
       // once, by the create, so no write of this session can replace what another wrote. The key
       // is this record's own, so a late append is replayed rather than written twice, and the same
       // record sent again with another body is refused (`422 KEY_REUSED`), never written twice.
+      // The record is this plugin's own text, not an agent's words, so it goes
+      // `override_writing_check: "generated"` (INFRA-3231): Dispatch's writing check counts it as
+      // generated and never refuses it.
       await client.docEdit(
         held,
-        { ops: [{ op: "insert", markdown: block, after: "end" }], actor },
+        {
+          ops: [{ op: "insert", markdown: block, after: "end" }],
+          actor,
+          override_writing_check: "generated",
+        },
         intentKey(RECORD_KEY_PREFIX, sessionId, id)
       );
       return undefined;
@@ -478,14 +485,16 @@ async function document(
   // The create's body, fixed for the session: the header alone, with no record, no time and no
   // plugin version in it, so two attempts of it — two processes', or one process's own, a day
   // apart — are the same request under the same key, which Dispatch replays rather than refusing
-  // as a key reused (`422 KEY_REUSED`).
+  // as a key reused (`422 KEY_REUSED`). The header is this plugin's own text, sent `generated`
+  // as every record is; a document a build from before that mark created answers this create
+  // `422 KEY_REUSED`, which sends it back to the read by name below.
   const content =
     `AskGate rule decisions of session ${sessionId}. One fenced block per decision follows, ` +
     "each holding one JSON record.\n";
   try {
     const created = await client.projectArtifact(
       project,
-      { name, content, actor },
+      { name, content, actor, override_writing_check: "generated" },
       intentKey(DOCUMENT_KEY_PREFIX, project, name)
     );
     return created.artifact.id;

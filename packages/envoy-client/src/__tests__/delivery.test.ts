@@ -4,11 +4,14 @@ import { dispatchIssueSubject, type Envelope } from "@legion/contracts";
 import { decode } from "@toon-format/toon";
 import { bearerCredential } from "../bearer";
 import {
+  answerDeliveryAside,
   type DispatchDelivery,
   postDeliveryReply,
   renderInbound,
   replyWith,
   senderLabel,
+  WRITING_CHECK_ANSWER_WITHHELD,
+  writingCheckRetryPrompt,
 } from "../delivery";
 
 const reader = "01a01111-2222-7333-4444-555555555555";
@@ -576,6 +579,129 @@ describe("renderInbound dispatch events", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  // The writing check (INFRA-3231, R14): a refused reply is answered as a refusal holding its
+  // findings, never thrown, and a plugin's own text carries the `generated` override.
+  describe("a reply the writing check reads", () => {
+    const findings = [
+      { field: "body", rule: "semicolon", text: "It works; ship it.", rewrite: "Split it." },
+    ];
+    const delivery: DispatchDelivery = {
+      resource: "message",
+      id: "message-1",
+      attempt: 1,
+      mode: "btw",
+      replyPath: "/api/v1/messages/message-1/reply",
+      replyFields: {},
+      issueKey: "CORE-1",
+      body: "Does it work?",
+    };
+    /** A Dispatch whose reply route refuses any body holding a semicolon, as the check does
+     *  where it is not overridden. */
+    const checkingServer = () => {
+      const bodies: Record<string, unknown>[] = [];
+      const server = Bun.serve({
+        port: 0,
+        fetch: async (request) => {
+          const body = (await request.json()) as Record<string, unknown>;
+          bodies.push(body);
+          const text = typeof body.body === "string" ? body.body : "";
+          if (text.includes(";") && body.override_writing_check === undefined) {
+            return Response.json(
+              {
+                code: "WRITING_CHECK_REFUSED",
+                error: "The writing check refused this write.",
+                findings,
+                override_field: "override_writing_check",
+              },
+              { status: 422 }
+            );
+          }
+          return Response.json({}, { status: 201 });
+        },
+      });
+      const config = {
+        url: `http://127.0.0.1:${server.port}`,
+        credential: bearerCredential("reply-token"),
+      };
+      return { bodies, config, stop: () => server.stop(true) };
+    };
+
+    test("answers a refusal with its findings, and sends the override it is given", async () => {
+      const server = checkingServer();
+      try {
+        expect(
+          await postDeliveryReply(server.config, reader, delivery, { body: "It works; ship it." })
+        ).toEqual({
+          posted: false,
+          refusal: { error: "The writing check refused this write.", findings },
+        });
+        expect(
+          await postDeliveryReply(server.config, reader, delivery, {
+            body: "It works; ship it.",
+            override: "generated",
+          })
+        ).toEqual({ posted: true });
+        expect(server.bodies[1]).toMatchObject({ override_writing_check: "generated" });
+        expect(server.bodies[0]).not.toHaveProperty("override_writing_check");
+      } finally {
+        server.stop();
+      }
+    });
+
+    test("a refused aside answer goes back to the side channel, then to the main turn", async () => {
+      const server = checkingServer();
+      const prompts: string[] = [];
+      const notices: string[] = [];
+      const post = (reply: Parameters<typeof postDeliveryReply>[3]) =>
+        postDeliveryReply(server.config, reader, delivery, reply);
+      try {
+        // A second answer that passes is posted in the first one's place.
+        const answers = ["It works; ship it.", "It works. Ship it."];
+        await answerDeliveryAside({
+          delivery,
+          ask: async (prompt) => {
+            prompts.push(prompt);
+            return answers.shift() ?? "";
+          },
+          post,
+          toMainTurn: (notice) => notices.push(notice),
+        });
+        expect(prompts[0]).toBe("Does it work?");
+        expect(prompts[1]).toBe(writingCheckRetryPrompt("Does it work?", { error: "", findings }));
+        expect(prompts[1]).toContain('Rule semicolon: "It works; ship it." Split it.');
+        expect(notices).toEqual([]);
+        expect(server.bodies.map((body) => body.body)).toEqual([
+          "It works; ship it.",
+          "It works. Ship it.",
+        ]);
+
+        // Refused twice: the main turn is handed the findings, and the attempt is settled with
+        // an error that quotes none of the refused text.
+        server.bodies.length = 0;
+        await answerDeliveryAside({
+          delivery,
+          ask: async () => "It works; ship it.",
+          post,
+          toMainTurn: (notice) => notices.push(notice),
+        });
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toContain(
+          "`dispatch message --issue CORE-1 --body ... --in-reply-to message-1`"
+        );
+        expect(notices[0]).toContain('Rule semicolon: "It works; ship it." Split it.');
+        expect(server.bodies.at(-1)).toEqual({
+          actor: { kind: "session", id: reader },
+          attempt: 1,
+          error: WRITING_CHECK_ANSWER_WITHHELD,
+          override_writing_check: "generated",
+        });
+        expect(JSON.stringify(server.bodies.at(-1))).not.toContain("ship it");
+      } finally {
+        server.stop();
+      }
+    });
   });
 
   test("renders an issue-less targeted BTW with a reply address and an issue-less reply hint", () => {

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { isShellCommandReport, isTypableCommandName } from "./agent-stream";
+import { isShellCommandReport, isTypableCommandName, shellCommandLine } from "./agent-stream";
 
 // The one rule the session's publisher lists a command by and the page accepts one by: a name a
 // person types after the slash, as one token.
@@ -42,4 +42,18 @@ test("a turn's text is the report of the `!` message whose body it carries", () 
   );
   expect(isShellCommandReport("!ls\t\n\nThe command printed nothing.", "!ls\t")).toBe(true);
   expect(isShellCommandReport("!ls\n\nThe command printed nothing.", "!ls\t")).toBe(false);
+});
+
+// A report opens with the person's line inside a code fence (INFRA-3231): a command line is code,
+// and Dispatch's writing check reads none, so `!a; b` is never refused as an English sentence.
+test("a report opens with the person's line fenced, and one from before the fence still reads", () => {
+  expect(shellCommandLine("!printf hi")).toBe("```\n!printf hi\n```");
+  // A line holding a run of backticks gets a longer fence, so the run stays inside it.
+  expect(shellCommandLine("!echo ```x```")).toBe("````\n!echo ```x```\n````");
+  expect(isShellCommandReport("```\n!printf hi\n```\n\n```\nhi\n```", "!printf hi")).toBe(true);
+  expect(isShellCommandReport("```\n! ls\n```\n\nThe command printed nothing.", "! ls")).toBe(true);
+  // The fence holds the line as the person sent it, so another line's fence is not this one's.
+  expect(isShellCommandReport("```\n!ls\n```\n\nThe command printed nothing.", "! ls")).toBe(false);
+  // The fenced line alone, with nothing after it, is no report.
+  expect(isShellCommandReport("```\n!printf hi\n```", "!printf hi")).toBe(false);
 });

@@ -17,7 +17,13 @@
 // is Dispatch recording that this session accepted that very attempt, and what it injects is
 // the body Dispatch answers with, never the frame's own text.
 import { comparableLines } from "@legion/contracts"
-import type { DispatchDelivery, RenderInboundResult } from "@legion/envoy-client/delivery"
+import {
+  answerDeliveryAside,
+  type DeliveryReply,
+  type DeliveryReplyOutcome,
+  type DispatchDelivery,
+  type RenderInboundResult,
+} from "@legion/envoy-client/delivery"
 import type { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { pictureAddresses } from "@legion/envoy-client/dispatch-pictures"
 import { messageFor } from "@legion/envoy-client/errors"
@@ -113,15 +119,19 @@ export interface UserTurnRouterOptions {
   readonly dispatch: (ms: number) => DispatchClient | undefined
   /** Answers a delivery on Dispatch: the reply the person reads, or the error that stopped it.
    *  `followUp` is the ask that Dispatch post this answer although the attempt is already
-   *  answered, which every answer to a delivery after the first carries (`post`). */
+   *  answered, which every answer to a delivery after the first carries (`post`). `override`
+   *  is the writing check's mark for text this plugin generated itself (INFRA-3231). The outcome
+   *  says whether Dispatch's writing check refused it (`postDeliveryReply`). */
   readonly reply: (
     delivery: DispatchDelivery,
-    result: {
-      readonly body?: string
-      readonly error?: string
-      readonly followUp?: boolean
-    },
-  ) => Promise<void>
+    result: DeliveryReply,
+  ) => Promise<DeliveryReplyOutcome>
+  /**
+   * Hands the session's main conversation a turn of its own holding `notice`: where a refused
+   * fork answer goes once the fork's second answer is refused too (`answerDeliveryAside`). The
+   * server writes it into the session as the card a channel notification is, which starts a turn.
+   */
+  readonly toMainTurn: (notice: string) => void
   /**
    * Where a person's own message goes in a Legion pane: the bridge's inbox, which makes it a user
    * turn (`./legion-inbox`). Undefined in a terminal session, where it goes to the mod.
@@ -315,8 +325,8 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    */
   const post = async (
     delivery: DispatchDelivery,
-    result: { readonly body?: string; readonly error?: string },
-  ): Promise<void> => {
+    result: DeliveryReply,
+  ): Promise<DeliveryReplyOutcome> => {
     const key = handledAttemptKey(delivery.id, delivery.attempt)
     const followUp = answered.has(key)
     if (!followUp) {
@@ -324,15 +334,28 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
       // attempt is inserted as the first reply anyway, so the record is kept either way.
       rememberBounded(answered, key, ANSWERED_DELIVERIES_MAX)
     }
-    await reply(delivery, { ...result, followUp })
+    return await reply(delivery, { ...result, followUp })
   }
 
-  /** Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch. */
+  /**
+   * Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch. Every
+   * text answered here is this plugin's own, never words the agent wrote: a command's output, a
+   * pick's confirmation, the waiting reply, and the error for a message this host could not run
+   * (`typedInputReply`). So each goes `override_writing_check: "generated"` (INFRA-3231), which
+   * Dispatch records as generated and never refuses.
+   */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
-    await post(delivery, { body }).catch((error: unknown) => {
-      warn(`a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`)
-    })
+    await post(delivery, { body, override: "generated" }).then(
+      (outcome) => {
+        if (!outcome.posted) {
+          warn(`Dispatch's writing check refused a generated reply to message ${delivery.id}`)
+        }
+      },
+      (error: unknown) => {
+        warn(`a reply to message ${delivery.id} did not reach Dispatch — ${messageFor(error)}`)
+      },
+    )
   }
 
   /**
@@ -420,17 +443,33 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    *  answer never asks for a follow-up: a BTW is answered one time, and the rule that a frame
    *  this session is handed twice posts no second answer is what Dispatch leans on for it
    *  (`replyAfterAnswer`, `packages/envoy/internal/dispatch/api/message_delivery.go`), since
-   *  nothing here guards a redelivered BTW and the fork would answer it afresh. */
+   *  nothing here guards a redelivered BTW and the fork would answer it afresh.
+   *
+   *  The fork's answer is the agent's own words, sent unmarked so Dispatch's writing check reads
+   *  them. A refusal goes back to a fork of its own - the fork keeps nothing between calls, so the
+   *  next fork, asked with the question, the findings and their rewrites, is that agent answering
+   *  again - and its answer is posted in the first one's place. Where that one is refused too,
+   *  the main conversation is handed a turn of its own holding the findings (`toMainTurn`), and
+   *  the attempt is settled with an error that quotes none of the refused text
+   *  (`answerDeliveryAside`). The errors this host answers with itself go `generated`. */
   const runBtw = (delivery: DispatchDelivery): void => {
     void (async () => {
       if (!session.connected()) {
-        await reply(delivery, { error: "this session has no link to Claude Code" })
+        await reply(delivery, {
+          error: "this session has no link to Claude Code",
+          override: "generated",
+        })
         return
       }
       try {
-        await reply(delivery, { body: await session.fork(delivery.body) })
+        await answerDeliveryAside({
+          delivery,
+          ask: (prompt) => session.fork(prompt),
+          post: (result) => reply(delivery, result),
+          toMainTurn: options.toMainTurn,
+        })
       } catch (error) {
-        await reply(delivery, { error: messageFor(error) })
+        await reply(delivery, { error: messageFor(error), override: "generated" })
       }
     })().catch((error: unknown) => {
       warn(`a BTW answer did not reach Dispatch — ${messageFor(error)}`)

@@ -16,6 +16,8 @@ import {
 } from "@legion/envoy-client/consumer-delivery"
 import {
   createDeliveryDedupe,
+  type DeliveryReply,
+  type DeliveryReplyOutcome,
   type DispatchDelivery,
   expectsLaneReceipt,
   inboundTimestamp,
@@ -462,20 +464,22 @@ class UnsupportedEnvoyToolError extends Error {
  * Answer a targeted Dispatch delivery, on the sender's behalf: the reply this session has for it,
  * or the error that stopped it, so the sender sees the attempt fail instead of waiting on a reply
  * that never comes. `followUp` asks Dispatch to post an answer to an attempt its first reply
- * already settled, which every answer after the first needs (`postDeliveryReply`).
+ * already settled, which every answer after the first needs (`postDeliveryReply`). `override`
+ * marks text this plugin generated itself (INFRA-3231); the outcome says whether Dispatch's
+ * writing check refused the reply, which is returned rather than thrown.
  */
 export async function postDispatchReply(
   identity: SessionIdentity,
   configFile: SessionConfigFile,
   delivery: DispatchDelivery,
-  result: { readonly body?: string; readonly error?: string; readonly followUp?: boolean },
-): Promise<void> {
+  result: DeliveryReply,
+): Promise<DeliveryReplyOutcome> {
   const config = sessionDispatchSettings(configFile, process.env, {
     cwd: identity.directory,
     session: () => identity.id,
   }).dispatch
   if (!config.enabled) throw new Error(config.error ?? config.notice)
-  await postDeliveryReply(config, identity.id, delivery, result)
+  return await postDeliveryReply(config, identity.id, delivery, result)
 }
 
 /**
@@ -578,8 +582,11 @@ export function createChannelDelivery(input: {
         process.stderr.write(
           `envoy-channel: rejecting malformed Dispatch targeted delivery ${rejected.id}\n`,
         )
+        // This plugin's own error text, not an agent's words: sent `generated`, so Dispatch's
+        // writing check, which reads a reply's `error` as prose, records it and refuses nothing.
         return postDispatchReply(input.identity, input.configFile, rejected, {
           error: "Invalid Dispatch targeted delivery frame",
+          override: "generated",
         }).then(
           () => false,
           (error: unknown) => {
@@ -2365,6 +2372,17 @@ export async function runEnvoyChannelServer(): Promise<void> {
       effortPicked: (effort) => agentStream?.pickedEffort(effort),
       refreshSettings: () => agentStream?.refresh(),
       reply: (delivery, result) => postDispatchReply(identity, configFile, delivery, result),
+      // A fork answer refused twice reaches the main conversation as a card of its own, which
+      // starts a turn there: the findings and the command that answers the person
+      // (`answerDeliveryAside`). A write that fails is logged; nothing quoting the refused text
+      // goes to Dispatch either way.
+      toMainTurn: (notice) => {
+        void notifier.notification({ content: notice }).catch((error: unknown) => {
+          process.stderr.write(
+            `envoy-channel: a refused answer's findings did not reach the session — ${messageFor(error)}\n`,
+          )
+        })
+      },
       session: claude,
       sessionId: () => identity.id,
       state,

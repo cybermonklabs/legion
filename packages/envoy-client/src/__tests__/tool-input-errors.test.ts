@@ -30,7 +30,7 @@ describe("ToolInputError", () => {
       [
         "dispatch message was not called: 1 problem",
         "- --body is required (string)",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'",
       ].join("\n")
     );

@@ -1495,4 +1495,50 @@ describe("dispatchToolSpecs", () => {
   test("no tool result subscribes the session to an issue; following an ask is the write's side effect", () => {
     expect(dispatchToolSpecs.every((spec) => !("subscribes" in spec))).toBe(true);
   });
+
+  // The writing check's override (INFRA-3231): every command whose write Dispatch's check reads
+  // takes it, as a boolean the executor sends as "agent", and no other command does. An agent's
+  // call cannot name "generated", the plugins' own mark.
+  test("every checked write takes override_writing_check as a boolean, and nothing else does", () => {
+    const checked: (keyof typeof validCalls)[] = [
+      "dispatch_issue",
+      "dispatch_issue_update",
+      "dispatch_ask",
+      "dispatch_edit_ask",
+      "dispatch_resolve_ask",
+      "dispatch_comment",
+      "dispatch_suggest",
+      "dispatch_message",
+      "dispatch_send_to_agent",
+      "dispatch_doc_edit",
+      "dispatch_request_approval",
+      "dispatch_result",
+      "dispatch_artifact",
+    ];
+    const carriers: string[] = dispatchToolSpecs
+      .filter((spec) => "override_writing_check" in spec.arguments(schemaApi))
+      .map((spec) => spec.name);
+    expect(carriers).toEqual([...checked]);
+    for (const name of checked) {
+      expect(z.toJSONSchema(schemaFor(name))).toMatchObject({
+        properties: { override_writing_check: { type: "boolean" } },
+      });
+    }
+    const message = schemaFor("dispatch_message");
+    expect(
+      message.safeParse({ issue: "DSP-1", body: "Done.", override_writing_check: true }).success
+    ).toBe(true);
+    expect(
+      message.safeParse({ issue: "DSP-1", body: "Done.", override_writing_check: "generated" })
+        .success
+    ).toBe(false);
+    // The override changes nothing on its own, so it is no field besides the ones these require.
+    expect(
+      schemaFor("dispatch_issue_update").safeParse({ issue: "DSP-1", override_writing_check: true })
+        .success
+    ).toBe(false);
+    expect(
+      schemaFor("dispatch_edit_ask").safeParse({ ask: "a1", override_writing_check: true }).success
+    ).toBe(false);
+  });
 });

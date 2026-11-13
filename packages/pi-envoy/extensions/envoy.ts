@@ -37,10 +37,13 @@ import {
   registeredWithoutRelay,
 } from "@legion/envoy-client/consumer-delivery";
 import {
+  answerDeliveryAside,
   createDeliveryDedupe,
   type DedupeIdentity,
   DedupeIdentitySchema,
   type DeliveryClaim,
+  type DeliveryReply,
+  type DeliveryReplyOutcome,
   type DispatchDelivery,
   expectsLaneReceipt,
   inboundTimestamp,
@@ -1201,16 +1204,43 @@ export default function envoyExtension(pi: PiApi): void {
   // reply failure.
   const postDispatchReply = async (
     delivery: DispatchDelivery,
-    result: { readonly body?: string; readonly error?: string },
+    result: DeliveryReply,
     replySessionID: string
-  ): Promise<void> => {
+  ): Promise<DeliveryReplyOutcome> => {
     if (!sessionOpen(replySessionID)) {
       logger.warn("envoy: a reply is signed as the session its message reached, which is closed", {
         addressed: replySessionID,
         open: sessionID,
       });
     }
-    await postDeliveryReply(dispatchConfigFor(replySessionID), replySessionID, delivery, result);
+    return await postDeliveryReply(
+      dispatchConfigFor(replySessionID),
+      replySessionID,
+      delivery,
+      result
+    );
+  };
+
+  // The main turn a refused answer goes back to (`answerDeliveryAside`, the path after a side
+  // turn's second answer is refused too): a custom message that starts a turn of its own in the
+  // session that wrote the answer, as a follow-up behind any turn running, holding the findings
+  // and the command that answers the person. A host that has left that session is handed
+  // nothing, since the notice would reach another conversation; the loss is logged instead.
+  const handWritingCheckNotice = (session: string, notice: string): void => {
+    if (!sessionOpen(session)) {
+      logger.warn(
+        "envoy: a refused answer's findings were not handed back; the session is closed",
+        {
+          addressed: session,
+          open: sessionID,
+        }
+      );
+      return;
+    }
+    pi.sendMessage(
+      { customType: "envoy-message", content: notice, display: true, details: LOCAL_ENVOY_NOTICE },
+      { deliverAs: "followUp", triggerTurn: true }
+    );
   };
 
   // A typed input's pictures, until the host's message carrying its Dispatch id starts
@@ -1429,20 +1459,39 @@ export default function envoyExtension(pi: PiApi): void {
   // enough to post in its place. Both the typed path and the `!command` path post through here,
   // so the fallback exists once. Both texts name the one session, so the fallback is signed as
   // the reply it replaces was.
+  //
+  // Every text posted here is the plugin's own, not an agent's words: a `!command`'s report
+  // (`shellCommandReport` and its refusals, `../src/typed-shell`), a slash command's output and
+  // this host's error for a line it did not run (`typedInputReply`). So each is sent
+  // `override_writing_check: "generated"` (INFRA-3231): Dispatch's writing check records it as
+  // generated and never refuses it, and the fallback below never carries a writing-check
+  // refusal. Were one to come back all the same, nothing is posted in its place, since the
+  // refusal's text quotes the output it refused.
   const postTypedInputReply = async (
     delivery: DispatchDelivery,
     replySessionID: string,
     body: string
   ): Promise<void> => {
+    let outcome: DeliveryReplyOutcome;
     try {
-      await postDispatchReply(delivery, { body }, replySessionID);
+      outcome = await postDispatchReply(delivery, { body, override: "generated" }, replySessionID);
     } catch (error) {
       if (!(error instanceof DispatchServiceError) || !error.fromDispatch) throw error;
       await postDispatchReply(
         delivery,
-        { body: `Your command ran, and Dispatch refused its output: ${error.message}` },
+        {
+          body: `Your command ran, and Dispatch refused its output: ${error.message}`,
+          override: "generated",
+        },
         replySessionID
       );
+      return;
+    }
+    if (!outcome.posted) {
+      logger.warn("envoy: Dispatch's writing check refused a reply sent as generated", {
+        attempt: delivery.attempt,
+        messageID: delivery.id,
+      });
     }
   };
 
@@ -1976,10 +2025,12 @@ export default function envoyExtension(pi: PiApi): void {
     // failed, and a same-mode re-send of it must reach this session again, so the claim is
     // released before the reply goes out. A BTW side turn adds nothing to the transcript, so
     // running it again for that re-send repeats no work the session kept. A relay frame is done
-    // once the reply is posted: the re-send is a new frame.
+    // once the reply is posted: the re-send is a new frame. The error is this plugin's own text
+    // (or the host's failure it names), not an agent's words, so it goes `generated`: Dispatch's
+    // writing check reads a reply's `error` as prose and would otherwise judge it.
     const refuse = async (delivery: DispatchDelivery, error: string): Promise<void> => {
       held.release();
-      await postDispatchReply(delivery, { error }, session);
+      await postDispatchReply(delivery, { error, override: "generated" }, session);
       relayed?.done();
     };
     // Runs a side turn or a Dispatch reply off the caller (a pump or the relay's queue), so the
@@ -2055,8 +2106,19 @@ export default function envoyExtension(pi: PiApi): void {
         } else {
           offWorker(async () => {
             try {
-              const reply = await answer({ prompt: delivery.body });
-              await postDispatchReply(delivery, { body: reply.replyText }, session);
+              // The side turn's answer is the agent's own words, sent unmarked so Dispatch's
+              // writing check reads them. Where the check refuses it, the refusal goes back into
+              // a side turn of this same session, holding the question, the findings and their
+              // rewrites, and that answer is posted in its place; where that one is refused too,
+              // the main conversation is handed a turn of its own holding the findings
+              // (`handWritingCheckNotice`), and the person's attempt is settled with an error
+              // that quotes none of the refused text (`answerDeliveryAside`).
+              await answerDeliveryAside({
+                delivery,
+                ask: async (prompt) => (await answer({ prompt })).replyText,
+                post: (reply) => postDispatchReply(delivery, reply, session),
+                toMainTurn: (notice) => handWritingCheckNotice(session, notice),
+              });
               await taken();
             } catch (error) {
               await refuse(delivery, messageFor(error));
@@ -2132,9 +2194,12 @@ export default function envoyExtension(pi: PiApi): void {
           // attempt, so each answer below settles rather than releases - Dispatch holds the
           // message delivered and refuses a re-send of it - and the reply is what tells the
           // person what became of their line.
+          // Each text answered here is the plugin's own - the refusal of a line this host cannot
+          // run, or of one the session it was accepted for is no longer open to run - so it goes
+          // `generated`.
           const answerAndSettle = (body: string): void => {
             offWorker(async () => {
-              await postDispatchReply(accepted.delivery, { body }, session);
+              await postDispatchReply(accepted.delivery, { body, override: "generated" }, session);
               await taken();
             });
           };

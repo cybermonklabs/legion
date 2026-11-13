@@ -67,6 +67,7 @@ import type {
   UpdateIssueInput,
   Version,
   WhoamiResponse,
+  WritingCheckOverride,
 } from "@legion/contracts";
 import {
   answerNotKept,
@@ -112,7 +113,10 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** A `WRITING_CHECK_REFUSED` refusal's findings: each sentence the check refused, the rule it
+     *  breaks, the request field it stands in and how to fix it. */
+    readonly findings?: DispatchServiceErrorShape["findings"]
   ) {
     super(message);
   }
@@ -1221,7 +1225,12 @@ export class DispatchClient {
    */
   async requestApproval(
     artifactID: string,
-    input: { actor: Actor; summary: string; include_verification?: boolean }
+    input: {
+      actor: Actor;
+      summary: string;
+      include_verification?: boolean;
+      override_writing_check?: WritingCheckOverride;
+    }
   ): Promise<ApprovalRequestResponse & { recorded: boolean }> {
     const answer = await this.#jsonAnswer<ApprovalRequestResponse>(
       "POST",
@@ -1351,10 +1360,22 @@ export class DispatchClient {
    * `POST /api/v1/agents/{session_id}/messages`: one message into a session's own conversation,
    * which belongs to no issue. The route is the person's, so the credential must hold the
    * `person` scope. It answers once the message's first delivery attempt has settled, with that
-   * attempt on the message.
+   * attempt on the message. `actingSession` is the session the call is made from, sent as
+   * `?session=`: a credential that proved no session of its own (a personal token) names its
+   * agent nowhere else on this route, and Dispatch records the act, and its writing check reads
+   * the body, as that session's.
    */
-  async agentMessage(sessionId: string, input: CreateAgentMessageInput): Promise<Message> {
-    return this.#json("POST", ["api", "v1", "agents", sessionId, "messages"], input);
+  async agentMessage(
+    sessionId: string,
+    input: CreateAgentMessageInput,
+    actingSession?: string
+  ): Promise<Message> {
+    return this.#json(
+      "POST",
+      ["api", "v1", "agents", sessionId, "messages"],
+      input,
+      actingSession === undefined || actingSession === "" ? undefined : { session: actingSession }
+    );
   }
 
   /**
@@ -1688,6 +1709,9 @@ export class DispatchClient {
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
+    if (input.override_writing_check !== undefined) {
+      form.set("override_writing_check", input.override_writing_check);
+    }
     form.set("file", input.file, input.name);
     return this.#form("POST", path, form, key);
   }
@@ -2068,7 +2092,8 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          error.findings
         );
       }
       const quoted = excerpt(text, this.token);

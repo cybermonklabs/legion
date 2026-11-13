@@ -560,6 +560,57 @@ describe("DispatchClient", () => {
     expect((artifactBody.get("file") as Blob).type).toBe("text/markdown");
   });
 
+  // The writing check (INFRA-3231): a file upload carries the override as a named form value,
+  // and a refusal keeps its findings on the DispatchServiceError it throws.
+  test("sends the writing check's override as a form value and keeps a refusal's findings", async () => {
+    const findings = [
+      { field: "summary", rule: "semicolon", text: "It is done; ship it.", rewrite: "Split it." },
+    ];
+    const { fetchImpl, requests } = fakeFetch([
+      jsonResponse({ ok: true }),
+      jsonResponse(
+        {
+          code: "WRITING_CHECK_REFUSED",
+          error: "The writing check refused this write.",
+          findings,
+          override_field: "override_writing_check",
+        },
+        422
+      ),
+    ]);
+    const client = new DispatchClient(
+      "http://dispatch.test/",
+      bearerCredential("secret"),
+      fetchImpl
+    );
+
+    await client.artifact("DSP-1", {
+      name: "notes.md",
+      file: new Blob(["# Notes"], { type: "text/markdown" }),
+      summary: "Notes",
+      override_writing_check: "generated",
+      actor,
+    });
+    const refused = await client
+      .message("DSP-1", { body: "It is done; ship it.", actor })
+      .catch((error: unknown) => error);
+
+    const upload = requests[0] as RecordedRequest;
+    const form = await new Response(upload.init.body, {
+      headers: {
+        "Content-Type": (upload.init.headers as Record<string, string>)["Content-Type"] as string,
+      },
+    }).formData();
+    expect(form.get("override_writing_check")).toBe("generated");
+    expect(refused).toMatchObject({
+      name: "DispatchServiceError",
+      code: "WRITING_CHECK_REFUSED",
+      status: 422,
+      message: "The writing check refused this write.",
+      findings,
+    });
+  });
+
   test("maps a structured conflict response into DispatchServiceError candidates", async () => {
     const candidates = [{ from: 12, to: 18, context: "duplicated text" }];
     const { fetchImpl } = fakeFetch([

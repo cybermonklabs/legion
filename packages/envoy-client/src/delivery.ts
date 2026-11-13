@@ -27,13 +27,16 @@ import {
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
+  WRITING_CHECK_REFUSED,
+  type WritingCheckFinding,
+  type WritingCheckOverride,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
-import { DispatchClient } from "./dispatch-http";
+import { DispatchClient, DispatchServiceError } from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
@@ -130,12 +133,45 @@ function dispatchReplyPath(resource: DispatchDelivery["resource"], id: string): 
   return `/api/v1/${collection}/${encodeURIComponent(id)}/reply`;
 }
 
+/** What a delivery reply sends: one of `body` (the answer) or `error` (why the host could not
+ *  answer), and how. */
+export interface DeliveryReply {
+  readonly body?: string;
+  readonly error?: string;
+  /** Ask that a second answer to an attempt the first already settled is posted
+   *  (`?follow_up=true`). */
+  readonly followUp?: boolean;
+  /**
+   * The writing check's override (INFRA-3231). A plugin sends `generated` for text it generates
+   * itself - a `!command`'s report, a slash command's output, its own error reply - and never
+   * for words an agent wrote, which go unmarked, so the check reads them.
+   */
+  readonly override?: WritingCheckOverride;
+}
+
+/** A delivery reply Dispatch's writing check refused: nothing was posted. */
+export interface DeliveryReplyRefusal {
+  /** Dispatch's own account of the refusal: each rewrite, rule, field and sentence. */
+  readonly error: string;
+  /** Each sentence the check refused, the rule it breaks and how to fix it. */
+  readonly findings: readonly WritingCheckFinding[];
+}
+
+/** What became of a delivery reply: posted, or refused by Dispatch's writing check. */
+export type DeliveryReplyOutcome =
+  | { readonly posted: true }
+  | { readonly posted: false; readonly refusal: DeliveryReplyRefusal };
+
 /**
  * Answers a targeted Dispatch delivery on the sender's behalf: the reply body when the
  * host delivered it, or the error when it could not (so the sender sees the attempt fail
  * instead of waiting on a reply that never comes). A write through `DispatchClient`, so it
  * carries a key of its own, is asked again under it while Dispatch gives no definitive answer,
- * and throws Dispatch's refusal as a `DispatchServiceError`.
+ * and throws Dispatch's refusal as a `DispatchServiceError` - except the writing check's
+ * (`422 WRITING_CHECK_REFUSED`), which is answered as a refusal holding its findings: the words
+ * were an agent's, and the caller hands the refusal back to that agent to answer again rather
+ * than post anything that quotes the refused text (`answerDeliveryAside`). A reply's `error` is
+ * prose the check reads too, so a plugin's own error text carries `override: "generated"`.
  *
  * `followUp` is the ask that a second answer to an attempt already settled by the first is
  * posted rather than handed back (`?follow_up=true`). It travels as the route's query parameter,
@@ -145,25 +181,132 @@ export async function postDeliveryReply(
   config: Pick<ActiveDispatchConfig, "url" | "credential">,
   sessionId: string,
   delivery: DispatchDelivery,
-  result: {
-    readonly body?: string;
-    readonly error?: string;
-    readonly followUp?: boolean;
-  }
-): Promise<void> {
-  const { followUp, ...reply } = result;
+  result: DeliveryReply
+): Promise<DeliveryReplyOutcome> {
+  const { followUp, override, ...reply } = result;
   const client = new DispatchClient(config.url, config.credential);
-  await client.deliveryReply(
-    delivery.resource,
-    delivery.id,
-    {
-      actor: { kind: "session", id: sessionId },
-      attempt: delivery.attempt,
-      ...delivery.replyFields,
-      ...reply,
-    },
-    followUp === undefined ? {} : { followUp }
+  try {
+    await client.deliveryReply(
+      delivery.resource,
+      delivery.id,
+      {
+        actor: { kind: "session", id: sessionId },
+        attempt: delivery.attempt,
+        ...delivery.replyFields,
+        ...reply,
+        ...(override === undefined ? {} : { override_writing_check: override }),
+      },
+      followUp === undefined ? {} : { followUp }
+    );
+  } catch (error) {
+    if (
+      error instanceof DispatchServiceError &&
+      error.fromDispatch &&
+      error.code === WRITING_CHECK_REFUSED
+    ) {
+      return { posted: false, refusal: { error: error.message, findings: error.findings ?? [] } };
+    }
+    throw error;
+  }
+  return { posted: true };
+}
+
+/**
+ * The error reply that settles a delivery whose answer the writing check refused twice: it says
+ * that no answer was posted and quotes none of the refused text. A plugin's own words, sent
+ * `generated`.
+ */
+export const WRITING_CHECK_ANSWER_WITHHELD =
+  "Dispatch's writing check refused this session's answer twice, so no answer is posted here. " +
+  "The session was asked to answer again in its own conversation.";
+
+/** Each finding of a refusal, one line each: the rule, the sentence and how to fix it. */
+function findingLines(refusal: DeliveryReplyRefusal): string[] {
+  if (refusal.findings.length === 0) return [refusal.error];
+  return refusal.findings.map(
+    (finding) => `- Rule ${finding.rule}: "${finding.text}" ${finding.rewrite}`
   );
+}
+
+/**
+ * The prompt that hands a refused answer back to the side turn or the fork that wrote it: the
+ * person's question again, each finding with its rewrite, and the ask to answer again.
+ */
+export function writingCheckRetryPrompt(question: string, refusal: DeliveryReplyRefusal): string {
+  return [
+    "Dispatch's writing check refused your answer to the question below, so it was not posted. Fix each sentence the findings name and answer the question again.",
+    "",
+    "Findings:",
+    ...findingLines(refusal),
+    "",
+    "Question:",
+    question,
+  ].join("\n");
+}
+
+/**
+ * What the session's main conversation is handed, as a turn of its own, when the side turn's or
+ * the fork's second answer is refused too: the findings, and the command that answers the
+ * person, which the agent runs in that turn. The `dispatch` command's own write is checked
+ * again, and its refusal is that command's output, in that same turn.
+ */
+export function writingCheckMainTurnNotice(
+  delivery: DispatchDelivery,
+  refusal: DeliveryReplyRefusal
+): string {
+  const owner = delivery.issueKey === null ? {} : { issue: delivery.issueKey };
+  const answer =
+    delivery.resource === "message"
+      ? commandLine("dispatch_message", { ...owner, in_reply_to: delivery.id, body: "..." })
+      : commandLine("dispatch_comment", { ...owner, reply_to: delivery.id, body: "..." });
+  const what = delivery.resource === "message" ? "message" : "comment";
+  return [
+    `Dispatch's writing check refused this session's answer to ${what} ${delivery.id} twice, so no answer was posted. The person asked:`,
+    "",
+    delivery.body,
+    "",
+    "Findings of the last answer:",
+    ...findingLines(refusal),
+    "",
+    `Write the answer again with each sentence fixed, and post it with \`${answer}\`${delivery.issueKey === null && delivery.resource === "comment" ? " and the --project and --artifact of the comment's document" : ""}.`,
+  ].join("\n");
+}
+
+/**
+ * Answers a delivery with words an agent writes off to the side of its conversation, under
+ * Dispatch's writing check (INFRA-3231, R14): Oh My Pi's side turn for a BTW, Claude Code's fork
+ * for one. `ask` is one answer of that side channel, over the conversation, to the prompt given.
+ *
+ * Where a refusal goes, for each path:
+ * - a side turn or a fork: back to the side channel that wrote the answer, as a prompt of its own
+ *   holding the person's question, the findings and their rewrites (`writingCheckRetryPrompt`).
+ *   A side turn and a fork each run once over the conversation and keep nothing, so the next
+ *   one, asked with that prompt, is where that agent answers again; its answer is posted, and
+ *   checked, as the first was;
+ * - the main turn: where the second answer is refused too, `toMainTurn` hands the main
+ *   conversation a turn of its own holding the findings and the command that answers the person
+ *   (`writingCheckMainTurnNotice`), and the attempt is settled with an error reply that quotes
+ *   none of the refused text (`WRITING_CHECK_ANSWER_WITHHELD`, sent `generated`). A main turn's
+ *   own answers reach Dispatch through the `dispatch` command, whose refusal is that command's
+ *   output in the same turn.
+ *
+ * Nothing posted to Dispatch quotes a refused answer.
+ */
+export async function answerDeliveryAside(input: {
+  readonly delivery: DispatchDelivery;
+  readonly ask: (prompt: string) => Promise<string>;
+  readonly post: (reply: DeliveryReply) => Promise<DeliveryReplyOutcome>;
+  readonly toMainTurn: (notice: string) => void;
+}): Promise<void> {
+  const { delivery } = input;
+  const first = await input.post({ body: await input.ask(delivery.body) });
+  if (first.posted) return;
+  const again = await input.post({
+    body: await input.ask(writingCheckRetryPrompt(delivery.body, first.refusal)),
+  });
+  if (again.posted) return;
+  input.toMainTurn(writingCheckMainTurnNotice(delivery, again.refusal));
+  await input.post({ error: WRITING_CHECK_ANSWER_WITHHELD, override: "generated" });
 }
 
 /**

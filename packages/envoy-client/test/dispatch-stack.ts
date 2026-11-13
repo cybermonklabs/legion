@@ -34,6 +34,9 @@ export interface DispatchStack {
   readonly url: string;
   /** The bearer token the server accepts for an agent, as `DISPATCH_TOKEN` takes it. */
   readonly token: string;
+  /** The stack's own database, for a row that sets up a state no route reaches: a delivery
+   *  attempt bound to a session, which the server writes only once a listener resolved it. */
+  readonly databaseUrl: string;
   /** Stops the server and drops its database. Its scratch directory is the caller's, and goes
    *  with it. */
   stop(): Promise<void>;
@@ -60,6 +63,11 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * Settings of the server's own beyond the stack's, such as `DISPATCH_WRITING_CHECK=on`. They
+   * are laid over the stack's environment, so a name the stack sets is the caller's to change.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -145,6 +153,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
         DISPATCH_PORT: String(port),
         DISPATCH_SERVER_URL: url,
         DISPATCH_WEB_DIST: WEB_DIST,
+        ...options.env,
       },
       stdout: out,
       stderr: out,
@@ -154,7 +163,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });
-    return { url, token, stop };
+    return { url, token, databaseUrl: databaseUrl.toString(), stop };
   } catch (error) {
     await stop();
     throw error;

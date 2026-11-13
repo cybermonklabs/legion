@@ -621,6 +621,8 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
           actor: { kind: "session", id: "ses_claude" },
           attempt: 1,
           error: "Invalid Dispatch targeted delivery frame",
+          // The plugin's own error text, which the writing check counts as generated.
+          override_writing_check: "generated",
         },
       },
     ])
@@ -727,6 +729,7 @@ test("answers a malformed targeted comment through its supplied comment reply ad
           attempt: 1,
           target: "session:ses_claude",
           error: "Invalid Dispatch targeted delivery frame",
+          override_writing_check: "generated",
         },
       },
     ])
