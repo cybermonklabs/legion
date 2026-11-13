@@ -924,6 +924,99 @@ The report counts for the process the claim runs now and for no other.
 A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
 That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
 
+## A commit carries another role's App as its author
+
+Every role of an issue works in one jj workspace, and each role's commits must carry that role's own GitHub App as their author.
+Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
+The shim runs `jj log` on `@`, which snapshots the working copy.
+Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
+So an adoption at the wrong time can make one role the author of another role's work.
+
+**Which tasks adopt the working copy.**
+The daemon adopts only for a task that names a phase, and only for the role that owns that phase:
+
+- the phase start that a move into the phase sends to its role;
+
+- the resume task of the phase owner.
+  The daemon sends it in these cases:
+
+  - the owner comes back ready with no task;
+
+  - a boot resumes an owner that the daemon suspended;
+
+  - a tree is re-admitted in the middle of a phase;
+
+  - the daemon repairs a slot whose worker has no task, or a worker that went silent.
+
+These tasks adopt nothing:
+
+- the ask of a pod update round or a plugin update round;
+
+- a wake for a CI settlement, a role message, an agent message or the backstop;
+
+- an operator's task through `POST /legion/v1/operator/claims/<token>/deliver`;
+
+- a look of a production check;
+
+- the root architect's start, and an architect's catch-up;
+
+- the controller's start.
+
+Notices, hooks, phase-ended messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
+
+**A phase task waits for the turns of the other roles.**
+The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
+It sends the task when that turn ends, and the adoption runs then.
+
+**Four lines in the daemon's log show what each adoption did.**
+Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
+So search the daemon's own log for the key and the `-` after it, without regard to case: the `-` keeps out the lines of a longer key, such as `WIDGETS-120` for `WIDGETS-12`.
+Read the log of the daemon's pod under Kubernetes, or the output of `legion start` under tmux:
+
+```sh
+kubectl -n <namespace> logs <the daemon's pod> > daemon.log
+grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
+  -e 'rather than adopt the working copy' -e 'refused to adopt the working copy' \
+  -e 'lost to the transport'
+```
+
+`kubectl logs` gives only the log file that the node keeps now, for the daemon's pod that runs now.
+On a busy daemon, that file can hold only the last minutes, and a new daemon pod starts with an empty log.
+Read the time of the first line.
+If the wrong commit is older than that line, read the daemon's lines from the log store of your cluster.
+A search that finds no line for a time before the first line does not show that no adoption occurred.
+
+- `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
+  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`, in nanoseconds.
+  The release that carries cybermonklabs/legion#3971 is the first to write this line.
+
+- `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
+  `inTurn` names the claim whose turn holds it.
+
+- `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
+  The task stays queued, and the refusal counts against the prompt budget of the claim.
+
+- `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
+  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon sent the adoption to the shim, and the answer did not come back: the connection closed, or the daemon stopped its wait.
+  The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
+  The task stays queued.
+
+Compare the time of the wrong commit with these lines.
+An adoption line for another role of the issue just before the commit shows that the adoption moved the author.
+On a daemon that carries the rule, every adoption line names a phase, and its `claim` is the claim of the role that owns that phase.
+
+A daemon from a release before `legion-v20.5.0` (cybermonklabs/legion#2539) adopts the working copy before every task that it sends, and it holds no task for the turn of another role.
+On such a daemon, an update round or a message wake can take the author of the commit that the implementer works on.
+
+**Other paths change an author, and no adoption line shows them.**
+
+- A role's own jj command in the shared workspace snapshots the working copy under that role's identity.
+  An architect's `jj git fetch` and the shell of a subagent are two such commands.
+  The roles container gives every role one git identity, and a subagent's shell can carry another identity: `dispatch://INFRA-2791` holds both.
+
+- `jj split` keeps the author of the commit that it splits, so a role that splits a commit that another role made keeps that other role's App on both halves.
+  A check at push time that refuses a commit that the review App authored is `dispatch://INFRA-1185`.
+
 ## A pod does not come up
 
 - **`Pending`.** Usually scheduling: a pod reserves its roles' cpu and memory (3 CPU and 19 GiB for
