@@ -562,3 +562,57 @@ test("a read equal to the screen while a pick is out is Dispatch's answer once t
     patchIssue.mockRestore();
   }
 });
+
+// R7 and R10. An answer older than the issue Dispatch last gave - a slow PATCH answer of another
+// field, merged after a read that saw the issue later (`mergeIssue`) - is kept out of Dispatch's
+// copy of the issue by the issue read's own rule, as it is kept out of the cache with no pick on
+// screen, and the store's drawing of the pick is never judged by that rule. So once the pick is
+// refused and every read fails, the page shows the priority Dispatch last confirmed, at the time
+// it confirmed it, and not the refused pick.
+test("an older issue answer merged while a pick is out leaves the issue Dispatch last gave once the pick is refused and reads fail", async () => {
+  const client = pageClient();
+  const refused = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => refused.promise);
+  let online = true;
+  const later = "2026-09-09T00:03:00Z";
+  // The issue as read at the later time, with priority 3; every read after it fails.
+  const unsubscribe = new QueryObserver(client, {
+    ...issueQuery(issue.key),
+    queryFn: () =>
+      online
+        ? Promise.resolve<IssueDetails>({ ...details, priority: 3, updated_at: later })
+        : Promise.reject(new Error("Failed to fetch")),
+    staleTime: Number.POSITIVE_INFINITY,
+  }).subscribe(() => {});
+  const shown = () => client.getQueryData<IssueDetails>(detailKey);
+  try {
+    await client.refetchQueries({ queryKey: detailKey });
+    expect(shown()).toMatchObject({ priority: 3, updated_at: later });
+    const pick = writesOf(client).run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-1 priority set to 0",
+      presentation: "indicator",
+      request: issuePatchRequest(issue.key, { priority: 0 }),
+      shows: (change) => {
+        change.on<IssueDetails>(detailKey, (current) => ({ ...current, priority: 0 }));
+      },
+      target: `issue:${issue.key}`,
+    });
+    expect(shown()?.priority).toBe(0);
+
+    // Another field's save, answered with the issue as it stood earlier.
+    mergeIssue(client, { ...issue, priority: 1, updated_at: "2026-09-09T00:02:00Z" });
+    expect(shown()).toMatchObject({ priority: 0, updated_at: later });
+
+    online = false;
+    refused.reject(new ApiError(422, { code: "INVALID_PRIORITY", error: "not a priority" }));
+    await expect(pick).rejects.toThrow("not a priority");
+    await waitFor(() => expect(client.getQueryState(detailKey)?.status).toBe("error"));
+    expect(shown()).toMatchObject({ priority: 3, updated_at: later });
+  } finally {
+    unsubscribe();
+    writesOf(client).clear();
+    patchIssue.mockRestore();
+  }
+});

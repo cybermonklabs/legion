@@ -1,9 +1,11 @@
 import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
 import {
   hashKey,
+  type InfiniteData,
   type Query,
   type QueryClient,
   type QueryKey,
+  replaceEqualDeep,
   useQueryClient,
 } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
@@ -391,10 +393,29 @@ export interface ShownAhead {
   readonly release: () => void;
 }
 
-/** What the store keeps of a cache a live change is drawn on: the data Dispatch last gave it. */
+/** What the store keeps of a cache a live change is drawn on: the data Dispatch last gave it,
+ *  and the data the store last drew there from it - the screen, against which a query's own rule
+ *  for its answers no longer judges them (`answerSharing`). */
 interface Copy {
   data: unknown;
+  drawn: unknown;
 }
+
+/** The copy each screen the store drew was drawn from, by that screen's data, for as long as it
+ *  is the screen of a copy the store holds (`Copy.drawn`). */
+const copyDrawnAs = new WeakMap<object, Copy>();
+
+/** The copy the store holds whose screen is `cached`, a cache's data, if it is one. */
+function copyUnder(cached: unknown): Copy | undefined {
+  if (typeof cached !== "object" || cached === null) return undefined;
+  const copy = copyDrawnAs.get(cached);
+  return copy?.drawn === cached ? copy : undefined;
+}
+
+/** Whether a store is drawing a cache now, so the cache writes it makes are answers neither to
+ *  the store (`Writes.#answered`) nor to a query's rule (`answerSharing`): TanStack runs a
+ *  cache's rule and tells its listeners in the very call that writes it. */
+let drawing = false;
 
 /** The data a query's own rule handed back in place of an answer it kept out (`keptOut`), until
  *  the store reads the cache write that carries it (`Writes.#answered`). */
@@ -402,7 +423,7 @@ const keptOutAnswers = new WeakSet<object>();
 
 /**
  * Marks `held`, the data a query's `structuralSharing` hands back in place of a fetch's answer
- * it keeps out - an issue older than the one shown (`issueQuery`'s `olderIssue`) - so the store
+ * it keeps out - an issue older than the one held (`issueQuery`'s `olderIssue`) - so the store
  * takes that fetch for no answer and leaves its copy of the cache as it is. Every other answer,
  * the very object the cache held among them - TanStack's `replaceEqualDeep` hands it back for an
  * answer equal to it - is Dispatch's data and becomes the copy. Answers `held`.
@@ -410,6 +431,84 @@ const keptOutAnswers = new WeakSet<object>();
 export function keptOut<T>(held: T): T {
   if (typeof held === "object" && held !== null) keptOutAnswers.add(held);
   return held;
+}
+
+/** Whether `judged`, what a query's rule handed back for an answer, is data it kept out in that
+ *  answer's place (`keptOut`). The mark is read once: reading it takes it off. */
+function heldOut(judged: unknown): boolean {
+  return typeof judged === "object" && judged !== null && keptOutAnswers.delete(judged);
+}
+
+/**
+ * `rule`, a query's `structuralSharing` - the rule it takes an answer by, as `issueQuery`'s keeps
+ * out an issue older than the one held - set beneath the write store's copies, as every such
+ * rule on a cache a write shows a change on is. Where a live change is drawn on the cache, an
+ * answer is judged against Dispatch's copy of it, never against the screen, which carries that
+ * change: one the rule keeps out leaves the screen as it stands, marked kept out so the store
+ * keeps its copy (`Writes.#answered`), and one it takes is what the store takes as the copy. The
+ * store's own drawing is no answer, and the rule never sees it: the screen drawn is shared with
+ * the one before it, as TanStack shares any data.
+ */
+export function answerSharing(
+  rule: (held: unknown, next: unknown) => unknown
+): (cached: unknown, next: unknown) => unknown {
+  return (cached, next) => {
+    if (drawing) return replaceEqualDeep(cached, next);
+    const copy = copyUnder(cached);
+    if (copy === undefined) return rule(cached, next);
+    const judged = rule(copy.data, next);
+    return heldOut(judged) ? keptOut(cached) : judged;
+  };
+}
+
+/** `next`, an answer merged into `held`, Dispatch's copy of `query`'s cache, as the query's own
+ *  rule takes it (`structuralSharing`): TanStack runs that rule on every write of the cache, but
+ *  a merge into the copy is made off the screen, so the store runs it there itself. */
+function judgedAnswer(query: Query, held: unknown, next: unknown): unknown {
+  const { structuralSharing } = query.options;
+  if (typeof structuralSharing === "function") return structuralSharing(held, next);
+  return structuralSharing === false ? next : replaceEqualDeep(held, next);
+}
+
+/**
+ * `held`, Dispatch's copy of an infinite query's cache, with the one page a fetch-more has just
+ * read (`fetchNextPage`, `previous` for `fetchPreviousPage`). TanStack builds that fetch's answer
+ * from the pages the cache held as it started - the screen, every live change drawn in - with the
+ * page that arrived at their end, so only that page and its param are Dispatch's, added where
+ * TanStack adds them, up to the query's `maxPages`. It is the page Dispatch's own pages lead to
+ * (`getNextPageParam`, `getPreviousPageParam`); a fetch that read none - there was none to read,
+ * and TanStack answers with the pages it started from - leaves the copy as it is, and one that
+ * started from no pages at all read every page from the first, so its answer is the copy whole.
+ */
+function pageFetched(
+  query: Query,
+  held: InfiniteData<unknown>,
+  answer: InfiniteData<unknown>,
+  previous: boolean
+): InfiniteData<unknown> {
+  if (held.pages.length === 0) return answer;
+  const edge = (data: InfiniteData<unknown>) => (previous ? 0 : data.pages.length - 1);
+  const rule: unknown = Reflect.get(
+    query.options,
+    previous ? "getPreviousPageParam" : "getNextPageParam"
+  );
+  if (typeof rule !== "function" || answer.pages.length === 0) return held;
+  const at = edge(held);
+  const param: unknown = rule(held.pages[at], held.pages, held.pageParams[at], held.pageParams);
+  const arrived = answer.pageParams[edge(answer)];
+  if (param === undefined || param === null || hashKey([param]) !== hashKey([arrived])) {
+    return held;
+  }
+  const max = query.options.maxPages ?? 0;
+  const add = <T>(items: readonly T[], item: T): T[] => {
+    const added = previous ? [item, ...items] : [...items, item];
+    if (max <= 0 || added.length <= max) return added;
+    return previous ? added.slice(0, -1) : added.slice(1);
+  };
+  return {
+    pageParams: add(held.pageParams, arrived),
+    pages: add(held.pages, answer.pages[edge(answer)]),
+  };
 }
 
 /** Whether `showing` wrote `query`'s cache, by name or by prefix, so it is drawn there. */
@@ -546,9 +645,6 @@ export class Writes {
    *  Dispatch still named them (`releaseUnsettled`), each with the time until which a lapse of
    *  theirs is that sign-out landing late rather than a lapse. */
   readonly #unsettledSignOuts = new Map<string, number>();
-  /** Whether the store is drawing a cache now, so the cache writes it makes are not read as
-   *  answers (`#whileShowing`, `#answered`). */
-  #showing = false;
   /** Dispatch's copy of each cache a live change is drawn on, by its hash: the data Dispatch
    *  last gave it, kept apart from the screen, which is that copy with every live change shown
    *  over it (`#draw`). Taken as the first live change is shown there (`#showEverywhere`),
@@ -569,14 +665,17 @@ export class Writes {
     this.#client = client;
     this.#kept = kept;
     this.#files = files;
-    // Every cache write from outside the store is an answer of Dispatch's whole - a fetch, a
-    // socket's snapshot - and becomes the copy of a cache a live change is drawn on
-    // (`#answered`); a surface merging an answer into such a cache goes through `answer`. The
-    // store's own drawing is not one (`#whileShowing`).
+    // Every cache write from outside the store is an answer of Dispatch's - a fetch, a socket's
+    // snapshot - and becomes the copy of a cache a live change is drawn on (`#answered`); a
+    // surface merging an answer into such a cache goes through `answer`. The store's own drawing
+    // is not one (`#whileShowing`).
     client.getQueryCache().subscribe((event) => {
-      if (event.type === "removed") this.#copies.delete(event.query.queryHash);
-      else if (event.type === "updated" && event.action.type === "success") {
-        this.#answered(event.query);
+      if (event.type === "removed") {
+        const copy = this.#copies.get(event.query.queryHash);
+        if (copy !== undefined) copy.drawn = undefined;
+        this.#copies.delete(event.query.queryHash);
+      } else if (event.type === "updated" && event.action.type === "success") {
+        this.#answered(event.query, event.action.manual === true);
       }
     });
     watcher?.(this);
@@ -604,30 +703,48 @@ export class Writes {
 
   /**
    * Takes the cache write `query` has just taken from outside the store as Dispatch's data for
-   * that cache, whole - a fetch's answer, a socket's snapshot - where a live change is drawn: it
-   * becomes the cache's copy, and the cache is drawn again as that copy with every live change
-   * over it, so the last to be pressed is the last to be seen (R7 of dispatch://INFRA-299). A
-   * merge made over the cache as it stands would carry every live change into the copy, so a
-   * surface merges through `answer` instead (`no-direct-cache-writes.test.ts`).
+   * that cache - a fetch's answer, a socket's snapshot - where a live change is drawn: it becomes
+   * the cache's copy, and the cache is drawn again as that copy with every live change over it,
+   * so the last to be pressed is the last to be seen (R7 of dispatch://INFRA-299). A merge made
+   * over the cache as it stands would carry every live change into the copy, so a surface merges
+   * through `answer` instead (`no-direct-cache-writes.test.ts`); `manual` is such a write, made
+   * with `setQueryData` rather than by a fetch.
    *
-   * A fetch the query's own rule kept out - an issue older than the one shown (`issueQuery`),
-   * whose rule marks the data it hands back instead (`keptOut`) - leaves the cache on what the
-   * store drew, and is no answer to keep. Every other answer is: one equal to what the store
-   * drew, which TanStack hands back as the very object the cache held, says Dispatch already
-   * holds what the live changes show, and becomes the copy as any answer does.
+   * A fetch is Dispatch's whole, a refetch of an infinite query's every page among them, but for
+   * a fetch-more (`fetchNextPage`, `fetchPreviousPage`): TanStack builds its answer from the
+   * pages the cache held - the screen - with the page that arrived added, and only that page is
+   * Dispatch's to take into the copy (`pageFetched`).
+   *
+   * A fetch the query's own rule kept out - an issue older than Dispatch's copy of it
+   * (`issueQuery`), judged against that copy (`answerSharing`), whose rule marks the data it
+   * hands back instead (`keptOut`) - leaves the cache on what the store drew, and is no answer to
+   * keep. Every other answer is: one equal to what the store drew, which TanStack hands back as
+   * the very object the cache held, says Dispatch already holds what the live changes show, and
+   * becomes the copy as any answer does.
    *
    * Nothing recurs: every cache write the store makes runs inside `#whileShowing`, and TanStack
    * tells its cache's listeners of a write in the very call that makes it, so each of those
    * returns here at once.
    */
-  #answered(query: Query): void {
-    const { data } = query.state;
+  #answered(query: Query, manual: boolean): void {
+    const { data, fetchMeta } = query.state;
     // The mark is read once, whoever wrote the cache, so it never outlives the write it was for.
-    const kept = typeof data === "object" && data !== null && keptOutAnswers.delete(data);
-    if (this.#showing || kept) return;
+    const kept = heldOut(data);
+    if (drawing || kept) return;
     const hash = query.queryHash;
-    if (!this.#copies.has(hash) && this.#liveOn(query).length === 0) return;
-    this.#copies.set(hash, { data });
+    const copy = this.#copies.get(hash);
+    // A write made with `setQueryData` leaves the last fetch's own `fetchMeta` on the query.
+    const more = manual ? undefined : fetchMeta?.fetchMore;
+    if (copy === undefined) {
+      if (this.#liveOn(query).length === 0) return;
+      this.#copies.set(hash, { data, drawn: undefined });
+    } else if (more === undefined) {
+      copy.data = data;
+    } else {
+      const held = copy.data as InfiniteData<unknown>;
+      const answer = data as InfiniteData<unknown>;
+      copy.data = pageFetched(query, held, answer, more.direction === "backward");
+    }
     this.#draw(query);
   }
 
@@ -647,15 +764,34 @@ export class Writes {
    *  store's order: each change is the same call its press made, so what is drawn is the change
    *  itself and never a value computed before it. A cache no live change is drawn on any more
    *  is left on its copy, which the store lets go; one with no copy held nothing when a change
-   *  was shown there, and is drawn once an answer fills it (`#answered`). */
-  #draw(query: Query): void {
+   *  was shown there, and is drawn once an answer fills it (`#answered`).
+   *
+   *  The draw is no answer: it meets no rule of the query's (`answerSharing`), and it leaves the
+   *  cache as old as Dispatch's last answer left it and still owed a read it was owed, so that a
+   *  press does not make a stale cache look freshly read. One made for an answer merged into the
+   *  copy (`answered`, from `answer`) is that answer's, and dates the cache as `setQueryData`
+   *  does. */
+  #draw(query: Query, answered = false): void {
     const hash = query.queryHash;
     const copy = this.#copies.get(hash);
     if (copy === undefined) return;
     const live = this.#liveOn(query);
     const screen = live.reduce((data, showing) => shownOn(query, showing, data, false), copy.data);
-    if (live.length === 0) this.#copies.delete(hash);
-    this.#whileShowing(() => this.#client.setQueryData(query.queryKey, screen));
+    const { dataUpdatedAt, isInvalidated } = query.state;
+    this.#whileShowing(() => {
+      if (answered) this.#client.setQueryData(query.queryKey, screen);
+      else {
+        this.#client.setQueryData(query.queryKey, screen, { updatedAt: dataUpdatedAt });
+        if (isInvalidated) query.invalidate();
+      }
+    });
+    if (live.length === 0) {
+      this.#copies.delete(hash);
+      copy.drawn = undefined;
+      return;
+    }
+    copy.drawn = query.state.data;
+    if (typeof copy.drawn === "object" && copy.drawn !== null) copyDrawnAs.set(copy.drawn, copy);
   }
 
   /** Draws again every cache `showing` wrote: as it stops being shown, or as the rule it is
@@ -668,13 +804,14 @@ export class Writes {
   }
 
   /** Runs `show`, which writes into the caches, as the store's own drawing: no cache write it
-   *  makes is read as an answer (`#answered`). */
+   *  makes is read as an answer (`drawing`, `#answered`). */
   #whileShowing(show: () => void): void {
-    this.#showing = true;
+    const was = drawing;
+    drawing = true;
     try {
       show();
     } finally {
-      this.#showing = false;
+      drawing = was;
     }
   }
 
@@ -682,11 +819,13 @@ export class Writes {
    * Merges an answer of Dispatch's into `key`'s cache - a write's answer, an event's patch, any
    * value of Dispatch's a surface or a kind writes over what the cache holds. Where a live change
    * is drawn on that cache, the merge is made into Dispatch's copy of it, never into the screen,
-   * and the cache is drawn again with every live change over the merged copy; anywhere else it
-   * is made into the cache as it stands, which holds Dispatch's data alone. `merge` is handed
-   * `undefined` for a cache that holds nothing, and answering `undefined` leaves the cache as it
-   * is, as `setQueryData` does. The one way the page writes into a cache a write shows a change
-   * on (`no-direct-cache-writes.test.ts`).
+   * and taken by the rules the query takes any answer by (`structuralSharing`, `judgedAnswer`),
+   * against that copy: one they keep out - an issue older than the copy (`issueQuery`) - leaves
+   * the copy as it is, and otherwise the cache is drawn again with every live change over the
+   * merged copy. Anywhere else it is made into the cache as it stands, which holds Dispatch's data
+   * alone, through those same rules. `merge` is handed `undefined` for a cache that holds
+   * nothing, and answering `undefined` leaves the cache as it is, as `setQueryData` does. The one
+   * way the page writes into a cache a write shows a change on (`no-direct-cache-writes.test.ts`).
    */
   answer<T>(key: QueryKey, merge: (data: T | undefined) => T | undefined): void {
     const hash = hashKey(key);
@@ -698,8 +837,10 @@ export class Writes {
     }
     const merged = merge(copy.data as T);
     if (merged === undefined) return;
-    copy.data = merged;
-    this.#draw(query);
+    const judged = judgedAnswer(query, copy.data, merged);
+    if (heldOut(judged)) return;
+    copy.data = judged;
+    this.#draw(query, true);
   }
 
   /** Draws `key`'s cache again, for a change whose rule reads more than the cache - the unread
@@ -769,7 +910,7 @@ export class Writes {
     for (const query of named) {
       const { queryHash, state } = query;
       if (!this.#copies.has(queryHash) && state.data !== undefined) {
-        this.#copies.set(queryHash, { data: state.data });
+        this.#copies.set(queryHash, { data: state.data, drawn: undefined });
       }
       this.#draw(query);
     }

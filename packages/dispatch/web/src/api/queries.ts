@@ -10,7 +10,7 @@ import {
 } from "@tanstack/react-query";
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
-import { keptOut } from "../features/writes/write-store";
+import { answerSharing, keptOut } from "../features/writes/write-store";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api } from "./client";
@@ -84,10 +84,13 @@ function olderIssue(next: unknown, cached: unknown): boolean {
  * after the write's own answer was put in its place (`mergeIssue`). Such an answer is older than
  * the cached issue, and is dropped: the cache never takes an issue whose `updated_at` is earlier
  * than the one it holds, as the event log never lets a fetched page take back the events above
- * its head (`mergeEventPages`). The rule is the query's own, so it holds for every writer of the
- * key: a read from any of its views, a PATCH's answer, an optimistic pick and its rollback. The
- * issue it keeps is marked kept out (`keptOut`), so the write store takes that read for no
- * answer, where an answer merely equal to the cached issue is Dispatch's all the same.
+ * its head (`mergeEventPages`). The rule is the query's own, so it holds for every answer the key
+ * takes: a read from any of its views, and a PATCH's answer, merged through the write store
+ * (`Writes.answer`). Where a live pick is drawn on the issue, the rule judges an answer against
+ * Dispatch's copy of the issue, never the screen with the pick over it, and never judges the
+ * store's drawing of the pick at all (`answerSharing`). The issue it keeps is marked kept out
+ * (`keptOut`), so the write store takes that read for no answer, where an answer merely equal to
+ * the cached issue is Dispatch's all the same.
  */
 export const issueQuery = (key: string | undefined) =>
   queryOptions({
@@ -96,8 +99,9 @@ export const issueQuery = (key: string | undefined) =>
       if (key === undefined) throw new Error("An issue read needs the issue's key.");
       return api.getIssue(key);
     },
-    structuralSharing: (cached: unknown, next: unknown) =>
-      olderIssue(next, cached) ? keptOut(cached) : replaceEqualDeep(cached, next),
+    structuralSharing: answerSharing((held, next) =>
+      olderIssue(next, held) ? keptOut(held) : replaceEqualDeep(held, next)
+    ),
   });
 
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which

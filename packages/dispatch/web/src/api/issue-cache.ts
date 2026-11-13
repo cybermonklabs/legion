@@ -42,7 +42,9 @@ export function roleDocument(
  * clears it, its holder and its reason rather than wear the old route's, and the issue's own
  * event refetches them. While a pick of another field of the issue is still out, the response
  * is merged into Dispatch's copy of the issue (`Writes.answer`), so that pick stays over it and
- * is not carried into what its refusal leaves.
+ * is not carried into what its refusal leaves; and a response older than that copy is kept out
+ * of it by the issue read's own rule (`issueQuery`), as it is kept out of the cache with no pick
+ * out.
  */
 export function mergeIssue(queryClient: QueryClient, next: Issue): void {
   writesOf(queryClient).answer<IssueDetails>(["issue", next.key], (current) => {

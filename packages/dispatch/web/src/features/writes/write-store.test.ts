@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import {
+  type InfiniteData,
+  InfiniteQueryObserver,
+  QueryClient,
+  QueryObserver,
+} from "@tanstack/react-query";
+import { waitFor } from "@testing-library/react";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import {
@@ -2250,4 +2256,77 @@ test("a Retry taken by a sign-out puts back Dispatch's last answer before readin
       tab.close();
     }
   });
+});
+
+/** A page of an infinite read, as the Inbox's Dismissed list pages its rows: the ids of its rows
+ *  and the cursor of the page after it. */
+interface RowPage {
+  readonly next: string | undefined;
+  readonly rows: readonly string[];
+}
+
+// R7 and R10 of dispatch://INFRA-299. A "Show more" read while a change is shown on an infinite
+// read - a restore taking a row out of the Dismissed list - is answered by TanStack with the pages
+// the cache held, which carry that change, and the page that arrived after them. Only that page
+// is Dispatch's, so once the restore is refused and every read fails, the list shows Dispatch's
+// first page whole, the row the restore took out among it, with the page that arrived after it.
+test("a page read more while a change is shown on an infinite read leaves Dispatch's pages once the write is refused and reads fail", async () => {
+  const tab = keptTab();
+  const client = signedIn();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  const key = ["me", "replies", "inbox", "dismissed"];
+  const served: Record<string, RowPage> = {
+    first: { next: "second", rows: ["a", "b"] },
+    second: { next: undefined, rows: ["c"] },
+  };
+  let online = true;
+  const read = {
+    getNextPageParam: (last: RowPage) => last.next,
+    initialPageParam: "first",
+    queryFn: ({ pageParam }: { pageParam: unknown }) =>
+      online
+        ? Promise.resolve(served[String(pageParam)])
+        : Promise.reject(new Error("Failed to fetch")),
+    queryKey: key,
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  };
+  await client.prefetchInfiniteQuery(read);
+  const observer = new InfiniteQueryObserver(client, read);
+  const unsubscribe = observer.subscribe(() => {});
+  const rows = () =>
+    client.getQueryData<InfiniteData<RowPage>>(key)?.pages.map((page) => page.rows);
+  const refused = Promise.withResolvers<never>();
+  try {
+    const restore = writes.run({
+      detail: null,
+      kind: plainWrite,
+      label: "Thread a restored",
+      presentation: "indicator",
+      shows: (shown) =>
+        shown.on<InfiniteData<RowPage>>(key, (pages) => ({
+          ...pages,
+          pages: pages.pages.map((page) => ({
+            ...page,
+            rows: page.rows.filter((id) => id !== "a"),
+          })),
+        })),
+      unlined: offLine,
+      write: attemptOf(put, () => refused.promise),
+    });
+    expect(rows()).toEqual([["b"]]);
+
+    await observer.fetchNextPage();
+    expect(rows()).toEqual([["b"], ["c"]]);
+
+    online = false;
+    refused.reject(verdict);
+    await expect(restore).rejects.toThrow();
+    await waitFor(() => expect(client.getQueryState(key)?.status).toBe("error"));
+    expect(rows()).toEqual([["a", "b"], ["c"]]);
+  } finally {
+    unsubscribe();
+    writes.clear();
+    tab.close();
+  }
 });
