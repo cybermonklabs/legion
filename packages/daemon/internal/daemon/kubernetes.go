@@ -12,8 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/client-go/rest"
@@ -588,20 +586,23 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 // It is filled once, in the boot's own goroutine, before the runtime is built and so before any
 // launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
 type volumeTrimReports struct {
-	pool     *pgxpool.Pool
+	pool     *store.Pool
 	handlers []intake.Handler
 }
 
-// bind gives the holder the daemon's pool and the handlers a fact applies through, which is what
-// the workflow has and the factory does not.
-func (v *volumeTrimReports) bind(pool *pgxpool.Pool, handlers []intake.Handler) {
+// bind gives the holder the daemon's guarded pool (store.Pool) and the handlers a fact applies
+// through, which is what the workflow has and the factory does not.
+func (v *volumeTrimReports) bind(pool *store.Pool, handlers []intake.Handler) {
 	v.pool, v.handlers = pool, handlers
 }
 
 // report applies one sweep of issue's pod as one intake fact (runtime.VolumeReported). It runs on
 // the launcher's own frame loop under that loop's bounded context, so an apply that cannot be
 // made is returned to the launcher session, which logs it and drops the report; the trimmer's
-// next sweep reports the same volume.
+// next sweep reports the same volume. Every launcher's frame loop runs beside the others and
+// beside the daemon's own loops, so each report applies under a hold mark of its own
+// (store.ForConcurrentWorker): this is a fact source, and a fact source marks its context where
+// it starts (store.ErrNestedAcquire).
 //
 // The event id is unique per report and never per sweep: the launcher sends one report per
 // sweep, but nothing in the frame numbers them, and ApplyFact applies one id exactly once — an
@@ -626,7 +627,7 @@ func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, re
 		Faults: report.Faults, FaultsOmitted: report.FaultsOmitted, SwitchedOff: report.SwitchedOff,
 	}}
 	eventID := fmt.Sprintf("volume-near-full:%s:%s:%s:%d:%s", issue, podUID, report.Trimmer, report.Episode, rand.Text())
-	if _, err := intake.ApplyFact(ctx, v.pool, "launcher", eventID, fact, v.handlers...); err != nil {
+	if _, err := intake.ApplyFact(store.ForConcurrentWorker(ctx), v.pool, "launcher", eventID, fact, v.handlers...); err != nil {
 		return fmt.Errorf("apply the volume report of %s's pod %s: %w", issue, podUID, err)
 	}
 	return nil
