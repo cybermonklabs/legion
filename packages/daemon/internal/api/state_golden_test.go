@@ -82,9 +82,6 @@ projects:
     deploys:
       - {repo: sjawhar/legion, workflow: .github/workflows/release.yaml, step: Apply}
   WIDGETS:
-    merge_queue_role: merge-queue
-    merge:
-      by_hand: ['^deploy/', '\.sql$']
     production_check: off
 gates:
   design: root-issues
@@ -222,9 +219,17 @@ func populatedState(t *testing.T) State {
 	t.Helper()
 	approvedVersion, mergedApproval, lineApproval := 6, 4, 3
 	commit := "3f9c1a7e5b2d84c06f1a9e3b7d5c2a08e4f6b1d9"
-	requiresChecks, requiresNothing := true, false
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
+	// When LEGION-210's implementer failed, the moment its claim carries beside the cause.
+	implementerFailedAt := time.Date(2026, 9, 22, 8, 47, 3, 0, time.UTC)
+	// When LEGION-207's linger runs out: its work finished and its tree lingers until then.
+	lingerUntil := time.Date(2026, 9, 22, 10, 10, 12, 0, time.UTC)
+	// The two flags the line's members write: LEGION-212 kept the slot it took when the daemon
+	// started it and waits for no other (record.KeepsSlot), and LEGION-211's tree has not been
+	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
+	// false rather than leaving it out, which is what the pointer behind that field is for.
+	heldSlot, noSlot := true, false
 	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
 	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
 	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
@@ -259,13 +264,18 @@ func populatedState(t *testing.T) State {
 		},
 		SettingSources: goldenSettingSources(),
 		Admission: Admission{
-			Cap:    2,
-			Active: []string{"LEGION-208", "LEGION-210"},
-			// The line is two long, so the fixture carries a place behind its front as well as the
-			// front itself: LEGION-211 stands at 1, where admission skips it while LEGION-210
-			// holds it, and LEGION-212, whose person answered later, stands at 2 behind it. Each
-			// of the two carries its own place (`waitingLine`).
-			Waiting: []string{"LEGION-211", "LEGION-212"},
+			Cap:    3,
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212"},
+			// The line is two long and carries one member of each of its two parts, in the order
+			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
+			// part whose work came back, which takes the free slots first, and LEGION-211, a root
+			// another tree handed over whose own tree has not been opened, stands at 2 in the part
+			// that has not started. Each of the two carries its own place and its own part's
+			// fields (`waitingLine`). LEGION-212 is in `active` as well, which is the shape of
+			// every member that already holds a slot: it kept the one it took when the daemon
+			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
+			// the holder's clause rather than in one about queuing for a free slot.
+			Waiting: []string{"LEGION-212", "LEGION-211"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed, and
 			// each of the other four roots a tree of its own.
 			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212"},
@@ -314,11 +324,15 @@ func populatedState(t *testing.T) State {
 							},
 							// The pod's update round, which every claim of that pod shares: the daemon
 							// replaces the pod only once each has answered. This one has, and reported
-							// the head it pushed.
-							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
-							UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+							// the head it pushed. The reasons are the round's own, so every claim of
+							// the pod carries the same text: what the worker answering is told to act
+							// on.
+							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
 						},
 						HandoffRecord: &HandoffRecordView{ID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 1},
+						Pass:          0,
 						Rounds:        0,
 					},
 					claim.RoleImplementer: {
@@ -343,14 +357,32 @@ func populatedState(t *testing.T) State {
 								Open:        []CapabilityGap{{Name: "github", Detail: "gh api user: HTTP 401: Bad credentials"}},
 							},
 							// The same round, on the worker that has not answered it yet: no head is
-							// reported until a worker answers.
-							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							// reported until a worker answers, and the reasons are the round's own.
+							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
+							// The run of the last confirmed delivery this claim retired, which is
+							// this issue's own generation: the worker is turning over the run the
+							// issue is in.
+							ServingGeneration: 3,
+							// Two turns of this claim ended in a provider error in a row, and the
+							// task went out again behind the daemon's own sentence. It bounds
+							// nothing: the controller is told once at six, and nothing fails a
+							// claim for it.
+							ProviderErrorRun: 2,
+							// The task this worker holds, as every agent surface reads it: that one
+							// is held, the phase it was queued for and when, and nothing of its
+							// text, which the operator routes serve whole.
+							PendingTask: &PendingTaskView{Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC)},
 							// The call this worker is in: a start the daemon received and no end,
 							// which is what a turn that has stopped moving leaves behind.
 							Step: StepViewOf(implementerStep),
 						},
 						HandoffCommit: "",
-						Rounds:        2,
+						// Three passes through the stretch, two of them ended by a review that
+						// requested changes: the third went back on something else, a tester's fail
+						// or a red, which the review rounds do not count.
+						Pass:   3,
+						Rounds: 2,
 						// Both of this issue's rounds came from a move back, and the two were of
 						// different kinds, so the counts name two pairs and add up to the rounds.
 						// LEGION-207's implementer below carries none: an issue whose rounds were
@@ -363,10 +395,7 @@ func populatedState(t *testing.T) State {
 					Number:         1247,
 					Head:           "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
 					State:          "open",
-					ChecksVerdict:  "pending",
 					ReviewDecision: "changes_requested",
-					// Its base branch requires a check, so the pending verdict is a CI wait.
-					RequiresChecks: &requiresChecks,
 				},
 				DesignGate: &GateView{
 					ArtifactID:      "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
@@ -397,17 +426,45 @@ func populatedState(t *testing.T) State {
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				HoldReason:    "escalated",
+				// The phase the hold took this root out of, which its release puts it back to. It
+				// stands beside the reason here; the two part on a tree that lingers, where the
+				// reason is withheld and this is not (internal/projection).
+				HeldFrom: string(phase.Implementing),
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed"}, Rounds: 1},
+					// Its implementer failed and nothing has launched it since, so the claim
+					// carries why: the one word the supervision chose, the sentence it wrote, the
+					// moment, and the four counts it failed with, which a reader reads against
+					// the limits in `settings`. The pending cause beside it names the death whose
+					// refused relaunches spent that budget, and stands until the agent's ready or
+					// a retry clears it with the launch failures it is counted beside.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_210",
+						State:   "failed",
+						Failure: &ClaimFailureView{
+							Cause:    supervise.CauseDied,
+							Detail:   "launch failures ran out",
+							At:       &implementerFailedAt,
+							Attempts: BudgetsView{LaunchFailures: 4, Deaths: 1},
+						},
+						PendingCause: supervise.CauseDied,
+					}, Pass: 1, Rounds: 1},
 				},
 				// Nobody has registered this root's spec, so its one gated step carries no
 				// document, no version and no approval, and holds the tree's work.
 				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
+				// Its implementer failed while implementing and nothing will wake that claim, so
+				// the issue's one rendered answer is the stopped claim rather than a queue
+				// (`why`, api.WhyClaimStopped).
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it.",
+				},
 			},
-			// LEGION-211 is a root of its own, at the front of the admission line and skipped
-			// there while LEGION-210, the issue `admission.blocked` names, is unfinished. A
-			// release suspended its implementer and the wake never brought that pod back, so its
-			// work is owed a start and it stands ahead of LEGION-212, whose answer came later.
+			// LEGION-211 is a root another tree handed over, carrying the phase it ran there and
+			// that run's suspended implementer, whose own tree has not been opened: it holds no
+			// slot row, and its promotion opens that tree. So it waits in the second part of the
+			// line, the issues that have not started, behind LEGION-212, whose work came back.
+			// `admission.blocked` names what it waits on besides the slot.
 			"LEGION-211": {
 				Key:           "LEGION-211",
 				Generation:    2,
@@ -417,8 +474,23 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_211", State: "suspended"}, Rounds: 1},
+					// A released claim keeps the task it was holding through its suspension, and
+					// the two sends that never reached a turn are on it: the diagnosis record a
+					// stalled claim is read by, with no budget spent on either.
+					claim.RoleImplementer: {Claim: ClaimView{
+						Session: "ses_implementer_211",
+						State:   "suspended",
+						PendingTask: &PendingTaskView{
+							Phase: phase.Implementing, QueuedAt: time.Date(2026, 9, 22, 8, 54, 20, 0, time.UTC),
+							SendFailures: 2, LastSendError: "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused",
+						},
+					}, Rounds: 1},
 				},
+				// The Dispatch parent chain this labelled root was recorded with: LEGION-209 is a
+				// child of LEGION-208's live tree that its architect has not released, so the
+				// ancestry hold is what keeps this root out of the line's front while that tree
+				// runs. Nothing else on this wire names the chain.
+				Ancestry: []string{"LEGION-209", "LEGION-208"},
 				// Its spec stands approved at the version Dispatch holds, which is how its work
 				// began: what holds it now is the blocker, not the gate.
 				GatedSteps: []GatedStepView{{
@@ -428,12 +500,29 @@ func populatedState(t *testing.T) State {
 					ApprovedVersion: &lineApproval,
 					Status:          GatedStepApproved,
 				}},
-				// The front of the line, which the length beside it reads against.
-				WaitingLine: &WaitingLineView{Place: 1, Length: 2},
+				// The second part's only member, standing behind the whole of the first: its
+				// place in the line, its place within its own part, the ranks that placed it
+				// there and no `since` at all, since its work never started.
+				WaitingLine: &WaitingLineView{
+					Place: 2, Length: 2,
+					Part: record.PartStarting.String(), Kind: record.LineQueuedRoot.String(),
+					PartPlace: 1, PartLength: 1, HoldsSlot: &noSlot,
+					RootRank: "00011", OwnRank: "00011", RootKey: "LEGION-211",
+					Reason: "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, " +
+						"and 1 issue whose work came back stands ahead of all of them.",
+				},
+				// A release suspended its implementer and the wake never brought that pod back,
+				// and a stopped claim is read before the line is: the one answer it carries is
+				// that claim rather than its place in the queue.
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it.",
+				},
 			},
-			// LEGION-212's architect asked a person a question and handed the turn back, which gave
-			// its slot up; the person has answered the question, so it stands in the admission
-			// line waiting for a slot to come back.
+			// LEGION-212's architect asked a person a question and handed the turn back, and the
+			// person has answered it: the root keeps the slot it took when the daemon started it
+			// (record.KeepsSlot) and stands in the line as well, where its promotion resumes the
+			// same architect and takes no second slot.
 			"LEGION-212": {
 				Key:           "LEGION-212",
 				Generation:    1,
@@ -443,8 +532,25 @@ func populatedState(t *testing.T) State {
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers:       map[claim.Role]PhaseView{},
-				// Second in the line, behind the root LEGION-210 blocks.
-				WaitingLine: &WaitingLineView{Place: 2, Length: 2},
+				// The first part's only member, at the front of the whole line: its place, its
+				// place within its own part, the moment its work came back and no rank at all,
+				// since the returned part is ordered by that moment. It holds a slot, so its
+				// sentence ends in the holder's clause: telling such a member that it queues for
+				// a free slot is the fault this whole answer exists to stop.
+				WaitingLine: &WaitingLineView{
+					Place: 1, Length: 2,
+					Part: record.PartReturned.String(), Kind: record.LineAnswered.String(),
+					PartPlace: 1, PartLength: 1, HoldsSlot: &heldSlot, Since: &answeredAt,
+					Reason: "A person answered it, and its work came back at 2026-09-22T09:21:00Z. " +
+						"It is 1st of 1 issue whose work came back. It already holds its admission slot, " +
+						"so it resumes at the next pass whatever the cap says.",
+				},
+				// A tester of its tree retired while the issue stood in its phase, and the
+				// stopped claim is read before the line: that is the one answer it carries.
+				Why: &WhyView{
+					State:  WhyClaimStopped,
+					Reason: "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it.",
+				},
 				WaitingOn: &WaitingOnView{
 					Kind:       "ask",
 					Ask:        "9a8fd348-55d5-4d72-a793-3cd037f75f13",
@@ -461,6 +567,10 @@ func populatedState(t *testing.T) State {
 					Status:         GatedStepChangesRequested,
 					ChangesReason:  "name the rollback path for the schema change",
 				}},
+				Slot: &SlotView{
+					Index:      2,
+					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
+				},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
@@ -474,8 +584,12 @@ func populatedState(t *testing.T) State {
 				Tree:          "LEGION-207",
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
+				// Its work finished, so its tree lingers: until this moment a todo on it takes the
+				// tree back without a re-admission. It is what a reader of a held issue of this
+				// tree would read an absent `holdReason` by, the suppression being the linger's.
+				LingerUntil: &lingerUntil,
 				Workers: map[claim.Role]PhaseView{
-					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Rounds: 1},
+					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_207", State: "working"}, HandoffCommit: "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40", Pass: 1, Rounds: 1},
 				},
 				PullRequest: &PullRequestView{
 					Repo:           "acme/widgets",
@@ -483,9 +597,6 @@ func populatedState(t *testing.T) State {
 					Head:           "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
 					State:          "merged",
 					ReviewDecision: "approved",
-					// A base branch that requires nothing, or one whose rules the daemon has not
-					// read: either way it knows of no required check there.
-					RequiresChecks: &requiresNothing,
 				},
 				// A check of this release records the project's `production_check` role, the tester;
 				// this one opened before it and keeps the implementer, which is the migrated case
@@ -586,7 +697,7 @@ func populatedState(t *testing.T) State {
 			},
 			Refused: []RefusedRepositoryView{{Repo: "acme/gadgets", Reason: "the review App is not installed on acme/gadgets"}},
 			// Dispatch's GitHub App is not installed on zeta/tools, which is served all the same.
-			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"}},
+			WithoutWebhookApp: []WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"}},
 			Caches: []CacheView{{
 				Repo: "acme/legacy", Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "starting", RetainedUntil: time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC),
 			}},
@@ -615,13 +726,20 @@ func populatedState(t *testing.T) State {
 	root.MemoryDrawnAt = &memoryDrawnAt
 	state.Issues["LEGION-208"] = root
 	state.Issues["LEGION-209"] = Issue{
-		Key:            "LEGION-209",
-		Generation:     1,
-		Phase:          phase.Admitted,
-		Status:         "in_progress",
-		Repo:           "acme/widgets",
-		DefaultBranch:  "main",
-		Workers:        map[claim.Role]PhaseView{},
+		Key:           "LEGION-209",
+		Generation:    1,
+		Phase:         phase.Admitted,
+		Status:        "in_progress",
+		Repo:          "acme/widgets",
+		DefaultBranch: "main",
+		Workers:       map[claim.Role]PhaseView{},
+		// The child the workflow holds at `admitted`: it stands in no line, and the Dispatch
+		// links `admission.blocked` names are what hold it where it stands, which is the
+		// rendered answer it carries (`why`, api.WhyBlocked).
+		Why: &WhyView{
+			State:  WhyBlocked,
+			Reason: "It waits on LEGION-210 and LEGION-213, which are not done.",
+		},
 		MemoryGroup:    string(memorygroup.GroupMemory),
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
@@ -629,8 +747,14 @@ func populatedState(t *testing.T) State {
 	return state
 }
 
+// The state golden is the body the route serves a caller at this daemon's own contract: the
+// source answers no mark and the route writes one (server's stateFor), so the fixture carries
+// the two numbers of `contract` and the plugin's schema is held to them. A caller below the
+// contract that added it is served no such key, which TestANarrowedBodySaysSo holds.
 func TestStateGolden(t *testing.T) {
-	golden(t, "state.json", populatedState(t))
+	state := populatedState(t)
+	state.Contract = &ContractView{Daemon: DaemonAPIVersion, Caller: DaemonAPIVersion}
+	golden(t, "state.json", state)
 }
 
 // Every plugin parses the state with the schema of the contract it was built at, and a
@@ -977,7 +1101,7 @@ func operatorClaim() OperatorClaim {
 		UncertainStreak: 0,
 		Pending: &DeliveryView{
 			ID:          "OVXA3ZC6BPIKTOQHKXHRZ7TYVB",
-			Task:        "Implement the plan in .legion/plan.json.",
+			Task:        "Implement the plan recorded on the issue, which `dispatch handoff-read --issue LEGION-208 --phase plan` reads.",
 			QueuedAt:    time.Date(2026, 9, 22, 9, 30, 58, 0, time.UTC),
 			DeliveredAt: &delivered,
 			ConfirmedAt: &delivered,
@@ -1017,7 +1141,13 @@ func TestOperatorClaimGolden(t *testing.T) {
 	golden(t, "operator-claim.json", operatorClaim())
 }
 
+// What a successful forget-session answers: the failed claim whose session the operator
+// abandoned, carrying why it failed. This is the fixture that holds the operator wire's failure
+// record, because operatorClaim's is working and a working claim has none: the launch that ran
+// it again cleared it (supervise's launchNow), which is why the record stands on a failed claim
+// alone.
 func TestForgetSessionOperatorClaimGolden(t *testing.T) {
+	failedAt := time.Date(2026, 9, 22, 9, 28, 41, 0, time.UTC)
 	golden(t, "operator-forget-session.json", OperatorClaim{
 		Token:                "legion-legion-legion-208-architect",
 		Tree:                 "LEGION-208",
@@ -1030,6 +1160,12 @@ func TestForgetSessionOperatorClaimGolden(t *testing.T) {
 		Budgets:              BudgetsView{LaunchFailures: 3},
 		UncertainStreak:      0,
 		PluginContract:       38,
+		Failure: &ClaimFailureView{
+			Cause:    supervise.CauseLaunchRefused,
+			Detail:   "launch failures ran out: resume the pane: the session table holds no such session",
+			At:       &failedAt,
+			Attempts: BudgetsView{LaunchFailures: 3},
+		},
 	})
 }
 
@@ -1069,7 +1205,7 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "grant.json", GrantResponse{
 		GrantID: "grant-for-one-command", ExpiresAt: "2026-09-23T12:01:00Z",
 	})
-	golden(t, "handoff-complete.json", HandoffCompleteResponse{Note: "pull request #312 is already merged, so READY was published without reading its head's handoffs"})
+	golden(t, "handoff-complete.json", HandoffCompleteResponse{})
 	golden(t, "issue-status.json", IssueStatusResponse{})
 	golden(t, "fresh-session.json", FreshSessionResponse{})
 	golden(t, "compact.json", CompactResponse{Reason: "Nothing to compact (session too small)"})
@@ -1081,4 +1217,12 @@ func TestTask310RouteGoldens(t *testing.T) {
 	golden(t, "root-close.json", EmptyResponse{})
 	golden(t, "child-park.json", EmptyResponse{})
 	golden(t, "child-rerun.json", EmptyResponse{})
+}
+
+// The turn outcome's answer is what a producer's report of one turn comes back as: the run of
+// refused turns the claim's reports now end with, and whether this report took that run to the
+// launch failure limit and failed the claim. It is a golden because `@legion/contracts` reads it
+// (LegionTurnOutcomeResponse), and every answer schema that module exports is held to one.
+func TestTurnOutcomeResponseGolden(t *testing.T) {
+	golden(t, "turn-outcome.json", claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true})
 }

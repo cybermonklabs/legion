@@ -142,16 +142,12 @@ var settingsEmitted = map[string]string{
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
-	"Project.MergeQueueRole":                         "projects.<KEY>.merge_queue_role",
-	"Project.Merge":                                  "projects.<KEY>.merge",
 	"Project.SlackChannels":                          "projects.<KEY>.slack_channels",
 	"Project.Memory":                                 "projects.<KEY>.memory",
 	"Project.ProductionCheck":                        "projects.<KEY>.production_check",
 	"Memory.Mode":                                    "projects.<KEY>.memory.mode",
 	"Memory.ConfigFiles":                             "projects.<KEY>.memory.config_files",
 	"Memory.InstructionsPath":                        "projects.<KEY>.memory.instructions",
-	"MergeRules.ByHand":                              "projects.<KEY>.merge.by_hand",
-	"PathPattern.Expression":                         "projects.<KEY>.merge.by_hand[]",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -192,7 +188,6 @@ var settingsExcluded = map[string]string{
 	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
 	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
-	"PathPattern.Regexp":              "compiled from Expression, not a setting",
 	"Config.SettingsRoute":            "not for an unauthenticated reader: who may change this daemon's settings",
 	"SettingsRoute.OIDCIssuer":        "not for an unauthenticated reader: the cluster whose tokens open the settings route",
 	"SettingsRoute.Audience":          "not for an unauthenticated reader: the audience a token must be projected for to open the settings route",
@@ -206,14 +201,13 @@ var settingsExcluded = map[string]string{
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
 }
 
-// The three keys this release adds to the state — `daemon.commit`, a pull request's
-// `requiresChecks` and the `settingSources` block — are in neither table above and belong in
-// neither: those two are a census of `config.Config`'s own fields, which is what SettingsOf
-// emits, and none of the three is a field of that struct. `commit` is the binary's own build
-// (daemon.Build.Revision), `requiresChecks` is read from a pull request's record, and
-// `settingSources` carries no value of any setting at all — only where each came from, which
+// The two keys this release adds to the state — `daemon.commit` and the `settingSources` block —
+// are in neither table above and belong in neither: those two are a census of `config.Config`'s
+// own fields, which is what SettingsOf emits, and neither of the two is a field of that struct.
+// `commit` is the binary's own build (daemon.Build.Revision), and `settingSources` carries no
+// value of any setting at all — only where each came from, which
 // TestSettingSourcesNameEverySettablePath holds to the same class table. The contracts mirror
-// (packages/contracts/src/legion-api.ts) and the state golden pin all three on the wire.
+// (packages/contracts/src/legion-api.ts) and the state golden pin both on the wire.
 
 // Every path the class table names has an entry in the state's settingSources, and every entry
 // names a path a caller may set: a reader of `settings` finds the provenance of each key beside
@@ -426,7 +420,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"merge_queue_role", "merge", "slack_channels", "memory", "production_check", "deploys",
+		"slack_channels", "memory", "production_check", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -471,12 +465,6 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if settings.Runtime.Kubernetes.SessionStore != "postgres" {
 		t.Errorf("session_store = %q, want postgres", settings.Runtime.Kubernetes.SessionStore)
-	}
-	if want := []string{"^deploy/", `\.sql$`}; !slices.Equal(settings.Projects["WIDGETS"].Merge.ByHand, want) {
-		t.Errorf("projects.WIDGETS.merge.by_hand = %q, want %q", settings.Projects["WIDGETS"].Merge.ByHand, want)
-	}
-	if settings.Projects["WIDGETS"].MergeQueueRole != "merge-queue" {
-		t.Errorf("projects = %+v, want WIDGETS's merge queue role", settings.Projects)
 	}
 	// The project that names no `production_check` shows the default role, and the one that turns
 	// the check off shows that word, never the empty string the role takes for off.

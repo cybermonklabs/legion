@@ -13,13 +13,13 @@ import (
 )
 
 // fireWorkBackHooks fires each hook of the deployment that stands on the work-back event and
-// counts this move, now that recordRound has counted it. counts is the issue's whole
+// counts this move, now that recordPass has counted it. counts is the issue's whole
 // backward-move map after the move, which is what each hook reads its own number from.
 //
 // A hook fires when the move is one its Moves selects and the counts of the moves it selects,
 // added up after this move, are a positive whole multiple of its Every. Two hooks on one event
 // each fire on their own moves and their own multiple, so a deployment reads each firing as the
-// count of what that hook watches and of nothing else. recordRound calls this for no conflict
+// count of what that hook watches and of nothing else. recordPass calls this for no conflict
 // round: such a round raised no pair, so nobody sent the work back and no hook counts it.
 //
 // A hook whose Every is not positive fires never. The loader refuses such a hook

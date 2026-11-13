@@ -137,6 +137,9 @@ type testServerOptions struct {
 	// (Deps.LegionDaemonTokenFile); empty is the deployment that names none, where the relay
 	// sends no bearer.
 	legionDaemonTokenFile string
+	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
+	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
+	buildCommit string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -265,6 +268,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 		LegionDaemonTokenFile:  options.legionDaemonTokenFile,
+		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

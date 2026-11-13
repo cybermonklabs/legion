@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
+import type { LegionState } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
@@ -412,6 +413,7 @@ const MOVED_ON = {
   daemon: {
     project: "BGSUB",
     schemaVersion: 1,
+    commit: "",
     boots: 1,
     firstBootAt: "2026-10-30T14:03:27Z",
     startedAt: "2026-10-31T09:15:02Z",
@@ -440,9 +442,10 @@ const MOVED_ON = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
+  settingSources: {},
   consumers: [],
-};
+} satisfies LegionState;
 
 test.skipIf(skip)(
   "a role's deep-worker runs in the background: the task call returns before it ends, a message sent meanwhile is read, and the job's result wakes the role",

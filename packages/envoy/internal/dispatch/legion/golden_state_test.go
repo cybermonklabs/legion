@@ -1,7 +1,6 @@
 package legion
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -20,8 +19,10 @@ func goldenStatePath() string {
 // TestTheDecodeReadsTheStateDocumentTheDaemonWrote: the sampler's decode reads the daemon's own
 // golden, and every field the Legion view and the four metrics take from a read survives it — the
 // settings the settings control shows with the source of each (the spec's contract 4), the
-// admission block the view's header and queue draw, each issue's phase and claims, and the pull
-// request's `requiresChecks`, which metric 2's CI-wait segment reads.
+// admission block the view's header and queue draw, and each issue's phase and claims. The pull
+// request's `requiresChecks`, which metric 2's CI-wait segment reads, is no longer on the
+// daemon's state (contract 87 dropped it with the required-checks record main's 86 deleted), so
+// this golden carries none and that segment reads it as absent (metrics' requiresChecks).
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	body, err := os.ReadFile(goldenStatePath())
 	if err != nil {
@@ -65,22 +66,5 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	}
 	if fields[FieldPhase] != len(state.Issues) {
 		t.Errorf("phase observations = %d, want one per issue (%d)", fields[FieldPhase], len(state.Issues))
-	}
-
-	// requiresChecks, which the daemon added for this change, reaches the metrics as the daemon
-	// wrote it: at least one pull request of the golden carries the field.
-	carried := 0
-	for _, issue := range state.Issues {
-		if issue.PullRequest != nil && len(issue.PullRequest.RequiresChecks) > 0 {
-			var requires bool
-			if err := json.Unmarshal(issue.PullRequest.RequiresChecks, &requires); err != nil {
-				t.Errorf("requiresChecks of %s is %s, which is not a boolean: %v",
-					issue.Key, issue.PullRequest.RequiresChecks, err)
-			}
-			carried++
-		}
-	}
-	if carried == 0 {
-		t.Errorf("no pull request of the daemon's own state carries requiresChecks, which metric 2's CI-wait segment reads")
 	}
 }

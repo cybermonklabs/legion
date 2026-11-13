@@ -59,6 +59,10 @@ func TestMain(m *testing.M) {
 //   - "refusal <text>": the result a content filter's refusal ends a turn with, which is the
 //     same but names no `api_error_status` (testdata/refusal-turn.jsonl:5);
 //   - "max-turns": a result Claude Code's own turn limit ended, which is no provider failure;
+//   - "maxturns <text>": an assistant message of text, then an error_max_turns result, which is
+//     Claude Code's own cap on the steps of one turn rather than the provider failing it;
+//   - "fail-when <name>": a step the provider failed, held until the test opens the gate <name>,
+//     so a test can decide what has reached the bridge before the failure does;
 //   - "replay <file>": no init of the fake's own — the lines of testdata/<file>, a recorded Claude
 //     Code stream, written as they were recorded, the last held back until the gate opens;
 //   - anything else: an assistant message "done".
@@ -175,6 +179,22 @@ func fakeClaude() int {
 			emit(map[string]any{"type": "result", "subtype": "error_max_turns", "is_error": true,
 				"terminal_reason": "api_error", "errors": []string{"Reached max turns (30)"}})
 			continue
+		case strings.HasPrefix(body, "maxturns "):
+			assistant(text(strings.TrimPrefix(body, "maxturns ")))
+			emit(map[string]any{"type": "result", "subtype": "error_max_turns", "is_error": true,
+				"errors": []string{"reached the maximum number of turns"}})
+			continue
+		case strings.HasPrefix(body, "fail-when "):
+			// The step fails on the provider only once the test opens the gate. The fake cannot
+			// order a delivery against its own result: both reach the bridge through two cases of
+			// one select, and a queued delivery emits no frame for this process to see. So the
+			// test sends the delivery, waits for the bridge's own log line saying it is queued,
+			// and opens the gate; the failure then lands with the delivery already in the queue,
+			// which is the order the case under test is about.
+			released(strings.TrimPrefix(body, "fail-when "))
+			assistant(text("trying"))
+			providerFailed(529)
+			continue
 		case strings.HasPrefix(body, "wait "):
 			released(strings.TrimPrefix(body, "wait "))
 			assistant(text("done"))
@@ -240,6 +260,13 @@ type rig struct {
 // newRig runs one bridge over the fake Claude Code, with the environment a pane gives it.
 func newRig(t *testing.T, args ...string) *rig {
 	t.Helper()
+	return newRigWithEnv(t, nil, args...)
+}
+
+// newRigWithEnv is newRig with more of the pane's environment than a bare bridge needs: the
+// daemon, boot token file and generation a bridge reports its turns with (turnoutcome.go).
+func newRigWithEnv(t *testing.T, extra []string, args ...string) *rig {
+	t.Helper()
 	dir := t.TempDir()
 	// Run opens the inbox under the process TMPDIR, so the rig places that directory itself, with
 	// room for the inbox's socket.
@@ -248,6 +275,7 @@ func newRig(t *testing.T, args ...string) *rig {
 	argv := append([]string{os.Args[0]}, args...)
 	env := append(os.Environ(), fakeClaudeEnv+"=1", "FAKE_CLAUDE_RECORD="+record, fakeClaudeGateEnv+"="+gate,
 		"CLAUDE_CONFIG_DIR="+dir, "LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7")
+	env = append(env, extra...)
 	cfg, err := Configure(argv, env)
 	if err != nil {
 		t.Fatal(err)

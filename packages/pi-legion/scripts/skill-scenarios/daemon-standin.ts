@@ -105,7 +105,7 @@ const STATE = LegionStateResponse.parse({
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   // Where each setting came from, required beside `settings`: the rig reads no file and takes no
   // settings change, so it names none.
   settingSources: {},

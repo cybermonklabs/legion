@@ -35,7 +35,13 @@ var contract45ClaimView = []string{"session", "state", "locator", "capabilities"
 // statePodUID and whose state snapshot holds claims.
 func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handler {
 	t.Helper()
-	return NewServer("127.0.0.1", 8437, Options{
+	return NewServer("127.0.0.1", 8437, stateOptions(state, claims)).Handler
+}
+
+// stateOptions is what that daemon answers from, apart so a test that reads the daemon's own
+// log takes them and adds its logger (narrowing_test.go's stateNarrowed).
+func stateOptions(state State, claims []supervise.Claim) Options {
+	return Options{
 		Settings: unauthenticatedSettings(),
 		State:    fakeSource{state: state, claims: claims}, StateTransactions: &fakeStateTransactions{tx: &fakeTx{}},
 		CallerPod: func(addr netip.Addr) (string, bool) {
@@ -44,7 +50,7 @@ func stateServer(t *testing.T, state State, claims []supervise.Claim) http.Handl
 			}
 			return "", false
 		},
-	}).Handler
+	}
 }
 
 // stateAsked is GET /legion/v1/state on handler, asked from remote.
@@ -150,6 +156,24 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 	return views
 }
 
+// unmarked is a state body with the `contract` mark taken out and written again: what two
+// bodies of two callers are compared by, since that mark is the one key of the body the
+// caller's own recorded contract decides rather than the state (narrowing_test.go holds what
+// each caller is told there).
+func unmarked(t *testing.T, body []byte) string {
+	t.Helper()
+	var served map[string]any
+	if err := json.Unmarshal(body, &served); err != nil {
+		t.Fatalf("decode state %s: %v", body, err)
+	}
+	delete(served, "contract")
+	encoded, err := json.Marshal(served)
+	if err != nil {
+		t.Fatalf("encode the state %s without its mark: %v", body, err)
+	}
+	return string(encoded)
+}
+
 // A plugin below supervise.PodUpdateContract reads the state with a schema that knows no
 // `updateRound` or `updateHead` and refuses the whole body for either, which is every legion
 // tool call of a worker the update round is still serving (read_record, handoff_complete). The
@@ -184,16 +208,20 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		rounds bool
 		wakes  bool
 		// stall is whether the caller is served the claim views' `step`, the record
-		// stallRecordContract added. That contract is below this daemon's own, so a pod at 57 or
-		// above is served the record and a pod still running an older plugin is not.
+		// stallRecordContract added at 57, so a pod at 57 or above is served the record and a pod
+		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, which is this daemon's own contract.
+		// claimsToRefreshContract added, the contract fourteen below this daemon's own.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true, refresh: true},
+		// The newest contract the route narrows by, which is what a pod must record to be served
+		// every key. What the caller is served is decided by its own recorded claim contract
+		// (podContract) and never by the declared constant, which is why this row names
+		// settingSourcesContract rather than the declaration.
+		{name: "a pod at the newest contract the route narrows by", remote: statePodAddr + ":41000", claims: podClaims(settingSourcesContract), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true, refresh: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true, refresh: true},
 	} {
@@ -214,8 +242,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if tc.refresh && count != fullCount {
 				t.Errorf("the state %s says the lane has %d claims left, want the fixture's %d", body, count, fullCount)
 			}
+			// The mark of contract 75 is the one key a full body and the baseline part on: the
+			// baseline is asked from no pod and carries the daemon's number alone, where a
+			// caller at a contract is told its own beside it (TestANarrowedBodySaysSo). The
+			// rest of the body is compared whole.
 			if tc.rounds && tc.stall {
-				if string(body) != string(full) {
+				if unmarked(t, body) != unmarked(t, full) {
 					t.Fatalf("state = %s, want the state as this contract writes it, %s", body, full)
 				}
 				return
@@ -229,43 +261,121 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					}
 				}
 			}
-			// Nothing else of the body differs: it is the full state with the two claim keys
-			// gone, with the three memory keys gone too, since a pod below this contract's own
-			// reader refuses those as well (memory_test.go holds that half), with
-			// treeContract's two tree keys — `admission.trees` and each issue's `tree` — gone
-			// (tree_test.go holds that half), with `wakesWaiting` gone, the key a reader before
-			// wakesWaitingContract refuses empty as surely as filled (withoutWakesWaiting),
-			// with the gated steps gone, the field gatedStepsContract added, with the retired
-			// entries of the report of claims nothing will wake gone, the one state
-			// retiredStrandedContract added (withoutRetiredStranded), with each claim view's
-			// `step` gone, the record stallRecordContract added (withoutStallRecord), with the
-			// places in the admission line gone, the field waitingLineContract added
-			// (withoutWaitingLine), with the workers' counts of the moves back gone, the field
-			// backwardMovesContract added (withoutBackwardMoves), with `claimsToRefresh` gone,
-			// the count a reader before claimsToRefreshContract refuses when it is 0 as surely
-			// as when it names a number (withoutClaimsToRefresh), and with the three fields
-			// settingSourcesContract added gone, which such a pod refuses the same way
-			// (state_sources_contract_test.go holds that half). What is expected of it is read
-			// from the state those eleven leave rather than by deleting the keys they write by
-			// name.
-			if carriesSettingSources(t, body) || carriesCommit(t, body) || carriesRequiresChecks(t, body) {
+			// Nothing else of the body differs: it is the full state with the two claim keys gone,
+			// with the three memory keys gone too, since a pod below this contract's own reader
+			// refuses those as well (memory_test.go holds that half), with contract 51's two tree
+			// keys — `admission.trees` and each issue's `tree` — gone (tree_test.go holds that
+			// half), with `wakesWaiting` gone, the key a reader before contract 53 refuses
+			// empty as surely as filled (withoutWakesWaiting), with the gated steps gone, the
+			// field contract 55 added, with contract 56's retired entries under
+			// `strandedClaims` gone (strandedWithoutRetired below), with each claim view's
+			// `step` gone, the record contract 57 added (withoutStallRecord), with the
+			// places in the admission line gone, the field contract 58 added, with the
+			// workers' counts of the moves back gone, the field contract 62 added
+			// (withoutBackwardMoves), with `claimsToRefresh` gone, the count a reader before
+			// contract 73 refuses as surely when it is 0 (withoutClaimsToRefresh), with the
+			// nine keys contract 75 added gone — a claim view's `servingGeneration`,
+			// `updateReasons`, `providerErrorRun`, `pendingTask`, `failure` and `pendingCause`,
+			// and an issue's `heldFrom`, `lingerUntil` and `ancestry` (withoutRecordFields), with
+			// the mark of that same contract gone with them, with each issue's one rendered
+			// answer gone, the `why` contract 85 added beside the line's own fields, which go
+			// with the `waitingLine` key itself for a caller this far back
+			// (withoutWhyAndLineFields), and with the two fields settingSourcesContract added
+			// gone — `settingSources` and the `daemon` block's `commit` (withoutSettingSources;
+			// state_sources_contract_test.go holds that half). Every row that reaches here is
+			// below all of them, so those fourteen keys go whatever the row is.
+			if carriesSettingSources(t, body) || carriesCommit(t, body) {
 				t.Errorf("the state %s carries a field contract %d added, which a reader before it refuses", body, settingSourcesContract)
 			}
 			if calls, _ := stepsServed(t, body); len(calls) > 0 {
 				t.Errorf("the state %s names the calls %v, which a reader before contract %d refuses", body, calls, stallRecordContract)
 			}
-			stripped := withoutUpdateRounds(withoutMemory(withoutTrees(withoutWakesWaiting(populatedState(t)))))
-			stripped = withoutStallRecord(withoutSettingSources(withoutRetiredStranded(withoutGatedSteps(stripped))))
-			stripped = withoutClaimsToRefresh(withoutBackwardMoves(withoutWaitingLine(stripped)))
-			wantJSON, err := json.Marshal(stripped)
-			if err != nil {
+			var want, got map[string]any
+			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
 			}
-			if got := normalized(t, body); string(got) != string(normalized(t, wantJSON)) {
-				t.Fatalf("state = %s, want the full state without those keys, %s", got, normalized(t, wantJSON))
+			if !tc.wakes {
+				delete(want, "wakesWaiting")
+			}
+			if !tc.refresh {
+				delete(want, ClaimsToRefreshField)
+			}
+			delete(want, "contract")
+			delete(want, "settingSources")
+			delete(want["daemon"].(map[string]any), "commit")
+			if !tc.rounds {
+				delete(want["admission"].(map[string]any), "trees")
+				want["strandedClaims"] = strandedWithoutRetired(t, want["strandedClaims"])
+			}
+			for _, issue := range want["issues"].(map[string]any) {
+				issue := issue.(map[string]any)
+				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
+					delete(issue, key)
+				}
+				views := []any{issue["architect"]}
+				for _, worker := range issue["workers"].(map[string]any) {
+					worker := worker.(map[string]any)
+					if !tc.rounds {
+						delete(worker, backwardMovesField)
+					}
+					views = append(views, worker["claim"])
+				}
+				for _, view := range views {
+					view, ok := view.(map[string]any)
+					if !ok {
+						continue
+					}
+					if !tc.rounds {
+						delete(view, "updateRound")
+						delete(view, "updateHead")
+					}
+					if !tc.stall {
+						delete(view, "step")
+					}
+					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause"} {
+						delete(view, key)
+					}
+				}
+				if tc.rounds {
+					continue
+				}
+				delete(issue, "memoryGroup")
+				delete(issue, "memoryDrawMode")
+				delete(issue, "memoryDrawnAt")
+				delete(issue, "tree")
+				delete(issue, "gatedSteps")
+				delete(issue, "waitingLine")
+				delete(issue, "why")
+			}
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatal(err)
+			}
+			wantJSON, _ := json.Marshal(want)
+			gotJSON, _ := json.Marshal(got)
+			if string(gotJSON) != string(wantJSON) {
+				t.Fatalf("state = %s, want the full state without those keys, %s", gotJSON, wantJSON)
 			}
 		})
 	}
+}
+
+// strandedWithoutRetired is the `strandedClaims` of a baseline body with its retired entries gone,
+// the report a pod below retiredStrandedContract is served (api's withoutRetiredStranded). The key
+// is never null, so a body every entry of which is retired keeps it as an empty array.
+func strandedWithoutRetired(t *testing.T, stranded any) []any {
+	t.Helper()
+	rows, ok := stranded.([]any)
+	if !ok {
+		t.Fatalf("the state's strandedClaims is %T, want the array the route always writes", stranded)
+	}
+	kept := []any{}
+	for _, row := range rows {
+		if row.(map[string]any)["state"] == string(supervise.StateRetired) {
+			continue
+		}
+		kept = append(kept, row)
+	}
+	return kept
 }
 
 // strandedServed is the report of claims nothing will wake of a state body, entry for entry as

@@ -251,7 +251,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// the pull request row landed would show this result standing at no basis until something
 	// else happened.
 	s.readThroughPullRequests(r.Context(), check.IssueKey, result.CommitSHA, checkRepo)
-	s.publish(event)
+	s.publish(r.Context(), event)
 	WriteJSON(w, http.StatusCreated, checkResultRecorded{
 		Line:   checkResultLine(check, result),
 		Result: result,

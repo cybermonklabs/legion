@@ -524,33 +524,27 @@ func TestADesignGateChangedThroughTheRouteReachesTheNextArchitectsLaunch(t *test
 	}
 }
 
-// The project block reaches the next launch too: the launch specs copy the project's merge rules
-// into every merger's prompt and its Slack channels into the controller's, and the runtime hands
-// the daemon-launched controller's pod the same channels, so the row names both beside the API
-// server. The diff names `projects` whatever member moved — the block is compared whole — so one
-// change of a project's merge rules is what proves all three were built again.
+// The project block reaches the next launch too: the launch specs copy the project's Slack
+// channels into the controller's prompt and its commit trailer repositories into every pane's
+// environment, and the runtime hands the daemon-launched controller's pod the same channels, so
+// the row names the launch specs and the runtime beside them. The diff names `projects` whatever
+// member moved — the block is compared whole — so one change of any member, here the project's
+// production_check (Slack channels need a daemon-launched controller this harness does not
+// run), is what proves both were built again.
 //
 // The change carries `github_apps` beside it because the loader takes a `projects` block in no
 // file without one (config's resolveStage3), and a file holding neither is what this harness
-// boots: the key this test is about is the project's own merge rules. This daemon has no
-// Dispatch and so no App manager to build again, which the rebuilder logs and nothing else.
-func TestTheProjectsBlockChangedThroughTheRouteReachesTheNextMergersLaunch(t *testing.T) {
+// boots: the key this test is about is the project's own block. This daemon has no Dispatch and
+// so no App manager to build again, which the rebuilder logs and nothing else.
+func TestTheProjectsBlockChangedThroughTheRouteRebuildsTheLaunchSpecsAndTheRuntime(t *testing.T) {
 	live := liveSettings(t)
 	rt := fake.NewRuntime()
 	logs := &syncBuffer{}
-	d := startDaemonOn(t, live, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)), 10*time.Second)
-	// A worker binds the work of a tree an architect opened, so the root goes first.
-	d.spawn(architect())
-	merger := func(issue string) runtime.SpawnSpec {
-		return lastLaunch(t, rt, d.spawn(api.SpawnRequest{Tree: "LEGION-1", Issue: issue, Role: claim.RoleMerger, Prompt: "Wait."}))
-	}
-	if want := MergeRulesFragment(config.MergeRules{}); !strings.Contains(merger("LEGION-2").Prompt.Addressing, want) {
-		t.Fatalf("the first merger is addressed without %q, want the file's own rules", want)
-	}
+	startDaemonOn(t, live, fakeRuntime(rt, &built{}), slog.New(slog.NewJSONHandler(logs, nil)), 10*time.Second)
 
 	applied := apply(t, live, map[string]any{
 		"projects": map[string]any{
-			live.Snapshot().Project: map[string]any{"merge": map[string]any{"by_hand": []string{"^docs/"}}},
+			live.Snapshot().Project: map[string]any{"production_check": "off"},
 		},
 		"github_apps": map[string]any{
 			"implement": map[string]any{"app_id": "1", "private_key": "implement-test-key"},
@@ -562,14 +556,11 @@ func TestTheProjectsBlockChangedThroughTheRouteReachesTheNextMergersLaunch(t *te
 	if !held {
 		t.Fatalf("the apply reported %+v, want the projects block among the changes", applied)
 	}
-	if projects.Outcome != config.OutcomeRebuilt || projects.Holder != config.HolderAPIServer {
-		t.Fatalf("the change is %+v, want a rebuild naming the API server", projects)
+	if projects.Outcome != config.OutcomeRebuilt || projects.Holder != config.HolderLaunchSpecs {
+		t.Fatalf("the change is %+v, want a rebuild naming the launch specs", projects)
 	}
 	for _, holder := range []string{config.HolderLaunchSpecs, config.HolderRuntime} {
 		awaitLog(t, logs, `"holder":"`+holder+`"`, 5*time.Second, "the project's change left "+holder+" holding the boot's block")
-	}
-	if addressing := merger("LEGION-3").Prompt.Addressing; !strings.Contains(addressing, "`^docs/`") {
-		t.Fatalf("the merger started after the change is addressed %q, want the rules the operator set", addressing)
 	}
 }
 

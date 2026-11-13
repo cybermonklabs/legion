@@ -150,6 +150,10 @@ func (h *dispatchHolder) SetStatus(ctx context.Context, key, status string) (dis
 	return h.get().SetStatus(ctx, key, status)
 }
 
+func (h *dispatchHolder) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return h.get().SetStatusAt(ctx, issue, status)
+}
+
 func (h *dispatchHolder) ReleaseClaim(ctx context.Context, key string) error {
 	return h.get().ReleaseClaim(ctx, key)
 }
@@ -335,8 +339,8 @@ func (h *appsHolder) Forget(role appauth.AppRole, owner string) {
 }
 
 // apiHolder is the settings the API server holds (config.HolderAPIServer): the operator bearer,
-// the design gate, the repository equivalence, each project's merge rules and the settings
-// route's own admission rule. Its socket is never rebound — the listener is boot's, and
+// the design gate, the repository equivalence and the settings route's own admission rule. Its
+// socket is never rebound — the listener is boot's, and
 // LEGION_LISTEN_FD may have handed the daemon one it never bound — so a rebuild reads the
 // operator bearer again (readOperatorToken), builds the verifier again where the deployment
 // moved it, and stores the new settings behind the pointer every request reads through
@@ -357,7 +361,6 @@ func newAPIHolder(cfg config.Config, operatorToken string) *apiHolder {
 		OperatorToken:     operatorToken,
 		Steps:             cfg.Gates.Steps(),
 		RepositoryRenames: cfg.RepositoryRenames,
-		MergeRules:        projectMergeRules(cfg),
 		SettingsRoute:     h.settingsRoute(cfg),
 	})
 	return h
@@ -380,7 +383,6 @@ func (h *apiHolder) rebuild(cfg *config.Config) error {
 		OperatorToken:     token,
 		Steps:             cfg.Gates.Steps(),
 		RepositoryRenames: cfg.RepositoryRenames,
-		MergeRules:        projectMergeRules(*cfg),
 		SettingsRoute:     h.settingsRoute(*cfg),
 	})
 	return nil

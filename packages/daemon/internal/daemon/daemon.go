@@ -395,6 +395,7 @@ func run(ctx context.Context, live *config.Live, build Build, log *slog.Logger, 
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
 		plan.rootTask = workflow.rootTask
 		plan.taskConfirmed = workflow.taskConfirmed
+		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
 	}
 	if cfg.Runtime.Name == "tmux" {
@@ -723,6 +724,11 @@ type plan struct {
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
+	// sessionLost and sessionStoreFault tell the workflow that a claim's recorded session is in no
+	// session store any more, and that a start could not reach that store at all; nil without a
+	// workflow, where neither is reported to anyone.
+	sessionLost       func(c supervise.Claim, detail string)
+	sessionStoreFault func(c supervise.Claim, detail string)
 	// providerErrorRunReached tells the project's controller of a claim whose turns keep ending
 	// in a provider error; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -1510,7 +1516,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			identity: p.identity, repository: p.repository,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
 			designSteps:  c.Gates.Steps(), slackChannels: c.Projects[c.Project].SlackChannels,
-			mergeRules: c.Projects[c.Project].Merge, runtimeName: c.Runtime.Name, plugins: p.plugins,
+			runtimeName: c.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: c.Projects[c.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: c.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
 			memoryInstructions: p.memoryInstructions, memoryGroup: treeMemoryGroup(st),
@@ -1530,12 +1536,15 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Store:                   pruning(gateLaunch(tokens.Recording(st), p.checkLaunch), runtime.SecretsDir(cfg.StateDir), log),
 		Specs:                   launchSpecs,
 		Identity:                adoptIdentity(p.identity, p.repository),
+		IssueInTurn:             sup.claimInTurn,
 		Secrets:                 p.secretsEnroller,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
 		TreeClosable:            p.treeClosable,
 		TaskConfirmed:           p.taskConfirmed,
+		SessionLost:             p.sessionLost,
+		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(supervising, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		Clock:                   p.clock,
@@ -2320,6 +2329,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	var tokens appauth.Tokens
 	var grants *credential.Grants
 	var claimReady func(supervise.Claim)
+	var handoffCompleted func(string)
 	var prepare func(context.Context, intake.DispatchIssue) (intake.DispatchIssue, error)
 	var unread func(string) bool
 	var await func(repo, tree, child, parent string)
@@ -2328,6 +2338,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	if workflow != nil {
 		records, handlers, client, tokens, grants = workflow.records, workflow.handlers, workflow.dispatch, workflow.tokens, workflow.grants
 		claimReady, prepare, unread, await = workflow.claimReady, workflow.prepareObserved, workflow.repositoryUnread, workflow.awaitRecovery
+		handoffCompleted = workflow.handoffCompleted
 		githubAPI = workflow.githubAPI
 		consumerLag = workflow.nats.intake().Lag
 	}
@@ -2349,8 +2360,8 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		ensureKeeper()
 	}
 	// The settings the API server holds, behind the pointer its routes read through: the operator
-	// bearer, the design gate, the repository equivalence, the projects' merge rules and the
-	// settings route's own admission rule. Its socket is the one boot took and is never rebound.
+	// bearer, the design gate, the repository equivalence and the settings route's own admission
+	// rule. Its socket is the one boot took and is never rebound.
 	held := newAPIHolder(cfg, p.operatorToken)
 	p.rebuild.register(held)
 	// What the state reports as `settings`, rebuilt from the configuration at every applied
@@ -2463,6 +2474,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		Trees:              st,
 		Memory:             cfg.Projects[cfg.Project].Memory,
 		ClaimReady:         claimReadyHook(keeper, claimReady),
+		HandoffCompleted:   handoffCompleted,
 		PromptAgents:       promptAgents(p.roleReferences),
 		CapabilityReported: s.capabilityReported,
 		ReleaseRecords:     st,
@@ -2773,15 +2785,21 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	// The gate is read once for this state, so the issues' steps and the stranded claims' are
 	// the same list even if an operator moves the gate while the body is being built.
 	steps := gatedStepsOf(s.live)
-	state, err := projection.Project(ctx, tx, records, s.project, steps, claims, s.reports(), now)
-	if err != nil {
-		return api.State{}, nil, err
-	}
+	// What nothing will wake, judged before the projection and handed to it: an issue whose
+	// claim is stranded carries that answer on its own view (api.WhyView), and the judgement is
+	// the daemon's own over the store, the gated steps and the released wakes, which
+	// internal/projection may not read. It is read through tx like every other durable fact
+	// here, so the body is still one snapshot, and it is what the state serves as
+	// `strandedClaims` below.
 	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
 	stranded, err := workflow.Stranded(ctx, tx, records, s.project, steps, claims, resumes, now)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	state, err := projection.Project(ctx, tx, records, s.project, steps, claims, stranded, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}
@@ -2854,14 +2872,6 @@ func adoptIdentity(identity func(context.Context, claim.Role, ghrepo.Repository)
 			return runtime.GitIdentity{}, err
 		}
 		return identity(ctx, role, repo)
-	}
-}
-
-// projectMergeRules answers the merge policy an issue's project configures. A project absent from
-// the configuration has no special merge policy.
-func projectMergeRules(cfg config.Config) func(project string) config.MergeRules {
-	return func(project string) config.MergeRules {
-		return cfg.Projects[project].Merge
 	}
 }
 

@@ -89,9 +89,9 @@ type Row struct {
 	// table to, so a field added to Config with no row fails that test.
 	Field string
 	// Path is the dotted path `legion.yaml` writes the unit as. A segment in angle brackets is a
-	// name the file chooses (`projects.<KEY>.merge`), and a `[]` suffix one entry of a sequence
-	// (`runtime.kubernetes.scheduling.tolerations[].key`); ClassOf matches a concrete path against
-	// both. Two rows share a path where one key fills more than one field.
+	// name the file chooses (`projects.<KEY>.slack_channels`), and a `[]` suffix one entry of a
+	// sequence (`runtime.kubernetes.scheduling.tolerations[].key`); ClassOf matches a concrete
+	// path against both. Two rows share a path where one key fills more than one field.
 	Path string
 	// Class is when a change of the unit takes effect.
 	Class Class
@@ -291,7 +291,7 @@ var Classes = []Row{
 	// and engineHooks) — and the daemon builds that list again at no later moment, since a hook
 	// whose words live only in that map would otherwise stand in front of its roles with none.
 	// So the whole key is settled at boot: a change of it reaches the next boot. The list is one
-	// value the walk compares whole, as `projects.<KEY>.merge.by_hand` is, and the rows of one
+	// value the walk compares whole, as `projects.<KEY>.slack_channels` is, and the rows of one
 	// entry's members below it are what ClassOf answers a caller that names one.
 	{Field: "Config.Hooks", Path: "hooks", Class: ClassFixed, Why: whyHooks},
 	{Field: "Hook.Name", Path: "hooks[].name", Class: ClassFixed, Why: whyHooks},
@@ -347,20 +347,17 @@ var Classes = []Row{
 		Also: []string{HolderRepositoryMapping, HolderNATS, HolderRuntime}},
 	// The projects block, which `projects` is the one path of: the block is no Block row, so the
 	// diff compares it whole and names `projects` whatever member moved, and the rows below are
-	// what a caller setting one member by name is answered from. Three things hold it: the API
-	// server, which holds each project's merge rules; the launch specs, which copy the project's
-	// merge rules into every merger's prompt and its Slack channels into the controller's; and
-	// the runtime, which hands the daemon-launched controller's pod the same channels and
-	// relaunches it when they change (sandbox.Options.ControllerSlackChannels). The operator is
-	// told the server was rebuilt, and the other two are built again with it, so the next launch
-	// reads the project the daemon is running on.
-	{Field: "Config.Projects", Path: "projects", Class: ClassRebuild, Holder: HolderAPIServer,
-		Also: []string{HolderLaunchSpecs, HolderRuntime}},
-	{Field: "Project.MergeQueueRole", Path: "projects.<KEY>.merge_queue_role", Class: ClassRebuild, Holder: HolderAPIServer},
-	{Field: "Project.Merge", Path: "projects.<KEY>.merge", Class: ClassRebuild, Holder: HolderAPIServer,
-		Also: []string{HolderLaunchSpecs}},
-	{Field: "Project.SlackChannels", Path: "projects.<KEY>.slack_channels", Class: ClassRebuild, Holder: HolderAPIServer,
-		Also: []string{HolderLaunchSpecs, HolderRuntime}},
+	// what a caller setting one member by name is answered from. Two things hold it: the launch
+	// specs, which copy the project's Slack channels into the controller's prompt and its commit
+	// trailer repositories into every pane's environment; and the runtime, which hands the
+	// daemon-launched controller's pod the same channels and relaunches it when they change
+	// (sandbox.Options.ControllerSlackChannels). The operator is told the launch specs were
+	// rebuilt, and the runtime is built again with them, so the next launch reads the project the
+	// daemon is running on.
+	{Field: "Config.Projects", Path: "projects", Class: ClassRebuild, Holder: HolderLaunchSpecs,
+		Also: []string{HolderRuntime}},
+	{Field: "Project.SlackChannels", Path: "projects.<KEY>.slack_channels", Class: ClassRebuild, Holder: HolderLaunchSpecs,
+		Also: []string{HolderRuntime}},
 	// The repositories whose commits a pane stamps the issue key into: a pane reads the key from
 	// its own launch environment (LEGION_ISSUE_TRAILER, built in the launch specs), so a change
 	// reaches a role at its next launch. The workflow runtime keeps a copy of its own, but only
@@ -374,10 +371,6 @@ var Classes = []Row{
 	// the next merge with nothing rebuilt. It decides the checks opened after it, never one
 	// already open: a running check keeps the role its record carries.
 	{Field: "Project.ProductionCheck", Path: "projects.<KEY>.production_check", Class: ClassDecision},
-	{Field: "MergeRules.ByHand", Path: "projects.<KEY>.merge.by_hand", Class: ClassRebuild, Holder: HolderAPIServer,
-		Also: []string{HolderLaunchSpecs}},
-	{Field: "PathPattern.Expression", Path: "projects.<KEY>.merge.by_hand[]", Class: ClassRebuild, Holder: HolderAPIServer,
-		Also: []string{HolderLaunchSpecs}},
 	// The project's memory block: the overlays a memory-group role's Oh My Pi loads reach that
 	// role at its next launch, through the runtime that builds its pod (sandboxOptions'
 	// MemoryConfigFiles), while the mode and the instructions are settled at boot — admission

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
+import type { LegionState } from "@legion/contracts/legion-api";
 import {
   LegionActivityRequest,
   type LegionSessionActivityBody,
@@ -324,6 +325,7 @@ const MOVED_ON = {
   daemon: {
     project: "ACT",
     schemaVersion: 1,
+    commit: "",
     boots: 1,
     firstBootAt: "2026-10-30T14:03:27Z",
     startedAt: "2026-10-31T09:15:02Z",
@@ -351,9 +353,10 @@ const MOVED_ON = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
+  settingSources: {},
   consumers: [],
-};
+} satisfies LegionState;
 
 test.skipIf(skip)(
   "what a role session reports of its background work on the real Oh My Pi: a backgrounded bash job and a task subagent reach the daemon, a named bash service does not",

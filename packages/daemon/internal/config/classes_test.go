@@ -47,7 +47,6 @@ func settingsConfigTypes() []reflect.Type {
 var classesDerived = map[string]string{
 	"Config.Warnings":              "derived: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, which no key of the file writes",
 	"Kubernetes.PluginsFromBinary": "derived: whether runtime.kubernetes.plugins was filled from the binary's linked pair rather than from the file",
-	"PathPattern.Regexp":           "derived: compiled from projects.<KEY>.merge.by_hand[], which carries the expression",
 	"Config.StallLimits":           "read from the daemon's own environment, not the file: the three LEGION_STALL_* numbers it passes to every session it starts, held here because the floor under worker_stall_backstop_hours is computed from them (config.StallLimits)",
 	"StallLimits.CallBound":        "read from the daemon's own environment: LEGION_STALL_CALL_BOUND_MS",
 	"StallLimits.CallGrace":        "read from the daemon's own environment: LEGION_STALL_CALL_GRACE_MS",
@@ -189,8 +188,8 @@ func TestClassOfReadsTheTemplatedPaths(t *testing.T) {
 	for _, tc := range []struct{ path, field string }{
 		{"admission_cap", "Config.AdmissionCap"},
 		{"gates.design", "Gates.Design"},
-		{"projects.DEMO.merge", "Project.Merge"},
-		{"projects.DEMO.merge.by_hand", "MergeRules.ByHand"},
+		{"projects.DEMO.slack_channels", "Project.SlackChannels"},
+		{"projects.DEMO.memory.mode", "Memory.Mode"},
 		{"github_apps.implement.app_id", "GitHubApp.AppID"},
 		{"runtime.kubernetes.resources.issue", "PodResources.Issue"},
 		{"runtime.kubernetes.resources.controller.cpu", "Reservation.CPU"},
@@ -206,7 +205,7 @@ func TestClassOfReadsTheTemplatedPaths(t *testing.T) {
 			t.Errorf("ClassOf(%q) = %s, want %s", tc.path, row.Field, tc.field)
 		}
 	}
-	for _, path := range []string{"", "admission", "gates.designn", "projects.DEMO.merge.by_hand[x", "runtime.kubernetes.resources.issue.cpu.core"} {
+	for _, path := range []string{"", "admission", "gates.designn", "projects.DEMO.merge", "projects.DEMO.memory.mode[x", "runtime.kubernetes.resources.issue.cpu.core"} {
 		if row, known := ClassOf(path); known {
 			t.Errorf("ClassOf(%q) = %s, want no row", path, row.Field)
 		}

@@ -308,8 +308,6 @@ type HeldSettings struct {
 	// transfer moved it away from, which the controller's gh bundle reads
 	// (appauth.ControllerCredential). The zero value configures none.
 	RepositoryRenames ghrepo.Renames
-	// MergeRules is the merge policy an issue's project configures. Nil has no special policy.
-	MergeRules func(project string) config.MergeRules
 	// SettingsRoute is the settings route's projected-token arm: the verifier of the cluster
 	// issuer and audience `settings_route` names, and the ServiceAccounts it admits. The zero
 	// value leaves that route to the operator bearer alone.
@@ -349,20 +347,11 @@ func (l *LiveSettings) Store(s HeldSettings) {
 // load is the settings this request reads.
 func (l *LiveSettings) load() *settledSettings { return l.current.Load() }
 
-// steps, renames and mergeRulesOf are the settings this request reads: the one place each is
-// read from, so the daemon's swap of them (LiveSettings.Store) reaches every route.
+// steps and renames are the settings this request reads: the one place each is read from, so
+// the daemon's swap of them (LiveSettings.Store) reaches every route.
 func (s *server) steps() []record.DesignStep { return s.settings.load().Steps }
 
 func (s *server) renames() ghrepo.Renames { return s.settings.load().RepositoryRenames }
-
-// mergeRulesOf is the merge policy project configures, the zero policy when none is configured.
-func (s *server) mergeRulesOf(project string) config.MergeRules {
-	rules := s.settings.load().MergeRules
-	if rules == nil {
-		return config.MergeRules{}
-	}
-	return rules(project)
-}
 
 // operatorBearer is whether a request's Authorization header carries the operator's bearer:
 // given is what followed "Bearer ", and carried whether the header had that prefix at all. The

@@ -36,8 +36,7 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // writes is the one of the step the registration names, which register_gate bound to the document
 // it carries. On a step the deployment does not gate it is approved at once, whatever the gate
 // held before; once every step the deployment gates is open the registration advances the
-// admitted tree and releases any READY the gate refused, including one refused before any gate
-// was registered. What register_gate read of Dispatch's approval travels with the registration, so
+// admitted tree. What register_gate read of Dispatch's approval travels with the registration, so
 // a person's review given before the architect registered is applied here: an approval of the
 // latest version (ApprovedVersion) records the gate open, and the root keeps its slot and starts
 // planning; a changes request on it (ChangesRequestedVersion) records it closed with the architect
@@ -84,10 +83,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// gateRegister). A fact naming no step is of the spec step, as a row naming none is
 	// (record.Store.PutGate). A step whose row holds another document — a carried root's, whose
 	// architect registers this issue's own — is registered afresh.
-	step := fact.Step
-	if step == "" {
-		step = record.DesignStepSpec
-	}
+	step := fact.Step.OrSpec()
 	var stored *record.DesignGate
 	if held, found := gates[step]; found && held.ArtifactID == fact.ArtifactID {
 		stored = &held
@@ -168,16 +164,14 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		tell = !classify.DesignGateChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 		gate = classify.RecordChangesTold(gate, gate.LatestVersion, fact.ChangesReason, fact.ChangesRequestedMark)
 	}
-	if err := e.store.PutGate(ctx, tx, gate); err != nil {
+	if err := e.putGateTold(ctx, tx, gate, gate.LatestVersion); err != nil {
 		return intake.Result{}, err
 	}
 	// The registration is the path that binds a step to a document, so it is the one that most
 	// often moves the issue's pairs; a re-registration of the document the step already names
-	// queues nothing (record.PublishChangedGates). Its read of the issue's gates, made after the
-	// write in this transaction, is the set the registration leaves, so what the pending READY
-	// below is decided on is that set rather than this row patched into the one read before.
-	gates, err = record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now())
-	if err != nil {
+	// queues nothing (record.PublishChangedGates). Its read of the issue's gates is made after
+	// the write in this transaction, so the set it publishes is the one the registration leaves.
+	if err := record.PublishChangedGates(ctx, e.store, tx, fact.Issue, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
@@ -203,16 +197,15 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		return intake.Result{}, nil
 	}
 	// The gate of this document was already open at this version: the architect was told then, so
-	// the registration tells it nothing again. Releasing a refused READY changes nothing that
-	// already moved. A root waiting on a person is told by its resume, which says how its spec
-	// stands (answerOpenGates), so it gets no notice now as well. This path writes nothing about a
-	// slot: a root keeps the row it was started with through its whole wait (record.KeepsSlot),
-	// so its resume takes no new one (admit's slotFor), and where it stands in the line is the
-	// `waitingLine` on its own state, which the projection writes (api.WaitingLineView). An
-	// architect reads the rule in skills/legion-architect/references/acceptance.md and
-	// references/design-gate.md. The members the opening releases are started by admission's own
-	// pass over this same fact, which gives each the slot its first phase needs (record.Waiting's
-	// LineFirstPhase).
+	// the registration tells it nothing again. A root waiting on a person is told by its resume,
+	// which says how its spec stands (answerOpenGates), so it gets no notice now as well. This
+	// path writes nothing about a slot: a root keeps the row it was started with through its
+	// whole wait (record.KeepsSlot), so its resume takes no new one (admit's slotFor), and where
+	// it stands in the line is the `waitingLine` on its own state, which the projection writes
+	// (api.WaitingLineView). An architect reads the rule in
+	// skills/legion-architect/references/acceptance.md and references/design-gate.md. The members
+	// the opening releases are started by admission's own pass over this same fact, which gives
+	// each the slot its first phase needs (record.Waiting's LineFirstPhase).
 	switch {
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
@@ -222,9 +215,6 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 		}
 	default:
 		e.logOnCommit(ctx, "workflow: a registration of a gate already open at its version tells the architect nothing", "issue", issue.Key, "version", gate.LatestVersion)
-	}
-	if err := e.advancePendingReady(ctx, tx, fact.Issue, gates); err != nil {
-		return intake.Result{}, err
 	}
 	return intake.Result{}, nil
 }
@@ -498,7 +488,7 @@ func (e *Engine) untellUnresumedChanges(ctx context.Context, tx pgx.Tx, root rec
 	// Every gate write asks the same question of the issue's pairs, this one included: these
 	// writes clear a review mark and leave each step on the document it named, so the answer is
 	// that nothing is published.
-	_, err = record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
+	err = record.PublishChangedGates(ctx, e.store, tx, root.Key, gates, e.now())
 	return err
 }
 
@@ -553,20 +543,18 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 	if ungated {
 		reset = classify.ApplyDesignGateEvent(reset, classify.DesignGateApproved, fact.Read.Version, record.EventMark{})
 	}
-	if err := e.store.PutGate(ctx, tx, reset); err != nil {
+	if err := e.putGateTold(ctx, tx, reset, reset.LatestVersion); err != nil {
 		return intake.Result{}, err
 	}
 	// The reset keeps the step on the document it named, so the pairs stand as they were and
-	// nothing is published; the question is asked of every gate write. Its read after the write
-	// is the set the reset leaves, which is what the pending READY below is decided on.
-	gates, err = record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now())
-	if err != nil {
+	// nothing is published; the question is asked of every gate write.
+	if err := record.PublishChangedGates(ctx, e.store, tx, issue.Key, gates, e.now()); err != nil {
 		return intake.Result{}, err
 	}
 	if !ungated && fact.Read.Kind != intake.DispatchArtifactVersion {
 		return intake.Result{}, e.applyArtifact(ctx, tx, reset, fact.Read, false)
 	}
-	return intake.Result{}, e.advancePendingReady(ctx, tx, issue.Key, gates)
+	return intake.Result{}, nil
 }
 
 // declareRegistration declares the hand-back a registration makes (gateRegistered): when the
@@ -674,7 +662,7 @@ func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.Di
 	if err != nil || pending {
 		return intake.Result{}, err
 	}
-	if err := e.enqueue(ctx, tx, fact.Key, record.StatusWrite{Status: "todo", ObservedStatus: fact.Issue.Status, PersonHandover: true}); err != nil {
+	if err := e.enqueue(ctx, tx, fact.Key, record.PersonHandoverStatusWrite("todo", fact.Issue.Status)); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "admission: queued a person's handover", "issue", fact.Key, "source", "approval")
@@ -703,7 +691,7 @@ func (e *Engine) recordHandover(ctx context.Context, tx pgx.Tx, gate record.Desi
 	if err := e.store.PutGate(ctx, tx, classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.Version, fact.Mark)); err != nil {
 		return err
 	}
-	_, err = record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
+	err = record.PublishChangedGates(ctx, e.store, tx, gate.Issue, before, e.now())
 	return err
 }
 
@@ -782,14 +770,14 @@ func (e *Engine) personHandoverQueues(ctx context.Context, tx pgx.Tx, fact intak
 // belongs to the old tree now, so nothing on it closes the copy: not a new version, a changes
 // request, or an approval of a version older than the copy's (which ApplyDesignGateEvent would
 // record as the approved version, closing it). Only an approval of the copy's version or a later
-// one applies, opening a copy carried closed and releasing the READYs it refused.
+// one applies, opening a copy carried closed.
 func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 	return fact.Kind == intake.DispatchArtifactApproved && fact.Version >= gate.LatestVersion
 }
 
 // applyArtifact applies an artifact event to one gate, for the issue that holds it: an approval
-// opens it and advances that issue's admitted tree, a changes request or a new version closes it,
-// and an open gate releases the READYs it refused in that issue's tree. Each open or close is
+// opens it and advances that issue's admitted tree, and a changes request or a new version closes
+// it. Each open or close is
 // logged, and a changes request that finds the gate closed has a line of its own. The architect is
 // told an opening as design-approved, which starts its tree's work, except for a carried copy
 // (carried): that tree's design was approved before the carry, so its architect is told
@@ -894,26 +882,18 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 	if err != nil {
 		return err
 	}
-	if err := e.store.PutGate(ctx, tx, updated); err != nil {
+	if err := e.putGateTold(ctx, tx, updated, fact.Version); err != nil {
 		return err
 	}
-	after, err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now())
-	if err != nil {
+	if err := record.PublishChangedGates(ctx, e.store, tx, key, before, e.now()); err != nil {
 		return err
 	}
-	// What the tree does next is the whole issue's question, not this row's: every step the
-	// deployment gates must be open before a member starts or a refused READY is released
-	// (classify.DesignGatesOpen; the waiting line, where record.Waiting classes such a member
-	// LineFirstPhase and StartFirstPhase runs it, and advancePendingReady). The publish above
-	// read the issue's gates after the write, in this transaction, so that set answers this row
-	// as it now stands and the question is answered without reading the rows again. A row this
-	// event leaves closed is one the deployment gates - an ungated row returned above - so it
-	// holds the work whatever the other rows say, and the pass below is given nothing: the nil
-	// map answers DesignGatesOpen false, as the closed row itself does.
-	var gates map[record.DesignStep]record.DesignGate
-	if isOpen {
-		gates = after
-	}
+	// What the tree does next is the whole issue's question, not this row's, and nothing here
+	// asks it: every step the deployment gates must be open before a member starts
+	// (classify.DesignGatesOpen), and the members an opening releases take their first phase from
+	// admission's own pass over this same fact, each at the slot that phase needs (the waiting
+	// line, where record.Waiting classes such a member LineFirstPhase and StartFirstPhase runs
+	// it).
 	if tell {
 		if err := e.tellChangesOnce(ctx, tx, gate.Step, fact, true); err != nil {
 			return err
@@ -938,7 +918,7 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		switch {
 		case carried:
 			opened = &record.Notice{Kind: "carried-gate-opened", Version: fact.Version, Actor: reviewer, Ref: stepRef(fact.Key, gate.Step), Reason: fmt.Sprintf(
-				"a human approved %s's spec document at version %d, which opens the gate %s carried; any READY it refused is released and any child waiting on it starts", fact.Key, fact.Version, key)}
+				"a human approved %s's spec document at version %d, which opens the gate %s carried; any child waiting on it starts", fact.Key, fact.Version, key)}
 		case issue.AwaitingPerson():
 			opened = nil
 			e.logOnCommit(ctx, "workflow: a root waiting on a person is told its gate's opening by its resume", "issue", key, "version", fact.Version)
@@ -951,7 +931,132 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		// The members the opening releases take their first phase from admission's pass over this
 		// same fact, each at the slot that phase needs (record.Waiting's LineFirstPhase).
 	}
-	return e.advancePendingReady(ctx, tx, key, gates)
+	return nil
+}
+
+// tellGateMoved tells every worker holding a phase in the tree of key, and the tree's root
+// architect, that the design gate closed or opened at version: one message per role topic
+// (record.RoleMessage), the way the daemon reaches a role holder with something to read rather
+// than work to do (tellChecks). A new version of an approved spec closes the gate under workers
+// already running on the old one, and until now it told none of them: they went on building to a
+// design the person was being asked about again (dispatch://INFRA-714/spec R5). The opening is
+// told the same way, so a worker that was told to expect a change hears that it landed.
+//
+// No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
+// closed (the daemon's supervise row) and releases it at the opening, and every other worker
+// decides for itself what the version means for the work in hand. A phase no worker holds names
+// nobody, and the architect, which holds accepting itself, is told once.
+//
+// Linger holds a member of a closed tree where it stood (record.TreeLingers): every role of it is
+// suspended there, so a gate that moves then tells nobody, as a CI settlement tells nobody.
+//
+// A holder whose message token cannot be built is logged and skipped, and the rest are told. The
+// gate's state is the record this transaction writes; a message is what the record is worth
+// telling, and secondary to it. Aborting here would roll the gate's own move back for a name the
+// daemon could not spell - a tree whose root key is not an issue key is one such - which would
+// leave the gate closed under workers the message existed to warn.
+func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step record.DesignStep,
+	document string, version int, open bool) error {
+	root, err := e.store.Issue(ctx, tx, key)
+	if err != nil || root == nil {
+		return err
+	}
+	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
+		return err
+	}
+	members, err := e.store.TreeIssues(ctx, tx, root.Tree)
+	if err != nil {
+		return err
+	}
+	// The members first, then the tree's architect, which owns the tree and so is named on the
+	// tree root; the phase it works itself (accepting) is that same claim, and is told once with
+	// it.
+	recipients := make([]roleRecipient, 0, len(members)+1)
+	for _, member := range members {
+		if role := RoleFor(member.Phase); role != claim.RoleArchitect {
+			recipients = append(recipients, roleRecipient{issue: member.Key, role: role, row: member.Key})
+		}
+	}
+	recipients = append(recipients, roleRecipient{issue: root.Tree, role: claim.RoleArchitect, row: root.Tree})
+	told, err := e.addressRoles(root.Project, recipients,
+		e.logUnnamable(ctx, "workflow: the design gate moved and this holder could not be named, so it is not told",
+			"tree", root.Tree, "step", string(step), "version", version, "open", open))
+	if err != nil {
+		return err
+	}
+	// The step and its own document, never "spec version": under more than one gated step the
+	// version this event carries is that step's document's, and a message naming the spec would
+	// send a reader to the wrong one (INFRA-1272).
+	var body string
+	if open {
+		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
+			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
+			"A merge the closed gate held is released.", root.Tree, version, step, document)
+	} else {
+		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
+			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
+			"stands open again.", root.Tree, version, step, document)
+	}
+	for _, to := range told {
+		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
+			return err
+		}
+	}
+	e.logOnCommit(ctx, "workflow: the design gate moved and every phase holder of the tree is told", "issue", key, "tree", root.Tree,
+		"step", string(step), "version", version, "open", open, "told", len(told))
+	return nil
+}
+
+// putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells
+// every phase holder of the tree (tellGateMoved). It is the one way a gate row that can move the
+// standing gate is written, so that no path writes one silently: the artifact event's own apply
+// (applyArtifact), the registration (gateRegistered) and the reset of a gate recorded above the
+// version Dispatch holds (gateAboveDispatch) all go through it, and the gate seed reaches it
+// through the last two, since what the seed reads is applied as one of those facts (the outbox's
+// seedGate). A registration alone can take the standing gate either way — it writes a row at a new
+// version, which closes it, or carries the approval its read found, which opens it — and before
+// this helper only the artifact path told anyone, so a merger could be left merging under a
+// document nobody had approved, or waiting for an opening it was never told of
+// (dispatch://INFRA-714/spec R5).
+//
+// Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record
+// of a person's approval on a parked root (recordHandover), whose roles are suspended and whose
+// decision goes to the controller instead, and the carry of a gate onto a re-admitted orphan
+// (admit's own write), which is a tree that has not started. The clearing of a told changes
+// request (untellUnresumedChanges) writes a row that cannot move the standing gate at all, since
+// that record is no part of whether a gate is open.
+//
+// version and the row's own document are what the message names, so a reader is sent to the
+// document that moved rather than to the spec.
+func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
+	step := gate.Step.OrSpec()
+	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
+	if err != nil {
+		return err
+	}
+	stood := e.standingGateOpen(gates)
+	if err := e.store.PutGate(ctx, tx, gate); err != nil {
+		return err
+	}
+	gates[step] = gate
+	stands := e.standingGateOpen(gates)
+	if stands == stood {
+		return nil
+	}
+	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands)
+}
+
+// standingGateOpen is whether the tree's work stands released under gates, the rows an issue
+// holds by step: no step the deployment gates is closed with a row of its own
+// (classify.StandingGate). It is the one predicate the message and the merger's start hold both
+// read — the hold asks it as the outbox's designGateClosed — so a member is never told the gate
+// opened while the hold still holds its merger, nor left untold when the hold lets it go. A step
+// the deployment gates that nothing has registered holds the tree's work (FirstClosedStep) but
+// names no document, so nobody can be asked about it and nothing can be said of it: it is why the
+// message reads StandingGate rather than DesignGatesOpen, and the one difference between them.
+func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
+	_, held := classify.StandingGate(e.settings().Steps, gates)
+	return !held
 }
 
 // tellChangesOnce tells fact's changes request to its issue's architect once, by a notice or by the
