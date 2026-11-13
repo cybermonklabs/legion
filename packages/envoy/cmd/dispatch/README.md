@@ -1433,6 +1433,8 @@ the contracting migration — one that drops, renames or narrows — ships no ea
 
 No migration is an exception to that rule: a change that cannot be written that way is split into releases that can, so no release stops every server process.
 `0113`, `0117` and `20261111210103` below were each deployed with no server of the earlier release running, under an exception this rule no longer has (`20261111210103` ships in `legion-envoy-v30.11.0`), and a deployment still on a release before one of them crosses it once that way, before it runs more than one replica.
+So a release from a build below `20261111210103` onto this one or any later one is stop-the-world: stop every server process of the old release, then start the new one.
+The two-build guarantee does not cover that release, and it is an outage for as long as the migration and the new release's start take; it covers every release after it.
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
