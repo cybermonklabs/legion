@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,43 +13,46 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/testlimits"
 )
 
-// A test that starts n Dispatch processes against one Postgres needs that server to allow what
-// those processes may open: n * store.ConnectionsPerProcess, beside the slots Postgres keeps for
-// superusers. A server that allows fewer does not fail where the arithmetic is wrong - it fails
-// later and elsewhere, as a room that cannot take a connection (503 DOC_SERVICE_UNAVAILABLE), a
-// socket dropped mid-read, a lease that cannot be taken, or a process that exits before it is
-// healthy, each with `FATAL: remaining connection slots are reserved for roles with the SUPERUSER
-// attribute` (SQLSTATE 53300) in its own log and nothing in the failure naming the cause.
+// Every Dispatch process a test starts against one Postgres may open store.ConnectionsPerProcess
+// connections, so n processes running at once need n * store.ConnectionsPerProcess beside the
+// slots Postgres reserves for superusers. A server that allows fewer does not fail where the
+// arithmetic is wrong. It fails later and elsewhere: a room that cannot take a connection (503
+// DOC_SERVICE_UNAVAILABLE), a socket dropped mid-read, a lease that cannot be taken, or a process
+// that exits before it is healthy. Each has `FATAL: remaining connection slots are reserved for
+// roles with the SUPERUSER attribute` (SQLSTATE 53300) in its own log, and nothing in the failure
+// names the cause.
 //
-// So every start checks it, against the constant rather than against a number written here: the
-// ceiling has climbed 105, 108 and 112 as pools were added, and a lane configured for one of
-// those stays silent until a row fails for a reason that reads like something else. The refusal
-// names the arithmetic and what to change, which is the lane's own server rather than the pools:
-// shrinking the pools for tests would test a shape production does not run.
+// So every start checks two things, against constants rather than numbers written here. It refuses
+// a start that would run more processes at once than testlimits.MaxProcessesAtOnce, which every CI
+// lane's server is sized from. And it refuses a start the server it meets cannot serve. The fix is
+// the server's size, never the pools: pools shrunk for tests would test a shape production does
+// not run.
 //
-// processesRunning counts the processes one test has running, keyed by the root test's name, so a
-// subtest's processes count against its parent's total: they share the server. A process is
-// counted from its start until it ends, which is what it holds connections for - a row that
-// restarts a process one after another needs one server's worth, not one per start.
-var processesRunning sync.Map
+// dispatchProcessesRunning is the count of Dispatch processes running in this test binary. It is
+// one count for the whole binary because one `go test` binary is what one lane's server serves,
+// and parallel root tests in it share that server. A process counts from its start until it exits,
+// which is what it holds connections for, so a row that restarts a process one after another asks
+// for one process's worth.
+var dispatchProcessesRunning atomic.Int64
 
-// requireConnectionCeiling refuses the start of a process the lane's Postgres cannot serve beside
-// the ones this test is already running, and answers the release the caller runs when this
-// process ends.
+// requireConnectionCeiling counts one more Dispatch process running in this test binary and
+// refuses its start when the count is over testlimits.MaxProcessesAtOnce or the server cannot serve
+// that many. It answers the release that takes the process off the count, which the caller runs
+// once the process has exited; the test's cleanup runs it too, for a start that never ran a
+// process, and only the first call counts.
 func requireConnectionCeiling(t *testing.T, databaseURL string) (release func()) {
 	t.Helper()
-	root, _, _ := strings.Cut(t.Name(), "/")
-	counter, _ := processesRunning.LoadOrStore(root, &atomic.Int64{})
-	processes := counter.(*atomic.Int64).Add(1)
+	processes := int(dispatchProcessesRunning.Add(1))
 	var once sync.Once
-	release = func() { once.Do(func() { counter.(*atomic.Int64).Add(-1) }) }
+	release = func() { once.Do(func() { dispatchProcessesRunning.Add(-1) }) }
 	t.Cleanup(release)
 
-	if int(processes) > testlimits.MaxProcessesPerTest {
-		t.Fatalf("this test starts %d Dispatch processes against one Postgres and testlimits."+
-			"MaxProcessesPerTest is %d, which is what every CI lane's server is sized from: raise that "+
-			"constant, so the lanes grow with it, rather than leaving this row to meet a server that "+
-			"cannot serve it.", processes, testlimits.MaxProcessesPerTest)
+	if processes > testlimits.MaxProcessesAtOnce {
+		release()
+		t.Fatalf("this start would run %d Dispatch processes at once in this test binary, and "+
+			"testlimits.MaxProcessesAtOnce is %d. Every CI lane's Postgres is sized from that constant: "+
+			"raise it, so the lanes grow with it, rather than leaving this row to meet a server that "+
+			"cannot serve it.", processes, testlimits.MaxProcessesAtOnce)
 	}
 
 	ctx := context.Background()
@@ -65,16 +67,27 @@ func requireConnectionCeiling(t *testing.T, databaseURL string) (release func())
 	defer conn.Close(ctx)
 	allowed := serverInt(t, conn, "max_connections")
 	reserved := serverInt(t, conn, "superuser_reserved_connections")
-	need := int(processes)*store.ConnectionsPerProcess + reserved
+	opened := processes * store.ConnectionsPerProcess
+	need := opened + reserved
 	if allowed >= need {
 		return release
 	}
-	t.Fatalf("this test starts %d Dispatch process(es) against a Postgres that allows %d connections "+
-		"with %d reserved for superusers, and %d process(es) may open %d (store.ConnectionsPerProcess=%d): "+
-		"raise the server's max_connections to at least %d. A smaller server does not fail here but later, "+
-		"as 53300 refusals inside a room, a lease or a socket.",
-		processes, allowed, reserved, processes, int(processes)*store.ConnectionsPerProcess,
-		store.ConnectionsPerProcess, need)
+	release()
+	// The fix names the size the whole suite needs, not this start's minimum: a server raised to
+	// the minimum for one process refuses the next row that runs more.
+	suite := testlimits.ServerConnections + reserved
+	t.Fatalf("this start would run %d Dispatch process(es) at once in this test binary, which may open %d "+
+		"connections (store.ConnectionsPerProcess=%d each), against a Postgres that allows %d with %d of "+
+		"them reserved for superusers. The server must allow at least %d for this start, and %d for the "+
+		"whole suite (testlimits.ServerConnections + the reserve). A smaller one does not fail here but "+
+		"later, as 53300 refusals inside a room, a lease or a socket.\n"+
+		"To fix it:\n"+
+		"- In CI, the lane runs .github/scripts/pg-connection-ceiling.sh before its tests.\n"+
+		"- On a server you own, restart it with -c max_connections=%d.\n"+
+		"- In a Legion pod whose legion-testpg still starts the server at 100 connections (an image "+
+		"built before legion-testpg was sized from testlimits), start a Postgres of your own on the "+
+		"issue's volume with -c max_connections=%d and point DISPATCH_TEST_DATABASE_URL at it.",
+		processes, opened, store.ConnectionsPerProcess, allowed, reserved, need, suite, suite, suite)
 	return release
 }
 

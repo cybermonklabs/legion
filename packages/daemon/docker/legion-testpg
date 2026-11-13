@@ -42,6 +42,14 @@ sockets=$dir/sockets
 log=$dir/server.log
 superuser=$(id -un)
 
+# max_connections is what the server allows: testlimits.ServerConnections
+# (packages/envoy/internal/dispatch/testlimits), what a Dispatch test suite needs beyond the
+# superuser reserve, plus the 3 slots Postgres reserves for superusers by default, since this
+# script leaves superuser_reserved_connections at its default. A shell script cannot read the Go
+# constant, so it holds the sum, and packages/envoy/internal/dispatch/testlimits/testlimits_test.go
+# fails when the two differ.
+max_connections=359
+
 die() {
 	echo "$name: $*" >&2
 	exit 1
@@ -214,8 +222,8 @@ start() {
 				rm -f "$data/postmaster.pid" "$sockets/.s.PGSQL.$port.lock"
 			fi
 		fi
-		# A throwaway cluster trades durability for speed: nothing in it survives the pod. 100
-		# connections cover a package's parallel tests, and 256MB of shared buffers their
+		# A throwaway cluster trades durability for speed: nothing in it survives the pod.
+		# max_connections is sized above, and 256MB of shared buffers covers a suite's
 		# fixtures. huge_pages and dynamic_shared_memory_type are the pod's: gVisor serves no
 		# huge pages, and each role mounts its own 64 MiB /dev/shm, too small for the posix
 		# segments the default picks. jit off keeps LLVM out of a test's plan times. The WAL
@@ -235,7 +243,7 @@ start() {
 		# 1.1 GB with the defaults and at 425 MB with these.
 		# shellcheck disable=SC2094 # pg_ctl writes $log through --log and this append; it reads none
 		"$bin/pg_ctl" --pgdata "$data" --log "$log" --wait --timeout 120 \
-			--options "-p $port -k $sockets -c listen_addresses=127.0.0.1 -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=100 -c shared_buffers=256MB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=512MB -c min_wal_size=64MB -c wal_keep_size=0" \
+			--options "-p $port -k $sockets -c listen_addresses=127.0.0.1 -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=$max_connections -c shared_buffers=256MB -c huge_pages=off -c dynamic_shared_memory_type=mmap -c jit=off -c wal_level=minimal -c max_wal_senders=0 -c max_wal_size=512MB -c min_wal_size=64MB -c wal_keep_size=0" \
 			start >> "$log" 2>&1 ||
 			die "pg_ctl start failed; $log holds its output"
 	fi
@@ -299,12 +307,12 @@ ensure() {
 	# pod's life, and nothing in the log would say the DSN does not work. So the DSN is tried
 	# again here. A start that worked can still fail this probe: PGCONNECT_TIMEOUT bounds the
 	# connect alone, not psql's whole run, so a loaded box answers late (measured: 48 ms median,
-	# 23.5 s worst of 40 samples), and a suite holding every one of the 100 connections leaves
+	# 23.5 s worst of 40 samples), and a suite holding every connection the server allows leaves
 	# none for the probe. Hence the second try, and a message that names those two before the
 	# cluster's own faults.
 	serving || sleep 2
 	serving ||
-		die "the server started but $LEGION_TEST_PG_DSN did not answer twice running; it may be slow under load or out of connections (max_connections=100), or the cluster's role or hba file may be wrong: $log holds the server's output"
+		die "the server started but $LEGION_TEST_PG_DSN did not answer twice running; it may be slow under load or out of connections (max_connections=$max_connections), or the cluster's role or hba file may be wrong: $log holds the server's output"
 	echo "$name: serving $LEGION_TEST_PG_DSN from $data"
 }
 

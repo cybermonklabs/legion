@@ -1,35 +1,31 @@
 #!/usr/bin/env bash
-# Raise a CI Postgres service's connection ceiling to what the Dispatch processes a lane starts
-# may open, and restart it so the setting takes.
+# Raise a CI Postgres service's max_connections to what a Dispatch test lane needs, and restart it
+# so the setting takes.
 #
-# The number is derived from the code rather than written here: store.ConnectionsPerProcess is the
-# most connections one Dispatch server process opens, and a lane that starts N of them against one
-# server needs N times that, beside the slots Postgres keeps for superusers and a little headroom
-# for the test's own clients. The ceiling has climbed 105, 108 and 112 as pools were added, so a
-# literal in this file would be right until the next pool and silent afterwards: the suite would
-# fail as 53300 refusals inside a room, a lease or a socket (see
-# packages/envoy/cmd/dispatch/connection_ceiling_test.go, which refuses such a server by name).
+# A lane's Postgres is raised because a server that allows fewer connections than the suite opens
+# does not fail where the size is wrong. It fails later, as a 53300 refusal (`remaining connection
+# slots are reserved for roles with the SUPERUSER attribute`) inside a room, a lease or a socket,
+# and nothing in the failure names the cause. What a lane's server must allow is
+# testlimits.ServerConnections (packages/envoy/internal/dispatch/testlimits) beyond its own
+# superuser_reserved_connections. packages/envoy/cmd/dispatch/connection_ceiling_test.go refuses,
+# by name, a test start on a server too small for the Dispatch processes then running.
 #
 # Usage: pg-connection-ceiling.sh <container>
 #   container  the service container id (${{ job.services.postgres.id }})
 #
-# It takes no count of its own: how many processes one test may start is testlimits.
-# MaxProcessesPerTest, and what they may open together is testlimits.RequiredConnections, which
-# the command below prints. A per-lane number here would be the same bare number in another
-# place, and a row that grows to one more process would meet a server nobody raised.
+# It holds no number of its own: internal/dispatch/store/cmd/connections prints
+# testlimits.ServerConnections, and this script adds only the server's own
+# superuser_reserved_connections.
 set -euo pipefail
 
 container=${1:?the service container id}
 
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
-required=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)
+server=$(cd -- "$repo_root/packages/envoy" && go run ./internal/dispatch/store/cmd/connections)
 reserved=$(docker exec "$container" psql -U postgres -Atc "select current_setting('superuser_reserved_connections')")
-# The test's own clients: each package run holds a pool of its own beside the processes, and the
-# harness opens short-lived connections for its reads. Twenty is what those have needed.
-headroom=20
-want=$((required + reserved + headroom))
+want=$((server + reserved))
 
-echo "pg-connection-ceiling: ${required} connections for the processes one test may start + ${reserved} reserved + ${headroom} headroom = ${want}"
+echo "pg-connection-ceiling: ${server} connections the suite needs (testlimits.ServerConnections) + ${reserved} reserved for superusers = ${want}"
 docker exec "$container" psql -U postgres -c "alter system set max_connections = ${want}"
 docker restart "$container" >/dev/null
 for _ in $(seq 1 30); do

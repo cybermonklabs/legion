@@ -1,10 +1,8 @@
-// Command connections prints what a Dispatch test lane's Postgres must allow: the connections
-// the most processes any one test starts may open together (testlimits.RequiredConnections,
-// store.ConnectionsPerProcess per process).
+// Command connections prints testlimits.ServerConnections: the connections a Dispatch test lane's
+// Postgres must allow beyond its superuser reserve (superuser_reserved_connections).
 //
-// It exists so that a CI lane sizes its server from the code rather than from a number written in
-// a workflow (.github/scripts/pg-connection-ceiling.sh). The per-process ceiling has climbed 105,
-// 108 and 112 as pools were added, and each climb left every literal elsewhere wrong and silent.
+// .github/scripts/pg-connection-ceiling.sh runs it to size a CI lane's server from the code, and
+// adds only that server's own superuser reserve, so no workflow holds the number.
 package main
 
 import (
@@ -14,5 +12,5 @@ import (
 )
 
 func main() {
-	fmt.Println(testlimits.RequiredConnections)
+	fmt.Println(testlimits.ServerConnections)
 }

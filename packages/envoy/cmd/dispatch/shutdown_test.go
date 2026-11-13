@@ -1354,8 +1354,9 @@ const testHorizonStallWarning = 250 * time.Millisecond
 // port before it serves. DISPATCH_PORT names the same port, which Dispatch checks against the socket.
 func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatchOptions) *dispatchProcess {
 	t.Helper()
-	// The server must allow what this process and the ones this test already started may open
-	// (connection_ceiling_test.go), since a server that allows fewer fails later and elsewhere.
+	// The server must allow what this process and every other Dispatch process this test binary
+	// runs may open (connection_ceiling_test.go), since a server that allows fewer fails later and
+	// elsewhere.
 	releaseConnections := requireConnectionCeiling(t, databaseURL)
 	// The process's own database, for the events_start wait; a URL it cannot serve against is
 	// the test's own mistake, not a stall to wait out.
@@ -1421,15 +1422,11 @@ func startDispatchProcessWith(t *testing.T, databaseURL string, options dispatch
 	if options.OwnProcessGroup {
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	}
-	started := &dispatchProcess{Process: cmdtest.Start(t, "Dispatch", cmd), port: held.Port, database: config.Database}
-	// The server's connections come back when this process ends, so the count of what this test
-	// runs falls then rather than at the test's own cleanup: a row that restarts a process one
-	// after another asks the server for one process's worth, not one per start.
-	go func() {
-		<-started.Exited
-		releaseConnections()
-	}()
-	return started
+	// The process leaves the count once it has exited and before Exited closes, so a test that
+	// waits on Exited and starts another process is counted with this one gone: a row that
+	// restarts a process one after another asks the server for one process's worth, not one per
+	// start. A start that fails leaves the count at the test's cleanup (requireConnectionCeiling).
+	return &dispatchProcess{Process: cmdtest.StartThen(t, "Dispatch", cmd, releaseConnections), port: held.Port, database: config.Database}
 }
 
 func (p *dispatchProcess) url(path string) string {
