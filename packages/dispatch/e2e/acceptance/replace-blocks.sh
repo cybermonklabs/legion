@@ -23,15 +23,15 @@
 # DATABASE_URL, a loopback PostgreSQL database of this run's own, starts a Dispatch of its own
 # with `bun run dispatch:local` (packages/dispatch/e2e/local-instance.ts) and stops it again from
 # this script's trap, however the run ends. That command truncates and reseeds the database it is
-# given, so the database must be one nothing else holds: the run reads the database the connection
-# string names — its path, a `dbname=` keyword in its query, or PGDATABASE where it names neither
-# — and refuses the database LEGION_TEST_PG_DSN names, a string whose database it cannot read
-# (database_name), and a string holding a percent sign where a database name can hide — the path
-# of the URL, or its query — since libpq decodes a percent escape there and this run does not
-# (percent_encoded_dsn). It builds the dashboard, builds the server and seeds before it
-# prints anything, so the wait for it is minutes long and bounded (instance_seconds); it refuses
-# to start at all when PLAYWRIGHT_BASE_URL or DISPATCH_E2E_PROCESSES is set, which is refused here
-# first, by name. The instance prints no bare base URL, so the base URL is cut out of its
+# given, so the database must be one nothing else holds. Before anything starts, the run asks the
+# server DATABASE_URL reaches which database it is and on which port it answers, asks the same
+# through LEGION_TEST_PG_DSN where that is set, and refuses a DATABASE_URL either question cannot
+# be answered through, and one that reaches a database of the shared database's name on a server
+# it cannot prove is another one (the guard below). It builds the dashboard, builds the server and
+# seeds before it prints anything, so the wait for it is minutes long and bounded
+# (instance_seconds); it refuses to start at all when PLAYWRIGHT_BASE_URL or
+# DISPATCH_E2E_PROCESSES is set, which is refused here first, by name. The instance prints no bare
+# base URL, so the base URL is cut out of its
 # `Open (signed in as alice): <base>/auth/_dev/signin?login=alice&next=/` line and used exactly as
 # printed: another Host earns 421. Its agent bearer is `e2e-token`. Nothing this run starts
 # inherits the Dispatch, Envoy, NATS or libpq variables a Legion pane exports: they are unset
@@ -92,89 +92,70 @@ readonly cli_entry="$script_dir/../../../envoy-client/bin/dispatch.ts"
 # two-core pod, four minutes with the Go build cache cold and two minutes with it warm.
 readonly instance_seconds=900
 
-# database_name STRING: the database a libpq connection string names, read from the string alone:
-# the path of a postgres:// URL, and a `dbname=` keyword in its query, which libpq reads after the
-# path and so takes over it. It reads that text as it stands and decodes nothing, so its caller
-# refuses a string carrying a percent sign in either of those two fields before this is reached
-# (percent_in_database_fields, percent_encoded_dsn), and what this reads is what libpq reads. It
-# prints nothing for a string whose database it cannot read — one that is no postgres:// URL, one
-# that names no database, one whose name carries a character a database name does not — and the
-# caller refuses what it cannot read.
+# The guard parses no connection string itself: it asks the server the string reaches which
+# database it is, and the port it answers on, and judges those answers.
 #
-# It reads the name alone and never the host and port beside it, so it also refuses a database of
-# the shared name on another server. That is the safe side of this guard: a refusal costs a
-# `createdb`, and a run let through truncates and reseeds whatever it reaches.
-database_name() {
-  local rest query name field
-  [[ "$1" =~ ^postgres(ql)?:// ]] || return 0
-  rest="${1#*://}"
-  query=""
-  if [[ "$rest" == *\?* ]]; then
-    query="${rest#*\?}"
-  fi
-  rest="${rest%%\?*}"
-  name=""
-  if [[ "$rest" == */* ]]; then
-    name="${rest#*/}"
-  fi
-  local -a fields=()
-  IFS='&' read -ra fields <<<"$query"
-  for field in "${fields[@]}"; do
-    if [[ "$field" == dbname=* ]]; then
-      name="${field#dbname=}"
-    fi
-  done
-  [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_$-]*$ ]] || return 0
-  printf '%s\n' "$name"
+# server_answer CONNECTION: psql's answer through CONNECTION to `select current_database(),
+# inet_server_port()`, one line holding the database's name and the port with a `|` between them,
+# in the environment it is called in. -X reads no psqlrc, -w never prompts for a password and stdin
+# is empty, so nothing waits on a person. CONNECTION is the value of --dbname, which psql reads as
+# a connection string or a database name and never as an option, whatever it opens with. psql's
+# stderr goes nowhere: its errors name the user and the host of the string, and a refusal prints
+# no part of it.
+server_answer() {
+  psql -XAtqw --dbname="$1" -c 'select current_database(), inet_server_port()' \
+    </dev/null 2>/dev/null
 }
 
-# percent_in_database_fields VALUE: whether a percent sign stands where a database name can hide —
-# the path of a postgres:// URL, or its query, which is where a `dbname=` keyword stands. libpq
-# decodes a percent escape in both and database_name, which reads the text as it stands, does not,
-# so one there hides the database the string reaches. Nothing else is read: a percent-encoded
-# password stands in the userinfo, before the last `@` of the authority, and the host and the port
-# stand beside it, and none of the three names a database. A string that is no postgres:// URL
-# answers no, having neither field: database_name reads no database in one either, so the caller
-# refuses it as unreadable (unreadable_dsn), which names what is wrong with it.
-percent_in_database_fields() {
-  local rest query path
-  [[ "$1" =~ ^postgres(ql)?:// ]] || return 1
-  rest="${1#*://}"
-  query=""
-  if [[ "$rest" == *\?* ]]; then
-    query="${rest#*\?}"
-    rest="${rest%%\?*}"
-  fi
-  # The authority ends at the first `/` after `//`, so what follows that slash is the path, and
-  # the userinfo, the host and the port before it are left unread.
-  path=""
-  if [[ "$rest" == */* ]]; then
-    path="${rest#*/}"
-  fi
-  [[ "$path" == *%* || "$query" == *%* ]]
+# scrubbed_server_answer CONNECTION: server_answer with every PG* variable unset, as the scrub
+# below leaves them for the instance, so libpq fills in nothing from them that the instance would
+# not, and with a PGCONNECT_TIMEOUT of this run's own, so a server that never answers is a refusal
+# and not a hang.
+scrubbed_server_answer() {
+  (
+    local name
+    local -a inherited
+    mapfile -t inherited < <(compgen -e)
+    for name in "${inherited[@]}"; do
+      [[ "$name" != PG* ]] || unset "$name"
+    done
+    export PGCONNECT_TIMEOUT=10
+    server_answer "$1"
+  )
+}
+
+# read_answer VARIABLE ANSWER: sets `answered_database` and `answered_port` to the name and the port
+# in ANSWER, server_answer's line for the connection string in the variable VARIABLE. The port is
+# what follows the last `|`, since a database name may hold one and an integer does not, and it is
+# empty for a Unix-socket connection, which answers no port. Any other answer — none, an empty
+# name, or a name holding a newline, which psql prints as a second line — is one this run cannot
+# read, and it refuses VARIABLE for it (unread_dsn).
+read_answer() {
+  [[ "$2" == *"|"* && "$2" != *$'\n'* ]] || unread_dsn "$1"
+  answered_database="${2%|*}"
+  answered_port="${2##*|}"
+  [[ -n "$answered_database" && "$answered_port" =~ ^[0-9]*$ ]] || unread_dsn "$1"
 }
 
 # The two refusals below reach stderr and whatever log keeps it, and a password must not
-# (ASVS v5.0.0-16.2.5), so each names the variable and what is wrong with it and prints no part
-# of the connection string it holds.
+# (ASVS v5.0.0-16.2.5), so each names the variable and the reason and prints no part of either
+# connection string.
 
-# unreadable_dsn NAME: refuses the connection string in the variable NAME, whose database this run
-# cannot read (database_name).
-unreadable_dsn() {
-  printf '%s does not name a database this run can read: give it as postgres://user@host:port/<database>. The dispatch:local command truncates and reseeds the database it is given, so this run refuses every connection string whose database it cannot read.\n' \
+# unread_dsn NAME: refuses the connection string in the variable NAME, through which this run
+# could not read the database it reaches: psql connected to no server, or got no answer this run
+# can read (read_answer).
+unread_dsn() {
+  printf '%s could not be read: psql, asking through it which database it reaches, got no answer this run can read. The dispatch:local command truncates and reseeds the database it is given, so this run refuses a connection string it cannot read. Give it as postgres://user@host:port/<database>, naming a database that exists.\n' \
     "$1" >&2
   usage
   exit 2
 }
 
-# percent_encoded_dsn NAME: refuses the connection string in the variable NAME, which holds a
-# percent sign where its database name stands (percent_in_database_fields). libpq percent-decodes
-# the path and the query keywords of a connection string, so `?db%6Eame=legion_test` reaches the
-# database legion_test while this guard, reading the text and decoding nothing, sees no `dbname=`
-# at all. An encoding this run cannot read is one it will not judge: it refuses rather than
-# truncate and reseed a database it cannot name.
-percent_encoded_dsn() {
-  printf '%s holds a percent sign in its path or its query, where libpq decodes percent escapes and this run does not, so this run cannot name the database the string reaches, and the dispatch:local command truncates and reseeds the database it is given. Give it as postgres://user@host:port/<database>, with no percent escape in the path or the query; one in the password is another matter and is let through.\n' \
+# shared_database NAME: refuses DATABASE_URL, which reaches a database named NAME, as
+# LEGION_TEST_PG_DSN does, on a server this run cannot prove is another one. It prints NAME, which
+# the server answered and which is the reason for the refusal.
+shared_database() {
+  printf 'DATABASE_URL reaches a database named %s, as LEGION_TEST_PG_DSN does, on a server this run cannot prove is another one: the dispatch:local command truncates and reseeds the database it is given, and that one holds every other check of this pod. Make a database of this run'"'"'s own with createdb and name it in the path of DATABASE_URL.\n' \
     "$1" >&2
   usage
   exit 2
@@ -188,43 +169,39 @@ if [[ -n "$database_url" ]]; then
     usage
     exit 2
   fi
-  # libpq decodes a percent escape and this guard does not, so a string carrying one where a
-  # database name can hide — the path, and the query a `dbname=` keyword stands in — is refused
-  # before any database name is read: `?db%6Eame=legion_test` is a `dbname=` keyword to libpq and
-  # no keyword at all to a reader of the text, and the database it reaches can be the shared one
-  # under a spelling this run cannot see. A percent escape in the userinfo is a password's
-  # (postgres://u:p%40ss@127.0.0.1:5433/mine), names no database, and is let through.
-  ! percent_in_database_fields "$database_url" || percent_encoded_dsn DATABASE_URL
+  require_commands psql setsid ps tail
   # The pod's shared test database, which every other check of this repository reads and writes.
   # The value a Legion pane exports carries its own quotes, so they come off before it is read.
   shared_dsn="${LEGION_TEST_PG_DSN-}"
   shared_dsn="${shared_dsn#[\"\']}"
   shared_dsn="${shared_dsn%[\"\']}"
-  shared_name=""
+  # Each string is read by asking its server, before anything starts. DATABASE_URL is read with no
+  # PG* variable set, as the instance reads it after the scrub below (scrubbed_server_answer), and
+  # LEGION_TEST_PG_DSN in the caller's environment, as the pod's other checks read it.
+  #
+  # A read that fails refuses: a string this run cannot read is one it cannot say it would write
+  # through, so it fails closed (unread_dsn).
+  answer="$(scrubbed_server_answer "$database_url")" || unread_dsn DATABASE_URL
+  read_answer DATABASE_URL "$answer"
+  readonly seeded_database="$answered_database"
+  readonly seeded_port="$answered_port"
+  # With no LEGION_TEST_PG_DSN there is no shared database to compare with, and the run goes on.
   if [[ -n "$shared_dsn" ]]; then
-    ! percent_in_database_fields "$shared_dsn" || percent_encoded_dsn LEGION_TEST_PG_DSN
-    shared_name="$(database_name "$shared_dsn")"
-    [[ -n "$shared_name" ]] || unreadable_dsn LEGION_TEST_PG_DSN
+    answer="$(server_answer "$shared_dsn")" || unread_dsn LEGION_TEST_PG_DSN
+    read_answer LEGION_TEST_PG_DSN "$answer"
+    # Two different names are never one database, whatever server each is on, and the run goes on.
+    # An equal name is refused unless both ports were answered and differ: a server has one port,
+    # so two ports are two servers. A port not answered (a Unix-socket connection answers none)
+    # proves nothing and is refused, and so is an equal port, which two servers on two hosts can
+    # share. The server's address is asked nowhere and decides nothing: inet_server_addr() is the
+    # address the connection came in on, and a server whose listen_addresses names several answers
+    # a different one for one database through each, so a differing address proves nothing and
+    # would let the shared database through, while `port` is one integer setting per server.
+    if [[ "$seeded_database" == "$answered_database" ]] &&
+      [[ -z "$seeded_port" || -z "$answered_port" || "$seeded_port" == "$answered_port" ]]; then
+      shared_database "$seeded_database"
+    fi
   fi
-  # The database this run would reach: the one DATABASE_URL names, else the one PGDATABASE names,
-  # which libpq reads when the string names none. PGDATABASE is read here, before the scrub below
-  # unsets it, so a run that means the shared database by that route is refused by name too.
-  own_name="$(database_name "$database_url")"
-  reached="$own_name"
-  if [[ -z "$reached" ]]; then
-    reached="${PGDATABASE:-}"
-  fi
-  if [[ -n "$shared_name" && "$reached" == "$shared_name" ]]; then
-    printf 'this run would reach the database %s, which LEGION_TEST_PG_DSN names: the dispatch:local command truncates and reseeds the database it is given, and that one holds every other check of this pod. Make a database of this run'"'"'s own with createdb and name it in the path of DATABASE_URL.\n' \
-      "$reached" >&2
-    usage
-    exit 2
-  fi
-  # A DATABASE_URL that names no database of its own leaves the instance nothing to read: the
-  # scrub below unsets PGDATABASE and every other PG* variable, and libpq would then open the
-  # database named after the connecting user.
-  [[ -n "$own_name" ]] || unreadable_dsn DATABASE_URL
-  require_commands setsid ps tail
   # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
   if [[ -n "${DISPATCH_URL:-}" ]]; then
     printf 'replace-blocks.sh: DATABASE_URL names the Dispatch to start, so the DISPATCH_URL in the environment is left alone.\n'
@@ -314,17 +291,19 @@ trap 'exit 143' TERM
 
 # instance_log_tail: the last ten lines the instance logged before its hand-over message, which a
 # failed start prints. That message is the one place the instance writes DATABASE_URL whole (the
-# console.log of packages/dispatch/e2e/local-instance.ts that opens with "Dispatch local instance is
-# up.": its `Database` line at :155 and the harness prefix of :75, which :160 prints), and it writes
-# the signed-in line in the same call, so a start that fails after it is a race this run can lose:
-# the line read missed it, then the process stopped. Nothing from that message's first line on is
-# printed, so no failure puts the string on stderr however the race goes.
+# hand-over console.log in `main` of packages/dispatch/e2e/local-instance.ts, which opens with
+# "Dispatch local instance is up.": its `Database` line, and the `DATABASE_URL=` prefix
+# `harnessEnvironment` builds, which that same call prints), and it writes the signed-in line in
+# the same call, so a start that fails after it is a race this run can lose: the line read missed
+# it, then the process stopped. Nothing from that message's first line on is printed, so no
+# failure puts the string on stderr however the race goes.
 #
 # This is safe exactly as long as nothing logs DATABASE_URL before that message. Today that holds by
-# the code of local-instance.ts: the URL is printed at :155 and through :75 and nowhere else, and
-# its one earlier refusal (databaseUrlRefusal, local-instance-support.ts) names hosts and never the
-# string. A line added to the instance that logs the URL before "Dispatch local instance is up." is
-# on the wrong side of this cut, and this run prints it.
+# the code of local-instance.ts: the URL is printed in that console.log, once itself and once
+# through `harnessEnvironment`, and nowhere else, and its one earlier refusal (databaseUrlRefusal,
+# local-instance-support.ts) names hosts and never the string. A line added to the instance that
+# logs the URL before "Dispatch local instance is up." is on the wrong side of this cut, and this
+# run prints it.
 instance_log_tail() {
   sed '/^Dispatch local instance is up\./,$d' "$work/instance.log" | tail -n 10
 }
@@ -336,7 +315,7 @@ instance_log_tail() {
 start_instance() {
   local deadline=$((SECONDS + instance_seconds)) own_group line
   printf 'replace-blocks.sh: starting a Dispatch of its own with bun run dispatch:local. It builds the dashboard, builds the server and seeds %s first, so this takes minutes.\n' \
-    "$(database_name "$database_url")"
+    "$seeded_database"
   (cd "$repo_root" && DATABASE_URL="$database_url" exec setsid bun run dispatch:local) \
     >"$work/instance.log" 2>&1 </dev/null &
   instance_pid=$!

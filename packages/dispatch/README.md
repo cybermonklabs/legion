@@ -479,17 +479,15 @@ matched item's own marker, and the markdown each edit answers with. It takes the
 inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
 that project. It is the one driver that can start its own server: given `DATABASE_URL`, a
 loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
-its own trap. That command truncates and reseeds the database it is given, so the run first reads
-the database the connection string names — the path of the URL, a `dbname=` keyword in its query,
-or `PGDATABASE` where it names neither — and refuses the database `LEGION_TEST_PG_DSN` names,
-whichever of the three spells it. It reads that name alone, so a database of that name on another
-server is refused too, and a connection string whose database it cannot read is refused as well.
-A connection string carrying a percent sign where a database name can hide — the path of the URL,
-or its query — is refused:
-libpq decodes a percent escape there and this guard reads the text as it stands, so
-`?db%6Eame=legion_test` reaches the shared database under a spelling the guard cannot see.
-A percent escape in the password is read by neither and is let through, which is what lets the
-string carry what the line below says it must.
+its own trap. That command truncates and reseeds the database it is given, so before anything
+starts the run asks the server the connection string reaches, through `psql`, which database it
+is (`current_database()`) and which port it answers on (`inet_server_port()`), and asks the same
+through `LEGION_TEST_PG_DSN` where that is set. It refuses a connection string it gets no answer
+through, and a database of the same name as the shared one on a server it cannot prove is
+another: two names that differ pass, and two equal names pass only where both servers answered a
+port and the ports differ. It parses neither string itself, so the database it judges is the one
+libpq connects to, however the string spells it; it reads `DATABASE_URL` with no `PG*` variable
+set, as the instance reads it.
 The connection string the run is given must carry everything libpq needs to connect — host, port,
 user, password and TLS settings among them — since the run unsets every `PG*` variable before it
 starts the instance, so none survives into it.
