@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -152,6 +152,11 @@
         },
         "negative_control": {
           "kind": "string"
+        },
+        "ci_check": {
+          "kind": "string",
+          "since": 4,
+          "creatable_since": 4
         }
       },
       "since": 3,

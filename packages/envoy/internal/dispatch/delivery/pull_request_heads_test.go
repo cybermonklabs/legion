@@ -303,6 +303,68 @@ func TestHeadStoredAtFindsARowWrittenUnderGitHubsOwnSpelling(t *testing.T) {
 	}
 }
 
+// NewestPullRequestHead answers the head of an issue's open pull request of the highest number,
+// and only where none is open the head of its merged pull request of the highest number. An open
+// pull request of a lower number wins over a merged one of a higher, a closed-unmerged pull
+// request is no head whatever its number, another issue's pull request answers for nothing, and
+// an issue holding no pull request has no head.
+func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	issue := seedHeadIssue(t, ctx, pool, 90)
+	other := seedHeadIssue(t, ctx, pool, 91)
+	none := seedHeadIssue(t, ctx, pool, 92)
+	writeHead := func(number int, sha, state, issueKey string) {
+		t.Helper()
+		attributed := issueKey
+		if err := UpsertPullRequestHead(ctx, pool, nil, PullRequestHead{
+			Repo: "acme/widgets", Number: number, HeadSHA: sha, HeadRef: "legion/work", BaseRef: "main",
+			State: state, IssueKey: &attributed, AttributionSource: "title", AttributionComplete: true,
+			Title: issueKey + " the work", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+		}); err != nil {
+			t.Fatalf("store #%d: %v", number, err)
+		}
+	}
+	newest := func(issueKey string) (NewestHead, bool) {
+		t.Helper()
+		head, found, err := NewestPullRequestHead(ctx, pool, issueKey)
+		if err != nil {
+			t.Fatalf("NewestPullRequestHead(%s): %v", issueKey, err)
+		}
+		return head, found
+	}
+
+	if head, found := newest(none); found {
+		t.Fatalf("NewestPullRequestHead(%s) = %+v, want no head: the issue holds no pull request", none, head)
+	}
+
+	const (
+		olderMerged = "9010000000000000000000000000000000000000"
+		newerMerged = "9020000000000000000000000000000000000000"
+		olderOpen   = "9030000000000000000000000000000000000000"
+		newerOpen   = "9040000000000000000000000000000000000000"
+		closed      = "9050000000000000000000000000000000000000"
+		othersOpen  = "9060000000000000000000000000000000000000"
+	)
+	writeHead(905, olderMerged, "merged", issue)
+	writeHead(909, newerMerged, "merged", issue)
+	writeHead(912, closed, "closed", issue)
+	writeHead(920, othersOpen, "open", other)
+	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 909, HeadSHA: newerMerged}) {
+		t.Fatalf("NewestPullRequestHead(%s) with no open pull request = %+v, %v; want the merged #909 at %s",
+			issue, head, found, newerMerged)
+	}
+
+	writeHead(903, olderOpen, "open", issue)
+	writeHead(907, newerOpen, "open", issue)
+	if head, found := newest(issue); !found || head != (NewestHead{Repo: "acme/widgets", Number: 907, HeadSHA: newerOpen}) {
+		t.Fatalf("NewestPullRequestHead(%s) = %+v, %v; want the open #907 at %s over the merged #909 and the closed #912",
+			issue, head, found, newerOpen)
+	}
+	if head, found := newest(other); !found || head.Number != 920 {
+		t.Fatalf("NewestPullRequestHead(%s) = %+v, %v; want its own open #920", other, head, found)
+	}
+}
+
 // A pull request's title, body and branch are text any account that can open one writes, and an
 // attributed head row is what a `before_merge` result's commit stands at, so an issue that
 // resolves to another repository attributes nothing: the row is still written, with no issue.

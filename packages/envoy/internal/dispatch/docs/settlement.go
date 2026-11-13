@@ -542,12 +542,16 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 }
 
 // planRepairs reconciles the document's ask blocks on the tree the settlement read, which says
-// what each block's row and the document owe each other: the repairs to write into the room, the
-// events to append, and the copies to arm.
+// what each block's row and the document owe each other, and holds its check blocks to the four
+// rules (reconcileCICheckBlocks): the repairs to write into the room, the events to append, and
+// the copies to arm.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
 	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown)
 	if err != nil {
+		return settleDone, st.abandon(err)
+	}
+	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
 	st.reconciliation = reconciliation
@@ -657,7 +661,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event) er
 func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state, tx, ledger := st.service, st.room, st.state, st.tx, st.ledger
 	// read is the settlement's private copy of the document (readSettlementTree), and nothing but
-	// reconcileAskBlocks changes it in place, which records each change it makes (changedTree).
+	// planRepairs changes it in place, which records each change it makes (changedTree).
 	// versioned is another tree once a stamp replaced the read or a write read the document again.
 	// So the version takes the rendering of the read when it is that tree, unchanged.
 	markdown, offsets, err := st.markdown, st.offsets, st.renderErr

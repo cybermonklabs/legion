@@ -381,6 +381,22 @@ function componentsArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
 
 const SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs says.";
 
+/** The rules a check block naming the CI check run that proves it keeps, written once for the
+ *  three tools that write a document. The server holds every document write to them
+ *  (`docs.CICheckRuleIn`), for each check block the write adds or whose ci_check, run, when or
+ *  negative_control it changes. */
+const CI_CHECK_RULE =
+  "A check block whose ci_check names the CI check run that proves it carries no run, keeps when " +
+  "before_merge, names its negative_control, and holds no recorded result. A write that adds a " +
+  "check block, or changes a check's ci_check, run, when or negative_control, so that it breaks " +
+  "one of those rules is refused with 400 INVALID_CI_CHECK, which names the block and the rule. " +
+  "A check that already holds a result never becomes CI's: write a new check block under a new id.";
+
+/** Which check CI proves, written once for the two tools that record and read results, each
+ *  ending it with its own punctuation. */
+const CHECK_PROVED_BY_CI =
+  "A check whose ci_check names a CI check run, and that holds no recorded result, is proved by CI";
+
 /**
  * The `images` argument of the three tools that write text a person reads: local picture files,
  * each uploaded to `owner` and shown inline in the text as one appended
@@ -643,6 +659,7 @@ export const dispatchToolSpecs = [
       "Create a native Dispatch issue for newly tracked work. Search first with dispatch search; if potentially duplicate issues exist, this returns 409 POSSIBLE_DUPLICATE unless --force is set after reading them. " +
       "When passing a spec, before calling, have a fresh read-only reader check it against the code and the human's words, then resolve every finding; a Legion architect uses `plan-gap-analyst`. " +
       "A spec holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK. " +
+      `${CI_CHECK_RULE} ` +
       "Create a project only when a person asks for one; work that spans projects goes in the project that owns most of it. " +
       `${RELATED_CHECK_RESULT} With --force, the result also names each issue whose title you forced past. ` +
       `Do not use it when an existing issue already covers the work; read or update that issue instead. ${ISSUE_REFERENCE}`,
@@ -1278,6 +1295,7 @@ export const dispatchToolSpecs = [
       "A delete whose find is a block's entire text removes the block (a list emptied of its items goes too); delete with block removes any block by id, and move with block relocates one. A delete or retype that would take an ask block out of the document while its ask is open is refused, with nothing sent. delete_row and delete_column take a table block and a zero-based index, preserving the table block id and refusing to remove cells with open asks or unresolved comments. " +
       'Insert and move anchors also accept "start", "end", "heading:<exact heading text>", and "block:<id>"; dispatch doc-read --blocks lists every block\'s id, type, opening words and token, and each table\'s rows and cells with the indexes delete_row and delete_column take (GET /api/v1/artifacts/{artifact UUID}/blocks serves the same list). ' +
       "Optionally require the state just read: precondition selects exactly one of a document token from dispatch doc-read, or block {id, token} values from dispatch doc-read --blocks. A block guard must include every block the batch changes; Dispatch resolves quote targets and rejects an uncovered batch rather than applying it. Use a document token for insert or move, which depend on document order. Prefer block tokens when the covered content blocks are independent sections. Tokens include inline marks, so a fresh human comment also makes a stale edit fail. PRECONDITION_FAILED means re-read; EDIT_QUEUE_FULL means back off before retrying. " +
+      `${CI_CHECK_RULE} ` +
       "The result carries the document token this edit produced, so a chain of guarded edits passes each result's token as the next edit's precondition with no dispatch doc-read between them. " +
       "A batch that leaves the document exactly as it was mints no version, named or not, and the result says nothing changed and names each operation that did nothing. " +
       "A change a browser removes while the edit is in flight is never reported as applied: EDIT_LOST_TO_CONCURRENT_CHANGE means the write was refused and nothing was written, so re-read the document and decide again, as with PRECONDITION_FAILED; lost_ops on a successful result names operations whose text the live document no longer has, because the deletion landed after the version was written. " +
@@ -1537,6 +1555,9 @@ export const dispatchToolSpecs = [
       "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +
       "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +
       "or of an issue above it holds is 400 UNKNOWN_CHECK. " +
+      `${CHECK_PROVED_BY_CI}. ` +
+      "Dispatch reads its result from that run, so a record for it is 409 " +
+      "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
       "Dispatch asks GitHub whether the repository of the check's issue holds the commit. A " +
@@ -1640,15 +1661,29 @@ export const dispatchToolSpecs = [
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
       "the reason and the caller that retracted it. A check with no result says so. " +
+      `${CHECK_PROVED_BY_CI}: ` +
+      "no role records its result, and Dispatch reads it from GitHub at the head of the " +
+      "issue's open pull request of the highest number, else at the head of its merged one of " +
+      "the highest number. Its one result prints as `- <id> (before_merge): <verdict> at " +
+      "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +
+      "words>`, then the `A pass stands:` line a recorded check prints, then `Pull request line:` " +
+      "and the line to write into the pull-request body unchanged, then the reading: the " +
+      "conclusion, the run's output title and summary, and its URL. A run that proves nothing " +
+      "prints `- <id> (before_merge): no result:`, the sentence that names why, and the check's " +
+      "words, then the `A pass stands:` line, then `Pull request line:` and `- Check <id> " +
+      "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
+      "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
+      "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
-      "no write of anyone's: record the check again at the new head. " +
+      "no write of anyone's: record the check again at the new head. A check CI proves is read " +
+      "again at the new head by itself. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
       at: z
         .string()
         .describe(
-          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with, and Dispatch reads GitHub for none of it."
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with. Dispatch reads GitHub for none of it, except the check runs of a check CI proves, which it reads at the issue's newest pull request head as on every read, so that check's result stands at this commit only where it is that head."
         )
         .optional(),
       brief: z
@@ -1672,6 +1707,7 @@ export const dispatchToolSpecs = [
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
       "Markdown holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK; a new version of a document is held to it only for the asks it writes or changes. " +
+      `${CI_CHECK_RULE} ` +
       `${OWNER_REFERENCE}`,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
@@ -1726,7 +1762,7 @@ export const dispatchToolSpecs = [
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
       "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries " +
-      "(a `check`'s serves, surface, run, when and negative_control; a `plan_task`'s serves and needs), `Changed in version:` " +
+      "(a `check`'s serves, surface, run, when, negative_control and ci_check; a `plan_task`'s serves and needs), `Changed in version:` " +
       "and `Text:`, then those two sections; a pinned one adds " +
       "the block's text at that version and whether it is unchanged, changed or removed since, and an absent block, unpinned, " +
       "reads `No block <id> in <document>.` " +
