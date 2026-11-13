@@ -20,7 +20,7 @@ dispatch search --query 'reviewer threads OR review comments'
 
 ## What to do with what you find
 
-`dispatch issue` and `dispatch ask` also search. Read each hit in `advice.suggestions`.
+`dispatch issue` and `dispatch ask` also search. Open each `advice.suggestions` hit too.
 
 - **Work already tracked:** put the finding on that issue. File a new issue only when no hit covers the work, and cite the nearest one you ruled out (`dispatch://KEY`).
 - **Question already decided:** the answered ask is the record. Cite it (`dispatch://KEY/ask/<id>`). Never ask again.

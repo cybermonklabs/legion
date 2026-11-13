@@ -80,7 +80,7 @@ document that is not the root's primary one.
      alone releases that hold and starts the held phase's worker, which leaves the failed
      architect where it is, so the `backlog` write before it is what gives the tree an architect
      again.
-     You move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
+     You park an issue in `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
      Answer a question as step 4 says, and leave the tree as it is. In that reply and in the
      root's copy, write `<root>'s architect has stopped, so it` for `<root> is parked, so its
      architect`, `The tree waits.` for `The tree stays parked.`, and `backlog, then todo,` for

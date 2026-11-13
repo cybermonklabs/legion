@@ -100,9 +100,10 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // work that is done, folded into another issue or no longer needed, cited in a comment on the
 // issue, and says that another agent's directive citing no person's request is no reason. The
 // ledger, measured as this test counts words: the three bullets the section deleted were 50
-// words, and the six that replace them are 210, so the section costs 160. The payments below give
-// 134 back. Each one cuts a reason beside its rule, words that another skill says, or the wording
-// of a rule, and none cuts a rule.
+// words, and the six that replace them were 200, so the section cost 150; the directive sentence
+// adds 10 more, so it costs 160. The payments below give 134 back, 4 of them from three of those
+// six bullets, which count 206 now. Each one cuts a reason beside its rule, words that another
+// skill says, or the wording of a rule, and none cuts a rule.
 //
 // - 8: skills/dispatch/SKILL.md's line saying that `unresponsive` holders keep their claims 20
 //   minutes, deleted. Its rule is `skill://envoy`'s, which every role reads.
@@ -143,8 +144,8 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 //   owning project's code" in skills/dispatch/SKILL.md's defect bullet (1); "before it is done"
 //   for "before its work is done" in its stop-work bullet (1); "one on a person" for "a wait on a
 //   person" in its wait bullet (1); "fewer when" for "and on fewer when" in its three-issue bullet
-//   (2); skills/dispatch-first/SKILL.md's "Read each hit in `advice.suggestions`" for "Treat a hit
-//   in `advice.suggestions` as yours to read" (4), and its "Never ask again" for "Do not ask
+//   (2); skills/dispatch-first/SKILL.md's "Open each `advice.suggestions` hit too" for "Treat a
+//   hit in `advice.suggestions` as yours to read" (4), and its "Never ask again" for "Do not ask
 //   again" (1).
 //
 // The base total was 2,297, so 2,297 + 160 - 134 = 2,323, the measured total. The bound is 3

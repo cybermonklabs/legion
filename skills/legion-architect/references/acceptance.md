@@ -216,7 +216,7 @@ waits in the line for a slot and for any unfinished blocker, and its architect s
 root and registers its own spec. Only a child that finished, was parked or was never released
 stays. The child stays its own tree; reopening the old root does not take it back. The hand-over
 runs by itself and needs no action from you.
-Park a child with `park_child` before then only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
+Park a child with `park_child` before then only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the child.
 Ask the person whether a child's work must end with the root. A root that is parked
 rather than closed hands over only a child in `merging` whose pull request is still open,
 since the daemon re-admits no parked root and only that child's own merger, started again under

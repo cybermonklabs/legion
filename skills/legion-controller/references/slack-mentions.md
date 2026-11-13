@@ -143,8 +143,8 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   the `Created` line names (naming nobody, Dispatch assigns the issue to your token's owner, or,
   under the shared token, to the project's default assignee when a person set one),
   and whether Legion will take it: with the label, triage admits it in its next turn unless a
-  person's request says to wait: the request itself, the deployment instructions, or a line of the
-  weekly plan that names a person's request.
+  person's request says to wait. That request is the request itself, the deployment instructions, or
+  a line of the weekly plan that names the person's request behind it.
 - **Something an issue's architect owns.** A question about a tree's design, a change of direction,
   a decision only the tree's architect can make about an issue Legion runs. Find the tree: follow
   `Links:` up through each `child_of` parent with `dispatch read` until you reach the issue
