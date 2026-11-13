@@ -357,6 +357,116 @@ test("however many narrowings are on, their chips take at most one more line of 
   ).toEqual([]);
 });
 
+/** The widths a reader's window takes, from the desktop down: R1's two, a tablet held upright,
+ *  the `sm` breakpoint itself (640 px, where the row stops wrapping), and a phone. */
+const READING_WIDTHS = [
+  { height: 900, width: 1440 },
+  { height: 800, width: 1280 },
+  { height: 1024, width: 768 },
+  { height: 800, width: 640 },
+  { height: 664, width: 390 },
+];
+
+/** How much of `element` the reader can see: its box cut by every box above it that clips
+ *  sideways, and by the window. */
+function shownOf(element: Element): { left: number; right: number; width: number; shown: number } {
+  const own = element.getBoundingClientRect();
+  let left = 0;
+  let right = window.innerWidth;
+  for (let box = element.parentElement; box !== null; box = box.parentElement) {
+    if (getComputedStyle(box).overflowX === "visible") continue;
+    const clip = box.getBoundingClientRect();
+    left = Math.max(left, clip.left);
+    right = Math.min(right, clip.right);
+  }
+  return {
+    left: own.left,
+    right: own.right,
+    width: own.width,
+    shown: Math.max(0, Math.min(own.right, right) - Math.max(own.left, left)),
+  };
+}
+
+// SLOW(>=2s): twenty-two seeded questions, the row's keyboard order walked at five widths.
+test("a chip of the Inbox's row that has the keyboard focus is shown whole, with its whole name, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const row = controlRow(page.getByTestId("main-content"));
+  const cut: string[] = [];
+  for (const size of READING_WIDTHS) {
+    await page.setViewportSize(size);
+    await page.goto(NINE_NARROWINGS);
+    await expect(control(row, CONTROL.chip)).toHaveCount(9);
+    await control(row, CONTROL.searchBox).focus();
+    let chips = 0;
+    // The search box, the filter trigger, nine chips and Clear filters, and the row's own
+    // controls after them: twenty presses walk past the end of the row.
+    for (let press = 0; press < 20; press++) {
+      await page.keyboard.press("Tab");
+      const reading = await page.evaluate((measure) => {
+        const shown = new Function(`return (${measure})`)() as typeof shownOf;
+        const focused = document.activeElement;
+        if (!(focused instanceof HTMLElement)) return null;
+        if (focused.closest('[data-control="control-row"]') === null) return null;
+        if (focused.getAttribute("data-control") !== "chip") return { chip: false } as const;
+        const name = focused.querySelector(".truncate");
+        return {
+          chip: true,
+          label: focused.getAttribute("aria-label") ?? "",
+          nameCut: name !== null && name.scrollWidth > name.clientWidth + 1,
+          ...shown(focused),
+        } as const;
+      }, shownOf.toString());
+      if (reading === null) break;
+      if (!reading.chip) continue;
+      chips++;
+      const where = `${size.width}x${size.height}: "${reading.label}" has the focus`;
+      if (reading.shown < reading.width - 1) {
+        cut.push(
+          `${where} and ${Math.round(reading.shown)} of its ${Math.round(reading.width)}px are shown`
+        );
+      } else if (reading.nameCut) {
+        cut.push(`${where} and its name is cut short`);
+      }
+    }
+    expect(chips, `${size.width}x${size.height}: the keyboard reached ${chips} of 9 chips`).toBe(9);
+  }
+  // The row's own promise (components/ControlRow.tsx): a chip the strip scrolled away is reached
+  // by the Tab key and scrolled into view. A reader who cannot see the chip they are on cannot
+  // tell which narrowing Enter takes off, which the chips showed whole before this change.
+  expect(cut, cut.join("; ")).toEqual([]);
+});
+
+// SLOW(>=2s): twenty-two seeded questions, read at five widths.
+test("Clear filters stays in view in the Inbox's row however many narrowings are on, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const row = controlRow(page.getByTestId("main-content"));
+  const hidden: string[] = [];
+  for (const size of READING_WIDTHS) {
+    await page.setViewportSize(size);
+    await page.goto(NINE_NARROWINGS);
+    await expect(control(row, CONTROL.chip)).toHaveCount(9);
+    const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+    await expect(clear).toHaveCount(1);
+    const reading = await clear.evaluate((button, measure) => {
+      const shown = new Function(`return (${measure})`)() as typeof shownOf;
+      return shown(button);
+    }, shownOf.toString());
+    if (reading.shown < reading.width - 1) {
+      hidden.push(
+        `${size.width}x${size.height}: ${Math.round(reading.shown)} of Clear filters' ${Math.round(reading.width)}px are in view`
+      );
+    }
+  }
+  // R6: Clear filters stays in the control row, and it is the one press that takes nine
+  // narrowings off. A mouse's own wheel does not scroll a strip sideways, and the filter panel
+  // holds no Clear filters, so a control scrolled out of view is one a pointer reader cannot find.
+  expect(hidden, hidden.join("; ")).toEqual([]);
+});
+
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
  *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
  *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
