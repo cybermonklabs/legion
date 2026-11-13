@@ -97,7 +97,7 @@ func TestWaitingLineReasonNamesTheMembersPlaceInWords(t *testing.T) {
 			otherPart:  18,
 			want: "It gave its admission slot back to wait on LEGION-7, LEGION-8 at 2026-11-10T15:11:32Z. " +
 				"It is 2nd of 3 issues whose work came back. The promotion passes over it while that wait lasts, " +
-				"and it takes a slot again by itself at the first pass after the wait ends.",
+				"and after the wait it takes a free slot again by itself.",
 		},
 		// The same kind with no wait left: its blockers closed while the cap was full, so it is
 		// told the wait has ended and that it takes the free slots first.

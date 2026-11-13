@@ -188,11 +188,11 @@ func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
 }
 
 // waitingLine is the waiting line of project, in its order, under the design gate of steps (nil
-// for the deployment's single step spec). It reads the line exactly as admission does, through
-// the one judgement it promotes from (blockers.JudgeLine): the mirror rows of every issue a
-// blocker can hold first, so the line leaves out an issue one of them holds where it stands
-// (record.LineFacts.Held), the children-first judgement next, so it leaves out a parent whose
-// own Dispatch children are still open (record.LineFacts.ChildWaits), and then the line.
+// for the deployment's single step spec). It reads the stored state and judges the line through
+// blockers.JudgeLine, the judgement admission promotes from: the held set
+// (record.LineFacts.Held), the children-first waits (record.LineFacts.ChildWaits) and the waits
+// of started issues (record.LineFacts.Waits), and then the line. It runs none of the releases a
+// pass runs before it judges the line, so it shows the line as the last pass left it.
 func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []record.DesignStep) []string {
 	t.Helper()
 	var got []string

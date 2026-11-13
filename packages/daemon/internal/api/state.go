@@ -406,10 +406,10 @@ type Admission struct {
 	// mergerWaitsForTheDesignGate) and a merged root standing in merging while the rest of its
 	// tree runs are each here, while an issue whose phase has left the workflow — done, or a
 	// status Dispatch took it out of the workflow with — is in neither list. An issue the daemon
-	// has started that waits on another issue is missing from here too: it gives its slot back
-	// for that wait (record.Issue.ReleasedForWaitAt) and stands in `waiting` and in `blocked`
-	// until the wait ends, which is how a reader tells it from an issue a person parked, which
-	// stands in none of the three.
+	// has started that waits on another issue is missing from here too: it holds no slot while
+	// it waits (record.Issue.ReleasedForWaitAt, admit.releaseSlotsForWaits) and stands in
+	// `waiting` and in `blocked`, which is how a reader tells it from an issue a person parked,
+	// which stands in none of the three.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch

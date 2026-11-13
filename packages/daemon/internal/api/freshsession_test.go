@@ -333,10 +333,10 @@ func stoppedWaitingImplementer(t *testing.T, h *harness) claim.Token {
 	return token
 }
 
-// freshSessionLine is admission's waiting line and the facts it is read from, read exactly as a
-// promotion reads them — blockers.JudgeLine, the one place the line is judged, which fills the
-// held set and the children-first waits the line cannot judge itself: the order in which the
-// next slot is offered.
+// freshSessionLine is admission's waiting line and the facts it is read from, judged by
+// blockers.JudgeLine from the stored state: the held set, the children-first waits and the waits
+// of started issues (record.LineFacts.Held, ChildWaits and Waits). It runs none of the releases
+// a pass runs before it judges the line.
 func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.LineEntry, record.LineFacts) {
 	t.Helper()
 	var (

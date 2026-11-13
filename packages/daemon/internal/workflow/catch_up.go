@@ -181,8 +181,9 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // that holds none is one that gave its row back to wait on another issue (admit's
 // releaseSlotsForWaits, record.Issue.ReleasedForWaitAt), and the two branches still hold for it:
 // the wait stops none of its work, so a level claim's resume is no new work and goes at once,
-// while an owed entry's work is work the claim does not have, and its start waits for the row the
-// wait's end gives back, as the slot repair's does (admit's resumeSlottedWorkers).
+// while an owed entry's work is work the claim does not have, and its start waits until the
+// issue holds a slot again, as the slot repair's does (admit's resumeSlottedWorkers). The rule is
+// "Admission" in the Issue Lifecycle section of the root AGENTS.md.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {

@@ -1340,8 +1340,8 @@ package api
 // that gave its admission slot back to wait on another issue — a Dispatch blocker of it that is
 // not done, or an open child its own first phase waits for (record.LineWaitingOnIssue). It
 // stands in the returned part with `since` the moment its row was taken
-// (record.Issue.ReleasedForWaitAt) and `holdsSlot` false, the promotion passes over it while
-// the wait lasts, and it takes a row again at the first pass after the wait ends. A plugin from
+// (record.Issue.ReleasedForWaitAt) and `holdsSlot` false (the rule: admit.releaseSlotsForWaits,
+// and "Admission" in the root AGENTS.md). A plugin from
 // 85 through 99, INFRA-714's 86, INFRA-3219's 87 and INFRA-2800's 94 above among them, reads
 // `kind` with a `z.enum` of the four words before it, which refuses a word it does not name and
 // with it the whole state body, so a caller from a pod whose claims record a contract below 100 is

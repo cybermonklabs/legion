@@ -700,7 +700,7 @@ func KeepsSlot(issue Issue) bool {
 // only where it answers true (Waiting). The other release, of a started issue that goes on
 // working and waits on another issue, is not stated here: it is admit's releaseSlotsForWaits,
 // judged by blockers.waitsOf. This answers true of such an issue all the same, so the issue
-// keeps its place in the line and takes a slot again when the wait ends. root is the record of
+// keeps its place in the line while it holds no slot. root is the record of
 // the issue's tree root; live is whether the tree is live (LiveRoots). The design gate is read
 // by no part of this: a gate open or closed changes neither whether the tree runs nor whether
 // the issue's phase keeps a row (KeepsSlot). The slot is accounting only: taking one away
@@ -905,8 +905,9 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// meanwhile. Two records say such an issue has started while it holds no row, and each
 		// gives the moment its entry stands at: the mark of the row a pass took away for the
 		// wait (Issue.ReleasedForWaitAt), and, where no mark stands, the start it owes its next
-		// worker, which nothing but a transition of a run writes and whose row carries its own
-		// creation time and id, as a return's entry does. An issue that never started has
+		// worker, which a transition of a run writes, or SendOwedEntry for an issue that already
+		// has a claim or a phases row, and whose row carries its own creation time and id, as a
+		// return's entry does. An issue that never started has
 		// neither — a child at admitted waiting for its first phase had no row to give back and
 		// owes nothing — so none is a candidate here.
 		owed, owes := facts.Owed[issue.Key]

@@ -62,7 +62,7 @@ func waitingLineReason(entry record.LineEntry, partLength, otherPart int) string
 			return came + ". " + place + "." + holdsItsSlot
 		}
 		// The promotion passes over a member that still waits on an issue (its Waits), so it
-		// does not take the free slots first; it takes one again by itself once the wait ends.
+		// does not take the free slots first (admit.releaseSlotsForWaits).
 		// A member whose waits all ended takes the free slots first like the rest of its part.
 		if entry.Kind == record.LineWaitingOnIssue && len(entry.Waits) > 0 {
 			return came + ". " + place + "." + waitsItsTurn
@@ -118,9 +118,9 @@ const holdsItsSlot = " It already holds its admission slot, so it resumes at the
 // (record.LineWaitingOnIssue), holds none, and still names a wait (record.LineEntry.Waits, read
 // there rather than off the kind, since the kind outlasts the wait): the promotion passes over
 // it while the wait lasts, so telling it that it takes the free slots first would be false, and
-// the clause says when it does take one instead. It opens on a space for the reason
-// holdsItsSlot does.
-const waitsItsTurn = " The promotion passes over it while that wait lasts, and it takes a slot again by itself at the first pass after the wait ends."
+// the clause says that it takes one by itself after the wait instead. It opens on a space for
+// the reason holdsItsSlot does. The rule is admit.releaseSlotsForWaits.
+const waitsItsTurn = " The promotion passes over it while that wait lasts, and after the wait it takes a free slot again by itself."
 
 // englishOrdinal is n as a person writes a place: 1st, 2nd, 3rd and `th` for the rest, with 11,
 // 12 and 13 taking `th` whatever their last digit says — so 11th, 12th and 13th, and 21st, 22nd,

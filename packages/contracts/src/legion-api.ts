@@ -751,12 +751,12 @@ const legionBlockedIssue = z.object({
  * holds, and a merged root standing in `merging` while the rest of its tree runs, while an issue
  * whose phase has left the workflow — `done`, or a status Dispatch took it out of the workflow
  * with — is in neither list. A started issue that waits on another issue is missing from `active`
- * too: it gives its slot back for that wait and stands in `waiting` and in `blocked` until the
- * wait ends, which is how a reader tells it from an issue a person parked, which stands in none
- * of the three. An issue holding a slot is in `waiting` as well while its work comes back to it,
- * an answered root until the pass that resumes it. `trees` is the root of every live tree,
- * sorted, which a reader needs
- * because a running tree may hold no slot at all — the controller reads it where it read
+ * too: it holds no slot while it waits and stands in `waiting` and in `blocked`, which is how a
+ * reader tells it from an issue a person parked, which stands in none of the three (the rule:
+ * "Admission" in the root AGENTS.md). An issue holding a slot is in `waiting` as well while its
+ * work comes back to it, an answered root until the pass that resumes it. `trees` is the root of
+ * every live tree, sorted, which a reader needs because a running tree may hold no slot at all —
+ * the controller reads it where it read
  * `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the

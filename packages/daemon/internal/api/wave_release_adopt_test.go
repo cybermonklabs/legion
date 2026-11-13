@@ -150,9 +150,10 @@ func (a *adoptionHarness) slotted(key string) bool {
 	return a.count(`select count(*) from slots where issue = $1`, key) > 0
 }
 
-// waiting is the keys of admission's waiting line, read as admission reads it (the steps of
-// blockers.JudgeLine): the mirror rows of every issue a blocker can hold first, so the line
-// leaves out an issue one of them holds where it stands, and the children-first judgement next.
+// waiting is the keys of admission's waiting line, judged by blockers.JudgeLine from the stored
+// state: the held set (record.LineFacts.Held), the children-first waits
+// (record.LineFacts.ChildWaits) and the waits of started issues (record.LineFacts.Waits). It
+// runs none of the releases a pass runs before it judges the line.
 func (a *adoptionHarness) waiting() []string {
 	a.t.Helper()
 	var keys []string
@@ -169,16 +170,12 @@ func (a *adoptionHarness) waiting() []string {
 		if err != nil {
 			return err
 		}
-		rows, err := blockers.Load(context.Background(), tx, a.records, testProject, blockers.Judged(issues, nil))
+		_, _, line, err := blockers.JudgeLine(context.Background(), tx, a.records, testProject, issues, slots, facts, nil)
 		if err != nil {
 			return err
 		}
-		facts.Held = blockers.HeldIssues(rows, issues)
-		if facts.ChildWaits, err = record.ChildWaitsOf(context.Background(), tx, a.records, testProject, issues, facts); err != nil {
-			return err
-		}
-		for _, issue := range record.Waiting(issues, slots, facts) {
-			keys = append(keys, issue.Issue.Key)
+		for _, entry := range line {
+			keys = append(keys, entry.Issue.Key)
 		}
 		return nil
 	}); err != nil {

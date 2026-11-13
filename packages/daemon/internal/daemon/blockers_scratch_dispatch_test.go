@@ -773,8 +773,8 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// re-entered its tree at admitted when a person set it back to todo, and the daemon had
 	// started it, so it would keep its admission slot until it is done or leaves the workflow
 	// (record.KeepsSlot); but it waits on `elsewhere`, and a started issue that waits on another
-	// issue gives its slot back (admit's releaseSlotsForWaits) and stands in `admission.waiting`
-	// and `admission.blocked` until the wait ends. So it stands in `admission.waiting` from its
+	// issue holds no slot while it waits (admit's releaseSlotsForWaits) and stands in
+	// `admission.waiting` and `admission.blocked`. So it stands in `admission.waiting` from its
 	// re-entry on, as it does after the hand-over, and a predicate reading that list would be true
 	// before the close of `free` was consumed at all and would judge the state before the
 	// hand-over.

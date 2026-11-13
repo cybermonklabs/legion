@@ -113,14 +113,15 @@ func UnfinishedOf(rows map[string]Row, blockedBy []string) []string {
 // issues its mirror row names, under the rule its kind is judged by. A root whose tree is not
 // open yet is judged by WaitsOn, which exempts a tree Legion takes back. An issue whose first
 // phase would start is judged by Holds, which exempts nothing and answers nothing at all for a
-// root: a root at admitted inside a running tree starts whatever its links say, since they were
-// read when its own tree was opened, and a blocker added to that tree afterwards is read by the
-// rule for a started issue instead (waitsOf), which gives its slot back rather than holding its
-// first phase. An issue the daemon started that waits on another issue carries that judgement
-// with it (record.LineEntry.Waits, startedWaits), which is read back here rather than made
-// again: it was made over the rows and the children-first facts of the pass that judged it, and
-// the line's entry is where the pass that promotes it reads it. An issue whose work is already
-// under way — a return, an answered root's resume — waits on nothing here, for that same reason.
+// root: a root at admitted inside a running tree is not held by its links here. Its links are
+// read by the rule for a started issue instead (waitsOf), on every pass, and a blocker not done
+// gives the root's slot back. That holds its first phase too: the root's entry is then
+// record.LineWaitingOnIssue, and this answers its Waits. An issue the daemon started that waits
+// on another issue carries that judgement with it (record.LineEntry.Waits, startedWaits), which
+// is read back here rather than made again: it was made over the rows and the children-first
+// facts of the pass that judged it, and the line's entry is where the pass that promotes it reads
+// it. An issue whose work is already under way — a return, an answered root's resume — waits on
+// nothing here, for that same reason.
 //
 // It is the one statement of the rule, and both the promotion that skips a candidate (admit's
 // promoteHolds) and the state's own report of what Legion waits for (Blocked) read it, so no
@@ -195,8 +196,9 @@ func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry
 // blocked by the other.
 //
 // Two kinds of issue are exempt. One that carries a run into a tree of its own — a handed-over
-// child, a re-admitted tree — is work already under way, which is never stopped and never
-// re-checked (record.Issue.CarriesRun), by whichever door it arrives. And a tree Legion takes back
+// child, a re-admitted tree — is work already under way, which the promotion never holds by its
+// links (record.Issue.CarriesRun), by whichever door it arrives. Once it holds a slot, the rule
+// for a started issue (waitsOf) reads its links like any other. And a tree Legion takes back
 // after it has finished and lingered starts again at its person's word, though re-admission leaves
 // it carrying no run: that is both halves at once, that it ran and that the tree coming back is its
 // own, which record.Issue.TakenBack holds. The mark is a fact about a run: the workflow writes it
@@ -266,10 +268,11 @@ func HeldIssues(rows map[string]Row, issues []record.Issue) map[string]struct{} 
 // startedIssues is the set of issues among issues the daemon has started, by key: one holding a
 // slot row now, one whose row the daemon has already taken away because it waits
 // (record.Issue.ReleasedForWaitAt), and one that owes its next worker a start
-// (record.LineFacts.Owed), which nothing but a transition of a run writes. The three are one
-// question — has this issue's work begun — asked of the three states a started issue can be in,
-// and the mark is why the second is told at all: a released issue is told from a child at
-// admitted that never started by nothing else.
+// (record.LineFacts.Owed). An owed start is written by a transition of a run, or by
+// SendOwedEntry (admit, catch-up, resume, silence), and each of those acts only on an issue that
+// already has a claim or a phases row. The three are one question — has this issue's work begun
+// — asked of the three states a started issue can be in, and the mark is why the second is told
+// at all: a released issue is told from a child at admitted that never started by nothing else.
 func startedIssues(issues []record.Issue, slots []record.Slot, facts record.LineFacts) map[string]struct{} {
 	slotted := make(map[string]struct{}, len(slots))
 	for _, slot := range slots {
