@@ -1,5 +1,16 @@
 kind: Changed
-body: 'The daemon API contract is 91: an issue of `GET /legion/v1/state` carries `repoBefore` and `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has not applied and why.'
+body: |-
+    The daemon API contract is 91. An issue of `GET /legion/v1/state` carries `repoBefore` and
+    `repoCorrectedAt`, the repository the issue left and the moment the daemon applied the
+    correction, and `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that
+    the daemon has not applied and why. The end-of-turn reminder that the `Stop` hook gives a Legion
+    phase worker no longer keeps a phase of its own: at the end of each turn it asks the daemon what
+    the claim owes (`POST /legion/v1/claims/owed`), waits at most 3 seconds for the answer, and
+    reminds the worker exactly when the claim owes work, naming that work in the daemon's words.
+    The `legion` tool's handoff_complete and backward move no longer change the reminder's state,
+    and every prompt the hook did not write itself only puts the run of reminders back at zero.
+    When the answer cannot be read, the reminder still nudges the worker, in words that name no
+    phase and no operation.
 time: 2026-11-12T04:36:44.346524862Z
 custom:
     Issue: pr3712

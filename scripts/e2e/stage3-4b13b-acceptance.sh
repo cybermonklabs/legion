@@ -412,9 +412,11 @@ claim_json() { claims list --json | jq -ce --arg t "$1" '.claims[] | select(.tok
 claim_is() { claim_json "$1" | jq -e "$2" >/dev/null; }
 token_session() { claim_json "$1" | jq -er '.session // empty | select(. != "")'; }
 
-# The reminder the phase stall sends (packages/pi-shared/src/phase-stall.ts REMINDER), which now
-# comes at the end of every turn a phase stays open through; this check reads the first of them.
-followup_needle="Your turn ended with your Legion phase still open"
+# A sentence of the reminder the phase stall sends (owedReminder in
+# packages/pi-shared/src/phase-stall.ts), which also ends the reminder given when the daemon's
+# answer could not be read (UNREAD_REMINDER). It comes at the end of every turn for as long as the
+# daemon answers that the claim owes work; this check reads the first of them.
+followup_needle="This reminder repeats at the end of every turn"
 
 # tool_outcomes FILE: every tool result in an OMP session file, joined to the call that produced it.
 tool_outcomes() {
@@ -772,27 +774,27 @@ begin gates
 for issue in "$root1" "$root2" "$root3"; do gate_send "$issue"; done
 root1_architect_file() { claim_session_file "$root1" architect; }
 root1_planner_file() { claim_session_file "$root1" planner; }
-# assignment_delivered ISSUE ROLE: the daemon's assignment (a user message) reached the worker and
-# armed its phase stall. Each planner is instructed as soon as its assignment is in its session, so
-# no instruction races the assignment (an instruction sent earlier could reach a planner before
-# its assignment) and no planner is left to act on the assignment alone (waiting for an idle turn
-# instead let planners complete planning unprompted before any instruction reached them).
+# assignment_delivered ISSUE ROLE: the daemon's assignment (a user message) reached the worker. The
+# phase stall writes no entry for it: the machine keeps no phase, and an arriving message only puts
+# the run of reminders back at zero, which writes nothing when it is at zero already. Each planner
+# is instructed as soon as its assignment is in its session, so no instruction races the assignment
+# (an instruction sent earlier could reach a planner before its assignment) and no planner is left
+# to act on the assignment alone (waiting for an idle turn instead let planners complete planning
+# unprompted before any instruction reached them).
 assignment_delivered() {
   local f
   f=$(claim_session_file "$1" "$2") || return 1
-  jq -e -s 'any(.[]; .type == "message" and .message.role == "user")' "$f" >/dev/null &&
-    grep -qF '"customType":"legion-phase-stall"' "$f"
+  jq -e -s 'any(.[]; .type == "message" and .message.role == "user")' "$f" >/dev/null
 }
 gate_finish "$root1"
-until_true 600 "the daemon's assignment to arm $root1's planner stall" assignment_delivered "$root1" planner
-note "root1 planner stall entries at its assignment: $({ grep -F '"customType":"legion-phase-stall"' "$(root1_planner_file)" || true; } | jq -r .data.state | tr '\n' ' ')"
+until_true 600 "the daemon's assignment to reach $root1's planner" assignment_delivered "$root1" planner
 marker_plan="PHASE-STALL-PLANNER-$stamp"
 send_agent "$root1" planner "Acceptance planning operation ($marker_plan): write the required plan handoff file, commit it and push the issue branch as your instructions require, then end your turn WITHOUT calling the legion tool's handoff_complete: reply with one line saying the handoff is committed and pushed, and wait. Do not call handoff_complete in this turn, and do not begin any line with WAITING."
 gate_finish "$root2"
-until_true 600 "the daemon's assignment to arm $root2's planner stall" assignment_delivered "$root2" planner
+until_true 600 "the daemon's assignment to reach $root2's planner" assignment_delivered "$root2" planner
 send_agent "$root2" planner "Acceptance planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 gate_finish "$root3"
-until_true 600 "the daemon's assignment to arm $root3's planner stall" assignment_delivered "$root3" planner
+until_true 600 "the daemon's assignment to reach $root3's planner" assignment_delivered "$root3" planner
 send_agent "$root3" planner "Acceptance planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 wait_for_phase "$child" planning
 wait_for_worker "$child" planner
@@ -804,9 +806,9 @@ pass
 begin phase-stall-follow-up
 db_value "select coalesce(handoff_commit, '') || '|' || coalesce(summary, '') from phases where issue = '$root1' and role = 'planner'" >"$evidence/phase-stall-planner-row-before-follow-up.txt" || true
 note "planner phase row before the follow-up: '$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")' (no row, or an empty handoff: nothing completed)"
-# The planner's turn ended with its phase open, so the reminder comes; the rig's
-# instructions let it answer WAITING. Once the reminder is in its session, it is given 60 s to
-# complete on its own, then told to.
+# The planner's turn ended with its phase not completed, so the daemon answers that its claim owes
+# that phase and the reminder comes; the rig's instructions let it answer WAITING. Once the
+# reminder is in its session, it is given 60 s to complete on its own, then told to.
 followup_seen() { grep -qF -- "$followup_needle" "$(root1_planner_file)"; }
 until_true 600 "the phase stall's follow-up to reach $root1's planner" followup_seen
 if ! until_true_quiet 60 issue_phase "$root1" implementing; then
@@ -817,8 +819,7 @@ fi
 f=$(root1_planner_file)
 jq -s -c --arg followup "$followup_needle" --arg marker "$marker_plan" '
   to_entries | map(.key as $i | .value as $e |
-    if ($e.type == "custom" and $e.customType == "legion-phase-stall") then {i: $i, kind: "stall", state: $e.data.state}
-    elif ($e.type == "message" and $e.message.role == "toolResult") then
+    if ($e.type == "message" and $e.message.role == "toolResult") then
       if $e.message.toolName == "legion" then
         {i: $i, kind: "legion-result", isError: $e.message.isError, text: (([$e.message.content[]? | select(.type == "text") | .text] | join("\n")) | .[0:240])}
       else empty end
@@ -828,22 +829,24 @@ jq -s -c --arg followup "$followup_needle" --arg marker "$marker_plan" '
     elif (($e | tostring) | contains($followup)) then {i: $i, kind: "followup", type: $e.type, customType: ($e.customType // $e.message.role // null)}
     elif (($e | tostring) | contains($marker)) then {i: $i, kind: "instruction", type: $e.type}
     else empty end)' "$f" >"$evidence/phase-stall-timeline.json"
-# The predicate: Oh My Pi appends the re-arming `open` for an arriving Envoy message before that
-# message's own entry, so the stall state at the instruction is the last one before the entry
-# carrying the marker.
-jq '
+# The predicate: the daemon's record held the planner's phase not completed when the follow-up was
+# awaited (its row read then names no handoff commit), the follow-up came after the instruction,
+# the tool's handoff_complete after the follow-up succeeded, the daemon's record now holds the
+# phase completed (root 1 is at implementing or later), and no follow-up came after the success.
+planner_completed=false
+if phase_at_least "$root1" implementing; then planner_completed=true; fi
+jq --arg row_before "$(cat "$evidence/phase-stall-planner-row-before-follow-up.txt")" --argjson completed "$planner_completed" '
   ([.[] | select(.kind == "instruction")] | first | .i) as $instr
-  | ([.[] | select(.kind == "stall" and .i < $instr)] | last | .state) as $stall_at
   | ([.[] | select(.kind == "followup" and .i > $instr)] | first | .i) as $follow
   | ([.[] | select(.kind == "legion-call" and (.ops | index("handoff_complete")) and .i > $follow)] | first | .i) as $call
   | ([.[] | select(.kind == "legion-result" and .isError == false and .i > $call)] | first | .i) as $done
-  | {stall_at_instruction: $stall_at, instruction: $instr, follow: $follow, call: $call, done: $done,
-     closed_after_call: any(.[]; .kind == "stall" and .state == "closed" and .i > $call),
+  | {owed_before_follow_up: (($row_before | split("|") | .[0] // "") == ""), instruction: $instr, follow: $follow, call: $call, done: $done,
+     completed_in_record: $completed,
      followups_after_done: (if $done == null then null else [.[] | select(.kind == "followup" and .i > $done)] | length end)}' \
   "$evidence/phase-stall-timeline.json" >"$evidence/phase-stall-verdict.json"
-if jq -e '.stall_at_instruction == "open" and .instruction != null and .follow != null and .call != null and .done != null
-    and .closed_after_call and .followups_after_done == 0' "$evidence/phase-stall-verdict.json" >/dev/null; then
-  note "stall: open at the instruction → the turn ends with the phase open → the follow-up → the tool's handoff_complete → closed; no follow-up after it: $(jq -c . "$evidence/phase-stall-verdict.json")"
+if jq -e '.owed_before_follow_up and .instruction != null and .follow != null and .call != null and .done != null
+    and .completed_in_record and .followups_after_done == 0' "$evidence/phase-stall-verdict.json" >/dev/null; then
+  note "stall: owed at the instruction → the turn ends with the phase owed → the follow-up → the tool's handoff_complete → completed in the record; no follow-up after it: $(jq -c . "$evidence/phase-stall-verdict.json")"
 else
   soft "the planner's stall timeline fails the follow-up predicate: $(jq -c . "$evidence/phase-stall-verdict.json")"
 fi

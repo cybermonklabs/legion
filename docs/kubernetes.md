@@ -2105,24 +2105,67 @@ What the rollback costs is the line:
 a pane of the earlier release is told no key and stamps none, so every commit it makes carries the session line alone, and a base branch that requires the issue line in the commit that lands refuses such a branch until a role describes a commit of it with that line by hand.
 The commits already stamped keep their line: it is in their messages, which nothing rewrites.
 
-**An issue's repository follows the one Dispatch resolves it to (daemon API contract 91).**
-A release at contract 91 moves a recorded issue's repository onto the one Dispatch resolves the issue to, rather than keeping the repository the record was written with, and says so on every issue of `GET /legion/v1/state`.
+**An issue's repository follows the one Dispatch resolves it to, and the reminder asks the daemon what a claim owes (daemon API contract 91).**
+A release at contract 91 carries three changes to what the daemon and its plugins exchange and store.
+
+The first is on every issue of `GET /legion/v1/state`.
+The release moves a recorded issue's repository onto the one Dispatch resolves the issue to, rather than keeping the repository the record was written with, and says so in four keys.
 `repoBefore` and `repoCorrectedAt` are the repository the issue left and the moment the daemon applied the correction.
 `repoChangePending` and `repoChangeReason` are a repository Dispatch has named that the daemon has not applied and why it has not, which is how a record that still names the old repository says why it does.
 Each pair is present or absent together, and an issue no correction has reached and nothing waits on carries none of the four.
 The issue's `pullRequest` is read beside them and takes no new key: a correction moves the issue's record alone, so `pullRequest.repo` is the repository the pull request was opened on, and an issue whose `repo` and `pullRequest.repo` name two repositories has open work on a repository it has left, which the daemon applies no GitHub event of to the issue any more.
-A caller in a pod whose claims record a contract below 91 is served every issue with the four stripped, so a pod of the release before this one reads the state as it always did.
-Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
+A caller in a pod whose claims record a contract below 91 is served every issue with the four stripped (`withoutRepositoryCorrection`), so a pod of the release before this one reads the state as it always did.
+
+The second is a claim route, `POST /legion/v1/claims/owed`.
+It takes the claim token, session and secret that `claims/activity` takes, and answers `{"owes": <bool>, "work": <string>}`: whether the claim owes work now, read from the issue's record, and what that work is called (`the testing phase of LEGION-208`, `the production check of LEGION-208`), empty when nothing is owed.
+The end-of-turn reminder of both harnesses asks it at each turn's end and keeps no phase of its own ([Idle release](#idle-release) says when a reminder is due).
+A plugin below 91 calls no such route, and nothing else of the claim wire changes.
+`packages/contracts/src/legion-api.ts` holds the two bodies as `LegionOwedRequest` and `LegionOwedResponse`.
+
+The third is the resume task of a root a person answered, which the daemon now writes at each send rather than when it queues the task, because the design gate can move in between.
+The outbox start that queues such a task carries the wait it answers as `awaiting` (`record.SuperviseRequest.Awaiting`) and no task text.
+The claim's held delivery carries that wait in `pending_task_deliveries.resume`, and its task text stays empty until the daemon sends it.
+
+Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the repository keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
 Every row already there takes each column's default, and nothing is backfilled.
 The same migration widens the check on a bundle's restore attempt to a third outcome, `refused_repository`, which the daemon records for a bundle of a repository the issue has left.
+Store migration 20261112215432_delivery_resume adds `pending_task_deliveries.resume`, null for every delivery but a resume task's.
 
-To roll this release back to contract 68, re-pin the earlier image.
-Before that image is pinned, take the work of every bundle this release refused for its repository off the database and delete those rows (`delete from workspace_bundles where attempt_outcome = 'refused_repository'`), or the earlier release holds each of those issues' pods for ever: its idle rule counts every row of an issue where this one skips a refused row, and such a row is never deleted and never taken again, so it reads there as work no pod restored (`workflow.IdleHoldBundleUnrestored`).
+To roll this release back, re-pin the earlier image (contract 86 at the base this release was written on).
 There is no `legion.yaml` key to put back and no column to drop:
-the earlier release names every column it reads and writes, so it boots with the five in place, reads none of them and writes none of them.
-What the rollback costs is the correction itself.
-That release carries the write-once guard this one removes, so it refuses a changed repository as it always did, and a person's change in Dispatch reaches no running tree until this release is pinned again.
-A correction this release applied stands under it, with `repo_before` and `repo_corrected_at` as this release wrote them, and the issue goes on working the repository the correction moved it to.
+the earlier release names every column it reads and writes, so it boots with the six in place, reads none of them and writes none of them.
+Going back costs four things, and each of the first two holds or loses work unless you act before the earlier image is pinned.
+
+- A bundle this release refused for its repository holds its issue's pod for ever.
+  The earlier release's idle rule counts every bundle row of an issue, where this one skips a refused row, and such a row is never deleted and never taken again, so it reads there as work no pod restored (`workflow.IdleHoldBundleUnrestored`).
+  Take the work of every such bundle off the database and delete those rows (`delete from workspace_bundles where attempt_outcome = 'refused_repository'`).
+
+- A resume task this release queued and has not sent reaches its architect with no text, or not at all.
+  The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it refuses an outbox start that carries `awaiting` and retries that row on its backoff until this release runs again: the answered root's architect is not resumed.
+  It does not read `pending_task_deliveries.resume`, so it sends a held resume task as the text the row holds, which is empty until this release has sent it.
+  Before you pin the earlier image, stop this release's daemon and run the two reads below.
+  When either returns a row, start this release again, let it send those tasks, and stop it and read again, until both return none.
+
+  ```sql
+  select id, payload->>'tree' as tree from outbox where kind = 'supervise' and payload ? 'awaiting';
+  select claim_token, delivery_id from pending_task_deliveries
+   where resume->>'delivery' = delivery_id and task = '';
+  ```
+
+- The correction itself stops.
+  That release carries the write-once guard this one removes, so it refuses a changed repository as it always did, and a person's change in Dispatch reaches no running tree until this release is pinned again.
+  A correction this release applied stands under it, with `repo_before` and `repo_corrected_at` as this release wrote them, and the issue goes on working the repository the correction moved it to.
+
+- A worker the earlier plugin resumes may be reminded of nothing until the daemon's next task reaches it.
+  This release's reminder records the states `active` and `waiting`, and the earlier plugin knows `waiting` and not `active`.
+  On Oh My Pi it restores the last `legion-phase-stall` entry it understands, an entry from before this release or none, and with none it starts with its phase `closed`.
+  On Claude Code it reads a state file holding `active` as one it does not know, warns once, and starts with its phase `closed`.
+  A closed phase earns no reminder, and the daemon's next task to that worker opens it again.
+  Nothing in the database holds this, so there is nothing to run before you pin.
+
+A plugin of the earlier image calls no `claims/owed` route, so the route needs no undoing.
+A delivery the earlier release writes over a resume task's row keeps this release's `resume` value, since that release's write does not name the column.
+The value names the delivery it was written for, so this release, pinned again, reads it under the new delivery's id and marks nothing with it.
 
 ### Contract discipline
 
@@ -4456,7 +4499,9 @@ A near-full disk slows jj's working-copy snapshot before a push, which is why `l
 
 An issue pod that no role is using is released: the daemon ends it and starts another at the next wake for one of its roles.
 A pod qualifies once it has had no turn in progress and no turn due for the idle period, `runtime.kubernetes.idle_release.idle_minutes` (10 minutes by default).
-A turn is due when the next phase reminder of a phase worker whose phase is open falls inside the idle period.
+A turn is due when the next phase reminder of a phase worker whose phase the daemon's record holds open falls inside the idle period:
+the worker's session reports when its next reminder timer is due, and the daemon reads from its own record whether the phase is open.
+The reminder keeps no phase of its own: when its timer is due it asks the daemon what the claim owes (`POST /legion/v1/claims/owed`), and it reminds only when the answer says the claim owes work, or when no answer arrives within 3 seconds (`OWED_READ_BOUND_MS`), when it nudges in words that name no phase.
 A phase worker whose phase is open is reminded five minutes after a turn that did not complete it, and fifteen minutes after one whose reply opened with a `WAITING` line or that ended with background work of its own still running (`reminderMs` and `waitingMs`, `packages/pi-shared/src/stall-limits.ts`), so of the workers in an open phase only one that said what it waits on is released.
 Each live claim of the pod must also have reported to the daemon, after its last turn, that it runs no background work, and the pod must run the image the daemon's configuration names with every live claim on the daemon's current contract.
 The pod of a root that waits on a person's answer in `awaiting_person` is kept until that answer comes; its children are not.
