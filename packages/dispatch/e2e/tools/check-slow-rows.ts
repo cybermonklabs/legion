@@ -37,7 +37,8 @@
  *  That run names no project, which is the default selection, and the six `-alone` projects
  *  carry `default: false` (`clockProjectNames`, e2e/configurations.ts), so it runs neither
  *  `heavy-bodies.e2e.ts` nor `nested-directive.e2e.ts`, nor the five rows of
- *  `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts` and
+ *  `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts`,
+ *  `large-documents-build-serves.the-decision.e2e.ts` and
  *  `large-documents-desktop-build.e2e.ts`, which `iphone-measure-alone`, `iphone-alone` and
  *  `chromium-alone` take whole, nor the phone half of `large-documents-long-build.e2e.ts`,
  *  which `iphone-long-build-alone` takes, and every

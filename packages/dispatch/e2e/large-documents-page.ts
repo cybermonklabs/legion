@@ -39,7 +39,7 @@
 // it prints names which two those are. How many readings it takes, the line each is printed
 // as and the median it holds to the targets are `large-documents-median.ts`; the recorders of
 // the page's reads and its deferred chrome, which the rows of
-// `large-documents-first-screen.e2e.ts` read the page's order by, are
+// `large-documents-first-screen.e2e.ts` and its two siblings read the page's order by, are
 // `large-documents-after-the-batch.ts`.
 import type { Page } from "@playwright/test";
 
@@ -181,9 +181,11 @@ async function listenForThePage(page: Page): Promise<Announced> {
   return { editorOpened: editorOpened.promise, firstBlock: firstBlock.promise };
 }
 
-/** Waits for one of the page's announcements, and fails with `missed` where it never comes.
- *  The wait is the one the caller named, and what it is waiting for is a message the page
- *  sends rather than a reading the run takes, so the build cannot starve it. */
+/** Waits for `announced` and fails with `missed` where it has not settled inside `timeoutMs`:
+ *  a deadline over a promise, and nothing more. What its callers hand it is a message rather
+ *  than a reading the run takes - one of the page's announcements, or the document's room
+ *  admitting the other writer (`theOtherPersonsPen`, `large-documents-rows.ts`), which is the
+ *  server's - so the build cannot starve the wait. */
 export async function theMomentThePageReached<T>(
   announced: Promise<T>,
   timeoutMs: number,

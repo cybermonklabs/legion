@@ -7,17 +7,20 @@
 # a string, a generator method's `*rows() {`, and a comment with no word in it (an empty `//` or
 # `/**/`, the ` */`, ` **/` or JSX `*/}` that closes a comment about something else) - all fail;
 # a site named inside a comment is prose and is not counted, while a site on a generator
-# method's own line is code and is; the module the rule exists for, and the suite's own test
+# method's own line is code and is, and so is a site after a comment that closes on its line
+# (`/* fine */ window.scrollTo(` or a `*/` closing one opened above), a line that is no reason
+# for the one under it either; the module the rule exists for, and the suite's own test
 # files, are outside the reach; a read of a box's own `scrollTop`, or a comparison of it, is not
 # a reading of a reader's place while `documentElement.scrollTop` is, through `?.` too; every
-# write of `scrollTop` counts, by name or bracketed name and by `=` or any compound assignment;
-# every call that moves a scroll counts, by each of its spellings - `scrollTo(`, `scrollBy(`,
-# `scrollIntoView(`, `scrollIntoViewIfNeeded(`, the `.scroll(` alias, any of them written as an
-# optional call or made through `.call(` or `.apply(`, and a `.scrollTop =` whose value a
-# formatter has put on the next line - and so does every spelling of the reader's own place,
-# `scrollY` destructured off the window and `scrollingElement` included, while a bare `scroll(`
-# counts too, since that is the window's own alias and a local function of that name is renamed
-# rather than excused;
+# write of `scrollTop` counts, by name or bracketed name and by `=`, any compound assignment, or
+# `++` or `--` before or after it, while `rows[++i].scrollTop` is a read; every call that moves
+# a scroll counts, by each of its spellings - `scrollTo(`, `scrollBy(`, `scrollIntoView(`,
+# `scrollIntoViewIfNeeded(`, the `.scroll(` alias, any of them by bracketed name
+# (`window["scrollTo"](`), written as an optional call or made through `.call(` or `.apply(`,
+# and a `.scrollTop =` whose value a formatter has put on the next line - and so does every
+# spelling of the reader's own place, `scrollY` destructured off the window and
+# `scrollingElement` included, while a bare `scroll(` counts too, since that is the window's own
+# alias and a local function of that name is renamed rather than excused;
 # and the real repository passes over a count of sites it actually found, so a run that scanned
 # nothing fails rather than reporting a clean scan.
 #
@@ -442,6 +445,62 @@ check "names the site under an empty //" "$(contains "$out" 'Surface.tsx:3')"
 check "names the site under an empty /**/" "$(contains "$out" 'Surface.tsx:5')"
 check "names the site under a **/ closer" "$(contains "$out" 'Surface.tsx:8')"
 check "names the site under a JSX */} closer" "$(contains "$out" 'Surface.tsx:15')"
+
+echo "case: an increment or decrement of scrollTop counts, before or after it, by name or bracketed name"
+root=$(fixture step_write)
+surface "$root" <<'EOF'
+export function nudge(box: HTMLElement, rows: HTMLElement[], i: number): number {
+  box.scrollTop++;
+  ++box.scrollTop;
+  box.scrollTop--;
+  --box["scrollTop"];
+  return rows[++i].scrollTop + rows[i--].scrollTop;
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts the four steps and neither read" "$(contains "$out" '4 of 4 scroll sites')"
+check "names the postfix ++" "$(contains "$out" 'Surface.tsx:2')"
+check "names the prefix ++" "$(contains "$out" 'Surface.tsx:3')"
+check "names the postfix --" "$(contains "$out" 'Surface.tsx:4')"
+check "names the bracketed prefix --" "$(contains "$out" 'Surface.tsx:5')"
+check "says what the site does" "$(contains "$out" 'writes a scroll')"
+
+echo "case: a call that moves a scroll counts by its bracketed name"
+root=$(fixture bracket_call)
+surface "$root" <<'EOF'
+export function toTop(box: HTMLElement, row: HTMLElement): void {
+  window["scrollTo"](0, 0);
+  row["scrollIntoView"]();
+  box['scrollBy']?.(0, 1);
+  box[`scroll`].call(box, 0, 0);
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all four" "$(contains "$out" '4 of 4 scroll sites')"
+check "names the bracketed scrollTo" "$(contains "$out" 'Surface.tsx:2')"
+check "names the bracketed scrollIntoView" "$(contains "$out" 'Surface.tsx:3')"
+check "names the optional bracketed scrollBy" "$(contains "$out" 'Surface.tsx:4')"
+check "names the bracketed scroll.call" "$(contains "$out" 'Surface.tsx:5')"
+
+echo "case: code after a comment that closes on its line is code, on the site's line and above it"
+root=$(fixture after_closer)
+surface "$root" <<'EOF'
+export function toTop(box: HTMLElement): void {
+  /* fine */ window.scrollTo(0, 0);
+  /**
+   */ window.scrollTo(0, 0);
+  /* fine */ box.focus();
+  box.scrollBy(0, 1);
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "counts all three" "$(contains "$out" '3 of 3 scroll sites')"
+check "names the site after a /* … */" "$(contains "$out" 'Surface.tsx:2')"
+check "names the site after a */" "$(contains "$out" 'Surface.tsx:4')"
+check "names the site under code after a /* … */" "$(contains "$out" 'Surface.tsx:6')"
 
 # The count matters as much as the exit status here: a script that resolved the wrong root would
 # scan nothing, find nothing bare, and print the same cheerful line.

@@ -1,11 +1,14 @@
-// What the rows of `large-documents-first-screen.e2e.ts` read the page's order by: which reads it
+// What the rows of `large-documents-first-screen.e2e.ts` and its two siblings
+// (`large-documents-first-screen.the-chrome.e2e.ts`,
+// `large-documents-first-screen.the-keyboard.e2e.ts`) read the page's order by: which reads it
 // made and when, when the editor's first batch landed, and when each part of the chrome the page
 // defers was first drawn (dispatch://INFRA-341, R11, "the issue page's non-document panels are
-// drawn after the editor's first batch"; `web/src/features/doc/AfterTheFirstBatch.tsx`). No
-// other file reads them. The measurement those rows sit beside, and the selector the first
-// batch is read by, are `large-documents-page.ts`.
+// drawn after the editor's first batch"; `web/src/features/doc/AfterTheFirstBatch.tsx`), and
+// how long they leave a held page to settle. No other file reads them. The measurement those
+// rows sit beside, and the selector the first batch is read by, are `large-documents-page.ts`.
 import type { Page } from "@playwright/test";
 
+import { LONGEST_HOLD_MS } from "../web/src/features/doc/first-batch";
 import { liveEditorSelector } from "./large-documents-page";
 
 declare global {
@@ -20,6 +23,23 @@ declare global {
      *  out on, which is how a row reads the order of the page's reads (`watchTheReads`). */
     __largeDocumentReads?: { at: number; path: string }[];
   }
+}
+
+/** How long a row waits, with the socket held and the page settled, before it decides a read
+ *  the page was going to make has not been made. The page's own draw of the document is on the
+ *  screen well inside it, and every panel of the header has rendered.
+ *
+ *  Both this window and the editor's build after it have to finish inside the hold's own
+ *  deadline, since a page held past that deadline releases the hold by design and the reads
+ *  then go out with no batch behind them (`web/src/features/doc/first-batch.ts`,
+ *  `LONGEST_HOLD_MS`, which the row of `large-documents-first-screen.the-chrome.e2e.ts` whose
+ *  socket never answers covers). The assertion below is what keeps the two in step when either
+ *  number moves. */
+export const settledWithTheSocketHeldMs = 6_000;
+if (settledWithTheSocketHeldMs * 2 >= LONGEST_HOLD_MS) {
+  throw new Error(
+    `the settled window (${settledWithTheSocketHeldMs} ms) leaves no room for the build inside the hold's deadline (${LONGEST_HOLD_MS} ms)`
+  );
 }
 
 /**

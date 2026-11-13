@@ -29,12 +29,12 @@
 //
 // The numbers R11's targets are read from are in `large-documents-measured.e2e.ts`, and the
 // rows beside them that need a build of the larger document to last are in
-// `large-documents-build-serves.e2e.ts`, `large-documents-desktop-build.e2e.ts` and
-// `large-documents-long-build.e2e.ts`; what stands on the reader's screen while the editor is
-// built is in `large-documents-build.e2e.ts`; the draw the server sends, and the reads and the
-// chrome the page holds until the first batch, are in `large-documents-first-screen.e2e.ts`,
-// and where that chrome leaves the server's first block is in
-// `large-documents-fold.e2e.ts`. What the eight files share is
+// `large-documents-build-serves.e2e.ts`, `large-documents-build-serves.the-decision.e2e.ts`,
+// `large-documents-desktop-build.e2e.ts` and `large-documents-long-build.e2e.ts`; what stands
+// on the reader's screen while the editor is built is in `large-documents-build.e2e.ts`; the
+// draw the server sends, and the reads and the chrome the page holds until the first batch, are
+// in the three `large-documents-first-screen.*.e2e.ts` files, and where that chrome leaves the
+// server's first block is in `large-documents-fold.e2e.ts`. What the eleven files share is
 // `large-documents-rows.ts`.
 import { MessageType } from "@hocuspocus/provider";
 import { expect, type Locator, type Page, test } from "@playwright/test";
@@ -70,6 +70,7 @@ import {
 } from "./large-documents";
 import { throttleTheCpu, watchTheBuildsWindow } from "./large-documents-page";
 import {
+  aDrawWithinMs,
   agent,
   blocksBuilt,
   type EditMade,
@@ -81,34 +82,21 @@ import { expectNoneOf } from "./none-of";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
-// Every wait of this file for something the page draws is bounded by one of the three figures
-// below, so a page that never draws it fails the row by name inside the leg it runs in.
+// Every wait of this file for something the page draws is bounded by `aDrawWithinMs`
+// (`large-documents-rows.ts`, which says the leg these rows run in, the rule a bound is held to
+// and what the waits it bounds cost) or by one of the two figures below.
 //
-// The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under a step
-// of 540 s with one retry (.github/workflows/dispatch-browser.yaml). In run 43421318396 the
-// `chromium` rows were in `shard (3)`, whose step took 329 s and leaves 211 s, and the `iphone`
-// rows in `shard (5)`, projected at 372 s since that leg's moves, which leaves 168 s; the longest
-// leg of that run took 433 s, which leaves 107 s. A row that hangs runs twice, so it adds twice
-// its failing time, less what it costs when it passes, to the worker it runs on.
+// What the waits these two bound cost, timed on this pod, one worker on two CPUs
+// (dispatch://INFRA-341), the slower of `chromium` and `iphone`. Bounded by `aBuildWithinMs`:
+// the linked block in the viewport 16.25 s, the editor open over the reader's typing 19.91 s,
+// the larger document's card 11.50 s and its editor taking edits 14.26 s. Bounded by
+// `herBuildWithinMs`: her editor open while Bob writes 69.23 s.
 //
-// What the waits cost, timed on this pod, one worker on two CPUs (dispatch://INFRA-341), the
-// slower of `chromium` and `iphone`. Bounded by `aDrawWithinMs`: the drawn card 6.72 s, the
-// draw's first block 0.76 s and 1.69 s, Bob's editor holding the title 5.81 s, the diagrams
-// settled 2.22 s, the reconnected dot 1.30 s and the edit at the server 0.86 s. Bounded by
-// `aBuildWithinMs`: the linked block in the viewport 16.25 s, the editor open over the reader's
-// typing 19.91 s, the larger document's card 11.50 s and its editor taking edits 14.26 s. Bounded
-// by `herBuildWithinMs`: her editor open while Bob writes 69.23 s.
-//
-// So 20 s is three times the slowest of the first kind and 45 s more than twice the slowest of
-// the second; each such row fails within about 60 s and adds at most 90.4 s to its worker,
-// which fits every leg above. 90 s for the third is 1.3 times its reading, and is the room its
-// row has: that row costs 102 s passing, 32.8 s of it before this wait, so a failing attempt is
-// 122.8 s and the row and its retry add 143.6 s to the worker - inside the 168 s and 211 s of
-// the legs it ran in, and over the 107 s of the longest leg, where no bound above its own
-// reading would fit.
-
-/** How long a row waits for something the page draws in its first seconds. */
-const aDrawWithinMs = 20_000;
+// So 45 s is more than twice the slowest of the first kind, and a row held only to
+// `aDrawWithinMs` and `aBuildWithinMs` fails within about 60 s and adds at most 90.4 s to its
+// worker. 90 s for the second is 1.3 times its reading: that row costs 102 s passing, 32.8 s of
+// it before this wait, so a failing attempt is 122.8 s and the row and its retry add 143.6 s to
+// the worker, the most a row of this file adds.
 
 /** How long a row waits for a build of the larger document, or for the reader's own typing to
  *  have crossed a build, to end. */

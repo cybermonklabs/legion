@@ -5,12 +5,16 @@
 // page's own code has evaluated, so they wait for nothing the entry chunk or the issue page
 // does; the first block is in the page's own bytes, drawn there by the Go server
 // (`internal/dispatch/pmdoc/first_screen.go`), so it owes nothing at all to the page's own
-// code; the margin beside the document draws no card a reader cannot see; and the reads and the
-// chrome that fill the rest of the issue page go out and are drawn after the editor's first
-// batch (`web/src/features/doc/first-batch.ts`, `web/src/features/doc/AfterTheFirstBatch.tsx`).
-// None of these rows is timed: each reads what the page asked for, what it drew and which side
-// of the first batch either fell on, never how long any of it took. The numbers that load is
-// mostly made of are in `large-documents-measured.e2e.ts`.
+// code; the margin beside the document draws no card a reader cannot see; and the reads that
+// fill the rest of the issue page go out after the editor's first batch
+// (`web/src/features/doc/first-batch.ts`). None of these rows is timed: each reads what the page
+// asked for, what it drew and which side of the first batch either fell on, never how long any
+// of it took. The numbers that load is mostly made of are in `large-documents-measured.e2e.ts`.
+// The chrome the page draws after that same batch (`web/src/features/doc/AfterTheFirstBatch.tsx`)
+// is in `large-documents-first-screen.the-chrome.e2e.ts`, and a reader with no pointer reaching
+// for it is in `large-documents-first-screen.the-keyboard.e2e.ts`: rows of this file until it
+// reached 1,391 lines, now in files whose names list right after it, so every project runs them
+// in the order it did.
 //
 // Their documents are short ones, because an order is the same over any length of document. The
 // one exception is the row that reads the reader's place half-way down the larger document of
@@ -19,18 +23,17 @@
 //
 // The numbers R11's targets are read from are in `large-documents-measured.e2e.ts`, and the
 // rows beside them that need a build of the larger document to last are in
-// `large-documents-build-serves.e2e.ts`, `large-documents-desktop-build.e2e.ts` and
-// `large-documents-long-build.e2e.ts`; what stands on the reader's screen while the editor is
-// built is in `large-documents-build.e2e.ts`; what a reader does with a document whose editor
-// is still being built is in `large-documents-reader.e2e.ts`; where the chrome these rows draw
-// leaves the server's first block, a place rather than an order, is in
-// `large-documents-fold.e2e.ts`. What the eight files share is
-// `large-documents-rows.ts`.
+// `large-documents-build-serves.e2e.ts`, `large-documents-build-serves.the-decision.e2e.ts`,
+// `large-documents-desktop-build.e2e.ts` and `large-documents-long-build.e2e.ts`; what stands
+// on the reader's screen while the editor is built is in `large-documents-build.e2e.ts`; what a
+// reader does with a document whose editor is still being built is in
+// `large-documents-reader.e2e.ts`; where the chrome draws leaves the server's first block, a
+// place rather than an order, is in `large-documents-fold.e2e.ts`. What the eleven files share
+// is `large-documents-rows.ts`.
 import { expect, type Page, test } from "@playwright/test";
 
-import { LONGEST_HOLD_MS } from "../web/src/features/doc/first-batch";
 import { subscribeSession } from "./agents";
-import { createAsk, patchIssue } from "./api";
+import { createAsk } from "./api";
 import { documentEditor, documentTransport, editorBeingBuilt } from "./editor";
 import {
   documentDiagrams,
@@ -42,46 +45,25 @@ import {
 } from "./large-documents";
 import {
   type PageRead,
-  readTheChrome,
   readTheReads,
-  watchTheChrome,
+  settledWithTheSocketHeldMs,
   watchTheReads,
 } from "./large-documents-after-the-batch";
-import { agent, seedDocument, shortDocument } from "./large-documents-rows";
+import {
+  aDrawWithinMs,
+  agent,
+  aLongDrawWithinMs,
+  seedDocument,
+  shortDocument,
+} from "./large-documents-rows";
 import { settledScrollTop, withoutScrollAnchoring } from "./mermaid-helpers";
-import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
-// Every wait of this file for something the page draws is bounded by one of the two figures
-// below, so a page that never draws it fails the row by name inside the leg it runs in.
-//
-// The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under a step
-// of 540 s with one retry (.github/workflows/dispatch-browser.yaml). In run 43421318396 the
-// `chromium` rows were in `shard (3)`, whose step took 329 s, and the `iphone` rows in
-// `shard (4)` and `shard (5)`, 369 s and a projected 372 s since that leg's moves; the longest
-// leg of that run took 433 s, which leaves 107 s. A row that hangs runs twice, so it adds twice
-// its failing time, less what it costs when it passes, to the worker it runs on.
-//
-// What the waits cost, timed on this pod, one worker on two CPUs (dispatch://INFRA-341), the
-// slower of `chromium` and `iphone`: every wait bounded by `aDrawWithinMs` - the draw's first
-// block, the editor's first block, the held boxes, the Subscribers control, the headers, the
-// reads and parts the page held behind its first batch - took 0.03 to 2.67 s. The two bounded
-// by `aLongDrawWithinMs` took 12.98 s (the editor open over the larger document, from the
-// navigation) and 12.63 s (the chrome on a page whose socket never answers, which waits out
-// `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`).
-//
-// So 20 s is more than seven times the slowest of the first kind and 40 s three times the
-// slowest of the second. The longest a row then runs before it fails is the long-document row's:
-// the 9.6 s it spends before its editor wait and 40 s, 49.6 s; twice that, less the 22.6 s the
-// row costs passing, is 76.6 s more on one worker, which fits every leg above, the longest's
-// 107 s among them.
-
-/** How long a row waits for something the page draws in its first seconds. */
-const aDrawWithinMs = 20_000;
-
-/** How long a row waits for the editor over the larger document, or for the chrome a page whose
- *  socket never answers draws once its own deadline has passed. */
-const aLongDrawWithinMs = 40_000;
+// Every wait of this file for something the page draws is bounded by `aDrawWithinMs` or
+// `aLongDrawWithinMs` (`large-documents-rows.ts`, which says the leg these rows run in, the rule
+// a bound is held to and what the waits it bounds cost). The longest a row of this file runs
+// before it fails is the long-document row's: the 9.6 s it spends before its editor wait and
+// 40 s, 49.6 s; twice that, less the 22.6 s the row costs passing, is 76.6 s more on one worker.
 
 // The three rows below are about what the page does in front of the document's own draw,
 // which is what the numbers of `large-documents-measured.e2e.ts` are mostly made of. The
@@ -498,22 +480,6 @@ function printTheOrder(
   console.log(`${what} · ${line}`);
 }
 
-/** How long a row waits, with the socket held and the page settled, before it decides a read
- *  the page was going to make has not been made. The page's own draw of the document is on the
- *  screen well inside it, and every panel of the header has rendered.
- *
- *  Both this window and the editor's build after it have to finish inside the hold's own
- *  deadline, since a page held past that deadline releases the hold by design and the reads
- *  then go out with no batch behind them (`web/src/features/doc/first-batch.ts`,
- *  `LONGEST_HOLD_MS`, which the last of this file's chrome rows covers). The assertion below
- *  is what keeps the two in step when either number moves. */
-const settledWithTheSocketHeldMs = 6_000;
-if (settledWithTheSocketHeldMs * 2 >= LONGEST_HOLD_MS) {
-  throw new Error(
-    `the settled window (${settledWithTheSocketHeldMs} ms) leaves no room for the build inside the hold's deadline (${LONGEST_HOLD_MS} ms)`
-  );
-}
-
 test("the reads the first editable block needs none of go out after the editor's first batch @phone", async ({
   browser,
 }, testInfo) => {
@@ -542,9 +508,9 @@ test("the reads the first editable block needs none of go out after the editor's
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
     await expect(page.getByRole("button", { name: /^Subscribers/ })).toBeVisible();
     await expect(page.locator('[data-testid="issue-components"]')).toBeVisible();
-    // A read that never goes out cannot be awaited, so the row waits the settled window above:
-    // a read any of these panels was going to make would have gone out inside it
-    // (`settledWithTheSocketHeldMs`).
+    // A read that never goes out cannot be awaited, so the row waits the settled window: a read
+    // any of these panels was going to make would have gone out inside it
+    // (`settledWithTheSocketHeldMs`, `large-documents-after-the-batch.ts`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
 
     const held = await readTheReads(page);
@@ -619,8 +585,8 @@ test("a reader who opens a panel before the first batch has its read started the
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
     const toggle = page.getByRole("button", { name: /^Subscribers/ });
     await expect(toggle).toBeVisible({ timeout: aDrawWithinMs });
-    // The settled window above: only time shows that the subscribers read nobody made is a read
-    // nobody made (`settledWithTheSocketHeldMs`).
+    // The settled window: only time shows that the subscribers read nobody made is a read
+    // nobody made (`settledWithTheSocketHeldMs`, `large-documents-after-the-batch.ts`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
     expect((await readTheReads(page)).reads.filter((read) => read.path === subscribers)).toEqual(
       []
@@ -789,602 +755,6 @@ test("a panel arriving while the reader is in a long document moves what they ar
       place?.moved ?? Number.NaN,
       "the panel moved the words the reader was looking at"
     ).toBeLessThan(1);
-  } finally {
-    await alice.close();
-  }
-});
-
-// --- The chrome the page draws after that batch -------------------------------------------
-//
-// The reads above were half the rule; the React that draws their panels is the other half.
-// Measured on this pod, the shell's own render and its commits cost the main thread 1,062 ms
-// on the way to the first editable block of the 28-section document, and the issue page's
-// header, tab strip and artifact chrome 522 ms of React inside a 1,065 ms window. The route
-// has to render; the sidebar, the inbox peek, the live pill, the needs-you and replies counts
-// and the page's own chrome do not, so each of them is drawn after the editor's first batch
-// (dispatch://INFRA-341 R11, `web/src/features/doc/AfterTheFirstBatch.tsx`).
-//
-// Each row below holds the document's socket (`documentTransport`), so the batch happens when
-// the row says so rather than when a loaded machine gets round to it, and names every part it
-// watches by what that part leaves in the page.
-
-/** The parts a document address draws after the batch, by what each leaves in the page. The
- *  tab is named by its own id rather than by its role, because the margin draws tabs of its
- *  own. The shell's part differs with the width: above the phone layout it is the sidebar's
- *  navigation column, and on a phone the count the compact header's inbox entry carries,
- *  which is the same needs-you read. The entry itself stands there before the batch, at a
- *  count of nothing, so the count is what arrives (`web/src/features/shell/ShellCounts.tsx`).
- */
-function theChromeAfterTheBatch(phone: boolean): Record<string, string> {
-  return {
-    "the artifact's header": '[data-testid="artifact-header"]',
-    "the issue's header": "[data-issue-header]",
-    "the issue's tab strip": "#issue-spec-tab",
-    ...(phone
-      ? { "the shell's inbox count": "[data-inbox-count]" }
-      : { "the sidebar's navigation": 'nav[aria-label="Navigation"]' }),
-  };
-}
-
-/** Puts what a chrome row read on its annotations, which the report keeps with the result, and
- *  on stdout, which `--reporter line` prints as the row runs, exactly as `printTheOrder` does:
- *  a report says which part was drawn when rather than only that the row was green. */
-function printTheChrome(
-  what: string,
-  firstBatchMs: number | undefined,
-  drawn: Readonly<Record<string, number>>
-): void {
-  const parts = Object.entries(drawn).sort(([left], [right]) => left.localeCompare(right));
-  const line = `first batch ${
-    firstBatchMs === undefined ? "never" : `${Math.round(firstBatchMs)} ms`
-  }; ${
-    parts.length === 0
-      ? "nothing of the chrome drawn"
-      : parts.map(([name, at]) => `${name} ${Math.round(at)} ms`).join("; ")
-  }`;
-  test.info().annotations.push({ description: line, type: what });
-  console.log(`${what} · ${line}`);
-}
-
-test("the shell's parts and the page's chrome are drawn after the editor's first batch @phone", async ({
-  browser,
-}, testInfo) => {
-  test.setTimeout(300_000);
-  const { issueKey, path } = await seedDocument("specs-chrome.md", proseOnlyDocument);
-  // One ask of an agent's, so the shell has a count to draw: with nothing waiting on the
-  // reader the compact header's peek reads `Inbox` before the batch and after it, and the row
-  // would be watching for a part that never changes.
-  // The count is the reader's own, which is an ask waiting on a human on an issue assigned to
-  // them (`isMine` in `web/src/features/inbox/sections.ts`), so the issue is alice's here.
-  await patchIssue(issueKey, { assignee: "alice" });
-  await createAsk(issueKey, { question: "Which ledger settles first?" }, agent);
-  const phone = testInfo.project.name === "iphone";
-  const parts = theChromeAfterTheBatch(phone);
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await watchTheReads(page);
-    await watchTheChrome(page, parts);
-    const transport = await documentTransport(page, { holding: true });
-    await page.goto(path);
-
-    // The reader has the document's own draw and the boxes the page keeps where its chrome
-    // will stand; no editor is being built, so none of the chrome itself is drawn.
-    await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
-      timeout: aDrawWithinMs,
-    });
-    await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
-    // The settled window above: a first batch, or any chrome read behind it, would have gone
-    // out inside it, so what the row reads next is what the held page never asked for
-    // (`settledWithTheSocketHeldMs`).
-    await page.waitForTimeout(settledWithTheSocketHeldMs);
-
-    const heldReads = await readTheReads(page);
-    const heldChrome = await readTheChrome(page);
-    printTheChrome("the chrome with the socket held", heldReads.firstBatchMs, heldChrome);
-    expect(heldReads.firstBatchMs).toBeUndefined();
-    expect(
-      Object.keys(heldChrome).sort(),
-      "a part of the chrome was drawn before the editor's first batch"
-    ).toEqual([]);
-
-    // Released, the editor builds, and every part is drawn behind its first batch.
-    await transport.release();
-    await expect(editorBeingBuilt(page)).toBeAttached({ timeout: aDrawWithinMs });
-    await expect
-      .poll(async () => Object.keys(await readTheChrome(page)).sort(), {
-        message: "a part of the chrome the page held behind the first batch was never drawn",
-        timeout: aDrawWithinMs,
-      })
-      .toEqual(Object.keys(parts).sort());
-
-    const afterReads = await readTheReads(page);
-    const afterChrome = await readTheChrome(page);
-    printTheChrome("the chrome after the first batch", afterReads.firstBatchMs, afterChrome);
-    const firstBatchMs = afterReads.firstBatchMs ?? 0;
-    expect(firstBatchMs).toBeGreaterThan(0);
-    for (const [name, at] of Object.entries(afterChrome)) {
-      expect(at, `${name} was drawn before the editor's first batch`).toBeGreaterThan(firstBatchMs);
-    }
-    // And the box the tab strip stood in has gone, which is the strip itself standing there.
-    await expect(page.getByTestId("issue-tabs-box")).toHaveCount(0);
-  } finally {
-    await alice.close();
-  }
-});
-
-// And the other end of that hold. A socket that opens and then neither connects nor fails
-// tells the page nothing, so none of the releases above ever comes; the reader would be left
-// with the document's own text and a header and tab strip that stay a skeleton for as long as
-// they are on the page, which is the way out of a document that is not opening. The hold is
-// bounded for that reason (`web/src/features/doc/first-batch.ts`, `LONGEST_HOLD_MS`), and this
-// is the row that says so: the socket is held throughout, no batch ever comes, and the chrome
-// is drawn all the same.
-test("the chrome is drawn even where the socket never answers @phone", async ({
-  browser,
-}, testInfo) => {
-  test.setTimeout(300_000);
-  const { issueKey, path } = await seedDocument("specs-deadline.md", proseOnlyDocument);
-  await patchIssue(issueKey, { assignee: "alice" });
-  await createAsk(issueKey, { question: "Which ledger settles first?" }, agent);
-  const parts = theChromeAfterTheBatch(testInfo.project.name === "iphone");
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await watchTheReads(page);
-    await watchTheChrome(page, parts);
-    const transport = await documentTransport(page, { holding: true });
-    await page.goto(path);
-
-    // Every part of the chrome, with the socket still held and no batch behind any of them.
-    await expect
-      .poll(async () => Object.keys(await readTheChrome(page)).sort(), {
-        message: "the chrome was never drawn on a page whose socket never answered",
-        timeout: aLongDrawWithinMs,
-      })
-      .toEqual(Object.keys(parts).sort());
-    const held = await readTheReads(page);
-    printTheChrome("the chrome with the socket never answering", held.firstBatchMs, {
-      ...(await readTheChrome(page)),
-    });
-    expect(held.firstBatchMs, "a batch came, so this row proved nothing").toBeUndefined();
-    await transport.release();
-  } finally {
-    await alice.close();
-  }
-});
-
-// The rule that chrome is held to, at the place the chrome stands over: the document's own
-// first block. Every part above the document is drawn into a box the page already kept - the
-// header's, the tab strip's, the artifact card's frame - and what the part turns out to be
-// taller than its box by is a growth above a reader who has placed themselves, which the page
-// answers by moving with it (`ChromeAfterTheFirstBatch`). So the first block stands on the
-// same line of their screen before the chrome and after it.
-//
-// The reader here has read the chrome's boxes off the top of their screen, which is where a
-// reader of a document on a phone is seconds into the load: the chrome stands 250 px down a
-// 664 px screen before it is drawn and 590 px down once it is. The browser's own scroll
-// anchoring is off (`withoutScrollAnchoring`), as it is in Safari before 27, so what keeps
-// them in place is the page's own doing.
-test("the chrome arriving moves the document's own first block by no pixels @phone", async ({
-  browser,
-}) => {
-  test.setTimeout(300_000);
-  const { path } = await seedDocument("specs-chrome-place.md", proseOnlyDocument);
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await watchTheReads(page);
-    const transport = await documentTransport(page, { holding: true });
-    await page.goto(path);
-    await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
-      timeout: aDrawWithinMs,
-    });
-    await withoutScrollAnchoring(page);
-    // The reader's own draw of the whole document, before they are placed in it: the page
-    // stops growing under them, and the draw stops painting when the build starts
-    // (`DocumentPreview`'s `building`), so a draw still painting would shorten the page under
-    // the reader for a reason that is not the chrome's.
-    await page.waitForTimeout(settledWithTheSocketHeldMs);
-
-    // The reader reads the chrome's boxes off the top of their screen and stops with the
-    // document's first block just under it. Every box of the chrome now stands above them,
-    // which the row proves before it measures anything: a box a reader can see is a box they
-    // watch land, and nothing moves for them (`readersBlock`).
-    const landed = await page.evaluate(() => {
-      const block = document.querySelector('[aria-label="Document text"] [data-block-id]');
-      if (block === null) return undefined;
-      window.scrollBy(0, block.getBoundingClientRect().top - 16);
-      return Math.round(block.getBoundingClientRect().top);
-    });
-    expect(landed, "the row never found the document's first block").toBe(16);
-    // Over a chrome that was really drawn rather than over nothing: "every box is above the
-    // reader" is met by a renamed test id or a chrome not yet mounted, so the clause says
-    // nothing until the boxes it is about are in the page - the tab strip's box and the issue
-    // header, which is the skeleton's own `header` while the socket is held
-    // (dispatch://INFRA-341, the pairing every universal clause of a check takes, as the row
-    // above does at its own read).
-    //
-    // The strip's box is named before the count and not left to it: this row is `@phone`, where
-    // the shell draws a `header` of its own beside the issue's (`web/src/app.tsx`), so two boxes
-    // are in the page whether or not `issue-tabs-box` is one of them and the floor below is met
-    // by a strip that was renamed or never mounted.
-    await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
-    const chrome = await page.evaluate(() =>
-      [...document.querySelectorAll('[data-testid="issue-tabs-box"], header')].map((box) => ({
-        name: box.getAttribute("data-testid") ?? box.tagName.toLowerCase(),
-        top: Math.round(box.getBoundingClientRect().top),
-      }))
-    );
-    expectNoneOf(chrome, {
-      amongAtLeast: 2,
-      are: (box) => box.top >= 0,
-      matched: "boxes the chrome stands in that were still on the reader's screen",
-      measured: "boxes of the chrome above the document",
-    });
-
-    // From here the row reads the first block after every frame the browser paints - a task
-    // scheduled from an animation frame runs once that frame is on the screen - so what it
-    // records is what the reader saw. The block is looked up afresh each time: the editor's
-    // first batch puts its own copy of it in front of the draw's, and both stand at the top of
-    // the document surface, which is what the chrome above moves.
-    await page.evaluate(() => {
-      const first = () =>
-        document.querySelector(
-          '.proof-editor [data-block-id], [aria-label="Document text"] [data-block-id]'
-        );
-      const block = first();
-      window.__firstBlockPlace =
-        block === null
-          ? undefined
-          : { grew: false, moved: 0, started: block.getBoundingClientRect().top };
-      const scrolled = document.scrollingElement?.scrollTop ?? 0;
-      const sample = () => {
-        const place = window.__firstBlockPlace;
-        const now = first();
-        if (place === undefined || now === null) return;
-        const top = now.getBoundingClientRect().top;
-        const above = top + (document.scrollingElement?.scrollTop ?? 0) - scrolled;
-        place.moved = Math.max(place.moved, Math.abs(top - place.started));
-        if (Math.abs(above - place.started) > 0.5) place.grew = true;
-        requestAnimationFrame(() => window.setTimeout(sample, 0));
-      };
-      sample();
-    });
-
-    await transport.release();
-    await expect(page.locator("[data-issue-header]")).toBeAttached({ timeout: aDrawWithinMs });
-    await expect(page.locator('[data-testid="artifact-header"]')).toBeAttached({
-      timeout: aDrawWithinMs,
-    });
-    await expect
-      .poll(async () => (await page.evaluate(() => window.__firstBlockPlace))?.grew, {
-        message: "the chrome landing never changed how much page stands above the reader",
-        timeout: aDrawWithinMs,
-      })
-      .toBe(true);
-
-    const place = await page.evaluate(() => window.__firstBlockPlace);
-    test.info().annotations.push({
-      description: `the first block started at ${Math.round(place?.started ?? Number.NaN)} px and moved ${place?.moved ?? Number.NaN} px`,
-      type: "the chrome moves the document by no pixels",
-    });
-    console.log(
-      `the chrome moves the document by no pixels · started ${Math.round(place?.started ?? Number.NaN)} px, moved ${place?.moved ?? Number.NaN} px`
-    );
-    // Not to the exact float: a scroll offset is a fraction of a pixel, so the correction lands
-    // within one, and a pixel is the unit a reader has.
-    expect(
-      place?.moved ?? Number.NaN,
-      "the chrome moved the document's own first block"
-    ).toBeLessThan(1);
-  } finally {
-    await alice.close();
-  }
-});
-
-// And the other half of the rule, for the chrome as for the reads: a part is held from a
-// reader who is not waiting for it, never from one who is. The reader here presses the box the
-// tab strip will stand in - which is how a reader reaches for a tab - with the document's
-// socket still held, so no first batch has happened and none is on its way.
-test("a reader who reaches for the chrome before the batch has it then @phone", async ({
-  browser,
-}) => {
-  test.setTimeout(300_000);
-  const { path } = await seedDocument("specs-chrome-reached.md", proseOnlyDocument);
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await watchTheReads(page);
-    await documentTransport(page, { holding: true });
-    await page.goto(path);
-
-    const box = page.getByTestId("issue-tabs-box");
-    await expect(box).toBeAttached({ timeout: aDrawWithinMs });
-    // The settled window above: with the socket held no batch ever comes, and this is how long
-    // the row gives it before it reads that none did (`settledWithTheSocketHeldMs`).
-    await page.waitForTimeout(settledWithTheSocketHeldMs);
-    expect((await readTheReads(page)).firstBatchMs).toBeUndefined();
-    await expect(page.getByRole("tab", { name: /^Spec$/ })).toHaveCount(0);
-
-    await box.click({ position: { x: 5, y: 5 } });
-
-    await expect(page.getByRole("tab", { name: /^Spec$/ })).toBeVisible({ timeout: 30_000 });
-    // And it was the reader's own press that did it, with no first batch behind it.
-    expect((await readTheReads(page)).firstBatchMs).toBeUndefined();
-  } finally {
-    await alice.close();
-  }
-});
-
-// And the same reach taken the other way: by a reader with no pointer, whose Tab is the only
-// way they have into a box the page is holding.
-//
-// The hand-over unmounts whatever they were standing on - the space and the chrome are
-// different elements in the same slot, so React takes the space off the page in the commit the
-// reach turns on, the reach inside it with it. Their focus fell to `<body>` then and their next
-// Tab started again at the top of the page, which is the whole page walked a second time to get
-// back to the chrome they had just asked for (dispatch://INFRA-341). `ChromeAfterTheFirstBatch`
-// draws the reach as a control of its own standing first in the box, carries `tabIndex={-1}` on
-// the box, and puts the focus back on the box in the commit the swap turned on.
-// `IssuePage.test.tsx` holds that in happy-dom, which lays nothing out and moves no focus of its
-// own; this row is the same hand-over under a real browser's own Tab, which is the only place
-// the browser's focus and its tab order are the product's rather than a harness's.
-//
-// Both boxes are driven, because the finding had two halves. The header's is the one the reader
-// meets first. The tab strip's keeps a row of `aria-hidden` spans and nothing else
-// (`IssueTabsSkeleton`, `features/issue/issue-page-skeleton.tsx`), so without a reach of its own
-// a reader tabbed from the header straight past the strip and into the document, with no way to
-// ask for a tab at all.
-//
-// No `@phone`: what this reads is where a Tab leaves the focus, which is the same at either
-// width, and the reach it drives is the page's own chrome at both. Untagged, it runs in the
-// `chromium` project, and that is the full lane rather than every pull request: the
-// pull-request lane names `chromium`, `iphone` and the two stubbed projects and greps `@pr`
-// over them (`.github/workflows/dispatch-browser.yaml`'s shard job), so a row without that tag
-// is run by the merge queue and the nightly and by a pull request carrying `full-ci`. It stays
-// untagged deliberately. The tag is for a real-stack row whose failure a pull request has to
-// see first, and the lane's real-stack half is held to 150 rows
-// (`e2e/__tests__/pull-request-lane.test.ts`), of which 147 are taken at this head; this row
-// seeds a document of its own and walks the page's whole tab order twice over, which is one
-// of the three remaining slots spent on a focus order the merge queue catches
-// before it reaches `main`.
-
-/** The document's own draw, in every surface it can stand in: where a reader who tabbed past
- *  the chrome ends up, and the one place this row's second walk must not reach before the tab
- *  strip's reach. */
-const theDocumentsOwnDraw = '#first-screen, [aria-label="Document text"], .proof-editor';
-
-/** One element the page put the focus on: enough for a failure to name the stop, and the one
- *  thing the walks below are judged on - whether it stands in the document rather than on the
- *  chrome over it. */
-interface Stop {
-  /** Whether it stands inside the document's own draw (`theDocumentsOwnDraw`). */
-  readonly inTheDocument: boolean;
-  /** What a reader hears it as: its `aria-label`, else its own text, cut to one line. */
-  readonly name: string;
-  /** The element it is, lowercased, so a failure says `button` rather than only a name. */
-  readonly tag: string;
-}
-
-/** Where the focus stands now, which is a different question from the one above: after the
- *  hand-over the stop the Tab landed on is gone, and this is what the reader was left with. */
-interface Here extends Stop {
-  /** The focus is on `<body>`, or the page holds none at all: what the hand-over used to
-   *  leave behind, and the whole of what this row is about. */
-  readonly body: boolean;
-}
-
-declare global {
-  interface Window {
-    /** Every element this page has put the focus on, oldest first, which `watchTheFocus`
-     *  records and the two walks of the row below read. */
-    __theFocusLanded?: Stop[];
-  }
-}
-
-/**
- * Records every element this page moves the focus onto, from before its own scripts run.
- *
- * A read of `document.activeElement` after the press cannot see the reach at all. The reach is
- * a focus handler (`ChromeAfterTheFirstBatch`'s `onFocusCapture`) and React treats focus as a
- * discrete event, so the hand-over's commit runs inside the Tab itself: by the time a read
- * from here arrives, the button the Tab landed on has been unmounted and the box holds the
- * focus in its place. The page's own `focusin` records both, in order, which is what says the
- * reader's Tab reached the control and what the page then did with their focus.
- *
- * Install before the navigation; read with `theFocusTrail`.
- */
-async function watchTheFocus(page: Page): Promise<void> {
-  await page.addInitScript((draw: string) => {
-    const landed: Stop[] = [];
-    window.__theFocusLanded = landed;
-    window.addEventListener(
-      "focusin",
-      (event) => {
-        const target = event.target;
-        if (!(target instanceof Element)) {
-          return;
-        }
-        const text = (target.textContent ?? "").replace(/\s+/gu, " ").trim();
-        landed.push({
-          inTheDocument: target.closest(draw) !== null,
-          name: (target.getAttribute("aria-label") ?? text).slice(0, 60),
-          tag: target.tagName.toLowerCase(),
-        });
-      },
-      true
-    );
-  }, theDocumentsOwnDraw);
-}
-
-/** Every element the page has put the focus on so far, oldest first. */
-function theFocusTrail(page: Page): Promise<Stop[]> {
-  return page.evaluate(() => window.__theFocusLanded ?? []);
-}
-
-/** Where the focus stands now. `toBeFocused` answers one locator; a walk has to ask the page
- *  what it is standing on, and a row that reads `<body>` has to be able to say so. */
-function whereTheFocusIs(page: Page): Promise<Here> {
-  return page.evaluate((draw: string) => {
-    const active = document.activeElement;
-    if (active === null) {
-      return { body: true, inTheDocument: false, name: "", tag: "none" };
-    }
-    const text = (active.textContent ?? "").replace(/\s+/gu, " ").trim();
-    return {
-      body: active === document.body,
-      inTheDocument: active.closest(draw) !== null,
-      name: (active.getAttribute("aria-label") ?? text).slice(0, 60),
-      tag: active.tagName.toLowerCase(),
-    };
-  }, theDocumentsOwnDraw);
-}
-
-/** Tabs forward until the focus has landed on a stop `arrived` accepts, and answers every stop
- *  it landed on from this walk's first press, in order. Bounded, because a page whose reach is
- *  missing is one this would tab around forever - the bound is far above the stops either walk
- *  of this row takes, and a walk that spends it answers the whole trail, which is what says
- *  where the reader went instead. */
-async function tabbingTo(
-  page: Page,
-  arrived: (stop: Stop) => boolean,
-  stops = 60
-): Promise<Stop[]> {
-  const before = (await theFocusTrail(page)).length;
-  for (let press = 0; press < stops; press += 1) {
-    await page.keyboard.press("Tab");
-    const walked = (await theFocusTrail(page)).slice(before);
-    if (walked.some(arrived)) {
-      return walked;
-    }
-  }
-  return (await theFocusTrail(page)).slice(before);
-}
-
-/** One stop as an assertion names it: the element and what a reader hears it as. A stop is
- *  read as this one string rather than matched field by field, so a walk that ends on the
- *  wrong stop - or on none at all - fails saying what the reader did reach, with the message
- *  the row gave and the trail in it. */
-function theStop(stop: Stop): string {
-  return `<${stop.tag}> ${stop.name === "" ? "(no name)" : stop.name}`;
-}
-
-/** A walk as a failure prints it: one stop a line, in the order the reader met them. */
-function theTrail(trail: readonly Stop[]): string {
-  return trail.map((stop, index) => `${index}. ${theStop(stop)}`).join("\n");
-}
-
-test("a reader with no pointer tabs into each held box and goes on into the chrome it hands them", async ({
-  browser,
-}) => {
-  test.setTimeout(300_000);
-  const { path } = await seedDocument("specs-chrome-tabbed.md", proseOnlyDocument);
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await watchTheReads(page);
-    await watchTheFocus(page);
-    await documentTransport(page, { holding: true });
-    await page.goto(path);
-
-    // The page as this reader meets it: the document's own text, the two boxes the chrome will
-    // stand in, and nothing of the chrome in either of them.
-    await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
-      timeout: aDrawWithinMs,
-    });
-    await expect(page.getByTestId("issue-header-box")).toBeAttached();
-    await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
-    await expect(page.getByRole("tab", { name: /^Spec$/ })).toHaveCount(0);
-    expect((await readTheReads(page)).firstBatchMs).toBeUndefined();
-
-    // The reader starts where a page just opened leaves them, and their first Tab is kept as a
-    // handle: it is the stop the page's own tab order starts at, which a reader walked round to
-    // the long way whenever this hand-over lost their focus, and which the Tab after the
-    // hand-over must therefore not be.
-    expect((await whereTheFocusIs(page)).body, "the page did not open with the focus on it").toBe(
-      true
-    );
-    await page.keyboard.press("Tab");
-    const theTopOfThePage = await page.evaluateHandle(() => document.activeElement);
-    expect((await whereTheFocusIs(page)).body, "the page's first Tab reached nothing").toBe(false);
-
-    // Tabbing on reaches the header's box while its space is still held: the reach is a
-    // control of its own standing first in the box, and it says what it brings. It is read
-    // from the page's own focus events rather than from `document.activeElement`, because the
-    // hand-over has already taken it off the page by the time a read from here lands
-    // (`watchTheFocus`).
-    const toTheHeader = await tabbingTo(page, (stop) => stop.name === "Show the issue header");
-    expect(
-      toTheHeader.map(theStop),
-      `no Tab reached the held header's own reach. The trail:\n${theTrail(toTheHeader)}`
-    ).toContain("<button> Show the issue header");
-
-    // That Tab is the reader reaching for the chrome, and they get it then.
-    const header = page.getByTestId("issue-header");
-    await expect(header).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole("combobox", { name: "Status" })).toBeVisible();
-    // And it was their own Tab that brought it rather than the hold letting go: a deadline that
-    // fired would release every box at once, and the tab strip is still a skeleton.
-    await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
-    await expect(page.getByRole("tab", { name: /^Spec$/ })).toHaveCount(0);
-
-    // The commit that brought it took the control they were standing on off the page, and their
-    // focus did not fall to `<body>` with it: the box they reached through is what holds them.
-    expect(
-      (await whereTheFocusIs(page)).body,
-      "the hand-over dropped the reader's focus to <body>"
-    ).toBe(false);
-    await expect(header.locator("..")).toBeFocused();
-
-    // So their next Tab goes on into the header they asked for, rather than starting the page
-    // again at the stop their first Tab took.
-    await page.keyboard.press("Tab");
-    const intoTheHeader = await whereTheFocusIs(page);
-    expect(
-      await page.evaluate((top) => document.activeElement === top, theTopOfThePage),
-      "the Tab after the hand-over started again at the top of the page"
-    ).toBe(false);
-    expect(
-      await header.evaluate((node) => node.contains(document.activeElement)),
-      `the Tab after the hand-over left the header: <${intoTheHeader.tag}> ${intoTheHeader.name}`
-    ).toBe(true);
-
-    // The other half: tabbing on out of the header meets the strip's own box, whose space
-    // holds nothing else a reader can reach, before it meets the document under it. The walk
-    // stops at whichever of the two comes first, and the first one is the reach.
-    const theReachOrTheDocument = (stop: Stop) =>
-      stop.name === "Show the issue tabs" || stop.inTheDocument;
-    const toTheStrip = await tabbingTo(page, theReachOrTheDocument);
-    const theFirstOfTheTwo = toTheStrip.find(theReachOrTheDocument);
-    expect(
-      theFirstOfTheTwo === undefined ? "nothing at all" : theStop(theFirstOfTheTwo),
-      `the reader tabbed out of the header without meeting the tab strip's reach. The trail:\n${theTrail(toTheStrip)}`
-    ).toBe("<button> Show the issue tabs");
-
-    // And the strip is handed over the same way, with their place kept the same way.
-    const tabs = page.getByTestId("issue-tabs");
-    await expect(tabs).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByRole("tab", { name: /^Spec$/ })).toBeVisible();
-    expect(
-      (await whereTheFocusIs(page)).body,
-      "the strip's hand-over dropped the reader's focus to <body>"
-    ).toBe(false);
-    await expect(tabs.locator("..")).toBeFocused();
-
-    await page.keyboard.press("Tab");
-    const intoTheStrip = await whereTheFocusIs(page);
-    expect(
-      await tabs.evaluate((node) => node.contains(document.activeElement)),
-      `the Tab after the strip's hand-over left the strip: <${intoTheStrip.tag}> ${intoTheStrip.name}`
-    ).toBe(true);
-    // The whole of it was the reader's doing: no first batch ever landed behind them.
-    expect((await readTheReads(page)).firstBatchMs).toBeUndefined();
   } finally {
     await alice.close();
   }

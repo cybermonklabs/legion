@@ -618,7 +618,7 @@ the stubbed layer alone" to the rest of the run; set by hand it tells `globalSet
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
 The suite has eighteen projects. `chromium` runs every spec except the two plain-HTTP specs,
-the six the `-alone` projects below take and the stubbed layer's own
+the seven the `-alone` projects below take and the stubbed layer's own
 (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
 run). `iphone` runs, from those
 same specs, only the tests tagged `@phone` (written at the end of the test's or its
@@ -631,7 +631,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the six `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no `-alone` row: that command names no project, and
 the six `-alone` projects are out of the default selection. Listed at this head, a deployed
-run holds 1,357 rows in 174 files, and the other 59 are an `-alone` run of its own, under the
+run holds 1,362 rows in 176 files, and the other 59 are an `-alone` run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --project=iphone-long-build-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -674,7 +674,8 @@ inside both of those bounds of up to twenty taken) and
 `e2e/large-documents-desktop-build.e2e.ts`, the longest main-thread task of a build read at a
 desktop width, `firefox-alone` and
 `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines, `iphone-alone` runs
-`e2e/large-documents-build-serves.e2e.ts`, the timer row and the decision row,
+`e2e/large-documents-build-serves.e2e.ts` and `e2e/large-documents-build-serves.the-decision.e2e.ts`,
+the timer row and the decision row,
 `iphone-measure-alone` runs `e2e/large-documents-measured.e2e.ts`, the two measurements of a
 first editable block, which take
 three readings each and hold the median of them to R11's targets - a project of their own
@@ -688,10 +689,10 @@ project selects whole files and no row by its title, so the file a row is writte
 project that runs it (`clockSpecNames` and `phoneAloneSpecNames`, `e2e/configurations.ts`). Each
 sets `default: false`, so a run that names no project holds none of their 59 rows, and each
 caps its own workers at one. What holds a reading to a quiet machine is the run being one
-worker wide, and the six files reach that in two ways: `e2e/main-thread-hold.ts` fails a
+worker wide, and the seven files reach that in two ways: `e2e/main-thread-hold.ts` fails a
 measuring row of `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more
 than one worker, since four workers on one machine make a second of wall clock unmeasurable,
-and the rows of `e2e/agent-workspace-timing.e2e.ts` and the five rows of the three
+and the rows of `e2e/agent-workspace-timing.e2e.ts` and the five rows of the four
 `e2e/large-documents-*` files above, which read a clock of their own, take that one worker
 from the command that runs them. `bun run e2e:clock` is the command that runs all six
 projects, and it names

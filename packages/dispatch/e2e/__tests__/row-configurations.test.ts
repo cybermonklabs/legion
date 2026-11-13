@@ -44,9 +44,9 @@ const ambientProcessCount: Record<string, string> =
 // holds no row of theirs, so without this one the accounting below would read the suite with
 // `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts`, `nested-directive.e2e.ts`,
 // `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts`,
-// `large-documents-desktop-build.e2e.ts` and the phone half of
-// `large-documents-long-build.e2e.ts` missing: 59 rows in 7 files, which is what this head's
-// `-alone` listing holds.
+// `large-documents-build-serves.the-decision.e2e.ts`, `large-documents-desktop-build.e2e.ts`
+// and the phone half of `large-documents-long-build.e2e.ts` missing: 59 rows in 8 files, which
+// is what this head's `-alone` listing holds.
 //
 // It is taken only where the run has one Dispatch process, because the ambient count reaches
 // these listings and two-process mode declares one project, the multiprocess one: measured at
@@ -148,7 +148,7 @@ test(
     // project of the resolved configuration whatever the command selected - this head's
     // `-alone` listing names six projects and reports all eighteen - so an assertion over
     // the project list could not fail, and would pass with the `-alone` listing missing
-    // altogether. Measured at this head, the two listings hold 1,552 rows and every project
+    // altogether. Measured at this head, the two listings hold 1,557 rows and every project
     // owns some: the smallest is `firefox-download-navigation` with one, and the `-alone`
     // six hold 23, 13, 16, 2, 2 and 3.
     const projectsWithRows = new Set(rows.map((row) => row.project));
@@ -179,12 +179,11 @@ test(
  *
  *  It is a count per file, and not a list of titles, because the file is the selector: each of
  *  these projects names its own files in its `testMatch` (`clockSpecsNamed` or
- *  `phoneAloneSpecsNamed`,
- *  e2e/configurations.ts), so a row's title moves it nowhere, and what this has to say out
- *  loud is a row that left one of those files or arrived in it. `firefox-alone` runs fewer
- *  rows of `heavy-bodies.e2e.ts` than `webkit-alone` because it inverts the three that read a
- *  reader's place (`readersPlaceRows`, e2e/playwright.config.ts), which is the one title left
- *  in that list and drops rows rather than taking them.
+ *  `phoneAloneSpecPattern`, e2e/configurations.ts), so a row's title moves it nowhere, and what
+ *  this has to say out loud is a row that left one of those files or arrived in it.
+ *  `firefox-alone` runs fewer rows of `heavy-bodies.e2e.ts` than `webkit-alone` because it
+ *  inverts the three that read a reader's place (`readersPlaceRows`, e2e/playwright.config.ts),
+ *  which is the one title left in that list and drops rows rather than taking them.
  *
  *  Measured at this head with `--list`, and the same numbers
  *  `.github/workflows/dispatch-browser.yaml` and `packages/dispatch/AGENTS.md` print beside
@@ -199,7 +198,10 @@ const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>>
     "nested-directive.e2e.ts": 2,
   },
   "firefox-alone": { "heavy-bodies.e2e.ts": 13 },
-  "iphone-alone": { "large-documents-build-serves.e2e.ts": 2 },
+  "iphone-alone": {
+    "large-documents-build-serves.e2e.ts": 1,
+    "large-documents-build-serves.the-decision.e2e.ts": 1,
+  },
   "iphone-long-build-alone": { "large-documents-long-build.e2e.ts": 3 },
   "iphone-measure-alone": { "large-documents-measured.e2e.ts": 2 },
   "webkit-alone": { "heavy-bodies.e2e.ts": 16 },

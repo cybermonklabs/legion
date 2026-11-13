@@ -1,27 +1,31 @@
-// What the rows of the eight `large-documents-*.e2e.ts` files share: the seed every one of them
+// What the rows of the eleven `large-documents-*.e2e.ts` files share: the seed every one of them
 // writes, the readings the page leaves on `window` for them, the three surfaces a block of the
 // document can stand on, the other person who writes into the document while a reader's
-// editor is built (`theOtherPersonsPen`), and the probe a build is read through at the end of
+// editor is built (`theOtherPersonsPen`), the bounds a wait for the page's draw is held to
+// (`aDrawWithinMs`, `aLongDrawWithinMs`), and the probe a build is read through at the end of
 // this file (`whatTheBuildServes`). A helper here is one more than one of those files needs; a
 // helper one file needs stays in that file.
 //
 // They were one file until the `iphone` half of it cost a browser shard 610 s of a step that is
 // given 540 (dispatch://INFRA-341, run 42794865122's `shard (4)`), and Playwright hands a
-// file's rows to one shard, so a file larger than the budget fits in none of them. Three of
-// the eight are read from the wall clock, and each of those is one project's whole selection,
+// file's rows to one shard, so a file larger than the budget fits in none of them. Four of
+// the eleven are read from the wall clock, and each of those is one project's alone,
 // because a wall-clock project selects by file (`clockSpecNames`, e2e/configurations.ts):
 // `large-documents-measured.e2e.ts` (`iphone-measure-alone`: the two measurements R11's
-// targets are read from), `large-documents-build-serves.e2e.ts` (`iphone-alone`: what a build
-// serves the rest of the page while it runs) and `large-documents-desktop-build.e2e.ts`
-// (`chromium-alone`: the longest main-thread task of a build at a desktop width). The five the
-// parallel projects run are `large-documents-long-build.e2e.ts` (what a build of the larger
-// document costs the page, with no number read from the clock),
-// `large-documents-build.e2e.ts` (what stands on the reader's screen while
-// the editor is built), `large-documents-reader.e2e.ts` (what a reader does with a document
-// whose editor is still being built, and the rest of acceptance A7),
-// `large-documents-first-screen.e2e.ts` (the draw the server sends, and the reads and the
-// chrome the page holds until the editor's first batch) and
-// `large-documents-fold.e2e.ts` (where that chrome leaves the server's first block).
+// targets are read from), `large-documents-build-serves.e2e.ts` and
+// `large-documents-build-serves.the-decision.e2e.ts` (`iphone-alone`: what a build serves the
+// rest of the page while it runs, the page's own clock and a decision answered inside it) and
+// `large-documents-desktop-build.e2e.ts` (`chromium-alone`: the longest main-thread task of a
+// build at a desktop width). The seven the parallel projects run are
+// `large-documents-long-build.e2e.ts` (what a build of the larger document costs the page, with
+// no number read from the clock), `large-documents-build.e2e.ts` (what stands on the reader's
+// screen while the editor is built), `large-documents-reader.e2e.ts` (what a reader does with a
+// document whose editor is still being built, and the rest of acceptance A7),
+// `large-documents-first-screen.e2e.ts` (the draw the server sends, and the reads the page holds
+// until the editor's first batch), `large-documents-first-screen.the-chrome.e2e.ts` (the chrome
+// the page holds until that batch), `large-documents-first-screen.the-keyboard.e2e.ts` (a reader
+// with no pointer reaching for that chrome) and `large-documents-fold.e2e.ts` (where that chrome
+// leaves the server's first block).
 //
 // The documents themselves are `large-documents.ts`, and what a page announces about its own
 // draw and its build is `large-documents-page.ts`.
@@ -42,6 +46,47 @@ import {
 import { theMomentThePageReached } from "./large-documents-page";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
+
+// What a row of the shards waits for the page to draw is bounded, so a page that never draws it
+// fails the row by name inside the leg it runs in, rather than at that leg's step budget, which
+// names no row and keeps no report. The two bounds below are the ones six files share:
+// `large-documents-first-screen.e2e.ts` and its two siblings
+// `large-documents-first-screen.the-chrome.e2e.ts` and
+// `large-documents-first-screen.the-keyboard.e2e.ts`, `large-documents-reader.e2e.ts`,
+// `large-documents-build.e2e.ts` and `large-documents-fold.e2e.ts`. A bound only one file's
+// waits need is that file's, beside what those waits cost.
+//
+// The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under the
+// browser step's 540 s with one retry (.github/workflows/dispatch-browser.yaml). What a leg
+// leaves of those 540 s moves with every merge, so it is read from the step times that job
+// prints rather than written here. A row that hangs runs twice, so it adds twice its failing
+// time, less what it costs when it passes, to the worker it runs on. And the fault the bounds
+// are for - an editor that never opens - fails the rows of all six files at once, in whichever
+// leg holds them: what a bound has to fit is the sum of that over every row of these files one
+// leg holds, shared over its four workers, and not one file's rows. What a file's own rows add
+// when they fail is written in that file, beside its own bounds.
+//
+// What the waits cost, timed on this pod, one worker on two CPUs (dispatch://INFRA-341), the
+// slower of `chromium` and `iphone`. Bounded by `aDrawWithinMs`, the slowest of each file:
+// the reader's drawn card 6.72 s (`large-documents-reader.e2e.ts`); 2.67 s across the three
+// first-screen files, whose waits - the draw's first block, the editor's first block, the held
+// boxes, the Subscribers control, the headers, the reads and the parts the page held behind its
+// first batch - took 0.03 s at the least; the document's header 2.38 s from the navigation and
+// the editor's text 0.02 s after it (`large-documents-fold.e2e.ts`); and the draw's first block
+// 2.3 s in the viewport and 0.85 s attached (`large-documents-build.e2e.ts`). Bounded by
+// `aLongDrawWithinMs`: the editor open over the larger document 12.98 s from the navigation
+// (`large-documents-first-screen.e2e.ts`), and the chrome on a page whose socket never answers
+// 12.63 s, which waits out `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`
+// (`large-documents-first-screen.the-chrome.e2e.ts`). So 20 s is about three times the slowest
+// of the first kind and 40 s three times the slowest of the second.
+
+/** How long a row waits for something the page draws in its first seconds. */
+export const aDrawWithinMs = 20_000;
+
+/** How long a row waits for the editor over the larger document, or for the chrome a page whose
+ *  socket never answers draws once its own deadline has passed. */
+export const aLongDrawWithinMs = 40_000;
+
 /** What one animation frame of the build held: how many of the document's top-level blocks
  *  stood on the screen across the three surfaces that draw them, how many of those the editor
  *  had built, and any block id two surfaces held at once. `framesOfTheBlocks` records one of

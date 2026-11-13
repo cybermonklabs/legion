@@ -194,13 +194,19 @@ export const realStackReasons: Record<string, string> = {
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
   "large-documents-build-serves.e2e.ts":
-    "its two rows read what the page serves while its editor is built - the page's own clock beside another person's words over the document socket, and a decision answered against the ask the server records - and run one row at a time in `iphone-alone`",
+    "its row reads what the page serves while its editor is built - the page's own clock beside another person's words over the document socket - and runs one row at a time in `iphone-alone`",
+  "large-documents-build-serves.the-decision.e2e.ts":
+    "its row reads a decision answered while the page's editor is built, against the ask the server records, and runs one row at a time in `iphone-alone`",
   "large-documents-build.e2e.ts":
     "each row reads the document being built in its live editor, batch by batch, over the socket the server syncs it on",
   "large-documents-desktop-build.e2e.ts":
     "it reads the longest main-thread task of a build the server's sync begins, over the draw that server sent, one row at a time in `chromium-alone`",
   "large-documents-first-screen.e2e.ts":
     "the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server",
+  "large-documents-first-screen.the-chrome.e2e.ts":
+    "the chrome it reads is drawn after the batch of an editor the server's document socket syncs, beside the server's own draw, and over an ask the server holds",
+  "large-documents-first-screen.the-keyboard.e2e.ts":
+    "its row tabs into the chrome the page holds while the server's document socket is held, over the server's own draw of the document",
   "large-documents-fold.e2e.ts":
     "the block it measures is the Go server's own draw, found by its id in the page that server sent for the document's address",
   "large-documents-long-build.e2e.ts":

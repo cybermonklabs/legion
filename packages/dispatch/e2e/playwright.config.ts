@@ -7,7 +7,6 @@ import {
   clockSpecPattern,
   clockSpecsNamed,
   phoneAloneSpecPattern,
-  phoneAloneSpecsNamed,
   stubProjectNames,
   tagged,
 } from "./configurations";
@@ -316,8 +315,9 @@ const readersPlaceRows =
 // `large-documents-measured.e2e.ts`, which `iphone-measure-alone` below runs, a leg of its own
 // in .github/workflows/dispatch-browser.yaml with a budget derived from their own measurement;
 // the timer row and the decision row, which neither changed nor repeat, are
-// `large-documents-build-serves.e2e.ts`, which `iphone-alone` runs, keeping the budget their
-// own measurement earned (dispatch://INFRA-341).
+// `large-documents-build-serves.e2e.ts` and `large-documents-build-serves.the-decision.e2e.ts`,
+// which `iphone-alone` runs, keeping the budget their own measurement earned
+// (dispatch://INFRA-341).
 //
 // The fifth is the guard on the longest main-thread task of a build at a desktop width, whose
 // number is as much the runner's as theirs: over three CI runs of one branch, each in a
@@ -630,9 +630,10 @@ const aloneProjects = [
     workers: 1,
     retries: 0,
   },
-  // The two clock rows read on the phone that take one reading apiece: the timer row and the
-  // decision row of `large-documents-build-serves.e2e.ts`, which is this project's whole
-  // selection. The iPhone 13 viewport, touch and Chromium the `iphone` project
+  // The two clock rows read on the phone that take one reading apiece: the timer row of
+  // `large-documents-build-serves.e2e.ts` and the decision row of
+  // `large-documents-build-serves.the-decision.e2e.ts`, which are this project's whole
+  // selection, in that order. The iPhone 13 viewport, touch and Chromium the `iphone` project
   // gives them, since every target the spec names is read on that device under 4x CPU
   // throttling. Like the three projects above it, it is out of the default
   // selection, so nothing of the suite is beside it in the run that names it. On CI's own
@@ -641,7 +642,10 @@ const aloneProjects = [
   {
     name: "iphone-alone",
     default: false,
-    testMatch: clockSpecsNamed("large-documents-build-serves"),
+    testMatch: clockSpecsNamed(
+      "large-documents-build-serves",
+      "large-documents-build-serves.the-decision"
+    ),
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,
     retries: 0,
@@ -667,20 +671,21 @@ const aloneProjects = [
     retries: 0,
   },
   // The phone half of `large-documents-long-build.e2e.ts`, which is this project's whole
-  // selection, on the same device profile as the two above and selected the same way, by file
-  // (`phoneAloneSpecsNamed`, e2e/configurations.ts). Its three rows read no number from the wall
-  // clock; what puts them on a leg of their own is their cost. Each builds the 406,000-character
-  // document under 4x CPU throttling, and in `iphone` they stood at the tail of the listing
-  // Playwright cuts its shards from by row count, so all three landed in the last shard: 1.8 min,
-  // 51.8 s and 39.3 s of the 499 s `shard (5)` took of its 540 s in run 43421318396. `iphone`
-  // ignores the file now, and `chromium` keeps its desktop half where it was, four workers wide.
+  // selection, on the same device profile as the two above. It selects by file, with the very
+  // value `iphone` ignores (`phoneAloneSpecPattern`, e2e/configurations.ts). Its three rows read
+  // no number from the wall clock; what puts them on a leg of their own is their cost. Each
+  // builds the 406,000-character document under 4x CPU throttling, and in `iphone` they stood at
+  // the tail of the listing Playwright cuts its shards from by row count, so all three landed in
+  // the last shard: 1.8 min, 51.8 s and 39.3 s of the 499 s `shard (5)` took of its 540 s in run
+  // 43421318396. `iphone` ignores the file now, and `chromium` keeps its desktop half where it
+  // was, four workers wide.
   // One worker and no retry, as every project of this list: the build-time row holds two builds'
   // own times to a ratio, which a second attempt would only blur. The leg's budget is derived from
   // these rows' own measurement in .github/workflows/dispatch-browser.yaml (dispatch://INFRA-341).
   {
     name: "iphone-long-build-alone",
     default: false,
-    testMatch: phoneAloneSpecsNamed("large-documents-long-build"),
+    testMatch: phoneAloneSpecPattern,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,
     retries: 0,

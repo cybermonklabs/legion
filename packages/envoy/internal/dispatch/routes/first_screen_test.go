@@ -91,7 +91,7 @@ func newFirstScreenRig(t *testing.T, budget ...time.Duration) *firstScreenRig {
 	}
 	// The reader is also a person the database knows has signed in: a project names a person a
 	// question falls to, and creating one refuses a login no one has signed in as
-	// (ASSIGNEE_NOT_ALLOWED), which reads the people table rather than the session store above.
+	// (ASSIGNEE_NOT_ALLOWED), which reads the people table rather than the in-memory people store above.
 	if err := store.NewPgPeopleStore(database.Pool, testSigningKey, nil).Record(context.Background(), "sami@d.example"); err != nil {
 		t.Fatalf("record sami@d.example as a person who has signed in: %v", err)
 	}

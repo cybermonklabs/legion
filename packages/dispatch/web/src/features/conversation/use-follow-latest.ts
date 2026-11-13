@@ -70,7 +70,8 @@ export function useFollowLatest({
   // post-scroll position distinguishes that automated placement from a reader's later scroll,
   // regardless of whatever height the issue header has at this breakpoint. The turn's top is a
   // viewport reading and the place written is one down the box, so the top of the box is what
-  // stands between them: zero on a document page, the column's own top edge in a reading pane.
+  // stands between them: zero on a document page, the top of the column's padding box
+  // (`scrollportTop`) in a reading pane.
   const jumpToLatest = useCallback(() => {
     const newest = document.querySelector<HTMLElement>(NEWEST_TURN_SELECTOR);
     const scroller = theBoxThatCarriesThem();

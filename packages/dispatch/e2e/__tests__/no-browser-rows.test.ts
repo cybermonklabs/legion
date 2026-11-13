@@ -29,8 +29,9 @@ const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 // of theirs, and every row of this head's `-alone` listing - 59 of them, the 47 of
 // `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, the four of
 // `agent-workspace-timing.e2e.ts`, the five of `large-documents-measured.e2e.ts`,
-// `large-documents-build-serves.e2e.ts` and `large-documents-desktop-build.e2e.ts`, and the
-// three of `large-documents-long-build.e2e.ts`'s phone half - reaches the union below from it
+// `large-documents-build-serves.e2e.ts`, `large-documents-build-serves.the-decision.e2e.ts`
+// and `large-documents-desktop-build.e2e.ts`, and the three of
+// `large-documents-long-build.e2e.ts`'s phone half - reaches the union below from it
 // alone.
 //
 // Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the

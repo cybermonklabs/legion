@@ -15,12 +15,12 @@
 //
 // The numbers R11's targets are read from are in `large-documents-measured.e2e.ts`, and the
 // rows beside them that need a build of the larger document to last are in
-// `large-documents-build-serves.e2e.ts`, `large-documents-desktop-build.e2e.ts` and
-// `large-documents-long-build.e2e.ts`; what a reader does with a document whose editor is
-// still being built is in `large-documents-reader.e2e.ts`; the draw the server sends, and the
-// reads and the chrome the page holds until the first batch, are in
-// `large-documents-first-screen.e2e.ts`, and where that chrome leaves the server's first block
-// is in `large-documents-fold.e2e.ts`. What the eight files share is
+// `large-documents-build-serves.e2e.ts`, `large-documents-build-serves.the-decision.e2e.ts`,
+// `large-documents-desktop-build.e2e.ts` and `large-documents-long-build.e2e.ts`; what a reader
+// does with a document whose editor is still being built is in `large-documents-reader.e2e.ts`;
+// the draw the server sends, and the reads and the chrome the page holds until the first batch,
+// are in the three `large-documents-first-screen.*.e2e.ts` files, and where that chrome leaves
+// the server's first block is in `large-documents-fold.e2e.ts`. What the eleven files share is
 // `large-documents-rows.ts`.
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -39,6 +39,7 @@ import {
 } from "./large-documents";
 import { throttleTheCpu } from "./large-documents-page";
 import {
+  aDrawWithinMs,
   type BlockFrame,
   blocksBuilt,
   builtBlocks,
@@ -57,41 +58,32 @@ import { settledScrollTop } from "./mermaid-helpers";
 import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
-// Every wait of this file for something the page draws is bounded below, so a page that never
-// draws it fails the row by name inside the leg it runs in, and each bound is sized from what
-// that wait costs and from what the leg leaves.
-//
-// The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under a step
-// of 540 s with one retry (.github/workflows/dispatch-browser.yaml). In run 43421318396 the
-// `chromium` half was in `shard (3)`, whose step took 329 s, and the `iphone` half in
-// `shard (4)`, 369 s; the longest leg of that run after the moves since (`shard (1)`) took
-// 433 s. A row that hangs runs twice, so it adds twice its failing time, less what it costs
-// when it passes, to the worker it runs on.
+// Every wait of this file for something the page draws is bounded, so a page that never draws
+// it fails the row by name inside the leg it runs in: the document's own draw by `aDrawWithinMs`
+// (`large-documents-rows.ts`, which says the leg these rows run in, the rule a bound is held to
+// and what that draw costs), and every other wait by one of the figures below, each sized from
+// what that wait costs.
 //
 // What the waits cost, on this pod, one worker on two CPUs at 4x CPU throttling where a row
 // throttles (dispatch://INFRA-341), the slower of `chromium` and `iphone`, each counted from the
-// navigation or from the release: the draw's first block in the viewport 2.3 s and attached
-// 0.85 s; the landmark half-way down the smaller document 8.7 s; the whole plain document drawn
-// 7.9 s; the editor open 3.6 s after the release over the reader's place, 20.5 s over the
-// framed build, 18.8 s under the other person's words and 18.7 s under the per-frame count;
-// his words in the open editor 8.7 s after it opened; and, with no socket held, the editor open
-// 9.2 s from the navigation and its five cards 0.7 s after it. Four workers wide on CI the
-// rows cost no more than they do here: 2.6 to 29.7 s each, against 1.8 to 34.5 s.
+// navigation or from the release: the landmark half-way down the smaller document 8.7 s; the
+// whole plain document drawn 7.9 s; the editor open 3.6 s after the release over the reader's
+// place, 20.5 s over the framed build, 18.8 s under the other person's words and 18.7 s under
+// the per-frame count; his words in the open editor 8.7 s after it opened; and, with no socket
+// held, the editor open 9.2 s from the navigation and its five cards 0.7 s after it. Four
+// workers wide on CI the rows cost no more than they do here: 2.6 to 29.7 s each, against 1.8
+// to 34.5 s.
 //
-// The bounds: `theDrawWithinMs` 20 s, `theLandmarkWithinMs` and `theWholeDrawWithinMs` 30 s,
-// `theBuildWithinMs` 45 s, `theWordsWithinMs` 20 s, `theOpenedEditorWithinMs` 30 s,
-// `theCardsWithinMs` 20 s and `theSyncedEditorWithinMs` 20 s - between twice and nine times
-// each reading. Measured with them, in a copy of this tree whose editor never opens (`chromium`,
-// one worker, one retry), each failing attempt took 22.9 to 59.4 s, the longest the per-frame
+// The bounds: `theLandmarkWithinMs` and `theWholeDrawWithinMs` 30 s, `theBuildWithinMs` 45 s,
+// `theWordsWithinMs` 20 s, `theOpenedEditorWithinMs` 30 s, `theCardsWithinMs` 20 s and
+// `theSyncedEditorWithinMs` 20 s - between twice and nine times each reading. Measured with
+// them and `aDrawWithinMs`, in a copy of this tree whose editor never opens (`chromium`, one
+// worker, one retry), each failing attempt took 22.9 to 59.4 s, the longest the per-frame
 // count's row: its seeding, its whole draw and `theBuildWithinMs`. Twice that, less the 34.5 s
-// that row costs when it passes, is 84.3 s more on one worker, which fits the 211 s `shard (3)`
-// left and the 171 s `shard (4)` left, and the 107 s of the longest leg. A page that never opens
-// its editor fails six of this file's eight rows, the first and the refused writer's passing:
-// their twelve attempts took 530.9 s, which shared four ways and less the 126.2 s those rows
-// cost passing is about 101 s more per worker - 430 s of `shard (3)` and 470 s of `shard (4)`.
-
-/** How long a row waits for the document's own draw to put its first block on the page. */
-const theDrawWithinMs = 20_000;
+// that row costs when it passes, is 84.3 s more on one worker. A page that never opens its
+// editor fails six of this file's eight rows, the first and the refused writer's passing: their
+// twelve attempts took 530.9 s, which shared four ways and less the 126.2 s those rows cost
+// passing is about 101 s more per worker.
 
 /** How long a row waits for the landmark half-way down the smaller document to be drawn. */
 const theLandmarkWithinMs = 30_000;
@@ -136,7 +128,7 @@ test(`${documentNames.small} is on the screen before its editor is @phone`, asyn
     // and no editor (`large-documents-page.ts`): it carries `data-block-id` as the editor's
     // blocks do, and it is not the block the measurement's targets are read against.
     const firstBlock = page.locator('[aria-label="Document text"] [data-block-id]').first();
-    await expect(firstBlock).toBeInViewport({ timeout: theDrawWithinMs });
+    await expect(firstBlock).toBeInViewport({ timeout: aDrawWithinMs });
     await expect(firstBlock).toContainText(documentTitle(documentDiagrams.small));
     // And the sections below it are drawn too, not only the block the measurement reads.
     await expect(page.getByRole("heading", { name: sectionHeading(0) })).toBeVisible();
@@ -225,7 +217,7 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
     // The document's own draw is what the reader has while no socket has synced, and no editor
     // has been built from it yet.
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
-      { timeout: theDrawWithinMs }
+      { timeout: aDrawWithinMs }
     );
     expect(await blocksBuilt(page)).toBe(0);
 
@@ -303,7 +295,7 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
-      { timeout: theDrawWithinMs }
+      { timeout: aDrawWithinMs }
     );
 
     // Throttled here and not before the load: her build begins with the release below, and her
