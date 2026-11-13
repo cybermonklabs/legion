@@ -659,14 +659,14 @@ const readsBeforeThePush = 90 * time.Second
 // jj's own snapshot here in its place, and one `git ls-files --others --exclude-standard` over
 // the worktree, which walks its directories and hashes no file (snapshotTree). Measured on
 // 2026-11-13 on a fixture of 290,400 tracked files and 3.6 GB whose index carries no stat data,
-// the snapshot took 22.8 to 25.9 s and that read 1.8 to 2.1 s, and every read before the push
-// 31.4 s on the clean tree and 34.3 s with 200 new files of 1 MB, where `git add --all` over a
-// copy of the index took 159.8 s and 217.0 s.
-// The first snapshot after a colocated `jj git init` took 62.5 s on that fixture on 2026-11-12,
-// because it also imports the git repository (it prints `Done importing changes from the
-// underlying Git repo.`); the live check imports wherever a git ref moved behind jj's back, HEAD,
-// a branch or a remote-tracking ref (the package doc), and what such an import costs on a large
-// repository was not measured.
+// the snapshot took 25.9 to 27.9 s and that read 1.8 to 1.9 s, and every read before the push
+// 29.0 and 30.1 s on the clean tree and 32.7 s with 200 new files of 1 MB, where `git add --all`
+// over a copy of the index took 171.3 s and 310.0 s. The first snapshot after a colocated `jj
+// git init` took 62.5 s on that fixture on 2026-11-12, because it also imports the git
+// repository (it prints `Done importing changes from the underlying Git repo.`); the live check
+// imports wherever a git ref moved behind jj's back, HEAD, a branch or a remote-tracking ref (the
+// package doc), and on the same fixture on 2026-11-13 a snapshot after a branch moved with HEAD
+// unchanged took 25.3 s, and after a new remote-tracking ref 25.9 s.
 const worktreeRead = 30 * time.Minute
 
 // pushReserve is what a workspace's bound keeps back from the read of its files: the guard's own
