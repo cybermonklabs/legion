@@ -285,7 +285,6 @@ const ALLOWED: readonly (readonly [string, string])[] = [
     "(an id holding a NUL, which a hand-built client can set and no ask row or anchor can store,",
   ],
   ["packages/envoy/AGENTS.md", "since the id repair would hand the held ask's row and answer to"],
-  // This change's own sentences: the rule itself, which an agent must read.
   [
     "dispatch_issue_update description",
     "this issue's asks, and every ask on it waits on them until a person hands that ask on",
@@ -298,7 +297,7 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   // telling an agent to use it: who an ask waits on, and what a hand-on moves.
   [
     "packages/contracts/AGENTS.md",
-    "Every ask on the issue waits on the assignee until a person hands that ask to somebody else, which no agent may do.",
+    "Every ask on the issue waits on the person it was handed to, else the assignee, else the project's default assignee",
   ],
   [
     "packages/contracts/AGENTS.md",
@@ -315,7 +314,7 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   ],
   [
     "packages/envoy/AGENTS.md",
-    "the person an ask on the issue waits on until somebody hands it on",
+    "the person an ask on the issue waits on until somebody hands it on, or, while the issue holds nobody, its project's default assignee",
   ],
   [
     "packages/envoy/AGENTS.md",
@@ -327,11 +326,11 @@ const ALLOWED: readonly (readonly [string, string])[] = [
   ],
   [
     "packages/envoy/AGENTS.md",
-    "the asks handed to them, and the asks on the issues assigned to them that nobody has handed on",
+    "the asks handed to them, the asks on the issues assigned to them that nobody has handed on",
   ],
   [
     "packages/envoy/AGENTS.md",
-    "the person the ask was handed to, and the assignee of its issue until somebody hands it on",
+    "the person the ask was handed to, the assignee of its issue until somebody hands it on",
   ],
 ];
 

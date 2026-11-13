@@ -1292,6 +1292,7 @@ test("createProject posts the key, name and actor and answers the created projec
     key: "CORE",
     name: "Core",
     open_asks: 0,
+    default_assignee: "alice@theorem.dev",
     created_at: "2026-10-11T00:00:00Z",
     gated_steps: [],
   };

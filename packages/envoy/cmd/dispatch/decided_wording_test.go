@@ -38,7 +38,7 @@ func TestDispatchBootRestoresADecidedAskAnEarlierReleaseReworded(t *testing.T) {
 	tuesday := `{"question":"Ship on Tuesday?","options":[{"label":"Tuesday","description":"Ship it."},{"label":"No","description":"Later."}],"multiple":false,"urgency":"high"}`
 	answer := `{"user":"alice","selected":["Yes"],"at":"2026-10-09T09:00:00Z"}`
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('CORE', 'Core')`,
+		`insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice')`,
 		`insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U')`,
 		`insert into artifacts (id, issue_key, project_key, slug, name, kind, is_primary, created_by)

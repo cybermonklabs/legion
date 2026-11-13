@@ -188,8 +188,9 @@ export const issueEventChangesFields = {
   ancestors: z.array(z.string()).optional(),
   /** Present only when the status or the assignee moved: for a close or a reopen every login
    *  with a Replies row on one of the issue's open asks, for an assignee move the assignee the
-   *  issue was taken from and the one it was given to, for the two together the sorted union of
-   *  both, and for any other status move `[]`. */
+   *  issue was taken from and the one it was given to - a side holding nobody named as the
+   *  project's default assignee, the person the issue's questions reach while nobody holds it -
+   *  for the two together the sorted union of both, and for any other status move `[]`. */
   thread_logins: z.array(z.string()).optional(),
   /** On an `issue.created` whose create went past the near-copy refusal with `force`: `past`
    *  names the issues that refusal named, and is the empty list when the check did not answer.

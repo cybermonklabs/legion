@@ -156,6 +156,29 @@ test("eventDescription labels a malformed decision", () => {
   ]);
 });
 
+test("eventDescription reads a refused ci_check as the check's refusal", () => {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
+    actor: { id: "session-1", kind: "session" },
+    created_at: "2026-09-13T17:01:00Z",
+    id: 4,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "a check proved by CI carries no run",
+      disturbed_by: { id: "session-1", kind: "session" },
+      block_type: "check",
+    },
+    seq: 4,
+    type: "block.invalid",
+  };
+
+  expect(eventDescription(event)).toEqual([
+    "refused check k1: a check proved by CI carries no run",
+  ]);
+});
+
 test("eventDescription names an added artifact", () => {
   const event: Extract<DispatchEvent, { type: "artifact.created" }> = {
     actor: { id: "session-1", kind: "session" },
@@ -296,6 +319,31 @@ test("eventDescription names the repository an architecture import came from; a 
   ]);
   expect(failed({ error: "duplicate component id api" })).toEqual([
     "Architecture sync failed: duplicate component id api",
+  ]);
+});
+
+test("eventDescription names the person a project's default moved to; a retained clear reads as cleared", () => {
+  const base = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 4,
+    issue_key: null,
+    notify: false,
+    project: "CORE",
+    seq: 4,
+    type: "settings.project_default_assignee.updated",
+  } as const;
+
+  expect(
+    eventDescription({
+      ...base,
+      payload: { assignee: "bob", project: "CORE", thread_logins: ["alice", "bob"] },
+    })
+  ).toEqual(["Default assignee updated: CORE → bob"]);
+  // Written before every project named a default: the stored row of a clear, and no
+  // `thread_logins`.
+  expect(eventDescription({ ...base, payload: { assignee: null, project: "CORE" } })).toEqual([
+    "Default assignee cleared: CORE",
   ]);
 });
 

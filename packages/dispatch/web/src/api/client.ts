@@ -921,6 +921,9 @@ export class DispatchApiClient {
     return this.read("/api/v1/projects", {});
   }
 
+  /** Answers `CreatedProject`: the project as created, with the default assignee the create
+   *  stored, which the project list leaves out (`listProjectDefaultAssignees` is the one read of
+   *  every project's default). */
   createProject(input: Body<"/api/v1/projects", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/projects", {}, input, bounds);
   }
@@ -946,15 +949,16 @@ export class DispatchApiClient {
     await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
   }
 
-  /** Only the projects that name a default; a project left out names nobody. Needs the
-   *  `person` scope. */
+  /** Every project with the person it defaults to: each one names somebody, so none is left out.
+   *  Needs the `person` scope. */
   listProjectDefaultAssignees() {
     return this.read("/api/v1/settings/project-default-assignees", {});
   }
 
-  /** Sets the person a project's unowned work lands on, or clears it with `{assignee: null}`.
-   *  Needs the `person` scope, and a login nobody has signed in as is refused
-   *  `400 ASSIGNEE_NOT_ALLOWED`. */
+  /** Moves the person a project's unowned work lands on, and the person a question on an issue
+   *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
+   *  blank is refused `400 INVALID_PROJECT`, so nothing clears a default. Needs the `person`
+   *  scope, and a login nobody has signed in as is refused `400 ASSIGNEE_NOT_ALLOWED`. */
   putProjectDefaultAssignee(
     project: string,
     input: Body<"/api/v1/projects/{key}/default-assignee", "put">,

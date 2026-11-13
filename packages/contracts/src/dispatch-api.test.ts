@@ -15,6 +15,7 @@ import {
   AskEventPayloadSchema,
   type AskRead,
   type AskThread,
+  BlockInvalidEventPayloadSchema,
   type ChangedReference,
   type Comment,
   CommentEventPayloadSchema,
@@ -907,6 +908,34 @@ test("models an invalid ask block event", () => {
     data: { type: "block.invalid" },
     success: true,
   });
+});
+
+test("models a refused ci_check event on a check block", () => {
+  const event: DispatchEvent = {
+    id: 74,
+    issue_key: "DOC-1",
+    seq: 6,
+    type: "block.invalid",
+    actor: { kind: "session", id: "session-1" },
+    notify: false,
+    created_at: "2026-09-13T16:31:00Z",
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "a check proved by CI carries no run",
+      disturbed_by: { kind: "session", id: "session-1" },
+      block_type: "check",
+    },
+  };
+
+  expect(DispatchEventSchema.safeParse(event)).toMatchObject({
+    data: { payload: { block_type: "check" }, type: "block.invalid" },
+    success: true,
+  });
+  expect(BlockInvalidEventPayloadSchema.safeParse(event.payload).success).toBe(true);
+  expect(
+    BlockInvalidEventPayloadSchema.safeParse({ ...event.payload, block_type: "ask" }).success
+  ).toBe(false);
 });
 
 test("rejects edit history on non-edit ask events", () => {
