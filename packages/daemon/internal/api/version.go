@@ -1335,7 +1335,7 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 104: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// 106: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
 // about, and the completion route judges that head rather than which phase entry the turn began
 // under. Every file-backed handoff record now carries `head`, the commit the work it reports was
 // done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
@@ -1352,13 +1352,15 @@ package api
 // move back where there was one. No field is added or removed on either side of the wire:
 // `commit` was already optional on `api.HandoffCompleteRequest` and `handoffCommit` on
 // `api.PhaseView`. What moves is what the two sides mean by them, so they move together: a plugin
-// below 104 sends the three roles' completions with no commit, which this daemon refuses behind
-// their entry exactly as 94 did, and a plugin at 104 against a daemon below it has a commit
-// recorded for those roles and named in the next role's task (`Handoff commit:`) that the daemon
-// never judges. (Taken at the push of the merge that brought main in at 8d9d1ff2, whose own
-// number is 94. The reading behind it, of `const DaemonAPIVersion` at refs/pull/<n>/head for every
-// open pull request of cybermonklabs/legion on 2026-11-13, made with the
-// `declared_by_open_pull_requests` of `.github/scripts/check-daemon-api-contract.sh`, gives above
-// the base's 94: 95 (#3659), 96 (#2731), 97 (#3937), 98 (#3708), 99 (#3575), 100 (#3573, #3715),
-// 101 (#3712), 102 (#3730) and 103 (#3519, #3830); 104 is the lowest number no head declares.)
-const DaemonAPIVersion = 104
+// below 106 sends the three roles' completions with no commit, which this daemon refuses behind
+// their entry as every daemon from 94 did, and a plugin at 106 against a daemon below it has a
+// commit recorded for those roles and named in the next role's task (`Handoff commit:`) that the
+// daemon never judges. (Taken at the push after the merge that brought main in at 8d9d1ff2; main
+// declares 98 at 0fde2dcff6e4 since. It took 104 first, from a reading of 2026-11-13 that found
+// 104 free above 94, and #3830 and #3937 have declared 104 since. The reading behind 106, of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of
+// cybermonklabs/legion on 2026-11-13, made with the `declared_by_open_pull_requests`
+// of `.github/scripts/check-daemon-api-contract.sh`, gives above main's 98: 99 (#3575), 100 (#3573,
+// #3715), 101 (#3712), 102 (#3730), 103 (#3519), 104 (#3830, #3937) and 105 (#3659); 106 is the
+// lowest number no head declares.)
+const DaemonAPIVersion = 106

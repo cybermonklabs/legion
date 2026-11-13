@@ -1,5 +1,5 @@
 kind: Changed
-body: 'A phase completion names the head its evidence is about: `LegionHandoffCompleteRequest.commit` is the commit the handoff record names under `head`, and the planner, the tester and the reviewer send it as well as the implementer. Daemon API contract 104.'
+body: 'A phase completion names the head its evidence is about: `LegionHandoffCompleteRequest.commit` is the commit the handoff record names under `head`, and the planner, the tester and the reviewer send it as well as the implementer. Daemon API contract 106.'
 time: 2026-11-13T12:31:08.156409669Z
 custom:
     Issue: pr3793
