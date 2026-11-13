@@ -285,6 +285,12 @@ func (d *blockingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoPro
 func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (d *blockingDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *blockingDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
@@ -471,6 +477,12 @@ func (d *refusingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoPro
 func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (d *refusingDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *refusingDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) error {
 	return nil
 }
@@ -524,7 +536,13 @@ func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 	return nil, nil
 }
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *boardDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *boardDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error { return nil }
 func (d *boardDispatch) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

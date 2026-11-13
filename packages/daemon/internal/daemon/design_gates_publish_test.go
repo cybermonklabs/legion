@@ -102,6 +102,12 @@ func (d *gatePublishDispatch) ListRepoProjects(context.Context) ([]dispatch.Repo
 func (d *gatePublishDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (d *gatePublishDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *gatePublishDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *gatePublishDispatch) PutGatedSteps(context.Context, string, []string) error { return nil }
 
 // gatePublishRig is the daemon over a database of its own: the workflow engine and the admission

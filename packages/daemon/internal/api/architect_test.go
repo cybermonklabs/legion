@@ -217,6 +217,12 @@ func (r *statusRecorder) ListRepoProjects(context.Context) ([]dispatch.RepoProje
 func (r *statusRecorder) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
 }
+func (r *statusRecorder) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (r *statusRecorder) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 
 func (r *statusRecorder) PutGatedSteps(context.Context, string, []string) error {
 	return nil

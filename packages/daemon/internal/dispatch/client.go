@@ -384,6 +384,49 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// ArtifactChanges reads GET /api/v1/artifacts/{id}/changes?from=&to=: what changed in the document
+// between versions from and to, both positive and from below to, as Dispatch answers them (a pair
+// from 0 has no earlier version to compare, and Dispatch refuses it). A 404 or 405 is
+// ErrNoChangesRoute wrapped around Dispatch's own refusal: a Dispatch whose release has no such
+// route answers its router's 404 or 405, and the caller records the pair unreadable rather than
+// waiting for an upgrade. Dispatch also answers 404 for a version the document does not have,
+// which the daemon does not ask for, since the versions it reads are the ones its gate recorded.
+// Every other failure is the request's own, which a caller rides out.
+func (c *HTTPClient) ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error) {
+	query := url.Values{}
+	query.Set("from", fmt.Sprint(from))
+	query.Set("to", fmt.Sprint(to))
+	var changes ArtifactChanges
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/changes?"+query.Encode(), nil, &changes); err != nil {
+		var refusal *Error
+		if errors.As(err, &refusal) && (refusal.Status == http.StatusNotFound || refusal.Status == http.StatusMethodNotAllowed) {
+			return ArtifactChanges{}, fmt.Errorf("%w: %w", ErrNoChangesRoute, err)
+		}
+		return ArtifactChanges{}, err
+	}
+	return changes, nil
+}
+
+// ApprovedVersionBefore reads GET /api/v1/artifacts/{id}/reviews, every review of the document,
+// newest first, and answers the highest version below version that one of them approved, 0 when
+// none did: the version a holder whose told version the record does not know is taken to have
+// worked from. It takes the highest such version wherever it stands in the list, so the answer
+// rests on no order of the list: a changes request names no approved version, and a review of a
+// version at or above the one asked about is not before it.
+func (c *HTTPClient) ApprovedVersionBefore(ctx context.Context, artifactID string, version int) (int, error) {
+	var reviews []reviewResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &reviews); err != nil {
+		return 0, err
+	}
+	approved := 0
+	for _, review := range reviews {
+		if review.State == "approved" && review.Version < version && review.Version > approved {
+			approved = review.Version
+		}
+	}
+	return approved, nil
+}
+
 // Handoff reads GET /api/v1/handoffs/{id}: one handoff record with its issue, phase, version and
 // author. A record Dispatch does not have is its 404 HANDOFF_NOT_FOUND (Missing).
 func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
@@ -612,6 +655,13 @@ func (r handoffResponse) handoff() Handoff {
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
+}
+
+// reviewResponse is one review as GET /api/v1/artifacts/{id}/reviews serves it, read for the
+// version it was given on and its state (`approved` or `changes_requested`) alone.
+type reviewResponse struct {
+	Version int    `json:"version"`
+	State   string `json:"state"`
 }
 
 type actor struct {

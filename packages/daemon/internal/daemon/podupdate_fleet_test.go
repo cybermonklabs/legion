@@ -443,7 +443,13 @@ func (d *fleetHandoffs) HandOver(context.Context, dispatch.Issue, string) error 
 func (d *fleetHandoffs) ReleaseClaim(context.Context, string) error                { return nil }
 func (d *fleetHandoffs) PostMessage(context.Context, string, string) error         { return nil }
 func (d *fleetHandoffs) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
-func (d *fleetHandoffs) PutGatedSteps(context.Context, string, []string) error     { return nil }
+func (d *fleetHandoffs) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *fleetHandoffs) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+func (d *fleetHandoffs) PutGatedSteps(context.Context, string, []string) error { return nil }
 func (d *fleetHandoffs) PutDesignGates(context.Context, string, []dispatch.DesignGateDocument) error {
 	return nil
 }

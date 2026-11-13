@@ -33,6 +33,13 @@ type Client interface {
 	// serves it: the boot catch-up's read of what a root's durable stream may not have delivered.
 	EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error)
 	Approval(ctx context.Context, artifactID string) (Approval, error)
+	// ArtifactChanges is what changed in a document between two of its stored versions, as
+	// Dispatch reads the two (GET /api/v1/artifacts/{id}/changes). A Dispatch that answers 404 or
+	// 405 there is ErrNoChangesRoute.
+	ArtifactChanges(ctx context.Context, artifactID string, from, to int) (ArtifactChanges, error)
+	// ApprovedVersionBefore is the highest version of the document below version that a review
+	// approved (GET /api/v1/artifacts/{id}/reviews), 0 when no review approved one.
+	ApprovedVersionBefore(ctx context.Context, artifactID string, version int) (int, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
 	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
 	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
@@ -258,6 +265,60 @@ func (a Approval) LatestReviewer() Actor {
 	}
 	return a.By
 }
+
+// ArtifactChanges is what changed in a document from version From to version To, as Dispatch's
+// GET /api/v1/artifacts/{id}/changes answers it (its artifactChanges), whose JSON it decodes as it
+// stands, as DesignGateDocument names its route's shape. Both versions are compared with their
+// decision blocks cut out, so an answer a person gave, or an ask added or moved, changes no
+// section and no block. DecisionOnly says the cut is the whole change: the stored texts differ and
+// cut to the same text, and Sections and Blocks are empty. Two versions of a document never
+// change, so the answer for one pair never goes stale.
+type ArtifactChanges struct {
+	ArtifactID   string `json:"artifact_id"`
+	From         int    `json:"from"`
+	To           int    `json:"to"`
+	DecisionOnly bool   `json:"decision_only"`
+	// Sections are the document's `##` sections whose text differs, in the later version's order
+	// and then the sections only the earlier version holds. The text outside every `##` section is
+	// one section of its own, first, under the heading "" and occurrence 0.
+	Sections []SectionChange `json:"sections"`
+	// Blocks are the typed blocks other than ask blocks whose text or any attribute differs.
+	Blocks []BlockChange `json:"blocks"`
+}
+
+// SectionChange is one `##` section that changed: its heading's text, how many sections before
+// it carry that heading (0 for the first), and how it changed: ChangeChanged, ChangeAdded or
+// ChangeRemoved.
+type SectionChange struct {
+	Heading    string `json:"heading"`
+	Occurrence int    `json:"occurrence"`
+	Change     string `json:"change"`
+}
+
+// BlockChange is one typed block that changed: its `#id`, its type in the later version (in the
+// earlier one for a removed block), and how it changed.
+type BlockChange struct {
+	ID     string `json:"id"`
+	Type   string `json:"type"`
+	Change string `json:"change"`
+}
+
+// ChangeChanged, ChangeAdded and ChangeRemoved are the three ways a section or a block stands
+// between two versions of a document, as Dispatch spells them (its api.changeChanged and the two
+// beside it). No mechanism shares a value between this module and Dispatch's, so the spellings
+// change together.
+const (
+	ChangeChanged = "changed"
+	ChangeAdded   = "added"
+	ChangeRemoved = "removed"
+)
+
+// ErrNoChangesRoute is a Dispatch that cannot say what changed between two versions: it answered
+// GET /api/v1/artifacts/{id}/changes with 404 or 405, which is what a release without the route
+// answers. ArtifactChanges wraps it around Dispatch's own refusal, so errors.Is finds it and the
+// message keeps what Dispatch said. A caller records the pair as unreadable at once rather than
+// retrying it: the route arrives with a Dispatch release, not with a wait.
+var ErrNoChangesRoute = errors.New("dispatch has no changes route")
 
 // Handoff is one phase handoff record Dispatch keeps on an issue, as a phase completion names it:
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its

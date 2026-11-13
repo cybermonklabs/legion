@@ -189,6 +189,12 @@ func (d *outboxDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProje
 	return nil, nil
 }
 func (d *outboxDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *outboxDispatch) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
+	return dispatch.ArtifactChanges{}, nil
+}
+func (d *outboxDispatch) ApprovedVersionBefore(context.Context, string, int) (int, error) {
+	return 0, nil
+}
 func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps []string) error {
 	d.gatedStepsOf = append(d.gatedStepsOf, project)
 	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
