@@ -17,8 +17,9 @@ import (
 //
 // It matters beyond the one issue: a merged issue in merging is in the workflow, so while it
 // stands there its tree's root cannot be accepted (SIGNOFF_CHILD_IN_WORKFLOW) or closed. The
-// issue itself keeps its admission slot (record.KeepsSlot) and stands in no part of the waiting
-// line. Its merging phase is finished (PhaseFinished), so nothing but this close moves it on.
+// issue itself holds no admission slot, since merging is past its review (record.KeepsSlot), and
+// stands in no part of the waiting line. Its merging phase is finished (PhaseFinished), so nothing
+// but this close moves it on.
 func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 	pool := migratedPool(t)
 	now := time.Date(2026, 10, 19, 4, 0, 0, 0, time.UTC)

@@ -56,9 +56,10 @@ import (
 // resume would spend the claim's first turn after the boot on the wrong prompt and the completion
 // it answered with would be refused as behind that entry. A claim level with that entry is sent
 // the task that takes its phase on (ResumePhaseTask), which the outbox does not deliver to a claim
-// still holding its phase's task. Either start resumes the claim by rule and waits for the issue's
-// admission slot as every start of a phase worker does. A role a start already covers (StartFor)
-// gets no second.
+// still holding its phase's task. Either start resumes the claim by rule and takes the slot mark
+// the slot rule gives its phase (StartOrOwe), as every start of a phase worker does, so it waits
+// for the issue's admission slot in a phase up to the review and for none past it. A role a start
+// already covers (StartFor) gets no second.
 //
 // The sweep runs first so the resume reads the trees it closed as lingering. The owners' read
 // (suspendedPhaseOwners) comes next, and the status repair runs on the issues and running roots
