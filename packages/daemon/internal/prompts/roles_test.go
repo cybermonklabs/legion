@@ -324,6 +324,30 @@ func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
 	}
 }
 
+// A `failed_checks` ejection of a head that has not changed is queued once more, and the work goes
+// back only on the second such ejection (dispatch://INFRA-1303, R4, which says the rule is written
+// in the merger's own text). The merger's part said the opposite until it did: "a queue that took
+// the head out because its own `merge_group` checks failed is work to fix, so send the issue
+// back", which sent cybermonklabs/legion#3972 round a lap on a flaky group build (INFRA-3204's
+// retro). The record the requeue owes is pinned as a pointer to the page that holds it, so the
+// merger keeps no second list of its facts.
+func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gets that same head queued once more",
+		"the issue goes back only on the second such removal of that head",
+		"no role re-runs a group build",
+		"carrying the facts `skill://legion-worker/references/red-at-the-head.md` names for the record",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	if strings.Contains(merger, "is work to fix, so send the issue back") {
+		t.Error("roles/merger.md still sends the issue back on the first `failed_checks` ejection")
+	}
+}
+
 // Every update round a part describes is one a daemon of this release can open. The stale-plugin
 // lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
 // plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),

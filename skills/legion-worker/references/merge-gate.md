@@ -238,7 +238,11 @@ it there until that answer comes clean.
 - **A `failed_checks` ejection at an unchanged head is queued once more.** When GitHub takes the
   pull request out of the merge queue because the group build failed a check (`failed_checks`)
   and the head has not changed, the merger queues that same head once more. It sends the work
-  back only on a second such ejection of that head. No role re-runs a group build. GitHub does
+  back only on a second such ejection of that head. Before it queues the head once more it
+  records the removal on the Dispatch issue as a `dispatch comment`, the same eight facts
+  `skill://legion-worker/references/red-at-the-head.md` asks of every role with the `merge_group`
+  run in place of the `pull_request` one, and after a green group build it posts the occurrence
+  as that page's *What becomes of the record* says. No role re-runs a group build. GitHub does
   re-run one, but the re-run puts nothing back in the queue, and GitHub deletes the entry's
   branch, after which `GET /git/ref/heads/gh-readonly-queue/main/pr-<n>-<sha>` answers 404
   (measured on cybermonklabs/legion#2811).
