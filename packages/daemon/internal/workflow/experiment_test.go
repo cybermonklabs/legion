@@ -118,14 +118,15 @@ func TestAnIssueExperimentIsDrawnForEachIssueOfATree(t *testing.T) {
 
 // An issue the daemon has already recorded is never drawn again, so an experiment declared after
 // it was recorded never reaches it: the draw is made where the daemon first records an issue and
-// nowhere else. The child here is first recorded by an engine handed no experiment at all, and
-// that record goes through recordChild, which enters the child (enterChild) and then draws its
-// issue-unit experiments (drawExperiments), none for that engine. The experiment is declared
-// afterwards, and the person moves the recorded child back to todo: that fact finds the record,
-// so it goes through Engine.ReenterChild instead, which enters the child through the same
-// enterChild and draws nothing. The test depends on that difference, and holds the re-entry to it
-// under a source that fails the test when it is read; the fresh child at the end, recorded
-// through recordChild under the declaring engine, is drawn.
+// nowhere else. The child, LEGION-209, is first recorded by the engine named declaring, which is
+// handed no experiment at all, and that record goes through recordChild, which enters the child
+// (enterChild) and then draws its issue-unit experiments (drawExperiments), none for that engine.
+// The experiment is declared afterwards, in the engine named declared, and the person moves the
+// recorded child back to todo: that fact finds the record, so it goes through Engine.ReenterChild
+// instead, which enters the child through the same enterChild and draws nothing. The test
+// depends on that difference, and holds the re-entry to it under a source that fails the test
+// when it is read (refusingSource); the fresh child at the end, LEGION-210, recorded through
+// recordChild by a third engine, drawing, which declares the same experiment, is drawn.
 func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testing.T) {
 	pool := migratedPool(t)
 	seedHeldTree(t, pool, record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: new(3)})
@@ -153,8 +154,10 @@ func TestAnIssueAlreadyRecordedIsNotDrawnForAnExperimentDeclaredAfterIt(t *testi
 	if got := answersOf(t, pool, "LEGION-209"); len(got) != 0 {
 		t.Fatalf("the reopened child holds %v, want none: an experiment declared after it was recorded never reaches it", got)
 	}
-	// A child the daemon records for the first time under the same engine is drawn, so what the
-	// re-entry above leaves alone is the record's age and not a declaration the engine missed.
+	// A child the daemon records for the first time under an engine that declares the same
+	// experiment (drawing, which differs from declared only in a source the draw may read) is
+	// drawn, so what the re-entry above leaves alone is the record's age and not a declaration
+	// the engine missed.
 	drawing := experimentEngine(t, []config.Experiment{planLength}, scriptedSource(t, 1))
 
 	applyChild(t, pool, drawing, "LEGION-210", "fresh-child")
