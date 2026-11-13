@@ -42,8 +42,10 @@ type AcceptedField struct {
 // contract's request does not carry it (request_shapes_test.go's requestShapesAt).
 var AcceptedByName = []AcceptedField{
 	// Contract 86 took `ready` out of HandoffCompleteRequest with READY and the daemon's merge.
-	// A plugin from 46 to 85 sends it on every handoff_complete (HandoffCompleteRequest.Ready).
-	{Route: "POST /legion/v1/handoff/complete", Field: "ready", LeftAt: stateMachineContract, Ignoring: readyIgnored},
+	{Route: "POST /legion/v1/handoff/complete", Field: "ready", LeftAt: stateMachineContract,
+		Ignoring: "a plugin from 46 to 85 sends ready on every handoff_complete: false, its default, " +
+			"meant what a completion means now, so it is read and ignored; true armed the daemon's merge of the pull request, " +
+			"which no daemon at contract 86 or later makes, so true is refused (READY_RETIRED)"},
 }
 
 // requestDecoded is told the pattern of the route and the Go type of every body decodeJSON

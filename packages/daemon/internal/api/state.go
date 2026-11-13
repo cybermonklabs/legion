@@ -1046,10 +1046,11 @@ type PullRequestView struct {
 }
 
 // MarshalJSON writes `fixAttempts` on the bodies that carry its stand-in, and leaves the key off
-// every other, which is how Admission.MarshalJSON leaves off `trees`: the key is written by a
-// field of the outer value rather than by one of the view, so no body this contract writes can
-// carry it. The outer value holds one pointer per stand-in, filled where the view's flag is set
-// and nil elsewhere, so a later stand-in is one more pointer and one more flag.
+// every other, which is how State.MarshalJSON leaves off `wakesWaiting` and `claimsToRefresh`:
+// the key is written by a field of the outer value rather than by one of the view, so no body
+// this contract writes can carry it. The outer value holds one pointer per stand-in, filled
+// where the view's flag is set and nil elsewhere, so a later stand-in is one more pointer and
+// one more flag.
 func (p PullRequestView) MarshalJSON() ([]byte, error) {
 	type wire PullRequestView
 	out := struct {
@@ -1250,9 +1251,9 @@ type CheckView struct {
 }
 
 // MarshalJSON leaves `role` off the one body whose reader knows no such key, and writes it on
-// every other, exactly as Admission.MarshalJSON leaves off `trees`: that body is marshalled
-// through a value whose own empty `role` field, being `omitempty`, shadows the embedded one and
-// so is written by nothing. The shadowing field is the whole mechanism, and the embedded `role`
+// every other, as State.MarshalJSON leaves off `wakesWaiting`: that body is marshalled through a
+// value whose own empty `role` field, being `omitempty`, shadows the embedded one and so is
+// written by nothing. The shadowing field is the whole mechanism, and the embedded `role`
 // is left as the check records it: a second way to the same end would leave a reader free to
 // delete the one that works. shaped_answers_test.go reads the key off the wire for a caller
 // below the contract (wantStandIns), which fails if it ever comes back.

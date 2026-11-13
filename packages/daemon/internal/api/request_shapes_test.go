@@ -74,6 +74,10 @@ var pluginRequests = map[string]reflect.Type{
 // never of two contracts.
 const sameBuild = "the `legion` command sends this body, and it is built from the daemon's own commit, so no older build sends it"
 
+// readsNoBody is why a route that decodes no body needs no record. The census of the bodies this
+// run decoded holds such a route to it (requestDecodedProblems).
+const readsNoBody = "the route reads no body"
+
 // routesWithNoPluginBody is every POST route the server registers that pluginRequests holds no
 // row for, with why no plugin's body reaches it.
 var routesWithNoPluginBody = map[string]string{
@@ -83,11 +87,11 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/claims/{token}/deliver":        sameBuild + " (`legion claims deliver`)",
 	"POST /legion/v1/operator/claims/{token}/retry":          sameBuild + " (`legion claims retry`)",
 	"POST /legion/v1/operator/claims/{token}/forget-session": sameBuild + " (`legion claims forget-session`)",
-	"POST /legion/v1/operator/claims/{token}/suspend":        "the route reads no body",
-	"POST /legion/v1/operator/claims/{token}/resume":         "the route reads no body",
-	"POST /legion/v1/operator/claims/{token}/stop":           "the route reads no body",
-	"POST /legion/v1/operator/claims/{token}/compact":        "the route reads no body",
-	"POST /legion/v1/operator/claims/{token}/close":          "the route reads no body",
+	"POST /legion/v1/operator/claims/{token}/suspend":        readsNoBody,
+	"POST /legion/v1/operator/claims/{token}/resume":         readsNoBody,
+	"POST /legion/v1/operator/claims/{token}/stop":           readsNoBody,
+	"POST /legion/v1/operator/claims/{token}/compact":        readsNoBody,
+	"POST /legion/v1/operator/claims/{token}/close":          readsNoBody,
 }
 
 // requestFieldPaths is every field path typ declares, read from its json tags as an answer's key
@@ -456,8 +460,9 @@ func init() {
 }
 
 // requestDecodedProblems is every body this run decoded into a type its route's row of
-// pluginRequests does not name, and every body decoded on a route neither table names. A decode
-// with no pattern is a handler a test called directly, which names no route to hold.
+// pluginRequests does not name, every body decoded on a route whose row of routesWithNoPluginBody
+// says it reads no body, and every body decoded on a route neither table names. A decode with no
+// pattern is a handler a test called directly, which names no route to hold.
 func requestDecodedProblems() []string {
 	requestsDecoded.mu.Lock()
 	defer requestsDecoded.mu.Unlock()
@@ -467,7 +472,11 @@ func requestDecodedProblems() []string {
 			continue
 		}
 		want, plugin := pluginRequests[pair.pattern]
-		if _, other := routesWithNoPluginBody[pair.pattern]; other {
+		if why, other := routesWithNoPluginBody[pair.pattern]; other {
+			if why == readsNoBody {
+				problems = append(problems, fmt.Sprintf(
+					"%s decoded a body into %s, and routesWithNoPluginBody says %s: correct the reason, or the route", pair.pattern, pair.into, readsNoBody))
+			}
 			continue
 		}
 		if !plugin {

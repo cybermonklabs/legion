@@ -427,12 +427,9 @@ func typesOf(values ...any) []reflect.Type {
 //
 // It reads declared json tags and nothing else. The shadow struct of a hand-written marshaller is
 // the same type with the same tags (`type wire State`), so it declares the same set. The
-// unexported flags the shaping sets are no json fields of any type and are not walked: the
-// stand-in flags PullRequestView.fixAttemptsShown and Settings.maxFixAttemptsShown, and the
-// flags that leave a key off, CheckView.roleHidden, PhaseView.passHidden, Admission.treesHidden,
-// State.wakesWaitingHidden and State.claimsToRefreshHidden. A map's value, a list's element and
-// the inner type of a pointer are each walked as the node below `*` or below the field's own
-// name.
+// unexported flags the shaping sets are no json fields, and the walk skips them. A map's value,
+// a list's element and the inner type of a pointer are each walked as the node below `*` or
+// below the field's own name.
 func walkDeclaredType(t *testing.T, typ reflect.Type, path string, owner declaredField, shape declaredShape, stack []reflect.Type) {
 	t.Helper()
 	for typ.Kind() == reflect.Pointer {

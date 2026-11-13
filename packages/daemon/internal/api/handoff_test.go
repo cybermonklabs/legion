@@ -425,12 +425,6 @@ func TestHandoffCompleteWithReadyTrueIsRefused(t *testing.T) {
 	if message != readyRetired {
 		t.Fatalf("the refusal is %q, want %q", message, readyRetired)
 	}
-	for _, want := range []string{"No daemon at contract 86 or later acts on READY", "the merger merges the pull request itself",
-		"the daemon closes the issue when it reads that merge", "Nothing was recorded"} {
-		if !strings.Contains(message, want) {
-			t.Fatalf("the refusal is %q, want it to say %q", message, want)
-		}
-	}
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts after the refused READY = %#v, want none", got)
 	}

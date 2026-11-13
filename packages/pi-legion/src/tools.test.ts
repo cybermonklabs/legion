@@ -1,6 +1,4 @@
-import { expect, mock, test } from "bun:test";
-import * as fs from "node:fs";
-import * as fsPromises from "node:fs/promises";
+import { expect, test } from "bun:test";
 import { type LegionRole, roleToken } from "@legion/contracts";
 import {
   LEGION_PHASES,
@@ -18,6 +16,7 @@ import {
 } from "@legion/pi-shared/handoff-record";
 import { phaseOpParameters } from "@legion/pi-shared/legion-phase-ops";
 import type { PiApi, RegisteredTool, SessionContext } from "@legion/pi-shared/pi-types";
+import { withImageManifest } from "@legion/pi-shared/test/image-manifest";
 import { z } from "zod";
 import pkg from "../package.json";
 import { createLegionTool, type LegionToolSession } from "./tools";
@@ -1646,38 +1645,17 @@ test("the controller reads the state without a grant and sets an issue's status 
 // R6: a role reads which plugin build its own process runs. The build is the manifest of the
 // module this process loaded: `tools.ts` imports `../package.json` and takes `pluginBuildOf` of
 // it, never the image's copy at `/opt/legion/pi-legion`, which a relaunch never updates. For this
-// case alone a read of that copy through `node:fs` `readFileSync` or `node:fs/promises`
-// `readFile` answers a manifest with a version and a contract of its own, so the answer below
-// fails wherever the build is read from that path, whatever the image holds. `tools.ts` reads
-// its build once, when it loads, and this file's own import of it loaded before the mock, so the
-// case loads it again under the mock and asks that copy: a query on the specifier makes Bun
-// evaluate the module anew rather than answer the one it cached. A read at load (in `tools.ts`
-// or in `pluginBuildOf`) and a read inside `readBuild` both meet the mock.
+// case alone a read of that copy answers a manifest with a version and a contract of its own
+// (withImageManifest), so the answer below fails wherever the build is read from that path,
+// whatever the image holds. The case imports `tools.ts` again under the mock and asks that copy.
 const TOOLS_LOADED_UNDER_THE_IMAGE_MOCK = "./tools?read_build";
 test("read_build answers the package and version this process loaded, both contract numbers, and reads no state", async () => {
-  const IMAGE_MANIFEST = "/opt/legion/pi-legion/package.json";
-  const atImagePath = JSON.stringify({
+  const atImagePath = {
     ...pkg,
     version: "0.0.0-image",
     legion: { daemonApiVersion: pkg.legion.daemonApiVersion - 1 },
-  });
-  const realFs = { ...fs };
-  const realFsPromises = { ...fsPromises };
-  mock.module("node:fs", () => ({
-    ...realFs,
-    readFileSync: (
-      file: Parameters<typeof fs.readFileSync>[0],
-      options?: Parameters<typeof fs.readFileSync>[1]
-    ) => (String(file) === IMAGE_MANIFEST ? atImagePath : realFs.readFileSync(file, options)),
-  }));
-  mock.module("node:fs/promises", () => ({
-    ...realFsPromises,
-    readFile: async (
-      file: Parameters<typeof fsPromises.readFile>[0],
-      options?: Parameters<typeof fsPromises.readFile>[1]
-    ) => (String(file) === IMAGE_MANIFEST ? atImagePath : realFsPromises.readFile(file, options)),
-  }));
-  try {
+  };
+  await withImageManifest("/opt/legion/pi-legion/package.json", atImagePath, async () => {
     const { createLegionTool: createFreshLegionTool } = (await import(
       TOOLS_LOADED_UNDER_THE_IMAGE_MOCK
     )) as { readonly createLegionTool: typeof createLegionTool };
@@ -1707,10 +1685,7 @@ test("read_build answers the package and version this process loaded, both contr
     });
     // The health route's header is the one read, and no project state is asked for.
     expect(calls).toEqual([["daemonContract", undefined]]);
-  } finally {
-    mock.module("node:fs", () => realFs);
-    mock.module("node:fs/promises", () => realFsPromises);
-  }
+  });
 });
 
 test("read_build says the daemon stated no contract, and belongs to the controller session too", async () => {
