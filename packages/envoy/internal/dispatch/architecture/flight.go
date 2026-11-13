@@ -2,6 +2,7 @@
 // waits on, what a flight hands every caller that joined it, and the flight itself — the contexts
 // it runs on and its errSuperseded retry chain. The Importer type, Sync and Close stay in
 // importer.go: they are the type's own surface.
+
 package architecture
 
 import (
