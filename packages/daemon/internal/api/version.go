@@ -1384,18 +1384,18 @@ package api
 // by the architect's decision: check-daemon-api-contract.sh compares a change with its base,
 // main at 86, so 93 passes, a renumber costs a push, a full check run and a test round each time
 // while the open heads move the free number again within the hour, and the change that lands
-// second is the one renumbered (AGENTS.md). If main declares this change's number or a higher
-// one before it merges, it takes the free number then, in one push. A seventh reading, at the forward merge of
-// 2026-11-13T04:21Z over the 139 open pull requests, found main at 87 (dispatch://INFRA-3219's
-// entry above), #3730 88, #3659 89, #3830 90, #3519, #3573 and #3712 91, #3715 92, #3677 93 beside
-// this change, #3708 94 and #3575 95; main carries no 93, so this change keeps it. An eighth
-// reading, at the forward merge of 2026-11-13T08:10Z over the 140 open pull requests, found main
-// at 94 (dispatch://INFRA-2800's entry above: #3677 landed at 94, not at the 93 it held at the
-// seventh), #3830 90, #3519 91, #3715 92, #3712 95, #2731 and #3573 96, #3708 98 and #3575 99.
-// For check-daemon-api-contract.sh a base above this change's number is the base taking it, so
-// this change takes 97, the lowest number above the base's that no other open head declares. The
-// entries above keep the numbers they were read at. Read the base's own number and every open
-// head again at the next merge rather than from this line, as
+// second is the one renumbered (AGENTS.md). If main declares this change's number or a higher one
+// before it merges, it takes the free number then, in one push. A seventh reading, at the forward
+// merge of 2026-11-13T04:21Z over the 139 open pull requests, found main at 87
+// (dispatch://INFRA-3219's entry above), #3730 88, #3659 89, #3830 90, #3519, #3573 and #3712 91,
+// #3715 92, #3677 93 beside this change, #3708 94 and #3575 95; main carries no 93, so this change
+// keeps it. An eighth reading, at the forward merge of 2026-11-13T08:10Z over the 140 open pull
+// requests, found main at 94 (dispatch://INFRA-2800's entry above: #3677 landed at 94, not at the
+// 93 it held at the seventh), #3830 90, #3519 91, #3715 92, #3712 95, #2731 and #3573 96, #3708 98
+// and #3575 99. For check-daemon-api-contract.sh a base above this change's number is the base
+// taking it, so this change takes 97, the lowest number above the base's that no other open head
+// declares. The entries above keep the numbers they were read at. Read the base's own number and
+// every open head again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 const DaemonAPIVersion = 97
