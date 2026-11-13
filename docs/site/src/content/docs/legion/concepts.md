@@ -496,7 +496,8 @@ outstanding, prompts it acknowledged without taking a turn, and the times it was
 that. When a budget runs out (`launch_failure_limit`, `prompt_failure_limit` and
 `prompt_retire_limit` in the configuration) the daemon stops relaunching that agent and **holds**
 the issue. A held phase worker is its architect's to retry or escalate to the controller; an
-architect that runs out goes to the controller, which can re-admit the tree.
+architect that runs out goes to the controller, which restarts a running tree when it finds no
+cause or the cause is gone, and otherwise asks a person whether to park it.
 [Troubleshooting](/legion/legion/troubleshooting/) shows how to see each of these.
 
 The daemon says why the claim failed rather than leaving that in its log alone. It keeps one word
@@ -514,8 +515,8 @@ phase and its worker starts again at the same generation, in the same pod and at
 in the admission line. Where the pull request's head is red, the issue goes on to implementing
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
-does the same at the cost of that session. The restart, `backlog` and then `todo` in the same
-turn, runs the whole tree over as a new generation, which is the move for a tree that must start
+does the same at the cost of that session. A restart, the root set to `backlog` and then to
+`todo`, runs the whole tree over as a new generation, which is the move for a tree that must start
 from its architect.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,

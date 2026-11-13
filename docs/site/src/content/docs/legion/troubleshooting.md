@@ -544,19 +544,19 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
 to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
 architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
-and the controller is woken: it restarts the tree when it finds no cause or the cause is gone, and
-otherwise asks the person whether to park it. What brings the architect back depends on where its
-tree stands:
+and the controller is woken. Unless the root's `phase` is `done`, it restarts the tree when it
+finds no cause or the cause is gone, and asks a person whether to park it when the cause stays.
+What brings the architect back depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will
   wake` line names the architect under `failed, retry`. Retry it, as
   [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
   relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
   generation and phase it stands at.
-- **Its root is parked or lingers,** the controller's restart (`backlog`, then `todo` in the same
-  turn) included: leave the claim as it is. The tree's re-admission retries it at a new generation;
-  a retry by hand would run it outside the admission cap, and it would be sent no catch-up. To
-  restart the tree by hand, write the same pair:
+- **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
+  in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
+  generation; a retry by hand would run it outside the admission cap, and it would be sent no
+  catch-up. To restart the tree by hand, write the same pair:
 
   ```sh
   legion status <KEY> backlog --config legion.yaml --operator-token-file operator-token
@@ -583,7 +583,7 @@ admission line stay as they were. A person's move of the root to `todo` in the D
 and the controller's own `set_status` do the same, since all three write the one status the
 daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
 of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
-generation, which is what the park and the admission above do.
+generation, which is what the restart above does.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
