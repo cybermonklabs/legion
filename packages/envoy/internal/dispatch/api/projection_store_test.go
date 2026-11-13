@@ -460,46 +460,77 @@ func newProjectionRun(t *testing.T) *projectionRun {
 }
 
 // requireNoStoredFunctionWritesAProjection reads the catalogue: no function of the schema and
-// no trigger on a projected table writes one, so a write hidden in plpgsql is found where the
-// Go sources cannot show it.
+// no trigger writes a projected table, so a write hidden in plpgsql is found where the Go
+// sources cannot show it. Each scan gathers every write it finds and fails on a set that is not
+// empty, naming each row of it: a scan that only logs its rows cannot fail.
 func requireNoStoredFunctionWritesAProjection(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
-	rows, err := run.database.Pool.Query(ctx, `
+	// prolang is the oid of a pg_language row, so the language is named through pg_language.
+	// An internal function's body is the name of a C entry point, not statements, so it is left
+	// out. 'internal'::regtype::oid is the oid of the type named internal (2281), which no
+	// language has, so comparing prolang with it left nothing out.
+	functions, read := catalogueProjectionWrites(t, ctx, run, `
 		select p.proname, p.prosrc
 		from pg_proc p
 		join pg_namespace n on n.oid = p.pronamespace
-		where n.nspname = current_schema() and p.prolang <> 'internal'::regtype::oid
+		where n.nspname = current_schema()
+			and p.prolang <> (select l.oid from pg_language l where l.lanname = 'internal')
 	`)
+	if read == 0 {
+		t.Fatal("no stored function was read, so nothing was checked")
+	}
+	if len(functions) != 0 {
+		t.Errorf("stored functions write a projected table:\n  %s", strings.Join(functions, "\n  "))
+	}
+	// Every trigger of the schema, on whichever table, with the body it runs: a trigger on any
+	// table can write a projected table, and a deferred constraint trigger writes it at COMMIT,
+	// where no writer can be named.
+	triggers, fired := catalogueProjectionWrites(t, ctx, run, `
+		select c.relname || '.' || t.tgname
+				|| case when t.tgdeferrable then ' (deferrable constraint trigger)' else '' end
+				|| ' -> ' || p.proname,
+			p.prosrc
+		from pg_trigger t
+		join pg_class c on c.oid = t.tgrelid
+		join pg_namespace n on n.oid = c.relnamespace
+		join pg_proc p on p.oid = t.tgfoid
+		where not t.tgisinternal and n.nspname = current_schema()
+	`)
+	if fired == 0 {
+		t.Fatal("no trigger was read, so nothing was checked")
+	}
+	if len(triggers) != 0 {
+		t.Errorf("triggers write a projected table:\n  %s", strings.Join(triggers, "\n  "))
+	}
+	t.Logf("%d stored functions and %d triggers of the schema read", read, fired)
+}
+
+// catalogueProjectionWrites runs a catalogue query answering a name and the body it runs, and
+// answers every projection write those bodies hold, each named by its row, with how many rows
+// it read.
+func catalogueProjectionWrites(t *testing.T, ctx context.Context, run *projectionRun, query string) ([]string, int) {
+	t.Helper()
+	rows, err := run.database.Pool.Query(ctx, query)
 	if err != nil {
-		t.Fatalf("read the schema's functions: %v", err)
+		t.Fatalf("read the catalogue: %v", err)
 	}
 	defer rows.Close()
+	var writes []string
 	read := 0
 	for rows.Next() {
 		var name, body string
 		if err := rows.Scan(&name, &body); err != nil {
-			t.Fatalf("read a function: %v", err)
+			t.Fatalf("read a row of the catalogue: %v", err)
 		}
 		read++
 		for _, clause := range projectionClauses(withoutSQLComments(body)) {
-			t.Errorf("the stored function %s writes %s: %s", name, clause.table, clause.text)
+			writes = append(writes, fmt.Sprintf("%s writes %s: %s", name, clause.table, clause.text))
 		}
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read the schema's functions: %v", err)
+		t.Fatalf("read the catalogue: %v", err)
 	}
-	triggers, err := readStrings(ctx, run.database.Pool, `
-		select c.relname || '.' || t.tgname || ' -> ' || p.proname
-		from pg_trigger t
-		join pg_class c on c.oid = t.tgrelid
-		join pg_proc p on p.oid = t.tgfoid
-		where not t.tgisinternal and c.relname = any($1)
-		order by 1
-	`, projectedTables)
-	if err != nil {
-		t.Fatalf("read the triggers of the projected tables: %v", err)
-	}
-	t.Logf("%d stored functions read, none writing a projected table; the triggers on them are %v", read, triggers)
+	return writes, read
 }
 
 // deferredCountersOfAProjection is the deferred work a projected table may carry: work that

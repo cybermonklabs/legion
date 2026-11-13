@@ -25,8 +25,10 @@ import (
 // What this half reads:
 //
 //   - the node a comment create stored, its supertag and its attribute values, with the time,
-//     the actor and the id of the event that same transaction appended; every tuple's cause is
-//     that event's own id, and the test fails on any that is not;
+//     the actor and the id of the event that same transaction appended; every tuple that
+//     transaction appended, attributes and relations alike, is read with no `to_kind` filter,
+//     its cause is that event's own id, and the test fails on any that is not, naming a
+//     base-attribute tuple whose cause reads 0;
 //   - every node the run wrote carrying `visibility` and carrying `state`, read as the tuples
 //     they are and not as the row's columns;
 //   - a `person`, a `role`, a `session` and a page node resolved through the one reader every
@@ -75,8 +77,8 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 		t.Fatalf("the node's cause is event %d, want %d", node.SourceEvent, event)
 	}
 
-	// Its attribute values are tuples, and every tuple of the write carries that event as its
-	// cause. The attribute read and the relation read are one read, so both are asked here.
+	// Its attribute values are tuples, and every tuple the write appended carries that event as its
+	// cause, attributes and relations alike.
 	for attribute, want := range map[string]string{
 		"visibility": graphstore.VisibilityProject, "state": graphstore.StateLive,
 	} {
@@ -85,22 +87,43 @@ func TestTheStoreHoldsNodesAndAppendedTuples(t *testing.T) {
 			t.Fatalf("the node's %s reads %q (held %t, err %v), want %q", attribute, value, ok, err, want)
 		}
 	}
-	tuples, err := graphstore.CurrentOut(ctx, database.Pool, "comment", written.ID, nil)
-	if err != nil {
-		t.Fatalf("read the tuples out of the comment: %v", err)
-	}
-	if len(tuples) == 0 {
-		t.Fatal("the write stated nothing about the node it stored")
-	}
+	// The tuples are read straight out of graph_tuples by the transaction that appended them, with
+	// no `to_kind` filter. graphstore.CurrentOut binds to_kind <> 'value', so a read through it
+	// holds relations alone, which is how a comment whose `visibility` and `state` tuples carried
+	// no cause passed this check on 2026-11-12.
+	tuples := tuplesTheWriteAppended(t, database, "comment", written.ID)
+	commentAttributes := map[string]bool{}
+	commentRelations := 0
 	for _, tuple := range tuples {
-		if tuple.SourceEvent != event {
-			t.Fatalf("the %s tuple's cause is event %d, want the write's own event %d",
-				tuple.Kind, tuple.SourceEvent, event)
+		baseAttribute := tuple.ToKind == graphstore.KindValue &&
+			(tuple.Kind == "visibility" || tuple.Kind == "state")
+		switch {
+		case baseAttribute && tuple.SourceEvent == graphstore.NoEvent:
+			t.Errorf("the %s base-attribute tuple of %s %s reads cause 0, the sentinel, and not the write's own event %d",
+				tuple.Kind, tuple.FromKind, tuple.FromID, event)
+		case tuple.SourceEvent != event:
+			t.Errorf("the %s tuple of %s %s (%s %q) carries cause %d, want the write's own event %d",
+				tuple.Kind, tuple.FromKind, tuple.FromID, tuple.ToKind, tuple.ToID, tuple.SourceEvent, event)
 		}
 		if !tuple.At.Equal(written.CreatedAt) {
-			t.Fatalf("the %s tuple is stated at %s, and the record at %s",
-				tuple.Kind, tuple.At, written.CreatedAt)
+			t.Errorf("the %s tuple of %s %s is stated at %s, and the record at %s",
+				tuple.Kind, tuple.FromKind, tuple.FromID, tuple.At, written.CreatedAt)
 		}
+		// The author's node the write made states its own base attributes, held to the cause
+		// above and counted here for nothing.
+		if tuple.FromKind != "comment" || tuple.FromID != written.ID {
+			continue
+		}
+		if baseAttribute {
+			commentAttributes[tuple.Kind] = true
+		} else if tuple.ToKind != graphstore.KindValue {
+			commentRelations++
+		}
+	}
+	// Both sorts must be among what was read, or the loop above held nothing of the missing one.
+	if !commentAttributes["visibility"] || !commentAttributes["state"] || commentRelations == 0 {
+		t.Fatalf("of the %d tuples the write appended, the comment's visibility is among them %t, its state %t, and %d are relations of it: want both base attributes and a relation",
+			len(tuples), commentAttributes["visibility"], commentAttributes["state"], commentRelations)
 	}
 	if authored := tupleTo(tuples, graphstore.TupleAuthoredBy); authored != "session:"+writer {
 		t.Fatalf("the comment is authored by %q, want the session that wrote it", authored)
@@ -184,6 +207,47 @@ func commentCreatedEvent(t *testing.T, database *store.Store, comment string) in
 		t.Fatalf("read the event that stored the comment: %v", err)
 	}
 	return id
+}
+
+// tuplesTheWriteAppended is every tuple the transaction that made one node appended, of either
+// sort, read straight out of graph_tuples with no `to_kind` filter. The transaction is named by
+// the xmin of the node's first tuple: a node's first fact is stated by the write that made it,
+// and a tuple row is never updated, so its xmin stays the transaction that appended it.
+func tuplesTheWriteAppended(t *testing.T, database *store.Store, kind, id string) []graphstore.Tuple {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select from_kind, from_id, kind, to_kind, to_id, at, source_event
+		from graph_tuples
+		where xmin::text = (
+			select first.xmin::text from graph_tuples first
+			where first.from_kind = $1 and first.from_id = $2
+			order by first.seq
+			limit 1
+		)
+		order by seq
+	`, kind, id)
+	if err != nil {
+		t.Fatalf("read the tuples the write of %s %s appended: %v", kind, id, err)
+	}
+	defer rows.Close()
+	var tuples []graphstore.Tuple
+	for rows.Next() {
+		var tuple graphstore.Tuple
+		if err := rows.Scan(&tuple.FromKind, &tuple.FromID, &tuple.Kind, &tuple.ToKind, &tuple.ToID,
+			&tuple.At, &tuple.SourceEvent); err != nil {
+			t.Fatalf("read a tuple the write of %s %s appended: %v", kind, id, err)
+		}
+		t.Logf("the write appended %s %s %s -> %s %q, cause %d",
+			tuple.FromKind, tuple.FromID, tuple.Kind, tuple.ToKind, tuple.ToID, tuple.SourceEvent)
+		tuples = append(tuples, tuple)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the tuples the write of %s %s appended: %v", kind, id, err)
+	}
+	if len(tuples) == 0 {
+		t.Fatalf("the write stated nothing about the %s %s it stored", kind, id)
+	}
+	return tuples
 }
 
 // tupleTo is the far end of the one tuple of that kind, as "kind:id", or "" for none.

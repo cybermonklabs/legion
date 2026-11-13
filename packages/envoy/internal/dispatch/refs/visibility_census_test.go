@@ -54,10 +54,24 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 			strings.Join(problems, "\n  "), resolved, declared)
 	}
 
-	for name, statement := range graphReadStatements(t, ctx, database) {
+	statements := graphReadStatements(t, ctx, database)
+	if len(statements) == 0 {
+		t.Fatal("no read of the graph was recorded, so no statement was checked")
+	}
+	for name, statement := range statements {
 		marks := strings.Count(statement, VisibilityMarker)
 		tests := strings.Count(statement, ".visibility")
-		if marks != tests {
+		t.Logf("the %s read binds %d predicate of the registry's and makes %d test of `visibility`",
+			name, marks, tests)
+		// Equal counts alone prove nothing: a statement that binds no visibility rule at all
+		// makes zero of each, and zero equals zero, which is how such a read passed this check on
+		// 2026-11-12. Every read of the graph answers only what the acting person may see, so
+		// every statement binds at least one predicate.
+		switch {
+		case marks == 0 || tests == 0:
+			t.Errorf("the %s read binds %d predicate of the registry's and makes %d test of `visibility`: a read of the graph that binds no visibility rule answers every node to everyone\n%s",
+				name, marks, tests, statement)
+		case marks != tests:
 			t.Errorf("the %s read makes %d test of `visibility` and binds %d predicate of the registry's: a read states no visibility rule of its own\n%s",
 				name, tests, marks, statement)
 		}
