@@ -746,6 +746,18 @@ type PullRequestClosed struct {
 
 func (PullRequestClosed) isFact() {}
 
+// PullRequestDequeued is GitHub's pull_request action `dequeued`: the pull request left the merge
+// queue, and HeadSHA is the head it left the queue at. GitHub's payload names why it left (its
+// `reason`), but the listener drops that field (packages/envoy/internal/contracts/normalize.go,
+// the pull_request payload), so the fact carries no reason.
+type PullRequestDequeued struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestDequeued) isFact() {}
+
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
 // is in implementing with no open or merged pull request recorded: never decoded from an event.

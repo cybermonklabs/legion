@@ -67,6 +67,9 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 			PullRequest: "sjawhar/legion#42", Prompt: "Read the reviewer's thread before you write anything."},
 		HookPrompt{Hook: "slow-review", Role: claim.RoleReviewer, From: phase.Accepting, To: phase.Reviewing,
 			Count: 2, Counts: map[string]int{"accepting-reviewing": 2}, Prompt: "Say what the round missed."},
+		MergeQueueRead{Number: 42, Head: "c0de"},
+		MergeQueueRemoval{Number: 42, Head: "c0de"},
+		MergeQueueRemoval{Number: 42, Head: "c0de", Unread: true},
 	}
 	for _, payload := range payloads {
 		t.Run(string(payload.OutboxKind()), func(t *testing.T) {
@@ -209,7 +212,8 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 	every := []OutboxKind{OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindSupervise,
 		OutboxKindGateSeed, OutboxKindLingerClose, OutboxKindIssueSuspend, OutboxKindWorkspaceRemove, OutboxKindIssueBranch,
 		OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound, OutboxKindRoleMessage, OutboxKindPhaseEnded, OutboxKindHookPrompt,
-		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish}
+		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
+		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval}
 	lanes := map[OutboxKind][]OutboxLane{}
 	for _, lane := range []OutboxLane{LaneLifecycle, LaneBoard, LaneRoleMessage, LaneClaim} {
 		for _, kind := range LaneKinds(lane) {
@@ -309,6 +313,11 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a hook prompt that counted nothing", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt counting backward", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: -1, Prompt: "Read the thread."}, reason: "its count is one or more"},
 		{name: "a hook prompt with no words", payload: HookPrompt{Hook: "back-to-implementing", Role: claim.RoleImplementer, From: phase.Reviewing, To: phase.Implementing, Count: 1}, reason: "carries the hook's own words"},
+		{name: "a merge-queue read of no pull request", payload: MergeQueueRead{Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
+		{name: "a merge-queue read of a negative pull request", payload: MergeQueueRead{Number: -42, Head: "c0de"}, reason: "a merge-queue read names the pull request it reads and the head"},
+		{name: "a merge-queue read with no head", payload: MergeQueueRead{Number: 42}, reason: "a merge-queue read names the pull request it reads and the head"},
+		{name: "a merge-queue removal of no pull request", payload: MergeQueueRemoval{Head: "c0de"}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
+		{name: "a merge-queue removal with no head", payload: MergeQueueRemoval{Number: 42, Unread: true}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
 		{name: "a check look bound without a look", payload: CheckLook{}, reason: "check look bound requires the look it bounds"},
 		{name: "unsupported payload", payload: unsupportedOutboxPayload{}, reason: "unknown outbox payload"},
 	} {
@@ -349,6 +358,10 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a hook prompt to an architect", row: OutboxRow{ID: 55, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"architect","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread."}`)}, reason: "never to an architect"},
 		{name: "a hook prompt on a move forward", row: OutboxRow{ID: 56, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"reviewer","from":"implementing","to":"reviewing","count":1,"counts":{},"prompt":"Read the thread."}`)}, reason: "is no move back"},
 		{name: "a hook prompt with an unknown field", row: OutboxRow{ID: 57, Kind: OutboxKindHookPrompt, Payload: json.RawMessage(`{"hook":"back-to-implementing","role":"implementer","from":"reviewing","to":"implementing","count":1,"counts":{"reviewing-implementing":1},"prompt":"Read the thread.","cap":2}`)}, reason: "unknown field"},
+		{name: "a merge-queue read with no head", row: OutboxRow{ID: 58, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":42}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
+		{name: "a merge-queue read of no pull request", row: OutboxRow{ID: 59, Kind: OutboxKindMergeQueueRead, Payload: json.RawMessage(`{"number":0,"head":"c0de"}`)}, reason: "a merge-queue read names the pull request it reads and the head"},
+		{name: "a merge-queue removal of no pull request", row: OutboxRow{ID: 60, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"head":"c0de"}`)}, reason: "a merge-queue removal names the pull request that left the queue and the head"},
+		{name: "a merge-queue removal naming a role", row: OutboxRow{ID: 61, Kind: OutboxKindMergeQueueRemoval, Payload: json.RawMessage(`{"role":"merger","number":42,"head":"c0de"}`)}, reason: "unknown field"},
 		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

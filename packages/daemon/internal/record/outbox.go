@@ -45,6 +45,11 @@ const (
 	// row (DesignGatesPublish). Unlike the gated_steps_publish above it, this row's issue column
 	// is an issue key like every other kind's.
 	OutboxKindDesignGatesPublish OutboxKind = "design_gates_publish"
+	// OutboxKindMergeQueueRead reads a pull request once after GitHub reported that it left the
+	// merge queue (MergeQueueRead), and OutboxKindMergeQueueRemoval tells the issue's merger that it
+	// left (MergeQueueRemoval).
+	OutboxKindMergeQueueRead    OutboxKind = "merge_queue_read"
+	OutboxKindMergeQueueRemoval OutboxKind = "merge_queue_removal"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
@@ -58,12 +63,13 @@ const (
 // an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
 // publish too, the one row addressed to the bare project key rather than to an issue, so that
 // write runs on a board lane of the project's own, behind none of any issue's rows and holding
-// none of them back. The role-message lane runs the two kinds the daemon addresses to a role of
-// the issue that is not its architect (phase_ended, hook_prompt), on a lane of its own because
-// the board lane's architect notices are ordered among themselves and one of them waits
+// none of them back. The role-message lane runs the kinds the daemon addresses to a role of the
+// issue that is not its architect (phase_ended, hook_prompt, merge_queue_removal), and the read of
+// GitHub that comes before a merge-queue removal's message (merge_queue_read), on a lane of its own
+// because the board lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
-// phase ended, or given the words a hook fired on a move back, must hear it while that is news,
-// not after whatever its tree's architect is owed.
+// phase ended, given the words a hook fired on a move back, or told that its pull request left the
+// merge queue must hear it while that is news, not after whatever its tree's architect is owed.
 // The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
 // own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
 // waiting on one issue's claim must delay no status write and no notice of that same issue, which
@@ -82,7 +88,7 @@ const (
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish},
-	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt},
+	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval},
 	LaneClaim:       {OutboxKindClaimRelease},
 }
 
@@ -1017,6 +1023,51 @@ func (p HookPrompt) Message(issue string) string {
 		p.Hook, issue, p.From, p.To, p.Prompt, p.Count, counts, pull)
 }
 
+// MergeQueueRead is the daemon's one read of a pull request that GitHub reported leaving the merge
+// queue (intake.PullRequestDequeued). The transaction that applies that event writes it, while the
+// issue is in merging at the head the event names, and its executor reads the pull request from
+// GitHub once, retrying only a read that failed. A merged answer applies the merge, as the
+// webhook's merge would. Any other answer, or no answer from any read the executor makes, applies
+// the fact that writes the merger's message (MergeQueueRemoval), and ends this row. Number is the
+// pull request, and Head the head that left the queue.
+//
+// The read and the message are two rows because no row's payload is rewritten and every retry is
+// an attempt: one row that both read and waited for the merger's session would read GitHub again
+// at each of those waits, and a later failed read would hold back a message an earlier read had
+// already decided. A durable row, rather than a read held in memory, is what a restart between the
+// event and the read cannot lose, since the event is acknowledged once its transaction commits.
+type MergeQueueRead struct {
+	Number int    `json:"number"`
+	Head   string `json:"head"`
+}
+
+func (MergeQueueRead) OutboxKind() OutboxKind { return OutboxKindMergeQueueRead }
+
+// MergeQueueRemoval tells the issue's merger, on the merger's own role topic, that the pull request
+// left the merge queue at Head. The fact the merge-queue read applies writes it when GitHub did not
+// report the pull request merged (MergeQueueRead). Number is the pull request and Head the head
+// that left the queue. Unread is that no read of GitHub succeeded, so the daemon does not know
+// whether GitHub merged the pull request, and the message says so. GitHub's event names no reason
+// for the removal, so the merger reads the reason on GitHub itself. The row names no role: the
+// merger is the one role it is ever for.
+//
+// The row is held as an architect's notice is held, not dropped as a phase-ended message nobody
+// holds is: it wakes a released merger and waits until the merger's session holds its role, since
+// a merger whose pod was released would otherwise never learn that its pull request is out of the
+// queue. While the root's design gate is closed it neither wakes nor tells a released merger, which
+// could enqueue the pull request again against the gate, and it waits for the gate to open; a
+// merger whose session holds its role is told at once. The row ends undelivered when the issue has
+// left merging at Head (its phase is not merging, it is out of the workflow, its tree lingers, or
+// its pull request is not open at Head), and when the merger's claim is failed or retired. A merger
+// with no claim yet is no end: the row waits for it.
+type MergeQueueRemoval struct {
+	Number int    `json:"number"`
+	Head   string `json:"head"`
+	Unread bool   `json:"unread,omitempty"`
+}
+
+func (MergeQueueRemoval) OutboxKind() OutboxKind { return OutboxKindMergeQueueRemoval }
+
 // NewOutboxRow encodes one validated payload for durable delivery at nextAt.
 func NewOutboxRow(issue string, payload OutboxPayload, nextAt time.Time) (OutboxRow, error) {
 	if err := validateOutboxPayload(payload); err != nil {
@@ -1165,6 +1216,18 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		payload = value
 	case OutboxKindHookPrompt:
 		value := HookPrompt{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindMergeQueueRead:
+		value := MergeQueueRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindMergeQueueRemoval:
+		value := MergeQueueRemoval{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
@@ -1388,6 +1451,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if value.Prompt == "" {
 			return fmt.Errorf("a hook prompt carries the hook's own words, which the daemon puts in front of the role")
+		}
+	case MergeQueueRead:
+		if value.Number < 1 || value.Head == "" {
+			return fmt.Errorf("a merge-queue read names the pull request it reads and the head that left the queue; it names #%d at %q", value.Number, value.Head)
+		}
+	case MergeQueueRemoval:
+		if value.Number < 1 || value.Head == "" {
+			return fmt.Errorf("a merge-queue removal names the pull request that left the queue and the head it left at; it names #%d at %q", value.Number, value.Head)
 		}
 	default:
 		return fmt.Errorf("unknown outbox payload %T", payload)
