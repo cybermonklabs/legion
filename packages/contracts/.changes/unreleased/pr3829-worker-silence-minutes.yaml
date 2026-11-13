@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The daemon's state carries two more settings. `worker_silence_minutes` is how long a phase
+  worker whose process is up and between turns may go with no recorded step before the daemon
+  reads it as a worker nothing will prompt and sends it its phase's task again: 30 minutes by
+  default, and the daemon refuses a value under 16 when its configuration loads.
+  `worker_background_hours` is how long that worker's own report of background work may stand
+  before the daemon names it to the issue's architect and sends it nothing, because a background
+  job can hang: 4 hours by default, and the daemon refuses a value at or below the silence bound.
+  `legionSettings` takes both with no edit, being a loose object, so the four daemon-API fixtures
+  are the whole of what moved here and no contract number was taken.

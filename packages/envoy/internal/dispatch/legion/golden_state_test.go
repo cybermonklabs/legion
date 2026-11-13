@@ -21,7 +21,7 @@ func goldenStatePath() string {
 // settings the settings control shows with the source of each (the spec's contract 4), the
 // admission block the view's header and queue draw, and each issue's phase and claims. The pull
 // request's `requiresChecks`, which metric 2's CI-wait segment reads, is no longer on the
-// daemon's state (contract 87 dropped it with the required-checks record main's 86 deleted), so
+// daemon's state (contract 96 dropped it with the required-checks record main's 86 deleted), so
 // this golden carries none and that segment reads it as absent (metrics' requiresChecks).
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	body, err := os.ReadFile(goldenStatePath())

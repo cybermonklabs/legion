@@ -193,6 +193,16 @@ type Claim struct {
 	// it chose.
 	FailureCause FailureCause
 	FailedAt     time.Time
+	// LeakCheckCause is the sentence a launch try's start was refused with because the shared
+	// public leak check could not be put in place in the role's pod (runtime.LeakCheckCause), and
+	// "" when the latest try started its process, failed for another reason, or was cut short by
+	// its own context, which refuses nothing. launchNow writes it from the outcome of every try
+	// and does not clear it at the start of one, so it reads the same across the backoff between
+	// tries; the retry that revives a failed claim clears it with the failure record (retry). It
+	// is kept beside Failure rather than in it: a claim that fails on it carries Failure `launch
+	// failures ran out: <the error>` and the cause word launchNow chooses, and this field says
+	// which check refused it.
+	LeakCheckCause string
 	// PendingCause is what failed the process whose relaunch is now under way
 	// (relaunchAfterFailure), and "" for a claim relaunching after no failure. It is the cause a
 	// launch the runtime then refuses fails under, so a claim that died and whose relaunch the
@@ -396,6 +406,30 @@ type Claim struct {
 	// no write a machine makes carries it or erases it, exactly as a session's activity report
 	// is held.
 	Step StepRecord
+	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are what the
+	// process this claim runs now last reported it was doing (POST /legion/v1/claims/activity):
+	// when it read what it was doing, the zero time for a session that has reported nothing;
+	// whether that reading found background work of the session's own running, and the kinds it
+	// named; and when the phase reminder armed in that session is due, the zero time for none.
+	// They are written by the store's PutClaimActivity alone and read back with the claim, as
+	// Step is: no write a machine makes carries them, and a launch's write clears them.
+	//
+	// The store's putClaim sets all four to their zero values on a write that moves Generation
+	// (launchNow), because the report describes the process that made it and the launch replaces
+	// that process; and a report is written only onto the launch whose secret the route
+	// authenticated it with, so one a dead process sent around its relaunch is refused rather
+	// than written over that clear. So a worker displaced into a replacement pod while a
+	// background task of its own ran is read as a session that has reported nothing, not as one
+	// still waiting on that task.
+	//
+	// The daemon's minute sweep reads them off the live claim, which is the only reading it has
+	// of what a quiet worker says it is waiting on (internal/daemon's tellSilentPhaseWorkers,
+	// config.Config.WorkerBackground). The rules over a run read the same report from the record
+	// instead (record.RoleClaim).
+	ActivityAt             time.Time
+	ActivityBackground     bool
+	ActivityKinds          []string
+	ActivityNextReminderAt time.Time
 }
 
 // StepRecord is the claim's record of its agent's last step: the last call the agent made, when
@@ -2081,6 +2115,11 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			}
 		}
 		loc, err := m.start(starting, token)
+		// A start cut short by its own context was refused by nothing, so it records no cause.
+		m.claim.LeakCheckCause = ""
+		if starting.Err() == nil {
+			m.claim.LeakCheckCause = runtime.LeakCheckCause(err)
+		}
 		if err == nil {
 			m.previous = nil
 			// The process this launch let go is the one the start was handed and waits out

@@ -8,8 +8,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 87,
-    "caller": 87
+    "daemon": 96,
+    "caller": 96
   },
   "admission": {
     "cap": 3,
@@ -289,7 +289,8 @@
                 "promptRetires": 0
               }
             },
-            "pendingCause": "died"
+            "pendingCause": "died",
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1
@@ -797,6 +798,8 @@
     "production_check_hours": 240,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "worker_silence_minutes": 45,
+    "worker_background_hours": 6,
     "pod_update_max_open_rounds": 6,
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,
@@ -1338,6 +1341,10 @@
       "source": "file",
       "at": "2026-09-22T09:15:02Z"
     },
+    "worker_background_hours": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
     "worker_boot_registration_deadline_intervals": {
       "source": "file",
       "at": "2026-09-22T09:15:02Z"
@@ -1347,6 +1354,10 @@
       "at": "2026-09-22T09:15:02Z"
     },
     "worker_rpc_timeout_seconds": {
+      "source": "file",
+      "at": "2026-09-22T09:15:02Z"
+    },
+    "worker_silence_minutes": {
       "source": "file",
       "at": "2026-09-22T09:15:02Z"
     },

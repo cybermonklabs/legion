@@ -1356,12 +1356,12 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// The shared public leak check every write of this role runs first: its `legion gh`, its
 	// pushes and the rescue helper each resolve PUBLIC_LEAK_CHECK before anything else
 	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
-	// image — it is published by tag, and a pod installs the pinned one once, before any role's
-	// agent starts (leakguard.Install, run by each role's shim from the pin the image carries) —
-	// so what is named here is the installed copy, under the scratch the roles of this pod share.
-	// The path is the installer's own constant, so the path a role is told and the path the
-	// install writes are one string and cannot drift
-	// (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
+	// image — it is published by tag, the image carries the pin, and the daemon reads the check at
+	// that pin and pushes it to the pod's launcher, which installs it once for the pod before any
+	// role starts (launchers.serveLeakCheck; each role's shim only reads that install) — so what
+	// is named here is the installed copy, under the scratch the roles of this pod share. The path
+	// is the installer's own constant, so the path a role is told and the path the install writes
+	// are one string and cannot drift (TestEveryRoleIsToldTheLeakCheckItsPodInstalls).
 	add(leakguard.CheckVar, leakguard.InstalledCheck)
 	// The two variables an agent reads to decide it holds a broker at all, gated on the same one
 	// decision as the shim's agent-secrets flags (enrollsIn, launcherCommand): a generation in a

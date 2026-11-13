@@ -239,7 +239,8 @@ func TestTheFixedPathsAreTheOnesBootSettled(t *testing.T) {
 		"runtime.kubernetes", "runtime.kubernetes.idle_release",
 		"runtime.kubernetes.idle_release.backstop_minutes",
 		"runtime.kubernetes.idle_release.idle_minutes", "runtime.kubernetes.namespace",
-		"runtime.tmux", "runtime.tmux.take_over", "state_dir", "worker_stall_backstop_hours",
+		"runtime.tmux", "runtime.tmux.take_over", "state_dir", "worker_background_hours",
+		"worker_silence_minutes", "worker_stall_backstop_hours",
 		"worker_stream_port", "worker_wake_burst", "worker_wakes_per_minute",
 	}
 	if !slices.Equal(fixed, want) {

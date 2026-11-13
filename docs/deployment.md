@@ -175,9 +175,11 @@ configuration home — and tells the pane where it is
 (`resolveLeakCheck` and `panePairs`, `packages/daemon/internal/runtime/tmux`).
 An operator who points one pane at another copy still wins: `runtime.tmux.pane_env` and a spec's
 own `Env` are told after the resolved one, and the last value of a name is what the pane holds.
-Legion installs no check on a shared box — the pinned install is the pod's, from a tag the worker
-image carries — so a box that writes to public repositories carries it through the check's own
-installer, run on the machine the daemon runs on.
+Legion installs no check on a shared box.
+The pinned install is a pod's: the daemon reads the check at the tag the worker image carries and
+pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
+So a box that writes to public repositories carries the check through the check's own installer,
+run on the machine the daemon runs on.
 A daemon that resolves none logs one line per launch naming the pane, tells that pane no
 `PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
 error naming the missing check.
@@ -769,9 +771,11 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `state_dir` | fixed | — |
 | `tree_stop_timeout_seconds` | decision | — |
 | `worker_backends` | launch | `launch-specs` |
+| `worker_background_hours` | fixed | — |
 | `worker_boot_registration_deadline_intervals` | rebuild | `runtime` |
 | `worker_boot_timeout_seconds` | rebuild | `runtime` |
 | `worker_rpc_timeout_seconds` | rebuild | `worker-stream` |
+| `worker_silence_minutes` | fixed | — |
 | `worker_stop_timeout_seconds` | rebuild | `runtime` |
 | `worker_stall_backstop_hours` | fixed | — |
 | `worker_stream_port` | fixed | — |
@@ -807,5 +811,7 @@ Each line below is the reason the route answers with, for the keys it names.
 - `worker_wakes_per_minute`, `worker_wake_burst` — the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it.
 
 - `worker_stall_backstop_hours` — the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it.
+
+- `worker_silence_minutes`, `worker_background_hours` — the silence sweep reads both bounds off the configuration the daemon booted on (internal/daemon's supervision.cfg, tellSilentPhaseWorkers), and admission is handed the same two at boot for the tick's silent list (admit's UseWorkerSilence, internal/daemon's openWorkflow), and nothing builds either reader again: a change of either reaches the next boot and no sweep or tick before it.
 
 - `hooks` and every key under it — the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a `prompt_file` (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it.

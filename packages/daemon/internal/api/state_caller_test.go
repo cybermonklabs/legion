@@ -182,11 +182,12 @@ func unmarked(t *testing.T, body []byte) string {
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
 // pacing holds, the count of claims the stale-plugin lane has left, the gated steps, the
 // retired entries of the report of claims nothing will wake, the claim views' step record, the
-// places in the admission line, the workers' counts of the moves back and the three fields the
-// setting sources came with among what it is served without, since such a pod is below
-// treeContract, wakesWaitingContract, claimsToRefreshContract, gatedStepsContract,
-// retiredStrandedContract, stallRecordContract, waitingLineContract, backwardMovesContract and
-// settingSourcesContract too. A pod at this contract, and a caller in no pod — the operator's
+// places in the admission line, the workers' counts of the moves back, the claim views' leak
+// check cause and the two fields the setting sources came with among what it is served without,
+// since such a pod is below treeContract, wakesWaitingContract, claimsToRefreshContract,
+// gatedStepsContract, retiredStrandedContract, stallRecordContract, waitingLineContract,
+// backwardMovesContract, leakCheckCauseContract and settingSourcesContract too. A pod at this
+// contract, and a caller in no pod — the operator's
 // `legion state`, whose open-rounds line reads both fields, whose queue line reads those wakes
 // and whose tool-call line reads the step records — are served everything. The claims are the
 // state snapshot's own, so there is no readable state whose caller's contract is unknown: a
@@ -212,7 +213,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, which a pod at or above that contract is served.
+		// claimsToRefreshContract added, the contract twenty-three below this daemon's own.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -280,10 +281,12 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields), and with the two fields settingSourcesContract added
-			// gone — `settingSources` and the `daemon` block's `commit` (withoutSettingSources;
-			// state_sources_contract_test.go holds that half). Every row that reaches here is
-			// below all of them, so those fourteen keys go whatever the row is.
+			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
+			// sentence contract 87 added (withoutLeakCheckCause), and with the two fields
+			// settingSourcesContract added gone — `settingSources` and the `daemon` block's
+			// `commit` (withoutSettingSources; state_sources_contract_test.go holds that half).
+			// Every row that reaches here is below all fourteen narrowings, so what each of them
+			// takes goes whatever the row is.
 			if carriesSettingSources(t, body) || carriesCommit(t, body) {
 				t.Errorf("the state %s carries a field contract %d added, which a reader before it refuses", body, settingSourcesContract)
 			}
@@ -332,7 +335,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause"} {
+					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause", "leakCheckCause"} {
 						delete(view, key)
 					}
 				}

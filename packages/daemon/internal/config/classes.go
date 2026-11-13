@@ -134,6 +134,7 @@ const (
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
 	whyStallBst = "the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it"
+	whySilence  = "the silence sweep reads both bounds off the configuration the daemon booted on (internal/daemon's supervision.cfg, tellSilentPhaseWorkers), and admission is handed the same two at boot for the tick's silent list (admit's UseWorkerSilence, internal/daemon's openWorkflow), and nothing builds either reader again: a change of either reaches the next boot and no sweep or tick before it"
 	whyHooks    = "the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a prompt_file (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it"
 )
 
@@ -263,6 +264,11 @@ var Classes = []Row{
 	// is computed from the three LEGION_STALL_* numbers of the daemon's own environment, which
 	// are no key of the file (config.StallLimits).
 	{Field: "Config.WorkerStallBackstops", Path: "worker_stall_backstop_hours", Class: ClassFixed, Why: whyStallBst},
+	// The two bounds a phase worker's quiet is read against: the silence sweep reads both off
+	// the configuration the daemon booted on, as the stall backstop above does, and admission
+	// is handed both once, at boot, for the silent list of every tick notice.
+	{Field: "Config.WorkerSilence", Path: "worker_silence_minutes", Class: ClassFixed, Why: whySilence},
+	{Field: "Config.WorkerBackground", Path: "worker_background_hours", Class: ClassFixed, Why: whySilence},
 	// The pace the daemon lets the wakes it causes out at, which it reads once, at boot, into
 	// the one limiter the engine and every machine reserve from (internal/daemon's run,
 	// reserveWake).
