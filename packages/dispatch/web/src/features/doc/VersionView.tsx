@@ -1,7 +1,9 @@
+import type { DocumentJSON } from "@legion/proof-editor";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Doc } from "yjs";
 
+import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Ask, BlockSchema } from "../../api/types";
@@ -10,7 +12,7 @@ import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { AskBlockCard } from "./AskBlockCard";
-import { changeMarksAgainst } from "./change-marks";
+import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import { createDoc, type EditorHandle } from "./editor";
@@ -25,10 +27,14 @@ export interface VersionViewProps {
   /** The document's block-indexed asks, so a historical decision block still names its asker. */
   asks: readonly Ask[];
   blockSchema: BlockSchema | undefined;
-  /** The markdown of the version this one is marked against - the last approved one - with which
-   *  the view draws what changed since it: the words each changed block gained, and each block
-   *  removed since then where it stood. Without it nothing is marked. */
-  changeBaseline?: string;
+  /** The version this one is marked against - the last approved one - with which the view draws
+   *  what changed since it: the words each changed block gained, and each block removed since
+   *  then where it stood. It carries the reading Go made of that version, in its version mode,
+   *  which keeps the attributes the server wrote into that text, since a decision answered in a
+   *  version is part of what that version said; and its markdown, which the marks are computed
+   *  from where the answer carried no reading (`changeMarksAgainst`). Without a baseline nothing
+   *  is marked. */
+  changeBaseline?: ChangeBaseline;
   createdAt: string | undefined;
   highlight: Highlight | undefined;
   /** The project document shown, for block asks with no issue to be referenced under. */
@@ -58,12 +64,27 @@ export function VersionView({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });
-  const userQuery = useQuery(whoAmIQuery());
+  // The signed-in person reaches the editor as their login alone, and the effect below depends
+  // on that string rather than on the whoami answer: the answer carries `event_head`, so it is
+  // a new object after every committed event, and keyed on it the editor is destroyed and
+  // built again while the reader reads. This view reads the person at build time only, so the
+  // login - equal to itself across re-reads - is both what the editor needs and the signal
+  // that it has arrived.
+  const login = useQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
-  const markdown =
-    versionQuery.data !== undefined && "markdown" in versionQuery.data
-      ? versionQuery.data.markdown
-      : undefined;
+  // The server's reading of this version's text, in its version mode: what the editor draws,
+  // with no parse of its own. `DisplayTree` is the same JSON `DocumentJSON` describes - one
+  // ProseMirror node - typed openly because a response carries whatever the server's schema
+  // wrote.
+  const tree = (isText(versionQuery.data) ? versionQuery.data.markdown_tree : undefined) as
+    | DocumentJSON
+    | undefined;
+  // The version's own markdown, which draws it where no reading arrived: a pod of the build
+  // before this one answers a version without one for the length of a rollout, and a stored
+  // text with no tree is parsed rather than refused, as every other view of this change does
+  // (`MarkdownBody`, `DecisionsPanel`). Telling a reader the version could not be loaded, where
+  // the document is right there in the answer, is the one reading this view must not make.
+  const markdown = isText(versionQuery.data) ? versionQuery.data.markdown : undefined;
   // Where a `#id` in this version's text resolves: the document it is a version of, whose
   // latest version's question blocks declare the asks it names, as the server reads them.
   const textSource = useMemo(() => textSourceOf("artifact", artifactId), [artifactId]);
@@ -86,13 +107,27 @@ export function VersionView({
         : { by: highlightBy, id: highlightId, quote: highlightQuote },
     [highlightBy, highlightId, highlightQuote]
   );
+  // The baseline is keyed on what it says for the same reason the highlight is: the reading pane
+  // builds this object from its own query's answer on every render, and keyed on the object the
+  // editor would be destroyed and built again under a reader who has moved nothing.
+  const baselineMarkdown = changeBaseline?.markdown;
+  const baselineTree = changeBaseline?.tree;
+  const baseline = useMemo(
+    () =>
+      baselineMarkdown === undefined
+        ? undefined
+        : { markdown: baselineMarkdown, tree: baselineTree },
+    [baselineMarkdown, baselineTree]
+  );
   useEffect(() => {
     const parent = root.current;
-    const user = userQuery.data;
+    // `markdown` is a required field of a text version, read under the same check as the
+    // reading beside it, so an answer that is a text has it and one that is not (a file
+    // version) has neither: this one test stands for both.
     if (
       parent === null ||
       markdown === undefined ||
-      user === undefined ||
+      login === undefined ||
       blockSchema === undefined
     ) {
       return;
@@ -116,7 +151,7 @@ export function VersionView({
         blockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
-        user: { color: colorForLogin(user.login), name: user.login },
+        user: { color: colorForLogin(login), name: login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,
       });
@@ -125,9 +160,25 @@ export function VersionView({
         editor.destroy();
         return;
       }
+      // The reading where the answer carried one, and the markdown itself where it carried
+      // none. A highlight is embedded in a tree, so a version drawn from its markdown is drawn
+      // first and the editor's own reading of it is what the quote is embedded in: the reader
+      // who followed a comment's deep link into a past version sees the quote marked either
+      // way, and is told the range is gone only where the text really no longer holds it. That
+      // reading is read back for a highlight alone: a version nobody deep-linked into is drawn
+      // already, and serializing the whole document again would buy nothing.
+      if (tree === undefined) {
+        editor.setMarkdown(markdown);
+      }
       const embedded =
-        highlighted === undefined ? undefined : embedHighlight(markdown, highlighted);
-      editor.setMarkdown(embedded ?? markdown);
+        highlighted === undefined
+          ? undefined
+          : embedHighlight(tree ?? (editor.view.state.doc.toJSON() as DocumentJSON), highlighted);
+      if (embedded !== undefined) {
+        editor.setDocumentJSON(embedded);
+      } else if (tree !== undefined) {
+        editor.setDocumentJSON(tree);
+      }
       setHighlightMissing(highlighted !== undefined && embedded === undefined);
       // Once the version's text is in: its references are drawn over what it reads now.
       setEditorHandle(editor);
@@ -140,17 +191,18 @@ export function VersionView({
           editor.view.dom
         );
       }
-      if (changeBaseline === undefined) return;
-      // The baseline is parsed by the shared headless engine, which the shell warms after the
-      // first paint: awaiting that load marks a version opened straight by its own URL too,
-      // rather than racing the warm-up and marking nothing.
+      if (baseline === undefined) return;
+      // The baseline is drawn - or parsed, where its answer carried no reading - by the shared
+      // headless engine, which the shell warms after the first paint: awaiting that load marks a
+      // version opened straight by its own URL too, rather than racing the warm-up and marking
+      // nothing.
       await warmMarkdownRenderer().catch(() => undefined);
       if (!mounted) return;
-      editor.setChangeDecorations(changeMarksAgainst(changeBaseline, editor.view.state.doc));
+      editor.setChangeDecorations(changeMarksAgainst(baseline, editor.view.state.doc));
     };
     mount().catch((error: unknown) => {
-      // A version the parser refuses must say so; an empty read-only editor looks like an
-      // empty document.
+      // A version the editor cannot build the server's tree into must say so; an empty
+      // read-only editor looks like an empty document.
       handle?.destroy();
       handle = undefined;
       setEditorHandle(undefined);
@@ -166,19 +218,14 @@ export function VersionView({
       ydoc?.destroy();
       setEditorHandle(undefined);
     };
-  }, [
-    blockSchema,
-    changeBaseline,
-    createEditor,
-    highlighted,
-    markdown,
-    queryClient,
-    userQuery.data,
-  ]);
+  }, [baseline, blockSchema, createEditor, highlighted, login, markdown, queryClient, tree]);
 
   if (versionQuery.isPending) {
     return <p>Loading version…</p>;
   }
+  // The message is for a version there is no text of: a read that failed, or an answer that is
+  // no text at all (a file version). An answer that carried its markdown and no reading is not
+  // one of those, and is drawn above by parsing it.
   if (versionQuery.isError || markdown === undefined) {
     return <p>Could not load this document version.</p>;
   }
@@ -216,6 +263,7 @@ export function VersionView({
             <AskBlockCard
               ask={asks.find((candidate) => candidate.block_id === blockId)}
               host={host}
+              inBody={false}
               key={host.key}
               owner={owner}
               readOnly

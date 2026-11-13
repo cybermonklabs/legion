@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -896,6 +897,35 @@ func TestTheIssuesRolesShareOneScratchAndOneGoCachePair(t *testing.T) {
 	}
 }
 
+// Every role of every pod is told the shared public leak check its own pod installs, at one path:
+// the installer's constant (leakguard.InstalledCheck), under the scratch the roles of the pod
+// share. The runtime names the path and the pod's launcher writes it, installing the check the
+// daemon pushes to it once for the pod before any role starts, so a constant of the installer's
+// is what keeps the two from drifting into a role told a check nothing ever put there — every
+// write path of that role resolves PUBLIC_LEAK_CHECK first and refuses when the file is not
+// there. It is under the scratch because that is the place of the pod's disk every role is told
+// the same of and nothing outlives the pod: a check that publishes as often as this one is
+// installed per pod and never kept past it. The controller's pod is in the cases here too: it
+// writes to GitHub as a role does, and its one container mounts the same volume at TreeRoot.
+func TestEveryRoleIsToldTheLeakCheckItsPodInstalls(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(leakguard.InstalledCheck, scratchRoot+"/") {
+		t.Errorf("the install puts the check at %s, want it under the issue's scratch %s", leakguard.InstalledCheck, scratchRoot)
+	}
+	for name, tc := range manifestCases(t) {
+		main := workerOf(t, r, tc.spec)
+		if told := envOf(main)["PUBLIC_LEAK_CHECK"]; told != leakguard.InstalledCheck {
+			t.Errorf("%s is told PUBLIC_LEAK_CHECK=%q, want the installed check %q", name, told, leakguard.InstalledCheck)
+		}
+		if mount := mountHolding(main, leakguard.InstallDir); mount == nil || mount.Name != issueVolume || mount.SubPath != "" {
+			t.Errorf("%s: the install directory %q is on mount %+v, want the pod's own volume mounted at %s", name, leakguard.InstallDir, mount, TreeRoot)
+		}
+	}
+}
+
 // Every directory the runtime tells a role to write in is one the shim makes, and every directory
 // the shim makes is one the runtime names. The shim reads its list from podsafety.ScratchVariables
 // and the runtime renders roleEnvironment, so without this the two could drift silently: a role
@@ -920,14 +950,18 @@ func TestTheRuntimeTellsTheShimEveryScratchDirectoryItMakes(t *testing.T) {
 			t.Errorf("the shim makes %s, which the runtime sets to %q; want an absolute path under %s", name, dir, TreeRoot)
 		}
 	}
-	// The runtime names these three on the issue's volume for a reason of their own and does not
-	// ask the shim to make them: LEGION_WORKSPACE is the issue's checkout, which workspace-init
-	// provisions before the pod's launcher container starts, and UV_PYTHON_INSTALL_DIR and UV_CACHE_DIR are
-	// uv's own, which uv makes and the tree's pods share by design
-	// (TestUvKeepsItsPythonsAndCacheOnTheIssueVolume). Every other path the runtime names there is
-	// a directory it tells the role to write in, so a fourth exemption has to be argued for rather
+	// The runtime names these four on the issue's volume for a reason of their own and does not
+	// ask the shim's EnsureScratch to make them: LEGION_WORKSPACE is the issue's checkout, which
+	// workspace-init provisions before the pod's launcher container starts; UV_PYTHON_INSTALL_DIR and
+	// UV_CACHE_DIR are uv's own, which uv makes and the tree's pods share by design
+	// (TestUvKeepsItsPythonsAndCacheOnTheIssueVolume); and PUBLIC_LEAK_CHECK is no directory a
+	// role writes in at all but a file the pod's launcher installs there, from the check the
+	// daemon pushes to it before any role starts, and which the shim reads before it starts the
+	// agent (leakguard.Installed), so a pod whose launcher could not install it fails the launch
+	// rather than leaving a role to meet it missing. Every other path the runtime names there is
+	// a directory it tells the role to write in, so a fifth exemption has to be argued for rather
 	// than slipped in.
-	theirOwn := []string{"LEGION_WORKSPACE", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR"}
+	theirOwn := []string{"LEGION_WORKSPACE", "UV_PYTHON_INSTALL_DIR", "UV_CACHE_DIR", "PUBLIC_LEAK_CHECK"}
 	for name, value := range env {
 		if !strings.HasPrefix(value, TreeRoot+"/") || slices.Contains(made, name) || slices.Contains(theirOwn, name) {
 			continue
@@ -1280,9 +1314,11 @@ func TestALaunchItCannotHonourIsRefused(t *testing.T) {
 		edit func(*runtime.SpawnSpec)
 		want string
 	}{
-		"no repository":       {func(s *runtime.SpawnSpec) { s.Repository = ghrepo.Repository{} }, "no repository"},
-		"no default branch":   {func(s *runtime.SpawnSpec) { s.DefaultBranch = "" }, "no default branch for repository sjawhar/legion-smoke"},
-		"runtime-owned env":   {func(s *runtime.SpawnSpec) { s.Env["PATH"] = "/bin" }, "Env sets PATH"},
+		"no repository":     {func(s *runtime.SpawnSpec) { s.Repository = ghrepo.Repository{} }, "no repository"},
+		"no default branch": {func(s *runtime.SpawnSpec) { s.DefaultBranch = "" }, "no default branch for repository sjawhar/legion-smoke"},
+		"runtime-owned env": {func(s *runtime.SpawnSpec) { s.Env["PATH"] = "/bin" }, "Env sets PATH"},
+		"composed env": {func(s *runtime.SpawnSpec) { s.Env[runtime.SpendAttributesVariable] = "legion.issue=OTHER-1" },
+			"Env sets " + runtime.SpendAttributesVariable},
 		"credential in env":   {func(s *runtime.SpawnSpec) { s.Env["ANTHROPIC_API_KEY"] = "x" }, "credential-shaped"},
 		"gh token in env":     {func(s *runtime.SpawnSpec) { s.Env["GH_TOKEN"] = "x" }, "Env sets GH_TOKEN"},
 		"boot token secret":   {func(s *runtime.SpawnSpec) { s.Secrets[bootTokenKey] = "x" }, "is a variable the runtime sets itself"},
@@ -1386,12 +1422,16 @@ func TestNewRefusesOptionsNoPodCouldRun(t *testing.T) {
 	}
 }
 
-// runtimeOwned is exactly what the worker container is told by the runtime itself, a tree agent's,
-// a Claude Code worker's and the controller's together: every name mainEnvironment sets with Env
-// empty and no secret of the spec's, every optional value configured — the tree agent works a
-// repository the project names, so it is told the issue key it stamps its commits with. A name
-// added to the environment and not to runtimeOwned is one a spec could override; a name left in
-// runtimeOwned that the environment no longer sets is one a spec is refused for nothing.
+// runtimeOwned and the composed names together are exactly what the worker container is told by
+// the runtime itself, a tree agent's, a Claude Code worker's and the controller's together: every
+// name mainEnvironment sets with Env empty and no secret of the spec's, every optional value
+// configured — the tree agent works a repository the project names, so it is told the issue key
+// it stamps its commits with. A name added to the environment and in neither set is one a spec
+// could override; a name left in one of them that the environment no longer sets is one a spec is
+// refused for nothing. The two sets are kept apart by what an operator may do with a name, not by
+// who writes the value the container carries: a composed name reaches the container with the
+// operator's own value inside it (roleOperatorEnv), and every launch has a role, so the spend
+// attributes are in every one of these environments.
 func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 	opts := testOptions()
 	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal", "dispatch-bearer"
@@ -1410,9 +1450,9 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 			told[name] = true
 		}
 	}
-	if !maps.Equal(told, runtimeOwned) {
-		t.Errorf("the worker container is told %v by the runtime, and runtimeOwned is %v",
-			slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwned)))
+	if !maps.Equal(told, runtimeOwnedOrComposed) {
+		t.Errorf("the worker container is told %v by the runtime, and runtimeOwned with composed is %v",
+			slices.Sorted(maps.Keys(told)), slices.Sorted(maps.Keys(runtimeOwnedOrComposed)))
 	}
 }
 
@@ -1983,8 +2023,9 @@ func TestNewRefusesAProvidersSecretThatIsNoLaunchSecret(t *testing.T) {
 	}
 }
 
-// legionVolumeNames, legionMountPaths, and runtimeOwned — what CheckPod refuses in the operator's
-// pod — are exactly what Legion's own pods carry: every volume of every pod a launch or
+// legionVolumeNames, legionMountPaths, and runtimeOwned with the composed names — what CheckPod
+// knows of as Legion's in the operator's pod — are exactly what Legion's own pods carry: every
+// volume of every pod a launch or
 // the image probe runs, and every mount and variable of the containers the operator's pieces join
 // (the agent's and the probe's), with every optional piece the runtime adds configured and nothing
 // of a spec's or the operator's. Among the goldens' cases is a Claude Code worker, which alone is
@@ -2049,7 +2090,7 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 	}{
 		{"legionVolumeNames", legionVolumeNames(), volumes},
 		{"legionMountPaths", legionMountPaths(), mounts},
-		{"runtimeOwned", slices.Collect(maps.Keys(runtimeOwned)), env},
+		{"runtimeOwned with composed", slices.Collect(maps.Keys(runtimeOwnedOrComposed)), env},
 	} {
 		listed := map[string]bool{}
 		for _, entry := range list.got {

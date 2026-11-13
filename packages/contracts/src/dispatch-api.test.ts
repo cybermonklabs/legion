@@ -32,6 +32,7 @@ import {
   DispatchTargetedCommentPayloadSchema,
   DispatchTargetedMessagePayloadSchema,
   type EditCommentInput,
+  everyBuildReadsSearch,
   type Handoff,
   HandoffRecordedPayloadSchema,
   type HandoffSummary,
@@ -57,6 +58,7 @@ import {
   type ReplyBlock,
   ReplyBlockSchema,
   retriesUnderKey,
+  SEARCH_MEMBERS_EVERY_BUILD_READS,
   serviceSubjectLabel,
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
@@ -432,6 +434,28 @@ test("parses an ask the close of its issue withdrew", () => {
   expect(parsed.resolution?.kind).toBe("withdrawn");
 });
 
+test("parses an ask a person declined to answer, note and Dispatch's words apart", () => {
+  const parsed = AskEventPayloadSchema.parse({
+    opened_event_id: 12,
+    question: "Ship it?",
+    resolution: {
+      kind: "declined",
+      reason: "Ask the release owner instead.",
+      dispatch_words:
+        "The person chose not to answer this question. Decide the next step without an answer. " +
+        "Do not ask this question again unless the facts change. Write in your work what you assumed.",
+      actor: { kind: "user", id: "alice@example.com" },
+      at: "2026-10-25T00:00:00Z",
+    },
+  });
+
+  expect([parsed.resolution?.kind, parsed.resolution?.reason]).toEqual([
+    "declined",
+    "Ask the release owner instead.",
+  ]);
+  expect(parsed.resolution?.dispatch_words).toStartWith("The person chose not to answer");
+});
+
 test("models answer changes, ask answer history, and the answers page", () => {
   const answer = {
     user: "alice@example.com",
@@ -444,18 +468,21 @@ test("models answer changes, ask answer history, and the answers page", () => {
     issue_key: "CORE-1",
     artifact_id: null,
     block_id: null,
-    author: { kind: "session", id: "session-1" },
-    kind: "question",
+    author: { kind: "session", id: "session-1" } as const,
+    kind: "question" as const,
     question: "Ship it?",
     options: [{ label: "Ship" }, { label: "Hold" }],
     multiple: false,
-    urgency: "med",
+    urgency: "med" as const,
     anchor: null,
-    state: "answered",
+    state: "answered" as const,
     answer,
     opened_event_id: 7,
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
   } satisfies Ask;
   const input = {
     selected: ["Hold"],
@@ -734,31 +761,34 @@ test("models full orphaned anchor refresh events without a notification", () => 
     quote: "Removed text",
     version: 3,
   };
-  const ask: Ask = {
+  const ask = {
     anchor,
     artifact_id: null,
     block_id: null,
     anchor_artifact: { name: "spec.md", primary: true, project: "CORE", slug: "spec" },
     answer: null,
-    author: { id: "session-1", kind: "session" },
+    author: { id: "session-1", kind: "session" } as const,
     created_at: "2026-09-18T00:00:00Z",
     edited_at: null,
     id: "ask-1",
     issue_key: "CORE-1",
-    kind: "question",
+    kind: "question" as const,
     multiple: false,
     opened_event_id: 7,
     options: [{ label: "Review the revised plan" }],
     question: "The release is ready, but the revised plan needs review. How should we proceed?",
-    state: "open",
-    urgency: "med",
-  };
-  const comment: Comment = {
+    state: "open" as const,
+    urgency: "med" as const,
+    asked_of: null,
+    asked_of_by: null,
+    asked_of_at: null,
+  } satisfies Ask;
+  const comment = {
     anchor,
     answers: null,
     artifact_id: null,
     reply_block: null,
-    author: { id: "session-1", kind: "session" },
+    author: { id: "session-1", kind: "session" } as const,
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
     deliveries: [],
@@ -773,7 +803,7 @@ test("models full orphaned anchor refresh events without a notification", () => 
     suggestion: { accepted: null, replace_with: "Replacement" },
     ask_id: null,
     turn: null,
-  };
+  } satisfies Comment;
   const events: DispatchEvent[] = [
     {
       actor,
@@ -831,6 +861,9 @@ test("accepts an artifact-owned ask edit event", () => {
       opened_event_id: 3,
       created_at: "2026-09-11T04:00:00Z",
       edited_at: "2026-09-11T04:05:29Z",
+      asked_of: null,
+      asked_of_by: null,
+      asked_of_at: null,
       previous: {
         question: "The document needs a publication decision. How should we proceed?",
         options: [{ label: "Publish for readers" }],
@@ -934,8 +967,8 @@ test("models anchors pinned to a block while preserving mark selectors", () => {
 });
 
 test("models comment thread lifecycle events and author edits", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
     answers: null,
     artifact_id: null,
@@ -955,7 +988,7 @@ test("models comment thread lifecycle events and author edits", () => {
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
   const input: EditCommentInput = { body: "Edited discussion" };
   const reopened: DispatchEvent = {
     actor,
@@ -1036,8 +1069,8 @@ test("models comment mention inputs and hydrated delivery records", () => {
 });
 
 test("keeps the comment id, author, and message id when parsing event payloads", () => {
-  const actor: Actor = { id: "alice", kind: "user" };
-  const comment: Comment = {
+  const actor = { id: "alice", kind: "user" } as const satisfies Actor;
+  const comment = {
     anchor: null,
     answers: null,
     artifact_id: null,
@@ -1057,7 +1090,7 @@ test("keeps the comment id, author, and message id when parsing event payloads",
     turn: null,
     mentions: [],
     deliveries: [],
-  };
+  } satisfies Comment;
 
   expect(CommentEventPayloadSchema.parse({ ...comment, artifact_name: "spec.md" })).toMatchObject({
     id: "comment-1",
@@ -1108,7 +1141,7 @@ test("parses a message reply's in_reply_to, reply_body preview, and thread targe
 });
 
 test("a reply names the block it answers, and an event recorded before reads no block", () => {
-  const actor: Actor = { id: "bob", kind: "user" };
+  const actor = { id: "bob", kind: "user" } as const satisfies Actor;
   const commentInput: CreateCommentInput = {
     body: "On the second paragraph.",
     reply_to: "comment-1",
@@ -1403,4 +1436,44 @@ test("a Kubernetes service subject renders as namespace/name, and anything else 
     "system:serviceaccount:legion:default:extra"
   );
   expect(serviceSubjectLabel("kubernetes-admin")).toBe("kubernetes-admin");
+});
+
+test("a search of the members every build reads stays on GET /api/v1/search", () => {
+  expect(SEARCH_MEMBERS_EVERY_BUILD_READS).toEqual(["q", "project", "limit", "offset", "session"]);
+
+  expect(everyBuildReadsSearch({})).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe" })).toBe(true);
+  expect(everyBuildReadsSearch({ q: "astrolabe", project: "LEGION", limit: 20, offset: 40 })).toBe(
+    true
+  );
+
+  // `session` is declared on every operation of every build and read by `actingPerson` on every
+  // route, so an older build serves a request carrying it correctly; sending that request to a
+  // path the build refuses would be the inversion of what this rule is for.
+  expect(everyBuildReadsSearch({ q: "astrolabe", session: "session-1" })).toBe(true);
+
+  // Both clients build a request out of optional filters, so a filter nobody set is a key whose
+  // value is `undefined`. It narrows nothing and an older build drops nothing, so it is not
+  // carried.
+  expect(everyBuildReadsSearch({ q: "astrolabe", status: undefined })).toBe(true);
+  expect(
+    everyBuildReadsSearch({ q: "astrolabe", keywords_only: undefined, number_project: undefined })
+  ).toBe(true);
+});
+
+test("a search carrying anything beyond them goes to GET /api/v1/search/results", () => {
+  const beyond: Record<string, unknown> = {
+    number_project: "INFRA",
+    status: "in_progress",
+    author: "sami@theorem.dev",
+    updated_since: "2026-11-01T00:00:00Z",
+    keywords_only: true,
+  };
+  for (const [member, value] of Object.entries(beyond)) {
+    expect(everyBuildReadsSearch({ q: "astrolabe", [member]: value })).toBe(false);
+  }
+
+  // The rule reads the request's own keys, so a member added after this test was written routes
+  // itself without anyone remembering to list it here.
+  expect(everyBuildReadsSearch({ q: "astrolabe", component: "search" })).toBe(false);
 });

@@ -27,15 +27,17 @@ import (
 // Every read and write goes through the bucket's legacy nats.KeyValue, except what nats.go runs as
 // a watcher and the reads beside them: a watch of the bucket (WatchKeys), a key's history
 // (ReadHistory) and its stream's state (ReadStreamState) go through the same bucket's
-// jetstream.KeyValue instead. nats.go v1.50.0's legacy KV watcher, which its legacy Watch, History
-// and Keys all run, arms an init timer while its scan is pending whose callback can send on the
-// channels the subscription's end has just closed, a "send on closed channel" panic in a goroutine
-// nats.go owns (kv.go:1145-1172, unfixed through v1.55.0), while the jetstream package's watcher has
-// no such timer and closes its updates only on the subscription goroutine's own exit (jetstream/
-// kv.go:1215-1366). So the legacy handle is held unexported and KeyValue forwards only the calls it
-// checks: nothing can reach the legacy handle's Watch, WatchAll, WatchFiltered, History, Keys or
-// ListKeys through a KeyValue, and a call to one does not compile. A legacy handle cannot name the
-// connection it was opened on, so every constructor takes it.
+// jetstream.KeyValue instead, and the leader-answered read of one key (GetFromLeader) makes
+// nats.go's legacy GetLastMsg call on that jetstream context's connection. nats.go's legacy KV
+// watcher, which its legacy Watch, History and Keys all run, arms an init timer while its scan is
+// pending whose callback can send on the channels the subscription's end has just closed, a "send
+// on closed channel" panic in a goroutine nats.go owns (the `initDoneTimer.Reset` of
+// `(*kvs).WatchFiltered`, unfixed through v1.55.0), while the jetstream package's watcher has no
+// such timer and closes its updates only on the subscription goroutine's own exit (its own
+// `(*kvs).WatchFiltered`). So the legacy handle is held unexported and KeyValue forwards only the
+// calls it checks: nothing can reach the legacy handle's Watch, WatchAll, WatchFiltered, History,
+// Keys or ListKeys through a KeyValue, and a call to one does not compile. A legacy handle cannot
+// name the connection it was opened on, so every constructor takes it.
 //
 // EnsureKeyValue and OpenKeyValue are how the listener and Dispatch open every bucket, and
 // WrapKeyValue pairs a legacy handle a caller already holds with its connection. A test that
@@ -50,10 +52,12 @@ type KeyValue struct {
 	// goes through.
 	watch jetstream.KeyValue
 	// streams is the same connection's jetstream context, which every read of the bucket's stream
-	// goes through (ReadStreamState): each read fetches the stream afresh. The jetstream handle's
-	// own Status stores the info it read in the handle's shared stream value with no lock (nats.go
-	// v1.50.0 jetstream/stream.go:460, from kv.go:1556), so two reads of one handle at once -- a
-	// watcher's stream probe beside its completion check -- race on it.
+	// goes through (ReadStreamState), and whose connection the leader read takes (GetFromLeader):
+	// each read fetches the stream afresh. The jetstream handle's own Status stores the info it
+	// read in the handle's shared stream value with no lock (the `s.info = &cached` of nats.go's
+	// `(*stream).Info`, which `(*kvs).Status` calls on the stream `mapStreamToKVS` built that
+	// handle over), so two reads of one handle at once -- a watcher's stream probe beside its
+	// completion check -- race on it.
 	streams jetstream.JetStream
 }
 
@@ -623,6 +627,36 @@ func invalidKey(key any, err error) error {
 	return err
 }
 
+// Get reads key's latest value from the bucket.
+//
+// The read is a direct get, as every read of this build's buckets is: nats.go sends a KV get
+// to the stream's $JS.API.DIRECT.GET subject whenever that stream carries AllowDirect, and every
+// bucket here carries it. CreateKeyValue sets AllowDirect on the stream it creates and
+// nats.KeyValueConfig holds no field that unsets it; mapStreamToKVS, which both CreateKeyValue
+// and KeyValue return a handle through, reads that stream's AllowDirect back as the handle's
+// useDirect; and kvs.get passes nats.DirectGet to the GetLastMsg behind every read that flag is
+// set on. Neither KV surface takes a per-read option for it: the legacy nats.KeyValue.Get takes a
+// key alone and jetstream.KeyValue.Get a context and a key, and the jetstream side builds the
+// same read (prepareKeyValueConfig sets AllowDirect, its own mapStreamToKVS sets useDirect, and
+// stream.getMsg sends the direct get an AllowDirect stream asks for). So with ENVOY_NATS_REPLICAS
+// above 1 a copy answers the read, one the queue group hands it at 90% caught up rather than when
+// it is current (EnsureKeyValue above), and what it answers stands up to one write behind the
+// bucket's leader. No test here reads a lagging copy: that takes a cluster, and these tests run
+// one server.
+//
+// A read the stream's leader answers exists, and this build makes none: js.GetLastMsg(stream,
+// subject) without nats.DirectGet is a STREAM.MSG.GET, which the leader answers, and the
+// listener's grant holds $JS.API.STREAM.MSG.GET.KV_<bucket> for every bucket it opens
+// (infra/core's bucketPermissions), so it is this build's choice and not its permissions. What
+// that read answers is a raw stream message rather than a KV entry, so each caller would decode
+// the KV operation markers nats.go's KV decodes for it today -- the KV-Operation header's DEL and
+// PURGE, which the legacy kvs.get and the jetstream package's own kvs.get both answer
+// ErrKeyDeleted for -- to tell a deleted record from a live one, in each of the two reads the
+// repair makes (session.SessionRegistry.Refresh, store.Registry.RefreshAt). The window the direct
+// get leaves is one write wide and is closed without that decoding: a delete and a registration
+// each repair the session's consumer from the bucket's newest record and row (cmd/listener's
+// registeredTarget, which states what a copy behind costs that repair), and the session's next
+// heartbeat registers again.
 func (kv KeyValue) Get(key string) (nats.KeyValueEntry, error) {
 	if err := kv.check(key, getOverhead(kv.Bucket())); err != nil {
 		return nil, err
@@ -652,10 +686,10 @@ func (kv KeyValue) RefusesRead(key string) error {
 	return nil
 }
 
-// natsKeyValid copies nats.go v1.50.0's keyValid (kv.go:579-584), which every KV call there runs on
+// natsKeyValid copies nats.go's keyValid, which every KV call there runs on
 // an exact key, refusing it locally without sending anything: a key is valid when it is not empty,
 // neither starts nor ends in a dot, and holds only `-`, `/`, `_`, `=`, `.`, a letter or a digit
-// (validKeyRe, kv.go:369). The copy exists because keyValid is unexported, so a caller that asks
+// (its `validKeyRe`). The copy exists because keyValid is unexported, so a caller that asks
 // what a read would be refused for (RefusesRead) cannot ask nats.go itself.
 func natsKeyValid(key string) bool {
 	if key == "" || key[0] == '.' || key[len(key)-1] == '.' {
@@ -727,23 +761,31 @@ func (kv KeyValue) Delete(key string, opts ...nats.DeleteOpt) error {
 }
 
 // DeleteAtRead deletes key at the revision it reads, so a write that lands in between is kept, and
-// returns that revision, 0 when there was none to read. A key it may not read (ErrRefused) it may not
-// write either, since a write is held to the longest bound and nats.go refuses a key outside its
-// alphabet everywhere, so nothing can land in between: that key is deleted at no revision, as a key
-// it finds missing is, and a key outside the alphabet is refused by the delete too.
+// returns that revision, 0 when there was none to read.
+//
+// A key the read finds missing is deleted at no revision at all, which fences nothing: nats.go
+// sends no expected-last-subject-sequence header for revision 0, so that delete would take
+// whatever the bucket holds, and a write that landed between the read and it - a registration
+// storing the row this delete read none of - would be deleted whole. So no delete is made for it:
+// the key is reported absent, at revision 0, and there is nothing there to remove.
+//
+// A key it may not read (ErrRefused) it may not write either, since a write is held to the longest
+// bound and nats.go refuses a key outside its alphabet everywhere, so nothing can land in between:
+// that key is deleted at no revision, which removes a key an earlier build stored past the write
+// bound, and a key outside the alphabet is refused by the delete too.
 func (kv KeyValue) DeleteAtRead(key string) (uint64, error) {
 	entry, err := kv.Get(key)
-	var revision uint64
-	var opts []nats.DeleteOpt
 	switch {
 	case err == nil:
-		revision = entry.Revision()
-		opts = append(opts, nats.LastRevision(revision))
-	case errors.Is(err, nats.ErrKeyNotFound), errors.Is(err, ErrRefused):
+		revision := entry.Revision()
+		return revision, kv.Delete(key, nats.LastRevision(revision))
+	case errors.Is(err, nats.ErrKeyNotFound):
+		return 0, nil
+	case errors.Is(err, ErrRefused):
+		return 0, kv.Delete(key)
 	default:
 		return 0, err
 	}
-	return revision, kv.Delete(key, opts...)
 }
 
 func (kv KeyValue) Purge(key string, opts ...nats.DeleteOpt) error {

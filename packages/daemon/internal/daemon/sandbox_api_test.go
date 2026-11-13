@@ -416,6 +416,20 @@ func (a *issueSandboxAPI) pod(name string) bool {
 	return ok
 }
 
+// podUID is the uid the API stamped on the pod of name, "" while it holds no such pod. It is
+// what a saved workspace bundle's one restore attempt is recorded against, so a test can read
+// which pod the daemon offered the bundle to (store.TakeWorkspaceBundleForRestore).
+func (a *issueSandboxAPI) podUID(name string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	object, ok := a.objects["pods"][name]
+	if !ok {
+		return ""
+	}
+	uid, _ := object["metadata"].(map[string]any)["uid"].(string)
+	return uid
+}
+
 // mode is the Sandbox's operatingMode, "deleted" once the API no longer holds it.
 func (a *issueSandboxAPI) mode(name string) string {
 	a.mu.Lock()

@@ -13,11 +13,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// mainIssueComponentsLateral and the laterals and statements below it are main's own SQL, held
-// here letter for letter as the oracle of every comparison in this file. They are copies of the
-// text this change replaced, not text built from the package's constants: a statement built
-// from those would move with them, and the two sides would agree however the resolution rule
-// changed. parentDepthCap is written as the 32 main spliced into them for the same reason.
+// The laterals and resolution rules below freeze main's SQL rather than reading the package's
+// constants: building the oracle from those would make both sides agree however the rule changed.
+// The listing projection independently includes the creator, the creation time and the closing
+// time now required by the summary contract; the inherited joins, filters and ordering stay
+// unchanged.
+// parentDepthCap is written as the 32 main spliced into them for the same reason.
 const mainIssueComponentsLateral = `
 	left join lateral (
 		with recursive chain as (
@@ -85,13 +86,13 @@ const mainIssueStatusCase = `case i.status
 const mainIssueSummaryHead = `
 	select i.key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
 	       coalesce((select array_agg(l.target_key order by l.target_key) from issue_links l where l.issue_key = i.key and l.kind = 'blocked_by'), '{}'),
-	       i.assignee, i.route, i.updated_at, i.last_seq,
+	       i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
 	       coalesce((select a.id::text from artifacts a where a.issue_key = i.key and a.is_primary), ''),
 	       i.claimed_by, i.claimed_at,
 	       count(a.id) filter (where i.closed_at is null),
 	       i.tasks_done, i.tasks_total, progress.children_done, progress.children_total,
 	       comp.owner_key, comp.mode, comp.reason, comp.ids, comp.unknown,
-	       i.repo, repo.resolved, repo.too_deep
+	       i.repo, repo.resolved, repo.too_deep, i.closed_at
 	from issues i`
 
 const mainIssueSummaryTail = `
@@ -159,7 +160,8 @@ const mainProjectList = `
 // The listing's four statements answer, row for row, what main's one statement answered over the
 // same rows: the unpaged read whole, and the paged read the slice of it the caller asked for,
 // with the count beside it. The paged read carries two columns of its own ahead of the issue's,
-// which is what those rows are compared without.
+// which is what those rows are compared without. Main's statement has no closed window, so the
+// listing's are passed none.
 func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 	fixture := newIssueListFixture(t)
 	filters := []any{"LIST", "", "", nil, []string{}, false, []int16{}, false}
@@ -175,11 +177,13 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 		{name: "the pinned listing", oracle: mainListPinnedIssuesQuery, paged: listPinnedIssuesPageQuery, unpaged: listPinnedIssuesQuery, pinnedBy: "alice"},
 	} {
 		t.Run(listing.name, func(t *testing.T) {
-			arguments := slices.Clone(filters)
+			oracleArguments := slices.Clone(filters)
+			arguments := append(slices.Clone(filters), nil, nil)
 			if listing.pinnedBy != "" {
+				oracleArguments = append(oracleArguments, listing.pinnedBy)
 				arguments = append(arguments, listing.pinnedBy)
 			}
-			want := issueListRows(t, fixture.database, listing.oracle, arguments)
+			want := issueListRows(t, fixture.database, listing.oracle, oracleArguments)
 			if len(want) < 4 {
 				t.Fatalf("%s answered %d rows, too few for the comparison to decide anything", listing.name, len(want))
 			}

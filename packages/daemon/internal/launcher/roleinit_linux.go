@@ -511,7 +511,8 @@ func runRoleShim(stop context.Context, cfg RoleInitConfig, exits <-chan os.Signa
 }
 
 // reportStatus writes the shim's own wait status to the launcher's pipe, so the daemon is told
-// the role's exit code and signal rather than its namespace init's.
+// the role's exit code and signal rather than its namespace init's. It writes the status as the
+// 32 bits a syscall.WaitStatus is, which is the width parseStatus reads back.
 func reportStatus(cfg RoleInitConfig, state *os.ProcessState) {
 	status, ok := state.Sys().(syscall.WaitStatus)
 	if !ok {
@@ -522,7 +523,7 @@ func reportStatus(cfg RoleInitConfig, state *os.ProcessState) {
 		roleLogf(cfg, "role-init: no status pipe at descriptor %d", cfg.StatusFD)
 		return
 	}
-	if _, err := fmt.Fprintf(file, "%d", int(status)); err != nil {
+	if _, err := fmt.Fprintf(file, "%d", uint32(status)); err != nil {
 		roleLogf(cfg, "role-init: report the shim's status: %v", err)
 	}
 	_ = file.Close()

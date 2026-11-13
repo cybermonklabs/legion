@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -566,6 +567,14 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	}
 	tools := r.toolsDir()
 	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
+	// The two halves of a release's saved work, as the daemon's own factory hands them to the
+	// runtime it builds (sandboxRuntime): what the launcher of the pod that replaces a released
+	// one is sent before any role of that pod starts, and what the launcher's confirmation
+	// drops. Without them no pod of this rig is ever offered a bundle. They cost a rig whose
+	// releases save none one indexed read per role start, which answers no row: the save of a
+	// workspace with nothing unpushed stores nothing and deletes what the issue had
+	// (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty workspace.
+	opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 		rendered := ghconfig.Render("ghs_idle_rig", string(appauth.AppRoleFor(role)), time.Now().Add(time.Hour))
@@ -719,6 +728,31 @@ func (r *idleWakeRig) newPrompts(issue idleRigIssue) []idleRigMessage {
 	return prompts[from:]
 }
 
+// adoptionsAhead is every adopt-working-copy frame the issue's role was sent ahead of the task at
+// index i of its prompts: after the task before that one was given, and before that one was.
+func (r *idleWakeRig) adoptionsAhead(issue idleRigIssue, i int) []idleRigAdoption {
+	var ahead []idleRigAdoption
+	for _, adoption := range r.agents.adoptions(issue.key, string(issue.role)) {
+		if adoption.Ahead == i {
+			ahead = append(ahead, adoption)
+		}
+	}
+	return ahead
+}
+
+// newAdoptions is every adopt-working-copy frame the issue's role was sent after the tasks
+// markPrompts counted: the frames ahead of each task newPrompts holds, and any ahead of a task
+// still to come. None of the frames the rig's start brought is among them.
+func (r *idleWakeRig) newAdoptions(issue idleRigIssue) []idleRigAdoption {
+	var since []idleRigAdoption
+	for _, adoption := range r.agents.adoptions(issue.key, string(issue.role)) {
+		if adoption.Ahead >= r.baseline[issue.key] {
+			since = append(since, adoption)
+		}
+	}
+	return since
+}
+
 // quiet back-dates when every claim of the project was last written, so the next pass of the
 // daemon's idle tick reads a pod that has done nothing for longer than the idle period. The
 // session's own report is left as the session wrote it, because the rule reads it against that
@@ -731,6 +765,73 @@ func (r *idleWakeRig) quiet() {
 		 where project = $1 and activity_at is not null`, r.project); err != nil {
 		r.t.Fatalf("back-date the project's claims: %v", err)
 	}
+}
+
+// idleRigGateAgeing is how often the gate is shut again while a test keeps it shut: a tenth of
+// the rig's tick, so the daemon reads a report this test has aged on every pass it makes.
+const idleRigGateAgeing = idleRigTick / 10
+
+// keepListenerGateShut ages the project's `listener_reports` row past the window the daemon
+// reads it in, which shuts the one gate the idle release passes before it takes a pod
+// (workflowRuntime.listenerLive, listenerReadyWindow), and goes on ageing it until the test
+// ends. The release of a pod no claim owns runs outside that gate, so a pass made with the gate
+// shut is the one case that tells the two rules apart: it releases a pod no role can use and
+// holds every idle one.
+//
+// The ageing runs on a goroutine of its own, and that is what makes it sound. The rig runs a
+// real Envoy listener and cannot leave it out — the listener owns the notification stream the
+// daemon binds its consumer on — and that listener publishes a ready report every five minutes
+// into this very row, while the daemon decides every pod on a ticker of its own (idleRigTick).
+// Ageing the row on the test's own poll turns would leave the gate open from the moment a
+// report lands until the next turn, which is long enough for one idle pass to take the pods a
+// test has just waited to make idle-release candidates. Every idleRigGateAgeing the gate is
+// shut again instead, which no tick of the daemon fits inside. The ageing is the one quiet
+// makes of the claim rows: the daemon reads this row against its own clock and nothing else.
+func (r *idleWakeRig) keepListenerGateShut() {
+	r.t.Helper()
+	aged, err := r.ageListenerReport()
+	if err != nil {
+		r.t.Fatalf("age the Envoy listener's report of %s: %v", r.project, err)
+	}
+	if aged == 0 {
+		r.t.Fatalf("there is no listener report of %s to age: the daemon has read none, so a pass made now is held by a gate this test did not shut",
+			r.project)
+	}
+	stop, stopped := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ageing := time.NewTicker(idleRigGateAgeing)
+		defer ageing.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ageing.C:
+				if _, err := r.ageListenerReport(); err != nil {
+					r.t.Errorf("age the Envoy listener's report of %s: %v", r.project, err)
+					return
+				}
+			}
+		}
+	}()
+	// The pool is closed by a cleanup the rig's own boot registered, which runs after this one.
+	r.t.Cleanup(func() {
+		close(stop)
+		<-stopped
+	})
+}
+
+// ageListenerReport back-dates the project's listener report and answers how many rows it moved,
+// which is zero while the daemon has read no report at all. It is the one statement behind the
+// gate, run from the test's own goroutine and from the one that keeps the gate shut, so it
+// fails nothing itself: a `Fatalf` off the test's goroutine would stop the wrong one.
+func (r *idleWakeRig) ageListenerReport() (int64, error) {
+	aged, err := r.pool.Exec(context.Background(),
+		`update listener_reports set ready_at = now() - interval '30 minutes' where project = $1`, r.project)
+	if err != nil {
+		return 0, err
+	}
+	return aged.RowsAffected(), nil
 }
 
 // awaitReleased waits for every issue's claim to be suspended with the source `released` and its
@@ -780,6 +881,66 @@ func (r *idleWakeRig) awaitReleased(issues ...idleRigIssue) {
 	})
 }
 
+// claimLines is every claim of the issue as the operator's listing answers it, one line each in
+// token order. It is what a release that suspends no role must leave exactly as it found it, so
+// it carries what such a release could change and nothing that moves on its own: the claim's
+// state and who suspended it, the session it records, whether it records a process, and the
+// task it holds.
+func (r *idleWakeRig) claimLines(issue idleRigIssue) []string {
+	r.t.Helper()
+	var lines []string
+	for _, c := range r.api.claims() {
+		if c.Issue != issue.key {
+			continue
+		}
+		task := ""
+		if c.Pending != nil {
+			task = c.Pending.ID
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s by %q, session %q, process %t, task %q",
+			c.Token, c.State, c.SuspendedBy, c.Session, c.Locator != nil, task))
+	}
+	slices.Sort(lines)
+	return lines
+}
+
+// awaitUnownedReleased waits for the issue's pod, that pod's disk and its Sandbox to be gone
+// while every claim of the issue stays exactly as it was. It is the wait of the second release
+// rule (workflow.UnownedPodRelease), beside awaitReleased: that one walks the claims a release
+// suspended, and this release suspends none — there is no live claim to stop, so no claim state
+// is a thing to wait for and the claims are what must not move.
+//
+// The claim rows are back-dated every couple of seconds, for the reason awaitReleased
+// back-dates them: they are the clock the daemon reads the quiet period against. The listener's
+// report is the other clock, and the test's own goroutine keeps it aged for as long as the test
+// runs (keepListenerGateShut), so this wait does nothing about it. A failure names where the
+// pod stood when the wait last read it, beside the launchers' log and the daemon's.
+func (r *idleWakeRig) awaitUnownedReleased(issue idleRigIssue) {
+	r.t.Helper()
+	before := r.claimLines(issue)
+	seen := "never read"
+	defer func() {
+		if r.t.Failed() {
+			r.t.Logf("the pod of %s, as the wait last read it: %s", issue.key, seen)
+			r.t.Log(r.diagnose())
+		}
+	}()
+	var quieted time.Time
+	idleRigEventually(r.t, idleRigReleaseWait, "the pod of "+issue.key+" released with every claim of it left as it was", func() bool {
+		if time.Since(quieted) > 2*time.Second {
+			quieted = time.Now()
+			r.quiet()
+		}
+		if got := r.claimLines(issue); !slices.Equal(got, before) {
+			r.t.Fatalf("the claims of %s read\n  %s\nwant the ones it stood at\n  %s\nthis release stops no role and changes no claim",
+				issue.key, strings.Join(got, "\n  "), strings.Join(before, "\n  "))
+		}
+		pod, sandbox, disk := r.kube.pod(issue.pod), r.kube.sandbox(issue.pod) != nil, r.kube.disk(issue.pod)
+		seen = fmt.Sprintf("pod %t, sandbox %t, disk %t", pod, sandbox, disk)
+		return !pod && !sandbox && !disk
+	})
+}
+
 // awaitResumed waits for the issue's role to be back: its claim live again, a second pod started
 // for it, and its role process registered again.
 func (r *idleWakeRig) awaitResumed(issue idleRigIssue, registrations int) {
@@ -789,6 +950,22 @@ func (r *idleWakeRig) awaitResumed(issue idleRigIssue, registrations int) {
 		return r.agents.role(issue.key, string(issue.role)).Registered >= registrations &&
 			idleRigWorking(r.api.claim(token).State)
 	})
+}
+
+// retry is the operator's `legion claims retry` of the issue's role, over the route that command
+// posts to: POST /legion/v1/operator/claims/{token}/retry with the body that says which retry it
+// is (api.RetryRequest). fresh is `--fresh-session`, which has the claim leave the session it
+// recorded behind and come back in a new one; a retry without it resumes the recorded session.
+// A phase worker's retry is its issue's phase started again, which answers 202: the start it
+// queues is an outbox row that runs behind the answer (api's restartWorkedPhase).
+func (r *idleWakeRig) retry(issue idleRigIssue, fresh bool) {
+	r.t.Helper()
+	token := r.token(issue)
+	status, body := r.api.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry",
+		api.RetryRequest{FreshSession: fresh}, true)
+	if status != http.StatusOK && status != http.StatusAccepted {
+		r.t.Fatalf("the operator's retry of %s = %d %s", token, status, body)
+	}
 }
 
 // publish puts one Envoy envelope from source on the stream the daemon consumes.
@@ -808,8 +985,7 @@ func (r *idleWakeRig) publish(subject, source, eventID, payload string) {
 }
 
 // publishSettlement publishes the CI settlement of the issue's pull request head, as Envoy relays
-// GitHub's check report (ci_red_no_takeover_live_test.go's publishSettlement builds the same
-// payload).
+// GitHub's check report.
 func (r *idleWakeRig) publishSettlement(issue idleRigIssue) {
 	r.t.Helper()
 	group := func() map[string]any { return map[string]any{"names": []string{}, "truncated": false} }

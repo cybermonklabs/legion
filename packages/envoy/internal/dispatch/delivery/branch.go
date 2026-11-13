@@ -18,11 +18,9 @@ import (
 // branch.go owns every answer about whether one branch of one repository carries one commit,
 // and about whether the App can read the repository at all. One place holds the GitHub reads,
 // the branch_commits table and how long each answer is believed, so a change to any of the
-// three is a change here and nowhere else. Nothing here reads or writes default_branch_commits,
-// the table of the release before this one, which this release leaves exactly as it is: its
-// drop is a contracting migration of a later release (dispatch://INFRA-1700). Its one caller is
-// the results read (api/results_currency.go), which picks the branch each check is measured
-// against and keeps a memo for the span of one request, and holds no policy of its own.
+// three is a change here and nowhere else. Its one caller is the results read
+// (api/results_comparison.go), which picks the branch each check is measured against and keeps a
+// memo for the span of one request, and holds no policy of its own.
 
 // DefaultBranch is the branch argument that means "the repository's own default branch, which
 // delivery resolves": a caller holding no branch name of its own passes it, and CommitOnBranch
@@ -35,12 +33,12 @@ import (
 const DefaultBranch = ""
 
 // BranchAnswer is what Dispatch could say about one commit of one branch: the whole of what
-// CommitOnBranch returns, and the whole of what a caller measuring a result's currency has to
-// go on. The four cases are kept apart because each is a different thing to do: two say
+// CommitOnBranch returns, and the whole of what a caller placing a result's commit has to go
+// on. The four cases are kept apart because each is a different thing to do: two say
 // something about the commit, one says something about the branch and nothing about the
 // commit, and one says nothing at all. A reader that folded the last two into "not on it"
 // would turn a GitHub hiccup into a verdict about the work, which is the one thing the
-// currency rule may not do (api/results_currency.go, of).
+// results read may not do (api/results_comparison.go, onNamedBranch).
 type BranchAnswer int
 
 const (
@@ -49,9 +47,9 @@ const (
 	// for any of those reasons or because the App cannot see it, where the caller named no
 	// branch and the stored rows answered nothing; and a repository whose default branch no
 	// read of this process ever named, which a deployment holding no App key makes of every
-	// repository. Wherever this is the last word the currency is unknown, and wherever it is
-	// any word at all no later branch's "not on it" may make a result older: a fault of
-	// Dispatch's or a hiccup of GitHub's must not make a reviewer refuse an approval.
+	// repository. Wherever this is the last word the result's commit is unknown, and wherever
+	// it is any word at all no later branch's "not on it" may place that commit elsewhere: a
+	// fault of Dispatch's or a hiccup of GitHub's must not make a reviewer refuse an approval.
 	BranchUnknown BranchAnswer = iota
 	// BranchCarries is the branch's history holding the commit: the commit is that branch's
 	// head, or an ancestor of it. It is the whole answer wherever it is given, and no branch
@@ -172,25 +170,33 @@ type cachedBranch struct {
 	readAt   time.Time
 }
 
-// RepositoryReadable reports whether the App can read repoFull right now: it answered that
-// repository's default branch, within BranchCommitStaleAfter of now. Reading the default branch
-// is the one read that says whether Dispatch can see the repository at all, whatever branch a
-// caller goes on to ask about (branchOf), which is why this question is asked of that read and
-// of no other. It is false for a repository the App is not installed on, one its token is
-// refused, a deployment holding no App key, and a read that failed; all of them mean Dispatch
-// cannot see the repository, which is the unknown currency rather than a verdict about the work.
-func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) bool {
-	_, readable := c.branchOf(ctx, client, repoFull, now)
-	return readable
+// DefaultBranchOf is the default branch this process last resolved for repoFull, and whether
+// the newest read of it could say. The results read names that branch among the branches a
+// check compares its results with, so it needs the name and not only the yes
+// (api/results_comparison.go). The name is "" where no read of this process ever named one,
+// which a deployment holding no App key makes of every repository; such a read answers false
+// as well.
+//
+// The yes is whether the App can read repoFull right now: it answered that repository's
+// default branch, within BranchCommitStaleAfter of now. Reading the default branch is the one
+// read that says whether Dispatch can see the repository at all, whatever branch a caller
+// goes on to ask about (branchOf). It is false for a repository the App is not installed on,
+// one its token is refused, a deployment holding no App key, and a read that failed. All of
+// them mean Dispatch cannot see the repository, which is no answer about the work rather than
+// a verdict about it.
+func (c *Branches) DefaultBranchOf(
+	ctx context.Context, client *githubapp.Client, repoFull string, now time.Time,
+) (string, bool) {
+	return c.branchOf(ctx, client, repoFull, now)
 }
 
 // CommitOnBranch answers what Dispatch can say about branch of repoFull carrying sha: one of
-// the four BranchAnswer cases, which is the whole of what the currency read has to go on.
+// the four BranchAnswer cases, which is the whole of what the results read has to go on.
 // DefaultBranch — the empty branch — means the repository's own default branch, resolved
 // through branchOf: a `default_branch` check names no branch of its own and so is measured
 // against that branch whatever the work merged into, while an `after_merge` check asks about
 // the branch its issue's pull request merged into and then about the default branch
-// (api/results_currency.go).
+// (api/results_comparison.go).
 //
 // What branch_commits holds for that repository, branch and commit answers first while it still
 // stands — a yes for good, a no for BranchCommitStaleAfter — and GitHub is read against the
@@ -258,7 +264,7 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // out under the name it passed. A row is keyed by a branch, so the name has to come from
 // somewhere before the cache can be asked at all, and without this the first unreadable moment
 // would turn every `default_branch` result, and every `after_merge` result of an issue Dispatch
-// holds no merge of, from current to unknown for BranchCommitStaleAfter — even where the
+// holds no merge of, from `at_basis` to `unknown` for BranchCommitStaleAfter — even where the
 // permanent yes is stored. A default branch renamed while the App cannot be read leaves that
 // answer under the old name, which is the same staleness the retention rule already accepts of
 // a yes. Where this process has resolved no name for the repository at all, a caller that names
@@ -343,11 +349,12 @@ func (c *Branches) CommitOnBranch(
 // it could say at all. The name is the newest GitHub gave, kept across a read that could not say
 // and "" where no read ever named one (cachedBranch); both are held for BranchCommitStaleAfter.
 //
-// The two are returned together because each caller wants a different one. RepositoryReadable
-// wants only whether the newest read could say, since that is the whole of what "can Dispatch
-// see this repository" means. CommitOnBranch wants the name even when the newest read could not
-// say, since a branch_commits row is keyed by a branch and the name has to come from somewhere
-// before that row can be asked for at all.
+// branchOf answers the two together because a caller needs both. The results read names the
+// branch it compared against, and asks whether the newest read could say at all
+// (DefaultBranchOf). That yes is the whole of what "can Dispatch see this repository" means.
+// CommitOnBranch wants the name even when the newest read could not say, since a
+// branch_commits row is keyed by a branch and the name has to come from somewhere before that
+// row can be asked for at all.
 func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) (string, bool) {
 	if held, fresh := c.get(repoFull, now); fresh {
 		return held.branch, held.readable
@@ -524,21 +531,20 @@ func cannotSeeRepository(err error) bool {
 // A merge's seed carries GitHub's own (`Acme/Widgets`), since refs.CanonicalRepo gives a
 // caller's spelling back unchanged where no rename is recorded, while the results read asks
 // under the lowercased name repo_projects stores (api's canonicalRepo, through
-// currencyReader.repositoryOf), so a table holding both spellings would answer `older` for
-// good for every `after_merge` result of a repository whose owner writes their name with
-// capitals — the squash-merged, branch-deleted case the seed exists for above all
+// comparisonReader.repositoryOf), so a table holding both spellings would place every
+// `after_merge` result of a repository whose owner writes their name with capitals at another
+// commit for good — the squash-merged, branch-deleted case the seed exists for above all
 // (UpsertPullRequestHead).
 //
 // It is lowercased on the way in rather than compared with `lower(repo)`, which is how
-// HeadStoredAt meets the same split one table over, because the two tables are in different
-// positions. pull_request_heads is a table of the release before this one, holding rows under
-// GitHub's spelling already and an index built on `(lower(repo), head_sha)` to read them by;
-// branch_commits is new in this unreleased change and holds no row in any deployment, so it
-// can be keyed once instead. One spelling per row is what keeps its primary key
-// (repo, branch, sha) the whole of its identity: two spellings would make two rows the
-// writer's `on conflict` could not fold together, and a case-insensitive read of them would
-// want a functional index — a migration — where this wants none, since `repo = lower($1)` is
-// an exact lookup on the primary key.
+// HeadStoredAt meets the same split one table over, because the two tables were in different
+// positions when each was keyed. pull_request_heads already held rows under GitHub's spelling,
+// with an index built on `(lower(repo), head_sha)` to read them by; branch_commits was new and
+// held no row in any deployment, so it could be keyed once instead. One spelling per row is
+// what keeps its primary key (repo, branch, sha) the whole of its identity: two spellings
+// would make two rows the writer's `on conflict` could not fold together, and a
+// case-insensitive read of them would want a functional index — a migration — where this
+// wants none, since `repo = lower($1)` is an exact lookup on the primary key.
 //
 // The branch is not lowercased with it. Git's branch names are case-sensitive, so `Release`
 // and `release` are two branches and a compare read of one says nothing about the other.

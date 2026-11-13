@@ -453,23 +453,42 @@ func owed(run record.RoleRun) (string, bool) {
 // from the acts the ask handlers record under one rule, personAct). A review of one of those
 // documents is not read here: the architect is already live, and the daemon's own
 // design-changes-requested notice is the work that reaches it (a handout of its own).
+//
+// A decline is named only where the act that answered is the decline itself: a decline closes the
+// ask, so the row's ClosedSeq is that close's own sequence (askChange.apply writes ClosedBy and
+// ClosedSeq from it), while a later act of the person's — a reply in the thread of the ask they
+// declined — raises PersonSeq above it and answers as the reply it is. The row is all this path
+// has to read, because a decline reaches it when it falls between the architect's hand-back and
+// the pass that would put the root in the wait, and there is no event in hand; the live path has
+// the close itself and reads the decline from that (personAnswered), since the row's decline
+// never comes off it.
 func answeredSince(waiting record.Awaiting, asks []record.RootAsk, gateArtifacts []string) (record.Answer, string, bool) {
 	since := waiting.Since.Seq
 	for _, ask := range asks {
-		if ask.Ask == waiting.Ask && ask.PersonActSeq(gateArtifacts...) > since {
-			return record.AnsweredByAsk, ask.Ask, true
+		if seq := ask.PersonActSeq(gateArtifacts...); ask.Ask == waiting.Ask && seq > since {
+			return answerOfAct(ask, seq, record.AnsweredByAsk), ask.Ask, true
 		}
 	}
 	for _, ask := range asks {
-		if ask.PersonActSeq(gateArtifacts...) > since {
-			return record.AnsweredByReply, ask.Ask, true
+		if seq := ask.PersonActSeq(gateArtifacts...); seq > since {
+			return answerOfAct(ask, seq, record.AnsweredByReply), ask.Ask, true
 		}
 	}
 	return "", "", false
 }
 
+// answerOfAct is how the person's act at seq on ask answered the wait: their decline of it where
+// that act is the ask's own close and the mirror records a decline, else otherwise, which is
+// whether the ask is the one the wait names.
+func answerOfAct(ask record.RootAsk, seq int64, otherwise record.Answer) record.Answer {
+	if ask.Decline != nil && seq == ask.ClosedSeq {
+		return record.AnsweredByDecline
+	}
+	return otherwise
+}
+
 // enterAwaiting moves root into awaiting_person on waiting, which keeps the slot the root holds:
-// an issue keeps its row until it is done, leaves the workflow or waits only for its merge
+// an issue keeps its row until it is done or leaves the workflow
 // (record.KeepsSlot). The architect stays live to read the person's answer, and the controller
 // is told.
 func (e *Engine) enterAwaiting(ctx context.Context, tx pgx.Tx, root record.Issue, waiting record.Awaiting, reason string) error {
@@ -617,6 +636,21 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case record.AnsweredByTurn:
 		fmt.Fprintf(&task, "A session's reply handed your question %s on %s to your turn, so no person is asked anything there; read its thread.",
 			waiting.AnsweredDetail, key)
+	case record.AnsweredByDecline:
+		// The sentences and the note are Dispatch's record of the decline, printed as the mirror
+		// row holds them (record.RootAsk.Decline): the daemon writes neither, so the architect
+		// reads the person's words and not the daemon's paraphrase of them. The note is quoted,
+		// as a review's reason is (changesDetail), so the architect reads where the person's own
+		// words begin and end. A decline the person wrote no note with ends after the sentences.
+		fmt.Fprintf(&task, "A person declined to answer your ask %s on %s.", waiting.AnsweredDetail, key)
+		if decline := recordedDecline(asks, waiting.AnsweredDetail); decline != nil {
+			if decline.Words != "" {
+				fmt.Fprintf(&task, " %s", decline.Words)
+			}
+			if decline.Note != "" {
+				fmt.Fprintf(&task, " Their note: %q", decline.Note)
+			}
+		}
 	default:
 		fmt.Fprintf(&task, "A person acted on %s; read the issue's asks and its spec.", key)
 	}
@@ -688,4 +722,17 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		task.WriteString(" Continue.")
 	}
 	return task.String()
+}
+
+// recordedDecline is the decline the mirror holds for ask, nil where no person declined it: it
+// carries the sentences Dispatch wrote for the asking agent and the person's own note, which the
+// resume prints. A record holding no such row — a decline mirrored by a release before this one,
+// or a row a later read has not reached — leaves the resume naming the ask alone.
+func recordedDecline(asks []record.RootAsk, ask string) *record.AskDecline {
+	for i := range asks {
+		if asks[i].Ask == ask && asks[i].Decline != nil {
+			return asks[i].Decline
+		}
+	}
+	return nil
 }

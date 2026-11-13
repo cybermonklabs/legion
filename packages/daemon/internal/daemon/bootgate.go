@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	workershim "github.com/sjawhar/legion/daemon/internal/shim"
@@ -167,6 +168,14 @@ type pluginGate struct {
 // each provider key the pane's shim exports from providerEnvDir as the shim exports it
 // (shim.ReadProviderEnv), so a task agent whose model's key comes only through a provider key
 // resolves as it will in a pane.
+//
+// The spend attributes are composed as a pane's are (runtime.SpendResourceAttributes, which
+// tmux.panePairs calls for a launch), with the zero spec: the probe serves no issue and runs in
+// no role, so the composition gives the operator's own value back alone, with no legion.issue and
+// no legion.role, and the probe's minutes are billed under the deployment's own attributes rather
+// than under some launch's issue. The call stands here, adding no attribute of its own, so that a
+// pane and the gate compose the one variable through the one function and cannot drift; an
+// operator who sets none leaves the gate told none, rather than an empty variable invented for it.
 func gateEnvironment(environ []string, stateDir, providerEnvDir string, block *config.Tmux) (map[string]string, error) {
 	env := tmux.PaneEnvironment(environ, stateDir)
 	if block != nil {
@@ -174,6 +183,9 @@ func gateEnvironment(environ []string, stateDir, providerEnvDir string, block *c
 		if len(block.PiConfigFiles) > 0 {
 			env["PI_CONFIG_FILES"] = strings.Join(block.PiConfigFiles, ":")
 		}
+	}
+	if attributes := runtime.SpendResourceAttributes(env[runtime.SpendAttributesVariable], runtime.SpawnSpec{}); attributes != "" {
+		env[runtime.SpendAttributesVariable] = attributes
 	}
 	if providerEnvDir == "" {
 		return env, nil

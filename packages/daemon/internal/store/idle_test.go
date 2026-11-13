@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -47,7 +48,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job", "subagent"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
 	}
-	if wrote, err := st.PutClaimActivity(ctx, token, reported); err != nil || !wrote {
+	if wrote, err := st.PutClaimActivity(ctx, token, c.Generation, reported); err != nil || !wrote {
 		t.Fatalf("PutClaimActivity = %t, %v", wrote, err)
 	}
 	if _, err := st.Pool().Exec(ctx, `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error) values
@@ -170,7 +171,7 @@ func TestAClaimWriteAfterAReportLeavesTheReportStanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	reported := claim.SessionActivity{At: time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)}
-	if _, err := st.PutClaimActivity(ctx, token, reported); err != nil {
+	if _, err := st.PutClaimActivity(ctx, token, c.Generation, reported); err != nil {
 		t.Fatal(err)
 	}
 	// The machine, which never read the report, persists its next state.
@@ -286,6 +287,65 @@ func TestReleaseIdleIssueWritesItsRowsAndItsMarkTogether(t *testing.T) {
 	}
 }
 
+// The release of a pod no role can use (workflow.UnownedPodRelease) suspends no role and saves
+// no bundle, so its mark names no role and records the rule that wrote it instead: every row of
+// that release, and the cancel that ends it, read the kind to know what the release did. A mark
+// that names no role and is not that release is the rule's own fault, and is refused before
+// anything is written.
+func TestAReleaseThatSuspendsNoRoleMarksItsKindAndNamesNoRole(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	teardown := IdleReleaseRow{Kind: "issue_release",
+		Payload:  []byte(`{"tree":"LEGION-208","generation":1,"treeGeneration":1}`),
+		Boundary: true}
+
+	refused, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+		return IdleReleaseMark{Generation: view.Generation, Rows: []IdleReleaseRow{teardown}}, nil
+	})
+	if err == nil || refused {
+		t.Fatalf("a mark naming neither a role nor the second rule = %t, %v; want it refused before anything is written", refused, err)
+	}
+	var rows int
+	if err := st.Pool().QueryRow(ctx, `select count(*) from outbox where issue = $1`, rootIssue).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 {
+		t.Fatalf("outbox rows = %d, want none written by a mark the store refused", rows)
+	}
+
+	marked, err := st.ReleaseIdleIssue(ctx, "legion", rootIssue, func(view pods.IdleView) (IdleReleaseMark, error) {
+		return IdleReleaseMark{Generation: view.Generation, SuspendsNoRole: true, Rows: []IdleReleaseRow{teardown}}, nil
+	})
+	if err != nil || !marked {
+		t.Fatalf("ReleaseIdleIssue = %t, %v; want the release of the pod no role can use marked", marked, err)
+	}
+	var kind, role string
+	var last int64
+	if err := st.Pool().QueryRow(ctx, `select kind, role, last_row from issue_releases
+		where project = 'legion' and issue = $1`, rootIssue).Scan(&kind, &role, &last); err != nil {
+		t.Fatal(err)
+	}
+	if kind != "unowned" || role != "" {
+		t.Fatalf("mark = kind %q role %q, want the unowned kind and no role: that release suspends none", kind, role)
+	}
+
+	// Every row of the release reads the kind back out of the mark, whatever the fences then
+	// decide for the row itself.
+	decision, err := st.IssueRelease(ctx, "legion",
+		IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last},
+		record.OutOfWorkflow)
+	if err != nil || !decision.SuspendsNoRole {
+		t.Fatalf("the teardown's decision = %+v, %v; want it to carry the release that suspends no role", decision, err)
+	}
+
+	resumed, suspendsNoRole, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+	if err != nil || !suspendsNoRole || len(resumed) != 0 {
+		t.Fatalf("the cancel = %v, %t, %v; want no role resumed and the release named as the one that suspends none",
+			resumed, suspendsNoRole, err)
+	}
+}
+
 // IdlePods is the tick's candidate list: every issue of the project with a live claim, and no
 // issue whose roles have all stopped — there is no role there to ask for a bundle and no claim to
 // suspend.
@@ -309,6 +369,57 @@ func TestIdlePodsListsOnlyIssuesWithALiveClaim(t *testing.T) {
 	}
 	if len(pods) != 1 || pods[0] != rootIssue {
 		t.Fatalf("pods = %v, want %s alone", pods, rootIssue)
+	}
+}
+
+// UnownedPods is the other candidate list: the issues whose claims have all stopped and whose
+// pod no role can take a turn in, which is what the second release rule acts on. The claim
+// states alone are not the answer — every issue of the deployment whose roles ever stopped
+// would be one, and each candidate costs a transaction that takes the daemon's global fact
+// serializer — so the workflow filter is read here beside them: the member of a lingering tree,
+// the issue whose own phase is done and the one closed long ago all hold claims that have
+// stopped and are no candidates, and the pod with a live claim is the idle rule's.
+func TestTheCandidateAnswerForIssuesWithNoLiveClaim(t *testing.T) {
+	const (
+		lingeringRoot = "LEGION-300"
+		unowned       = "LEGION-301"
+		underLinger   = "LEGION-302"
+		phaseDone     = "LEGION-303"
+		closedLongAgo = "LEGION-304"
+		stillLive     = "LEGION-305"
+	)
+	st := migratedStore(t)
+	ctx := context.Background()
+	if _, err := st.Pool().Exec(ctx, `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, linger_until, last_dispatch_seq) values
+		($1, $1, 'LEGION', 'a tree lingering after its close', 'done', 1, 'done', 'A', now() + interval '1 hour', 1),
+		($2, $2, 'LEGION', 'a pod whose claims have all stopped', 'implementing', 1, 'in_progress', 'B', null, 1),
+		($3, $1, 'LEGION', 'a member of the lingering tree', 'implementing', 1, 'in_progress', 'C', null, 1),
+		($4, $4, 'LEGION', 'an issue whose own phase is done', 'done', 1, 'in_progress', 'D', null, 1),
+		($5, $5, 'LEGION', 'an issue closed long ago', 'done', 1, 'done', 'E', null, 1),
+		($6, $6, 'LEGION', 'a pod a live claim still holds', 'implementing', 1, 'in_progress', 'F', null, 1)`,
+		lingeringRoot, unowned, underLinger, phaseDone, closedLongAgo, stillLive); err != nil {
+		t.Fatalf("seed the project's issues: %v", err)
+	}
+	for _, c := range []supervise.Claim{
+		{Token: claim.Token("legion-legion-legion-301-implementer"), Issue: unowned, Tree: unowned, Role: claim.RoleImplementer, State: supervise.StateFailed},
+		{Token: claim.Token("legion-legion-legion-301-tester"), Issue: unowned, Tree: unowned, Role: claim.RoleTester, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-302-implementer"), Issue: underLinger, Tree: lingeringRoot, Role: claim.RoleImplementer, State: supervise.StateRetired},
+		{Token: claim.Token("legion-legion-legion-303-implementer"), Issue: phaseDone, Tree: phaseDone, Role: claim.RoleImplementer, State: supervise.StateRetired},
+		{Token: claim.Token("legion-legion-legion-304-implementer"), Issue: closedLongAgo, Tree: closedLongAgo, Role: claim.RoleImplementer, State: supervise.StateSuspended},
+		{Token: claim.Token("legion-legion-legion-305-implementer"), Issue: stillLive, Tree: stillLive, Role: claim.RoleImplementer, State: supervise.StateIdle},
+	} {
+		c.Project, c.TreeEpoch, c.Generation = "legion", 1, 1
+		if err := st.PutClaim(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidates, err := st.UnownedPods(ctx, "LEGION", "legion", record.OutOfWorkflowStatuses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0] != unowned {
+		t.Fatalf("the candidates = %v, want %s alone: the pod no claim owns under a tree the workflow still runs", candidates, unowned)
 	}
 }
 
@@ -361,7 +472,7 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 	}
 	done := make(chan cancelled, 1)
 	go func() {
-		roles, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+		roles, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
 		done <- cancelled{roles: roles, err: err}
 	}()
 
@@ -414,6 +525,20 @@ func TestACancelRacingAParkLeavesNoResumeAboveTheClose(t *testing.T) {
 		record.OutOfWorkflow)
 	if err != nil || !act {
 		t.Fatalf("the close after the race = %t, %v; want it to act", act, err)
+	}
+}
+
+// The idle rule holds an issue's pod for every row of the role-message lane: each of those rows
+// speaks to a role of that pod, and a release stops the role that the row was written for. The
+// lane's own list is record.LaneKinds(record.LaneRoleMessage) and idleWaitingKinds writes its
+// kinds out as the strings the SQL compares, so nothing but this test holds the two together: a
+// kind added to the lane and left out of the idle list lets the daemon release the pod out from
+// under a row nobody has read yet.
+func TestEveryRoleMessageKindWaitsForARoleOfThePod(t *testing.T) {
+	for _, kind := range record.LaneKinds(record.LaneRoleMessage) {
+		if !slices.Contains(idleWaitingKinds, string(kind)) {
+			t.Errorf("the role-message kind %q stands in no idleWaitingKinds %v: a release would stop the role before it reads the row", kind, idleWaitingKinds)
+		}
 	}
 }
 

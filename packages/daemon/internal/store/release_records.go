@@ -156,27 +156,41 @@ func (s *Store) StuckPodResumes(ctx context.Context, project string, before time
 }
 
 // UnfinishedPodResumes are the resumes of project the stranded report judges R6 on: those of
-// each pod's newest release whose wake is at or before the bound and whose woken role has not
-// taken its first turn, the ones a stuck pass has already marked included — a resume marked
-// stuck is exactly a pod a wake never brought back, so dropping it would take the claim out of
-// the report the moment the warning was written.
+// each pod's newest release that suspended a role, whose wake is at or before the bound and
+// whose woken role has not taken its first turn, the ones a stuck pass has already marked
+// included — a resume marked stuck is exactly a pod a wake never brought back, so dropping it
+// would take the claim out of the report the moment the warning was written.
 //
-// A resume of an older release is left out, whatever became of it: the claim it was for has
-// been released again since, which is a pod the daemon has just let go rather than one a wake
-// never brought back. Reading those too would list a role as stranded the moment its next
-// release was recorded.
+// A resume of an older release that suspended a role is left out, whatever became of it: the
+// claim it was for has been released again since, which is a pod the daemon has just let go
+// rather than one a wake never brought back. Reading those too would list a role as stranded
+// the moment its next release was recorded.
+//
+// A release that suspended no role is no such later release, whichever rule wrote it, and the
+// subquery's filter on a roles column that is not empty is what keeps it out. Two releases
+// record their roles empty: every release of a pod no claim of the issue can use
+// (workflow.UnownedPodRelease), which changes no claim, and the rare idle release whose every
+// role stop found a claim that had failed or retired since the mark. After either one a role an
+// earlier release left `released` is still released, still woken and still without a first
+// turn, which is the stranded claim this read is for, and counting either as the pod's newest
+// release would drop exactly those rows from the report's released-claim arm. So the filter is
+// of what a release did and never of which rule wrote it.
 func (s *Store) UnfinishedPodResumes(ctx context.Context, project string, before time.Time) ([]PodResume, error) {
 	return s.podResumesWithoutAFirstTurn(ctx, project, before, false)
 }
 
+// podResumesWithoutAFirstTurn is both reads above. A resume a release closed (closed_at) is left
+// out of each: it is a wake of a pod that is gone, which no warning and no stranded report has
+// anything to say about, and before closing had a column of its own such a row was indeed gone
+// from here, because closing wrote first_turn_at.
 func (s *Store) podResumesWithoutAFirstTurn(ctx context.Context, project string, before time.Time, unmarked bool) ([]PodResume, error) {
 	query := `select id, release_id, project, issue, role, kind, at, stuck
-		from pod_resumes r where project = $1 and first_turn_at is null and at <= $2`
+		from pod_resumes r where project = $1 and first_turn_at is null and closed_at is null and at <= $2`
 	if unmarked {
 		query += ` and not stuck`
 	} else {
 		query += ` and release_id = (select max(id) from pod_releases
-			where project = r.project and issue = r.issue)`
+			where project = r.project and issue = r.issue and roles <> '')`
 	}
 	rows, err := s.pool.Query(ctx, query+` order by id`, project, before)
 	if err != nil {
@@ -239,6 +253,32 @@ func (s *Store) EndPodHoldStreaks(ctx context.Context, project, issue string) er
 		return fmt.Errorf("end the hold streaks of %s: %w", issue, err)
 	}
 	return nil
+}
+
+// OpenPodHold is whether a hold streak of the pod is running, on the pool: the same question
+// readIdleView answers as IdleView.Holding, asked outside any transaction. The release of a pod
+// no claim owns needs it there, because the one pass that reads no view at all — the issue whose
+// Sandbox the runtime no longer holds — still has a streak to end, and opening ReleaseIdleIssue
+// to learn that would cost the transaction, and the daemon's global fact serializer with it,
+// that reading the Sandbox first exists to save (daemon.releaseUnownedPod). The answer bounds a
+// write and nothing else: a pod with no streak is left alone, since an update that matches no
+// row costs a write transaction all the same.
+func (s *Store) OpenPodHold(ctx context.Context, project, issue string) (bool, error) {
+	return openPodHold(ctx, s.pool, project, issue)
+}
+
+// openPodHold is that question as one statement, read through db: the pool for OpenPodHold's
+// own read, and the release's own transaction for the idle view it decides on (readIdleView,
+// pods.IdleView.Holding). One predicate for both, so a reader of a view's Holding and a reader
+// of the answer outside a transaction can never be reading two different questions.
+func openPodHold(ctx context.Context, db queryRower, project, issue string) (bool, error) {
+	var holding bool
+	if err := db.QueryRow(ctx, `select exists (
+		select 1 from pod_holds where project = $1 and issue = $2 and not ended)`,
+		project, issue).Scan(&holding); err != nil {
+		return false, fmt.Errorf("read whether a hold streak of %s is running: %w", issue, err)
+	}
+	return holding, nil
 }
 
 // endPodHoldStreaks marks the running streaks of the pod ended through the caller's transaction.

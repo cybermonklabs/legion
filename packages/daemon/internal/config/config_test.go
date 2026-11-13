@@ -237,8 +237,11 @@ func defaultsFor(port int) Config {
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateRetask:      time.Hour,
 		PodUpdateNotice:      4 * time.Hour,
+		WorkerSilence:        30 * time.Minute,
+		WorkerBackground:     4 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
+		Hooks:                DefaultHooks(),
 		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets
 		// none of: the plugin's own defaults, which the backstop's floor is computed from.
 		StallLimits: StallLimits{CallGrace: StallCallGrace, Step: StallStep},
@@ -351,7 +354,7 @@ func TestLoadReadsEveryStage3Key(t *testing.T) {
 dispatch_token_file: tokens/DISPATCH_TOKEN
 projects:
   DEMO: {}
-  OTHER: { merge_queue_role: merge-queue }
+  OTHER: {}
   EMPTY: {}
 gates:
   design: off
@@ -366,6 +369,14 @@ github_apps:
 linger_hours: 96
 production_check_hours: 48
 review_round_cap: 5
+worker_silence_minutes: 45
+hooks:
+  - name: back-to-implementing
+    on: work_back
+    moves: [reviewing-implementing]
+    every: 2
+    roles: [implementer, reviewer]
+    prompt: Read the reviewer's thread before you write anything.
 `))
 
 	cfg, err := Load(path, noEnv)
@@ -380,7 +391,7 @@ review_round_cap: 5
 	}
 	if !reflect.DeepEqual(cfg.Projects, map[string]Project{
 		"DEMO":  {ProductionCheck: claim.RoleTester},
-		"OTHER": {MergeQueueRole: "merge-queue", ProductionCheck: claim.RoleTester},
+		"OTHER": {ProductionCheck: claim.RoleTester},
 		"EMPTY": {ProductionCheck: claim.RoleTester},
 	}) {
 		t.Errorf("Projects = %#v", cfg.Projects)
@@ -395,7 +406,18 @@ review_round_cap: 5
 		t.Errorf("review app = %#v", cfg.GitHubApps.Review)
 	}
 	if cfg.Linger != 96*time.Hour || cfg.ProductionCheckBound != 48*time.Hour || cfg.ReviewRoundCap != 5 {
-		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h, 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+		t.Errorf("Linger=%s ProductionCheckBound=%s ReviewRoundCap=%d, want 96h, 48h and 5", cfg.Linger, cfg.ProductionCheckBound, cfg.ReviewRoundCap)
+	}
+	if cfg.WorkerSilence != 45*time.Minute {
+		t.Errorf("WorkerSilence = %s, want the file's 45m", cfg.WorkerSilence)
+	}
+	if want := []Hook{{
+		Name: "back-to-implementing", On: HookEventWorkBack, Every: 2,
+		Moves:  []string{"reviewing-implementing"},
+		Roles:  []claim.Role{claim.RoleImplementer, claim.RoleReviewer},
+		Prompt: "Read the reviewer's thread before you write anything.",
+	}}; !reflect.DeepEqual(cfg.Hooks, want) {
+		t.Errorf("Hooks = %+v, want the file's one hook %+v and no default beside it", cfg.Hooks, want)
 	}
 }
 
@@ -462,19 +484,6 @@ func TestTheZeroValueOfGatesGatesTheSpec(t *testing.T) {
 	off := Config{Gates: Gates{Design: DesignGateOff.Steps()}}
 	if steps := off.Gates.Steps(); len(steps) != 0 || steps == nil {
 		t.Fatalf("Gates.Steps() under 'off' = %#v, want the non-nil empty list: 'off' gates no step and is not the unset field", steps)
-	}
-}
-
-func TestLoadReadsProjectMergeRules(t *testing.T) {
-	body := strings.Replace(minimalFile, "DEMO: {}",
-		"DEMO: { merge: { by_hand: ['^migrations/versions/'] } }", 1)
-	cfg, err := Load(writeConfigFile(t, body), noEnv)
-	if err != nil {
-		t.Fatalf("Load project merge rules: %v", err)
-	}
-	rules := cfg.Projects["DEMO"].Merge
-	if !rules.MatchByHand([]string{"migrations/versions/0001.py"}) {
-		t.Error("by_hand rule does not match its migration path")
 	}
 }
 
@@ -1425,6 +1434,137 @@ func TestLoadRefuses(t *testing.T) {
 			want: "runtime.tmux.pi_config_files entry \"/etc/legion:operator/overlay.yml\" holds `:`, which separates the overlays PI_CONFIG_FILES names",
 		},
 		{
+			name: "hooks that is not a list",
+			body: minimalFile + "hooks: 5\n",
+			want: "hooks must be an array",
+		},
+		{
+			name: "a hook that is not a mapping",
+			body: minimalFile + "hooks: [5]\n",
+			want: "hooks[0] must be a mapping",
+		},
+		{
+			name: "a hook with an unknown member",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester], prompts: Words.}"),
+			want: "unknown key hooks[0].prompts",
+		},
+		{
+			name: "a hook with no name",
+			body: aHook("{on: work_back, every: 1, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].name is required: the hook's own name, which every prompt it publishes carries",
+		},
+		{
+			name: "a hook whose name is empty",
+			body: aHook(`{name: "", on: work_back, every: 1, roles: [tester], prompt: Words.}`),
+			want: "hooks[0].name must not be empty",
+		},
+		{
+			name: "two hooks of one name",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester], prompt: Words.}, " +
+				"{name: stuck, on: work_back, every: 2, roles: [reviewer], prompt: More words.}"),
+			want: `hooks[1].name is "stuck", which hooks[0] already carries: a hook is named once, and its name is what every prompt it publishes carries`,
+		},
+		{
+			name: "a hook that stands on no event",
+			body: aHook("{name: stuck, every: 1, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].on is required: the event the hook stands on",
+		},
+		{
+			name: "a hook whose event is empty",
+			body: aHook(`{name: stuck, on: "", every: 1, roles: [tester], prompt: Words.}`),
+			want: "hooks[0].on must not be empty",
+		},
+		{
+			name: "a hook on an event the daemon does not have",
+			body: aHook("{name: stuck, on: revuew_rounds, every: 1, roles: [tester], prompt: Words.}"),
+			want: `hooks[0].on is "revuew_rounds", which is no event the daemon has (work_back)`,
+		},
+		{
+			name: "a hook with no every",
+			body: aHook("{name: stuck, on: work_back, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every is required: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook that fires every nothing",
+			body: aHook("{name: stuck, on: work_back, every: 0, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook that fires every negative number",
+			body: aHook("{name: stuck, on: work_back, every: -1, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook whose every is no whole number",
+			body: aHook("{name: stuck, on: work_back, every: 2.5, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook whose every is a string",
+			body: aHook(`{name: stuck, on: work_back, every: "5", roles: [tester], prompt: Words.}`),
+			want: "hooks[0].every must be a positive whole number: the hook fires on every nth move back it selects",
+		},
+		{
+			name: "a hook with no roles",
+			body: aHook("{name: stuck, on: work_back, every: 1, prompt: Words.}"),
+			want: "hooks[0].roles is required: the hook puts its words in front of the roles it names",
+		},
+		{
+			name: "a hook whose roles are the empty list",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [], prompt: Words.}"),
+			want: "hooks[0].roles names no role: the hook puts its words in front of the roles it names",
+		},
+		{
+			name: "a hook naming a role that is not a Legion role",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [reviewr], prompt: Words.}"),
+			want: `hooks[0].roles names "reviewr", which is not a Legion role (architect, planner, implementer, tester, reviewer, merger)`,
+		},
+		{
+			name: "a hook naming the architect",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [architect], prompt: Words.}"),
+			want: "hooks[0].roles names the architect, which no hook writes to: the daemon's own wake to an architect is a notice",
+		},
+		{
+			name: "a hook whose moves are a word other than any",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: every, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].moves must be an array of the moves back it selects, or the word any",
+		},
+		{
+			name: "a hook whose moves are a mapping",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: {reviewing: implementing}, roles: [tester], prompt: Words.}"),
+			want: "hooks[0].moves must be an array of the moves back it selects, or the word any",
+		},
+		{
+			name: "a hook whose moves are the empty list",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [], roles: [tester], prompt: Words.}"),
+			want: "hooks[0].moves names no move back: write any, or leave the key out, to select every move back",
+		},
+		{
+			name: "a hook naming a move the daemon does not count",
+			body: aHook("{name: stuck, on: work_back, every: 1, moves: [planning-merging], roles: [tester], prompt: Words.}"),
+			want: `hooks[0].moves names "planning-merging", which is no move back the daemon counts: a move is written "<from>-<to>", both of them workflow phases, and the phase it goes to before the phase it leaves`,
+		},
+		{
+			name: "a hook with both prompt and prompt_file",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester], prompt: Words., prompt_file: hooks/stuck.md}"),
+			want: "hooks[0] names prompt and prompt_file: the hook's words are written in the key, or read from a file, never both",
+		},
+		{
+			name: "a hook with neither prompt nor prompt_file",
+			body: aHook("{name: stuck, on: work_back, every: 1, roles: [tester]}"),
+			want: "hooks[0] names neither prompt nor prompt_file: a hook carries the words it puts in front of its roles",
+		},
+		{
+			name: "a hook whose prompt is empty",
+			body: aHook(`{name: stuck, on: work_back, every: 1, roles: [tester], prompt: "  "}`),
+			want: "hooks[0].prompt must not be empty",
+		},
+		{
+			name: "a hook whose prompt_file is empty",
+			body: aHook(`{name: stuck, on: work_back, every: 1, roles: [tester], prompt_file: ""}`),
+			want: "hooks[0].prompt_file must not be empty",
+		},
+		{
 			name: "a root that is not a mapping",
 			body: "- project: demo\n",
 			want: "config file root must be a mapping",
@@ -1603,11 +1743,14 @@ func TestLoadClassifiesEveryShippedKey(t *testing.T) {
 		{key: "linger_hours", line: "linger_hours: 72", class: modelled},
 		{key: "production_check_hours", line: "production_check_hours: 336", class: modelled},
 		{key: "review_round_cap", line: "review_round_cap: 3", class: modelled},
+		{key: "worker_silence_minutes", line: "worker_silence_minutes: 45", class: modelled},
+		{key: "worker_background_hours", line: "worker_background_hours: 6", class: modelled},
 		{
 			key: "max_fix_attempts", line: "max_fix_attempts: 3", class: warned,
-			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+			want: "setting max_fix_attempts changes nothing: nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
 		},
 		{key: "capabilities", line: `capabilities: {decided: {secrets: "dispatch://LEGION-205 enrolls pods later"}}`, class: modelled},
+		{key: "hooks", line: "hooks: [{name: stuck, on: work_back, every: 5, roles: [implementer], prompt: Say what is in your way.}]", class: modelled},
 
 		{
 			key: "worker_cap", line: "worker_cap: 10", class: tossed,
@@ -1695,7 +1838,7 @@ func TestAWarnedKeyLoadsWithEveryOtherValueIntact(t *testing.T) {
 			if len(cfg.Warnings) != 1 || !strings.Contains(cfg.Warnings[0], "max_fix_attempts") {
 				t.Fatalf("Load warned %+v, want the one max_fix_attempts warning", cfg.Warnings)
 			}
-			for _, want := range []string{"max_fix_attempts", "nothing counts fix attempts", "sends the work back to the implementer",
+			for _, want := range []string{"max_fix_attempts", "nothing counts fix attempts", "no CI verdict sends work back on its own",
 				"the architect decides when to stop", "review_round_cap"} {
 				if !strings.Contains(cfg.Warnings[0], want) {
 					t.Errorf("the warning %q does not say %q", cfg.Warnings[0], want)

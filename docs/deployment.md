@@ -155,6 +155,35 @@ the saved help is the pin's).
 The shared clone's `credential.helper` is `!legion git-credential` with `credential.useHttpPath`
 on, so a pane's `git` and `jj git push` read the hosts.yml of the repository in the path git asks
 about where the bundle holds its directory, the owner's otherwise, and nothing else.
+
+A pane keeps the machine's own `git` and `jj`, unwrapped.
+Legion's leak-guard wrappers and its pre-push hook are the worker image's, root-owned under
+`/opt/legion` in a filesystem no role can write ([Worker image](kubernetes.md#worker-image)), and
+a shared box has no such boundary: the daemon, its panes and the operator are one Unix user, so a
+wrapper put first on a pane's `PATH` would be one the pane can replace, and a `core.hooksPath`
+pinned for it one the pane can override.
+A copy of them here would read as a guard and hold nothing.
+What a pane does run the guard in is `legion gh` and the rescue helper, the same binary with the
+same rules compiled in, and each of them resolves the shared public leak check from the pane's
+own `PUBLIC_LEAK_CHECK`.
+A pane can find that check no other way: `PUBLIC_LEAK_CHECK` is not a name a pane reads from the
+daemon's environment, a pane's `XDG_CONFIG_HOME` is under the state directory rather than the
+operator's home, and the check's installer puts its files on no `PATH` a pane has.
+So the daemon resolves it instead, once per launch and in its own environment — the machine's
+own `PUBLIC_LEAK_CHECK`, a `public-leak-check.sh` on its `PATH`, or the pointer file under its
+configuration home — and tells the pane where it is
+(`resolveLeakCheck` and `panePairs`, `packages/daemon/internal/runtime/tmux`).
+An operator who points one pane at another copy still wins: `runtime.tmux.pane_env` and a spec's
+own `Env` are told after the resolved one, and the last value of a name is what the pane holds.
+Legion installs no check on a shared box.
+The pinned install is a pod's: the daemon reads the check at the tag the worker image carries and
+pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
+So a box that writes to public repositories carries the check through the check's own installer,
+run on the machine the daemon runs on.
+A daemon that resolves none logs one line per launch naming the pane, tells that pane no
+`PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
+error naming the missing check.
+
 The real gh is a compiled program, so when the first `gh` on the daemon's `PATH`
 is a script (a `gh` wrapper of the box's own, as the devbox's login `PATH` heads with, or asdf's
 shim), boot refuses it, naming it and `LEGION_GH_PATH` (`RefuseScriptGH`): run as the real gh, a
@@ -198,7 +227,7 @@ bearer as a service token or a personal token (`optionalActor`, the same file), 
 session then carries that token's service or owner as well. `dispatch whoami` in a pane tells the
 two apart: for a shared agent token it answers
 `Session <id> runs under the shared token: no owner, …`
-(`packages/envoy-client/src/dispatch-execute.ts`). A pod's side of this is in `docs/kubernetes.md`,
+(`packages/envoy-client/src/dispatch-commands/session.ts`). A pod's side of this is in `docs/kubernetes.md`,
 "Anatomy of a Sandbox pod". A person's own session on the same box uses a personal token instead,
 minted from Dispatch's Settings → Agent tokens
 (`docs/site/src/content/docs/dispatch/for-agents.md`).
@@ -348,6 +377,25 @@ provider_keys:
   every process of the host, so a secret reaches a pane as a file. The loader refuses these at load
   and the runtime again at boot, naming the variable and never its value. A launch whose own
   variable or secret pointer collides with a `pane_env` name is refused.
+  `OTEL_RESOURCE_ATTRIBUTES` is the one composed name `pane_env` accepts: the runtime composes
+  `PI_CONFIG_FILES` from `pi_config_files` and so refuses that name in the list above, while the
+  attributes are the operator's to begin and the runtime's to finish.
+  The operator sets the attributes this deployment's spend is billed
+  under, and each pane carries them with its own `legion.issue` and `legion.role` after them,
+  so a pane's own attributes name the issue it serves. The agent keeps the last value a key is
+  given, so the daemon's two pairs come last. Both keys reach the spend collector today, and
+  its keep-list of six `theorem.*` attributes drops every other key, so no spend row names an
+  issue yet. A row grouped by issue follows when the collector keeps them, which
+  dispatch://INFRA-1835 adds to that list. A controller pane serves no issue and carries the
+  role alone, and the boot gate's probe runs no role, so it carries the operator's value with its
+  trailing commas and whitespace dropped and nothing added.
+  The loader reads this one value for its content as well as its name: it
+  refuses a member the agent's OpenTelemetry detector would throw on — one that is no single
+  `key=value`, one with an empty key, one whose key or value does not percent-decode or is longer
+  than 255 characters once decoded, and one naming `legion.issue` or `legion.role`, which the
+  runtime writes itself — and names that member and what is wrong with it, never the rest of the
+  value. One such member costs the pane every attribute of the variable, the operator's own among
+  them, because the detector's caller catches the throw with an empty hand.
 - **`pi_config_files`** paths resolve against `legion.yaml`'s directory and may not hold `:`.
   Legion adds no overlay of its own to the list: it writes none, so the operator's are the whole of
   it, with a role's own (`role_config_files`) after them. The
@@ -492,22 +540,21 @@ written by whichever daemon wrote last — so the order matters:
 3. Set `runtime.tmux.take_over: kubernetes` and boot the tmux daemon with the same Postgres. Each
    claim whose recorded process is a pod is reported gone, displaced, and relaunched in a pane,
    charged nothing, on its session when step 2 put its file in one of those places, searched by
-   file name or session id. While `take_over` is set, a session found nowhere starts a fresh agent,
-   uncharged, which registers a session of its own, whatever the claim's last process was and
-   wherever the session was recorded: a claim the Kubernetes daemon left suspended carries no
-   process, and a host built from the worker image records its own sessions at the paths a pod
-   used, so neither tells the two apart. That is what the key buys and what it costs: in this
-   window a session of this host's own that has gone missing starts fresh too. Each workspace is
-   provisioned before its first launch.
+   file name or session id. A session found nowhere starts a fresh agent, uncharged, which
+   registers a session of its own; the loss is posted on the issue and told to its architect, to
+   the controller and to the new agent in its own prompt. That holds whether or not `take_over` is
+   set — a session no store holds is gone whichever runtime last wrote it — so what this key buys
+   is the takeover of the other runtime's locators: a claim whose pod this daemon cannot see is
+   resumed without waiting that process out. Each workspace is provisioned before its first launch.
 4. Retry what failed to launch meanwhile, once the cause is gone: `legion claims retry --failed`
    (an architect relaunches on its session; a phase worker whose issue is held for its own role
    retries that phase).
 5. Remove `take_over` once no claim can still wake on a session a pod recorded: every claim that
    was running has relaunched in a pane, and no claim the Kubernetes daemon suspended (a
    production check's checking role — the one the project's `production_check` names — waiting
-   for the look its own `wake_at` asked for among them) is left to wake. From then on a session
-   found nowhere is refused again, and a tmux daemon pointed at a store a Kubernetes daemon still
-   drives refuses to start rather than take its claims.
+   for the look its own `wake_at` asked for among them) is left to wake. From then on a resume
+   over a locator of the other runtime is refused, and a tmux daemon pointed at a store a
+   Kubernetes daemon still drives refuses to start rather than take its claims.
 
 ## Rotating broker-held App keys
 

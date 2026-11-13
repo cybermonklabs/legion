@@ -5,7 +5,7 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
-} from "./dispatch-api";
+} from "./dispatch-api-limits";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
 export interface DispatchToolSpec {
@@ -67,6 +67,18 @@ const ASK_OPTIONS_CONTRACT =
   "Options carry the genuinely different approaches. Each option has a label, and its description " +
   "says what that approach costs.";
 
+/** Who an ask is for, written once so every text an agent reads says it the same way: the two
+ *  tool descriptions that open or edit one, and `skills/dispatch/SKILL.md`. An agent cannot
+ *  address an ask or hand one on, so neither this file nor a skill may tell it to. */
+export const ASK_IS_FOR_A_PERSON =
+  "An ask is a question for a person, never a request to another agent. Ask an agent by envoy_send or a comment on the issue.";
+
+/** Whom an open ask waits on, and who may move it: the companion of ASK_IS_FOR_A_PERSON, carried
+ *  by the same texts. The person it waits on is the server's `waiting_on_person`, which every ask
+ *  read carries. */
+export const ASK_WAITS_ON_THE_ASSIGNEE =
+  "An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.";
+
 const HUMAN_AGREED_TO_DOCUMENT = "the human has agreed to every point in the document";
 
 function documentOwnerValidation(
@@ -97,7 +109,8 @@ function documentOwnerValidation(
   };
 }
 
-const ARTIFACT_SOURCE_RULE = "Exactly one of path or content is required.";
+const ARTIFACT_SOURCE_RULE =
+  "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
 const ARTIFACT_OWNER_AND_SOURCE_RULE = `${ARTIFACT_SOURCE_RULE} Exactly one of issue and project is required; with project, artifact names the document.`;
 
 /** Joins the parts of a rule a call broke, so a refusal never names a part the call kept. */
@@ -109,23 +122,60 @@ function brokenParts(parts: ReadonlyArray<readonly [boolean, string]>): string |
 const CONTENT_IS_MARKDOWN =
   "content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
 
-const PATH_KEEPS_BYTES =
+const DOCUMENT_IS_MARKDOWN =
+  "a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph)";
+
+export const PATH_KEEPS_BYTES =
   "path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged";
 
-const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so with content the name ends in .md or .markdown or has no extension; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
+const ARTIFACT_CONTENT_NAME_RULE = `${CONTENT_IS_MARKDOWN}, so a document's name ends in .md or .markdown or has no extension, under content and under neither flag alike; upload any other file (.jsonl, .tsv, .json, .txt) with ${PATH_KEEPS_BYTES}.`;
 
-/** A name's extension: what follows its last dot when that holds no blank. Digits count, so
- *  "rows.jsonl.1" has one, and so does a title such as "plan v1.2", which takes content once it
- *  ends in .md. */
+/**
+ * What `dispatch artifact` says of a name the owner already holds. The command refuses it before
+ * it uploads anything, because an upload of that name writes the document's next version and
+ * replaces its text. `force` is what asks for that version. The refusal is the command's: the
+ * API writes the version for every other caller, the Dispatch page's own upload among them.
+ */
+export const ARTIFACT_NAME_EXISTS_RULE =
+  "An upload under the name of a document the owner already holds is refused: it writes that document's next version, over the text it holds. Change a document with dispatch doc-edit. Send the upload again with force (--force) to write the next version.";
+
+/**
+ * What `dispatch artifact` says of inline text the store would change. The command renders the
+ * text as Dispatch renders a document it stores and compares the two, so a text stored under
+ * another spelling (a `*` list stored with `-`, an ordered list renumbered, a CR LF stored as a
+ * line feed) is refused before the upload rather than stored changed. The rule holds for both
+ * kinds of name: `--path` keeps the bytes of a name that is not Markdown, and a Markdown name is
+ * parsed and rendered whichever flag sends it, so its one way out is to send the stored text.
+ */
+export const ARTIFACT_STORED_TEXT_RULE = `content and content-file hold text Dispatch stores as Markdown, and a text the store would write under another spelling is refused. The refusal prints the text Dispatch stores: send that text. A name that does not end in .md or .markdown has a second way out, which keeps the text as it was written: send it as a file with ${PATH_KEEPS_BYTES}.`;
+
+/** A name's extension, or undefined for a name with none: what follows its last dot when that
+ *  holds no blank. Digits count, so "rows.jsonl.1" has one, and so does a title such as
+ *  "plan v1.2", which takes content once it ends in .md. */
 const NAME_EXTENSION = /\.([^\s.]+)$/u;
 
 const MARKDOWN_EXTENSION = /^(md|markdown)$/i;
 
+/**
+ * Whether `--path` would store this name's text as the bytes it was written as: true for every
+ * name that does not end in .md or .markdown, a name with no extension included. Dispatch reads
+ * an upload's media type, which a Markdown path alone makes `text/markdown`, and parses and
+ * renders only a document (`PATH_KEEPS_BYTES`). A refusal of inline text the store would change
+ * names `--path` for such a name, and never for a Markdown one, which `--path` would change the
+ * same way.
+ */
+export function pathKeepsBytesOf(name: string): boolean {
+  const extension = NAME_EXTENSION.exec(name.trim())?.[1];
+  return extension === undefined || !MARKDOWN_EXTENSION.test(extension);
+}
+
 const artifactOwner = documentOwnerValidation(false);
 
 /** The refusal of the part of dispatch_artifact's rule `value` breaks, or undefined when it keeps
- *  the rule. Inline content is always stored as Markdown, so it goes only under a name that says
- *  Markdown or says nothing: a .jsonl stored that way reads back with its lines joined. */
+ *  the rule. A call without path writes a document, whose text is always Markdown, so it goes
+ *  only under a name that says Markdown or says nothing: a .jsonl stored that way reads back with
+ *  its lines joined. The name alone makes an empty document and is held to the same rule, since
+ *  what the writer types into it afterwards is Markdown too. */
 function artifactProblem(value: unknown): string | undefined {
   const input = value as {
     readonly name?: unknown;
@@ -134,16 +184,13 @@ function artifactProblem(value: unknown): string | undefined {
   };
   const ownerOrSourceProblem = brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
-    [
-      (typeof input.path === "string") !== (typeof input.content === "string"),
-      ARTIFACT_SOURCE_RULE,
-    ],
+    [typeof input.path !== "string" || typeof input.content !== "string", ARTIFACT_SOURCE_RULE],
   ]);
   if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
-  if (typeof input.content !== "string" || typeof input.name !== "string") return undefined;
+  if (typeof input.path === "string" || typeof input.name !== "string") return undefined;
   const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
   if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;
-  return `${CONTENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; content takes a name ending in .md or .markdown or with no extension.`;
+  return `${DOCUMENT_IS_MARKDOWN}, and ${JSON.stringify(input.name)} is not a Markdown name. Upload the file under the same name with ${PATH_KEEPS_BYTES}; a document takes a name ending in .md or .markdown or with no extension.`;
 }
 
 const documentEditOwner = documentOwnerValidation(true);
@@ -194,7 +241,7 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 };
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
@@ -211,6 +258,7 @@ function issueUpdateProblem(value: unknown): string | undefined {
     readonly title?: unknown;
     readonly labels?: unknown;
     readonly priority?: unknown;
+    readonly assignee?: unknown;
     readonly external_links?: unknown;
     readonly route?: unknown;
     readonly parent?: unknown;
@@ -235,6 +283,8 @@ function issueUpdateProblem(value: unknown): string | undefined {
     Array.isArray(input.labels) ||
     typeof input.priority === "number" ||
     input.priority === null ||
+    typeof input.assignee === "string" ||
+    input.assignee === null ||
     Array.isArray(input.external_links) ||
     typeof input.route === "string" ||
     typeof input.parent === "string" ||
@@ -371,12 +421,15 @@ export const DISPATCH_ITEM_BLOCKS = 32768;
  */
 export const DISPATCH_EVENT_BODY_MAX = 32000;
 
-/** What a tool that writes a body says about the two bounds the server holds it to, written once
- *  so every such tool says it the same way. */
+/** What a tool that writes a body says about the two bounds the server holds it to and about the
+ *  decision block it refuses in one, written once so every such tool says it the same way. */
 const BODY_BLOCK_RULE =
   `Each block (a paragraph, list, quote, table or code block) holds at most ${DISPATCH_BLOCK_UNITS} ` +
   `characters and a body at most ${DISPATCH_ITEM_BLOCKS} blocks; Dispatch refuses a longer one and ` +
-  "names it, and `dispatch limits` prints the bounds.";
+  "names it, and `dispatch limits` prints the bounds. A body holding a decision block (`:::ask`) " +
+  "is refused however short it is, since nobody can answer a question put in a comment or a " +
+  "message: ask the question in the issue's own document, as a decision block there, or open an " +
+  "ask with `dispatch ask`.";
 
 /** What dispatch_ask and dispatch_edit_ask say about the bound on a question. It carries no
  *  number: the server owns the bound and `dispatch limits` prints it. */
@@ -436,6 +489,63 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
   message: HANDOFF_RULE,
   refusal: (value) => handoffProblem(value) ?? HANDOFF_RULE,
 };
+
+/** The five arguments a record of a result must carry. They are named here rather than taken as
+ *  the head of the list below, because reading them by position makes a field inserted in the
+ *  wrong place change what a record requires, with nothing to say so. */
+const RESULT_REQUIRED_FIELDS = ["issue", "check", "role", "verdict", "commit"] as const;
+
+/** Every argument a record of a result carries, the required ones above first. A retraction
+ *  takes none of them: it names the stored result and says why that result is wrong, and
+ *  nothing of a fresh run belongs in it. */
+const RESULT_RECORD_FIELDS = [
+  ...RESULT_REQUIRED_FIELDS,
+  "surface",
+  "run",
+  "observed",
+  "negative_control",
+  "failed",
+  "skipped",
+  "excluded",
+  "screenshots",
+] as const;
+
+/** What retract does, written once: the tool's description gives it, and so does the refusal of
+ *  a call that mixes a retraction with a record. */
+const RESULT_RETRACT_RULE =
+  "Pass retract with the id of a result recorded before, and reason with why that result is " +
+  "wrong, to retract it.";
+
+/** The whole rule a call of this tool keeps: one shape records a result, the other retracts one. */
+const RESULT_SHAPE_RULE =
+  `${RESULT_RETRACT_RULE} A call with retract takes reason and no other argument. A call ` +
+  "without retract records a result, and it takes issue, check, role, verdict and commit.";
+
+/** The refusal of the first rule a result call breaks, or undefined when it keeps them. The two
+ *  shapes are one command because a retraction answers for one recorded result: the reader of
+ *  `dispatch results` sees the result and its retraction together. */
+function resultProblem(value: unknown): string | undefined {
+  const input = value as Record<string, unknown>;
+  const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
+  if (typeof input["retract"] === "string") {
+    const reason = input["reason"];
+    if (typeof reason !== "string" || reason.trim() === "") {
+      return "retract needs reason, the words that say why the result is wrong.";
+    }
+    if (carried.length > 0) {
+      return `retract takes reason alone, and this call also carries ${carried.join(", ")}. Retract the result, then record a new one with a call of its own.`;
+    }
+    return undefined;
+  }
+  if (input["reason"] !== undefined) {
+    return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
+  }
+  const missing = RESULT_REQUIRED_FIELDS.filter((field) => input[field] === undefined);
+  if (missing.length > 0) {
+    return `recording a result needs ${missing.join(", ")}. ${RESULT_RETRACT_RULE}`;
+  }
+  return undefined;
+}
 
 /**
  * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units. The
@@ -589,7 +699,8 @@ export const dispatchToolSpecs = [
     },
     description:
       "Update an existing issue: move its lifecycle status, retitle it, replace its labels, set " +
-      "its priority, link a URL (the pull request that delivers it, a run, a document), set its " +
+      "its priority, set or clear its assignee, link a URL (the pull request that delivers it, a " +
+      "run, a document), set its " +
       "route, set or clear its parent, replace the issues it is blocked by, attach it to " +
       "architecture components, set the repository it targets, or move it on its project's " +
       "board. Status is one of " +
@@ -610,7 +721,10 @@ export const dispatchToolSpecs = [
       "a reopening status (any status but done), and an external_links write that adds no new " +
       "link (so a link can move to the issue that replaced it); everything else, priority " +
       "included, waits for the reopen. " +
-      "priority is yours to set and a human overrides it. before and after move the issue on " +
+      "priority is yours to set and a human overrides it. assignee is the person who answers " +
+      "this issue's asks, and every ask on it waits on them until a person hands that ask on. " +
+      "Passing null unassigns the issue. Set the assignee when a person said who owns the work, as you " +
+      "file the issue or hand it over. before and after move the issue on " +
       "its project's board: before puts it above that issue, after below, and both together " +
       "land it between them. A project's board order is one agent's to keep; in a Legion " +
       "deployment that is the controller. Never reassign an issue a person holds to get a " +
@@ -644,6 +758,13 @@ export const dispatchToolSpecs = [
         .nullable()
         .optional()
         .describe("Coarse priority: 0 is P0 (highest) through 3 is P3 (lowest); null clears it."),
+      assignee: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); null unassigns the issue. Set it only when a person said who owns the issue, never to move a question off the person holding it."
+        ),
       external_links: z
         .array(z.string({ min: 1 }))
         .describe(
@@ -750,6 +871,7 @@ export const dispatchToolSpecs = [
       ],
     },
     description:
+      `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Open a to-do or permission only a human can give, or a decision that has no document to " +
       "live in. A question about the design an issue's document records is not this tool: write " +
       "it into that document as a decision block (dispatch doc-edit inserting an ask block at the " +
@@ -832,6 +954,7 @@ export const dispatchToolSpecs = [
       ],
     },
     description:
+      `${ASK_IS_FOR_A_PERSON} ${ASK_WAITS_ON_THE_ASSIGNEE} ` +
       "Edit an open question in place. Use it to correct or refine the same decision; retract the " +
       "old ask and open a new one when the decision itself changes. " +
       ASK_QUESTION_CONTRACT +
@@ -902,6 +1025,8 @@ export const dispatchToolSpecs = [
       "a newer one replaces or the design made moot, resolved for one whose answer you found; an " +
       "answered ask cannot be resolved, and resolving records no decision by a person. An issue's " +
       "close withdrew its open asks (kind withdrawn, which only Dispatch writes, never this tool); " +
+      "a person who chose not to answer declined the ask on a route of their own (kind declined, " +
+      "which only they write, never this tool); " +
       "an ask on a closed issue is refused (409 ISSUE_CLOSED): reopen the issue first.",
     arguments: (z) => ({
       ask: z
@@ -1395,37 +1520,51 @@ export const dispatchToolSpecs = [
       commit: "1111111111111111111111111111111111111111",
     },
     description:
-      "Record one result of one check of an issue's Verification document, and print the " +
-      "pull-request body line it implies. The check is named by its block id, or, when two " +
-      "Verification documents in reach share that id, by its canonical reference " +
-      "(dispatch://KEY/artifact/verification-md#b-<id>); 409 CHECK_AMBIGUOUS names them, and an " +
-      "id no Verification document of the issue or of an issue above it holds is 400 " +
-      "UNKNOWN_CHECK. A pass counting any failed, skipped or excluded case contradicts itself " +
-      "and is 400 RESULT_CONTRADICTS. Dispatch asks GitHub whether the repository of the " +
-      "check's issue holds the commit: one it does not hold is 400 RESULT_COMMIT_UNKNOWN, " +
-      "naming the commit and that owner/repo, so record the result after the commit is pushed. " +
-      "A repository Dispatch cannot read records the result as before. " +
-      "The result is recorded against the check's own issue, so " +
-      "a child's run of a parent's check appears under that check. A closed issue takes a " +
-      "result only for a check whose when is after_merge or default_branch — the production " +
-      "check after the merge — and refuses every other one with 409 ISSUE_CLOSED, as it refuses " +
-      "every other write. Write the printed line into the pull-request body unchanged: it is " +
-      "the one grammar every writer uses, and it carries no link to Dispatch. " +
+      "Record one result of one check of an issue's Verification document, or retract a result " +
+      "recorded before. A record prints the pull-request body line it implies. Write that line " +
+      "into the pull-request body unchanged: it is the one grammar every writer uses, and it " +
+      "carries no link to Dispatch. " +
+      "Name the check by its block id. Where two Verification documents in reach hold that id, " +
+      "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +
+      "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +
+      "or of an issue above it holds is 400 UNKNOWN_CHECK. " +
+      "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
+      "400 RESULT_CONTRADICTS. " +
+      "Dispatch asks GitHub whether the repository of the check's issue holds the commit. A " +
+      "commit that repository does not hold is 400 RESULT_COMMIT_UNKNOWN, which names the " +
+      "commit and that owner/repo. Record the result after the commit is pushed. A repository " +
+      "Dispatch cannot read records the result as before. " +
+      "The result is recorded against the check's own issue, so a child's run of a parent's " +
+      "check appears under that check. A closed issue takes a result only for a check whose " +
+      "when is after_merge or default_branch, the production check after the merge. It refuses " +
+      "every other record with 409 ISSUE_CLOSED, as it refuses every other write. " +
+      RESULT_RETRACT_RULE +
+      " The retraction keeps both records: the result stays readable, and it proves nothing " +
+      "from then on. Record a new result where the check still needs one. A retraction is " +
+      "taken on a closed issue and for a check of any when. Three callers may retract: the " +
+      "session that recorded the result, a session that holds the Dispatch claim of the issue " +
+      "the result was recorded on, and a caller whose credential carries a person. Every other " +
+      "caller is 403 RETRACTION_FORBIDDEN. A result retracted already is 409 RESULT_RETRACTED. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
-      issue: z.string().describe(ISSUE_REFERENCE),
+      issue: z.string().describe(ISSUE_REFERENCE).optional(),
       check: z
         .string()
         .describe(
           "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
-        ),
+        )
+        .optional(),
       role: z
         .string({ max: 32 })
         .describe(
           "Who ran it: implementer, tester, reviewer. At most 32 characters of a-z and -, printed in the pull-request line."
-        ),
-      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed."),
-      commit: z.string().describe("The 40-character lowercase hex commit the check ran at."),
+        )
+        .optional(),
+      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed.").optional(),
+      commit: z
+        .string()
+        .describe("The 40-character lowercase hex commit the check ran at.")
+        .optional(),
       surface: z.string().describe("Where a person reaches the change.").optional(),
       run: z.string().describe("The command that proved it.").optional(),
       observed: z.string().describe("What the command printed.").optional(),
@@ -1451,38 +1590,76 @@ export const dispatchToolSpecs = [
           "dispatch:// references to image documents of this issue or of the check's issue."
         )
         .optional(),
+      retract: z
+        .string()
+        .describe(
+          "The id of a result recorded before. It records that the result is wrong, and it takes reason alone beside it."
+        )
+        .optional(),
+      reason: z
+        .string()
+        .describe("Why the retracted result is wrong. It goes with retract and with nothing else.")
+        .optional(),
     }),
+    validation: {
+      check: (value) => resultProblem(value) === undefined,
+      message: RESULT_SHAPE_RULE,
+      refusal: (value) => resultProblem(value) ?? RESULT_SHAPE_RULE,
+    },
   },
   {
     name: "dispatch_results",
     example: { issue: "DSP-1" },
     description:
-      "Print each check of an issue's Verification document with its latest result and whether " +
-      "that result is current. A result is current when it ran at the commit the work stands at " +
-      "— the head of an open pull request of the check's issue, the final head of a merged one, " +
-      "for an after_merge check a commit on the branch that issue's pull request merged into or " +
-      "on the repository's default branch (which answers alone where Dispatch holds no merge of " +
-      "that issue), or for a default_branch check a commit on the repository's default branch, " +
-      "whatever branch the pull request merged into — and the check's words have not changed " +
-      "since; older otherwise, and unknown when Dispatch cannot read the repository. On an " +
-      "after_merge check's base branch a read GitHub refused — a 403 or 404, which a branch it " +
-      "no longer holds answers with — says the commit is not on that branch and leaves the " +
-      "default branch to decide; every other failure of that read, a rate limit or a 5xx " +
-      "among them, leaves the result unknown and never older. A push that moves the " +
-      "pull request's head makes a result older with no write of anyone's: record it again at " +
-      "the new head. " +
+      "Print each check of an issue's Verification document with every result recorded against " +
+      "it, newest first. " +
+      "Each check prints what Dispatch compared its results with. A before_merge check is " +
+      "compared with the head of each pull request Dispatch holds for the check's issue, open " +
+      "or merged. An after_merge check is compared with the branch that issue's pull request " +
+      "merged into and with the repository's default branch, and with the default branch alone " +
+      "where Dispatch holds no merge of the issue. A default_branch check is compared with the " +
+      "repository's default branch alone, whatever branch the pull request merged into. Where " +
+      "a check compared with nothing, it says which of three things happened: the issue has no " +
+      "pull request and no branch to compare with, Dispatch cannot read the repository, or a " +
+      "read Dispatch made did not answer. " +
+      "Each check then prints one line that answers the gate: whether a pass of it stands, and " +
+      "from which roles. A pass stands when its commit is one of the commits the check " +
+      "compared with, the check's words did not move after the result was recorded, and no " +
+      "retraction stands against it. " +
+      "The check's own words print once, under the check. Each result then prints its verdict, " +
+      "its role, its whole 40-character commit, where that commit stands, whether the check's " +
+      "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
+      "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
+      "the reason and the caller that retracted it. A check with no result says so. " +
+      "A push that moves a pull request's head leaves a result at the commit before it, with " +
+      "no write of anyone's: record the check again at the new head. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
+      at: z
+        .string()
+        .describe(
+          "One commit of 40 lowercase hex characters. It becomes the only thing every check is compared with, and Dispatch reads GitHub for none of it."
+        )
+        .optional(),
+      brief: z
+        .boolean()
+        .describe(
+          "Cut each reading whose result stands at none of the compared commits to its first 200 characters. Every other reading prints whole."
+        )
+        .optional(),
     }),
   },
   {
     name: "dispatch_artifact",
     example: { issue: "DSP-1", name: "design.md", content: "# Design\n" },
     description:
-      "Attach a local file or inline text as an issue artifact or project document. Do not use it to edit a live document; use " +
-      "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. Uploading the same name again makes its next version, and so does uploading a document's slug (plan-md for plan.md). Exactly one of path or content is required; a markdown document is at most 1 MiB and any other file at most 25 MiB. " +
-      `${ARTIFACT_CONTENT_NAME_RULE} ` +
+      "Attach a local file or inline text as an issue artifact or project document, or make an empty document from its name alone. Do not use it to edit a live document; use " +
+      "dispatch doc-edit instead. Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. " +
+      `${ARTIFACT_SOURCE_RULE} ` +
+      `${ARTIFACT_NAME_EXISTS_RULE} A call that stores nothing - no path, and content absent or blank - is refused under a held name even with force, so a title typed twice never empties the document that holds it. ` +
+      "A markdown document is at most 1 MiB and any other file at most 25 MiB. " +
+      `${ARTIFACT_CONTENT_NAME_RULE} ${ARTIFACT_STORED_TEXT_RULE} ` +
       "Markdown is also refused with 413 CAP_EXCEEDED when it makes more than 65,536 elements (a block weighs 3, and an empty list item, quote, footnote definition or typed block 3 more for the empty paragraph it holds; a table cell 4, a hard line break 3, an image 3, a piece of inline HTML 2, an autolink 2, a footnote reference 2; inline syntax, marks, lines of text and backslash escapes or character references 1 each), or when a new version would leave the document's stored markdown (what its text reads back as) longer than 1 MiB or making more than 65,536 elements, and longer or heavier than before; shorten it or split it across documents. " +
       "In a table row, write every | in a cell as \\|, in code too: a | after two backslashes ends the cell, and a row with more cells than its table is refused. " +
       "Markdown holding an ask block whose body breaks its content rule (one or more question paragraphs, then at most one bullet list of options, last) is refused with 400 INVALID_ASK_BLOCK; a new version of a document is held to it only for the asks it writes or changes. " +
@@ -1495,7 +1672,13 @@ export const dispatchToolSpecs = [
       content: z
         .string()
         .describe(
-          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension; a CR LF or a lone carriage return in it is stored as a line feed."
+          "Inline text to store as a Markdown document, under a name ending in .md or .markdown or with no extension. The command refuses a text the store would write under another spelling, a CR LF or a lone carriage return among them, which Dispatch stores as a line feed. A missing line feed at the end is not such a text: Dispatch adds one, and the upload goes on. The refusal prints the text Dispatch stores, which is the text to send."
+        )
+        .optional(),
+      force: z
+        .boolean()
+        .describe(
+          "Write the next version of a document the owner already holds under this name; without it the upload of a name that exists is refused."
         )
         .optional(),
       summary: z.string().describe("Optional version summary.").optional(),
@@ -1635,14 +1818,18 @@ export const dispatchToolSpecs = [
       "Run the related-item check that dispatch issue, dispatch ask and a new decision block in " +
       "dispatch doc-edit run on their own write, and write nothing: it lists the three items of " +
       "one project most like a title and a text (at most one per issue or document, open ones " +
-      "first), each ask with whether it is answered, and a past decision that already answers " +
-      "the same question. Use it to check a draft before filing it. It searches by meaning and by " +
-      "the text's rarest words, and says how it searched; when meaning search cannot run it " +
-      "searches by keywords only and says why. When it could not search at all it says why and " +
-      "names the dispatch search to run instead. exclude_issues leaves each named issue's own " +
-      "items out of the results, at most 50 of them, so a draft under a parent can leave out " +
-      "that parent and its children without changing how rare the text's words are; " +
-      "keywords_only skips meaning search.",
+      "first), each ask with whether it is answered. Use it to check a draft before filing it. " +
+      "It calls the POST form of the related route, which is the form that also lists the " +
+      "answered asks of other projects: at most two answered questions of another project, " +
+      "each naming the project it is in, its answer and who gave it, ranked by meaning alone " +
+      "and claiming nothing about whether they answer your question. The GET form of that " +
+      "route, which the dashboard's new-issue dialog calls, lists none of them. " +
+      "It searches by meaning and by the text's rarest words, and says how it searched; when " +
+      "meaning search cannot run it searches by keywords only and says why. When it could not " +
+      "search at all it says why and names the dispatch search to run instead. exclude_issues " +
+      "leaves each named issue's own items out of the results, at most 50 of them, so a draft " +
+      "under a parent can leave out that parent and its children without changing how rare the " +
+      "text's words are; keywords_only skips meaning search.",
     arguments: (z) => ({
       project: z.string().describe("Project key to search within, such as CORE."),
       title: z

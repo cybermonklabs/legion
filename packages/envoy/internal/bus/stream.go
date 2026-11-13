@@ -26,8 +26,9 @@ const Stream = "ENVOY_NOTIFICATIONS"
 // changed after. It lives in the configuration, so a backup and restore, a reconcile and a leader
 // election all keep it. The stream's Created time is no identity: a restore changes it, and after
 // a clustered restore the servers can report different Created times (per nats-server's clustered
-// restore code), so it can change again at a later leader election. POST /v1/replay answers the
-// key's value as stream.id (cmd/listener/replay.go).
+// restore code), so it can change again at a later leader election. Every relay frame carries the
+// key's value in its Envoy-Stream-Id header (cmd/listener/session_relay.go), so a session can tell
+// a cursor of its own apart from one belonging to a stream that was restored.
 const StreamIDMetadataKey = "envoy_stream_id"
 
 // The JetStream KV buckets Envoy's stores keep, each named for what it holds.
@@ -123,9 +124,8 @@ const DeliverSubjectPrefix = NotificationTopicPrefix + "envoy.deliver."
 
 // DeliverSubject is the relay subject of session sessionID: the subject the listener that owns the
 // session publishes each message of its consumer (SessionConsumerName) on, and the session
-// subscribes to. Every message a session gets travels on it; a plain subscription of the session's
-// own carries only a lane receipt, a live ad-hoc topic and the core fallback ("Session consumers"
-// in packages/envoy/AGENTS.md).
+// subscribes to. Every message a session on NATS gets travels on it: no session takes a message
+// from a plain NATS subscription of its own ("Session consumers" in packages/envoy/AGENTS.md).
 func DeliverSubject(sessionID string) string {
 	return DeliverSubjectPrefix + sessionID
 }
@@ -174,8 +174,8 @@ func KeptRoleCursorSubject(role string) string {
 const streamDuplicateWindow = contracts.DeliveryDuplicateWindow
 
 // streamSubjects are the notification subjects the stream carries, and the list every consumer
-// filter over them takes (StreamSubjects). The stream carries one subject more, the listener's own
-// kept lane (streamCarriedSubjects).
+// filter over them takes (StreamSubjects). The stream carries two subjects more, the listener's
+// own kept and resume lanes (listenerOwnStreamLanes, streamCarriedSubjects).
 var streamSubjects = []string{
 	"notifications.agent.>",
 	"notifications.dispatch.>",
@@ -187,90 +187,165 @@ var streamSubjects = []string{
 	"notifications.legion.>",
 	"notifications.ghostwispr.>",
 	"notifications.whatsapp.>",
+	// A team's own topic, the one namespace an agent names itself
+	// (notifications.team.deploy-squad): the listener's publish route stores it so a session
+	// that was not connected reads it from its consumer later, and refuses by name every other
+	// notifications. topic no subject here captures (cmd/listener/api.go).
+	"notifications.team.>",
 	ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
+	ExceptionTopicPrefix + "notifications.team.>",
 }
 
-// streamCarriedSubjects is every subject the stream itself carries: the notification subjects and
-// the listener's kept lane, the role messages it could not deliver and the per-role drain cursors
-// over them. That prefix is the stream's alone and no consumer filter takes it: a kept copy still
-// carries its role topic in the envelope, so a consumer handed one would deliver it as a role
-// message and re-trigger role delivery on every listener. The listener reads the lane itself
-// instead (cmd/listener/role_keep.go).
-var streamCarriedSubjects = slices.Concat(streamSubjects, []string{KeptTopicPrefix + ">"})
+// listenerOwnStreamLanes are the subjects the stream carries for the listener itself: the kept
+// lane, holding the role messages it could not deliver and the per-role drain cursors over them
+// (KeptTopicPrefix), and the resume lane, holding where each deleted session consumer stopped
+// (SessionResumeSubjectPrefix). Each is the stream's alone and no consumer filter takes one
+// (consumerFilterSubjects): a kept copy still carries its role topic in the envelope, so a
+// consumer handed one would deliver it as a role message and re-trigger role delivery on every
+// listener, and a drain cursor and a resume record are no envelope at all. The listener reads
+// both lanes itself instead (cmd/listener/role_keep.go, SessionConsumers). A lane added here is
+// carried by the stream and kept out of every consumer's filter by that one list.
+var listenerOwnStreamLanes = []string{KeptTopicPrefix + ">", SessionResumeSubjectPrefix + ">"}
 
-// Every subject of streamCarriedSubjects is classified for POST /v1/replay (cmd/listener/replay.go) by
-// whether a topic under it ever carries one agent session's private payload, read from the code
-// that publishes it. A shared subject's topics are replayed to any session that registered them as
-// interests; a private subject's never are, since a registered interest is any topic a caller
-// names, and a session replays only its own agent subject by name. Each subject is in exactly one
-// list (TestEveryStreamSubjectIsClassifiedForReplay), so a new stream subject must be classified.
-var (
-	sharedStreamSubjects = []string{
-		// Dispatch's outbox: an issue's, a document's or a project's events (internal/dispatch/outbox
-		// envelope), each readable on its owner in Dispatch, and Dispatch's start (startup.Subject); a
-		// copy for one session goes to that session's agent subject, and an issue-less message has
-		// no owner and is not published (outbox publish).
-		"notifications.dispatch.>",
-		// A repository's GitHub webhook events (internal/webhook github, contracts.GithubEnvelopes)
-		// and the CI settlements derived from them (internal/cistore).
-		"notifications.github.>",
-		// A Slack channel's or thread's messages and app mentions (internal/webhook slack,
-		// contracts.SlackEnvelopes).
-		"notifications.slack.>",
-		// A Ghost Wispr recording's events, under its recording id, not an agent session's
-		// (internal/webhook ghostwispr, contracts.GhostWisprEnvelope).
-		"notifications.ghostwispr.>",
-		// A WhatsApp chat's messages the MCP bridge relays (internal/mcpbridge BuildEnvelope).
-		"notifications.whatsapp.>",
+// ListenerOwnLanes reports the lanes the stream carries for the listener itself
+// (listenerOwnStreamLanes), each as the prefix every topic of that lane begins with
+// (`notifications.envoy.kept.`) rather than the `>` pattern the stream carries it as. That is the
+// shape a caller names a lane in and builds a topic of one with: the publish route's refusal
+// names the lane it refused, and the row that tests that refusal is the lanes themselves
+// (cmd/listener), so a lane the stream gains is named and covered with nothing written out a
+// second time. A caller judging one topic asks ListenerOwnLaneOf instead, which reads the same
+// list.
+func ListenerOwnLanes() []string {
+	lanes := make([]string, len(listenerOwnStreamLanes))
+	for i, lane := range listenerOwnStreamLanes {
+		lanes[i] = listenerOwnLanePrefix(lane)
 	}
-	privateStreamSubjects = []string{
-		// Each session's own inbox: Dispatch's routes, follower and author copies, and every
-		// message sent to one session (contracts.AgentSubject).
-		contracts.AgentTopicPrefix + ">",
-		// The Legion daemon's notices for one project's controller (daemon notify.ControllerTopic),
-		// which its role holder hears through the role and never registers.
-		"notifications.legion.>",
-		// A failed delivery's report, carrying the undelivered message's payload and the session it
-		// was for (cmd/listener publishDeliveryException); a session's own lane included.
-		ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
-		// A role message the listener could not deliver, carrying that message's payload and the
-		// holder it was meant for, and the per-role drain cursor over them: no session may
-		// register a topic under it and no replay hands one out.
-		KeptTopicPrefix + ">",
-	}
-)
+	return lanes
+}
 
-// SharedStreamTopic reports whether every topic subject matches lies under one shared stream
-// subject (sharedStreamSubjects), under NATS wildcard rules (SubjectContains): a topic no session's
-// private payload is ever published on.
-func SharedStreamTopic(subject string) bool {
-	return slices.ContainsFunc(sharedStreamSubjects, func(shared string) bool { return SubjectContains(shared, subject) })
+// ListenerOwnLaneOf is the lane of the listener's own that topic lies under, spelled as
+// ListenerOwnLanes spells it, and "" for a topic under none. It is the one test a caller makes
+// of such a topic, and the name it puts in a refusal: the publish route refuses one, since a
+// session writing a drain cursor or a resume floor would take over a role's lane or move
+// another session's delivery (cmd/listener/api.go). So a lane added to listenerOwnStreamLanes
+// is covered wherever the question is asked, and no caller lists a lane of its own.
+func ListenerOwnLaneOf(topic string) string {
+	for _, lane := range listenerOwnStreamLanes {
+		if SubjectContains(lane, topic) {
+			return listenerOwnLanePrefix(lane)
+		}
+	}
+	return ""
+}
+
+// listenerOwnLanePrefix is lane, a subject pattern of listenerOwnStreamLanes, as the prefix every
+// topic of that lane begins with: the pattern without its trailing `>`.
+func listenerOwnLanePrefix(lane string) string {
+	return strings.TrimSuffix(lane, ">")
+}
+
+// streamCarriedSubjects is every subject the stream itself carries: the notification subjects
+// and the listener's own lanes (listenerOwnStreamLanes).
+var streamCarriedSubjects = slices.Concat(streamSubjects, listenerOwnStreamLanes)
+
+// privateStreamSubjects are the subjects of streamSubjects a topic under which ever carries one
+// agent session's private payload, read from the code that publishes it. A session may register
+// no interest reaching one but its own agent subject and its own project's controller notice lane
+// (ReachesPrivateStreamSubject, which POST /v1/interests/subscribe applies), since a registered
+// interest is any topic a caller names and the stored topics drive both the listener's fan-out and
+// the session's own consumer filter. Every other stream subject is deliberately absent, which
+// TestEveryStreamSubjectIsClassifiedForInterestRegistration names one by one, so a new stream
+// subject carrying a session's payload cannot be added without listing it here.
+var privateStreamSubjects = []string{
+	// Each session's own inbox: Dispatch's routes, follower and author copies, and every
+	// message sent to one session (contracts.AgentSubject).
+	contracts.AgentTopicPrefix + ">",
+	// The Legion daemon's notices for one project's controller (daemon notify.ControllerTopic),
+	// which only the session holding that project's controller role may register
+	// (ControllerNoticeRole), and no other session may.
+	contracts.LegionNoticeTopicPrefix + ">",
+	// A failed delivery's report, carrying the undelivered message's payload and the session it
+	// was for (cmd/listener publishDeliveryException); a session's own lane included.
+	ExceptionTopicPrefix + contracts.AgentTopicPrefix + ">",
+	// A failed delivery on a team topic, carrying that message's payload and the session it
+	// was for, as the agent lane above does; only the exception's own reader may have it.
+	ExceptionTopicPrefix + "notifications.team.>",
+	// A role message the listener could not deliver, carrying that message's payload and the
+	// holder it was meant for, and the per-role drain cursor over them: the listener alone
+	// reads the lane, and no session may register a topic under it.
+	KeptTopicPrefix + ">",
+	// The resume floor of a session whose consumer was deleted, which names the session and
+	// the stream sequence its delivery stopped at (SessionResumeSubject): no session may
+	// register a topic under it and no replay hands one out.
+	SessionResumeSubjectPrefix + ">",
+}
+
+// ControllerNoticeRole reports the Legion role token whose holder topic's notices are for, and
+// whether topic is a controller notice lane at all: project <p>'s lane is
+// contracts.LegionNoticeTopicPrefix + <p> + contracts.ControllerNoticeSuffix and its role token
+// is contracts.ControllerRoleToken(<p>), all three generated from legionControllerNoticeSubject
+// and controllerToken in packages/contracts (scripts/gen-go.ts), so a rename there reaches this
+// package rather than a hand copy of it. Both are read here from the one project token the lane
+// names, so no caller builds the pair a second time. Only a literal lane names a role: a wildcard
+// token, an empty project, a longer subject, and the issue notices of the same family
+// (notifications.legion.<p>.<issue key>) name none.
+func ControllerNoticeRole(topic string) (string, bool) {
+	project, found := strings.CutPrefix(topic, contracts.LegionNoticeTopicPrefix)
+	if !found {
+		return "", false
+	}
+	project, found = strings.CutSuffix(project, contracts.ControllerNoticeSuffix)
+	if !found || project == "" || strings.ContainsAny(project, ".*>") {
+		return "", false
+	}
+	return contracts.ControllerRoleToken(project), true
+}
+
+// NamesControllerNoticeLane reports whether any of topics is a controller notice lane
+// (ControllerNoticeRole). It is the one question a caller asks before reading a session's roles:
+// that lane is the only private stream subject whose owner ReachesPrivateStreamSubject reads them
+// for, so a topic set naming none needs no read (cmd/listener's subscribeHandler,
+// store.Registry's controllerLaneRoles).
+func NamesControllerNoticeLane(topics []string) bool {
+	return slices.ContainsFunc(topics, func(topic string) bool {
+		_, lane := ControllerNoticeRole(topic)
+		return lane
+	})
 }
 
 // ReachesPrivateStreamSubject reports whether a topic sessionID registers as an interest reaches a
-// private stream subject (privateStreamSubjects) other than sessionID's own agent subject: it
-// overlaps one under NATS wildcard rules (subjectsOverlap), so another session's inbox, a
-// failed-delivery lane (a session's own included), the Legion controller lane, and wildcards
-// reaching any of them (notifications.>, notifications.*.<x>, notifications.envoy.>) count, and it
-// is not sessionID's own agent subject as one literal subject. A session id holding `*` or `>`
-// makes a wildcard of its "own" agent subject, which is no session's alone and counts too.
-func ReachesPrivateStreamSubject(sessionID, topic string) bool {
+// private stream subject (privateStreamSubjects) that is not its own: it overlaps one under NATS
+// wildcard rules (subjectsOverlap), so another session's inbox, a failed-delivery lane (a session's
+// own included), another project's controller notice lane, and wildcards reaching any of them
+// (notifications.>, notifications.*.<x>, notifications.envoy.>) count. Two literal subjects are a
+// session's own: its agent subject, and the controller notice lane of a project whose controller
+// role roles names (ControllerNoticeRole), which its holder registers because a session receives
+// what its own consumer delivers and nothing else, the lane's core subscription having gone with
+// the rest of that receive path (INFRA-771). roles is what the session holds, as the role claims
+// say (store.Registry.RolesHeldBy), so a session that lost the role loses the lane at its next
+// registration. A session id holding `*` or `>` makes a wildcard of its "own" agent subject, which
+// is no session's alone and counts too.
+func ReachesPrivateStreamSubject(sessionID, topic string, roles []string) bool {
 	if !slices.ContainsFunc(privateStreamSubjects, func(private string) bool { return subjectsOverlap(topic, private) }) {
 		return false
+	}
+	if role, lane := ControllerNoticeRole(topic); lane {
+		return !slices.Contains(roles, role)
 	}
 	return topic != contracts.AgentSubject(sessionID) || strings.ContainsAny(sessionID, "*>")
 }
 
 // StreamSubjects reports the notification subjects the stream carries, excluding the role lanes
-// and the listener's kept lane: the list every consumer filter built over the notification
-// subjects uses. The stream's own list, which carries the kept lane too, is StreamCarriedSubjects.
+// and the listener's own lanes, the kept one and the resume one: the list every consumer filter
+// built over the notification subjects uses. The stream's own list, which carries both of those
+// lanes too, is StreamCarriedSubjects.
 func StreamSubjects() []string {
 	return slices.Clone(streamSubjects)
 }
 
 // StreamCarriedSubjects reports every subject the stream itself carries (streamCarriedSubjects):
-// the notification subjects and the listener's kept lane. A caller that builds or checks the
-// stream takes it, where a consumer's filter takes StreamSubjects.
+// the notification subjects and the listener's own kept and resume lanes. A caller that builds or
+// checks the stream takes it, where a consumer's filter takes StreamSubjects.
 func StreamCarriedSubjects() []string {
 	return slices.Clone(streamCarriedSubjects)
 }
@@ -322,21 +397,31 @@ func StreamCaptures(topic string) bool {
 // (infra/gcp/clusteredhub_live_test.go), and it renders no accounts block, so every client runs
 // in the global account with its JetStream limits unset.
 //
-// The population the cap must cover is not the live session count. Nothing deletes a session's
-// consumer when the session ends: the only delete is inside SessionConsumers.RestartAtFloor
-// (session_consumers.go), and the server removes a consumer SessionConsumerInactiveThreshold, 72
-// hours, after its last pull. The population is therefore every distinct session that pulled
-// inside those 72 hours. It was read twice on 2026-11-06, by sampling the listener's session list
-// every 20 seconds and counting each id that appeared in no earlier read, which needs no
-// assumption about how long a session lives: 238 reads from 01:53:37Z to 02:33:35Z gave 42 new
-// ids, 63.1 an hour, 36 of them stamped inside the window by their UUIDv7, 54.0 an hour, against
-// 663 live; 136 reads from 04:23:40Z to 05:09:16Z gave 61 new ids, 80.3 an hour, 57 of them
-// stamped inside it, 75.0 an hour, against 668 live. The population is live + 72 x rate: 4,551 to
-// 5,206 by the first reading and 6,068 to 6,447 by the second.
+// The population the cap must cover is not the live session count. The measurement below was
+// taken while nothing deleted a session's consumer when the session ended, the only delete being
+// inside SessionConsumers.RestartAtFloor (session_consumers.go), and the server removing a
+// consumer SessionConsumerInactiveThreshold after its last pull, which was then 72 hours. The
+// population was therefore every distinct session that pulled inside those 72 hours. It was read
+// twice on 2026-11-06, by sampling the listener's session list every 20 seconds and counting each
+// id that appeared in no earlier read, which needs no assumption about how long a session lives:
+// 238 reads from 01:53:37Z to 02:33:35Z gave 42 new ids, 63.1 an hour, 36 of them stamped inside
+// the window by their UUIDv7, 54.0 an hour, against 663 live; 136 reads from 04:23:40Z to
+// 05:09:16Z gave 61 new ids, 80.3 an hour, 57 of them stamped inside it, 75.0 an hour, against
+// 668 live. That population was live + 72 x rate: 4,551 to 5,206 by the first reading and 6,068
+// to 6,447 by the second.
+//
+// What bounds the population today is not that threshold but two deletes it only backs up
+// (SessionConsumerInactiveThreshold): a deregistration deletes the session's consumer
+// (cmd/listener/api.go) and the sweep deletes the consumer of every session the registry judges
+// gone, at most 256 a pass (cmd/listener/session_consumer_sweep.go), so the population is the
+// live sessions, plus the sessions that ended without deregistering, which keep their consumers
+// about the gone horizon plus one ENVOY_SESSION_REAP_INTERVAL plus one sweep interval after
+// their last registration - about 60 to 85 at the rates above - plus the consumers a hub still
+// holds from before the sweep existed.
 //
 // dispatch://INFRA-514's capacity gate asks for at least twice the larger of the stream's consumer
-// count and that population, so the gate's own number is 9,102 to 12,894 across the two readings.
-// 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times the population. The second
+// count and that measured population, so the gate's own number is 9,102 to 12,894 across the two
+// readings. 24000 is 1.9 to 2.6 times the gate's number and 3.7 to 5.3 times that population. The
 // reading sets it: at the fleet's growth between the two, a cap only 1.2 to 1.3 times the gate's
 // own number would need raising again within a release or two, and the cap costs nothing while it
 // is not reached, since the server allocates per live consumer. It costs what its consumers cost
@@ -455,13 +540,14 @@ func purgeLegacyRoleMessages(js nats.JetStreamContext) error {
 	return nil
 }
 
-// consumerFilterSubjects is subjects without the listener's kept lane, the list a consumer's
-// filter may carry: the stream's own list holds the kept prefix (streamCarriedSubjects) and no
-// consumer filter ever does, since a kept copy still carries its role topic and a consumer handed
-// one would deliver it as a role message, and a drain cursor is no envelope at all.
+// consumerFilterSubjects is subjects without the listener's own lanes
+// (listenerOwnStreamLanes), the list a consumer's filter may carry: the stream's own list holds
+// both prefixes (streamCarriedSubjects) and no consumer filter ever does.
 func consumerFilterSubjects(subjects []string) []string {
 	return slices.DeleteFunc(slices.Clone(subjects), func(subject string) bool {
-		return subjectsOverlap(subject, KeptTopicPrefix+">")
+		return slices.ContainsFunc(listenerOwnStreamLanes, func(lane string) bool {
+			return subjectsOverlap(subject, lane)
+		})
 	})
 }
 

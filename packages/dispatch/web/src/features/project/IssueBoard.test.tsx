@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -14,8 +14,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { Issue, IssueSummary, UserState } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -52,6 +54,9 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     status: "triage",
     title: "Plan the work",
     updated_at: "2026-09-13T00:00:00Z",
+    closed_at: overrides.status === "done" ? "2026-09-13T00:00:00Z" : null,
+    created_by: null,
+    created_at: "2026-09-13T00:00:00Z",
     ...overrides,
   };
 }
@@ -539,7 +544,8 @@ function articleLabels(region: HTMLElement): (string | null)[] {
 const boardListKey = ["issues", "project", "CORE"] as const;
 
 test("a board refetch already on the wire when a card moves is dropped: the card stays where it moved and keeps focus", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const patchIssue = patchInFlight();
   const { cleanup, listIssues, queryClient } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -566,12 +572,11 @@ test("a board refetch already on the wire when a card moves is dropped: the card
     await waitFor(() => expect(queryClient.getQueryState(boardListKey)?.fetchStatus).toBe("idle"));
     // The stale answer, had it landed, has notified the board by now: query-core notifies on a
     // zero-delay timer queued when the data is written, ahead of this one.
-    const notified = Promise.withResolvers<void>();
-    setTimeout(notified.resolve, 0);
-    await act(() => notified.promise);
+    await tick(0);
     expect(articleLabels(inProgress)).toEqual(["CORE-2 Bravo", "CORE-4 Delta"]);
     expect(within(inProgress).getByRole("article", { name: "CORE-2 Bravo" })).toHaveFocus();
   } finally {
+    realClock();
     cleanup();
     patchIssue.mockRestore();
   }
@@ -741,12 +746,10 @@ async function droppedCard(): Promise<HTMLElement> {
 }
 
 /** Wait until a click reaches React again: dnd-kit stops click propagation for 50 ms after a
- * drop, so a route is no evidence of what a click did until that listener is gone. The timer it
- * waits out was armed before this one, so it has fired by the time this resolves. */
+ * drop, so a route is no evidence of what a click did until that listener is gone. The fake
+ * clock the test installed moves past the 50 ms, so that timer has fired when this resolves. */
 async function pastDndKitClickGuard(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 80);
-  await act(async () => promise);
+  await tick(80);
 }
 
 test("the click that trails a drop never follows the card's link, however late it arrives", async () => {
@@ -782,7 +785,8 @@ test("the click that trails a drop never follows the card's link, however late i
 // a touch drag makes no tap, and a cancelled drag releases outside the page - so the mark a
 // drop leaves must not outlive the gesture that follows it, by pointer or by key.
 test("a drop that draws no click leaves the next press on the board working", async () => {
-  const user = userEvent.setup();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const patchIssue = answerIssuePatches().mockResolvedValue(patched);
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -794,6 +798,7 @@ test("a drop that draws no click leaves the next press on the board working", as
     await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
   } finally {
+    realClock();
     cleanup();
     patchIssue.mockRestore();
   }
@@ -843,6 +848,7 @@ test("a drag cancelled with Escape keeps its own release off the card's link", a
 // The press of a pointer drops the mark as a key press does. `fireEvent.mouseDown` emits no
 // `pointerdown`, so the drag above cannot reach that listener; this row presses one itself.
 test("a pointer press on a card after a drop that drew no click follows its link", async () => {
+  jest.useFakeTimers();
   const patchIssue = answerIssuePatches().mockResolvedValue(patched);
   const { cleanup } = renderBoard({}, undefined, keyboardIssues);
   try {
@@ -859,6 +865,7 @@ test("a pointer press on a card after a drop that drew no click follows its link
     });
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1");
   } finally {
+    realClock();
     cleanup();
     patchIssue.mockRestore();
   }

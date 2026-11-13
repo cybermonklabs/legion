@@ -824,7 +824,10 @@ type unknownIDRouteProbe struct {
 // caller - is refused before the route reads the id, with what it takes to reach that read.
 // Every other row is driven with that default, and no row is left out of the test.
 var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
-	"PATCH /api/v1/asks/{id}":                                {body: map[string]any{"question": "Which way?"}},
+	"PATCH /api/v1/asks/{id}": {body: map[string]any{"question": "Which way?"}},
+	// The hand-on reads who it hands the ask to before it reads the ask (the pool refuses a
+	// second connection under the transaction), so its probe names a person who has signed in.
+	"PUT /api/v1/asks/{id}/asked-of":                         {body: map[string]any{"asked_of": "alice"}},
 	"POST /api/v1/asks/{id}/resolve":                         {body: map[string]any{"kind": "resolved", "reason": "Settled elsewhere."}},
 	"PUT /api/v1/me/asks/{id}/snooze":                        {body: map[string]any{"snoozed_until": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}},
 	"PATCH /api/v1/comments/{id}":                            {body: map[string]any{"body": "A remark."}},
@@ -834,6 +837,7 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {bearer: true},
 	"POST /api/v1/messages/{id}/reply":                       {body: map[string]any{"actor": sessionActor(), "attempt": 1, "body": "A reply."}, bearer: true},
 	"POST /api/v1/artifacts/{id}/rebuild":                    {body: map[string]any{}},
+	"PATCH /api/v1/artifacts/{id}":                           {body: map[string]any{"name": "Launch notes"}},
 	"POST /api/v1/artifacts/{id}/versions":                   {body: map[string]any{"summary": "A named version"}},
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":     {body: map[string]any{"text_sha256": strings.Repeat("0", 64)}},
 	"PUT /api/v1/me/documents/{id}/read":                     {body: map[string]any{"version": 1}},

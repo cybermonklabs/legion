@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -40,6 +41,10 @@ import (
 const (
 	keptPropertyRuns  = 30
 	keptPropertySteps = 100
+	// keptPropertyTest is the one test whose seeds LEGION_KEPT_PROPERTY_SEED and
+	// LEGION_KEPT_PROPERTY_RUNS set (keptPropertySeeds); every other driver hard-codes its own,
+	// which is what a failure's replay command has to say (keptRun.replay).
+	keptPropertyTest = "TestKeptDecisionsReachTheCurrentArchitectOnce"
 	// keptQuiesceBound caps the quiescence loop: a root whose rows and deliveries do not drain
 	// with every failure switched off is itself a failure of the invariant, reported with its
 	// trace rather than left to the package deadline.
@@ -804,12 +809,13 @@ type keptRun struct {
 // was owed nothing is no telling of any debt, and is reported with the debt it left unpaid.
 //
 // Each seed's operations are its own: the generator is the only source of choices, the machines'
-// clock never moves (stillClock), and every wait is for a goroutine the step started. A run whose
-// steps all ran one at a time replays exactly from its seed; the two steps that run rows beside
-// each other — raceRow, which holds one catch-up's publish open while one other operation runs,
-// and runTogether, which runs several due rows at once on lanes of their own — are ordered by
-// PostgreSQL and the Go scheduler as much as by the seed, so a failure either reaches is reported
-// with its seed and its whole trace and may need more than one replay to come back.
+// timers are armed and never fire (stillClock, whose Now is the wall clock), and every wait is
+// for a goroutine the step started. A run whose steps all ran one at a time replays exactly from
+// its seed; the two steps that run rows beside each other — raceRow, which holds one catch-up's
+// publish open while one other operation runs, and runTogether, which runs several due rows at
+// once on lanes of their own — are ordered by PostgreSQL and the Go scheduler as much as by the
+// seed, so a failure either reaches is reported with its seed and its whole trace and may need
+// more than one replay to come back.
 // LEGION_KEPT_PROPERTY_SEED runs one seed, LEGION_KEPT_PROPERTY_RUNS how many seeds and
 // LEGION_KEPT_PROPERTY_STEPS how many operations each drives.
 //
@@ -1078,6 +1084,7 @@ func (r *keptRun) restart() {
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	r.t.Cleanup(sup.stop)
 	if !first {
@@ -1464,14 +1471,14 @@ func (r *keptRun) park() {
 		mode == keptParkOverAMergeReadyChild, r.root.issue.Generation, r.lastRow())
 }
 
-// awaitTheChildsMerge puts the child one merge from landing: it stands at phase.AwaitingMerge with
+// awaitTheChildsMerge puts the child one merge from landing: it stands at phase.Merging with
 // an open pull request recorded, which is the member a close under a root that is not done hands
 // to Legion and the only one it does (workflow's unfinishedHandOvers). Only a merger's READY arms
 // that merge, and the linger the park begins disarms it, so nothing of this tree would ever land
 // it; handed over, the child carries the pull request into a tree of its own, and what a person
 // decided on it is owed to the architect of that tree.
 func (r *keptRun) awaitTheChildsMerge() {
-	r.child.issue.Phase = phase.AwaitingMerge
+	r.child.issue.Phase = phase.Merging
 	r.putIssue(r.child.issue)
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: keptChild,
@@ -1603,14 +1610,14 @@ func keptCount(kept *record.KeptDecisions) int {
 // still stands in the root's tree, in the workflow, and the root lingers, under whichever of the
 // two rules the root's own status picks (workflow's unfinishedHandOvers). A root that stayed done
 // hands over every such member, whatever phase it stands in (handsOverEveryMember). A root a
-// person parked hands over only a member standing at phase.AwaitingMerge whose pull request is
+// person parked hands over only a member standing at phase.Merging whose pull request is
 // still open: a re-admission of that root resumes a member of any other phase where it stood, and
 // the one thing it cannot do is arm again the merge the park disarmed.
 func (r *keptRun) handOverEnabled(member *keptTree) bool {
 	if member.handed || !r.root.issue.Lingers() || record.OutOfWorkflow(member.issue.Status) {
 		return false
 	}
-	return r.handsOverEveryMember() || (member.issue.Phase == phase.AwaitingMerge && r.pullRequestOpen(member.key))
+	return r.handsOverEveryMember() || (member.issue.Phase == phase.Merging && r.pullRequestOpen(member.key))
 }
 
 // handsOverEveryMember is whether the close of the root's linger hands over every member it
@@ -1684,8 +1691,8 @@ func (r *keptRun) handOverMemberErr(member *keptTree, parent string, withRun boo
 			Generation: r.root.issue.Generation}); err != nil {
 			return err
 		}
-		row, err := record.NewOutboxRow(member.key, record.StatusWrite{Status: "todo", ObservedStatus: member.issue.Status,
-			HandOver: true, HandOverTree: r.root.issue.Tree, HandOverLinger: r.root.issue.Generation}, now)
+		row, err := record.NewOutboxRow(member.key, record.HandOverStatusWrite("todo", member.issue.Status,
+			r.root.issue.Tree, r.root.issue.Generation), now)
 		if err != nil {
 			return err
 		}
@@ -1961,7 +1968,7 @@ func (r *keptRun) owedOfTheClosingTree() []string {
 func (r *keptRun) handedOverByTheClose(key string) bool {
 	var queued bool
 	if err := r.pool.QueryRow(r.ctx, `select exists (select 1 from outbox where issue = $1 and kind = $2
-		and (payload->>'handOver')::boolean)`, key, string(record.OutboxKindDispatchStatus)).Scan(&queued); err != nil {
+		and payload->>'kind' = $3)`, key, string(record.OutboxKindDispatchStatus), string(record.HandOverStatusRow)).Scan(&queued); err != nil {
 		r.fatalf("read whether the close handed %s to Legion: %v", key, err)
 	}
 	return queued
@@ -2345,8 +2352,9 @@ func keptClaimState(state supervise.ClaimState) supervise.ClaimState {
 }
 
 // claimFailed tells the workflow that an architect's claim spent its launch budget, as the
-// daemon's terminal hook does (workflowRuntime.applyTerminal): the engine writes the tree's
-// worker-died notice, which goes to that same architect and waits ahead of its catch-ups.
+// daemon's terminal hook does (workflowRuntime.applyTerminal), carrying the same cause, counters
+// and limits that hook carries: the engine writes the tree's worker-died notice, which goes to
+// that same architect and waits ahead of its catch-ups.
 func (r *keptRun) claimFailed(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2354,7 +2362,8 @@ func (r *keptRun) claimFailed(tree *keptTree) {
 	}
 	held := machine.Claim()
 	if _, err := intake.ApplyFact(r.ctx, r.pool, terminalSource, terminalEventID(held, supervise.StateFailed),
-		intake.ClaimFailed{Issue: tree.key, Role: claim.RoleArchitect, Reason: held.Failure}, r.engine); err != nil {
+		intake.ClaimFailed{Issue: tree.key, Role: claim.RoleArchitect, Reason: held.Failure,
+			Cause: held.FailureCause, Budgets: held.Budgets, Limits: r.sup.deps.Limits}, r.engine); err != nil {
 		r.fatalf("apply the failure of %s's architect at launch %d: %v", tree.key, held.Generation, err)
 	}
 	r.tracef("claim-failed tree=%s launch=%d refusals=%d notice-row=%d", tree.key, held.Generation, r.rt.refused(), r.lastRow())
@@ -2652,8 +2661,9 @@ func (r *keptRun) busyRefusalEnabled(tree *keptTree) bool {
 // every decision the task names (the claim store's tellKeptDecisions). Oh My Pi then answers that
 // very prompt busy, since the turn it is in is not this task's: the machine takes the
 // confirmation back, charges nothing (supervise's refused), and the write that records it puts
-// back every mark the confirmation told (holdKeptDecisions' insert). The turn ends, and the task
-// is sent again under the id it kept, which the shim and this run read as the same telling.
+// back every mark the confirmation told (the claim store's putBackARetakenConfirmation). The
+// turn ends, and the task is sent again under the id it kept, which the shim and this run read
+// as the same telling.
 func (r *keptRun) busyRefusalAfterAConfirmation(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -2798,9 +2808,10 @@ func (r *keptRun) deathEnabled(tree *keptTree) bool {
 // task and tells what it names, and the process is then found gone. Oh My Pi does not go on with
 // an interrupted turn, so the machine takes the task back under a new id the relaunched process's
 // shim has no record of (supervise's interrupted), and the write that records it puts back every
-// mark that confirmation told (holdKeptDecisions). The relaunch's agent comes up and its ready
-// sends the task again, which tells the same decisions to the same architect a second time: the
-// accepted lesser fault, since the turn died and nobody can say what of it the agent read.
+// mark that confirmation told (putBackARetakenConfirmation). The relaunch's agent comes up and
+// its ready sends the task again, which tells the same decisions to the same architect a second
+// time: the accepted lesser fault, since the turn died and nobody can say what of it the agent
+// read.
 func (r *keptRun) deathInTheTasksTurn(tree *keptTree) {
 	machine, found := r.sup.Machine(tree.token)
 	if !found {
@@ -3675,10 +3686,46 @@ func (r *keptRun) tracef(format string, args ...any) {
 	r.trace = append(r.trace, fmt.Sprintf("%3d %s", r.step, fmt.Sprintf(format, args...)))
 }
 
-// fatalf ends the run with what broke, the seed that replays it, the step it broke at and every
-// operation that led there.
+// fatalf ends the run with what broke, the command that replays it, the step it broke at and
+// every operation that led there.
 func (r *keptRun) fatalf(format string, args ...any) {
 	r.t.Helper()
-	r.t.Fatalf("%s\n\nseed %d, step %d (LEGION_KEPT_PROPERTY_SEED=%d replays this run)\ntrace:\n%s",
-		fmt.Sprintf(format, args...), r.seed, r.step, r.seed, strings.Join(r.trace, "\n"))
+	r.t.Fatalf("%s\n\nseed %d, step %d (replay with %s; a replay can take more than one run, since the two steps that "+
+		"run rows beside each other are ordered by PostgreSQL and the Go scheduler as well as by the seed)\ntrace:\n%s",
+		fmt.Sprintf(format, args...), r.seed, r.step, r.replay(), strings.Join(r.trace, "\n"))
+}
+
+// replay is the command that runs this one failing subtest again, as CI ran it and with nothing
+// served from the test cache: CGO_ENABLED=1, which -race needs and a Legion pod leaves at 0
+// (packages/daemon/docker/worker.Dockerfile), where these failures are replayed; -count=1, since
+// -run is a cacheable flag and the cache keys on the files and the environment rather than on
+// what Postgres holds, so a second identical run would print `ok … (cached)` and run nothing;
+// and -race, which is how CI runs this package (.github/workflows/ci.yaml) and where the
+// schedules that fail come from. A seed driver hard-codes its seeds
+// (kept_decision_handover_seeds_test.go, kept_decision_regression_seeds_test.go) and reads
+// LEGION_KEPT_PROPERTY_SEED not at all, so -run alone names its subtest; under
+// TestKeptDecisionsReachTheCurrentArchitectOnce the subtests are the seeds that variable or
+// LEGION_KEPT_PROPERTY_RUNS makes (keptPropertySeeds), so the seed is named with it or -run
+// matches nothing and the command passes having run no test at all, and the step count goes with
+// it whenever this run took one the default does not give.
+func (r *keptRun) replay() string {
+	command := fmt.Sprintf("CGO_ENABLED=1 go test -count=1 -race -run '%s' ./internal/daemon/", keptRunPattern(r.t.Name()))
+	if !strings.HasPrefix(r.t.Name(), keptPropertyTest+"/") {
+		return command
+	}
+	command = fmt.Sprintf("LEGION_KEPT_PROPERTY_SEED=%d %s", r.seed, command)
+	if r.steps != keptPropertySteps {
+		command = fmt.Sprintf("LEGION_KEPT_PROPERTY_STEPS=%d %s", r.steps, command)
+	}
+	return command
+}
+
+// keptRunPattern is go test's -run pattern for one test by its full name, each element of the
+// path anchored and quoted so that no sibling subtest runs beside it.
+func keptRunPattern(name string) string {
+	parts := strings.Split(name, "/")
+	for i, part := range parts {
+		parts[i] = "^" + regexp.QuoteMeta(part) + "$"
+	}
+	return strings.Join(parts, "/")
 }

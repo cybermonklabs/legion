@@ -1,7 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { expect, type Locator, test, type WebSocket } from "@playwright/test";
-
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
 import {
@@ -18,7 +16,7 @@ import {
 } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
-import { resetDatabase } from "./seed";
+import { expect, type Locator, test, type WebSocket } from "./test";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -57,11 +55,8 @@ async function renameUntilShown(
   throw new Error(`no rename of ${key} reached the page in 10 writes 2 s apart`);
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("live: bob's ask updates alice's Inbox and project badges without reload", async ({
+// @pr: A two-context race over the live stream: bob's ask has to move alice's Inbox and project badges with no reload.
+test("live: bob's ask updates alice's Inbox and project badges without reload @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -136,7 +131,10 @@ test("live: answering an ask updates the Inbox and project badges immediately", 
   await expect(navigation.locator('a[href="/projects/CORE"]')).toContainText("1");
 
   await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("radio", { name: "Yes" }).check();
-  await inboxPage.getByTestId(`ask-${ask.id}`).getByRole("button", { name: "Answer" }).click();
+  await inboxPage
+    .getByTestId(`ask-${ask.id}`)
+    .getByRole("button", { exact: true, name: "Answer" })
+    .click();
   await expect(inboxPage.getByTestId(`ask-${ask.id}`)).toHaveCount(0);
   await issuePage.clock.fastForward(MIN_REFETCH_INTERVAL_MS);
 
@@ -189,6 +187,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // Anything the first rename scheduled fires on this clock, and is then cleared with the
     // counters below; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS);
+    // The margin that paragraph names: a read the jump above set going leaves the page at once,
+    // and this window in Node is for it to reach Playwright's counter before the counters are
+    // cleared, since the page's own clock cannot carry a request across the wire.
     await sleep(100);
     inboxReads = 0;
     pinnedReads = 0;
@@ -202,6 +203,9 @@ test("live: a message on another issue reads neither the Inbox nor the pinned li
     // `MIN_REFETCH_INTERVAL_MS` both fall due inside this jump, so a read either owed is sent and
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a read either timer owed leaves the page in the jump
+    // above, and this window in Node is for it to reach Playwright's counter, which the page's
+    // own clock cannot move it to. A read that never happens marks nothing else to wait on.
     await sleep(100);
 
     expect([inboxReads, pinnedReads]).toEqual([0, 0]);
@@ -222,7 +226,7 @@ test("live: an agent message makes a read issue appear in the project's Unread f
   try {
     await page.goto("/projects/CORE?unread=1");
     await expect(page.getByRole("heading", { name: "Core" })).toBeVisible();
-    await expect(page.getByRole("region", { exact: true, name: "Project issues" })).toBeVisible();
+    await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
     await expect(page.getByText("Unread after agent message")).toHaveCount(0);
 
     await createMessage(issue.key, { body: "This should make the issue unread" }, bob);
@@ -357,7 +361,8 @@ test("live: new events on the open issue appear in Conversation and mark it read
   await alice.close();
 });
 
-test("live: the stream recovers after the connection drops", async ({ browser }, testInfo) => {
+// @pr: The live socket: the stream has to recover after the connection drops.
+test("live: the stream recovers after the connection drops @pr", async ({ browser }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Reconnect target" });
 
@@ -408,7 +413,8 @@ test("live: the stream recovers after the connection drops", async ({ browser },
 
 // SLOW(>=2s): two live sockets, each with its own subscribe and replay, and the two messages
 // written across the forced disconnect between them.
-test("live: a forced server disconnect resumes from the last event id", async ({ browser }) => {
+// @pr: The live socket: after a forced server disconnect the page resumes from the last event id, so nothing written across it is lost.
+test("live: a forced server disconnect resumes from the last event id @pr", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Disconnect target" });
   await createMessage(issue.key, { body: "Before disconnect" }, bob);
@@ -676,13 +682,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await alice.close();
 });
 
-test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone", async ({
+test("live: the Reconnecting pill never covers the phone margin sheet toggle @phone @phone-only", async ({
   browser,
 }, testInfo) => {
-  test.skip(
-    testInfo.project.name !== "iphone",
-    "the margin sheet toggle only renders as a fixed bottom bar on phone; desktop hides it via md:hidden"
-  );
   await createProject({ key: "CORE", name: "Core" });
   // #844 hides the margin sheet's `<aside>` (and its toggle) entirely when no
   // issue is open, so the toggle only exists on an issue page.
@@ -790,12 +792,19 @@ test("live: an event during a project list's first load fetches it again once th
     release();
 
     // The held body predates the rename; the list is fetched again once it lands.
-    await expect(page.getByLabel(`${issue.key} ${newTitle}`)).toBeVisible();
-    await expect(page.getByLabel(`${issue.key} OLDTITLE`)).toHaveCount(0);
+    await expect(
+      page.getByRole("row", { name: `${issue.key} ${newTitle}`, exact: true })
+    ).toBeVisible();
+    await expect(page.getByRole("row", { name: `${issue.key} OLDTITLE`, exact: true })).toHaveCount(
+      0
+    );
     // The 100 ms event batch and the refresh the scheduler holds back for
     // `MIN_REFETCH_INTERVAL_MS` fire inside this jump, so a third request would already be
     // counted; the margin is for the request reaching Playwright's counter.
     await page.clock.runFor(MIN_REFETCH_INTERVAL_MS + 100);
+    // The margin that paragraph names: a third request would leave the page inside the jump
+    // above, and this window in Node is for it to reach Playwright's counter; a request that is
+    // never made marks nothing else the row could wait on.
     await sleep(100);
     expect([listRequests, mostInFlight]).toEqual([2, 1]);
   } finally {

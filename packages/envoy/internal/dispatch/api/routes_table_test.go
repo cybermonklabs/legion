@@ -519,6 +519,13 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"GET /api/v1/broadcasts",
 		"GET /api/v1/broadcasts/{id}",
 		"POST /api/v1/asks/{id}/answer",
+		// A decline is the person's own word that they will not answer, which nobody may give
+		// for them: no agent and no deployment credential declines a question on their behalf.
+		"POST /api/v1/asks/{id}/decline",
+		// Handing an ask to another person is this change's own row, and it is the person's as
+		// the answer above it is: Dispatch takes who hands the question on from the credential,
+		// and a credential the deployment configured is nobody to hand one on.
+		"PUT /api/v1/asks/{id}/asked-of",
 		"POST /api/v1/comments/{id}/reopen",
 		"POST /api/v1/comments/{id}/accept",
 		"PATCH /api/v1/comments/{id}",
@@ -527,6 +534,12 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/artifacts/{id}/subscribers/{session_id}",
 		"POST /api/v1/artifacts/{id}/rebuild",
 		"POST /api/v1/artifacts/{id}/reviews",
+		// The title correction is this change's own row: a document's title is what every
+		// reader sees it by, so the person whose credential it is corrects one.
+		"PATCH /api/v1/artifacts/{id}",
+		// The removal is this change's own row: a document made by mistake is removed by the
+		// person whose credential it is, as that person's title correction is.
+		"DELETE /api/v1/artifacts/{id}",
 		"GET /api/v1/me/state",
 		"PUT /api/v1/me/issues/{key}/state",
 		"GET /api/v1/me/agents/state",

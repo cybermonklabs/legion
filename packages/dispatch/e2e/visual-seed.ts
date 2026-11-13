@@ -1,8 +1,8 @@
-/** `bun e2e/visual-seed.ts <path>`: empties this lane's database, writes the review corpus into
+/** `bun e2e/visual-seed.ts <path>`: empties this stack's database, writes the review corpus into
  *  it, and saves the ids that corpus made as JSON at `<path>`.
  *
- *  It runs on the HOST, under `bun`, inside the harness `e2e/run.ts` started: `e2e/seed.ts` and
- *  `e2e/delivery-seed.ts` reach the `psql` binary (`e2e/psql.ts`), and the pinned Playwright
+ *  It runs on the HOST, under `bun`, inside the stack `e2e/harness-up.ts` started: `e2e/seed.ts`
+ *  and `e2e/delivery-seed.ts` reach the `psql` binary (`e2e/psql.ts`), and the pinned Playwright
  *  image carries none. The container that takes the shots reads this file instead of seeding -
  *  `DISPATCH_E2E_VISUAL_SEED` names it there - so the visual specs import nothing that reaches
  *  `./psql`. `e2e/visual-run.sh` is what runs the two halves in order.

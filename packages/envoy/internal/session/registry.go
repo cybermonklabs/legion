@@ -35,10 +35,10 @@ type SessionEntry struct {
 	// every session registers through one shared listener or each machine runs its own; a
 	// re-registration through another listener moves both, this entry's and the machine the
 	// stored subscription names (store's mergeForUpsert). No delivery reads Host: a message
-	// reaches the session from its own consumer, relayed by the listener the entry names, or on
-	// the session's own subscription, wherever its process runs. Host is empty for a session
-	// whose plugin predates this field (subscribeBody had no "host"), and HostOrMachine falls
-	// back to MachineID so every display caller sees a populated value.
+	// reaches the session from its own consumer, relayed by the listener the entry names,
+	// wherever its process runs. Host is empty for a session whose plugin predates this field
+	// (subscribeBody had no "host"), and HostOrMachine falls back to MachineID so every display
+	// caller sees a populated value.
 	Host string `json:"host,omitempty"`
 	// TmuxPlace is where the session's process sits in tmux, as its own client read it and sent
 	// it with this registration. Nil for a session that is in no pane — one started outside
@@ -845,21 +845,26 @@ func (r *SessionRegistry) Lookup(sessionID string) (SessionEntry, State) {
 	return cs.entry, r.stateOf(cs.entry, now)
 }
 
-// Refresh reads sessionID's entry from the session bucket itself, applies it to the cache as a
-// delivered record is applied, and then answers as Get does. The cache follows the bucket
-// through a watcher and so trails it: a session another listener registered a moment ago, or one
-// this listener has not re-read since its connection to the bus came back, can be in the bucket and
-// not yet here. A caller that acts on a session being missing asks here — one about to take
-// something away from a session because it looks gone, and one about to tell a sender that its
-// destination is gone, which makes that sender route around the pane, report it, or stop. Get is
-// the read for a caller that only enriches what it already holds, or that asks again anyway, since
-// a cache miss cannot tell a session that ended from one this cache has not caught up with. A key
-// no read may name is nats.ErrKeyNotFound, since no session can register under it: one
-// bus.KeyValue refuses (bus.ErrRefused), `ses:bad` among them, which is outside nats.go's key
-// alphabet and which an earlier build or a direct bucket write could leave as a role holder. Any
-// other error is a read that did not answer, ctx's end among them: nats.go's KV read takes no
-// context and waits out the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends and
-// lets that read finish on its own (bus.Bounded).
+// Refresh reads sessionID's entry from the session bucket itself, with the direct get nats.go
+// answers a KV read with, applies it to the cache as a delivered record is applied, and then
+// answers as Get does. The cache follows the bucket through a watcher and so trails it: a
+// session another listener registered a moment ago, or one this listener has not re-read since
+// its connection to the bus came back, can be in the bucket and not yet here. A caller that
+// acts on a session being missing asks here — one about to take something away from a session
+// because it looks gone, and one about to tell a sender that its destination is gone, which
+// makes that sender route around the pane, report it, or stop. Get is the read for a caller that
+// only enriches what it already holds, or that asks again anyway, since a cache miss cannot tell
+// a session that ended from one this cache has not caught up with. A key no read may name is
+// nats.ErrKeyNotFound, since no session can register under it: one bus.KeyValue refuses
+// (bus.ErrRefused), `ses:bad` among them, which is outside nats.go's key alphabet and which an
+// earlier build or a direct bucket write could leave as a role holder. Any other error is a read
+// that did not answer, ctx's end among them: nats.go's KV read takes no context and waits out
+// the JetStream MaxWait (10 s), so Refresh stops waiting when ctx ends and lets that read
+// finish on its own (bus.Bounded).
+//
+// A direct get of a clustered bucket is answered by any copy near enough to current, so this
+// read can report a record the bucket holds as missing while the copy answering catches up. A
+// caller that cannot afford that miss asks RefreshFromLeader.
 //
 // A read the cache does not take is answered as read, uncached, as store.Registry.Get answers its
 // own: one made before a watch moved the epoch (a probe or a Rewatch installed a recreated stream),
@@ -874,6 +879,37 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 	if !answered {
 		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
 	}
+	return r.applyRead(sessionID, epoch, got, err)
+}
+
+// RefreshFromLeader is Refresh with the leader of the session bucket's stream answering the read
+// (bus.KeyValue.GetFromLeader) instead of whichever copy of the bucket a direct get reaches: it
+// applies what it read to the cache as Refresh does, answers as Get would for that row, and maps
+// every error the same way, ctx's end included.
+//
+// It is the read for the caller that cannot afford a stale miss, because a miss makes it take
+// something away from the session on the strength of the session having no record at all: the
+// listener's delete of a session's JetStream consumer, which re-reads this bucket under the
+// session's lock and deletes only where the session is gone from it (cmd/listener). A copy that
+// has not applied a relaunch's registration would answer that read "not found", and the delete
+// would then remove the consumer of a live relaunch, whose relay stops until it registers again.
+// Every other caller asks Refresh, which costs the server less: a direct get is answered by any
+// copy that is near enough to current, where this read is one more thing for the leader to do.
+func (r *SessionRegistry) RefreshFromLeader(ctx context.Context, sessionID string) (SessionEntry, error) {
+	kv, epoch := r.watcher.Handle()
+	got, err := kv.GetFromLeader(ctx, sessionID)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return SessionEntry{}, fmt.Errorf("read session %s from the bucket: %w", sessionID, err)
+	}
+	return r.applyRead(sessionID, epoch, got, err)
+}
+
+// applyRead is what Refresh and RefreshFromLeader both do with the read they made: got and err
+// are that read's answer, and epoch the watcher epoch it was taken in. A key the bucket refuses
+// is not found, since no session can register under it; any other error is the read's own. The
+// entry is applied to the cache as a delivered record is, and the answer is Get's for the row
+// that leaves, or uncachedLocked's where the cache did not take it.
+func (r *SessionRegistry) applyRead(sessionID string, epoch uint64, got nats.KeyValueEntry, err error) (SessionEntry, error) {
 	if errors.Is(err, bus.ErrRefused) {
 		return SessionEntry{}, fmt.Errorf("%w: %w", nats.ErrKeyNotFound, err)
 	}
@@ -896,10 +932,11 @@ func (r *SessionRegistry) Refresh(ctx context.Context, sessionID string) (Sessio
 	return r.Get(sessionID)
 }
 
-// uncachedLocked answers entry, a read of the bucket the cache did not take (Refresh), as Get
-// would answer the row applying it leaves: a delete or purge marker, and a value that does not
-// decode, which applying evicts, are not found, and so is a row past its TTL, measured as the
-// cache measures one (decodeLocked). Callers hold r.mu.
+// uncachedLocked answers entry, a read of the bucket the cache did not take (applyRead, for
+// Refresh and RefreshFromLeader alike), as Get would answer the row applying it leaves: a delete
+// or purge marker, and a value that does not decode, which applying evicts, are not found, and
+// so is a row past its TTL, measured as the cache measures one (decodeLocked). Callers hold
+// r.mu.
 func (r *SessionRegistry) uncachedLocked(entry kvwatch.Entry, now time.Time) (SessionEntry, error) {
 	if entry.Op != kvwatch.OpPut {
 		return SessionEntry{}, nats.ErrKeyNotFound

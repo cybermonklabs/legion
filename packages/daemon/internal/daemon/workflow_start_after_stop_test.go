@@ -118,7 +118,7 @@ func startedAgainDaemon(t *testing.T) (*pgxpool.Pool, config.Config, overrides, 
 // merge's check is opened for), over the repositories these tests serve. A fact applied through
 // it writes what the daemon's own handlers would.
 func startedAgainEngine(cfg config.Config) *workflow.Engine {
-	engineCfg := engineConfig(cfg, "")
+	engineCfg := engineConfig(cfg, "", nil)
 	engineCfg.Repositories = testRepositories
 	return workflow.New(record.NewStore(), engineCfg, quietLogger())
 }
@@ -302,7 +302,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 		// The retro is the implementer's own phase, as implementing is, so the move back is one
 		// between two phases of one role: the worker the move starts is the worker the operator
-		// stopped (workflow.RoleFor, TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
+		// stopped (phase.RoleFor, TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase).
 		kept := stoppableWorker(cfg, project, implementer, root, root, claim.RoleImplementer, phase.Retro)
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Retro), kept)
 		writePrompt(t, cfg, implementer)
@@ -361,7 +361,7 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		}
 		// Both roots stand where a root's own architect works and no phase worker does: at
 		// admitted, before the first phase, which is the one root phase that holds a slot
-		// (record.AtWork) and which no pass starts a worker for (workflow.RoleFor names none).
+		// (record.AtWork) and which no pass starts a worker for (phase.RoleFor names none).
 		// So the only worker of this fixture is the member's implementer.
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, root, root, phase.Admitted))
 		seedWorkflowTree(t, cfg.PostgresDSN, project, startedAgainIssue(cfg, other, other, phase.Admitted))
@@ -441,8 +441,11 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		before := stopTheWorker(t, pool, rt, d, root, tester)
 
 		// The issue reaches the one phase a merge closes it from, as the rest of its run would
-		// leave it, and GitHub reports the merge.
-		finish(t, pool, record.NewStore(), root)
+		// leave it, and GitHub reports the merge. On this release that phase is merging, which
+		// the merger holds until its merge closes the issue (dispatch://INFRA-714 R2), so this
+		// is not finish's done: a merge of an issue already done closes nothing and opens no
+		// check.
+		mergingPhase(t, pool, root)
 		applyFact(t, pool, "api", "merged:"+root, intake.PullRequestMerged{Repo: startedAgainRepo, Number: 42,
 			MergeSHA: "0bada55e0bada55e0bada55e0bada55e0bada55e"}, startedAgainEngine(cfg))
 		testwait.Eventually(t, "the merge to open "+root+"'s production check", func() bool {
@@ -477,5 +480,23 @@ func seedMergeablePullRequest(t *testing.T, pool *pgxpool.Pool, issue string) {
 			Repo: startedAgainRepo, Number: 42, Branch: "legion/" + issue, HeadSHA: "head", Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request of %s: %v", issue, err)
+	}
+}
+
+// mergingPhase puts key where its merger holds it: the phase the daemon's own reading of the
+// merged pull request closes the issue from.
+func mergingPhase(t *testing.T, pool *pgxpool.Pool, key string) {
+	t.Helper()
+	ctx := context.Background()
+	records := record.NewStore()
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		issue, err := records.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		issue.Phase, issue.Status, issue.DispatchStatus = phase.Merging, "retro", "retro"
+		return records.PutIssue(ctx, tx, *issue)
+	}); err != nil {
+		t.Fatalf("put %s in merging: %v", key, err)
 	}
 }

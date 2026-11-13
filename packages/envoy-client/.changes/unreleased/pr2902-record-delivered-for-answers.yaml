@@ -1,0 +1,5 @@
+kind: Changed
+body: "`DeliveryLedger.recordDeliveredFor` answers whether the write that keeps the record reached the host: false says the host's `writeSessionID()` no longer named that session by the time the queued write ran, or that write failed, so the caller can report what that session's record lost. It records and writes exactly as before, and a caller that ignores the answer is unchanged."
+time: 2026-11-09T00:00:00.000000000Z
+custom:
+    Issue: pr2902

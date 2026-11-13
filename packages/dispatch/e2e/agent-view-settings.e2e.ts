@@ -1,5 +1,3 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
-
 import { type FakeSession, getSentMessages, setLiveSessions, setSessionSendStatus } from "./agents";
 import {
   baseUrl,
@@ -10,7 +8,7 @@ import {
   replyToMessageDelivery,
   setAgentStreamResponder,
 } from "./api";
-import { resetDatabase } from "./seed";
+import { type Browser, type BrowserContext, expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -136,14 +134,19 @@ function livePath(sessionID: string): string {
   return `/agents/${sessionID}/live`;
 }
 
-/** On a phone, the header's settings never push the page sideways: the document is no wider than
- *  the 390 px screen, and each rendered piece of the header's settings lies inside it. */
+/** On a phone, the session's settings never push the page sideways: the document is no wider
+ *  than the 390 px screen, and every piece of them is whole on that screen once the reader has
+ *  it in view. The row under the message box scrolls sideways itself (INFRA-812, R6), so a
+ *  picker can start beyond the right edge until that row is scrolled to it; what must never
+ *  happen is the page scrolling, or a piece that cannot be brought onto the screen at all. */
 async function expectNoSidewaysScroll(page: Page, project: string): Promise<void> {
   if (!PHONE_PROJECTS.includes(project)) return;
-  const widths = await page.evaluate(() => ({
-    clientWidth: document.documentElement.clientWidth,
-    scrollWidth: document.documentElement.scrollWidth,
-  }));
+  const pageWidths = async () =>
+    page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+  const widths = await pageWidths();
   expect(widths.clientWidth).toBe(390);
   expect(widths.scrollWidth).toBe(widths.clientWidth);
   for (const selector of [
@@ -156,11 +159,14 @@ async function expectNoSidewaysScroll(page: Page, project: string): Promise<void
   ]) {
     const element = page.locator(selector);
     if ((await element.count()) === 0) continue;
+    await element.scrollIntoViewIfNeeded();
     const box = await element.boundingBox();
     expect(box, selector).not.toBeNull();
     expect(box?.x ?? -1, selector).toBeGreaterThanOrEqual(0);
     expect((box?.x ?? 0) + (box?.width ?? 0), selector).toBeLessThanOrEqual(widths.clientWidth);
   }
+  // Bringing each piece into view scrolled the row it sits in, never the page.
+  expect(await pageWidths()).toEqual(widths);
 }
 
 /** The header's pickers and the shown values, as a reader finds them. */
@@ -247,10 +253,6 @@ function answer(
     { id: sessionID, kind: "session" }
   );
 }
-
-test.beforeEach(async () => {
-  await resetDatabase();
-});
 
 // A1: a session on this change's pi-envoy reports its settings in its replay, before any turn has
 // run, and every later report replaces them, with no turn run.
@@ -405,7 +407,8 @@ test("the header says why a session shows less: an Oh My Pi that does not report
 // the thread shows as theirs; Send waits for the session's answer, and the header moves only when
 // the session reports the switch. A pick is a steer whatever the composer's mode, since a BTW is a
 // side question the session answers rather than input it runs.
-test("a model picked in the header is the viewer's own Send of /model, holds Send until the session answers, and goes as a steer whatever Send as says", async ({
+// @pr: A write the server settles: the header's model pick goes out as the viewer's own Send and holds until the session answers.
+test("a model picked in the header is the viewer's own Send of /model, holds Send until the session answers, and goes as a steer whatever Send as says @pr", async ({
   browser,
 }) => {
   const session = liveSession(4);

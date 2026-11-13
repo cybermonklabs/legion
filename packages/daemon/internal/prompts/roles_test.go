@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // The role prompt parts Compose joins. A core and the interactive fragment are also composed for an
@@ -32,7 +33,14 @@ var (
 		// dispatch that carries other arguments is caught too.
 		`agent="`,
 	}
-	repoSpecific = []string{"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga"}
+	repoSpecific = []string{
+		"Inspect", "inspect_ai", "inspect_", "Hawk", "middleman", "Taiga",
+		// A deployment's own name for itself, for the repository it runs the daemon from, for the
+		// runbook it sends a heavy run to, and for the bucket it keeps one's output in. The match
+		// is case-sensitive, so the deployment's name stands here in both the forms a part could
+		// write it in, the slug and the prose one, as `Inspect` and `inspect_ai` already do.
+		"theorem", "Theorem", "agent-infra", "running-heavy-jobs", "gs://",
+	}
 )
 
 func coreFiles() []string {
@@ -64,6 +72,11 @@ func TestCoresAndTheInteractiveFragmentCarryNoHeadlessMechanics(t *testing.T) {
 	}
 }
 
+// A reusable part is composed for every deployment, so it names no repository, library, service or
+// bucket of one deployment's own. Both trees are read: the roles/ parts Compose joins for any role
+// and every go/ part, because the pod memory rule tells a role where its deployment's instructions
+// send a heavy run, and the next hand to write that rule down can spell a deployment's own route
+// out in the architect parts, which this test read nothing of before.
 func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 	for _, file := range reusableParts {
 		text := rolePart(t, file)
@@ -72,6 +85,17 @@ func TestNoReusablePartNamesARepositoryOrLibrary(t *testing.T) {
 				t.Errorf("%s contains %q", file, needle)
 			}
 		}
+	}
+	err := eachPart(goParts, "go", func(name string, body []byte) error {
+		for _, needle := range repoSpecific {
+			if strings.Contains(string(body), needle) {
+				t.Errorf("go/%s contains %q", name, needle)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("read the go parts: %v", err)
 	}
 }
 
@@ -240,22 +264,133 @@ func TestEveryTaskAgentARolePromptDispatchesIsShipped(t *testing.T) {
 	}
 }
 
-// The daemon submits the merge itself once it accepts READY, and Legion enforces no GitHub
-// restriction the repository itself does not: a part that says Legion never merges, shared or the
-// Go daemon's, contradicts what the merger is told the daemon does. The phrases, in any case,
-// are a pattern rather than spelled out, so a grep for them over this directory finds only prompt
-// text.
-func TestNoPartSaysLegionNeverMerges(t *testing.T) {
-	saysLegionNeverMerges := regexp.MustCompile(`(?i)never merg(es)|merg(e|es) nothing`)
+// The merger merges the pull request itself, at the head it read, and the daemon submits no merge
+// and changes no merge setting (dispatch://INFRA-714, R2). So a part that has the daemon submit a
+// merge, arm auto-merge or enqueue a pull request contradicts what the merger is told to do, while
+// the parts may — and do — say the daemon merges nothing. The claim is a pattern rather than
+// spelled out, so a grep for it over this directory finds only prompt text; it matches the claim
+// made of the daemon and not its denial, which is why the verb must follow `daemon` directly and
+// name what is merged.
+func TestNoPartSaysTheDaemonMerges(t *testing.T) {
+	daemonMerges := regexp.MustCompile(`(?i)daemon\s+(submits|arms|enqueues|enables|merges|turns)\s+(the|a|an|that|its|it|ready|auto)\b`)
 	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
 		err := eachPart(parts, dir, func(name string, body []byte) error {
-			if phrase := saysLegionNeverMerges.Find(body); phrase != nil {
+			if phrase := daemonMerges.Find(body); phrase != nil {
 				t.Errorf("%s/%s says %q", dir, name, phrase)
 			}
 			return nil
 		})
 		if err != nil {
 			t.Fatalf("read the %s parts: %v", dir, err)
+		}
+	}
+	// The merger's own parts carry the other half: the merge it runs, the head GitHub is held to,
+	// the one setting it never touches, and the daemon's own silence on all three.
+	for _, want := range []string{"gh pr merge <n> --squash --match-head-commit <head>", "Never turn auto-merge on"} {
+		if !strings.Contains(rolePart(t, "merger.md"), want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+	goMerger, err := goParts.ReadFile("go/merger.md")
+	if err != nil {
+		t.Fatalf("read go/merger.md: %v", err)
+	}
+	if want := "It submits no merge and changes no merge setting"; !strings.Contains(string(goMerger), want) {
+		t.Errorf("go/merger.md does not say %q", want)
+	}
+}
+
+// GitHub's default squash message, `squash_merge_commit_message` of `COMMIT_MESSAGES`, joins every
+// commit message of a pull request, which put this tree's Dispatch keys, `Omp-Session:` trailers
+// and `skip-checks: true` lines on the default branch (dispatch://INFRA-714, R2). So the merger
+// writes the message itself, and on the one path that cannot — `enqueuePullRequest` takes no
+// message — it reads the repository's setting first and stops rather than enqueueing under a
+// setting that joins them. The command's shape is the instruction: a merge that drops `--subject`
+// or `--body ”` lets GitHub write the message again.
+func TestTheMergersSquashMessageIsItsOwn(t *testing.T) {
+	merger := rolePart(t, "merger.md")
+	for _, want := range []string{
+		"gh pr merge <n> --squash --match-head-commit <head> --subject '<pull request title> (#<n>)' --body ''",
+		"--subject",
+		"--body ''",
+		"squash_merge_commit_message",
+		"COMMIT_MESSAGES",
+		"`enqueuePullRequest` takes no message",
+		"Do not enqueue it and do not complete.",
+	} {
+		if !strings.Contains(merger, want) {
+			t.Errorf("roles/merger.md does not say %q", want)
+		}
+	}
+}
+
+// Every update round a part describes is one a daemon of this release can open. The stale-plugin
+// lane replaces a stale process at a paced wake and asks its worker nothing, so nothing builds a
+// plugin round id any more (supervise's PluginRoundPrefix has no constructor beside PodRound's),
+// and the parts that still told a role its process alone would be replaced "on a different
+// plugin" promised a task no daemon could send. Nothing saw that: the sentences were true when
+// they were written and no row read them against the lane they described.
+//
+// So the rule is read off the daemon's own vocabulary rather than off the prose. The openers are
+// counted in supervise's own source: a kind a prompt may describe is one some path builds an id
+// for. A pod round has PodRound, which is why the parts may — and do — describe a pod the daemon
+// replaces; a plugin round has no such path, so no part may promise one. The day someone builds
+// a plugin round id again this row fails and names what the parts must say once more, which a
+// row quoting the deleted sentences could never do: it would have passed on the day the lane
+// went, exactly as the empty census did.
+func TestNoPartPromisesAnUpdateRoundNoDaemonCanOpen(t *testing.T) {
+	buildsAPluginRound := regexp.MustCompile(`\bPluginRoundPrefix\s*\+`)
+	buildsAPodRound := regexp.MustCompile(`\bPodRoundPrefix\s*\+`)
+	files, err := os.ReadDir(filepath.Join("..", "supervise"))
+	if err != nil {
+		t.Fatalf("read the supervise package: %v", err)
+	}
+	pod, plugin := false, false
+	for _, entry := range files {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join("..", "supervise", name))
+		if err != nil {
+			t.Fatalf("read supervise/%s: %v", name, err)
+		}
+		pod = pod || buildsAPodRound.Match(body)
+		plugin = plugin || buildsAPluginRound.Match(body)
+	}
+	// A reader that found neither opener would pass below while checking nothing, so the pod
+	// round's own constructor is the control: it is what the parts are allowed to describe.
+	if !pod {
+		t.Fatalf("nothing in supervise builds a %q round id; this row reads the openers and would check nothing", supervise.PodRoundPrefix)
+	}
+	promisesAPluginRound := regexp.MustCompile(`(?i)your process alone|on a different plugin|plugin (update )?(round|task)`)
+	whitespace := regexp.MustCompile(`\s+`)
+	for dir, parts := range map[string]embed.FS{"roles": roleParts, "go": goParts} {
+		err := eachPart(parts, dir, func(name string, body []byte) error {
+			phrase := promisesAPluginRound.Find(whitespace.ReplaceAll(body, []byte(" ")))
+			if phrase != nil && !plugin {
+				t.Errorf("%s/%s says %q, and no path builds a plugin round id: a daemon of this release replaces the pod and never a role's process alone", dir, name, phrase)
+			}
+			if phrase == nil && plugin && strings.Contains(string(body), "ready_for_update") {
+				t.Errorf("%s/%s describes an update round and never the plugin round, which supervise builds again: say what a role answering one must do", dir, name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", dir, err)
+		}
+	}
+	// The pod half is what survives, and the two parts that carry it are listed rather than
+	// counted: a part that stopped telling a role how to answer an update round fails here.
+	for _, part := range []string{"go/worker-common.md", "go/architect-common.md"} {
+		body, err := goParts.ReadFile(part)
+		if err != nil {
+			t.Fatalf("read %s: %v", part, err)
+		}
+		for _, want := range []string{`op: "ready_for_update"`, "the pod that runs this issue's roles"} {
+			if !strings.Contains(string(body), want) {
+				t.Errorf("%s does not say %q", part, want)
+			}
 		}
 	}
 }
@@ -441,6 +576,132 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 			if strings.Contains(text, retired) {
 				t.Errorf("%s still contains %q", file, retired)
 			}
+		}
+	}
+}
+
+// The pod memory rule is written twice, once for each reader: a phase worker meets it in the
+// headless fragment every worker composes, and an architect in the common part every architect
+// tree joins. One part each is the whole of it. Copied into a second part of the same tree it
+// drifts, because the next edit reaches one copy and leaves the other saying what the pod no
+// longer does, and a reader that counted the copies would pass while the text spread through
+// every residue. So each paragraph's first sentence is pinned to the one part that carries it
+// and refused in every other part of that tree. The match runs over a body whose whitespace is
+// collapsed to one space, since a part hard-wraps and a sentence can cross the break.
+func TestThePodMemoryRuleIsWrittenInOneWorkerPartAndOneArchitectPart(t *testing.T) {
+	fold := func(body []byte) string { return foldWhitespace(string(body)) }
+	for _, pin := range []struct {
+		dir      string
+		parts    embed.FS
+		want     string
+		sentence string
+	}{
+		{"roles", roleParts, "mechanics/headless.md", "In an issue pod every role of this issue runs in one container and shares its memory limit"},
+		{"go", goParts, "architect-common.md", "Your subagents run their commands in your own issue pod"},
+	} {
+		var carrying []string
+		err := eachPart(pin.parts, pin.dir, func(name string, body []byte) error {
+			if strings.Contains(fold(body), pin.sentence) {
+				carrying = append(carrying, pin.dir+"/"+name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", pin.dir, err)
+		}
+		if want := []string{pin.dir + "/" + pin.want}; !slices.Equal(carrying, want) {
+			t.Errorf("%q is in %q, want %q alone", pin.sentence, carrying, want)
+		}
+	}
+}
+
+// Each of the two paragraphs ends by passing the rule on, because a subagent runs its commands in
+// the same pod and reads none of these parts: the worker's clause tells a role to put these facts
+// in the context of each subagent it starts, and the architect's says the same of its own. The
+// clause belongs where the rule is written and nowhere else, so a part that dispatches a task
+// subagent carries no copy of it. The three parts that dispatch one are named here rather than
+// counted, as TestNoPartKeepsItsWorkInTheForegroundAndEveryDispatchNamesWait names its want list,
+// so a part renamed out from under this test fails it rather than passing with nothing read. The
+// match runs over a body whose whitespace is collapsed to one space, since a part hard-wraps and
+// the clause can cross the break.
+func TestThePassOnClauseIsWrittenOnlyWhereThePodMemoryRuleIs(t *testing.T) {
+	fold := func(body []byte) string { return foldWhitespace(string(body)) }
+	for _, pin := range []struct {
+		dir       string
+		parts     embed.FS
+		want      string
+		unwritten []string
+		clause    string
+	}{
+		{
+			dir: "roles", parts: roleParts, want: "mechanics/headless.md",
+			unwritten: []string{"implementer.md", "planner.md"},
+			clause:    "Each subagent you start runs its commands in this pod, so put these facts in its context",
+		},
+		{
+			dir: "go", parts: goParts, want: "architect-common.md",
+			unwritten: []string{"claude-mechanics.md"},
+			clause:    "you put these facts in the context of each subagent you start",
+		},
+	} {
+		var carrying, read []string
+		err := eachPart(pin.parts, pin.dir, func(name string, body []byte) error {
+			read = append(read, name)
+			if strings.Contains(fold(body), pin.clause) {
+				carrying = append(carrying, pin.dir+"/"+name)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("read the %s parts: %v", pin.dir, err)
+		}
+		if want := []string{pin.dir + "/" + pin.want}; !slices.Equal(carrying, want) {
+			t.Errorf("%q is in %q, want %q alone", pin.clause, carrying, want)
+		}
+		// The walk above refuses the clause in every part but one, the dispatching parts of this
+		// tree among them: two under roles/ and one under go/, three across the two. What it
+		// cannot say is that those parts are still there to be read, so each is named and held to
+		// having been walked.
+		for _, name := range pin.unwritten {
+			if !slices.Contains(read, name) {
+				t.Errorf("%s/%s, which dispatches a task subagent, is not a part of this tree any more; the walk read %q", pin.dir, name, read)
+			}
+		}
+	}
+}
+
+// The headless fragment sends four runs to CI on the pull request, and
+// skill://legion-worker/references/tools.md, which that same paragraph sends a role to for what it
+// may run in the pod, sends the same four. A role reads both, so the two must agree: a run the
+// fragment calls CI's work and the skill does not leaves the role with two answers. Three rows
+// pin the four runs, each a substring both files hold: the bare `go test ./...` for the module
+// run, the name with the comma before it for the Postgres-backed package, and for the browser
+// suite and `lake build` the one clause both files carry whole, so one row pins those two. The
+// skill is read from the repository by relative path, as
+// TestEveryTaskAgentARolePromptDispatchesIsShipped reads the plugin's agents/, and a skill file
+// this package cannot read is a fatal rather than a quiet pass. The match runs over a body whose
+// whitespace is collapsed to one space, since the skill hard-wraps: the browser-suite clause
+// crosses a line break in it today, and a reflow of the skill could put a break inside either
+// of the other two.
+func TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI(t *testing.T) {
+	fold := foldWhitespace
+	fragment := fold(rolePart(t, "mechanics/headless.md"))
+	skillPath := filepath.Join("..", "..", "..", "..", "skills", "legion-worker", "references", "tools.md")
+	body, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("read %s, the skill the headless fragment sends a role to: %v", skillPath, err)
+	}
+	skill := fold(string(body))
+	for _, run := range []struct{ name, agreed string }{
+		{"a whole module's test run", "`go test ./...`"},
+		{"a whole Postgres-backed package", ", a whole Postgres-backed package"},
+		{"a browser suite run whole and `make -j` or `lake build`", ", a browser suite run whole, and `make -j` or `lake build`"},
+	} {
+		if !strings.Contains(fragment, run.agreed) {
+			t.Errorf("roles/mechanics/headless.md does not hold %q, what it and %s agree on about %s", run.agreed, skillPath, run.name)
+		}
+		if !strings.Contains(skill, run.agreed) {
+			t.Errorf("%s does not hold %q, what it and roles/mechanics/headless.md agree on about %s", skillPath, run.agreed, run.name)
 		}
 	}
 }

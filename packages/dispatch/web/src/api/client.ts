@@ -2,6 +2,7 @@ import {
   AUTH_NO_IDENTITY,
   answerNotKept,
   DISPATCH_LOGIN_HEADER,
+  everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -326,6 +327,14 @@ export function isCapExceeded(error: unknown): error is ApiError {
   return error instanceof ApiError && error.code === "CAP_EXCEEDED";
 }
 
+// The server refusing a write because its text holds a decision block, which nobody can answer
+// where it stands (`itemblocks.DecisionBlock`, INFRA-1201). The refusal names the block and says
+// where the question belongs, so a page shows those words rather than wording of its own; a
+// retry of the same text is refused again, as it is for a bound.
+export function isDecisionBlockInBody(error: unknown): error is ApiError {
+  return error instanceof ApiError && error.code === "DECISION_BLOCK_IN_BODY";
+}
+
 // A document whose stored history cannot load at all: the state a rebuild from its latest saved
 // version repairs, and retrying the read cannot.
 export function isDocumentUnloadable(error: unknown): boolean {
@@ -393,6 +402,9 @@ export function apiErrorCodeIn(error: unknown, codes: ReadonlySet<string>): erro
 export type ArtifactOwner = { issue: string } | { project: string } | { session: string };
 
 export type CreateArtifactReviewInput = Body<"/api/v1/artifacts/{id}/reviews", "post">;
+
+/** What a decline carries: the person's own note, which is optional. */
+export type DeclineAskInput = Body<"/api/v1/asks/{id}/decline", "post">;
 
 /** Every write verb, as the document names a route's operation; the request carries the method
  *  it uppercases to, which is `WRITE_METHODS`' member of the same name. */
@@ -496,7 +508,8 @@ export function issueStateRequest(
   return writeRequest("put", "/api/v1/me/issues/{key}/state", { key }, input);
 }
 
-/** `PUT /api/v1/me/agents/{session_id}/state`: the person's state of a session (`putAgentState`). */
+/** `PUT /api/v1/me/agents/{session_id}/state`: the person's state of a session (`putAgentState`) -
+ *  a Clear, a read mark, or the pin the rail's Agents list is drawn from (`pinned`). */
 export function agentStateRequest(
   sessionID: string,
   input: Body<"/api/v1/me/agents/{session_id}/state", "put">
@@ -536,12 +549,14 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
 }
 
 /** What an upload carries: the JSON body the document gives the three artifact routes for text
- *  written in the browser, and a multipart form - the body those same routes take as
- *  `multipart/form-data` - for a file picked, pasted or dropped. */
+ *  written in the browser and for a title typed with nothing under it, and a multipart form - the
+ *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
+ *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
+ *  the name alone. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
-  if ("content" in input) {
+  if (input.file === undefined) {
     return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
   }
   const form = new FormData();
@@ -732,7 +747,14 @@ export class DispatchApiClient {
     arrived?: () => void,
     uploaded?: (loaded: number, total: number) => void
   ): Promise<Response> {
-    const sent = { credentials: "same-origin", ...init } satisfies RequestInit;
+    // Every read and write of the page funnels through here, so this one line asks Dispatch for
+    // the display tree of every stored text it answers with (`Dispatch-Trees`); no other client
+    // sends it, and no other client's bytes change.
+    const sent = {
+      credentials: "same-origin",
+      ...init,
+      headers: [...new Headers(init.headers), ["Dispatch-Trees", "1"]],
+    } satisfies RequestInit;
     const progress = (part?: UploadProgress) => {
       arrived?.();
       if (part !== undefined) uploaded?.(part.loaded, part.total);
@@ -837,7 +859,12 @@ export class DispatchApiClient {
 
   /** One read of a route the document holds, named by its own path pattern: `params` fills the
    *  pattern's `{name}`s and `query` its query parameters, and what it answers is the document's
-   *  `200` body for that route. No read states a response shape of its own. */
+   *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
+   *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
+   *  shaped read, so the trees are part of the body the document holds. A read states a response
+   *  shape of its own only where the document cannot hold it - `getBlockSchema`,
+   *  `getIssueEvents` and `listIssueAskThreads`, each saying beside it what that is - and those
+   *  three go through `json` with `routeUrl`. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1026,25 +1053,32 @@ export class DispatchApiClient {
     const answer = await this.read("/api/v1/issues", {}, query);
     return Array.isArray(answer) ? answer : (answer.issues ?? []);
   }
-  /** `GET /api/v1/search`. `project`, `status`, `author` (an actor id: a person's login or a
-   *  session id) and `updated_since` (RFC 3339) each narrow every leg of the search rather than
-   *  striking rows out of the page it answers. `number_project` narrows nothing: it is the
-   *  project of the page the search was made from, which a query that is a bare issue number is
-   *  read in, and a request naming `project` too reads the number in that project instead.
-   *  `keywords_only` runs the keyword leg alone and makes no embedding call, whatever embedder
-   *  the deployment configured, which is what the bar sends behind a keystroke; a request
-   *  leaving it out searches by meaning too wherever an embedder is configured. The route
-   *  refuses a value it cannot read under its own code (`INVALID_PROJECT`,
-   *  `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`, `INVALID_UPDATED_SINCE`,
-   *  `INVALID_KEYWORDS_ONLY`). The bar searches while a person types, so it passes the `signal`
-   *  of the search it is still interested in: an aborted request ends the route's own work with
-   *  it, the embedding a search by meaning had asked for included. */
+  /** `GET /api/v1/search/results`, or `GET /api/v1/search` for a request `everyBuildReadsSearch`
+   *  keeps there: the same search either way, from the same handler. `project`, `status`,
+   *  `author` (an actor id: a person's login or a session id) and `updated_since` (RFC 3339)
+   *  each narrow every leg of the search rather than striking rows out of the page it answers.
+   *  `number_project` narrows nothing: it is the project of the page the search was made from,
+   *  which a query that is a bare issue number is read in, and a request naming `project` too
+   *  reads the number in that project instead. `keywords_only` runs the keyword leg alone and
+   *  makes no embedding call, whatever embedder the deployment configured, which is what the
+   *  bar sends behind a keystroke; a request leaving it out searches by meaning too wherever an
+   *  embedder is configured. The route refuses a value it cannot read under its own code
+   *  (`INVALID_PROJECT`, `INVALID_NUMBER_PROJECT`, `INVALID_STATUS`, `INVALID_AUTHOR`,
+   *  `INVALID_UPDATED_SINCE`, `INVALID_KEYWORDS_ONLY`). The bar searches while a person types,
+   *  so it passes the `signal` of the search it is still interested in: an aborted request ends
+   *  the route's own work with it, the embedding a search by meaning had asked for included.
+   *  The path is `everyBuildReadsSearch`'s to pick, because a Dispatch released before the
+   *  results route refuses that path outright rather than answering `GET /api/v1/search` with
+   *  the member dropped, which is unnarrowed rows under the filters a person chose. */
   search(
     query: string,
-    options: Omit<Query<"/api/v1/search", "get">, "q"> = {},
+    options: Omit<Query<"/api/v1/search/results", "get">, "q"> = {},
     init: { signal?: AbortSignal } = {}
   ) {
-    return this.read("/api/v1/search", {}, { q: query, ...options }, init);
+    const request = { q: query, ...options };
+    return everyBuildReadsSearch(request)
+      ? this.read("/api/v1/search", {}, request, init)
+      : this.read("/api/v1/search/results", {}, request, init);
   }
 
   /**
@@ -1097,8 +1131,9 @@ export class DispatchApiClient {
   }
 
   /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
-   *  document order, each with every result recorded against it from any issue, newest first,
-   *  and each result's currency as the server judged it against the repository. */
+   *  document order, each with the commits and branches its results are compared with, whether a
+   *  pass of it stands, and every result recorded against it from any issue, newest first, each
+   *  with where its commit stands as the server judged it against the repository. */
   getIssueResults(key: string) {
     return this.read("/api/v1/issues/{key}/results", { key });
   }
@@ -1124,6 +1159,15 @@ export class DispatchApiClient {
    *  answers the same 204. */
   async unsnoozeAsk(id: string, bounds: WriteBounds): Promise<void> {
     await this.remove("/api/v1/me/asks/{id}/snooze", { id }, bounds);
+  }
+
+  /** `PUT /api/v1/asks/{id}/asked-of`: hand an open ask to `askedOf`, the email of somebody who
+   *  has signed in, so the ask waits on them wherever its issue goes and their Inbox lists it.
+   *  Naming the assignee of the ask's own issue empties the stored field, which hands the ask
+   *  back to whoever holds that issue. Needs the `person` scope: handing a question on is one
+   *  person asking another. */
+  handAskTo(id: string, askedOf: string, bounds: WriteBounds) {
+    return this.put("/api/v1/asks/{id}/asked-of", { id }, { asked_of: askedOf }, bounds);
   }
 
   listAgents() {
@@ -1155,6 +1199,13 @@ export class DispatchApiClient {
 
   answerAsk(id: string, input: Body<"/api/v1/asks/{id}/answer", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/asks/{id}/answer", { id }, input, bounds);
+  }
+
+  /** `POST /api/v1/asks/{id}/decline`: close an open question with no answer, keeping the
+   *  person's note. Needs the `person` scope, as the answer route does; an approval request is
+   *  refused `409 ASK_NOT_DECLINABLE`. */
+  declineAsk(id: string, input: DeclineAskInput, bounds: WriteBounds) {
+    return this.post("/api/v1/asks/{id}/decline", { id }, input, bounds);
   }
 
   getAsk(id: string) {
@@ -1342,6 +1393,18 @@ export class DispatchApiClient {
       body,
       bounds
     );
+  }
+
+  /** Corrects a document's title. The write carries the name alone: the slug, the reference key
+   *  and the role do not move, so every citation of the document holds. */
+  renameArtifact(id: string, input: Body<"/api/v1/artifacts/{id}", "patch">, bounds: WriteBounds) {
+    return this.patch("/api/v1/artifacts/{id}", { id }, input, bounds);
+  }
+
+  /** Removes a document of an issue that is still untouched. Dispatch refuses one that holds
+   *  anything, in a sentence that names which test it failed. */
+  async deleteArtifact(id: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/artifacts/{id}", { id }, bounds);
   }
 
   getArtifact(id: string) {

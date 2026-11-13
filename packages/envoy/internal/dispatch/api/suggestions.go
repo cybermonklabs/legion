@@ -52,9 +52,22 @@ const (
 	relatedRecordRetryLimit = 4
 	// suggestionRelatedCount is "the three items most like what was just filed" (LEGION-550's spec).
 	suggestionRelatedCount = 3
-	// suggestionSearchDepth widens the search past suggestionRelatedCount so an answered ask a few
-	// ranks behind the top issues can still surface as Suggestions.Decision, and so three distinct
-	// owners remain once an issue and its spec collapse into one item.
+	// suggestionOtherProjectCount is how many answered questions of the other projects a check
+	// whose write is a question offers (Suggestions.OtherProjects). Two: they stand beside the
+	// project's own items, which keep their three places.
+	suggestionOtherProjectCount = 2
+	// crossProjectGrace is how long the meaning stage waits for the cross-project query after
+	// the one-project query has answered. The check's own bound is five seconds
+	// (relatedCheckAllowance) and its recorded median is 1,615 ms, so a grace of this size
+	// cannot push a median check into its allowance.
+	crossProjectGrace = 300 * time.Millisecond
+	// crossProjectGraceMargin ends the grace that much before the meaning deadline. It keeps the
+	// stage's own answer ahead of the backstop in runRelatedCheck, which watches the same
+	// deadline. A timer wakes a goroutine in microseconds, so 25 ms is far more than the margin
+	// needs, and it shortens the grace only in the last 25 ms of a three-second allowance.
+	crossProjectGraceMargin = 25 * time.Millisecond
+	// suggestionSearchDepth widens the search past suggestionRelatedCount so that three distinct
+	// owners remain once an issue and its document collapse into one item.
 	suggestionSearchDepth = 10
 	// relatedSearchQueryTerms is how many of the chosen terms Suggestions.SearchQuery holds: enough
 	// for a reader's own dispatch search to find what the check found, few enough that search's
@@ -168,8 +181,14 @@ func withSuggestions(payload any, advice *writeAdvice, suggestions *model.Sugges
 // Each check reads and records under a connection mark of its own (store.ForConcurrentRead): on
 // the request's one mark, one check's open cursor would have the pool refuse the others' reads
 // and records (store.ErrNestedAcquire).
+//
+// trees is what the edit's own request asked for (wantsDisplayTrees), which decides whether an
+// answered ask a check offers carries the display tree of its answer. Each check reads its
+// trees through a reader of its own, resolved on that check's goroutine and before
+// running.Wait answers: the checks run side by side, and one reader is registered with and
+// resolved on one goroutine alone (text_trees.go).
 func (s *server) decisionBlockChecks(
-	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor model.Actor,
+	ctx context.Context, artifact model.Artifact, blocks []docs.AddedAskBlock, actor model.Actor, trees bool,
 ) []decisionBlockCheck {
 	if len(blocks) == 0 {
 		return nil
@@ -186,7 +205,10 @@ func (s *server) decisionBlockChecks(
 		} else {
 			source.artifactID = artifact.ID
 		}
-		input := relatedInput{project: artifact.Project, text: block.Question, title: block.Question, source: source, record: true}
+		input := relatedInput{
+			project: artifact.Project, text: block.Question, title: block.Question,
+			source: source, question: true, record: true,
+		}
 		checks[index] = decisionBlockCheck{BlockID: block.ID, Question: block.Question}
 		if index >= decisionBlockCheckLimit {
 			suggestions := notMadeSuggestions("more than five new decision blocks in one edit")
@@ -203,7 +225,12 @@ func (s *server) decisionBlockChecks(
 			checks[index].Suggestions = s.relatedCheckNotRun(ctx, input, relatedReasonSearchFailed, relatedSearchFailedMissing)
 			continue
 		}
-		running.Go(func() { checks[index].Suggestions = s.relatedCheck(checkCtx, input) })
+		running.Go(func() {
+			reader := s.readDisplayTrees(checkCtx, trees)
+			input.trees = reader
+			checks[index].Suggestions = s.relatedCheck(checkCtx, input)
+			reader.resolve()
+		})
 	}
 	if len(overflow) > 0 {
 		s.recordRelatedChecks(ctx, overflow...)
@@ -248,9 +275,28 @@ type relatedInput struct {
 	excludeIssues []string
 	// keywordsOnly skips the meaning search.
 	keywordsOnly bool
+	// question says the write is a question to a person: an ask create, a new decision block, or
+	// the POST form of the related route, which `dispatch related` calls. Such a check also
+	// offers the answered questions of the other projects (relatedOtherProjects). An issue
+	// create and the GET form of the related route leave it false, so they offer the items of
+	// the asking project alone.
+	question bool
 	// record writes the check's records: write_suggestions rows for an issue or ask source and one
 	// related_checks row. The no-write route leaves it false.
 	record bool
+	// trees is the display tree reader of the request that runs the check, made from its
+	// `Dispatch-Trees` header (readDisplayTrees of wantsDisplayTrees), and nil where the caller
+	// asked for no tree - which is every caller that is not a browser, and every check run from
+	// no request at all. An answered ask the check offers carries the tree of that answer's text
+	// under it, as the same answer carries one in a search hit (attachAskStates), so the one
+	// panel that draws a check's result reads a tree here rather than parsing the markdown
+	// itself.
+	//
+	// The check registers with it on the goroutine that called relatedCheck and never on
+	// another, and that caller resolves it once its answer is shaped and before it writes the
+	// response. The cross-project leg, which runs on a goroutine of its own and may be
+	// abandoned, registers with a reader of its own instead (relatedMeaningStage).
+	trees *displayTreeReader
 }
 
 // relatedRecord is what the related_checks row of one check holds besides its source and what
@@ -270,7 +316,12 @@ type relatedStage struct {
 	response model.SearchResponse
 	err      error
 	reason   string // stage 2's reason for keywords only when it did not answer
-	took     time.Duration
+	// otherProjects is what stage 2's cross-project leg found: the answered questions of the
+	// other projects (relatedOtherProjects), empty for every check whose write is not a
+	// question and for a leg that failed, overran its grace or found nothing. It never decides
+	// whether the stage answered: response stands whatever this holds.
+	otherProjects []model.SearchResult
+	took          time.Duration
 }
 
 // relatedPick is stage 1's term selection as the check and stage 2 both read it: ready is closed
@@ -295,9 +346,15 @@ type relatedPick struct {
 // request that ran it goes away first, it was not made, cancelled.
 //
 // The source's own items are left out, each owner keeps its best-ranked item, open owners come
-// before done issues, and the best three are Related; the decision is the first answered ask in
-// the search's own order. Unless record is false it then records what it offered and how it went
-// (recordRelatedChecks).
+// before done issues, and the best three are Related. A check whose write is a question
+// (input.question) and whose meaning stage answered also carries OtherProjects, the answered
+// questions of the other projects nearest it in meaning (relatedMeaningStage). Unless record is
+// false it then records what it offered and how it went (recordRelatedChecks).
+//
+// An answered ask among either the one-project items or the cross-project ones carries the
+// display tree of its answer where the caller asked for the trees (input.trees): what the
+// request's header asked for decides it, on this path as on every read of the same answer, and
+// the caller resolves its own reader once this returns.
 func (s *server) relatedCheck(ctx context.Context, input relatedInput) *model.Suggestions {
 	started := time.Now()
 	suggestions, record := s.runRelatedCheck(ctx, input, started)
@@ -418,10 +475,38 @@ func (s *server) runRelatedCheck(
 			reason = relatedReasonMeaningFailed
 			break
 		}
+		// The cross-project leg reads on a connection mark of its own, taken only where the
+		// write is a question, since no other check runs that leg. Both marks are taken here,
+		// before beginMeaningScan opens the one-project transaction: Pool.Begin marks the
+		// context it is given, and a later ForConcurrentRead on a marked context is refused
+		// (store.ErrNestedAcquire). Where this mark is refused, that leg alone is dropped and
+		// the stage runs as it runs without it.
+		//
+		// One check held two marks; a question's makes three. One document edit runs up to
+		// decisionBlockCheckLimit (5) checks at once, so an edit moves from 10 to 15
+		// connections of a shared pool of 64 (store.sharedPoolSize). That is accepted.
+		var crossRead context.Context
+		if input.question {
+			read, crossErr := store.ForConcurrentRead(meaningCtx)
+			if crossErr != nil {
+				// The leg is dropped, and the check's own record names no reason, because a
+				// contained failure of the leg records none (INFRA-2337, R3). The store logs
+				// its own error, with a stack, only the first time a call site is refused
+				// (logRefusal in store/pool.go), so this line is what says, at every refusal,
+				// that a check offered nothing of another project because the store refused
+				// the leg's connection, and not because no other project held a qualifying
+				// answer.
+				slog.Warn("dispatch: the related-item check offers no answered question of another project",
+					"reason", "the store refused a connection for the leg", "error", crossErr)
+			}
+			// ForConcurrentRead returns a nil context with its error (store/pool.go), so a
+			// refusal leaves crossRead nil and relatedMeaningStage does not run the leg.
+			crossRead = read
+		}
 		meaningDone = meaningCtx.Done()
 		meaning = make(chan relatedStage, 1)
 		go func() {
-			stage := s.relatedMeaningStage(meaningRead, project, input.text, pick, excluded)
+			stage := s.relatedMeaningStage(meaningRead, crossRead, project, input.text, pick, excluded, input.trees != nil)
 			stage.took = time.Since(stagesStarted)
 			meaning <- stage
 		}()
@@ -446,17 +531,33 @@ func (s *server) runRelatedCheck(
 	var answer relatedStage
 	answered := false
 	if meaning != nil {
+		var stage relatedStage
+		got := false
 		select {
-		case stage := <-meaning:
+		case stage = <-meaning:
+			got = true
+		case <-meaningDone:
+			// Both channels can be ready at once, and Go then picks between them at random,
+			// which would have one check answer meaning_and_keywords and the next fall back to
+			// keywords. So read the stage's channel once without blocking first and use an
+			// answer that is already there. The stage keeps its own answer ahead of this
+			// deadline (crossProjectGraceMargin), which makes this a safety net rather than the
+			// rule.
+			select {
+			case stage = <-meaning:
+				got = true
+			default:
+				record.meaningMS = milliseconds(time.Since(stagesStarted))
+				reason = relatedReasonMeaningTimeout
+			}
+		}
+		if got {
 			record.meaningMS = milliseconds(stage.took)
 			if stage.reason == "" {
 				answer, answered = stage, true
 			} else {
 				reason = stage.reason
 			}
-		case <-meaningDone:
-			record.meaningMS = milliseconds(time.Since(stagesStarted))
-			reason = relatedReasonMeaningTimeout
 		}
 	}
 	// A meaning stage cut short by the request going away did not time out, and nobody waits on
@@ -466,6 +567,9 @@ func (s *server) runRelatedCheck(
 	}
 	if answered {
 		suggestions.Search = relatedMeaningAndKeywords
+		// The answered questions of the other projects are the meaning stage's alone: a check
+		// that fell back to keywords offers none.
+		fillOtherProjectItems(input, answer.otherProjects, suggestions)
 		// Stage 1's time is recorded when it has answered by now; it is not waited for.
 		select {
 		case stage := <-keyword:
@@ -500,11 +604,39 @@ func (s *server) runRelatedCheck(
 // picked the terms, the meaning query over them, which leaves out the owners excluded names. Its
 // reason is empty when it answered and names why it did not otherwise; ctx ends at the meaning
 // allowance.
+//
+// crossRead is the second connection mark runRelatedCheck took for the cross-project leg, which
+// it takes only where the check's own write is a question (relatedInput.question), and nil
+// where it took none or the pool refused it. With a mark in hand this stage also reads the
+// answered questions of the other projects (relatedOtherProjects). That leg starts as soon as
+// the embedding is in hand, before the wait on pick.ready, because it needs the vector alone
+// and starting it there gives it the most time. It reuses this stage's own embedding, so the
+// check calls the embedding service no more often than it does without it.
+//
+// The one-project response is the stage's answer whenever it has one. A cross-project leg that
+// failed, that overran its grace or that found nothing leaves that response whole, with no
+// reason recorded and no cross-project item.
+//
+// A meaning search this stage's own context ended, and one the server ended itself at
+// searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
+// not answer, so the check answers by keywords alone and says so (INFRA-148). Which of the two
+// clocks ran out first is not the caller's business, and only one of them shows in ctx: a
+// statement Postgres ended arrives as SQLSTATE 57014 (meaningStatementEnded) and may arrive
+// while this stage's own context is still live, so the reason is read from the error too. Were
+// it not, the bound this server holds on its own query would reach the writer as "meaning search
+// failed", which is what the check says when something broke.
+//
+// trees says the check's caller asked for the display trees (relatedInput.trees). The leg makes
+// a reader of its own from it rather than registering with the caller's: it runs on a goroutine
+// this stage may abandon at the grace, and a reader the caller resolves while an abandoned leg
+// still registers with it is a data race. Its own reader is written by that one goroutine
+// alone, and resolved there before the results are handed over, so an answer that reaches the
+// check carries its trees filled and one the grace left behind is read by nobody.
 func (s *server) relatedMeaningStage(
-	ctx context.Context, project, text string, pick *relatedPick, excluded []string,
+	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || meaningStatementEnded(err) {
 			reason = relatedReasonMeaningTimeout
 		}
 		if err != nil {
@@ -515,6 +647,26 @@ func (s *server) relatedMeaningStage(
 	vector, err := s.embedQuery(ctx, text)
 	if err != nil {
 		return failed(relatedReasonEmbedFailed, err)
+	}
+	var cross chan []model.SearchResult
+	if crossRead != nil {
+		// The leg runs on a context of its own, cancelled when this function returns, which is
+		// where the grace below ends: an overrunning query then gives its pool connection back
+		// at the grace rather than at the meaning deadline.
+		crossCtx, cancelCross := context.WithCancel(crossRead)
+		defer cancelCross()
+		cross = make(chan []model.SearchResult, 1)
+		go func() {
+			reader := s.readDisplayTrees(crossCtx, trees)
+			results, err := s.relatedOtherProjects(crossCtx, vector, project, s.deps.Embedder.Identity(), reader)
+			if err != nil {
+				slog.Warn("dispatch: the related-item check offers no answered question of another project", "error", err)
+			}
+			// Before the send, which is the only hand-over of these results: the trees stand in
+			// the answers by the time any other goroutine can read one.
+			reader.resolve()
+			cross <- results
+		}()
 	}
 	select {
 	case <-pick.ready:
@@ -529,13 +681,38 @@ func (s *server) relatedMeaningStage(
 	if err != nil {
 		return failed(relatedReasonMeaningFailed, err)
 	}
-	return relatedStage{response: response}
+	stage := relatedStage{response: response}
+	if cross == nil {
+		return stage
+	}
+	// The grace ends at the earlier of crossProjectGrace from now and crossProjectGraceMargin
+	// before the meaning deadline. Where that second moment has passed, there is no grace at
+	// all and the stage answers at once with no cross-project item.
+	grace := time.Now().Add(crossProjectGrace)
+	if deadline, ok := ctx.Deadline(); ok {
+		if margin := deadline.Add(-crossProjectGraceMargin); margin.Before(grace) {
+			grace = margin
+		}
+	}
+	left := time.Until(grace)
+	if left <= 0 {
+		return stage
+	}
+	timer := time.NewTimer(left)
+	defer timer.Stop()
+	select {
+	case stage.otherProjects = <-cross:
+	case <-timer.C:
+	}
+	return stage
 }
 
 // relatedMeaningSearch runs the check's meaning statement in a read transaction of its own
 // (beginMeaningScan), so that the check's meaning query reads the index as search's own does: it
 // runs the same arms, and searchMeaningScan, which that transaction sets, is what either of them
-// needs of the index scan (searchMeaningScan says what each setting is for).
+// needs of the index scan (searchMeaningScan says what each setting is for) - the bound the
+// server holds on the statement included, which its caller reports as the meaning search not
+// answering (relatedMeaningStage).
 func (s *server) relatedMeaningSearch(
 	ctx context.Context, project string, picked relatedTerms, vector []float32, excluded []string,
 ) (model.SearchResponse, error) {
@@ -544,8 +721,35 @@ func (s *server) relatedMeaningSearch(
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	return s.relatedSearch(ctx, tx, relatedMeaningStatement, project, picked, excluded,
+	// The flag is read only where it can change the statement, as search reads it
+	// (runMeaningSearch): a check naming no project runs the unscoped one either way.
+	filled := project != "" && embeddingProjectKeysFilled(ctx, tx)
+	return s.relatedSearch(ctx, tx, relatedMeaningStatementFor(project, filled), project, picked, excluded,
 		embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
+}
+
+// relatedMeaningStatementFor is the meaning statement for a check of project, filled being what
+// embeddingProjectKeysFilled answered in the check's own transaction: the unscoped one, whose
+// arms carry no project predicate, where no project is named; the scoped one, whose meaning
+// arms read `e.project_key = $2`, where one is named and the fill has labelled the rows stored
+// before that column; and the joined one, whose arms read the owner each of them joins, until
+// it has - which is the only one of the three a row the fill has not reached can answer.
+// Search picks among the same three the same way (meaningStatementFor); meaningProjectScope
+// argues why there are three statements rather than one predicate.
+//
+// It takes no filtered case, where search's chooser does: a search narrowing by status, author
+// or updated_since has to run the joined statement, whose comment arm applies those three
+// inside its candidate limit, and no check can narrow by them at all - the check's own q binds
+// all three empty (relatedQOpener), which is the same q every statement here opens with.
+func relatedMeaningStatementFor(project string, filled bool) relatedStatement {
+	switch {
+	case project == "":
+		return relatedMeaningStatement
+	case filled:
+		return relatedMeaningScopedStatement
+	default:
+		return relatedMeaningJoinedStatement
+	}
 }
 
 // relatedSearch runs one of the check's two statements with the parameters search passes its own
@@ -585,7 +789,9 @@ func (s *server) relatedSearch(
 	}
 	defer rows.Close()
 	// A document hit's link opens the document with these words highlighted.
-	return scanSearchRows(rows, relatedSearchQuery(picked.Terms), suggestionSearchDepth, 0)
+	// A write's related-item check shows no snippet tree: nothing reads one, and the trees are
+	// the dashboard's to ask for.
+	return scanSearchRows(rows, relatedSearchQuery(picked.Terms), suggestionSearchDepth, 0, false)
 }
 
 // relatedSearchQuery is Suggestions.SearchQuery: the best relatedSearchQueryTerms chosen terms,
@@ -620,19 +826,18 @@ func milliseconds(d time.Duration) *int {
 	return &ms
 }
 
-// fillRelatedItems turns the search's results into Related and Decision. Everything the input
-// excludes is left out first, as the statement that answered already left it out of the rows it
-// ranked and paged (relatedExcludedOwners): the same rule over what came back, so an item the
-// check must not offer cannot reach a reader through a statement that answered anything else.
-// The rest carry their ask state (attachAskStates). A failure to read those states leaves every
-// item's nil, and so no Decision, rather than failing the check or keeping the states read
-// before it. Each owner (an issue, or a project document) keeps one item, which the loop below
-// picks, so an issue matched through its title, its spec and a comment fills one place, not
-// three. Related then takes the best suggestionRelatedCount in
-// relatedItemRank's order, keeping the search's order within each rank;
-// Decision is the first answered ask in the search's own order, deliberately not reordered by
-// owner status: an answered question stays the best match for the question asked whether or not
-// its issue has since closed.
+// fillRelatedItems turns the search's results into Related. Everything the input excludes is
+// left out first, as the statement that answered already left it out of the rows it ranked and
+// paged (relatedExcludedOwners): the same rule over what came back, so an item the check must
+// not offer cannot reach a reader through a statement that answered anything else. The rest
+// carry their ask state (attachAskStates), and, where the caller asked for the display trees,
+// the tree of each answered ask's answer with it: the reader is the check's own (input.trees),
+// registered with here on the goroutine that called the check and resolved by that caller. A
+// failure to read those states leaves every item's nil, rather than failing the check or
+// keeping the states read before it. Each owner (an issue, or a project document) keeps one
+// item, which the loop below picks, so an issue matched through its title, its spec and a
+// comment fills one place, not three. Related then takes the best suggestionRelatedCount in
+// relatedItemRank's order, keeping the search's order within each rank.
 func (s *server) fillRelatedItems(
 	ctx context.Context, input relatedInput, results []model.SearchResult, suggestions *model.Suggestions,
 ) {
@@ -642,7 +847,7 @@ func (s *server) fillRelatedItems(
 			candidates = append(candidates, result)
 		}
 	}
-	if err := s.attachAskStates(ctx, s.deps.Store.Pool, candidates); err != nil {
+	if err := s.attachAskStates(ctx, s.deps.Store.Pool, candidates, input.trees); err != nil {
 		// attachAskStates sets each row's state before it reads resolved asks' answers, so a
 		// failure partway would leave a resolved ask that was answered showing no answer.
 		slog.Warn("dispatch: related items carry no ask state", "error", err)
@@ -692,15 +897,27 @@ func (s *server) fillRelatedItems(
 	for _, result := range related[:min(len(related), suggestionRelatedCount)] {
 		suggestions.Related = append(suggestions.Related, suggestionFromResult(result))
 	}
-	for _, result := range candidates {
-		if result.Ask == nil || result.Ask.State != "answered" || result.Ask.Answer == nil {
+}
+
+// fillOtherProjectItems turns the cross-project leg's results into OtherProjects: the answered
+// questions of the other projects for a check whose write is a question (relatedOtherProjects).
+// Everything the input excludes is left out first, the rule fillRelatedItems runs over the
+// one-project items, so an item the check must not offer cannot reach a reader through this leg
+// either. The best suggestionOtherProjectCount are kept, each a different ask: the statement
+// already folds an ask matched through more than one window into its best one, and this keeps
+// that true of whatever came back. Each row carries its own ask state and answer, so the items
+// read no state a second time (suggestionFromResult copies what the row holds).
+func fillOtherProjectItems(input relatedInput, results []model.SearchResult, suggestions *model.Suggestions) {
+	seen := make(map[string]bool, suggestionOtherProjectCount)
+	for _, result := range results {
+		if input.excludes(result) || seen[result.ID] {
 			continue
 		}
-		item := suggestionFromResult(result)
-		at := result.Ask.Answer.At
-		item.AnsweredBy, item.AnsweredAt = result.Ask.Answer.User, &at
-		suggestions.Decision = &item
-		break
+		seen[result.ID] = true
+		suggestions.OtherProjects = append(suggestions.OtherProjects, suggestionFromResult(result))
+		if len(suggestions.OtherProjects) == suggestionOtherProjectCount {
+			return
+		}
 	}
 }
 
@@ -812,7 +1029,7 @@ const relatedCheckInsert = `
 // outcome, search mode, reason, the lexemes it searched for, the stages' and the whole check's
 // times and how many items it listed. A check whose project could not be resolved has no row to
 // write, since the row belongs to a project. The rows go in one round trip (store.Pool.SendBatch),
-// so an edit's decision blocks past decisionBlockCheckLimit, however many, cost one.
+// so an edit's decision blocks beyond decisionBlockCheckLimit, however many, cost one.
 //
 // related_checks rows the first attempt could not write for a reason a retry can cure
 // (relatedRecordRetryable) are tried once more in the background, on the server's lifetime
@@ -899,20 +1116,31 @@ func relatedRecordRetryable(err error) bool {
 }
 
 // persistSuggestions records every item a check offered, so the outcome sweep has something to
-// resolve and a later count has something to count, in one round trip (store.Pool.SendBatch):
-// up to four rows, three related plus one decision. A row that cannot be inserted is only logged.
+// resolve and a later count has something to count, in one round trip (store.Pool.SendBatch): up
+// to five rows, one per item. The check's own project's items come first, up to three under the
+// role `related`, then the answered questions of the other projects, up to two under the role
+// `other_project` (Suggestions.OtherProjects), each ranked in the order it stands in. A row that
+// cannot be inserted is only logged.
+//
+// recordRelatedChecks calls this for an issue source and an ask source alone, so an ask create's
+// cross-project offers are recorded, on an issue and on a project document alike, and a new
+// decision block's offers reach no row. That is what the table admits: it keys such a row by the
+// ask the offer was made on (source_ask_id, which every row of an ask source holds), and a
+// decision block's check holds the document block's own id and no ask id. So the role is written
+// for an ask create alone, which is what lets the records route count the writes that offered
+// one by that column (relatedChecksOffersQuery).
 func (s *server) persistSuggestions(ctx context.Context, source suggestionSource, suggestions *model.Suggestions) {
 	type row struct {
 		role string
 		rank int
 		item model.WriteSuggestion
 	}
-	rows := make([]row, 0, len(suggestions.Related)+1)
+	rows := make([]row, 0, len(suggestions.Related)+len(suggestions.OtherProjects))
 	for i, item := range suggestions.Related {
 		rows = append(rows, row{role: "related", rank: i, item: item})
 	}
-	if suggestions.Decision != nil {
-		rows = append(rows, row{role: "decision", rank: 0, item: *suggestions.Decision})
+	for i, item := range suggestions.OtherProjects {
+		rows = append(rows, row{role: "other_project", rank: i, item: item})
 	}
 	if len(rows) == 0 {
 		return

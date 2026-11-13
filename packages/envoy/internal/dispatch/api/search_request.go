@@ -31,7 +31,9 @@ import (
 // the query as typed needs none of it, because websearch_to_tsquery is already reading each
 // -word in $1 itself. keywordsOnly is the request's own ?keywords_only=true: the search runs the
 // keyword statement and makes no embedding call, whatever embedder the deployment configured
-// (runSearch).
+// (runSearch). trees is whether the caller reads display trees (wantsDisplayTrees), which each
+// hit's snippet is cut and marked into beside its text (scanSearchRows); the answerer's own
+// search reads a hit's title and href alone and asks for none.
 //
 // reading is text read as the words a person wrote and the operators around them
 // (readSearchQuery), taken once by whoever builds the parameters and handed to every reader of
@@ -46,6 +48,7 @@ type searchParameters struct {
 	limit         int
 	offset        int
 	keywordsOnly  bool
+	trees         bool
 	ownKeys       []string
 	broaden       []string
 	excluded      string
@@ -62,6 +65,17 @@ func (p searchParameters) numberScope() string {
 		return p.project
 	}
 	return p.numberProject
+}
+
+// filtered is whether this search narrows by any of the three filters every leg carries
+// (searchRowFilters): the issue status a row belongs to, the actor that wrote the item it
+// names, and when that item was written. The meaning read path asks, because only one of its
+// three statements applies those filters inside the comment arm's candidate limit, and a
+// search that narrows by one of them has to run that statement whatever project it names
+// (meaningStatementFor). The project is no filter of this kind: it is what the three
+// statements differ over, and each of them carries it.
+func (p searchParameters) filtered() bool {
+	return p.status != "" || p.author != "" || p.since != nil
 }
 
 // queryReading is this search's text read as words and operators, which the search route reads

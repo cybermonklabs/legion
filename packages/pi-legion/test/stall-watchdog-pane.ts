@@ -3,21 +3,23 @@
 // helpers a case reads it with. The cases are in `extensions/legion-stall-watchdog-omp.test.ts`,
 // and what was measured to build them is in that file's own header; nothing here is a case, so
 // this module runs nothing on import but the constants below.
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import type { LegionState } from "@legion/contracts/legion-api";
 import {
   type Block,
   type Cleanup,
   call,
+  deliveryFor,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
-  refusingNats,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { writtenLines } from "@legion/test-fixtures/transcript-lines";
 import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
 import {
   STALL_WATCH_ENTRY,
@@ -26,16 +28,14 @@ import {
   type StallWatchRecord,
 } from "../src/stall-evidence";
 import { stallExitsFile } from "../src/stall-exits";
+import { awaitSettled, transcriptEntries } from "./transcript-entries";
 
-const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-export const skip = omp === undefined && !onActions;
+/** The binary (LEGION_TEST_OMP) and the NATS server (LEGION_TEST_NATS_URL) every case here runs
+ *  against: a run without both skips, except on GitHub Actions, where it throws (`ompNatsGuard`). */
+const ompNats = ompNatsGuard();
 
-/** The binary the case runs against; throws on GitHub Actions without it. */
-function setup(): string {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  return omp;
-}
+/** What the cases in extensions/legion-stall-watchdog-omp.test.ts pass `test.skipIf`. */
+export const skip = ompNats.skip;
 
 const PROJECT = "watch";
 export const ROLE = "implementer";
@@ -67,6 +67,11 @@ export const SHELL_DEADLINE_MS = 20_000;
 /** How long a case waits for something the pane owes it before failing: the pane's boot and the
  * three steps of the ladder, each a 5-second sweep apart. */
 export const DEADLINE_MS = 120_000;
+
+/** How long `settled()` waits for the pane to finish the line it is writing. One line is one
+ * `write`, so this is orders of magnitude more than it takes even on a loaded pod; it is a
+ * bound, not a sleep. */
+const SETTLED_MS = 5_000;
 
 /** How long a case watches for something that must not happen: the bound, two of the plugin's
  * 5-second sweeps, and a margin. */
@@ -109,12 +114,21 @@ export async function runs(pid: number): Promise<boolean> {
   );
 }
 
-/** A directory of this case's own: the claim's state directory, or where a cell writes the pid of
- * the child it started. */
-export async function scratchDir(name: string): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), `legion-watch-${name}-`));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  return directory;
+/**
+ * Waits until `pid` is gone, and fails at the pane's own deadline if it never is.
+ *
+ * The ladder's first step sends SIGKILL and counts the signal (`src/stall-recovery.ts:242-243`);
+ * it does not wait for the task to end, and the kernel ends it after that call has returned. So
+ * the step's record is written while the process may still be on its way out, and a read of
+ * `/proc` taken the moment a case sees that record can still find it running — once in 20 runs
+ * of the first case under six busy loops on a 2-CPU pod, where the margin is thinnest
+ * (dispatch://INFRA-2188). Waiting proves what the immediate read meant to prove, since a
+ * process the step never ended still fails the case.
+ */
+export async function gone(pane: StallPane, pid: number): Promise<void> {
+  await pane.until(`process ${pid} to be gone after the step ended it`, async () =>
+    (await runs(pid)) ? undefined : true
+  );
 }
 
 /** The counter file one claim counts its own stall exits in, under `stateDir`. */
@@ -206,9 +220,9 @@ const MOVED_ON = {
     withoutWebhookApp: [],
     caches: [],
   },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
+  settings: { review_round_cap: 3, worker_boot_timeout_seconds: 120 },
   consumers: [],
-};
+} satisfies LegionState;
 
 /**
  * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own
@@ -252,7 +266,8 @@ export interface AgentEndSeen {
  * (`pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })` in
  * `packages/pi-envoy/extensions/envoy.ts`), so what lands on the running turn is what a message
  * from this worker's architect lands as. Nothing of the plugin is replaced: this extension only
- * does what the listener's delivery would have done had this case run a NATS of its own.
+ * does what a delivery on this session's own consumer would have done, which this case's
+ * stand-in listener relays none of.
  *
  * It also writes down what each run end hands an extension, which is how a case shows that the
  * entry's close at either end is a choice: the host does tell them apart, and the watch reads
@@ -325,6 +340,13 @@ export interface StallPane {
   readonly exited: Promise<number>;
   /** Whether omp is still running. */
   readonly running: () => boolean;
+  /** Waits until a read of the transcript finds it ending on a finished line. A case that reads
+   * an empty result as proof a record is absent calls this first, after the quiet period in
+   * which nothing should be written: the only line that could falsify such a read is one a
+   * write has not finished, which `records()` withholds while the pane runs. It is a separate
+   * read from the one that follows, so it does not promise that one finds the file whole — it
+   * narrows the window to the gap between the two. Throws naming the file at its bound. */
+  settled(): Promise<void>;
   /** Polls `probe` until it answers, failing on `what` at the deadline. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
@@ -333,13 +355,15 @@ export interface StallPane {
  * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
  * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
  * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
- * numbers set low. Nothing here takes a NATS delivery, so the Envoy extension is given an address
- * that refuses every connection (`refusingNats`). A side request — the run-end self-check, a
- * routing hint — is answered at once with one word, since none of them is a turn; a turn of the
- * pane's own conversation is answered from `reply`.
+ * numbers set low. The pane takes no NATS delivery of its own and is given a real server all the
+ * same (`LEGION_TEST_NATS_URL`): a session receives only what its own consumer holds
+ * (INFRA-771), so one that can open no relay subject is answered no consumer, every registration
+ * of its fails, and its claim boot ends the session rather than running on deaf. A side request —
+ * the run-end self-check, a routing hint — is answered at once with one word, since none of them
+ * is a turn; a turn of the pane's own conversation is answered from `reply`.
  */
 export async function startPane(options: PaneOptions): Promise<StallPane> {
-  const binary = setup();
+  const { binary, nats } = ompNats.setup();
   const registered: Record<string, unknown> = JSON.parse(
     await readFile(
       path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/register.json"),
@@ -416,12 +440,16 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
         trace_id: `trace-${key}`,
       });
     }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
+    // The Envoy listener: registration, the role claim, and any read answer with an interest. A
+    // registration is answered a consumer on the session's own relay subject, the one path a
+    // message reaches a session by (INFRA-771); an answer without one leaves the pane deaf and
+    // its claim boot fails.
     return Response.json({
       session_id: typeof body.session_id === "string" ? body.session_id : "",
       machine_id: `${PROJECT}-machine`,
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, `ses_${PROJECT}`),
     });
   });
   await writeStandinProfile(home, base);
@@ -457,7 +485,7 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       env: {
         TMPDIR: temporary,
         ENVOY_URL: base,
-        ENVOY_NATS_URL: refusingNats(cleanup),
+        ENVOY_NATS_URL: nats,
         LEGION_DAEMON_URL: base,
         LEGION_ROLE: ROLE,
         LEGION_TREE: TREE,
@@ -485,25 +513,14 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
   rpc.send({ type: "prompt", message: ASSIGNMENT });
 
   /** This launch's transcript entries of `customType`. The file is appended to as the session
-   * runs, so a case reads it while the pane is still running — and after it has ended itself. */
-  const entries = async (customType: string): Promise<Record<string, unknown>[]> => {
-    const files = (await readdir(sessions, { recursive: true })).filter((file) =>
-      file.endsWith(".jsonl")
-    );
-    if (files.length !== 1) return [];
-    return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line): unknown => JSON.parse(line))
-      .flatMap((entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        "customType" in entry &&
-        entry.customType === customType
-          ? [entry as Record<string, unknown>]
-          : []
-      );
-  };
+   * runs, so a case reads it while the pane is still running — and after it has ended itself.
+   * While it runs, a read can land between a line's bytes and its newline, so the unfinished
+   * last line is withheld rather than handed to `JSON.parse` half-written
+   * (`transcript-entries.ts`, dispatch://INFRA-2188); once the pane has exited nothing will
+   * finish it, so every line is parsed and a fragment throws where it is written. A case that
+   * reads an empty result as proof a record is absent waits for `settled()` first. */
+  const entries = async (customType: string): Promise<Record<string, unknown>[]> =>
+    transcriptEntries(sessions, customType, running ? "alive" : "gone");
 
   const pane: StallPane = {
     requests,
@@ -518,19 +535,25 @@ export async function startPane(options: PaneOptions): Promise<StallPane> {
       (await entries(STALL_RESTART_MESSAGE)).map((entry) => String(entry.content ?? "")),
     frames: () => frames,
     agentEnds: async () => {
+      // Read the pane's state before the file, never after: a read that catches half a line
+      // while the pane then exits would be marked "gone" and parsed, and the parse error would
+      // stand in for the real failure, which is that omp exited (dispatch://INFRA-2188).
+      const writer = running ? "alive" : "gone";
       let written: string;
       try {
         written = await readFile(endsFile, "utf8");
       } catch {
         return [];
       }
-      return written
-        .split("\n")
-        .filter(Boolean)
-        .map((line): AgentEndSeen => JSON.parse(line) as AgentEndSeen);
+      // The pane's own extension appends to this file (`steerExtension`), so the last line can
+      // be half-written while the pane runs; see `entries` above.
+      return writtenLines(written, writer).map(
+        (line): AgentEndSeen => JSON.parse(line) as AgentEndSeen
+      );
     },
     exited: rpc.exited,
     running: () => running,
+    settled: () => awaitSettled(sessions, SETTLED_MS),
     async until(what, probe) {
       const deadline = Date.now() + DEADLINE_MS;
       for (;;) {

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The live proof that a recorded check result says whether it still speaks for the work as it
-# stands (currencyReader, packages/envoy/internal/dispatch/api/results.go), and that the head it is
-# measured against moves with the pull-request events Dispatch takes off the bus
+# The live proof that a recorded check result says where its commit stands against the commits and
+# branches its check compares with (comparisonReader,
+# packages/envoy/internal/dispatch/api/results_comparison.go), and that the head it is compared with
+# moves with the pull-request events Dispatch takes off the bus
 # (recordPullRequestHead, packages/envoy/internal/dispatch/delivery/pull_request_heads.go). It runs
 # the real envoy-dispatch binary against a PostgreSQL the caller names, a NATS server of the run's
 # own (internal/testnats/cmd/natsd), the e2e harness's fake Envoy listener
@@ -13,15 +14,21 @@
 #
 # Its cases: the run's first result write, which reaches the record route and is refused 400
 # UNKNOWN_CHECK for a check nobody has; a result recorded and read back under its check (A2); a
-# push that moves the pull request's head, after which the earlier result reads older with no
-# write of Dispatch's and a result at the new head reads current (A4); a result for an
-# `after_merge` check recorded on a closed issue, where a document write is still refused 409
-# ISSUE_CLOSED (A5); a `default_branch` check whose result at a commit the compare calls `behind`
-# reads current, while its result at a commit the compare calls `diverged` does not (A10); a
-# result at a 40-hex commit the fake was seeded with nowhere, refused 400 RESULT_COMMIT_UNKNOWN
-# naming the commit and the `owner/repo`, which leaves the check no row; and an issue whose
-# repository the fake's installation lookup does not find, whose result is marked
-# neither current nor older. Each case prints `== <case>`, what it read, and `ok <case>` or
+# push that moves the pull request's head, after which the earlier result stands at none of the
+# compared commits with no write of Dispatch's, and no pass of the check stands until a result at
+# the new head is recorded (A4); a fork's pull request taken for no basis, where the same pull
+# request with its head in this repository is one; a result for an `after_merge` check recorded on
+# a closed issue, where a document write is still refused 409 ISSUE_CLOSED (A5); a `default_branch`
+# check whose result at a commit the compare calls `behind` stands at the branch, while its result
+# at a commit the compare calls `diverged` stands at another commit (A10); a result at a 40-hex
+# commit the fake was seeded with nowhere, refused 400 RESULT_COMMIT_UNKNOWN naming the commit and
+# the `owner/repo`, which leaves the check no row; an issue whose repository the fake's
+# installation lookup does not find, whose results are answered unknown; the bases one issue's
+# three checks compare with, read through the `dispatch results` command of this checkout and
+# through the API, with no commit named, with a commit every check is compared with instead, and
+# again after an event moves one head; and what decides a pull request's issue, where a branch, a
+# body and a person's link each decide one row and the reconcile re-judges two stored rows of the
+# rule before this build's. Each case prints `== <case>`, what it read, and `ok <case>` or
 # `FAIL <case>`; the first case failing stops the run, since every later case records a result
 # too, and any FAIL exits 1.
 #
@@ -31,10 +38,11 @@
 # DATABASE_URL is required, and the run refuses to start without it: it names a loopback PostgreSQL
 # (127.0.0.1, localhost or ::1, as scripts/e2e/lib/loopback-dsn.py reads the DSN with libpq's own
 # parser) whose `public` schema this run drops and recreates before the server migrates it, and it
-# leaves what the run wrote there for inspection. DISPATCH_BIN is optional and names a prebuilt
-# envoy-dispatch: built from the base commit it is this change's negative control, and it fails at
-# the first result write, the route it does not serve; unset, the script builds ./cmd/dispatch
-# from this checkout. The ports are
+# leaves what the run wrote there for inspection. The driver reads it too, for the one fixture no
+# route of Dispatch can write: a stored pull request row of the attribution rule before this
+# build's. DISPATCH_BIN is optional and names a prebuilt envoy-dispatch: built from the base
+# commit it is this change's negative control, and it fails at the first result write, the route
+# it does not serve; unset, the script builds ./cmd/dispatch from this checkout. The ports are
 # VERIFICATION_RESULTS_E2E_DISPATCH_PORT (19061), VERIFICATION_RESULTS_E2E_ENVOY_PORT (19063) and
 # VERIFICATION_RESULTS_E2E_GITHUB_PORT (19065), each refused when something already answers on it;
 # NATS listens on a port the kernel picks. The work directory, under TMPDIR, holds the binaries and
@@ -111,11 +119,6 @@ cleanup() {
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
 trap 'cleanup 143' TERM
-
-# port_answers PORT succeeds when something accepts a connection on 127.0.0.1:PORT.
-port_answers() {
-  (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null
-}
 
 begin prerequisites
 [ -n "$database_url" ] ||
@@ -198,6 +201,12 @@ begin dispatch
 # caller's is read. The GitHub App is a throwaway RSA key beside a fake client id, as the browser
 # harness's own server runs with (packages/dispatch/e2e/run-server.sh): it is what makes the
 # delivery intake run at all, and every call it makes goes to the fake GitHub above.
+#
+# The delivery reconcile runs every two seconds here, under the test hooks, in place of the five
+# minutes a deployment runs it at (DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL,
+# packages/dispatch/e2e/run-server.sh runs it the same way), and its first pass runs as the server
+# starts: the attribution case waits for a pass to re-judge two stored rows, and a run that waited
+# five minutes for one would be no proof a reader runs.
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
@@ -219,18 +228,22 @@ start_process dispatch env -i \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
   DISPATCH_PORT="$dispatch_port" \
   DISPATCH_SERVER_URL="$dispatch_url" \
+  DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL=2s \
+  DISPATCH_TEST_HOOKS=1 \
+  DISPATCH_TEST_RECONCILE_AT_START=1 \
   DISPATCH_WEB_DIST="$work/web-dist" \
   ENVOY_URL="http://127.0.0.1:$envoy_port" \
   NATS_URLS="$nats_url" \
   "$dispatch_bin"
 await_start dispatch "$dispatch_pid" 60 "envoy-dispatch to answer /healthz" \
   curl -fsS --max-time 2 "$dispatch_url/healthz"
-note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url"
+note "envoy-dispatch on $dispatch_url, NATS on, delivery intake reading $nats_url, delivery reconcile every 2s"
 pass
 
 check=cases
 status=0
 VERIFICATION_RESULTS_E2E_AGENT_TOKEN=$agent_token \
+  VERIFICATION_RESULTS_E2E_DATABASE_URL=$database_url \
   bun "$root/scripts/e2e/verification-results.ts" "$dispatch_url" "$nats_url" "$github_url" ||
   status=$?
 kill -0 "$dispatch_pid" 2>/dev/null || fail "envoy-dispatch exited during the run; see $work/logs/dispatch.log"

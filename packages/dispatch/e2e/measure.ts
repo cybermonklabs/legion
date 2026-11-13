@@ -20,7 +20,7 @@ export async function measured<T>(part: MeasuredPart, body: () => Promise<T>): P
     test.info();
   } catch {
     // `test.step` throws outside a running test, and the parts are not only paid inside one:
-    // e2e/preflight.ts, Playwright's globalSetup, runs before any row. Only this probe is
+    // e2e/global-setup.ts, Playwright's globalSetup, runs before any row. Only this probe is
     // guarded, never `body`, so a real failure inside the part still propagates.
     return body();
   }

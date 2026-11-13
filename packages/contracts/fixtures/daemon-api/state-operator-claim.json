@@ -40,6 +40,7 @@
   "heldOutboxRows": [],
   "strandedClaims": [],
   "wakesWaiting": [],
+  "claimsToRefresh": 0,
   "capabilities": [],
   "repositories": {
     "owners": [],
@@ -86,6 +87,8 @@
     "production_check_hours": 336,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "worker_silence_minutes": 30,
+    "worker_background_hours": 4,
     "pod_update_max_open_rounds": null,
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
@@ -95,7 +98,22 @@
     },
     "worker_backends": {},
     "role_config_files": {},
-    "repository_renames": []
+    "repository_renames": [],
+    "hooks": [
+      {
+        "name": "work-back",
+        "on": "work_back",
+        "moves": [
+          "any"
+        ],
+        "every": 5,
+        "roles": [
+          "implementer",
+          "tester",
+          "reviewer"
+        ]
+      }
+    ]
   },
   "consumers": []
 }

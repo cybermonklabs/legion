@@ -28,7 +28,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
@@ -276,8 +275,10 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewJSONHandler(io.Discard, nil))
 }
 
-// stillClock is time that never moves: the machines' timers are armed and never fire, so a test
-// sees only what it drove.
+// stillClock is a clock whose timers never fire: the machines arm them and nothing calls them
+// back, and a Sleep returns at once, so a test sees only what it drove. Its Now is the wall
+// clock, so what is due by the time of day — an outbox row's next_at — still comes due as the
+// run goes on.
 type stillClock struct{}
 
 func (stillClock) Now() time.Time { return time.Now() }
@@ -912,7 +913,13 @@ func repositoriesGitHub(t *testing.T) string {
 	}})
 }
 
-// stop cancels the daemon and requires it to return cleanly.
+// stop cancels the daemon and requires it to return cleanly. What it waits for is a run that
+// never returns, not a measurement of how long the stop took: no row of its callers reads the
+// elapsed time, so the wait is stopHangGuard(stopBudget) rather than the contract itself,
+// stopBound(stopBudget) — the budget, then the NATS close's, the stamp's and the store close's
+// bounds (daemon.go, stopBudget). Held to that contract a row reds on a machine that spends a
+// few milliseconds more than the budget on a stop that waited for nothing, 3.005826798 s
+// against 3 s, which is what INFRA-985 was filed for (stopHangGuard, inflight_test.go).
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
@@ -926,7 +933,7 @@ func (d *daemon) stop() {
 		if err != nil {
 			d.t.Fatalf("run: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-time.After(stopHangGuard(stopBudget)):
 		d.t.Fatal("run did not return after its context was cancelled")
 	}
 }
@@ -1615,11 +1622,7 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
-	conn, err := nats.Connect(natsURL, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, natsURL)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
@@ -1666,15 +1669,22 @@ func (r *workflowTokenRecorder) InstalledOn(_ context.Context, role appauth.AppR
 // the repository mapping, acme/widgets the default of project; the webhook App check, Dispatch's
 // GitHub App installed on every repository; the publish of the project's gated design steps,
 // which the boot queues for its own project (daemon.queueGatedStepsPublish) and the outbox's
-// first sweep sends; and the read of a gate's own document, which the boot's catch-up makes for
-// every root it reads (bindGateRequest through dispatch.Client.Approval). It reports whether it
-// answered r. A board that leaves one of these to its own default arm fails the test with an
-// unexpected request, which is what this helper exists to stop: none of them belongs to a test
-// here.
+// first sweep sends; the publish of the documents a gated issue's own gates record, which the
+// boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
+// and that same sweep sends; and the read of a gate's own document, which the boot's catch-up
+// makes for every root it reads (bindGateRequest through dispatch.Client.Approval). It reports
+// whether it answered r. A board that leaves one of these to its own default arm fails the test
+// with an unexpected request, which is what this helper exists to stop: none of them belongs to a
+// test here.
 func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, project string) bool {
 	t.Helper()
 	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/projects/") &&
 		strings.HasSuffix(r.URL.Path, "/gated-steps") {
+		w.WriteHeader(http.StatusNoContent)
+		return true
+	}
+	if r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/api/v1/issues/") &&
+		strings.HasSuffix(r.URL.Path, "/design-gates") {
 		w.WriteHeader(http.StatusNoContent)
 		return true
 	}
@@ -1722,11 +1732,7 @@ func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
 func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
+	conn := testnats.Connect(t, url)
 	js, err := jetstream.New(conn)
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)

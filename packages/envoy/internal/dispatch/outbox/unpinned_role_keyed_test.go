@@ -29,7 +29,7 @@ import (
 // Waiting for that attempt is what the wider rule did, and it costs every such forward the 2 s
 // re-read for a mention that reaches one session (resolveUnpinnedRoleMentions). The key costs
 // that one session the mention's mode - the comment arrives as this copy rather than as a steer -
-// and nothing else, which is the trade the round's ruling made.
+// and nothing else, which is the trade the round's decision made.
 func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing.T) {
 	const routed = "routed-to-a-session-the-unanswered-mention-may-name"
 	const mentioned = "mentioned-and-held-by-nobody-the-outbox-can-name"
@@ -42,7 +42,7 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
 	rig.silent(t, contracts.RoleTopicPrefix+mentioned)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)
@@ -117,7 +117,7 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	rig := newRoleRig(t)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)
@@ -197,7 +197,7 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	rig := newRoleRig(t)
 	rig.claim(t, routed, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+routed)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)

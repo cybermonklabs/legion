@@ -42,6 +42,15 @@ const workerShimUsage = "legion worker-shim --connect <unix:///path|tcp://host:p
 // flooring the wait is the safe answer there. On a relaunch the warm-up runs again: `codegraph
 // status` on the volume's existing index answers complete and nothing runs, or an index an
 // earlier build left partial is repaired as workspace.nextCodegraphStep decides.
+//
+// Before the wrapped process is started, and before any frame the daemon sends is read, the shim
+// reads the pod's shared public leak check where its own environment carries the pin the worker
+// image sets (leakguard.Installed, shim's spawnOnce). The daemon reads the check and pushes it to
+// the pod's launcher, which installs it once for the pod before any role starts; the shim installs
+// nothing. The runtime tells every role of the pod that installed check as PUBLIC_LEAK_CHECK, and
+// where the environment names none the shim names the install itself. A role whose install is
+// absent or of another tag fails its launch rather than running an agent whose every write path
+// would refuse. On a tmux pane there is no pin and nothing is read.
 func runWorkerShim(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := newFlags("worker-shim", "usage: legion worker-shim [flags] -- <omp argv…>", stderr)
 	var given workerShimFlags

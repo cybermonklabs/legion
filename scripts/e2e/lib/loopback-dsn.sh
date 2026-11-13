@@ -18,13 +18,15 @@
 # what the run does on that server, in a few words.
 #
 # Nine call sites read a DSN with this guard before they start anything, because the server must
-# be this machine's. Eight are proofs of their own: plan-pointer-drive.sh,
-# dispatch-two-builds.sh, verification-results.sh, dispatch-claimant-delivery.sh,
-# clean-session-stop-tmux.sh, envoy-session-states.sh, envoy-session-delivery.sh and
-# dispatch-session-settings.sh. The ninth is lib/live-daemon-proof.sh, whose prerequisites check
-# reads LEGION_TEST_PG_DSN for each of the seven proofs that make that run: child-adoption.sh,
-# ci-red-no-takeover.sh, claim-compaction.sh, handoff-records.sh, merged-root-waits.sh,
-# no-required-checks.sh and provider-error-retry.sh. Seven of the nine call this function.
+# be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
+# verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
+# envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
+# eighth is lib/two-builds.sh, the harness the two two-builds proofs share, which reads
+# DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
+# lib/live-daemon-proof.sh, whose prerequisites check
+# reads LEGION_TEST_PG_DSN for each of the six proofs that make that run: child-adoption.sh,
+# claim-compaction.sh, conflict-no-takeover.sh, handoff-records.sh, provider-error-retry.sh and
+# role-prompt-rule.sh. Seven of the nine call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
@@ -40,16 +42,18 @@
 #
 # So the client the run connects with must be this one. A proof that reads the DSN with a second
 # parser decides the host twice, and the host it connects to is the second answer. Each of the
-# eight creates and drops its database with psql, which is libpq. Five of them give every server
+# nine proofs those eight call sites serve reaches that server with psql, which is libpq. Five
+# of them give every server
 # they start the connection string run_database_url below rebuilds, which libpq read back inside
 # the helper.
 #
-# The other three read the DSN a second time, with pgx. dispatch-two-builds.sh:308,
-# verification-results.sh:211 and dispatch-claimant-delivery.sh:174 give Dispatch the caller's
+# The other four read the DSN a second time, with pgx. lib/two-builds.sh:289, which starts both
+# servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh,
+# verification-results.sh:206 and dispatch-claimant-delivery.sh:169 give Dispatch the caller's
 # raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
-# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those three safe. The
+# (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those four safe. The
 # pinned pgx reads these shapes as libpq does, because pgx v5.11.0's own pgconn/parse_url.go is
-# written to match libpq's URI parser and says so in its first comment. And all three run
+# written to match libpq's URI parser and says so in its first comment. And all four run
 # Dispatch with DISPATCH_DEV_SIGNIN=1, whose boot reads the host again with pgx and refuses one
 # that is not loopback (loopbackDatabase, packages/envoy/cmd/dispatch/main.go:1270-1284).
 #
@@ -60,7 +64,7 @@
 # version is in use. dispatch://INFRA-2338 tracks that gap. A raise is a deliberate edit of those
 # files, and this comment is the one text that says what such a raise moves:
 # scripts/e2e/README.md and packages/daemon/internal/testpg/testdb/testdb_test.go point here
-# rather than write it again. Whoever raises pgx moves the safety of those three proofs, and of
+# rather than write it again. Whoever raises pgx moves the safety of those four proofs, and of
 # the rewrite check the next paragraph names, and must drive this guard's own cases
 # (lib/loopback-dsn.test.ts) and that check's own cases
 # (packages/daemon/internal/testpg/testdb/testdb_test.go) again.

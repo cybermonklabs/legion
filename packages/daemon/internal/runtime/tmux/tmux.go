@@ -189,15 +189,21 @@ type Runtime struct {
 	conns                runtime.Conns
 	paneEnv              map[string]string
 	environ              []string
-	tmuxPath             string
-	legion               string
-	now                  func() time.Time
-	log                  *slog.Logger
-	providerEnvDir       string
-	providerKeys         []string
-	operatorEnv          map[string]string
-	piConfigFiles        []string
-	roleConfigFiles      map[claim.Role][]string
+	// ownEnviron is the daemon's own environment, as Options.Environ gave it and before
+	// PaneEnvironment made a pane's out of it: what a launch resolves the machine's shared public
+	// leak check in (resolveLeakCheck). environ above is the pane environment, which carries
+	// neither the operator's XDG_CONFIG_HOME nor any name off the allow list, so it is no
+	// environment to resolve that check in.
+	ownEnviron      []string
+	tmuxPath        string
+	legion          string
+	now             func() time.Time
+	log             *slog.Logger
+	providerEnvDir  string
+	providerKeys    []string
+	operatorEnv     map[string]string
+	piConfigFiles   []string
+	roleConfigFiles map[claim.Role][]string
 	// memoryConfigFiles are the project's memory overlays (Options.MemoryConfigFiles), named last
 	// in PI_CONFIG_FILES by a pane whose tree is in the memory group alone.
 	memoryConfigFiles []string
@@ -346,6 +352,7 @@ func New(opts Options) (*Runtime, error) {
 		commandTimeout:       opts.CommandTimeout,
 		conns:                opts.Conns,
 		paneEnv:              paneEnv,
+		ownEnviron:           environ,
 		tmuxPath:             tmuxPath,
 		legion:               legion,
 		now:                  opts.Now,
@@ -376,11 +383,11 @@ func New(opts Options) (*Runtime, error) {
 	sort.Strings(r.environ)
 	r.run = r.runTmux
 	if r.takeOver != "" {
-		// One line at boot, in the log an operator reads first: while the key is set the
-		// same-agent refusal is off for the whole project — every session found nowhere starts a
-		// fresh agent (takingOverSession) — and a forgotten key leaves it off with no other trace
-		// than a per-launch warning and `take_over` in `legion state --json`.
-		r.log.Warn("tmux runtime: runtime.tmux.take_over is set, so every session found nowhere starts a fresh agent and no launch is charged for it; remove the key once the move is done (docs/deployment.md, \"Moving a project onto tmux\", step 5)",
+		// One line at boot, in the log an operator reads first: while the key is set this runtime
+		// takes over the other runtime's locators, resuming a claim whose process it cannot see
+		// without waiting for that process, and a forgotten key leaves that on with no trace other
+		// than `take_over` in `legion state --json`.
+		r.log.Warn("tmux runtime: runtime.tmux.take_over is set, so this runtime resumes the other runtime's claims without waiting out their processes; remove the key once the move is done (docs/deployment.md, \"Moving a project onto tmux\", step 5)",
 			"takeOver", opts.TakeOver, "takesOver", r.takeOver)
 	}
 	return r, nil

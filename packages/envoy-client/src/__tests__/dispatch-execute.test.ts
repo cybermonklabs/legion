@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
+  ARTIFACT_NAME_EXISTS_RULE,
   type Artifact,
   type BlockPath,
   dispatchToolSpecs,
@@ -23,6 +24,7 @@ import {
 } from "@legion/contracts/dispatch-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
+import goUnicodeIsSpace from "../../../contracts/fixtures/go-unicode-isspace.json";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import type { ExecFn } from "../dispatch-cwd";
@@ -30,6 +32,7 @@ import {
   type DispatchToolResult,
   dispatchRefFromUrl,
   executeDispatchTool,
+  goBlankPattern,
   positionText,
   resolveIssueDocumentId,
 } from "../dispatch-execute";
@@ -51,6 +54,22 @@ function response(body: unknown, status = 200): Response {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+/**
+ * The two reads `dispatch artifact` makes before it uploads anything: what the owner already
+ * holds, which decides the name-exists refusal, and the markdown the store would hold for inline
+ * text, which decides the stored-text refusal. A test that exercises neither refusal answers an
+ * owner holding no document and a store that would hold the text as it stands, so the upload
+ * itself is what it measures. Undefined for every other request, which the stub answers itself.
+ */
+function uploadPreflight(url: RequestInfo | URL, init?: RequestInit): Response | undefined {
+  const { pathname } = new URL(String(url));
+  if (pathname === "/api/v1/markdown/round-trip") {
+    return response({ markdown: JSON.parse(String(init?.body)).markdown });
+  }
+  if (pathname.endsWith("/artifacts") && (init?.method ?? "GET") === "GET") return response([]);
+  return undefined;
 }
 
 /**
@@ -713,33 +732,46 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
-  test("rejects a numbered reply_to_ask with the issue's open asks", async () => {
-    const requests: string[] = [];
-    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+  // The open asks of the issue a reply_to_ask is resolved against, and the two ids a prefix of
+  // "0123" cannot tell apart.
+  const openAsks = [
+    { id: "01234567-0000-4000-8000-000000000001", question: firstReleaseQuestion },
+    { id: "01234567-0000-4000-8000-000000000002", question: secondReleaseQuestion },
+    { id: "89abcdef-0000-4000-8000-000000000003", question: "A third release. When?" },
+  ];
+
+  /** The issue read every reply_to_ask refusal below makes, and the comment POST a reply makes. */
+  function replyToAskServer(requests: string[]): typeof fetch {
+    return (async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
       requests.push(pathname);
       if (pathname === "/api/v1/issues/DSP-41") {
-        return response({
-          key: "DSP-41",
-          open_asks: [
-            { id: "01234567-0000-4000-8000-000000000001", question: firstReleaseQuestion },
-            { id: "89abcdef-0000-4000-8000-000000000002", question: secondReleaseQuestion },
-          ],
-        });
+        return response({ key: "DSP-41", open_asks: openAsks });
+      }
+      if (pathname === "/api/v1/issues/DSP-41/comments" && init?.method === "POST") {
+        return response({ id: "comment-1", issue_key: "DSP-41" }, 201);
       }
       throw new Error(`unexpected request: ${pathname}`);
-    };
+    }) as typeof fetch;
+  }
 
-    const failure = await executeDispatchTool({
+  function replyToAsk(replyToAskValue: string, fetchImpl: typeof fetch) {
+    return executeDispatchTool({
       tool: "dispatch_comment",
-      args: { issue: "DSP-41", body: "Ship the first.", reply_to_ask: "12" },
+      args: { issue: "DSP-41", body: "Ship the first.", reply_to_ask: replyToAskValue },
       cwd: "/workspace",
       host: "omp",
       config,
       env: {},
       exec: repoExec("owner/repo"),
-      fetchImpl: fetchImpl as typeof fetch,
-    }).then(
+      fetchImpl,
+    });
+  }
+
+  test("rejects a numbered reply_to_ask with the issue's open asks", async () => {
+    const requests: string[] = [];
+
+    const failure = await replyToAsk("12", replyToAskServer(requests)).then(
       () => undefined,
       (error: unknown) => error
     );
@@ -747,8 +779,54 @@ describe("executeDispatchTool", () => {
     expect(failure).toBeInstanceOf(ToolInputError);
     if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
     expect(failure.problems).toEqual([
-      `ask IDs are UUIDs; use the full ask ID; this issue's open asks: 01234567… ${firstReleaseQuestion}, 89abcdef… ${secondReleaseQuestion}`,
+      `ask ids are uuids. Write the whole id, or at least its first 8 characters. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
     ]);
+    // The problem is the id, not which flags the command takes (INFRA-1522 R16).
+    expect(failure.message).not.toContain("Allowed flags");
+    expect(failure.message).toContain("Example:");
+    expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
+  });
+
+  test("replies under the ask an 8-character prefix names", async () => {
+    const requests: string[] = [];
+
+    const result = await replyToAsk("89abcdef", replyToAskServer(requests));
+
+    expect(result.text).toContain("Replied on ask 89abcdef-0000-4000-8000-000000000003");
+    expect(requests).toEqual(["/api/v1/issues/DSP-41", "/api/v1/issues/DSP-41/comments"]);
+  });
+
+  test("rejects a reply_to_ask prefix that names no open ask", async () => {
+    const requests: string[] = [];
+
+    const failure = await replyToAsk("deadbeef", replyToAskServer(requests)).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toEqual([
+      `reply_to_ask deadbeef names no open ask of this issue. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
+    ]);
+    expect(failure.message).not.toContain("Allowed flags");
+    expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
+  });
+
+  test("rejects a reply_to_ask prefix that names more than one open ask", async () => {
+    const requests: string[] = [];
+
+    const failure = await replyToAsk("01234567", replyToAskServer(requests)).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toEqual([
+      `reply_to_ask 01234567 names 2 open asks of this issue. Write more of the id. The open asks of this issue are: 01234567… ${firstReleaseQuestion}, 01234567… ${secondReleaseQuestion}, 89abcdef… A third release. When?.`,
+    ]);
+    expect(failure.message).not.toContain("Allowed flags");
     expect(requests).toEqual(["/api/v1/issues/DSP-41"]);
   });
 
@@ -1964,7 +2042,10 @@ describe("executeDispatchTool", () => {
     expect(result.details).toEqual({ projects: [] });
   });
 
-  test("dispatch_open_asks renders active asks by whose reply is due", async () => {
+  // Both groups name the person the ask waits on, the server's `waiting_on_person`: the issue
+  // ask is the assignee's, and the document ask, which the server answers no person for, waits
+  // on nobody.
+  test("dispatch_open_asks renders active asks by whose reply is due and names who waits", async () => {
     const requests: string[] = [];
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
@@ -1990,6 +2071,7 @@ describe("executeDispatchTool", () => {
             human_replied: false,
             last_reply: null,
             waiting_on: "human",
+            waiting_on_person: "alice@theorem.dev",
           },
           {
             id: "ask-2",
@@ -2029,10 +2111,10 @@ describe("executeDispatchTool", () => {
         "2 unanswered asks you authored on active issues and project documents.",
         "",
         "Waiting on human (1):",
-        `- 1m 5s · P0 · LEGION-1: Reminder · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
+        `- 1m 5s · P0 · LEGION-1: Reminder · asked of alice@theorem.dev · ${releaseQuestion} · http://dispatch.test/issues/LEGION-1/asks/ask-1`,
         "",
         "Waiting on agent (1):",
-        "- 2h · OPS / Runbook · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
+        "- 2h · OPS / Runbook · asked of nobody · Which region? · http://dispatch.test/projects/OPS/documents/runbook?ask=ask-2",
       ].join("\n"),
       details: {
         session_id: "session-1",
@@ -3168,43 +3250,45 @@ describe("executeDispatchTool", () => {
         });
       }
       if (pathname === "/api/v1/artifacts/artifact-8/text") {
-        return response({ markdown, token: "sha256:doc" });
-      }
-      if (pathname === "/api/v1/artifacts/artifact-8/blocks") {
-        return response([
-          {
-            id: "t2",
-            type: "plan_task",
-            from: 0,
-            to: taskBytes,
-            token: "sha256:t2",
-            references: { comments: 0, asks: 0 },
-            attributes: [
-              { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
-              {
-                name: "needs",
-                value: "dispatch://DSP-8/artifact/plan-md#b-t1",
-                kind: "block[]",
-              },
-            ],
-          },
-          {
-            id: "k1",
-            type: "check",
-            from: taskBytes + 2,
-            to: documentBytes,
-            token: "sha256:k1",
-            references: { comments: 0, asks: 0 },
-            attributes: [
-              { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
-              {
-                name: "run",
-                value: "dispatch read --ref dispatch://DSP-8/spec#b-r1",
-                kind: "string",
-              },
-            ],
-          },
-        ]);
+        return response({
+          markdown,
+          token: "sha256:doc",
+          version: 4,
+          blocks: [
+            {
+              id: "t2",
+              type: "plan_task",
+              from: 0,
+              to: taskBytes,
+              token: "sha256:t2",
+              references: { comments: 0, asks: 0 },
+              attributes: [
+                { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
+                {
+                  name: "needs",
+                  value: "dispatch://DSP-8/artifact/plan-md#b-t1",
+                  kind: "block[]",
+                },
+              ],
+            },
+            {
+              id: "k1",
+              type: "check",
+              from: taskBytes + 2,
+              to: documentBytes,
+              token: "sha256:k1",
+              references: { comments: 0, asks: 0 },
+              attributes: [
+                { name: "serves", value: "dispatch://DSP-8/spec#b-r1", kind: "block[]" },
+                {
+                  name: "run",
+                  value: "dispatch read --ref dispatch://DSP-8/spec#b-r1",
+                  kind: "string",
+                },
+              ],
+            },
+          ],
+        });
       }
       throw new Error(`unexpected request: ${pathname}`);
     };
@@ -3714,7 +3798,7 @@ describe("executeDispatchTool", () => {
     expect(result.text).toBe(
       [
         createdIssueLines,
-        'Could not check whether project LEGION has an architecture model: not found. Review the `dispatch` skill, "Architecture components", to attach it to the parts it changes or mark it as non-architectural with a reason.',
+        'Could not check whether project LEGION has an architecture model: NOT_FOUND: not found. Review the `dispatch` skill, "Architecture components", to attach it to the parts it changes or mark it as non-architectural with a reason.',
       ].join("\n")
     );
     expect(requests).toEqual([
@@ -7639,6 +7723,293 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // One check with the three shapes a reader must tell apart: a result that stands at the head
+  // the check compared with, a result retracted after it was recorded, and a result at a commit
+  // that head is not. Every result prints, in the order the API served them, because the gate is
+  // read over all of them and not over the newest alone.
+  const headCommit = "1111111111111111111111111111111111111111";
+  const otherCommit = "2222222222222222222222222222222222222222";
+  const longReading =
+    "bun test: 1595 pass, 3 fail. The three failures all read a stale build of the client, so " +
+    "this run proves nothing about the change. Rebuild the workspace, run it again, and record " +
+    "the result at the new head commit.";
+  const threeResults = {
+    issue: "DSP-42",
+    verification_artifact_id: "artifact-9",
+    checks: [
+      {
+        artifact_id: "artifact-9",
+        block_id: "k1",
+        issue_key: "DSP-42",
+        ref: "dispatch://DSP-42/artifact/verification-md#b-k1",
+        sha256: "d4",
+        version: 4,
+        when: "before_merge",
+        text: "Run bun test in packages/envoy-client and see every case pass.",
+        surface: "the test run",
+        run: "bun test",
+        negative_control: "Break one case and see the run fail.",
+        compared_with: [
+          {
+            kind: "pull_request",
+            commit: headCommit,
+            pull_request: 3530,
+            learned_at: { at: "2026-11-10T09:00:00Z", kind: "read_at" },
+          },
+        ],
+        pass_stands: { answer: "yes", roles: ["implementer"] },
+        results: [
+          {
+            id: "res-3",
+            issue_key: "DSP-42",
+            check_issue_key: "DSP-42",
+            check_artifact_id: "artifact-9",
+            check_block_id: "k1",
+            check_version: 3,
+            check_sha256: "d3",
+            check_words_moved: true,
+            role: "tester",
+            verdict: "fail",
+            commit_sha: otherCommit,
+            commit_stands: { answer: "other_commit" },
+            surface: "the test run",
+            run: "bun test",
+            observed: longReading,
+            negative_control: "",
+            failed: 3,
+            skipped: 0,
+            excluded: 0,
+            screenshots: null,
+            session: "session-3",
+            actor: { kind: "session", id: "session-3" },
+            created_at: "2026-11-10T11:30:00Z",
+          },
+          {
+            id: "res-2",
+            issue_key: "DSP-42",
+            check_issue_key: "DSP-42",
+            check_artifact_id: "artifact-9",
+            check_block_id: "k1",
+            check_version: 4,
+            check_sha256: "d4",
+            check_words_moved: false,
+            role: "reviewer",
+            verdict: "pass",
+            commit_sha: headCommit,
+            commit_stands: {
+              answer: "at_basis",
+              basis: { kind: "pull_request", commit: headCommit, pull_request: 3530 },
+            },
+            retracted: {
+              reason: "The reviewer read the tester's run, not their own.",
+              actor: { kind: "user", id: "alice" },
+              created_at: "2026-11-10T12:00:00Z",
+            },
+            surface: "the test run",
+            run: "bun test",
+            observed: "bun test: 1598 pass, 0 fail.",
+            negative_control: "",
+            failed: 0,
+            skipped: 0,
+            excluded: 0,
+            screenshots: null,
+            session: "session-2",
+            actor: { kind: "session", id: "session-2" },
+            created_at: "2026-11-10T10:45:00Z",
+          },
+          {
+            id: "res-1",
+            issue_key: "DSP-42",
+            check_issue_key: "DSP-42",
+            check_artifact_id: "artifact-9",
+            check_block_id: "k1",
+            check_version: 4,
+            check_sha256: "d4",
+            check_words_moved: false,
+            role: "implementer",
+            verdict: "pass",
+            commit_sha: headCommit,
+            commit_stands: {
+              answer: "at_basis",
+              basis: { kind: "pull_request", commit: headCommit, pull_request: 3530 },
+            },
+            surface: "the test run",
+            run: "bun test",
+            observed: "bun test: 1598 pass, 0 fail.",
+            negative_control: "",
+            failed: 0,
+            skipped: 0,
+            excluded: 0,
+            screenshots: null,
+            session: "session-1",
+            actor: { kind: "session", id: "session-1" },
+            created_at: "2026-11-10T10:00:00Z",
+          },
+        ],
+      },
+    ],
+  };
+
+  async function readResults(args: Record<string, unknown>, asked: string[] = []) {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        asked.push(target.search);
+        return response(threeResults);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+    return await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42", ...args },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+  }
+
+  test("dispatch_results prints every result of a check with where its commit stands", async () => {
+    const read = await readResults({});
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k1 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes, from implementer.",
+        "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
+        "  - fail by tester at 2222222222222222222222222222222222222222. That commit is none of the compared commits. The check's words moved after this result (result version 3, check version 4). Recorded 2026-11-10T11:30:00Z. Result res-3.",
+        `    Reading: ${longReading}`,
+        "  - pass by reviewer at 1111111111111111111111111111111111111111. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:45:00Z. Result res-2.",
+        "    Retracted by user alice at 2026-11-10T12:00:00Z. The reason: The reviewer read the tester's run, not their own.",
+        "    Reading: bun test: 1598 pass, 0 fail.",
+        "  - pass by implementer at 1111111111111111111111111111111111111111. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result res-1.",
+        "    Reading: bun test: 1598 pass, 0 fail.",
+      ].join("\n")
+    );
+    expect(read.details).toMatchObject({ issue: "DSP-42", checks: 1, results: 3 });
+  });
+
+  // --brief is for an issue holding hundreds of results: it cuts the readings that stand at none
+  // of the compared commits, and leaves whole every reading a reader may act on.
+  test("dispatch_results --brief cuts only a reading that stands at no compared commit", async () => {
+    const read = await readResults({ brief: true });
+
+    expect(read.text).toContain(
+      "    Reading: bun test: 1595 pass, 3 fail. The three failures all read a stale build of the client, so this run proves nothing about the change. Rebuild the workspace, run it again, and record the result at the new… (result res-3)"
+    );
+    // The two results at the head keep their readings whole, retracted or not.
+    expect(
+      read.text.split("\n").filter((line) => line === "    Reading: bun test: 1598 pass, 0 fail.")
+    ).toHaveLength(2);
+  });
+
+  test("dispatch_results --at asks the route about that one commit", async () => {
+    const asked: string[] = [];
+
+    await readResults({ at: headCommit }, asked);
+
+    expect(asked).toEqual([`?at=${headCommit}`]);
+  });
+
+  // A check nobody has run yet still prints its own words: a reader decides what to run from
+  // them, and an empty line would send them to the document for it.
+  test("dispatch_results prints the words of a check with no result, and why it compared nothing", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        return response({
+          issue: "DSP-42",
+          verification_artifact_id: "artifact-9",
+          checks: [
+            {
+              ...threeResults.checks[0],
+              block_id: "k2",
+              when: "after_merge",
+              text: "Read the production dashboard and see no error.",
+              compared_with: [],
+              compared_nothing: "repository_unreadable",
+              pass_stands: { answer: "unknown" },
+              results: [],
+            },
+          ],
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k2 (after_merge). Compared with nothing: Dispatch cannot read the repository. A pass stands: not known.",
+        "  The check's words: Read the production dashboard and see no error.",
+        "  No result is recorded for this check.",
+      ].join("\n")
+    );
+  });
+
+  test("dispatch_result --retract records the retraction and prints what it holds", async () => {
+    const posts: Array<{ path: string; body: unknown }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/results/res-2/retract") {
+        posts.push({ path: target.pathname, body: JSON.parse(String(init?.body)) });
+        return response(
+          {
+            result_id: "res-2",
+            reason: "The reviewer read the tester's run, not their own.",
+            session: "session-1",
+            actor: { kind: "session", id: "session-1" },
+            created_at: "2026-11-10T12:00:00Z",
+          },
+          201
+        );
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const retracted = await executeDispatchTool({
+      tool: "dispatch_result",
+      args: { retract: "res-2", reason: "The reviewer read the tester's run, not their own." },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(posts).toHaveLength(1);
+    expect(posts[0]?.path).toBe("/api/v1/results/res-2/retract");
+    expect(posts[0]?.body).toMatchObject({
+      actor: { kind: "session", id: "session-1" },
+      reason: "The reviewer read the tester's run, not their own.",
+    });
+    expect(retracted.text).toBe(
+      [
+        "Retracted result res-2. session session-1 retracted it at 2026-11-10T12:00:00Z. The reason: The reviewer read the tester's run, not their own.",
+        "",
+        "The result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.",
+      ].join("\n")
+    );
+    expect(retracted.details).toMatchObject({ result: "res-2" });
+  });
+
   test("dispatch_request_approval sends its summary and reports the question the Inbox shows", async () => {
     const posts: Array<{ path: string; body: unknown }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -9548,9 +9919,13 @@ describe("executeDispatchTool", () => {
         return response(artifact);
       }
       if (request.pathname === "/api/v1/projects/CORE/artifacts") {
-        return request.search === "?unlinked=true"
-          ? response([artifact])
-          : response({ artifact, version: { number: 1 } });
+        if (init?.method === "POST") return response({ artifact, version: { number: 1 } });
+        // The unlinked listing a project read makes, and the listing the upload reads to refuse
+        // a name the project already holds, which this project does not hold.
+        return response(request.search === "?unlinked=true" ? [artifact] : []);
+      }
+      if (request.pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: JSON.parse(String(init?.body)).markdown });
       }
       if (request.pathname.endsWith("/text"))
         return response({ markdown: "# Runbook", version: 1 });
@@ -9780,6 +10155,8 @@ describe("executeDispatchTool", () => {
     writeFileSync(path.join(cwd, "artifact.txt"), "artifact from Dispatch cwd");
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       const request = { url: String(url), init: init ?? {} };
       requests.push(request);
       if (new URL(request.url).pathname === "/api/v1/issues/DSP-42/artifacts") {
@@ -9816,6 +10193,8 @@ describe("executeDispatchTool", () => {
   test("uploads inline artifact content as JSON", async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       const request = { url: String(url), init: init ?? {} };
       requests.push(request);
       return response({
@@ -9849,7 +10228,8 @@ describe("executeDispatchTool", () => {
   });
 
   test("reports the artifact slug and dispatch:// reference in the upload result text", async () => {
-    const fetchImpl = async (_url: RequestInfo | URL, _init?: RequestInit): Promise<Response> =>
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> =>
+      uploadPreflight(url, init) ??
       response({
         artifact: {
           id: "artifact-42",
@@ -9877,13 +10257,69 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // A create carrying a name alone makes an empty document: the body goes as JSON with the name,
+  // and the result says where the writer types into it. No name-exists read comes first: a create
+  // that stores nothing writes no version, so under a name the issue holds it is the server that
+  // refuses it, and `requests` holds the create alone.
+  test("makes an empty document from a name alone and sends it as JSON", async () => {
+    const requests: Array<{ url: string; init: RequestInit }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
+      requests.push({ url: String(url), init: init ?? {} });
+      return response({
+        artifact: {
+          id: "artifact-42",
+          issue_key: "DSP-42",
+          name: "Launch notes",
+          slug: "launch-notes",
+        },
+        version: { number: 1 },
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "Launch notes" },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      "Made Launch notes as an empty document " +
+        "(artifact slug launch-notes; dispatch://DSP-42/artifact/launch-notes). " +
+        "Write in it with dispatch doc-edit."
+    );
+    expect(result.details).toMatchObject({ issue: "DSP-42", artifact: "artifact-42", version: 1 });
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.init.headers).toMatchObject({ "Content-Type": "application/json" });
+    const body = JSON.parse(requests[0]?.init.body as string);
+    expect(body).toMatchObject({
+      name: "Launch notes",
+      actor: { kind: "session", id: "session-42" },
+    });
+    expect(body).not.toHaveProperty("content");
+    expect(body).not.toHaveProperty("file");
+  });
+
   test.each([
-    ["neither path nor content", { issue: "DSP-42", name: "spec.md" }],
     [
       "both path and content",
       { issue: "DSP-42", name: "spec.md", path: "spec.md", content: "# Spec\n" },
+      "Give at most one of path and content.",
     ],
-  ])("rejects an artifact call with %s", async (_name, args) => {
+    // A create with neither is allowed, and its name is a document's name: rows.jsonl is not one.
+    [
+      "neither path nor content under a name that is not a Markdown name",
+      { issue: "DSP-42", name: "rows.jsonl" },
+      '"rows.jsonl" is not a Markdown name.',
+    ],
+  ])("rejects an artifact call with %s", async (_name, args, refusal) => {
     await expect(
       executeDispatchTool({
         tool: "dispatch_artifact",
@@ -9895,7 +10331,7 @@ describe("executeDispatchTool", () => {
         exec: repoExec("owner/repo"),
         fetchImpl: (async () => response({})) as unknown as typeof fetch,
       })
-    ).rejects.toThrow("Exactly one of path or content is required.");
+    ).rejects.toThrow(refusal);
   });
 
   test.each([
@@ -9943,6 +10379,8 @@ describe("executeDispatchTool", () => {
   ])("sends inline content named %j as a Markdown document", async (name) => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const preflight = uploadPreflight(url, init);
+      if (preflight !== undefined) return preflight;
       requests.push({ url: String(url), init: init ?? {} });
       return response({
         artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "slug" },
@@ -9963,6 +10401,654 @@ describe("executeDispatchTool", () => {
 
     expect(requests).toHaveLength(1);
     expect(JSON.parse(requests[0]?.init.body as string)).toMatchObject({ name });
+  });
+
+  // INFRA-1522 R14: an upload under a name the issue already holds would write that document's
+  // next version, over the text it holds, so the command reads what the issue holds and refuses
+  // it before it sends the upload. --force is what asks for the version.
+  test("refuses an upload under a name the issue already holds, naming --force", async () => {
+    const held = {
+      id: "artifact-plan",
+      issue_key: "DSP-42",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      created_by: { kind: "session", id: "session-7" },
+      versions: [
+        { number: 1, authors: [{ kind: "session", id: "session-7" }] },
+        { number: 2, authors: [{ kind: "user", id: "alice" }] },
+      ],
+    };
+    const requests: Array<{ path: string; method: string }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      requests.push({ path: pathname, method: init?.method ?? "GET" });
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([held]);
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+    const upload = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_artifact",
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    const failure = await upload({ issue: "DSP-42", name: "plan.md", content: "# Plan\n" }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toEqual([
+      "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 2, which user alice wrote. " +
+        ARTIFACT_NAME_EXISTS_RULE,
+    ]);
+    // The document's own slug names it too, as the upload itself resolves a name.
+    await expect(upload({ issue: "DSP-42", name: "plan-md", content: "# Plan\n" })).rejects.toThrow(
+      "already holds plan.md"
+    );
+    // Nothing was uploaded, and the round trip was never asked for: the name decided it.
+    expect(requests.every((request) => request.method === "GET")).toBe(true);
+  });
+
+  // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
+  // document's next version, and a create whose content is blank writes none. The guard is the
+  // server's own `blank` (the `blank :=` line of jsonArtifactUpload,
+  // packages/envoy/internal/dispatch/api/artifacts.go): a blank create goes to the server, which
+  // refuses it under a held name whatever --force says, in the sentence that names its own rule.
+  // Refusing it here would answer it with --force, which changes nothing for it.
+  //
+  // R11: that `blank` is Go's `unicode.IsSpace`, which JavaScript's `trim` is not
+  // (goBlankPattern's comment in ../dispatch-execute.ts names the two characters they differ
+  // on). The server empties U+0085, so this create writes no version, and reading `trim` here
+  // would refuse it and name --force instead.
+  test.each([
+    ["empty", ""],
+    ["spaces alone", "   "],
+    ["a next line (U+0085) alone, which Go empties and `trim` keeps", "\u0085"],
+    ["a no-break space (U+00A0) alone, which both empty", "\u00A0"],
+  ])("sends a create under a name the issue holds whose content is %s", async (_what, content) => {
+    const held = {
+      id: "artifact-plan",
+      issue_key: "DSP-42",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      created_by: { kind: "session", id: "session-7" },
+      versions: [{ number: 1, authors: [{ kind: "user", id: "alice" }] }],
+    };
+    const refusal =
+      '"plan.md" names artifact plan-md (plan.md), which exists; a write with no content makes ' +
+      "no document and writes no version: edit it with dispatch doc-edit, or give the new " +
+      "document another name";
+    const posts: Array<Record<string, unknown>> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") {
+        // What the store holds for text that is whitespace alone: nothing at all (storedMarkdown,
+        // packages/envoy/internal/dispatch/api/markdown_round_trip.go).
+        return response({ markdown: "" });
+      }
+      if (pathname === "/api/v1/issues/DSP-42/artifacts") {
+        if ((init?.method ?? "GET") === "GET") return response([held]);
+        posts.push(JSON.parse(String(init?.body)));
+        return response({ code: "ARTIFACT_INPUT", error: refusal }, 400);
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "plan.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    // The create was sent as it stands, and what the writer reads is the server's own sentence.
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({
+      name: "plan.md",
+      content,
+      actor: { kind: "session", id: "session-42" },
+    });
+    expect(failure).not.toBeInstanceOf(ToolInputError);
+    expect(String(failure)).toContain(refusal);
+    expect(String(failure)).not.toContain(ARTIFACT_NAME_EXISTS_RULE);
+  });
+
+  // INFRA-1334 R11: the server reads U+FEFF as content, the other way round from U+0085 above
+  // (goBlankPattern's comment names the pair). So this create writes the held document's next
+  // version over the text it holds, and what answers it is the same held-name refusal
+  // "refuses an upload under a name the issue already holds, naming --force" reads for
+  // `# Plan\n`. Read with `trim` the create was blank here, skipping both that refusal and the
+  // stored-text check, and the upload stored version 2 with no --force asked for.
+  test("refuses a create under a name the issue holds whose content is U+FEFF alone", async () => {
+    const content = "\uFEFF";
+    const held = {
+      id: "artifact-plan",
+      issue_key: "DSP-42",
+      name: "plan.md",
+      slug: "plan-md",
+      kind: "doc",
+      created_by: { kind: "session", id: "session-7" },
+      versions: [{ number: 1, authors: [{ kind: "user", id: "alice" }] }],
+    };
+    const requests: Array<{ path: string; method: string }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      requests.push({ path: pathname, method: init?.method ?? "GET" });
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([held]);
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "plan.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    // The held-name sentence, which names --force as what asks for the version.
+    expect(failure.problems).toEqual([
+      "issue DSP-42 already holds plan.md (slug plan-md, kind doc) at version 1, which user alice wrote. " +
+        ARTIFACT_NAME_EXISTS_RULE,
+    ]);
+    // Nothing was uploaded, and the round trip was never asked for: the name decided it.
+    expect(requests.every((request) => request.method === "GET")).toBe(true);
+  });
+
+  test("writes the next version of a name the issue holds with --force", async () => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: JSON.parse(String(init?.body)).markdown });
+      }
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && init?.method === "POST") {
+        posts.push(pathname);
+        return response({
+          artifact: { id: "artifact-plan", issue_key: "DSP-42", name: "plan.md", slug: "plan-md" },
+          version: { number: 3 },
+        });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "plan.md", content: "# Plan\n", force: true },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    // --force reads nothing of what the issue holds: it asks for the version outright.
+    expect(result.text).toContain("Uploaded plan.md as version 3");
+    expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
+  });
+
+  // INFRA-1522 R15: inline text is stored as Markdown, so Dispatch stores its rendering. The
+  // command asks the store what it would hold and refuses a text it would write otherwise. The
+  // refusal prints the text the store writes, because that is the text the writer sends instead.
+  test("refuses inline content the store would change, printing the text Dispatch stores", async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      requests.push(pathname);
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        // What the store holds for a list written with stars: the renderer writes dashes.
+        return response({ markdown: "# Notes\n\n- one\n- two\n" });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n* two\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toEqual([
+      'Dispatch stores this text under another spelling: line 3 reads "* one" and is stored as "- one".' +
+        " Send the text Dispatch stores, which is between the two marker lines below." +
+        "\n--- the text Dispatch stores ---\n# Notes\n\n- one\n- two\n" +
+        "--- end of the text Dispatch stores ---",
+    ]);
+    // notes.md is a Markdown name, which --path parses and renders the same way, so the refusal
+    // sends nobody there: the one way out is the text printed above.
+    expect(failure.problems[0]).not.toContain("--path");
+    expect(requests).toEqual(["/api/v1/issues/DSP-42/artifacts", "/api/v1/markdown/round-trip"]);
+  });
+
+  // A name --path would store as bytes has a second way out, and the refusal names it.
+  test("names --path in the refusal of a name whose extension keeps the bytes", async () => {
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ markdown: "- one\n" });
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "Design notes", content: "* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    expect(failure.problems).toEqual([
+      'Dispatch stores this text under another spelling: line 1 reads "* one" and is stored as "- one".' +
+        " Send the text Dispatch stores, which is between the two marker lines below." +
+        " To keep the text as you wrote it, send it as a file with path (--path <file>), which" +
+        " stores a file whose path does not end in .md or .markdown as its bytes, unchanged." +
+        "\n--- the text Dispatch stores ---\n- one\n" +
+        "--- end of the text Dispatch stores ---",
+    ]);
+  });
+
+  // A document is up to 1 MiB, and a refusal nobody reads to the end is one nobody acts on, so a
+  // long stored text is cut at a line boundary and the refusal says how much it cut.
+  test("cuts a long stored text in the refusal and says what it cut", async () => {
+    const body = "A paragraph of the design.\n\n".repeat(200);
+    const stored = `# Notes\n\n- one\n\n${body}`;
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ markdown: stored });
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: `# Notes\n\n* one\n\n${body}` },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    const printed =
+      /--- the text Dispatch stores ---\n([\s\S]*)--- end of the text Dispatch stores ---$/.exec(
+        problem
+      )?.[1] ?? "";
+    expect(problem).toContain('line 3 reads "* one" and is stored as "- one".');
+    expect(printed.length).toBeGreaterThan(0);
+    expect(printed.length).toBeLessThan(stored.length);
+    // Whole lines only, and the start of the stored text, so what is printed reads as it stores.
+    expect(stored.startsWith(printed)).toBe(true);
+    expect(printed.endsWith("\n")).toBe(true);
+    expect(problem).toContain(
+      ` The text below is cut after ${printed.length} of its ${stored.length} characters: change the line named above and send the text again.`
+    );
+  });
+
+  // One line can be as long as the document, so the quote of the line that differs is bounded
+  // as the stored text below it is, and names its own cut (review round 2, finding G).
+  test("cuts a long quoted line in the refusal and says what it cut", async () => {
+    const items = "one two three ".repeat(40);
+    const long = `* ${items}`;
+    const content = `# Notes\n\n${long}\n`;
+    // The store writes a `*` bullet as `-`, which is the one difference of these two lines.
+    const storedLine = `- ${items}`;
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: `# Notes\n\n${storedLine}\n` });
+      }
+      throw new Error(`unexpected request: ${pathname}`);
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    }).then(
+      () => undefined,
+      (error: unknown) => error
+    );
+
+    expect(failure).toBeInstanceOf(ToolInputError);
+    if (!(failure instanceof ToolInputError)) throw new Error("expected ToolInputError");
+    const problem = failure.problems[0] ?? "";
+    expect(problem).toContain(
+      `${JSON.stringify(long.slice(0, 200))} (cut after 200 of its ${long.length} characters)`
+    );
+    expect(problem).toContain(
+      `${JSON.stringify(storedLine.slice(0, 200))} (cut after 200 of its ${storedLine.length} characters)`
+    );
+    // The whole line never reaches the refusal.
+    expect(problem).not.toContain(long);
+  });
+
+  // INFRA-1522 R15: the store ends every document it holds with a line feed, so text written
+  // without one comes back with one and nothing else changed. That is no other spelling, and the
+  // upload goes on. The server's own test pins it ("one" is stored as "one\n",
+  // packages/envoy/internal/dispatch/api/markdown_round_trip_test.go).
+  test("uploads inline content whose only difference is the store's final line feed", async () => {
+    const content = "# Notes\n\n- one\n- two";
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ markdown: `${JSON.parse(String(init?.body)).markdown}\n` });
+      }
+      posts.push(String(init?.body));
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toContain("Uploaded notes.md as version 1");
+    // The text goes up as it was written: the store adds the line feed, the command does not.
+    expect(posts.map((body) => JSON.parse(body).content)).toEqual([content]);
+  });
+
+  // INFRA-1522 R15(b): only a Dispatch that holds no such route leaves the upload to make its own
+  // refusal. 404 and 405 are what such a server answers.
+  test.each([
+    [404, "NOT_FOUND", "no route for POST /api/v1/markdown/round-trip"],
+    [405, "METHOD_NOT_ALLOWED", "method not allowed"],
+  ])("uploads when the round trip answers %i, which says the route is absent", async (status, code, error) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    });
+
+    expect(result.text).toContain("Uploaded notes.md as version 1");
+    expect(posts).toEqual(["/api/v1/issues/DSP-42/artifacts"]);
+  });
+
+  // A 404 or 405 from an ingress, a proxy or a load balancer is no answer of Dispatch's, so it
+  // says nothing about the route and the upload stops: reading such a page as an absent route
+  // would store the respelled text this check exists to stop (review round 2, finding C).
+  test.each([
+    [404, "<html><head><title>404 Not Found</title></head><body>nginx</body></html>"],
+    [405, "<html><body>405 Method Not Allowed</body></html>"],
+  ])("refuses the upload when a gateway answers %i for the round trip", async (status, page) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return new Response(page, { status, headers: { "content-type": "text/html" } });
+      }
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = failure instanceof Error ? failure.message : String(failure);
+    expect(message).toContain("Dispatch could not say how it would store this text");
+    // The upload never left, and the failure carries what the gateway answered.
+    expect(posts).toEqual([]);
+    expect(failure instanceof Error ? failure.cause : undefined).toBeInstanceOf(Error);
+  });
+
+  // A body Dispatch itself refused as too large is the one failure a repeat can never get
+  // through, so the refusal names what to do instead of saying to send the upload again
+  // (review round 3, finding 2). A name whose extension keeps the bytes has --path; a .md
+  // name has not, since --path parses and renders it the same way.
+  test.each([
+    ["notes.md", false],
+    ["Design notes", true],
+  ])("names the bound rather than a retry when Dispatch refuses the round trip's body (%s)", async (name, asBytes) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") {
+        return response({ error: "request body exceeds 6292480 bytes", code: "CAP_EXCEEDED" }, 413);
+      }
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name, slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name, content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = failure instanceof Error ? failure.message : String(failure);
+    expect(message).toContain("request body exceeds 6292480 bytes");
+    expect(message).toContain("sending the upload again does not change that");
+    expect(message).not.toContain("Send the upload again once that call is answered");
+    // The remedy is a step a writer can take: every text that reaches this refusal is past the
+    // megabyte one document holds, so "a document of its own" would be refused the same way.
+    expect(message).toContain(
+      "a markdown document is at most 1 MiB, so shorten it or split it across documents of at most that"
+    );
+    expect(message).not.toContain("write it to a document of its own");
+    expect(message.includes("Send it as a file with path (--path <file>)")).toBe(asBytes);
+    expect(posts).toEqual([]);
+  });
+
+  // Every other failure leaves open what the store would write, so the upload stops rather than
+  // storing the changed text this check exists to refuse.
+  test.each([
+    [401, "UNAUTHENTICATED", "the bearer token is not valid"],
+    [500, "INTERNAL", "the document service is down"],
+  ])("refuses the upload when the round trip answers %i, naming what failed", async (status, code, error) => {
+    const posts: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      if (pathname === "/api/v1/issues/DSP-42/artifacts" && (init?.method ?? "GET") === "GET") {
+        return response([]);
+      }
+      if (pathname === "/api/v1/markdown/round-trip") return response({ error, code }, status);
+      // A failed write asks /healthz whether the server keeps idempotency keys. Only the upload
+      // route is counted here.
+      if (pathname === "/healthz") return response({ idempotency_keys: true });
+      posts.push(pathname);
+      return response({
+        artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+        version: { number: 1 },
+      });
+    };
+
+    const failure = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n* one\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+      writeRetry,
+    }).then(
+      () => undefined,
+      (caught: unknown) => caught
+    );
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = failure instanceof Error ? failure.message : String(failure);
+    expect(message).toContain(
+      "Dispatch could not say how it would store this text, so nothing was uploaded: POST /api/v1/markdown/round-trip failed with "
+    );
+    expect(message).toContain(error);
+    expect(message).toContain("Send the upload again once that call is answered.");
+    // The upload never left: a check that did not run says nothing about what the store writes.
+    expect(posts).toEqual([]);
+  });
+
+  test("uploads inline content the store would hold as it stands, and asks no round trip for a file", async () => {
+    const requests: string[] = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const { pathname } = new URL(String(url));
+      requests.push(pathname);
+      return (
+        uploadPreflight(url, init) ??
+        response({
+          artifact: { id: "artifact-42", issue_key: "DSP-42", name: "notes.md", slug: "notes-md" },
+          version: { number: 1 },
+        })
+      );
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "notes.md", content: "# Notes\n\n- one\n- two\n" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toContain("Uploaded notes.md as version 1");
+    expect(requests).toEqual([
+      "/api/v1/issues/DSP-42/artifacts",
+      "/api/v1/markdown/round-trip",
+      "/api/v1/issues/DSP-42/artifacts",
+    ]);
   });
 
   for (const input of [
@@ -10550,6 +11636,9 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // The request this fixture carries names no `documents` list, which is what a Dispatch older
+  // than this client answers: for it the lead pair (spec.md, asked about at version 36 and now
+  // at 37) is the whole request, and the line reads that pair alone.
   test("a reply on a moved approval request says why it still waits on the agent and how to hand it back", async () => {
     const askID = "01234567-0000-4000-8000-000000000045";
     const requests: Array<{ method: string; pathname: string }> = [];
@@ -10608,9 +11697,9 @@ describe("executeDispatchTool", () => {
       [
         `Replied on ask ${askID} (comment comment-3; ask now waiting on agent). ` +
           "You follow this ask: its answer and replies reach you directly.",
-        "The reply did not hand the ask to the human: it is the approval request for spec.md at " +
-          "version 36, and spec.md is now version 37. No reply hands a moved approval request " +
-          "back. Once the human has agreed to every point in version 37, run: " +
+        "The reply did not hand the ask to the human: it is an open approval request, and " +
+          "spec.md asked about version 36 and is now version 37. No reply hands a moved " +
+          "approval request back. Once the human has agreed to every point in it, run: " +
           "dispatch request-approval --issue DSP-42 --summary '<what changed since version 36>'",
       ].join("\n")
     );
@@ -10626,6 +11715,164 @@ describe("executeDispatchTool", () => {
     expect((await run({ primary: false, issue: null })).text).toContain(
       "run: dispatch request-approval --project DSP --artifact artifact-7 --summary"
     );
+  });
+
+  // A request over an issue's spec and that issue's Verification document, where the write that
+  // moved it stored the Verification document: the lead pair stands at the version the request
+  // asks about and the second document is the one that moved, so every document of the request
+  // is read, and the `--summary` floor is the second document's requested version, not the
+  // first's. Two documents under a primary first one is what `--include-verification` asked for,
+  // so the call that hands the request back carries the flag again.
+  test("a reply on a two-document request names the second document that moved and its version", async () => {
+    const askID = "01234567-0000-4000-8000-000000000047";
+    const result = await executeDispatchTool({
+      tool: "dispatch_comment",
+      args: { issue: "DSP-42", body: "The verification is written.", reply_to_ask: askID },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: (async (url: RequestInfo | URL) => {
+        const target = new URL(String(url));
+        if (target.pathname === `/api/v1/asks/${askID}`) {
+          return response({
+            ask: {
+              id: askID,
+              issue_key: "DSP-42",
+              kind: "approval",
+              question: "Approve spec.md at version 9?",
+              state: "open",
+              waiting_on: "agent",
+              approval: {
+                artifact_id: "artifact-7",
+                name: "spec.md",
+                version: 9,
+                requested_version: 9,
+                documents: [
+                  {
+                    artifact_id: "artifact-7",
+                    name: "spec.md",
+                    requested_version: 9,
+                    version: 9,
+                  },
+                  {
+                    artifact_id: "artifact-8",
+                    name: "verification.md",
+                    requested_version: 16,
+                    version: 17,
+                  },
+                ],
+              },
+              approval_artifact: {
+                project: "DSP",
+                slug: "spec",
+                name: "spec.md",
+                primary: true,
+              },
+            },
+            replies: [],
+            edits: [],
+            answers: [],
+            followers: [],
+          });
+        }
+        return response({
+          id: "comment-5",
+          issue_key: "DSP-42",
+          ask_id: askID,
+          turn: "human",
+          ask_waiting_on: "agent",
+        });
+      }) as unknown as typeof fetch,
+      subscriptions: async () => ["notifications.dispatch.issue.DSP-42.>"],
+    });
+
+    expect(result.text).toBe(
+      [
+        `Replied on ask ${askID} (comment comment-5; ask now waiting on agent). ` +
+          "You follow this ask: its answer and replies reach you directly.",
+        "The reply did not hand the ask to the human: it is an open approval request, and " +
+          "verification.md asked about version 16 and is now version 17. No reply hands a moved " +
+          "approval request back. Once the human has agreed to every point in it, run: " +
+          "dispatch request-approval --issue DSP-42 --include-verification " +
+          "--summary '<what changed since version 16>'",
+      ].join("\n")
+    );
+  });
+
+  // Nothing moved: every document of the request stands at the version it asks about, so the
+  // reply left the request where it was and reports as any other reply does.
+  test("a reply on an approval request no write moved prints no hand-back line", async () => {
+    const askID = "01234567-0000-4000-8000-000000000048";
+    const result = await executeDispatchTool({
+      tool: "dispatch_comment",
+      args: { issue: "DSP-42", body: "One more point.", reply_to_ask: askID },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: (async (url: RequestInfo | URL) => {
+        const target = new URL(String(url));
+        if (target.pathname === `/api/v1/asks/${askID}`) {
+          return response({
+            ask: {
+              id: askID,
+              issue_key: "DSP-42",
+              kind: "approval",
+              question: "Approve spec.md at version 9?",
+              state: "open",
+              waiting_on: "agent",
+              approval: {
+                artifact_id: "artifact-7",
+                name: "spec.md",
+                version: 9,
+                requested_version: 9,
+                documents: [
+                  {
+                    artifact_id: "artifact-7",
+                    name: "spec.md",
+                    requested_version: 9,
+                    version: 9,
+                  },
+                  {
+                    artifact_id: "artifact-8",
+                    name: "verification.md",
+                    requested_version: 16,
+                    version: 16,
+                  },
+                ],
+              },
+              approval_artifact: {
+                project: "DSP",
+                slug: "spec",
+                name: "spec.md",
+                primary: true,
+              },
+            },
+            replies: [],
+            edits: [],
+            answers: [],
+            followers: [],
+          });
+        }
+        return response({
+          id: "comment-6",
+          issue_key: "DSP-42",
+          ask_id: askID,
+          turn: "human",
+          ask_waiting_on: "agent",
+        });
+      }) as unknown as typeof fetch,
+      subscriptions: async () => ["notifications.dispatch.issue.DSP-42.>"],
+    });
+
+    expect(result.text).toBe(
+      `Replied on ask ${askID} (comment comment-6; ask now waiting on agent). ` +
+        "You follow this ask: its answer and replies reach you directly."
+    );
+    expect(result.text).not.toContain("request-approval");
   });
 
   test("a progress note on an approval request reads no ask", async () => {
@@ -12195,11 +13442,11 @@ describe("executeDispatchTool", () => {
     });
 
     expect(result.text).toContain(
-      "References:\n- unavailable: GET http://dispatch.test/api/v1/issues/DSP-42/references?versions=latest " +
+      "References:\n- unavailable: HTTP_404: GET http://dispatch.test/api/v1/issues/DSP-42/references?versions=latest " +
         "answered 404 Not Found with a body that is not Dispatch's error JSON"
     );
     expect(result.text).toContain(
-      "Referenced by:\n- unavailable: GET http://dispatch.test/api/v1/references?to="
+      "Referenced by:\n- unavailable: HTTP_404: GET http://dispatch.test/api/v1/references?to="
     );
   });
 
@@ -13854,5 +15101,59 @@ describe("positionText", () => {
         ],
       })
     ).toBe("bullet_list[7] › list_item[0] › paragraph[0]");
+  });
+});
+
+describe("goBlankPattern", () => {
+  // INFRA-1334: the pattern writes Go's `unicode.IsSpace` set out, and the create rows above pin
+  // the two characters a person meets. Nothing but this test holds the whole set, so a hand edit
+  // that drops one scalar, or a raise of Go that moves the set, would otherwise be silent on this
+  // side. The committed list is what both languages read: Go's own predicate is held to it by
+  // TestUnicodeIsSpaceReportsTheCommittedScalars
+  // (packages/envoy/internal/dispatch/text/whitespace_fixture_test.go).
+  test("calls blank exactly the scalars the committed list holds", () => {
+    const listed = new Set(goUnicodeIsSpace.scalars.map((written) => Number.parseInt(written, 16)));
+    // A code point written twice would make the list shorter than it reads.
+    expect(listed.size).toBe(goUnicodeIsSpace.scalars.length);
+
+    const blankNotListed: number[] = [];
+    const listedNotBlank: number[] = [];
+    for (let code = 0; code <= 0x10ffff; code++) {
+      const blank = goBlankPattern.test(String.fromCodePoint(code));
+      if (blank && !listed.has(code)) {
+        blankNotListed.push(code);
+      } else if (listed.has(code) && !blank) {
+        listedNotBlank.push(code);
+      }
+    }
+    if (blankNotListed.length === 0 && listedNotBlank.length === 0) return;
+
+    const codePoints = (codes: number[]): string =>
+      codes.map((code) => `U+${code.toString(16).toUpperCase().padStart(4, "0")}`).join(", ");
+    const moved: string[] = [];
+    if (blankNotListed.length > 0) {
+      moved.push(
+        `  goBlankPattern calls ${codePoints(blankNotListed)} blank, which the list does not hold.`
+      );
+    }
+    if (listedNotBlank.length > 0) {
+      moved.push(
+        `  the list holds ${codePoints(listedNotBlank)}, which goBlankPattern calls content.`
+      );
+    }
+    throw new Error(
+      `goBlankPattern and packages/contracts/fixtures/go-unicode-isspace.json disagree:\n` +
+        `${moved.join("\n")}\n` +
+        "This test ran the pattern over every scalar from 0 to 10FFFF, so the characters above " +
+        "are where the pattern in ../dispatch-execute.ts stands now; the list is what Go's " +
+        "unicode.IsSpace reported when the list was written. Which side moved is in the Go test " +
+        "that measures the same list (TestUnicodeIsSpaceReportsTheCommittedScalars, " +
+        "packages/envoy/internal/dispatch/text): green there and Go has not moved, so the " +
+        "pattern was edited; red there too and Go or its Unicode version moved, so both were " +
+        "measured from a Go that is gone. `dispatch artifact` reads this pattern to tell whether " +
+        "the Dispatch server will call a create's content blank, and the server reads " +
+        "strings.TrimSpace, which trims what the list holds: measure the pattern and the list " +
+        "again together, or the command and the server read the same text differently."
+    );
   });
 });

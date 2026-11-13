@@ -140,9 +140,12 @@ export const artifactBlocksQuery = (id: string) =>
     queryFn: () => api.getArtifactBlocks(id),
   });
 
-/** The viewer's per-agent conversation state: each session's Clear, read mark, and count of
- *  unread replies to the viewer's direct messages. The navigation, the Agents page, and the
- *  live view all read this one key. */
+/** The viewer's per-agent conversation state: each session's Clear, read mark, count of unread
+ *  replies to the viewer's direct messages, and `pinned_at` where the viewer pinned it
+ *  (`features/agents/pins.ts`). The navigation, the Agents page, and the live view all read this
+ *  one key, and `user_agent_state.updated` refreshes it, so a pin or a read mark another browser
+ *  of the same person made shows here without a reload. A session the viewer has only pinned is
+ *  in the answer too. */
 export const userAgentStateQuery = () =>
   queryOptions({
     queryKey: ["user-agent-state"],
@@ -286,12 +289,16 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
  * unanswered waits for the answer: until then the server may not have applied the move, and its
  * list would put the card back where it came from.
  */
-export const projectIssuesQuery = (project: string, labels: readonly string[]) =>
+export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({
-    queryKey: projectIssuesQueryKey(project, labels),
+    queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
-      return api.listIssues(labels.length === 0 ? { project } : { label: [...labels], project });
+      return api.listIssues({
+        project,
+        ...(labels.length ? { label: [...labels] } : {}),
+        ...(open ? { open: true } : {}),
+      });
     },
   });
 

@@ -42,7 +42,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays) and each message, once however it arrived. It reads the ask.answered, comment.created, message.created and message.answered events a person wrote whose published_destinations hold the session's own topic, the session's sent message deliveries (targeted and broadcast messages) and its sent comment deliveries (mentions); it never lists an agent's or the system's words, an ask's resolution or hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer), the ask and its whole question on an answer and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose text takes the running sum of text lengths (UTF-16 units) past it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
+    /** @description What people wrote that Dispatch delivered to one session, newest first by at, then by id: each ask's current answer (replaced when it changed an earlier answer), each comment at its current body (edited_at when edited; a resolved comment stays), each message, and each ask a person declined to answer, once however it arrived. It reads the ask.answered, comment.created, message.created, message.answered and ask.resolved events a person wrote whose published_destinations hold the session's own topic, the session's sent message deliveries (targeted and broadcast messages) and its sent comment deliveries (mentions); of an ask's resolutions it lists the decline alone, and it never lists an agent's or the system's words, a retraction, a withdrawal, another resolution, a hand-back, or a delivery to a role: route's topic. Each item names its relation to the session (mentioned_you over replied_on_your_ask over replied_in_a_comment_thread over commented_on_a_document over commented_on_an_issue for a comment; replied_to_your_message over sent_you_a_message for a message; answered_your_ask for an answer; declined_your_ask for a decline), the ask and its whole question on an answer, on a decline and on a reply in an ask's thread, its owner, dispatch:// ref and href (null owner and ref, and /agents/<session_id>/live, for a direct message). A decline carries a kind of its own, declined, at the resolution's own time, its id the ask's, and its words in two parts: text, the person's own note, empty when they wrote none, and dispatch_words, the sentences Dispatch wrote for the asking agent; nobody chose an option, so it carries no selected. ?since= (RFC3339, default 72 hours ago; older than 7 days or in the future is 400 INVALID_QUERY) starts the window; ?max_chars= (1-100000, else 400 INVALID_QUERY) stops the list after the item whose words take the running sum past it, counting the UTF-16 units of text and, on a decline, of dispatch_words beside it, while total counts every item in the window; {session_id, since, total, items}. A session_id that is not a session id is 400 INVALID_SESSION_ID, as on the agent artifact routes. Not an authorization boundary: direct-message text already reaches every authenticated caller through GET /api/v1/events, and a person may read any session's list. */
     get: operations["getApiV1AgentsBySessionIdAnswers"];
     put?: never;
     post?: never;
@@ -183,10 +183,12 @@ export interface paths {
     get: operations["getApiV1ArtifactsById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes. */
+    delete: operations["deleteApiV1ArtifactsById"];
     options?: never;
     head?: never;
-    patch?: never;
+    /** @description Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT. */
+    patch: operations["patchApiV1ArtifactsById"];
     trace?: never;
   };
   "/api/v1/artifacts/{id}/_test/hold-persistence": {
@@ -286,7 +288,7 @@ export interface paths {
     /** @description List a document's asks. */
     get: operations["getApiV1ArtifactsByIdAsks"];
     put?: never;
-    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when. */
+    /** @description Open an ask on a document. After the write commits, a related-item check searches the document's project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
     post: operations["postApiV1ArtifactsByIdAsks"];
     delete?: never;
     options?: never;
@@ -352,7 +354,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List a document's comments. */
+    /** @description List a document's comments. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1ArtifactsByIdComments"];
     put?: never;
     /** @description Comment on a document or one of its quotes. */
@@ -507,7 +509,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A document's canonical markdown and whole-document token. */
+    /** @description A document's canonical markdown, its whole-document token and its version. With ?blocks=true the answer carries the document's blocks as well, each as GET /api/v1/artifacts/{id}/blocks reports it, rendered from the one tree the markdown and the token come from: a listing read this way cannot be split by another session's write. */
     get: operations["getApiV1ArtifactsByIdText"];
     put?: never;
     post?: never;
@@ -603,6 +605,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/asks/{id}/asked-of": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Hand an open ask to another person {asked_of}, the email of somebody who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise): the ask waits on them from now on, wherever its issue goes, and the Inbox lists it under them. It needs the person scope, since handing a question on is one person asking another. An ask that is not open is 409 ASK_NOT_OPEN and one whose issue is closed 409 ISSUE_CLOSED. Naming the assignee of the ask's own issue empties the field instead, so the ask follows its issue again; either way the row records who handed it on and when (asked_of_by, asked_of_at), and one ask.asked_of event names the person it waited on before and the one it waits on now. Answers the ask. */
+    put: operations["putApiV1AsksByIdAskedOf"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/asks/{id}/decline": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Decline to answer an ask: the person closes it with no answer, and Dispatch writes beside their note the words that tell the asking agent to decide without one. The note is optional, and at most the event body limit (400 CAP_EXCEEDED); the ask resolves with the kind declined, a block ask's block records it as every other resolution does, and an approval request is 409 ASK_NOT_DECLINABLE, being answered with Approve or Request changes. */
+    post: operations["postApiV1AsksByIdDecline"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/asks/{id}/followers": {
     parameters: {
       query?: never;
@@ -647,7 +683,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too. */
+    /** @description Retract or resolve an ask without answering it (kind retracted or resolved; withdrawn is written only by an issue's close, and an ask on a closed issue is 409 ISSUE_CLOSED); a block ask's block records it too. A person who will not answer declines instead, on a route of their own, POST /api/v1/asks/{id}/decline. */
     post: operations["postApiV1AsksByIdResolve"];
     delete?: never;
     options?: never;
@@ -699,6 +735,23 @@ export interface paths {
     };
     /** @description One broadcast with every recipient's delivery attempts and replies, recipients in the order the send named them; a broadcast from before that order was stored falls back to created_at, id. */
     get: operations["getApiV1BroadcastsById"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/ci-reconcile/passes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The CI reconcile passes of the last 24 hours, newest first: each one's id, the server process that ran it, when it started and ended, what it did (graphql_queries, graphql_points, rest_requests, rest_not_modified, heads_over_rest, records, heads, heads_known) and where it left the cursor, which is where the pass after it takes the order up: the repository, from (the number naming the page of its open pull requests, one above the last head of the page before it), number (the first pull request of that page the pass did not finish, 0 for the whole page), rest (the page is read from the repository's REST listing rather than from a query) and counted (its heads are already among the heads the cycle knows the repository has). Both the counts and the cursor are null until the pass ends. state is running, complete, deadline (its own five-minute bound cut it short), rate_limit (a shared GitHub limit ended it), cancelled (its process shut down under it) or ended_without_completing, which is a pass whose process died before it could record its end. Rows are kept for 48 hours and pruned by the pass that ends. */
+    get: operations["getApiV1CiReconcilePasses"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1209,7 +1262,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter (unassigned includes document asks; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
+    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
     get: operations["getApiV1Inbox"];
     put?: never;
     post?: never;
@@ -1226,10 +1279,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. Each issue carries progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
+    /** @description List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, any answered ask that settles it, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1348,7 +1401,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description An issue document's canonical markdown and whole-document token, by slug or unambiguous filename. */
+    /** @description An issue document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1IssuesByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -1402,7 +1455,7 @@ export interface paths {
     /** @description List an issue's asks, each with its newest reply; ?state= filters, and ?thread=1 adds each ask's thread (replies, rewordings, answers, followers, claimant, route, route_holder). */
     get: operations["getApiV1IssuesByKeyAsks"];
     put?: never;
-    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, the three items most like it with each ask item's answer state, and any already-answered ask that may settle the same question, with who answered and when. */
+    /** @description Open a question ask on an issue (options optional). After the write commits, a related-item check searches the project for the question and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome, with the reason in missing when not made), how it searched, and the three items most like it with each ask item's answer state. */
     post: operations["postApiV1IssuesByKeyAsks"];
     delete?: never;
     options?: never;
@@ -1452,7 +1505,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List an issue's comments; ?artifact= scopes to a document. */
+    /** @description List an issue's comments; ?artifact= scopes to a document. The answer carries an ETag, which moves for every write the list shows, a delivery attempt that appends no event included; If-None-Match answers 304. */
     get: operations["getApiV1IssuesByKeyComments"];
     put?: never;
     /** @description Comment on an issue, a document quote, or an ask. A reply names the comment it answers in reply_to, and one block of it in reply_to_block; with ask_id in place of reply_to, reply_to_block names one part of that ask. */
@@ -1497,6 +1550,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/design-gates": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /** @description Publish the documents this issue's design-gate steps record {gates}: each entry {step, artifact_id}, step one of decisions, criteria and spec and artifact_id the document that step's gate recorded, or [] for an issue whose gates record none. The deployment's daemon writes it and replaces the issue's whole set, appending no issue event and notifying nobody whether the set changed or not. Answers 200 {issue, gates} with the stored set in step order. A body without gates, a step that is none of the three, a step named twice, and an artifact_id that is empty are each 400 INVALID_ISSUE; an issue Dispatch does not know is 404 ISSUE_NOT_FOUND. */
+    put: operations["putApiV1IssuesByKeyDesignGates"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/events": {
     parameters: {
       query?: never;
@@ -1504,7 +1574,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Page an issue's event log (after, before, ids, order, limit). */
+    /** @description Page an issue's event log (after, before, ids, order, limit). The answer carries an ETag over the issue's event sequence and the paging query; If-None-Match answers 304. */
     get: operations["getApiV1IssuesByKeyEvents"];
     put?: never;
     post?: never;
@@ -1624,7 +1694,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first; two results recorded in transactions that overlapped can come back in either order. Each result carries currency: current (its commit is the head of an open pull request attributed to the check's issue or the final head of a merged one, or, for an after_merge check, a commit on the branch that issue's pull request merged into - the base branch of the newest merged pull request attributed to it - or on the repository's default branch, which answers alone where Dispatch holds no merge of that issue, or, for a default_branch check, a commit on the repository's default branch, whatever branch the pull request merged into, and the check's words have not changed since), older, or unknown (the check's issue resolves to no repository, Dispatch's GitHub App cannot read it, or a read of a branch failed and no branch carried the commit; a read GitHub refused on an after_merge check's base branch is the one exception - a 403 or 404, which a branch it no longer holds answers with - and says the commit is not on that branch, leaving the default branch to decide). An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read. A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}, and makes no read of GitHub at all. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
     /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
@@ -1771,6 +1841,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/markdown/round-trip": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description The markdown Dispatch would store for the text a body gives it {markdown}: the parse and the render every write of a whole document makes. The route writes nothing and reads no row. A caller compares the answer with the text it holds, and refuses its own write where the two differ. Text the parse or the render refuses comes back as it was given, so the write that follows refuses it with its own error. */
+    post: operations["postApiV1MarkdownRoundTrip"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/me/agent-tokens": {
     parameters: {
       query?: never;
@@ -1814,7 +1901,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's per-agent conversation state: cleared_before, read_through, and unread_replies (the session's replies to the caller's direct messages newer than both and not read by id). */
+    /** @description The caller's per-agent conversation state: cleared_before, read_through, unread_replies (the session's replies to the caller's direct messages newer than both and not read by id), and pinned_at (when the caller pinned the session, which puts it in their sidebar's Agents list). */
     get: operations["getApiV1MeAgentsState"];
     put?: never;
     post?: never;
@@ -1832,7 +1919,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), and/or mark some of its replies read by id (read_replies, the session's own messages); answers the session's state. */
+    /** @description Clear an agent's conversation for the caller (cleared_before hides exchanges at or before it), mark it read (read_through only moves forward), mark some of its replies read by id (read_replies, the session's own messages), and/or pin it to the caller's sidebar (pinned: true pins it, false unpins it, and neither touches the Clear); answers the session's state. */
     put: operations["putApiV1MeAgentsBySessionIdState"];
     post?: never;
     delete?: never;
@@ -1952,7 +2039,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask the Inbox already lists on an open issue assigned to them; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
+    /** @description The caller's Inbox threads, of the kinds ?kind= names: reply (the default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody else has written in, less an open ask on an open issue that waits on them, which the Inbox already lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists both in one order. ?state= is unread (the default), which lists the rows somebody else has written in since they read them, newest reply first; inbox, every row in their Inbox, read or not, dismissed ones aside, newest reply first; or dismissed, what they have dismissed out of it, newest dismissal first, 200 rows at a time from ?cursor= (the next_cursor of the page before it; limit and offset are 400 INVALID_QUERY there, and cursor is 400 INVALID_QUERY under any other state). Each row names the thread, its owner, its issue's priority, its project, the thread's subject, its root's deep link (an agent row's is the session's live view), the newest reply's author, first line and time, the caller's read mark, whether it is unread and how many writes in it they have not read, the root's document anchor when it has one, its dismissal mark when it has been dismissed, and, on an agent row, the session and the ids of its unread replies. ?issue= or ?artifact= narrows to one owner (both is 400 INVALID_QUERY), and an agent row, which has neither, is then in no answer. An absent limit answers every row, as the Inbox reads them; a named limit is 1-200 (limit=0 is 400 INVALID_QUERY) from ?offset=. {rows, total (both kinds, and under state=dismissed the page the read answers rather than the whole pile, which nothing counts), limit (0 when none was named), offset, as_of, next_cursor (a dismissed page that filled)}: as_of is the database time of the one read-only repeatable-read snapshot every row was read in, which is what a mark-all passes back as its read mark. */
     get: operations["getApiV1MeReplies"];
     put?: never;
     post?: never;
@@ -2312,7 +2399,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description A project document's canonical markdown and whole-document token, by slug or unambiguous filename. */
+    /** @description A project document's canonical markdown, whole-document token and version, by slug or unambiguous filename; ?blocks=true carries its blocks beside them, from the one tree. */
     get: operations["getApiV1ProjectsByKeyArtifactsBySlugText"];
     put?: never;
     post?: never;
@@ -2397,10 +2484,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query, related and decision, with up to 3 open issues before any item of another kind and everything a done issue owns last. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND. */
+    /** @description Run the related-item check an issue create runs, over ?title= and ?text= (checked as the title, a newline and the text; either alone is enough), without writing anything: no issue, ask, suggestion or related_checks record. ?exclude_issue= leaves that issue of the project and everything it holds out of the results and out of the word statistics (400 EXCLUDE_ISSUE_INPUT when it is not an issue of the project); ?exclude_issues=, repeated, leaves each of up to 50 issues of the project out of the results alone, so a draft can leave out a whole subtree without changing how rare its words are (400 EXCLUDE_ISSUE_INPUT for a longer list or for a key the project does not hold); ?keywords_only=true skips meaning search. It waits at most 5 seconds and answers the create's advice.suggestions shape: outcome found, none or not_made (a blank text is 200 not_made, the reason in missing), search, search_note, search_query and related, with up to 3 open issues before any item of another kind and everything a done issue owns last. This form answers no other_projects: its caller is the dashboard's new-issue dialog, which runs the check for each burst of typing and draws the items of the asking project alone. Title and text over 1000 characters together are 400 CAP_EXCEEDED; POST takes a longer text. An unknown project is 404 PROJECT_NOT_FOUND. */
     get: operations["getApiV1ProjectsByKeyRelated"];
     put?: never;
-    /** @description The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds; answers the same suggestions shape. */
+    /** @description The GET form of this route with its fields in a JSON body {title, text, exclude_issue, exclude_issues, keywords_only}, exclude_issues a list of issue keys: the related-item check over a title and a text as long as an issue's spec (the body's 1 MiB bound; a title over 1000 characters is 400 CAP_EXCEEDED), writing nothing and waiting at most 5 seconds. The two forms do not answer alike. This one is the check an agent runs to ask a question, so it answers other_projects beside related: at most 2 answered question asks of other projects, each with its ask state, its answer and the project it stands in (owner.project), ranked by meaning alone and offered with no claim that they answer the question. The GET form answers none. */
     post: operations["postApiV1ProjectsByKeyRelated"];
     delete?: never;
     options?: never;
@@ -2449,10 +2536,27 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. */
+    /** @description Count the related-item checks recorded when an issue, an ask or a new decision block was written, within [from, to) (RFC3339, each optional) and of ?project= and ?source_kind= (issue, ask or decision_block; any other is 400 INVALID_QUERY) when given: {project, source_kind, from, to} echo the filters (null when absent), total, by_source_kind, by_outcome (found, none, not_made), by_search (meaning_and_keywords, keywords_only, not_made), by_reason (each reason a check was not made or searched by keywords only), completed (found or none), skipped_for_time (reason timeout), other_project_offers, and keyword_ms and total_ms each {count, p50, p95, max, over_300ms}: the checks holding that time, its discrete percentiles and largest value (null with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window offered at least one answered question of another project (other_projects), a count of writes and not of items, read from write_suggestions over the same window and under the same filters, and zero for a source kind no such row carries; the two records are written at different moments and only the check's own row is retried, so a count at a window's edge can name one fewer write than the window's total. The meaning_ms recorded for such a check holds the whole meaning stage, the wait for the other projects' answers with it, which is at most 300 ms after the asking project's own query answered. */
     get: operations["getApiV1RelatedChecks"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/results/{id}/retract": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Retract one recorded result, with the reason it is wrong: {reason, actor?}. {id} is the result's own id. The retraction is a record of its own: the result is neither updated nor deleted, and both records stay readable with the reason and the actor who wrote it. No surface counts a retracted result as evidence. Three callers are admitted and every other is 403 RETRACTION_FORBIDDEN: the session that recorded the result, a session holding the Dispatch claim of the issue the result was recorded on, and a caller whose credential carries a person, which is a personal token or a signed-in person's own session. A closed issue and a check of any when are retracted here, which is what recording refuses. A blank reason is 400 RETRACTION_INPUT, an id no result has is 404 RESULT_NOT_FOUND, and a result a retraction already stands against is 409 RESULT_RETRACTED. The answer is the retraction: {result_id, reason, session, actor, created_at, event_seq}. It is appended as result.retracted on the check's issue. */
+    post: operations["postApiV1ResultsByIdRetract"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2483,7 +2587,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares ?q=, ?project=, ?limit= and ?offset= alone, and GET /api/v1/search/results declares all nine: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= there, because a build released before those five answers this route 200 with the member dropped, which is unnarrowed rows under the filters a person chose, where it answers that path 404 no route. This route still reads all nine, so a page served by an earlier release that sends one of the five here is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
     get: operations["getApiV1Search"];
     put?: never;
     post?: never;
@@ -2502,6 +2606,23 @@ export interface paths {
     };
     /** @description Meaning search's coverage {identity, place, model, total, kinds, not_indexed}: the configured embedder's identity, its place (bedrock, azure, or dev for a local harness) and model, all three null with none configured; then, in total and for each kind (issue, document_block, comment_block, message_block, ask_part), the searchable items, how many carry a current vector from that identity, how many lack one, how many failed for good, and how many seconds the oldest lacking item has waited (null when none lacks). not_indexed names every kind of node neither leg of search holds a row of - component, session, document_version, result and handoff - each {kind, items}, items being how many of it the database holds, counted from the table that holds it; such a kind is named rather than left out, so a reader never reads it as a covered kind with nothing lacking, and it is in no total. */
     get: operations["getApiV1SearchCoverage"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/search/results": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Full-text search ?q= across issues, documents, asks, comments, and messages, within ?project= when given: every match ranked on one list across the kinds by one score, the keyword leg's length-normalised rank and the meaning leg's cosine weighted onto one scale and summed, one page of ?limit= (1-50, default 20) from ?offset=, with the total match count and how many the pages can reach (each leg's best 100). A q that is one issue key in any form a person writes it - INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is read in, or of every project at once, all of them then heading the list in project order - puts that issue first. The number is read in ?project= when the search is narrowed to one, and otherwise in ?number_project=, the project of the page the search was made from: that parameter narrows nothing at all, so a search carrying it answers every project's rows, and a request naming both reads the number in the ?project= it filters by. A q is searched as typed, websearch_to_tsquery's AND of its words, whatever its length; only a q that matches nothing at all is searched a second time for its 5 rarest words ORed, rarest by the document frequency the project's own term statistics hold. The "phrase", OR and -word forms are read as always, and the answer's query {operators, broadened} names the forms it read and whether that second search is what answered. ?status=, ?author= and ?updated_since= narrow every leg of the search beside ?project=: the status of the issue a row belongs to (a row with no issue, such as a project document, matches none), the actor id that wrote the item a row names (a person's login or a session id; an issue's and a document's is their creator), and the RFC3339 time at or after which that item was last written. The answer's filters echoes those four and never ?number_project=, which narrowed nothing. ?keywords_only=true runs the keyword leg alone and makes no embedding call, whatever embedder the deployment configured; its answer is not stamped degraded, because nothing is unavailable - the caller asked for the words alone. The command bar sends it on every keystroke, so a person typing waits on no model call and no reader of this route should take the bar's type-ahead for the hybrid path. A request leaving it out searches as it always did, by meaning too wherever an embedder is configured. This route declares all nine members and answers exactly what GET /api/v1/search answers, from the same handler: a client sends a search carrying ?number_project=, ?status=, ?author=, ?updated_since= or ?keywords_only= here, because a build released before those five answers this path 404 no route, where it answers GET /api/v1/search 200 with the member dropped, which is unnarrowed rows under the filters a person chose. GET /api/v1/search still reads all nine, so a page served by an earlier release that sends one of the five there is still answered narrowed. A q over 1000 characters is 400 CAP_EXCEEDED, a project or number_project that is not a project key 400 INVALID_PROJECT or INVALID_NUMBER_PROJECT, a repeated, blank or unreadable status, author or updated_since 400 INVALID_STATUS, INVALID_AUTHOR or INVALID_UPDATED_SINCE, and a keywords_only that is neither true nor false 400 INVALID_KEYWORDS_ONLY. */
+    get: operations["getApiV1SearchResults"];
     put?: never;
     post?: never;
     delete?: never;
@@ -2729,6 +2850,12 @@ export interface components {
       ask_id: null | string;
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
@@ -2737,7 +2864,7 @@ export interface components {
       issue_key: null | string;
       lost: null | boolean;
       mentions: components["schemas"]["CommentMention"][] | null;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       reply_to: null | string;
       resolved: boolean;
       resolved_at: null | string;
@@ -2791,6 +2918,11 @@ export interface components {
     };
     AdviceAsk: {
       id: string;
+      question: string;
+    };
+    AdviceDeclinedAsk: {
+      id: string;
+      note: string;
       question: string;
     };
     Agent: {
@@ -2855,9 +2987,9 @@ export interface components {
       summary?: null | string;
     };
     ApprovalRequestResponse: {
-      approval: components["schemas"]["ArtifactApproval"];
+      approval: components["schemas"]["ArtifactApprovalWithTrees"];
       artifact_id: string;
-      ask: components["schemas"]["Ask"] | null;
+      ask: components["schemas"]["AskWithTrees"] | null;
       coverage: string[] | null;
       coverage_unread?: boolean;
       version: number;
@@ -2879,6 +3011,27 @@ export interface components {
     ApproverGrantsResponse: {
       grants: components["schemas"]["ApproverGrantResp"][] | null;
     };
+    ArchitectureComponentRead: {
+      depends_on: string[] | null;
+      done: number;
+      external: boolean;
+      id: string;
+      issues: components["schemas"]["ArchitectureTreeIssue"][] | null;
+      own_done: number;
+      own_total: number;
+      parent: null | string;
+      paths: string[] | null;
+      prose: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      prose_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      source: string;
+      title: string;
+      total: number;
+    };
     ArchitectureSource: {
       branch: string;
       components: number;
@@ -2894,7 +3047,7 @@ export interface components {
       repo: string;
     };
     ArchitectureTree: {
-      components: components["schemas"]["ArchitectureTreeComponent"][] | null;
+      components: components["schemas"]["ArchitectureComponentRead"][] | null;
       not_architectural: components["schemas"]["ArchitectureTreeNone"][] | null;
       retired_links: components["schemas"]["ArchitectureTreeRetired"][] | null;
       sources: components["schemas"]["ArchitectureTreeSource"][] | null;
@@ -2995,6 +3148,28 @@ export interface components {
       version?: number;
       waiting_on?: string;
     };
+    ArtifactApprovalWithTrees: {
+      ask_id?: string;
+      at?: string;
+      by?: components["schemas"]["Actor"];
+      content_sha256?: string;
+      content_sha256_source?: string;
+      documents?: components["schemas"]["AskApprovalDocument"][];
+      kind?: string;
+      latest_version: number;
+      reason?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      requested_by?: components["schemas"]["Actor"];
+      seq?: number;
+      state: string;
+      version?: number;
+      waiting_on?: string;
+    };
     ArtifactBlock: {
       attributes?: components["schemas"]["BlockAttributeValue"][];
       embedding?: string;
@@ -3036,8 +3211,35 @@ export interface components {
       state: string;
       version: number;
     };
+    ArtifactReviewRead: {
+      actor: components["schemas"]["Actor"];
+      artifact_id: string;
+      ask_id: null | string;
+      content_sha256: null | string;
+      content_sha256_source: null | string;
+      /** Format: date-time */
+      created_at: string;
+      id: string;
+      kind: string;
+      reason: null | string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      state: string;
+      version: number;
+    };
     ArtifactText: {
+      blocks?: components["schemas"]["ArtifactBlock"][];
       markdown: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      markdown_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       token: string;
       version: null | number;
     };
@@ -3050,6 +3252,12 @@ export interface components {
       /** Format: date-time */
       created_at: string;
       markdown: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      markdown_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       mime?: string;
       named: boolean;
       number: number;
@@ -3057,34 +3265,22 @@ export interface components {
       size?: number;
       summary: null | string;
     };
-    Ask: {
-      anchor: components["schemas"]["Anchor"] | null;
-      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
-      anchor_block?: components["schemas"]["BlockPath"];
-      anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
-      approval?: components["schemas"]["AskApproval"];
-      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
-      artifact_id: null | string;
-      author: components["schemas"]["Actor"];
-      block_artifact?: components["schemas"]["AskBlockArtifact"];
-      block_id: null | string;
+    ArtifactWithTrees: {
+      approval?: components["schemas"]["ArtifactApprovalWithTrees"];
       /** Format: date-time */
       created_at: string;
-      edited_at: null | string;
+      created_by: components["schemas"]["Actor"];
       id: string;
       issue_key: null | string;
       kind: string;
-      multiple: boolean;
-      opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
-      question: string;
-      referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
-      revision?: number;
-      state: string;
-      urgency: string;
-      waiting_on?: string;
+      name: string;
+      primary: boolean;
+      project: string;
+      ref_key: string;
+      role?: string;
+      session_id: null | string;
+      slug: string;
+      versions: components["schemas"]["Version"][] | null;
     };
     AskAnchorArtifact: {
       name: string;
@@ -3099,6 +3295,21 @@ export interface components {
       id?: string;
       selected: string[] | null;
       text: null | string;
+      user: string;
+    };
+    AskAnswerWithTrees: {
+      act?: components["schemas"]["ActorAct"];
+      /** Format: date-time */
+      at: string;
+      id?: string;
+      selected: string[] | null;
+      text: null | string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       user: string;
     };
     AskApproval: {
@@ -3120,21 +3331,36 @@ export interface components {
       requested_version: number;
       version: number;
     };
+    AskAskedOfInput: {
+      asked_of: string;
+    };
     AskBlockArtifact: {
       id: string;
       primary: boolean;
       slug: string;
-    };
-    AskEdit: {
-      at: string;
-      edited_by: components["schemas"]["Actor"];
-      previous: components["schemas"]["AskEditPrevious"];
     };
     AskEditPrevious: {
       multiple: boolean;
       options: components["schemas"]["AskOption"][] | null;
       question: string;
       urgency: string;
+    };
+    AskEditPreviousWithTrees: {
+      multiple: boolean;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      urgency: string;
+    };
+    AskEditWithTrees: {
+      at: string;
+      edited_by: components["schemas"]["Actor"];
+      previous: components["schemas"]["AskEditPreviousWithTrees"];
     };
     AskFollower: {
       session_id: string;
@@ -3153,13 +3379,30 @@ export interface components {
       id?: string;
       label: string;
     };
+    AskOptionWithTrees: {
+      description?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      description_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      id?: string;
+      label: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      label_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
     AskRead: {
-      answers: components["schemas"]["AskAnswer"][] | null;
-      ask: components["schemas"]["Ask"];
+      answers: components["schemas"]["AskAnswerWithTrees"][] | null;
+      ask: components["schemas"]["AskWithTrees"];
       claimant: null | string;
-      edits: components["schemas"]["AskEdit"][] | null;
+      edits: components["schemas"]["AskEditWithTrees"][] | null;
       followers: components["schemas"]["AskFollower"][] | null;
-      replies: components["schemas"]["Comment"][] | null;
+      replies: components["schemas"]["CommentWithTrees"][] | null;
       route: null | string;
       route_holder: null | string;
       route_status: null | string;
@@ -3169,8 +3412,23 @@ export interface components {
       actor: components["schemas"]["Actor"];
       /** Format: date-time */
       at: string;
+      dispatch_words?: string;
       kind: string;
       reason: string;
+    };
+    AskResolutionWithTrees: {
+      actor: components["schemas"]["Actor"];
+      /** Format: date-time */
+      at: string;
+      dispatch_words?: string;
+      kind: string;
+      reason: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      reason_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     AskSnooze: {
       snoozed_until: string;
@@ -3179,15 +3437,61 @@ export interface components {
       snoozed_until: null | string;
     };
     AskThread: {
-      answers: components["schemas"]["AskAnswer"][] | null;
+      answers: components["schemas"]["AskAnswerWithTrees"][] | null;
       claimant: null | string;
-      edits: components["schemas"]["AskEdit"][] | null;
+      edits: components["schemas"]["AskEditWithTrees"][] | null;
       followers: components["schemas"]["AskFollower"][] | null;
-      replies: components["schemas"]["Comment"][] | null;
+      replies: components["schemas"]["CommentWithTrees"][] | null;
       route: null | string;
       route_holder: null | string;
       route_status: null | string;
       route_status_reason: null | string;
+    };
+    AskWithTrees: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
+      approval?: components["schemas"]["AskApproval"];
+      approval_artifact?: components["schemas"]["AskAnchorArtifact"];
+      artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
+      author: components["schemas"]["Actor"];
+      block_artifact?: components["schemas"]["AskBlockArtifact"];
+      block_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      kind: string;
+      multiple: boolean;
+      opened_event_id?: number;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
+      question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      referenced_by_count?: number;
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
+      revision?: number;
+      state: string;
+      urgency: string;
+      waiting_on?: string;
+      waiting_on_person?: string;
+    };
+    BasisLearnedAt: {
+      /** Format: date-time */
+      at: string;
+      /** @enum {string} */
+      kind: "read_at" | "updated_at";
     };
     BlockAttributeValue: {
       kind: string;
@@ -3225,6 +3529,19 @@ export interface components {
       text: string;
       version: number;
     };
+    BlockPinRead: {
+      ref: string;
+      removed_version?: number;
+      state: string;
+      text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      version: number;
+    };
     BlockReferences: {
       asks: number;
       comments: number;
@@ -3247,6 +3564,12 @@ export interface components {
     BroadcastCreated: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       delivery: string;
@@ -3262,6 +3585,12 @@ export interface components {
     BroadcastRead: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       delivery: string;
@@ -3269,13 +3598,19 @@ export interface components {
       recipients: components["schemas"]["BroadcastRecipient"][] | null;
     };
     BroadcastRecipient: {
-      message: components["schemas"]["Message"];
-      replies: components["schemas"]["Message"][] | null;
+      message: components["schemas"]["MessageWithTrees"];
+      replies: components["schemas"]["MessageWithTrees"][] | null;
       session_id: string;
     };
     BroadcastSummary: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       delivery: string;
@@ -3291,11 +3626,23 @@ export interface components {
       per_deploy: components["schemas"]["DeliveryDeployFlagCounts"];
       per_pr: components["schemas"]["DeliveryFlagCounts"];
     };
+    CheckBasis: {
+      branch?: string;
+      commit?: string;
+      /** @enum {string} */
+      kind: "named" | "pull_request" | "branch";
+      learned_at?: components["schemas"]["BasisLearnedAt"];
+      pull_request?: number;
+    };
     CheckBlock: {
       artifact_id: string;
       block_id: string;
+      /** @enum {string} */
+      compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
+      compared_with: components["schemas"]["CheckBasis"][] | null;
       issue_key: string;
       negative_control: string;
+      pass_stands: components["schemas"]["CheckPassStands"];
       ref: string;
       results: components["schemas"]["CheckResult"][] | null;
       run: string;
@@ -3305,6 +3652,11 @@ export interface components {
       version: number;
       when: string;
     };
+    CheckPassStands: {
+      /** @enum {string} */
+      answer: "yes" | "no" | "unknown";
+      roles?: string[];
+    };
     CheckResult: {
       actor: components["schemas"]["Actor"];
       check_artifact_id: string;
@@ -3312,10 +3664,11 @@ export interface components {
       check_issue_key: string;
       check_sha256: string;
       check_version: number;
+      check_words_moved?: boolean;
       commit_sha: string;
+      commit_stands?: components["schemas"]["ResultCommitStands"];
       /** Format: date-time */
       created_at: string;
-      currency?: string;
       event_seq?: number;
       excluded: number;
       failed: number;
@@ -3323,6 +3676,7 @@ export interface components {
       issue_key: string;
       negative_control: string;
       observed: string;
+      retracted?: components["schemas"]["CheckResultRetracted"];
       role: string;
       run: string;
       screenshots: string[] | null;
@@ -3334,6 +3688,25 @@ export interface components {
     CheckResultRecorded: {
       line: string;
       result: components["schemas"]["CheckResult"];
+    };
+    CheckResultRetracted: {
+      actor: components["schemas"]["Actor"];
+      /** Format: date-time */
+      created_at: string;
+      reason: string;
+    };
+    CheckResultRetraction: {
+      actor: components["schemas"]["Actor"];
+      /** Format: date-time */
+      created_at: string;
+      event_seq?: number;
+      reason: string;
+      result_id: string;
+      session: string;
+    };
+    CheckResultRetractionInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      reason: string;
     };
     ClaimIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -3416,8 +3789,8 @@ export interface components {
       target: string;
     };
     CommentRead: {
-      comment: components["schemas"]["Comment"];
-      replies: components["schemas"]["Comment"][] | null;
+      comment: components["schemas"]["CommentWithTrees"];
+      replies: components["schemas"]["CommentWithTrees"][] | null;
     };
     CommentReplyInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -3426,6 +3799,36 @@ export interface components {
       error?: null | string;
       reply_to_block?: null | string;
       target?: null | string;
+    };
+    CommentWithTrees: {
+      anchor: components["schemas"]["Anchor"] | null;
+      anchor_block?: components["schemas"]["BlockPath"];
+      anchor_block_error?: string;
+      answers: null | string;
+      artifact_id: null | string;
+      ask_id: null | string;
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      created_at: string;
+      deliveries: components["schemas"]["CommentDelivery"][] | null;
+      edited_at: null | string;
+      id: string;
+      issue_key: null | string;
+      mentions: components["schemas"]["CommentMention"][] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      reply_to: null | string;
+      resolved: boolean;
+      resolved_at: null | string;
+      resolved_by: components["schemas"]["Actor"] | null;
+      suggestion: components["schemas"]["Suggestion"] | null;
+      turn: null | string;
     };
     CommentWriteResponse: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -3437,6 +3840,12 @@ export interface components {
       ask_waiting_on?: string;
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       /** Format: date-time */
       created_at: string;
       deliveries: components["schemas"]["CommentDelivery"][] | null;
@@ -3444,7 +3853,7 @@ export interface components {
       id: string;
       issue_key: null | string;
       mentions: components["schemas"]["CommentMention"][] | null;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       reply_to: null | string;
       resolved: boolean;
       resolved_at: null | string;
@@ -3610,6 +4019,12 @@ export interface components {
       replaced: boolean;
       text: string;
       text_sha256: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       unsure: boolean;
       waiting_review: boolean;
     };
@@ -3638,6 +4053,10 @@ export interface components {
       credential_id: null | string;
       /** @enum {string} */
       state: "approved";
+    };
+    DeclineAskInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      note?: null | string;
     };
     DeliveryComponent: {
       parent: null | string;
@@ -4022,6 +4441,7 @@ export interface components {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
       decision_blocks: number;
       decision_blocks_added: number;
+      moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
     };
@@ -4121,6 +4541,9 @@ export interface components {
       payload: unknown;
       project: string;
       seq: number;
+      trees?: {
+        [key: string]: unknown;
+      };
       type: string;
     };
     ExternalLink: {
@@ -4195,9 +4618,35 @@ export interface components {
       kind: string;
       ref?: string;
     };
+    GraphNodeRead: {
+      block_id?: string;
+      /** Format: date-time */
+      changed_at: null | string;
+      changed_by: components["schemas"]["Actor"][] | null;
+      changed_version?: number;
+      document?: string;
+      id: string;
+      issue_key?: string;
+      kind: string;
+      /** Format: date-time */
+      made_at: null | string;
+      made_by: components["schemas"]["Actor"][] | null;
+      parent: components["schemas"]["GraphNodeParent"] | null;
+      parent_version: null | number;
+      pin?: components["schemas"]["BlockPinRead"];
+      project?: string;
+      ref?: string;
+      text?: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+    };
     GraphReferences: {
       edges: components["schemas"]["GraphEdge"][] | null;
-      node: components["schemas"]["GraphNode"];
+      node: components["schemas"]["GraphNodeRead"];
     };
     Handoff: {
       author: components["schemas"]["Actor"];
@@ -4265,10 +4714,14 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4283,17 +4736,24 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       priority: null | number;
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       snoozed_until: null | string;
       state: string;
       thread: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     Issue: {
       assignee: null | string;
@@ -4331,10 +4791,14 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4347,15 +4811,22 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       state: string;
       thread?: components["schemas"]["AskThread"];
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     IssueCheckResults: {
       checks: components["schemas"]["CheckBlock"][] | null;
@@ -4436,8 +4907,21 @@ export interface components {
       document: null | string;
       open_questions: components["schemas"]["IssueAskRow"][] | null;
     };
+    IssueDesignGate: {
+      artifact_id: string;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
+    };
+    IssueDesignGates: {
+      gates: components["schemas"]["IssueDesignGate"][] | null;
+      issue: string;
+    };
+    IssueDesignGatesInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      gates: null | components["schemas"]["IssueDesignGate"][];
+    };
     IssueDetails: {
-      artifacts: components["schemas"]["Artifact"][] | null;
+      artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
       children: components["schemas"]["IssueChild"][] | null;
@@ -4449,6 +4933,7 @@ export interface components {
       created_at: string;
       created_by: components["schemas"]["Actor"] | null;
       decisions_artifact_id: string;
+      design_gates: components["schemas"]["IssueDesignGate"][] | null;
       external_links: components["schemas"]["ExternalLink"][] | null;
       holder_state: null | string;
       key: string;
@@ -4490,10 +4975,14 @@ export interface components {
       anchor_artifact?: components["schemas"]["AskAnchorArtifact"];
       anchor_block?: components["schemas"]["BlockPath"];
       anchor_block_error?: string;
-      answer: components["schemas"]["AskAnswer"] | null;
+      answer: components["schemas"]["AskAnswerWithTrees"] | null;
       approval?: components["schemas"]["AskApproval"];
       approval_artifact?: components["schemas"]["AskAnchorArtifact"];
       artifact_id: null | string;
+      asked_of: null | string;
+      /** Format: date-time */
+      asked_of_at: null | string;
+      asked_of_by: null | string;
       author: components["schemas"]["Actor"];
       block_artifact?: components["schemas"]["AskBlockArtifact"];
       block_id: null | string;
@@ -4506,14 +4995,21 @@ export interface components {
       last_reply: components["schemas"]["AskLastReply"] | null;
       multiple: boolean;
       opened_event_id?: number;
-      options: components["schemas"]["AskOption"][] | null;
+      options: components["schemas"]["AskOptionWithTrees"][] | null;
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       referenced_by_count?: number;
-      resolution?: components["schemas"]["AskResolution"];
+      resolution?: components["schemas"]["AskResolutionWithTrees"];
       revision?: number;
       state: string;
       urgency: string;
       waiting_on?: string;
+      waiting_on_person?: string;
     };
     IssueProgress: {
       children: components["schemas"]["ProgressCount"] | null;
@@ -4549,7 +5045,12 @@ export interface components {
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
+      /** Format: date-time */
+      closed_at: null | string;
       components: components["schemas"]["IssueComponents"];
+      /** Format: date-time */
+      created_at: string;
+      created_by: components["schemas"]["Actor"] | null;
       key: string;
       labels: string[] | null;
       last_seq: number;
@@ -4596,7 +5097,7 @@ export interface components {
     };
     JsonArtifactUpload: {
       actor?: components["schemas"]["Actor"] | null;
-      content: null | string;
+      content?: null | string;
       name: string;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
@@ -4635,18 +5136,11 @@ export interface components {
     MachineLookupRequest: {
       code: string;
     };
-    Message: {
-      author: components["schemas"]["Actor"];
-      body: string;
-      broadcast_id: null | string;
-      /** Format: date-time */
-      created_at: string;
-      deliveries: components["schemas"]["MessageDelivery"][] | null;
-      id: string;
-      in_reply_to: null | string;
-      issue_key: null | string;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
-      target: null | string;
+    MarkdownRoundTripInput: {
+      markdown: string;
+    };
+    MarkdownRoundTripResponse: {
+      markdown: string;
     };
     MessageDelivery: {
       accepted_as: null | string;
@@ -4666,8 +5160,8 @@ export interface components {
       state: string;
     };
     MessageRead: {
-      message: components["schemas"]["Message"];
-      replies: components["schemas"]["Message"][] | null;
+      message: components["schemas"]["MessageWithTrees"];
+      replies: components["schemas"]["MessageWithTrees"][] | null;
       unread?: boolean;
     };
     MessageReplyInput: {
@@ -4680,6 +5174,12 @@ export interface components {
     MessageReplyResult: {
       author: components["schemas"]["Actor"];
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       broadcast_id: null | string;
       /** Format: date-time */
       created_at: string;
@@ -4688,15 +5188,54 @@ export interface components {
       id: string;
       in_reply_to: null | string;
       issue_key: null | string;
-      reply_block: components["schemas"]["ReplyBlock"] | null;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
       target: null | string;
+    };
+    MessageWithTrees: {
+      author: components["schemas"]["Actor"];
+      body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
+      broadcast_id: null | string;
+      /** Format: date-time */
+      created_at: string;
+      deliveries: components["schemas"]["MessageDelivery"][] | null;
+      id: string;
+      in_reply_to: null | string;
+      issue_key: null | string;
+      reply_block: components["schemas"]["ReplyBlockWithTrees"] | null;
+      target: null | string;
+    };
+    MovedApprovalDocument: {
+      artifact_id: string;
+      name: string;
+      primary: boolean;
+      requested_version: number;
+      role?: string;
+      version: number;
+    };
+    MovedApprovalRequest: {
+      ask_id: string;
+      documents: components["schemas"]["MovedApprovalDocument"][] | null;
+      issue?: string;
+      project?: string;
     };
     MyAnswerReply: {
       body: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      body_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       id: string;
     };
     MyAnswerRow: {
-      answer?: components["schemas"]["AskAnswer"];
+      answer?: components["schemas"]["AskAnswerWithTrees"];
       ask_id: string;
       ask_kind: string;
       ask_state: string;
@@ -4707,6 +5246,12 @@ export interface components {
       kind: string;
       owner: components["schemas"]["OpenAskOwner"];
       question: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      question_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
       ref: string;
       reply?: components["schemas"]["MyAnswerReply"];
     };
@@ -4781,6 +5326,7 @@ export interface components {
       ref: string;
       urgency: string;
       waiting_on: string;
+      waiting_on_person: string;
     };
     OpenAskDocument: {
       name: string;
@@ -4812,6 +5358,37 @@ export interface components {
       artifact?: components["schemas"]["Artifact"];
       kind: string;
       to_id: string;
+    };
+    PassCounts: {
+      graphql_points: number;
+      graphql_queries: number;
+      heads: number;
+      heads_known: number;
+      heads_over_rest: number;
+      records: number;
+      rest_not_modified: number;
+      rest_requests: number;
+    };
+    PassCursor: {
+      counted: boolean;
+      /** Format: int64 */
+      from: number;
+      /** Format: int64 */
+      number: number;
+      repository: string;
+      rest: boolean;
+    };
+    PassRecord: {
+      counts: components["schemas"]["PassCounts"] | null;
+      cursor: components["schemas"]["PassCursor"] | null;
+      /** Format: date-time */
+      ended_at: null | string;
+      /** Format: int64 */
+      id: number;
+      instance: string;
+      /** Format: date-time */
+      started_at: string;
+      state: string;
     };
     PersonSignInResp: {
       /** Format: date-time */
@@ -4971,6 +5548,7 @@ export interface components {
       /** Format: date-time */
       from: null | string;
       keyword_ms: components["schemas"]["RelatedCheckTiming"];
+      other_project_offers: number;
       project: null | string;
       skipped_for_time: number;
       source_kind: null | string;
@@ -4979,12 +5557,28 @@ export interface components {
       total: number;
       total_ms: components["schemas"]["RelatedCheckTiming"];
     };
+    RenameArtifactInput: {
+      name: string;
+    };
     ReplyBlock: {
       block_id: string;
       node: string;
       ref?: string;
       removed: boolean;
       text: string;
+    };
+    ReplyBlockWithTrees: {
+      block_id: string;
+      node: string;
+      ref?: string;
+      removed: boolean;
+      text: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      text_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     RepoProject: {
       /** Format: date-time */
@@ -5010,6 +5604,13 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       kind: string;
       reason: string;
+    };
+    ResultCommitStands: {
+      /** @enum {string} */
+      answer: "at_basis" | "other_commit" | "unknown";
+      basis?: components["schemas"]["CheckBasis"];
+      /** @enum {string} */
+      reason?: "repository_unreadable" | "read_failed";
     };
     RoomCounters: {
       awareness_clients: number;
@@ -5037,7 +5638,7 @@ export interface components {
       slug: string;
     };
     SearchAsk: {
-      answer?: components["schemas"]["AskAnswer"];
+      answer?: components["schemas"]["AskAnswerWithTrees"];
       resolution?: components["schemas"]["AskResolution"];
       /** @enum {string} */
       state: "open" | "answered" | "resolved";
@@ -5123,12 +5724,19 @@ export interface components {
       /** Format: double */
       rank: number;
       snippet: string;
+      /** @description a stored text read as the ProseMirror document a reader is shown (pmdoc.ReadForDisplay): a node named by its own `type`, with whatever that node type carries beside it. Present only for a caller that sent `Dispatch-Trees: 1` */
+      snippet_tree?: {
+        type: string;
+      } & {
+        [key: string]: unknown;
+      };
     };
     SessionAnswer: {
       ask?: components["schemas"]["SessionAnswerAsk"];
       /** Format: date-time */
       at: string;
       author: components["schemas"]["Actor"];
+      dispatch_words?: string;
       /** Format: date-time */
       edited_at?: string;
       href: string;
@@ -5178,10 +5786,10 @@ export interface components {
       replace_with: string;
     };
     Suggestions: {
-      decision?: components["schemas"]["WriteSuggestion"];
       likely_duplicate?: components["schemas"]["DuplicateCandidate"];
       missing?: string;
       near_copy_check?: string;
+      other_projects?: components["schemas"]["WriteSuggestion"][];
       outcome: string;
       related: components["schemas"]["WriteSuggestion"][] | null;
       search?: string;
@@ -5192,7 +5800,13 @@ export interface components {
     SupersededApproval: {
       approved_by: string;
       approved_version: number;
+      design_gates?: components["schemas"]["SupersededApprovalGate"][];
       version: number;
+    };
+    SupersededApprovalGate: {
+      issue: string;
+      /** @enum {string} */
+      step: "decisions" | "criteria" | "spec";
     };
     TablePosition: {
       cells: string[] | null;
@@ -5269,11 +5883,13 @@ export interface components {
     };
     UserAgentState: {
       cleared_before?: string;
+      pinned_at?: string;
       read_through?: string;
       unread_replies: number;
     };
     UserAgentStateInput: {
       cleared_before?: null | string;
+      pinned?: null | boolean;
       read_replies?: string[] | null;
       read_through?: null | string;
     };
@@ -5332,8 +5948,10 @@ export interface components {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
       decision_blocks: number;
       decision_blocks_added: number;
+      declined_asks?: components["schemas"]["AdviceDeclinedAsk"][];
       issue_status: string;
       legion_managed_status?: boolean;
+      moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       session_writes_since_human: number;
       suggestions?: components["schemas"]["Suggestions"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
@@ -5341,9 +5959,6 @@ export interface components {
       your_open_asks: components["schemas"]["AdviceAsk"][] | null;
     };
     WriteSuggestion: {
-      /** Format: date-time */
-      answered_at?: string;
-      answered_by?: string;
       artifact?: components["schemas"]["SearchArtifactRef"];
       ask?: components["schemas"]["SearchAsk"];
       href: string;
@@ -5533,7 +6148,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -5641,7 +6256,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Message"];
+          "application/json": components["schemas"]["MessageWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -5774,6 +6389,76 @@ export interface operations {
       cookie?: never;
     };
     requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ArtifactWithTrees"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ArtifactsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1ArtifactsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RenameArtifactInput"];
+      };
+    };
     responses: {
       /** @description OK */
       200: {
@@ -6069,7 +6754,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"][];
+          "application/json": components["schemas"]["AskWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6107,7 +6792,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"] & {
+          "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -6251,7 +6936,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"][];
+          "application/json": components["schemas"]["CommentWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6526,7 +7211,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["ArtifactReview"][];
+          "application/json": components["schemas"]["ArtifactReviewRead"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6648,6 +7333,7 @@ export interface operations {
   getApiV1ArtifactsByIdText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -6846,7 +7532,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6884,7 +7570,83 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1AsksByIdAskedOf: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AskAskedOfInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1AsksByIdDecline: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DeclineAskInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7030,7 +7792,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"];
+          "application/json": components["schemas"]["AskWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7180,6 +7942,38 @@ export interface operations {
       };
     };
   };
+  getApiV1CiReconcilePasses: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PassRecord"][];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1CommentsById: {
     parameters: {
       query?: {
@@ -7238,7 +8032,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7386,7 +8180,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7420,7 +8214,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7507,7 +8301,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"];
+          "application/json": components["schemas"]["CommentWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8340,6 +9134,8 @@ export interface operations {
         parent?: string;
         label?: string[];
         updated_since?: string;
+        closed_since?: string;
+        closed_before?: string;
         priority?: string[];
         route_status?: string;
         open?: boolean;
@@ -8559,7 +9355,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"][];
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8647,7 +9443,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8752,6 +9548,7 @@ export interface operations {
   getApiV1IssuesByKeyArtifactsBySlugText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -8920,7 +9717,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Ask"] & {
+          "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -9085,7 +9882,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Comment"][];
+          "application/json": components["schemas"]["CommentWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9194,6 +9991,44 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["IssueDecisions"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1IssuesByKeyDesignGates: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["IssueDesignGatesInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueDesignGates"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9412,7 +10247,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Message"] & {
+          "application/json": components["schemas"]["MessageWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
         };
@@ -9508,6 +10343,7 @@ export interface operations {
   getApiV1IssuesByKeyResults: {
     parameters: {
       query?: {
+        at?: string;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -9827,6 +10663,42 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["StateResponse"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1MarkdownRoundTrip: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["MarkdownRoundTripInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["MarkdownRoundTripResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11018,7 +11890,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"][];
+          "application/json": components["schemas"]["ArtifactWithTrees"][];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11106,7 +11978,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Artifact"];
+          "application/json": components["schemas"]["ArtifactWithTrees"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11246,6 +12118,7 @@ export interface operations {
   getApiV1ProjectsByKeyArtifactsBySlugText: {
     parameters: {
       query?: {
+        blocks?: boolean;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
         session?: string;
       };
@@ -11613,6 +12486,44 @@ export interface operations {
       };
     };
   };
+  postApiV1ResultsByIdRetract: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CheckResultRetractionInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["CheckResultRetraction"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1SchemaBlocks: {
     parameters: {
       query?: {
@@ -11650,11 +12561,6 @@ export interface operations {
       query?: {
         q?: string;
         project?: string;
-        number_project?: string;
-        status?: string;
-        author?: string;
-        updated_since?: string;
-        keywords_only?: boolean;
         limit?: number;
         offset?: number;
         /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
@@ -11705,6 +12611,47 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["SearchCoverage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1SearchResults: {
+    parameters: {
+      query?: {
+        q?: string;
+        project?: string;
+        number_project?: string;
+        status?: string;
+        author?: string;
+        updated_since?: string;
+        keywords_only?: boolean;
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SearchResponse"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12201,12 +13148,11 @@ export type AcceptedMessageDelivery = components["schemas"]["AcceptedMessageDeli
 export type Actor = components["schemas"]["Actor"];
 export type ActorAct = components["schemas"]["ActorAct"];
 export type ActorInput = components["schemas"]["ActorInput"];
-export type ActorOrigin = components["schemas"]["ActorOrigin"];
 export type AdviceAsk = components["schemas"]["AdviceAsk"];
+export type AdviceDeclinedAsk = components["schemas"]["AdviceDeclinedAsk"];
 export type Agent = components["schemas"]["Agent"];
 export type AgentToken = components["schemas"]["AgentToken"];
 export type AmbiguousTargetError = components["schemas"]["AmbiguousTargetError"];
-export type Anchor = components["schemas"]["Anchor"];
 export type AnchorInput = components["schemas"]["AnchorInput"];
 export type AnswerAskInput = components["schemas"]["AnswerAskInput"];
 export type AppInstallationResponse = components["schemas"]["AppInstallationResponse"];
@@ -12214,6 +13160,7 @@ export type ApprovalRequestInput = components["schemas"]["ApprovalRequestInput"]
 export type ApprovalRequestResponse = components["schemas"]["ApprovalRequestResponse"];
 export type ApproverGrantResp = components["schemas"]["ApproverGrantResp"];
 export type ApproverGrantsResponse = components["schemas"]["ApproverGrantsResponse"];
+export type ArchitectureComponentRead = components["schemas"]["ArchitectureComponentRead"];
 export type ArchitectureSource = components["schemas"]["ArchitectureSource"];
 export type ArchitectureTree = components["schemas"]["ArchitectureTree"];
 export type ArchitectureTreeComponent = components["schemas"]["ArchitectureTreeComponent"];
@@ -12225,37 +13172,42 @@ export type ArchitectureTreeSource = components["schemas"]["ArchitectureTreeSour
 export type ArchitectureTreeTotals = components["schemas"]["ArchitectureTreeTotals"];
 export type Artifact = components["schemas"]["Artifact"];
 export type ArtifactApproval = components["schemas"]["ArtifactApproval"];
+export type ArtifactApprovalWithTrees = components["schemas"]["ArtifactApprovalWithTrees"];
 export type ArtifactBlock = components["schemas"]["ArtifactBlock"];
 export type ArtifactRebuildReport = components["schemas"]["ArtifactRebuildReport"];
 export type ArtifactReferences = components["schemas"]["ArtifactReferences"];
 export type ArtifactReview = components["schemas"]["ArtifactReview"];
+export type ArtifactReviewRead = components["schemas"]["ArtifactReviewRead"];
 export type ArtifactText = components["schemas"]["ArtifactText"];
 export type ArtifactUploadResponse = components["schemas"]["ArtifactUploadResponse"];
 export type ArtifactVersionText = components["schemas"]["ArtifactVersionText"];
-export type Ask = components["schemas"]["Ask"];
-export type AskAnchorArtifact = components["schemas"]["AskAnchorArtifact"];
+export type ArtifactWithTrees = components["schemas"]["ArtifactWithTrees"];
 export type AskAnswer = components["schemas"]["AskAnswer"];
+export type AskAnswerWithTrees = components["schemas"]["AskAnswerWithTrees"];
 export type AskApproval = components["schemas"]["AskApproval"];
 export type AskApprovalApproved = components["schemas"]["AskApprovalApproved"];
-export type AskApprovalDocument = components["schemas"]["AskApprovalDocument"];
-export type AskBlockArtifact = components["schemas"]["AskBlockArtifact"];
-export type AskEdit = components["schemas"]["AskEdit"];
+export type AskAskedOfInput = components["schemas"]["AskAskedOfInput"];
 export type AskEditPrevious = components["schemas"]["AskEditPrevious"];
+export type AskEditPreviousWithTrees = components["schemas"]["AskEditPreviousWithTrees"];
+export type AskEditWithTrees = components["schemas"]["AskEditWithTrees"];
 export type AskFollower = components["schemas"]["AskFollower"];
 export type AskFollowersRead = components["schemas"]["AskFollowersRead"];
 export type AskLastReply = components["schemas"]["AskLastReply"];
-export type AskOption = components["schemas"]["AskOption"];
+export type AskOptionWithTrees = components["schemas"]["AskOptionWithTrees"];
 export type AskRead = components["schemas"]["AskRead"];
 export type AskResolution = components["schemas"]["AskResolution"];
+export type AskResolutionWithTrees = components["schemas"]["AskResolutionWithTrees"];
 export type AskSnooze = components["schemas"]["AskSnooze"];
 export type AskSnoozeInput = components["schemas"]["AskSnoozeInput"];
 export type AskThread = components["schemas"]["AskThread"];
+export type AskWithTrees = components["schemas"]["AskWithTrees"];
+export type BasisLearnedAt = components["schemas"]["BasisLearnedAt"];
 export type BlockAttributeValue = components["schemas"]["BlockAttributeValue"];
 export type BlockLink = components["schemas"]["BlockLink"];
 export type BlockLinks = components["schemas"]["BlockLinks"];
 export type BlockPath = components["schemas"]["BlockPath"];
-export type BlockPathEntry = components["schemas"]["BlockPathEntry"];
 export type BlockPin = components["schemas"]["BlockPin"];
+export type BlockPinRead = components["schemas"]["BlockPinRead"];
 export type BlockReferences = components["schemas"]["BlockReferences"];
 export type BlockTable = components["schemas"]["BlockTable"];
 export type BlockTableCell = components["schemas"]["BlockTableCell"];
@@ -12267,9 +13219,14 @@ export type BroadcastRecipient = components["schemas"]["BroadcastRecipient"];
 export type BroadcastSummary = components["schemas"]["BroadcastSummary"];
 export type CarriedBlock = components["schemas"]["CarriedBlock"];
 export type ChangeFailureRate = components["schemas"]["ChangeFailureRate"];
+export type CheckBasis = components["schemas"]["CheckBasis"];
 export type CheckBlock = components["schemas"]["CheckBlock"];
+export type CheckPassStands = components["schemas"]["CheckPassStands"];
 export type CheckResult = components["schemas"]["CheckResult"];
 export type CheckResultRecorded = components["schemas"]["CheckResultRecorded"];
+export type CheckResultRetracted = components["schemas"]["CheckResultRetracted"];
+export type CheckResultRetraction = components["schemas"]["CheckResultRetraction"];
+export type CheckResultRetractionInput = components["schemas"]["CheckResultRetractionInput"];
 export type ClaimIssueInput = components["schemas"]["ClaimIssueInput"];
 export type ClaimedIssue = components["schemas"]["ClaimedIssue"];
 export type Comment = components["schemas"]["Comment"];
@@ -12277,6 +13234,7 @@ export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
 export type CommentRead = components["schemas"]["CommentRead"];
 export type CommentReplyInput = components["schemas"]["CommentReplyInput"];
+export type CommentWithTrees = components["schemas"]["CommentWithTrees"];
 export type CommentWriteResponse = components["schemas"]["CommentWriteResponse"];
 export type CreateAgentMessageInput = components["schemas"]["CreateAgentMessageInput"];
 export type CreateAgentTokenInput = components["schemas"]["CreateAgentTokenInput"];
@@ -12307,6 +13265,7 @@ export type DecisionBlockCheck = components["schemas"]["DecisionBlockCheck"];
 export type DecisionKeep = components["schemas"]["DecisionKeep"];
 export type DecisionLink = components["schemas"]["DecisionLink"];
 export type DecisionResponse = components["schemas"]["DecisionResponse"];
+export type DeclineAskInput = components["schemas"]["DeclineAskInput"];
 export type DeliveryComponent = components["schemas"]["DeliveryComponent"];
 export type DeliveryDailyPoint = components["schemas"]["DeliveryDailyPoint"];
 export type DeliveryDeployFlagCounts = components["schemas"]["DeliveryDeployFlagCounts"];
@@ -12364,7 +13323,6 @@ export type EditPreconditionError = components["schemas"]["EditPreconditionError
 export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMismatch"];
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
-export type ExternalLink = components["schemas"]["ExternalLink"];
 export type GoingAction = components["schemas"]["GoingAction"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
@@ -12374,13 +13332,13 @@ export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphNode = components["schemas"]["GraphNode"];
 export type GraphNodeParent = components["schemas"]["GraphNodeParent"];
+export type GraphNodeRead = components["schemas"]["GraphNodeRead"];
 export type GraphReferences = components["schemas"]["GraphReferences"];
 export type Handoff = components["schemas"]["Handoff"];
 export type HandoffSummary = components["schemas"]["HandoffSummary"];
 export type HoldPersistenceInput = components["schemas"]["HoldPersistenceInput"];
 export type InboxDismissRequest = components["schemas"]["InboxDismissRequest"];
 export type InboxDismissResponse = components["schemas"]["InboxDismissResponse"];
-export type InboxDocument = components["schemas"]["InboxDocument"];
 export type InboxIssue = components["schemas"]["InboxIssue"];
 export type InboxReadRequest = components["schemas"]["InboxReadRequest"];
 export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
@@ -12399,6 +13357,9 @@ export type IssueComponents = components["schemas"]["IssueComponents"];
 export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"];
 export type IssueCoverage = components["schemas"]["IssueCoverage"];
 export type IssueDecisions = components["schemas"]["IssueDecisions"];
+export type IssueDesignGate = components["schemas"]["IssueDesignGate"];
+export type IssueDesignGates = components["schemas"]["IssueDesignGates"];
+export type IssueDesignGatesInput = components["schemas"]["IssueDesignGatesInput"];
 export type IssueDetails = components["schemas"]["IssueDetails"];
 export type IssueDuplicateError = components["schemas"]["IssueDuplicateError"];
 export type IssueOpenAsk = components["schemas"]["IssueOpenAsk"];
@@ -12420,11 +13381,15 @@ export type LeadTime = components["schemas"]["LeadTime"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];
-export type Message = components["schemas"]["Message"];
+export type MarkdownRoundTripInput = components["schemas"]["MarkdownRoundTripInput"];
+export type MarkdownRoundTripResponse = components["schemas"]["MarkdownRoundTripResponse"];
 export type MessageDelivery = components["schemas"]["MessageDelivery"];
 export type MessageRead = components["schemas"]["MessageRead"];
 export type MessageReplyInput = components["schemas"]["MessageReplyInput"];
 export type MessageReplyResult = components["schemas"]["MessageReplyResult"];
+export type MessageWithTrees = components["schemas"]["MessageWithTrees"];
+export type MovedApprovalDocument = components["schemas"]["MovedApprovalDocument"];
+export type MovedApprovalRequest = components["schemas"]["MovedApprovalRequest"];
 export type MyAnswerReply = components["schemas"]["MyAnswerReply"];
 export type MyAnswerRow = components["schemas"]["MyAnswerRow"];
 export type MyAnswersResponse = components["schemas"]["MyAnswersResponse"];
@@ -12441,6 +13406,9 @@ export type OpenAskItemOwner = components["schemas"]["OpenAskItemOwner"];
 export type OpenAskOwner = components["schemas"]["OpenAskOwner"];
 export type OpenAsksResponse = components["schemas"]["OpenAsksResponse"];
 export type OutgoingReference = components["schemas"]["OutgoingReference"];
+export type PassCounts = components["schemas"]["PassCounts"];
+export type PassCursor = components["schemas"]["PassCursor"];
+export type PassRecord = components["schemas"]["PassRecord"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
@@ -12465,11 +13433,13 @@ export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
-export type ReplyBlock = components["schemas"]["ReplyBlock"];
+export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
+export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];
 export type ResidentRooms = components["schemas"]["ResidentRooms"];
 export type ResolveAskInput = components["schemas"]["ResolveAskInput"];
+export type ResultCommitStands = components["schemas"]["ResultCommitStands"];
 export type RoomCounters = components["schemas"]["RoomCounters"];
 export type RouteIndex = components["schemas"]["RouteIndex"];
 export type RouteIndexEntry = components["schemas"]["RouteIndexEntry"];
@@ -12491,9 +13461,9 @@ export type SessionAnswersResponse = components["schemas"]["SessionAnswersRespon
 export type SlowWriteInput = components["schemas"]["SlowWriteInput"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type Subscriber = components["schemas"]["Subscriber"];
-export type Suggestion = components["schemas"]["Suggestion"];
 export type Suggestions = components["schemas"]["Suggestions"];
 export type SupersededApproval = components["schemas"]["SupersededApproval"];
+export type SupersededApprovalGate = components["schemas"]["SupersededApprovalGate"];
 export type TablePosition = components["schemas"]["TablePosition"];
 export type TargetCandidate = components["schemas"]["TargetCandidate"];
 export type TestHookOK = components["schemas"]["TestHookOK"];
@@ -12518,3 +13488,18 @@ export type WhoamiAgent = components["schemas"]["WhoamiAgent"];
 export type WhoamiUser = components["schemas"]["WhoamiUser"];
 export type WriteAdvice = components["schemas"]["WriteAdvice"];
 export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
+
+/** Every schema name whose exported type the hand-written split owns, which
+ * `dispatch-api-owned.ts` holds to the shape this module declares for it. */
+export type SplitOwnedSchemaName =
+  | "ActorOrigin"
+  | "Anchor"
+  | "AskAnchorArtifact"
+  | "AskApprovalDocument"
+  | "AskBlockArtifact"
+  | "AskOption"
+  | "BlockPathEntry"
+  | "ExternalLink"
+  | "InboxDocument"
+  | "ReplyBlock"
+  | "Suggestion";

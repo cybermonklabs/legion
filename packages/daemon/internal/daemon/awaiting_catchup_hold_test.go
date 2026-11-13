@@ -36,10 +36,9 @@ func openSpecGate(root string, version int) record.DesignGate {
 // offer its first phase that slot (record.Waiting classes it LineFirstPhase, StartFirstPhase runs
 // it), and the root would start on a document version nobody approved — the version the catch-up
 // has still to read off Dispatch. A held READY of the same tree is released the same way, through
-// AdvanceOpenTrees, whose own hold is this one.
+// the pass's own first-phase starts, whose hold is this one.
 //
-// So holdForCatchUp itself must hold a root standing at admitted under an open gate, and the root
-// of a tree with a member in merging, which is often a child rather than the root. The boot that
+// So holdForCatchUp itself must hold a root standing at admitted under an open gate. The boot that
 // never ran such a root is still left alone: its gate stands at no open step, and replaying the
 // event log below its own admission handout is history this release must not replay.
 func TestTheBootsCatchUpHoldsEveryRootItsOwnStepListOpens(t *testing.T) {
@@ -49,10 +48,6 @@ func TestTheBootsCatchUpHoldsEveryRootItsOwnStepListOpens(t *testing.T) {
 			// The root a shorter list releases: admitted, holding the slot its own work took
 			// while the step that has since gone held it.
 			openTreeIssue("CAPTURE-200", "CAPTURE-200", phase.Admitted, "A"),
-			// The tree whose child's READY a step the deployment no longer gates refused: the
-			// root is at work in its own phase, and the member in merging is the child.
-			openTreeIssue("CAPTURE-300", "CAPTURE-300", phase.Implementing, "B"),
-			readyHeldChild("CAPTURE-301", "CAPTURE-300"),
 			// The root that never ran, waiting in line for its first slot: nothing of its design
 			// is registered, so no list opens its gate.
 			openTreeIssue("CAPTURE-400", "CAPTURE-400", phase.Admitted, "C"),
@@ -61,7 +56,7 @@ func TestTheBootsCatchUpHoldsEveryRootItsOwnStepListOpens(t *testing.T) {
 				return err
 			}
 		}
-		for _, root := range []string{"CAPTURE-200", "CAPTURE-300"} {
+		for _, root := range []string{"CAPTURE-200"} {
 			if err := records.PutGate(ctx, tx, openSpecGate(root, 4)); err != nil {
 				return err
 			}
@@ -77,17 +72,9 @@ func TestTheBootsCatchUpHoldsEveryRootItsOwnStepListOpens(t *testing.T) {
 
 	held := w.admission.CatchUpHeld()
 	slices.Sort(held)
-	want := []string{"CAPTURE-200", "CAPTURE-300"}
+	want := []string{"CAPTURE-200"}
 	if !reflect.DeepEqual(held, want) {
-		t.Fatalf("the boot holds %v, want %v: the root its own list leaves at admitted with an open gate, and the root of the tree holding a refused READY — and not the root that never ran",
+		t.Fatalf("the boot holds %v, want %v: the root its own list leaves at admitted with an open gate — and not the root that never ran",
 			held, want)
 	}
-}
-
-// readyHeldChild is a child of tree standing in merging with the READY a closed design gate
-// refused, which is the one thing that says its tree may hold one (workflow's advancePendingReady).
-func readyHeldChild(key, tree string) record.Issue {
-	child := openTreeIssue(key, tree, phase.Merging, "V")
-	child.ReadyPending = &record.ReadyPending{Step: record.DesignStepSpec, Version: 5}
-	return child
 }

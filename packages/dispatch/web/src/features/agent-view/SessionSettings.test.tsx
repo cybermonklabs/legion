@@ -1,15 +1,19 @@
-import { afterEach, expect, type Mock, mock, test } from "bun:test";
+import { afterEach, expect, jest, type Mock, mock, test } from "bun:test";
 import type { AgentStreamSettingsReported } from "@legion/contracts";
 // biome-ignore lint/style/noRestrictedImports: the same-task pair a closed select's own key makes (`stepWithKey`), and the blur that leaves a picker
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 
+import { realClock, tick } from "../../__tests__/fake-clock";
+import { userOnFakeClock } from "../../__tests__/user";
 import type { SessionSettingsView } from "./conversation";
-import { SessionSettings } from "./SessionSettings";
+import { SessionSettings, SessionSwitchLines } from "./SessionSettings";
 import type { SwitchRequest } from "./use-session-switch";
 
-type Props = ComponentProps<typeof SessionSettings>;
+/** What the page passes the row: the pickers' props, and the switch status the lines under the
+ *  row show. */
+type Props = ComponentProps<typeof SessionSettings> & { status: string | undefined };
 
 afterEach(cleanup);
 
@@ -55,8 +59,9 @@ interface Header {
   update: (props: Partial<Omit<Props, "onPick">>) => void;
 }
 
-/** The header's settings, as the page renders them: a session reporting `reportedView()` with no
- *  switch pending, unless `props` say otherwise. */
+/** The row's settings as the page renders them - the pickers, and the switch's lines under the
+ *  row (`SessionSwitchLines`) - for a session reporting `reportedView()` with no switch
+ *  pending, unless `props` say otherwise. */
 function renderSettings(props: Partial<Omit<Props, "onPick">> = {}): Header {
   const onPick = mock((_request: SwitchRequest) => {});
   let current: Props = {
@@ -66,12 +71,18 @@ function renderSettings(props: Partial<Omit<Props, "onPick">> = {}): Header {
     view: reportedView(),
     ...props,
   };
-  const { rerender } = render(<SessionSettings {...current} />);
+  const draw = ({ status, ...settings }: Props) => (
+    <>
+      <SessionSettings {...settings} />
+      <SessionSwitchLines notice={settings.view.notice} status={status} />
+    </>
+  );
+  const { rerender } = render(draw(current));
   return {
     onPick,
     update: (next) => {
       current = { ...current, ...next };
-      rerender(<SessionSettings {...current} />);
+      rerender(draw(current));
     },
   };
 }
@@ -189,43 +200,48 @@ test("a session that cannot switch here shows what it reports, no picker, and wh
 // a new value, drops a choice not taken - the header never shows an unreported value once not
 // being stepped.
 test("a header picker's arrows pick nothing, Enter picks once, and leaving drops the step", async () => {
-  const user = userEvent.setup();
-  const header = renderSettings();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  try {
+    const header = renderSettings();
 
-  const model = picker("Model");
-  stepWithKey(model, "openai/model-c");
-  stepWithKey(model, "anthropic/model-b");
-  expect(picker("Model").value).toBe("anthropic/model-b");
-  await Bun.sleep(20);
-  expect(header.onPick).not.toHaveBeenCalled();
-  // The shown value stays the reported one.
-  expect(screen.getByTestId("agent-session-model").textContent).toBe("anthropic/model-a");
+    const model = picker("Model");
+    stepWithKey(model, "openai/model-c");
+    stepWithKey(model, "anthropic/model-b");
+    expect(picker("Model").value).toBe("anthropic/model-b");
+    await tick(20);
+    expect(header.onPick).not.toHaveBeenCalled();
+    // The shown value stays the reported one.
+    expect(screen.getByTestId("agent-session-model").textContent).toBe("anthropic/model-a");
 
-  // Leaving the picker without Enter puts it back on the reported model.
-  // user-event has no form for leaving a control: its `tab` would move focus somewhere else.
-  fireEvent.blur(picker("Model"));
-  expect(picker("Model").value).toBe("anthropic/model-a");
-  expect(header.onPick).not.toHaveBeenCalled();
+    // Leaving the picker without Enter puts it back on the reported model.
+    // user-event has no form for leaving a control: its `tab` would move focus somewhere else.
+    fireEvent.blur(picker("Model"));
+    expect(picker("Model").value).toBe("anthropic/model-a");
+    expect(header.onPick).not.toHaveBeenCalled();
 
-  // A new reported value drops a step taken from the old one.
-  stepWithKey(picker("Thinking level"), "low");
-  expect(picker("Thinking level").value).toBe("low");
-  header.update({
-    view: reportedView({ thinking: { level: "high", levels: ["auto", "low", "high"] } }),
-  });
-  expect(picker("Thinking level").value).toBe("high");
-  expect(header.onPick).not.toHaveBeenCalled();
+    // A new reported value drops a step taken from the old one.
+    stepWithKey(picker("Thinking level"), "low");
+    expect(picker("Thinking level").value).toBe("low");
+    header.update({
+      view: reportedView({ thinking: { level: "high", levels: ["auto", "low", "high"] } }),
+    });
+    expect(picker("Thinking level").value).toBe("high");
+    expect(header.onPick).not.toHaveBeenCalled();
 
-  // Enter picks the stepped choice, once, the id exactly as the session listed it.
-  stepWithKey(picker("Model"), "custom/model@v2:high");
-  // Enter reaches the focused element, and a click on a closed select focuses it and picks
-  // nothing: the select's handlers are its change, its keys and its blur.
-  await user.click(picker("Model"));
-  await user.keyboard("{Enter}");
-  expect(header.onPick).toHaveBeenCalledWith({ kind: "model", value: "custom/model@v2:high" });
-  expect(header.onPick).toHaveBeenCalledTimes(1);
-  // The picker shows the reported model again until the session reports the switch.
-  expect(picker("Model").value).toBe("anthropic/model-a");
+    // Enter picks the stepped choice, once, the id exactly as the session listed it.
+    stepWithKey(picker("Model"), "custom/model@v2:high");
+    // Enter reaches the focused element, and a click on a closed select focuses it and picks
+    // nothing: the select's handlers are its change, its keys and its blur.
+    await user.click(picker("Model"));
+    await user.keyboard("{Enter}");
+    expect(header.onPick).toHaveBeenCalledWith({ kind: "model", value: "custom/model@v2:high" });
+    expect(header.onPick).toHaveBeenCalledTimes(1);
+    // The picker shows the reported model again until the session reports the switch.
+    expect(picker("Model").value).toBe("anthropic/model-a");
+  } finally {
+    realClock();
+  }
 });
 
 // A change no key on the select made - the pointer's, or a pick in the native popup - is a pick
@@ -244,69 +260,79 @@ test("a header picker's pointer change picks at once", async () => {
 // pick on it picks: a pointer's pick snaps back to the reported value, and Enter on a step leaves
 // the step a step until the picker is left.
 test("a held picker keeps focus and its keys, and no pick on it picks", async () => {
-  const user = userEvent.setup();
-  const header = renderSettings({ pending: true });
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  try {
+    const header = renderSettings({ pending: true });
 
-  expect(held(picker("Model"))).toBe(true);
-  expect(held(picker("Thinking level"))).toBe(true);
-  expect(picker("Model").disabled).toBe(false);
-  expect(picker("Thinking level").disabled).toBe(false);
+    expect(held(picker("Model"))).toBe(true);
+    expect(held(picker("Thinking level"))).toBe(true);
+    expect(picker("Model").disabled).toBe(false);
+    expect(picker("Thinking level").disabled).toBe(false);
 
-  await user.selectOptions(picker("Model"), "openai/model-c");
-  await user.selectOptions(picker("Thinking level"), "low");
-  await Bun.sleep(20);
-  expect(picker("Model").value).toBe("anthropic/model-a");
-  expect(picker("Thinking level").value).toBe("auto");
-  stepWithKey(picker("Thinking level"), "low");
-  await user.click(picker("Thinking level"));
-  await user.keyboard("{Enter}");
-  await Bun.sleep(20);
-  expect(picker("Thinking level").value).toBe("low");
-  expect(header.onPick).not.toHaveBeenCalled();
-  // user-event has no form for leaving a control: its `tab` would move focus somewhere else.
-  fireEvent.blur(picker("Thinking level"));
-  expect(picker("Thinking level").value).toBe("auto");
-  expect(header.onPick).not.toHaveBeenCalled();
-  // Nothing the session has not reported shows.
-  expect(picker("Model").value).toBe("anthropic/model-a");
+    await user.selectOptions(picker("Model"), "openai/model-c");
+    await user.selectOptions(picker("Thinking level"), "low");
+    await tick(20);
+    expect(picker("Model").value).toBe("anthropic/model-a");
+    expect(picker("Thinking level").value).toBe("auto");
+    stepWithKey(picker("Thinking level"), "low");
+    await user.click(picker("Thinking level"));
+    await user.keyboard("{Enter}");
+    await tick(20);
+    expect(picker("Thinking level").value).toBe("low");
+    expect(header.onPick).not.toHaveBeenCalled();
+    // user-event has no form for leaving a control: its `tab` would move focus somewhere else.
+    fireEvent.blur(picker("Thinking level"));
+    expect(picker("Thinking level").value).toBe("auto");
+    expect(header.onPick).not.toHaveBeenCalled();
+    // Nothing the session has not reported shows.
+    expect(picker("Model").value).toBe("anthropic/model-a");
+  } finally {
+    realClock();
+  }
 });
 
 // A held picker keeps focus and its keys still step, so a keyboard reader can choose while a
 // switch waits; Enter then picks nothing until the switch ends, and after it picks the step once.
 test("a held picker's steps survive the switch, and Enter after it ends picks the step once", async () => {
-  const user = userEvent.setup();
-  const header = renderSettings();
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  try {
+    const header = renderSettings();
 
-  await user.selectOptions(picker("Model"), "openai/model-c");
-  expect(header.onPick).toHaveBeenCalledTimes(1);
-  header.update({ pending: true, status: "Switching model to openai/model-c…" });
-  expect(held(picker("Thinking level"))).toBe(true);
+    await user.selectOptions(picker("Model"), "openai/model-c");
+    expect(header.onPick).toHaveBeenCalledTimes(1);
+    header.update({ pending: true, status: "Switching model to openai/model-c…" });
+    expect(held(picker("Thinking level"))).toBe(true);
 
-  stepWithKey(picker("Thinking level"), "low");
-  stepWithKey(picker("Thinking level"), "high");
-  expect(picker("Thinking level").value).toBe("high");
-  await user.click(picker("Thinking level"));
-  await user.keyboard("{Enter}");
-  await Bun.sleep(20);
-  expect(header.onPick).toHaveBeenCalledTimes(1);
-  expect(picker("Thinking level").value).toBe("high");
-  expect(screen.getByTestId("agent-switch-status").textContent).toBe(
-    "Switching model to openai/model-c…"
-  );
+    stepWithKey(picker("Thinking level"), "low");
+    stepWithKey(picker("Thinking level"), "high");
+    expect(picker("Thinking level").value).toBe("high");
+    await user.click(picker("Thinking level"));
+    await user.keyboard("{Enter}");
+    await tick(20);
+    expect(header.onPick).toHaveBeenCalledTimes(1);
+    expect(picker("Thinking level").value).toBe("high");
+    expect(screen.getByTestId("agent-switch-status").textContent).toBe(
+      "Switching model to openai/model-c…"
+    );
 
-  header.update({ pending: false, status: "The session answered: Model set to openai/model-c." });
-  expect(held(picker("Thinking level"))).toBe(false);
-  expect(picker("Thinking level").value).toBe("high");
-  expect(header.onPick).toHaveBeenCalledTimes(1);
+    header.update({ pending: false, status: "The session answered: Model set to openai/model-c." });
+    expect(held(picker("Thinking level"))).toBe(false);
+    expect(picker("Thinking level").value).toBe("high");
+    expect(header.onPick).toHaveBeenCalledTimes(1);
 
-  // The picker still holds focus from the step above, so Enter reaches it.
-  await user.keyboard("{Enter}");
-  expect(header.onPick).toHaveBeenLastCalledWith({ kind: "thinking", value: "high" });
-  expect(header.onPick).toHaveBeenCalledTimes(2);
-  expect(header.onPick.mock.calls).toEqual([
-    [{ kind: "model", value: "openai/model-c" }],
-    [{ kind: "thinking", value: "high" }],
-  ]);
+    // The picker still holds focus from the step above, so Enter reaches it.
+    await user.keyboard("{Enter}");
+    expect(header.onPick).toHaveBeenLastCalledWith({ kind: "thinking", value: "high" });
+    expect(header.onPick).toHaveBeenCalledTimes(2);
+    expect(header.onPick.mock.calls).toEqual([
+      [{ kind: "model", value: "openai/model-c" }],
+      [{ kind: "thinking", value: "high" }],
+    ]);
+  } finally {
+    realClock();
+  }
 });
 
 // A step taken while held survives the switch's end only where its picker's value did not move:

@@ -1,15 +1,10 @@
-import { expect, test } from "@playwright/test";
-
 import { createIssue, createProject, getIssue, listIssues, patchIssue } from "./api";
-import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
+import { expect, test } from "./test";
 import { asUser } from "./users";
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
-test("an issue shows its spec's task list and its children counted, on its page, in the list and on the board", async ({
+// @pr: The progress surface's only row: the spec's task list and the children count, on the issue page, the list and the board.
+test("an issue shows its spec's task list and its children counted, on its page, in the list and on the board @pr", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -62,10 +57,10 @@ test("an issue shows its spec's task list and its children counted, on its page,
     await expect(page.getByTestId("issue-progress-children")).toHaveCount(0);
 
     await navigateInApp(page, "/projects/CORE/issues");
-    const rootRow = page.getByRole("listitem", { name: `${root.key} Tracked work` });
+    const rootRow = page.getByRole("row", { name: `${root.key} Tracked work`, exact: true });
     await expect(rootRow.getByTestId("issue-progress-tasks")).toHaveText("2/4 tasks");
     await expect(rootRow.getByTestId("issue-progress-children")).toHaveText("1/2 children");
-    const plainRow = page.getByRole("listitem", { name: `${plain.key} Plain` });
+    const plainRow = page.getByRole("row", { name: `${plain.key} Plain`, exact: true });
     await expect(plainRow).toBeVisible();
     await expect(plainRow.getByTestId("issue-progress-tasks")).toHaveCount(0);
     await shot("list");

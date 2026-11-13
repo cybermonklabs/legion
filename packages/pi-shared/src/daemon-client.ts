@@ -27,9 +27,12 @@ import {
   LegionSignOffRequest,
   type LegionState,
   LegionStateResponse,
+  LegionTurnOutcomeRequest,
+  LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
 } from "@legion/contracts/legion-api";
+import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 import { messageFor } from "@legion/envoy-client/errors";
 import type { z } from "zod";
 
@@ -98,6 +101,12 @@ export interface LegionDaemonClient {
   readonly ready: (input: ReadyInput, options?: { readonly signal?: AbortSignal }) => Promise<void>;
   readonly readyForUpdate: (input: ReadyForUpdateInput) => Promise<void>;
   readonly exit: (input: ExitInput) => Promise<void>;
+  /** `claim.TurnOutcomeRequest`: how one of the claim's turns ended, under the sequence the
+   * reporting plugin counted itself (`packages/pi-legion/src/turn-outcome.ts`). The answer is the
+   * trailing run of refused turns the daemon derived and whether this report failed the claim. */
+  readonly turnOutcome: (
+    input: z.input<typeof LegionTurnOutcomeRequest>
+  ) => Promise<z.output<typeof LegionTurnOutcomeResponse>>;
   /** The session's report of what it is doing, after each of its turns and whenever the report's
    * content changes. It is authenticated by the claim, as `ready` is, and answers 204. */
   readonly activity: (input: ActivityInput) => Promise<void>;
@@ -290,9 +299,11 @@ export function daemonUnreachable(error: unknown): "refused" | "dropped" | undef
  * applies at most once however often it arrives may run through it: `handoff_complete` (a repeat
  * is answered HANDOFF_ALREADY_RECORDED, or, once the completion moved the issue, refused as no
  * longer the role's phase), `sign_off` (a repeat finds the issue out of accepting and changes
- * nothing) and `register_gate` (its fact is keyed by the gate's issue, generation, document,
+ * nothing), `register_gate` (its fact is keyed by the gate's issue, generation, document,
  * version and Dispatch sequence; a repeat after the sequence moved is a new fact, which the gate
- * takes as a re-registration of the same document and tells no one again). `call` is the whole
+ * takes as a re-registration of the same document and tells no one again) and
+ * `claims/turn-outcome` (one outcome per claim, generation and sequence, so a repeat writes the
+ * cell its first attempt wrote). `call` is the whole
  * operation, grant mint included, since grants live in the daemon's memory and do not survive
  * its restart. `onRetrying` is told once. A daemon refusal after a dropped attempt is told that
  * the dropped one may have been applied.
@@ -388,7 +399,7 @@ export function createLegionDaemonClient(
   baseUrl: string,
   fetchFn: typeof fetch = fetch
 ): LegionDaemonClient {
-  const endpoint = baseUrl.replace(/\/+$/, "");
+  const endpoint = withoutTrailingSlashes(baseUrl);
 
   /** The response's status and body once the daemon answered success; a refusal throws. */
   const call = async (
@@ -473,6 +484,13 @@ export function createLegionDaemonClient(
     ready: (input, options) => acknowledge("/legion/v1/claims/ready", input, options?.signal),
     readyForUpdate: (input) => acknowledge("/legion/v1/claims/ready-for-update", input),
     exit: (input) => acknowledge("/legion/v1/claims/exit", input),
+    turnOutcome: (input) =>
+      post(
+        "/legion/v1/claims/turn-outcome",
+        LegionTurnOutcomeRequest,
+        LegionTurnOutcomeResponse,
+        input
+      ),
     activity: (input) => acknowledge("/legion/v1/claims/activity", input),
     releaseRecords: (input) =>
       post(

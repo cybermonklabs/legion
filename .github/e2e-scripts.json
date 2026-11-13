@@ -23,13 +23,13 @@
       "jj": true
     },
     {
-      "script": "ci-red-no-takeover.sh",
+      "script": "conflict-no-takeover.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
-      "evidence_variable": "CI_RED_NO_TAKEOVER_EVIDENCE_DIR",
+      "evidence_variable": "CONFLICT_NO_TAKEOVER_EVIDENCE_DIR",
       "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/ci-red-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
       "jj": true
     },
     {
@@ -53,23 +53,13 @@
       "jj": true
     },
     {
-      "script": "merged-root-waits.sh",
+      "script": "phase-entry-converge.sh",
       "go_version_file": "packages/daemon/go.mod",
       "apt": [],
       "bun": false,
-      "evidence_variable": "MERGED_ROOT_WAITS_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/merged-root-waits.sh; CI's service satisfies it, and this script starts none",
-      "jj": true
-    },
-    {
-      "script": "no-required-checks.sh",
-      "go_version_file": "packages/daemon/go.mod",
-      "apt": [],
-      "bun": false,
-      "evidence_variable": "NO_REQUIRED_CHECKS_EVIDENCE_DIR",
-      "timeout_minutes": 30,
-      "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/no-required-checks.sh; the proof waits for three reads of what each base requires, so a run takes about seven minutes",
+      "evidence_variable": "PHASE_ENTRY_CONVERGE_EVIDENCE_DIR",
+      "timeout_minutes": 20,
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/phase-entry-converge.sh; the proof needs a real PostgreSQL, which CI's service is, and a real nats-server, which it installs with go install, and it starts no container; a measured run took 88 seconds, most of it building the driver",
       "jj": true
     },
     {
@@ -100,7 +90,7 @@
     },
     {
       "script": "claim-compaction.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar, python3 and bun with this repository's node_modules, and about eight minutes of wall clock for its four panes and the compaction it holds"
     },
     {
       "script": "claude-backend-sandbox.sh",
@@ -124,7 +114,11 @@
     },
     {
       "script": "dispatch-two-builds.sh",
-      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and which commit is `the build before the change` is a caller's choice no job can make. The property the script proves is covered in CI by the Go tests that write an older build's row by raw SQL and assert the drain re-indexes it (`store/refs_grammar_migrations_test.go`, `docs/refs_grammar_drain_test.go`); the script is the live proof of the same thing through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
+    },
+    {
+      "script": "dispatch-search-two-builds.sh",
+      "needs": "a commit of this repository's own history to build the base from, which it takes with `git archive` from `--base-commit`: a CI checkout is shallow and carries none but its own head, and the commit this proof needs is the release before the five narrowing members, legion-envoy-v29.47.1, which no job can pick for it. It is the live proof that a search carrying one of those members reaches an older build as 404 no route rather than as unnarrowed rows, through two real `envoy-dispatch` binaries, run by hand from a full checkout with go, bun, curl, psql, git, tar, openssl and python3 (which the shared harness runs the loopback guard with) and a loopback PostgreSQL carrying pgvector (DATABASE_URL)"
     },
     {
       "script": "dispatch-session-settings.sh",
@@ -143,6 +137,14 @@
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
     },
     {
+      "script": "leak-guard-image-job.sh",
+      "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with the base branch's digest as the negative control (--control); it starts one Job of that image and nothing of its own"
+    },
+    {
+      "script": "leak-guard-image-probe.sh",
+      "needs": "the worker image and the Job leak-guard-image-job.sh creates: it is that proof's probe, not a proof of its own, and the harness writes it into the Job's command because a Job holds no checkout to read it from; it runs inside the image against a scratch repository on the Job's emptyDir and judges nothing a runner could give it"
+    },
+    {
       "script": "multi-repo-acceptance.sh",
       "needs": "a live multi-repository run on the production cluster: it is the operator's acceptance observer, reads that run's daemon, Dispatch, GitHub and kubectl, and starts nothing of its own"
     },
@@ -156,12 +158,16 @@
     },
     {
       "script": "provider-error-retry.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar and bun with this repository's node_modules"
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "refusal-fallback-omp.sh",
-      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), go, which it builds its own natsd with, bun with this repository's node_modules, and about fifteen minutes of wall clock, which is longer than any job of ci.yaml holds",
       "timeout_minutes": 25
+    },
+    {
+      "script": "role-prompt-rule.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL (LEGION_TEST_PG_DSN), go, awk, tar, python3 and bun with this repository's node_modules"
     },
     {
       "script": "share-volumes-kind.sh",

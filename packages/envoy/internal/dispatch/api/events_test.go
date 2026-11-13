@@ -82,15 +82,16 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 
 	eventTypes := []string{
 		"issue.created", "issue.updated", "issue.closed", "issue.reopened", "issue.claimed", "issue.released", "issue.deployed",
+		"issue.pull_request_attribution_changed",
 		"child.added", "child.removed", "child.status",
 		"artifact.created", "artifact.version", "artifact.human_edited", "artifact.approved", "artifact.changes_requested",
-		"ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back",
+		"ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of",
 		"ask.follower_added", "ask.follower_removed",
 		"comment.created", "comment.delivery", "comment.answered", "comment.resolved", "comment.reopened",
 		"comment.edited", "comment.anchor_refreshed", "suggestion.accepted", "suggestion.rejected",
 		"subscription.remove_requested", "subscription.removed",
 		"message.created", "message.answered", "message.delivery", "message.accepted", "handoff.recorded",
-		"block.repaired", "block.invalid", "result.recorded",
+		"block.repaired", "block.invalid", "result.recorded", "result.retracted",
 		"project.created", "project.updated", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
@@ -98,7 +99,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 	}
 	askEventTypes := map[string]bool{
 		"ask.opened": true, "ask.anchor_refreshed": true, "ask.answered": true, "ask.resolved": true,
-		"ask.edited": true, "ask.handed_back": true,
+		"ask.edited": true, "ask.handed_back": true, "ask.asked_of": true,
 	}
 	type storedEvent struct {
 		eventType string

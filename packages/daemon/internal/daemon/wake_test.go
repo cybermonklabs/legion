@@ -43,7 +43,7 @@ func recordPodWake(t *testing.T, st *store.Store, res store.PodResume) int64 {
 	var id int64
 	if err := st.Tx(ctx, func(tx pgx.Tx) error {
 		var err error
-		id, err = store.RecordPodWakeTx(ctx, tx, res)
+		id, _, err = store.RecordPodWakeTx(ctx, tx, res)
 		return err
 	}); err != nil {
 		t.Fatalf("record the wake of %s: %v", res.Issue, err)
@@ -253,7 +253,7 @@ func TestTheDaemonsOneDurableStateCallbackCarriesTheFactsAndTheResumeStamps(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	sup := newSupervisor(ctx, w.idleStore, "legion", t.TempDir(), quietLogger())
-	w.attach(&supervision{supervisor: sup, log: quietLogger()})
+	w.attach(&supervision{supervisor: sup, log: quietLogger(), refreshGate: supervise.NewRefreshGate(0)})
 	hook := sup.durableState
 	if hook == nil {
 		t.Fatal("attach left the supervisor no durable-state callback")

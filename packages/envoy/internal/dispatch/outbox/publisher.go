@@ -102,13 +102,14 @@ type Deps struct {
 	// listener's sweep, which is what this package's tests that publish through a stand-in with
 	// no stream behind it leave it to.
 	KeptLanes KeptLaneReader
-	// receiptWait is how long a role forward waits for its holder's answer, and zero is
-	// roleReceiptTimeout, which is what cmd/dispatch runs. A test sets it longer than its own run
-	// so that a holder that never answers stays unanswered for the whole test: then what the test
-	// reads is the order of two events rather than a duration, which a loaded machine changes. It
-	// is unexported, so only this package sets it and no importer can shorten the wait
-	// cmd/dispatch runs.
-	receiptWait time.Duration
+	// forwardAckWait is how long a role forward waits for the stream's acknowledgement of its
+	// stored copy, which is what counts the forward as reached, and zero is roleForwardAckTimeout,
+	// which is what cmd/dispatch runs. A test sets it longer than its own run so that a forward
+	// nothing acknowledges stays unanswered for the whole test: then what the test reads is the
+	// order of two events rather than a duration, which a loaded machine changes. It is
+	// unexported, so only this package sets it and no importer can shorten the wait cmd/dispatch
+	// runs.
+	forwardAckWait time.Duration
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
 	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
 	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
@@ -124,24 +125,22 @@ type Deps struct {
 	lanes *lanes
 }
 
-// receiptTimeout is the wait this outbox's role forwards give their holder's answer
-// (roleForward.forward), from receiptWait.
-func (d Deps) receiptTimeout() time.Duration {
-	if d.receiptWait > 0 {
-		return d.receiptWait
+// forwardAckTimeout is the wait this outbox's role forwards give the stream's acknowledgement of
+// their stored copy (roleForward.forward), from forwardAckWait.
+func (d Deps) forwardAckTimeout() time.Duration {
+	if d.forwardAckWait > 0 {
+		return d.forwardAckWait
 	}
-	return roleReceiptTimeout
+	return roleForwardAckTimeout
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
 // reason: "denied" for a send the server refused under this connection's own publish permissions,
 // "refused" for one NATS refuses however often it is retried, "unanswered" for a forward NATS
-// took whose answer never came - the holder's receipt, or the stream's acknowledgement of the
-// stored copy for a holder whose entry an earlier listener stored with a port (roleForward.send) -
-// and "failed" for every other failure
-// (sendChains). A role forward held pending is counted by countRoleForwardHeld and under none of
-// these. Every increment goes through here: a Deps built without a counter - the package's own
-// tests - then counts nothing instead of dereferencing nil.
+// took whose stored copy the stream did not acknowledge (roleForward.forward), and "failed" for
+// every other failure (sendChains). A role forward held pending is counted by
+// countRoleForwardHeld and under none of these. Every increment goes through here: a Deps built
+// without a counter - the package's own tests - then counts nothing instead of dereferencing nil.
 func (d Deps) countPublishFailure(reason string) {
 	if d.PublishFailures == nil {
 		return
@@ -204,15 +203,16 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 // (bus.ErrUnavailable) is no fault of its event, and its event is released with no attempt
 // counted, to be sent again on the reconnect's wake. A send NATS denied (bus.ErrPublishDenied), did
 // not acknowledge on a connection still current (bus.ErrNotAcknowledged: no acknowledgement in
-// time, no responders, no receipt from a role's holder), a role route whose holder could not be
-// resolved or is stale (roleForward), or a send that failed some other way backs its event off
-// with the attempt counted and the error recorded. A batch with a send that failed for the
-// connection either way then looks at the connection: a client that has reconnected since the
-// batch began (its connection changed and it is connected again) releases the not-acknowledged
-// events too and keeps the hold, since the resend follows on the reconnect's wake; otherwise the
-// batch probes its window's connection, and a probe that fails - a silent cut on a connection still
-// the window's, or a client not connected - reports NATS lost, which gives the publisher hold up
-// (Outbox), and releases the not-acknowledged events rather than backing them off.
+// time, no responders, no acknowledgement of a role forward's stored copy), a role route whose
+// holder could not be resolved or is stale (roleForward), or a send that failed some other way
+// backs its event off with the attempt counted and the error recorded. A batch with a send that
+// failed for the connection either way then looks at the connection: a client that has
+// reconnected since the batch began (its connection changed and it is connected again) releases
+// the not-acknowledged events too and keeps the hold, since the resend follows on the
+// reconnect's wake; otherwise the batch probes its window's connection, and a probe that fails -
+// a silent cut on a connection still the window's, or a client not connected - reports NATS
+// lost, which gives the publisher hold up (Outbox), and releases the not-acknowledged events
+// rather than backing them off.
 //
 // The batch runs under hold, the publisher hold: its window is the hold's (Publisher.WindowUntil
 // with the hold's deadline), which checks the deadline before each send and writes nothing past
@@ -243,13 +243,13 @@ func scanBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID) (ba
 //
 // An owner is settled, recorded and released as soon as the last chain of its own has finished
 // (sendChains), so its next events and the owners this batch left behind are read while the rest
-// of the batch is still sending: a chain waiting for a role holder's receipt then holds back its
-// own owner's later events alone. An owner with a send that failed for the connection, one with a
-// send the hold's deadline fenced, one with a send the batch's stop left unmade, and every owner
-// of a batch whose context has ended wait for the batch's end instead, where the connection check
-// below decides what their sends came to: each of those is an owner an early settle would release
-// or leave unrecorded, so it is settled once, there. Whichever way an owner settles, every lane
-// the read took is given back before the batch returns.
+// of the batch is still sending: a chain waiting for a role forward's acknowledgement then holds
+// back its own owner's later events alone. An owner with a send that failed for the connection, one
+// with a send the hold's deadline fenced, one with a send the batch's stop left unmade, and every
+// owner of a batch whose context has ended wait for the batch's end instead, where the connection
+// check below decides what their sends came to: each of those is an owner an early settle would
+// release or leave unrecorded, so it is settled once, there. Whichever way an owner settles, every
+// lane the read took is given back before the batch returns.
 //
 // What an owner's own settle came to is the batch's too: its published events are counted, and
 // an event it released reports the batch blocked, so the scan stops after it (Outbox.scan,
@@ -1078,7 +1078,7 @@ func eventDestinations(ctx context.Context, deps Deps, item *batchEvent, look lo
 		if err := addPrimaryDocumentAuthors(event, routing, look, d); err != nil {
 			return d.list, d.mentionPending, d.err(err)
 		}
-		if err := addAuthorRoutes(event, look, d); err != nil {
+		if err := addAuthorRoutes(event, routing, look, d); err != nil {
 			return d.list, d.mentionPending, d.err(err)
 		}
 	}
@@ -1136,16 +1136,10 @@ func addRoute(d *destinations, route *string) error {
 // author gets one copy: destinations adds a subject once per event. The claimant's subject is an
 // ordinary agent subject, so its sends share the chain of every other route to that session
 // (destinationKey).
+// Whether the route applies at all - a person's event, on an issue a session claims, of a type a
+// claimant is told about - is takesClaimantRoute, the one predicate addAuthorRoutes reads too.
 func addClaimantRoute(event model.Event, claimant string, d *destinations) {
-	// A project document's event names no issue, so there is no claim to read.
-	if event.IssueKey == nil || event.Actor.Kind != "user" || claimant == "" {
-		return
-	}
-	switch event.Type {
-	case "ask.answered", "ask.handed_back", "ask.resolved",
-		"comment.created", "comment.edited", "comment.resolved", "comment.reopened",
-		"message.created", "message.answered":
-	default:
+	if !takesClaimantRoute(event, claimant) {
 		return
 	}
 	d.addWorkingSession(claimant, "publish claimant route to", claimant)
@@ -1266,21 +1260,50 @@ func addPrimaryDocumentAuthors(event model.Event, routing routing, look lookup, 
 // document never learns of a new comment on it or of a person's edit to it.
 //
 // A reply (reply_to set), and its edit, reach every session that wrote a comment in the thread,
-// its root and each reply, then every session the thread's document credits, which the batch reads
-// for all its replies in one query (loadLookups, loadCommentRecipients); when that query failed,
-// its error ends the event's destinations here. A new comment on a document (no reply_to and no
-// ask_id), and its edit, reach every session that document credits (loadDocumentSessionAuthors,
-// whose failed query ends the event's destinations here too); a new comment on an issue's
-// conversation names no document and reaches no author. A resolution or a reopening reaches the
-// thread root's author only, so the reopening a reply makes tells no new session twice.
+// its root and each reply, and, where the claim below does not leave them out, every session the
+// thread's document credits, which the batch reads for all its replies in one query (loadLookups,
+// loadCommentRecipients); when that query failed, its error ends the event's destinations here. A
+// new comment on a document (no reply_to and no ask_id), and its edit, reach every session that
+// document credits under that same claim (loadDocumentSessionAuthors, whose failed query ends the
+// event's destinations here too); a new comment on an issue's conversation names no document and
+// reaches no author. A resolution or a reopening reaches the thread root's author only, so the
+// reopening a reply makes tells no new session twice.
 // artifact.human_edited, which the notice sweep appends once a person's quiet window on a document
 // ends (docs.sendEditNotice), reaches every session the document its payload's artifact_id names
 // credits, read the same way. Ask threads are not walked here: their asker and repliers are the
 // ask's followers (addFollowerRoutes). The event's own actor is skipped (recipientFilter), and a
 // session whose own mention of the comment delivers it is left to that mention
 // (destinations.addSession, the mention rule); an author whose mention failed is added instead.
-func addAuthorRoutes(event model.Event, look lookup, d *destinations) error {
+//
+// A session the read names as a credit of a document alone is left out where a person's comment,
+// or its edit, is on an issue a session claims: the credits of a document are
+// not a second reason to deliver what the claimant already hears on its own topic. The conditions
+// are exactly those under which that claimant was added: both read the one predicate
+// (takesClaimantRoute, where the rule is stated) - the event names an issue, its actor is a
+// person, routing holds a session claimant, and the event's type is one a claimant is told about
+// - so no comment loses every destination. Those credits are the rows of the thread read the
+// thread itself does not name (threadRecipient.fromThread) and the whole of a document's credits
+// under a comment at the head of a thread anchored on it. The read is made all the same, so a
+// credit read that failed still ends the event's destinations and backs it off.
+//
+// Kept whatever the claim: a comment on a project document, which names no issue; a comment on an
+// issue a person claims, which leaves routing.claimant empty; a comment on an unclaimed issue,
+// routed or not; a session that wrote in the thread, which keeps the person's later replies; a
+// session the comment names whose copy of it a mention decides - one whose mention failed before
+// the batch read it, which takes this copy under that mention's key, for a new comment
+// (mentionDeliveries.fallbackKeys) and for its edit (lookup.mentionFallbackKeys) alike, and one a
+// mention of a new comment still decides (mentionDeliveries.decidesCopyFor), whose copy the
+// mention rule holds back or keeps as a fallback row rather than this filter dropping it before
+// that rule is asked (destinations.addSession, destinations.leftTo); and artifact.human_edited, a
+// person's edit of the document itself.
+func addAuthorRoutes(event model.Event, routing routing, look lookup, d *destinations) error {
 	filter := newRecipientFilter(event)
+	// claimed is whether the claimant of this event's issue was added above (addClaimantRoute),
+	// which is where the credits of a document are left out, and failedMentions the sessions this
+	// comment names and no mention of it reached. Both are askTheClaim's to decide, and only the
+	// two arms that read credits ask it: no other event type leaves a session out.
+	var claimed bool
+	var failedMentions map[string]string
 	var targets []string
 	consider := func(sessionID string) {
 		if filter.keep(sessionID) {
@@ -1296,14 +1319,58 @@ func addAuthorRoutes(event model.Event, look lookup, d *destinations) error {
 		}
 		return nil
 	}
-	considerSessions := func(sessionIDs []string, err error) error {
-		if err != nil {
-			return err
+	// askTheClaim decides, once for the arm that asks it, whether this event leaves the credits
+	// of a document out, and reads the one thing that exempts a session from that and is not in
+	// the destination build already: the sessions this comment names and no mention of it
+	// reached. A new comment's are the reading the build holds (eventDestinations), and an edit's
+	// are read of its comment alone (lookup.mentionFallbackKeys), which adds no reading of that
+	// comment anywhere else. An edit whose payload names no mention can exempt nobody that way,
+	// so it asks nothing. A read that failed ends the event's destinations, as every other lookup
+	// here does.
+	//
+	// It is asked once per arm and never per credit row: the pass that only records the ids an
+	// event asks for answers no row at all (wanted), so an ask made per row would register no id
+	// and the resolved pass would find nothing read for it.
+	askTheClaim := func() error {
+		claimed = takesClaimantRoute(event, routing.claimant)
+		if !claimed {
+			return nil
 		}
-		for _, sessionID := range sessionIDs {
-			consider(sessionID)
+		switch {
+		case event.Type == "comment.created":
+			failedMentions = d.mentions.fallbackKeys
+		case event.Type == "comment.edited" && payloadHasMentions(event.Payload):
+			keys, err := look.mentionFallbackKeys(payloadString(event.Payload, "id"))
+			if err != nil {
+				return err
+			}
+			failedMentions = keys
 		}
 		return nil
+	}
+	// considerCredit adds a session a document credits, unless the claim leaves it out. Two it
+	// does not leave out, both of them sessions the comment names whose copy of it a mention
+	// decides: one whose mention failed before the batch read it, which takes the copy under that
+	// mention's key (failedMentions), and one a mention of the comment still decides
+	// (mentionDeliveries.decidesCopyFor), which stays in the list so that the mention rule runs
+	// for it - holding the event while that send is live, and keeping the fallback row the pass
+	// publishes when it fails (destinations.addSession, destinations.leftTo).
+	considerCredit := func(sessionID string) {
+		if claimed {
+			_, failed := failedMentions[sessionID]
+			if !failed && !d.mentions.decidesCopyFor(sessionID) {
+				return
+			}
+		}
+		consider(sessionID)
+	}
+	// addEach hands every session of a read's answer to add: a document's credits under a comment
+	// go to considerCredit, which the claim can leave out, and the same read's answer for a
+	// person's edit of the document itself goes to consider, which it cannot.
+	addEach := func(sessionIDs []string, add func(string)) {
+		for _, sessionID := range sessionIDs {
+			add(sessionID)
+		}
 	}
 
 	switch event.Type {
@@ -1312,14 +1379,33 @@ func addAuthorRoutes(event model.Event, look lookup, d *destinations) error {
 		case payloadString(event.Payload, "ask_id") != "":
 			// An ask's thread reaches the ask's followers (addFollowerRoutes).
 		case replyTo != "":
-			if err := considerSessions(look.commentRecipients(replyTo)); err != nil {
+			recipients, err := look.commentRecipients(replyTo)
+			if err != nil {
 				return err
+			}
+			if err := askTheClaim(); err != nil {
+				return err
+			}
+			// A member of the comment's thread keeps the copy whatever the issue's claim is;
+			// a session the thread's document credits alone is considerCredit's
+			// (loadCommentRecipients, threadRecipient).
+			for _, recipient := range recipients {
+				if recipient.fromThread {
+					consider(recipient.sessionID)
+					continue
+				}
+				considerCredit(recipient.sessionID)
 			}
 		default:
 			if document := commentedDocument(event); document != "" {
-				if err := considerSessions(look.documentAuthors(document)); err != nil {
+				credited, err := look.documentAuthors(document)
+				if err != nil {
 					return err
 				}
+				if err := askTheClaim(); err != nil {
+					return err
+				}
+				addEach(credited, considerCredit)
 			}
 		}
 	case "comment.resolved", "comment.reopened":
@@ -1344,9 +1430,11 @@ func addAuthorRoutes(event model.Event, look lookup, d *destinations) error {
 		}
 	case "artifact.human_edited":
 		if document := payloadString(event.Payload, "artifact_id"); document != "" {
-			if err := considerSessions(look.documentAuthors(document)); err != nil {
+			authors, err := look.documentAuthors(document)
+			if err != nil {
 				return err
 			}
+			addEach(authors, consider)
 		}
 	default:
 		return nil

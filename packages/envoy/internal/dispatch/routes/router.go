@@ -97,6 +97,9 @@ type AppContextOptions struct {
 	// when it published the build (dashboard.Publish); "" when it serves none. See
 	// api.DepsInput.
 	DashboardEntry string
+	// BuildCommit is the commit this process was built from, which main holds in its own
+	// `buildCommit`; "" for a build nothing stamped. See api.DepsInput.
+	BuildCommit    string
 	Sessions       auth.SessionStore
 	People         auth.PeopleStore
 	Identity       identity.Identity
@@ -148,6 +151,13 @@ type AppContextOptions struct {
 	// ListenerTakeoverWindow replaces how long a sender keeps trying a listener that is being
 	// replaced; zero keeps the server's twelve seconds. See api.Deps.ListenerTakeoverWindow.
 	ListenerTakeoverWindow time.Duration
+	// HorizonStallAfter and HorizonWarnEvery replace how long a pending event-horizon
+	// observation waits before the process logs its stall warning and how often each of that
+	// Horizon's three warnings repeats - the stall warning, the failed-observation warning and
+	// the failed-persist warning; zero keeps the horizon's own five and thirty seconds. See
+	// api.Deps.HorizonStallAfter.
+	HorizonStallAfter time.Duration
+	HorizonWarnEvery  time.Duration
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
@@ -208,8 +218,11 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
 		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
+		HorizonStallAfter:      opts.HorizonStallAfter,
+		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
 		DashboardEntry:         opts.DashboardEntry,
+		BuildCommit:            opts.BuildCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -667,7 +680,7 @@ func isRetainedAssetPath(normalized string) bool {
 // the request until that read ends: a client that abandons each request the moment it reaches
 // the store cannot hold more store reads at once than the cap has room for.
 func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, key string) {
-	if asset, ok := r.assets.get(key); ok {
+	if asset, ok := r.assets.Get(key); ok {
 		writeRetainedAsset(w, req, key, asset)
 		return
 	}
@@ -728,7 +741,7 @@ func (r *router) serveRetainedAsset(w http.ResponseWriter, req *http.Request, ke
 func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-chan singleflight.Result, error) {
 	read := r.assets.reads.DoChan(key, func() (any, error) {
 		// A read that finished between this request's cache miss and its flight answers it.
-		if asset, ok := r.assets.get(key); ok {
+		if asset, ok := r.assets.Get(key); ok {
 			return asset, nil
 		}
 		readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), retainedAssetFetchTimeout)
@@ -737,7 +750,7 @@ func (r *router) readRetainedAsset(ctx context.Context, key string) ([]byte, <-c
 		if err != nil {
 			return nil, err
 		}
-		r.assets.put(key, asset)
+		r.assets.Put(key, asset)
 		return asset, nil
 	})
 	select {

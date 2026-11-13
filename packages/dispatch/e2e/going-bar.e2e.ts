@@ -1,8 +1,6 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
-
 import { createIssue, createProject, createProjectDocument } from "./api";
-import { documentEditor, placeCaret } from "./editor";
-import { resetDatabase } from "./seed";
+import { documentEditor, holdFirstRequest, placeCaret } from "./editor";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 // One bar from anywhere, and it says what it will act on. `Control+K` opens it on every page, the
@@ -69,10 +67,6 @@ async function openDocumentWithCaret(page: Page, slug: string): Promise<void> {
   await expect(documentEditor(page)).toBeFocused();
 }
 
-test.beforeEach(async () => {
-  await resetDatabase();
-});
-
 // SLOW(>=2s): four pages, one of them a document whose editor must connect before the caret
 // goes in.
 test("Control+K opens the bar from the issue list, an issue, a document being written in, and the agents page @phone", async ({
@@ -112,6 +106,8 @@ test("Control+K opens the bar from the issue list, an issue, a document being wr
   }
 });
 
+// SLOW(>=2s): the seed, then three keys, each opening the bar and reading its chip, its actions
+// group and its box.
 test("slash and g p open the same bar as Control+K @phone", async ({ browser }) => {
   // Every check here carries the suite's own 15 s deadline, and a run where two of the three
   // keys open something else reports each of them, which takes longer than one row's budget.
@@ -210,6 +206,50 @@ test("the chip names what the bar will act on, and nothing where the page names 
   }
 });
 
+test("the bar acts on the issues the table has selected, and leaving the table clears them @phone", async ({
+  browser,
+}) => {
+  const fixture = await seed();
+  const third = await createIssue({ project: "CORE", title: "Sextants" });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openIssueList(page);
+
+    // Two rows by their own checkboxes, the third by the key that takes the row in hand: both
+    // ways in reach the one selection the bar reads.
+    await page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` }).check();
+    await page.getByRole("checkbox", { name: `Select ${fixture.secondKey}` }).check();
+    await page.keyboard.press("j");
+    await page.keyboard.press("x");
+    await expect(page.getByRole("checkbox", { name: `Select ${third.key}` })).toBeChecked();
+
+    await openBar(page, ["Control+k"]);
+    await expect(scope(page)).toHaveText(
+      new RegExp(`${fixture.firstKey}[\\s\\S]*${fixture.secondKey}[\\s\\S]*${third.key}`)
+    );
+    await closeBar(page);
+
+    // The Board takes the table off the page, and the selection goes with it.
+    await page.getByRole("button", { name: "Board", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
+    await page.locator("body").focus();
+    await openBar(page, ["Control+k"]);
+    await expect(scope(page)).toHaveText(/Acting on the project CORE/);
+    await closeBar(page);
+
+    // Back on the table, the rows come back unselected rather than carrying a hidden mark.
+    await page.getByRole("button", { name: "List", exact: true }).click();
+    await expect(
+      page.getByRole("checkbox", { name: `Select ${fixture.firstKey}` })
+    ).not.toBeChecked();
+  } finally {
+    await context.close();
+  }
+});
+
+// SLOW(>=2s): a document opened and its editor connected before the caret goes in.
 test("Tab narrows the chip to the block the cursor is in and Backspace widens it to the project @phone", async ({
   browser,
 }) => {
@@ -268,6 +308,48 @@ test("an empty input lists the person's recent items and the actions of that pag
     // A recent item opens from the bar.
     await recent.getByRole("option", { name: /Design notes/ }).click();
     await expect(page).toHaveURL(`/projects/CORE/documents/${fixture.documentSlug}`);
+  } finally {
+    await context.close();
+  }
+});
+
+// The bare `/projects/CORE`, the path the sidebar links, is a route that settles itself: it
+// draws nothing while its architecture-sources read is pending, then redirects with `replace`
+// to Issues. The bar a person opened in that moment is theirs, and a redirect the page made on
+// its own is no navigation of theirs, so the bar stays open and stays typable
+// (dispatch://INFRA-2452).
+// SLOW(>=2s): the seed of a project, two issues and a document, then a page held mid-redirect.
+test("the bar opened on a project page that has not settled survives that page's own redirect", async ({
+  browser,
+}) => {
+  await seed();
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    // The sources read is held, so the page is still deciding where it goes while the bar opens
+    // on it; letting it through sends the redirect out from under the open bar. Awaiting the
+    // held route is also what proves the page asked: a row whose pattern stopped matching fails
+    // here rather than passing over a page that never redirected.
+    const sources = await holdFirstRequest(
+      page,
+      /\/api\/v1\/projects\/[^/]+\/architecture-sources$/u
+    );
+
+    await page.goto("/projects/CORE");
+    await page.locator("body").focus();
+    await openBar(page, ["/"]);
+    const box = page.getByRole("combobox", { name: "Search" });
+    await expect(box).toBeVisible();
+
+    await (await sources.held).continue();
+    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+
+    // The redirect has landed and the bar is still there, and still the same box to type in:
+    // the page moved under it and took nothing from the person.
+    await expect(bar(page)).toBeVisible();
+    await box.fill("Instruments");
+    await expect(box).toHaveValue("Instruments");
   } finally {
     await context.close();
   }

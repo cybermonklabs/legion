@@ -1,5 +1,4 @@
 import { AGENT_STREAM_LIMITS, capAgentStreamText } from "@legion/contracts";
-import { expect, type Page, test } from "@playwright/test";
 
 import { agentRow, type FakeSession, getSentMessages, setLiveSessions } from "./agents";
 import {
@@ -12,8 +11,9 @@ import {
   setAgentStreamResponder,
 } from "./api";
 import { expectConsecutiveLinksClear, expectUncovered } from "./layout";
-import { resetDatabase } from "./seed";
+import { FRONT_LIVE_VIEW, frontLiveView } from "./live-views";
 import { MESSAGE_REFUSED, navigateInApp, refusePosts } from "./sends";
+import { expect, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -177,13 +177,6 @@ function rebuiltReplay(
   return { frames: [...frames.slice(from), ...extra], session_id: sessionID, v: 1 };
 }
 
-/** The phone layout runs on Chromium (the `iphone` project) and on WebKit (`webkit-iphone`). */
-const PHONE_PROJECTS = ["iphone", "webkit-iphone"];
-
-/** Reading back through a live transcript is the same in both engines, so it runs on the desktop
- *  project and the phone one; what the phone's WebKit is for is the layout row below. */
-const READING_PROJECTS = ["chromium", "iphone"];
-
 interface LiveViewLayout {
   /** The document's scrollable height and the layout viewport's height. */
   documentHeight: number;
@@ -192,6 +185,9 @@ interface LiveViewLayout {
   visualBottom: number;
   composerTop: number;
   composerBottom: number;
+  /** The row under the message box (R6), which is the view's last element: its own edges. */
+  footerTop: number;
+  footerBottom: number;
   /** The newest turn's bottom edge, and the thread's own top edge and scroll position. */
   newestBottom: number;
   threadTop: number;
@@ -200,18 +196,25 @@ interface LiveViewLayout {
   mainPaddingBottom: number;
   threadScrollHeight: number;
   threadClientHeight: number;
+  /** The live view's own bottom edge: the row under the message box, or the line under that
+   *  row where a switch or a notice puts one. */
+  viewBottom: number;
 }
 
 function liveViewLayout(page: Page): Promise<LiveViewLayout> {
-  return page.evaluate(() => {
-    const byTestId = (testId: string) => {
-      const element = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+  return page.evaluate((front) => {
+    const view = document.querySelector<HTMLElement>(front);
+    if (view === null) throw new Error("no live view in front");
+    const byTestId = (testId: string, root: ParentNode = view) => {
+      const element = root.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
       if (element === null) throw new Error(`no ${testId}`);
       return element;
     };
-    const main = byTestId("main-content");
+    const main = byTestId("main-content", document);
     const thread = byTestId("agent-thread");
+    const conversation = byTestId("agent-conversation").getBoundingClientRect();
     const composer = byTestId("agent-composer").getBoundingClientRect();
+    const footer = byTestId("agent-composer-footer").getBoundingClientRect();
     const turns = thread.querySelectorAll('[data-testid^="agent-message-"]');
     const newest = turns[turns.length - 1]?.getBoundingClientRect();
     if (newest === undefined) throw new Error("no turns");
@@ -221,6 +224,8 @@ function liveViewLayout(page: Page): Promise<LiveViewLayout> {
       composerBottom: composer.bottom,
       composerTop: composer.top,
       documentHeight: document.documentElement.scrollHeight,
+      footerBottom: footer.bottom,
+      footerTop: footer.top,
       mainBottom: main.getBoundingClientRect().bottom,
       mainPaddingBottom: Number.parseFloat(getComputedStyle(main).paddingBottom),
       newestBottom: newest.bottom,
@@ -228,10 +233,11 @@ function liveViewLayout(page: Page): Promise<LiveViewLayout> {
       threadScrollHeight: thread.scrollHeight,
       threadScrollTop: thread.scrollTop,
       threadTop: thread.getBoundingClientRect().top,
+      viewBottom: conversation.bottom,
       viewportHeight: window.innerHeight,
       visualBottom: viewport.offsetTop + viewport.height,
     };
-  });
+  }, FRONT_LIVE_VIEW);
 }
 
 /** The page never scrolls, its header and composer are on screen, and the thread is the one
@@ -241,13 +247,20 @@ async function expectViewportBound(page: Page): Promise<void> {
   const layout = await liveViewLayout(page);
   expect(layout.documentHeight).toBeLessThanOrEqual(layout.viewportHeight + 1);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
-  // The composer ends one page gutter above the visual viewport's bottom, not merely on screen:
-  // a composer overflowing a collapsed thread would still be inside the window.
-  expect(layout.composerBottom).toBe(layout.visualBottom - layout.mainPaddingBottom);
+  // The view's last element is the row under the message box (R6), and it ends one page gutter
+  // above the visual viewport's bottom, not merely on screen: a composer overflowing a
+  // collapsed thread would still be inside the window. The message box sits whole above it.
+  expect(layout.viewBottom).toBe(layout.visualBottom - layout.mainPaddingBottom);
+  expect(layout.composerBottom).toBeLessThanOrEqual(layout.footerTop);
   await expect(page.getByRole("link", { name: "← Agents" })).toBeInViewport({ ratio: 1 });
-  await expect(page.getByTestId("agent-composer")).toBeInViewport({ ratio: 1 });
+  await expect(frontLiveView(page).getByTestId("agent-composer")).toBeInViewport({ ratio: 1 });
+  await expect(frontLiveView(page).getByTestId("agent-composer-footer")).toBeInViewport({
+    ratio: 1,
+  });
   expect(layout.threadScrollHeight).toBeGreaterThan(layout.threadClientHeight);
-  await page.getByTestId("agent-thread").evaluate((thread) => thread.scrollTo(0, 0));
+  await frontLiveView(page)
+    .getByTestId("agent-thread")
+    .evaluate((thread) => thread.scrollTo(0, 0));
   await expect(page.getByText("Turn 0:")).toBeInViewport();
   expect((await liveViewLayout(page)).composerBottom).toBe(layout.composerBottom);
 }
@@ -257,19 +270,21 @@ async function expectViewportBound(page: Page): Promise<void> {
  *  there, and WebKit delivers scroll events a frame later than Chromium: a keyboard raised before
  *  delivery raced the event and left the newest turn behind in about half of WebKit's runs. */
 async function scrollThreadTo(page: Page, top: number | "bottom"): Promise<void> {
-  await page.getByTestId("agent-thread").evaluate(
-    (thread, target) =>
-      new Promise<void>((resolve) => {
-        const to = target === "bottom" ? thread.scrollHeight - thread.clientHeight : target;
-        if (Math.abs(thread.scrollTop - to) < 1) {
-          resolve();
-          return;
-        }
-        thread.addEventListener("scroll", () => resolve(), { once: true });
-        thread.scrollTo(0, to);
-      }),
-    top
-  );
+  await frontLiveView(page)
+    .getByTestId("agent-thread")
+    .evaluate(
+      (thread, target) =>
+        new Promise<void>((resolve) => {
+          const to = target === "bottom" ? thread.scrollHeight - thread.clientHeight : target;
+          if (Math.abs(thread.scrollTop - to) < 1) {
+            resolve();
+            return;
+          }
+          thread.addEventListener("scroll", () => resolve(), { once: true });
+          thread.scrollTo(0, to);
+        }),
+      top
+    );
 }
 
 /** Whether <main> carries a keyboard cap, and whether that cap is at or below <main>'s own
@@ -292,8 +307,8 @@ function mainCap(page: Page): Promise<{ capped: boolean; fitsOwnHeight: boolean 
  *  This is what "the page left me where I was" means to a reader, and it survives the browser's
  *  own scroll anchoring moving `scrollTop` when something above them grows. */
 function topmostTurn(page: Page): Promise<{ id: string; top: number }> {
-  return page.evaluate(() => {
-    const thread = document.querySelector<HTMLElement>('[data-testid="agent-thread"]');
+  return page.evaluate((front) => {
+    const thread = document.querySelector<HTMLElement>(`${front} [data-testid="agent-thread"]`);
     if (thread === null) throw new Error("no agent-thread");
     const edge = thread.getBoundingClientRect().top;
     for (const turn of thread.querySelectorAll<HTMLElement>("[data-message-id]")) {
@@ -303,7 +318,7 @@ function topmostTurn(page: Page): Promise<{ id: string; top: number }> {
       }
     }
     throw new Error("no turn in view");
-  });
+  }, FRONT_LIVE_VIEW);
 }
 
 /** The newest turn is in view: its bottom edge is inside the thread and above the composer. */
@@ -335,7 +350,7 @@ async function rebuildThroughResubscribe(
  *  with the composer behind the keyboard), and the composer then sits one page gutter above the
  *  visual viewport's bottom edge. */
 async function raiseKeyboard(page: Page, height: number, offsetTop = 0): Promise<void> {
-  await page.getByTestId("agent-composer").locator("textarea").focus();
+  await frontLiveView(page).getByTestId("agent-composer").locator("textarea").focus();
   const sameTask = await page.evaluate(
     ({ visualHeight, visualTop }) => {
       const viewport = window.visualViewport;
@@ -355,7 +370,7 @@ async function raiseKeyboard(page: Page, height: number, offsetTop = 0): Promise
   await expect
     .poll(async () => {
       const layout = await liveViewLayout(page);
-      return layout.visualBottom - layout.mainPaddingBottom - layout.composerBottom;
+      return layout.visualBottom - layout.mainPaddingBottom - layout.viewBottom;
     })
     .toBe(0);
   expect((await liveViewLayout(page)).visualBottom).toBe(offsetTop + height);
@@ -371,21 +386,21 @@ async function lowerKeyboard(page: Page): Promise<void> {
     Reflect.deleteProperty(viewport, "offsetTop");
     viewport.dispatchEvent(new Event("resize"));
   });
-  await page.getByTestId("agent-composer").locator("textarea").blur();
+  await frontLiveView(page).getByTestId("agent-composer").locator("textarea").blur();
   await expect
     .poll(async () => {
       const layout = await liveViewLayout(page);
-      return layout.viewportHeight - layout.mainPaddingBottom - layout.composerBottom;
+      return layout.viewportHeight - layout.mainPaddingBottom - layout.viewBottom;
     })
     .toBe(0);
 }
 
 test.beforeEach(async () => {
-  await resetDatabase();
   await setLiveSessions([planner]);
 });
 
-test("the conversation view replays what the session held, streams its next turn, and sends as Send, the terminal's Enter, through the existing delivery", async ({
+// @pr: Live delivery: the transcript replays, the next turn streams in, and Send reaches the session through the existing delivery.
+test("the conversation view replays what the session held, streams its next turn, and sends as Send, the terminal's Enter, through the existing delivery @pr", async ({
   browser,
 }) => {
   await publishAgentStreamFrame(planner.session_id, replay, "replay");
@@ -393,9 +408,8 @@ test("the conversation view replays what the session held, streams its next turn
   const page = await context.newPage();
   try {
     await page.goto("/agents");
-    // A session Dispatch has never heard from sits in a collapsed fold, its row mounted and
-    // hidden until the fold opens.
-    await page.getByRole("button", { name: /No Dispatch activity/ }).click();
+    // The session has no Dispatch activity, so its row is under `Idle`, and every group is open
+    // when the page loads (INFRA-812, R7).
     // The row's live link, which `AgentName` draws beside the row's toggle.
     await agentRow(page, planner.session_id)
       .getByRole("link", { name: "Open live conversation with Planner" })
@@ -564,10 +578,11 @@ test("Enter sends mid-turn in the delivery mode the person picked", async ({ bro
   }
 });
 
-// An empty box is the one thing that refuses Send mid-turn, and Send says why: on its title, as
-// its accessible description, and on a line in the composer a reader with no pointer can see.
-// Neither a click nor Enter sends. With text, Send is pressable and the line says how to send.
-test("mid-turn, an empty box refuses Send, says why on screen, and sends nothing", async ({
+// An empty box is the one thing that refuses Send mid-turn, and Send says why: on its title and
+// as its accessible description at rest, and on a line in the composer once a person has
+// pressed it, which a reader with no pointer can see. Neither a click nor Enter sends. With
+// text, Send is pressable and the line reads nothing again.
+test("mid-turn, an empty box refuses Send, says why on screen once it is pressed, and sends nothing", async ({
   browser,
 }) => {
   await publishAgentStreamFrame(planner.session_id, replay, "replay");
@@ -580,28 +595,36 @@ test("mid-turn, an empty box refuses Send, says why on screen, and sends nothing
     await publishAgentStreamFrame(planner.session_id, assistantFrame(4, "Working", true));
     await expect(assistant.last()).toContainText("Working");
 
-    const composer = page.getByTestId("agent-composer");
+    const composer = frontLiveView(page).getByTestId("agent-composer");
     const field = composer.locator("textarea");
     const send = composer.getByRole("button", { exact: true, name: "Send" });
-    const reason = composer.getByText("Type a message first.", { exact: true });
-    const hint = composer.getByText("Enter to send · Shift+Enter for a new line", { exact: true });
+    const hint = composer.getByTestId("agent-composer-hint");
     await expect(send).toBeDisabled();
     await expect(send).toHaveAccessibleDescription("Type a message first.");
     await expect(send).toHaveAttribute("title", "Type a message first.");
-    // `toBeVisible` passes for an `sr-only` line, a 1 px box, so its height is the check.
-    await expect(reason).toBeVisible();
-    expect((await reason.boundingBox())?.height ?? 0).toBeGreaterThan(8);
+    // At rest the line under the box reads nothing: how to send is a rule of the page, which
+    // the question mark under the box holds (INFRA-812, R6), and the reason belongs to a press
+    // nobody has made yet.
+    await expect(hint).toHaveText("");
+
     const sent = (await getSentMessages()).length;
     await send.click({ force: true });
+    // The press was refused, and now the line says why. `toBeVisible` passes for an `sr-only`
+    // line, a 1 px box, so its height is the check.
+    await expect(hint).toHaveText("Type a message first.");
+    expect((await hint.boundingBox())?.height ?? 0).toBeGreaterThan(8);
     await field.press("Enter");
+    // Neither the forced click nor Enter may send while the box is empty, and a send that never
+    // happens marks nothing to wait on: this window is the check. One would be a POST made in
+    // the task of the gesture that made it and recorded by the fake Envoy a server hop later, so
+    // 500 ms of real time is many frames past where it would show.
     await page.waitForTimeout(500);
     expect(await getSentMessages()).toHaveLength(sent);
 
     await field.fill("status?");
     await expect(send).toBeEnabled();
     await expect(send).not.toHaveAttribute("aria-describedby");
-    await expect(reason).toHaveCount(0);
-    await expect(hint).toBeVisible();
+    await expect(hint).toHaveText("");
   } finally {
     await context.close();
   }
@@ -786,7 +809,12 @@ test("a session that has published nothing renders as empty, not as a conversati
     await expect(page.getByTestId("agent-thread-empty")).toHaveText(
       "Nothing yet. This session's next turn appears here as it happens."
     );
-    await expect(page.getByText(/relayed while this page is open/)).toBeVisible();
+    // What this view keeps of the conversation is no longer printed on the page: it is one of
+    // the three rules the question mark under the message box holds (INFRA-812, R6).
+    await frontLiveView(page).getByTestId("agent-help").click();
+    await expect(frontLiveView(page).getByTestId("agent-help-popover")).toContainText(
+      "relayed while this page is open"
+    );
   } finally {
     await context.close();
   }
@@ -953,13 +981,9 @@ test("a turn whose thinking Claude Code hid reads as the turn's thinking, beside
   }
 });
 
-test("on a phone the live view never scrolls the page, keeps its header and composer on screen, and follows the keyboard @phone", async ({
+test("on a phone the live view never scrolls the page, keeps its header and composer on screen, and follows the keyboard @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the phone layout runs on the phone projects"
-  );
+}) => {
   const phone: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-0000000390a4" };
   await setLiveSessions([planner, phone]);
   await publishAgentStreamFrame(phone.session_id, longReplay(phone.session_id), "replay");
@@ -1022,13 +1046,9 @@ test("on a phone the live view never scrolls the page, keeps its header and comp
 // session's own publisher (packages/pi-shared/src/agent-stream.ts), is still an unbroken
 // identifier with no spaces: on a 390 px phone it does not fit the header pill or the turn's own
 // label, and without an ellipsis it forced the whole page to scroll sideways rather than wrapping.
-test("a capped model name ends in an ellipsis on a phone, in the header and on the turn, and never forces the page to scroll sideways @phone", async ({
+test("a capped model name ends in an ellipsis on a phone, in the header and on the turn, and never forces the page to scroll sideways @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the phone layout runs on the phone projects"
-  );
+}) => {
   const longModel = capAgentStreamText(
     `anthropic/${"x".repeat(300)}`,
     AGENT_STREAM_LIMITS.modelChars
@@ -1073,13 +1093,9 @@ test("a capped model name ends in an ellipsis on a phone, in the header and on t
 // A turn's reasoning is 12px italic text on 16px lines. Two reasoning links on consecutive lines:
 // the lower one's padded box has to start at or below the upper one's own text, or a tap on the
 // upper line can open the lower link.
-test("on a phone the live view keeps a reasoning link's padded box off the line above @phone", async ({
+test("on a phone the live view keeps a reasoning link's padded box off the line above @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the padding is the phone media query's: at desktop width it is off, so the row would pass whatever the CSS"
-  );
+}) => {
   const reasoning: FakeSession = {
     ...planner,
     session_id: "01a0e0c1-0000-7000-8000-0000000304a1",
@@ -1132,8 +1148,7 @@ test("on a phone the live view keeps a reasoning link's padded box off the line 
 
 test("at desktop width the live view fills the main column beside the navigation and the thread is its scroller", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const desktop: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-000000001280" };
   await setLiveSessions([planner, desktop]);
   await publishAgentStreamFrame(desktop.session_id, longReplay(desktop.session_id), "replay");
@@ -1146,20 +1161,19 @@ test("at desktop width the live view fills the main column beside the navigation
     await expect(page.getByRole("complementary", { name: "Navigation" })).toBeVisible();
     await expectViewportBound(page);
     const layout = await liveViewLayout(page);
-    expect(layout.composerBottom).toBe(layout.mainBottom - layout.mainPaddingBottom);
+    // The view ends at the main column's gutter: the row under the message box, or the line a
+    // switch or a notice puts under that row, with the message box whole above the row.
+    expect(layout.viewBottom).toBe(layout.mainBottom - layout.mainPaddingBottom);
+    expect(layout.composerBottom).toBeLessThanOrEqual(layout.footerTop);
     expect(layout.mainBottom).toBe(layout.viewportHeight);
   } finally {
     await context.close();
   }
 });
 
-test("a document-scrolling route is never capped for the keyboard, at mount or after focus and resize @phone", async ({
+test("a document-scrolling route is never capped for the keyboard, at mount or after focus and resize @phone @phone-only", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !PHONE_PROJECTS.includes(testInfo.project.name),
-    "the phone layout runs on the phone projects"
-  );
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({
     project: "CORE",
@@ -1206,11 +1220,7 @@ test("a document-scrolling route is never capped for the keyboard, at mount or a
 // message, with the thread's scroll measured after each.
 test("a reader scrolled back into a live session's transcript keeps their place, and Jump to latest carries what arrived @phone", async ({
   browser,
-}, testInfo) => {
-  test.skip(
-    !READING_PROJECTS.includes(testInfo.project.name),
-    "reading back runs on the desktop and phone Chromium projects"
-  );
+}) => {
   const reading: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a001" };
   await setLiveSessions([planner, reading]);
   await publishAgentStreamFrame(
@@ -1325,8 +1335,7 @@ test("a reader scrolled back into a live session's transcript keeps their place,
 // is no arrival at all - it leaves them on the line they were reading, where the refusal is.
 test("sending a message from the live view while scrolled back takes the reader to the live end, and a refused send leaves them where they are", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const sender: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a002" };
   await setLiveSessions([planner, sender]);
   await publishAgentStreamFrame(sender.session_id, longReplay(sender.session_id), "replay");
@@ -1377,8 +1386,7 @@ test("sending a message from the live view while scrolled back takes the reader 
 // up on - a count carried over from the session before would be about turns nobody missed.
 test("opening a session, switching to another, and reloading each land the reader at the newest text with no count", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const first: FakeSession = {
     ...planner,
     session_id: "01a0e0c1-0000-7000-8000-00000000a003",
@@ -1404,7 +1412,9 @@ test("opening a session, switching to another, and reloading each land the reade
   );
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  const jump = page.getByTestId("jump-to-latest");
+  // This row leaves one view for another, so two are mounted at once and each has a pill of its
+  // own: what the reader is looking at is the one in front (D5).
+  const jump = frontLiveView(page).getByTestId("jump-to-latest");
   try {
     await page.goto(`/agents/${first.session_id}/live`);
     await expect(page.getByText("The first session's last word.")).toBeInViewport();
@@ -1471,8 +1481,7 @@ test("on a phone the live view's Jump to latest covers none of the composer and 
 // list the composer opens over it, so the row a reader presses is the row that is picked.
 test("a transcript shorter than the viewport shows no Jump to latest, and the control never swallows the composer's slash commands", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const commander: FakeSession = {
     ...planner,
     session_id: "01a0e0c1-0000-7000-8000-00000000a006",
@@ -1528,8 +1537,7 @@ test("a transcript shorter than the viewport shows no Jump to latest, and the co
 // hold a number that means another turn entirely once the turns above it are gone.
 test("a rebuilt transcript keeps a scrolled-back reader on the turn they were reading", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const kept: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a007" };
   await setLiveSessions([planner, kept]);
   await publishAgentStreamFrame(kept.session_id, longReplay(kept.session_id), "replay");
@@ -1583,8 +1591,7 @@ test("a rebuilt transcript keeps a scrolled-back reader on the turn they were re
 // instead, following again, with nothing left to catch up on.
 test("a rebuilt transcript that dropped the reader's turn lands them at the newest text", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const dropped: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a008" };
   await setLiveSessions([planner, dropped]);
   await publishAgentStreamFrame(dropped.session_id, longReplay(dropped.session_id), "replay");
@@ -1617,8 +1624,7 @@ test("a rebuilt transcript that dropped the reader's turn lands them at the newe
 // theirs alone - no compensation, the hook's or the browser's, may be read into it.
 test("a rebuilt transcript leaves a reader who was at the live end at the live end, and still sees their next scroll back", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name !== "chromium", "the desktop layout runs on the desktop project");
+}) => {
   const held: FakeSession = { ...planner, session_id: "01a0e0c1-0000-7000-8000-00000000a009" };
   await setLiveSessions([planner, held]);
   await publishAgentStreamFrame(held.session_id, longReplay(held.session_id), "replay");

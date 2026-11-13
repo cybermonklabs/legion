@@ -1,0 +1,149 @@
+{
+  "read": "reply:e121e1fc-41cf-49ab-a6ee-6c999bd72821",
+  "rows": [
+    {
+      "assignee": "alice",
+      "id": "1981e6c2-1d6d-4783-b430-c903b52db018",
+      "issueKey": "CORE-1",
+      "priority": "P0",
+      "project": "CORE",
+      "type": "question",
+      "urgency": "blocking"
+    },
+    {
+      "assignee": "alice",
+      "id": "8ac76cf5-6a76-44d7-90ff-8bc403b0580a",
+      "issueKey": "CORE-2",
+      "priority": "P1",
+      "project": "CORE",
+      "type": "question",
+      "urgency": "high"
+    },
+    {
+      "assignee": "bob",
+      "id": "2850f112-8550-4c68-90ec-c432cc218f82",
+      "issueKey": "CORE-3",
+      "priority": "P2",
+      "project": "CORE",
+      "type": "question",
+      "urgency": "low"
+    },
+    {
+      "assignee": "alice",
+      "id": "f523fd93-2f1c-4c8e-a63e-16b5278c5782",
+      "issueKey": "CORE-4",
+      "priority": "P3",
+      "project": "CORE",
+      "type": "question",
+      "urgency": "med"
+    },
+    {
+      "assignee": "unassigned",
+      "id": "92f6a8bd-5f9f-46c3-a622-76bd526a10ef",
+      "issueKey": "CORE-5",
+      "priority": "none",
+      "project": "CORE",
+      "type": "question",
+      "urgency": "med"
+    },
+    {
+      "assignee": "alice",
+      "id": "b44748d9-14e0-4628-9b99-fbdf20dbf3e9",
+      "issueKey": "CORE-6",
+      "priority": "P1",
+      "project": "CORE",
+      "type": "decision",
+      "urgency": "med"
+    },
+    {
+      "assignee": "alice",
+      "id": "b2703352-9126-4add-a7b9-560d8bd36dc3",
+      "issueKey": "CORE-7",
+      "priority": "P2",
+      "project": "CORE",
+      "type": "approval",
+      "urgency": "high"
+    },
+    {
+      "assignee": "alice",
+      "id": "reply:f8f2b247-205b-4f32-9bbf-a3434e40d6b9",
+      "issueKey": "CORE-8",
+      "priority": "P3",
+      "project": "CORE",
+      "type": "reply",
+      "urgency": "none"
+    },
+    {
+      "assignee": "alice",
+      "id": "reply:00edd344-3e97-4865-bb0d-844d247ac8e6",
+      "issueKey": "MIRROR-1",
+      "priority": "none",
+      "project": "MIRROR",
+      "type": "reply",
+      "urgency": "none"
+    },
+    {
+      "assignee": "alice",
+      "id": "agent:368f4f78-d14f-4427-a09e-b8303d43ce11",
+      "priority": "none",
+      "project": "none",
+      "type": "agent",
+      "urgency": "none"
+    },
+    {
+      "assignee": "alice",
+      "id": "reply:e121e1fc-41cf-49ab-a6ee-6c999bd72821",
+      "issueKey": "CORE-9",
+      "priority": "none",
+      "project": "CORE",
+      "type": "reply",
+      "urgency": "none"
+    }
+  ],
+  "at": [
+    [
+      "1981e6c2-1d6d-4783-b430-c903b52db018",
+      "2026-11-12T06:46:09.273979Z"
+    ],
+    [
+      "b44748d9-14e0-4628-9b99-fbdf20dbf3e9",
+      "2026-11-12T06:46:09.833124Z"
+    ],
+    [
+      "8ac76cf5-6a76-44d7-90ff-8bc403b0580a",
+      "2026-11-12T06:46:09.325247Z"
+    ],
+    [
+      "b2703352-9126-4add-a7b9-560d8bd36dc3",
+      "2026-11-12T06:46:10.048834Z"
+    ],
+    [
+      "2850f112-8550-4c68-90ec-c432cc218f82",
+      "2026-11-12T06:46:09.437156Z"
+    ],
+    [
+      "f523fd93-2f1c-4c8e-a63e-16b5278c5782",
+      "2026-11-12T06:46:09.478883Z"
+    ],
+    [
+      "92f6a8bd-5f9f-46c3-a622-76bd526a10ef",
+      "2026-11-12T06:46:09.535278Z"
+    ],
+    [
+      "reply:e121e1fc-41cf-49ab-a6ee-6c999bd72821",
+      "2026-11-12T06:46:10.253371Z"
+    ],
+    [
+      "agent:368f4f78-d14f-4427-a09e-b8303d43ce11",
+      "2026-11-12T06:46:10.2099Z"
+    ],
+    [
+      "reply:00edd344-3e97-4865-bb0d-844d247ac8e6",
+      "2026-11-12T06:46:10.177405Z"
+    ],
+    [
+      "reply:f8f2b247-205b-4f32-9bbf-a3434e40d6b9",
+      "2026-11-12T06:46:10.116948Z"
+    ]
+  ]
+}
