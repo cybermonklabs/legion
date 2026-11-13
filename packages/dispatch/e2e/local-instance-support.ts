@@ -6,6 +6,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { InboxRow } from "../web/src/api/types";
 
 export class Interrupted extends Error {}
 
@@ -270,12 +271,7 @@ export type SeededInboxRow =
     };
 
 /** What the helper reads of an Inbox row; `getInbox`'s own rows satisfy it. */
-export interface InboxRowRead {
-  readonly id: string;
-  readonly issue_key?: string | null;
-  readonly block_id?: string | null;
-  readonly document?: { readonly name?: string; readonly slug?: string } | null;
-}
+export type InboxRowRead = Pick<InboxRow, "id" | "issue_key" | "block_id" | "document">;
 
 export interface SeededInboxOptions {
   /** 15_000 by default: the deadline `waitForSpecAsk` already gives this settlement. */
@@ -286,7 +282,6 @@ export interface SeededInboxOptions {
 }
 
 export interface SeededInboxMatch {
-  readonly matched: number;
   readonly reads: number;
   /** `inbox rows: 5 of 5 declared rows matched in 1 read`. */
   readonly line: string;
@@ -299,7 +294,6 @@ const SEEDED_INBOX_OWNER =
 
 /** What one Inbox read holds against the rows the seed declares. */
 interface SeededInboxDiff {
-  readonly matched: number;
   readonly missing: readonly SeededInboxRow[];
   readonly unexpected: readonly InboxRowRead[];
   /** How many rows the read listed. */
@@ -326,7 +320,7 @@ function diffSeededInbox(
     else taken.add(index);
   }
   const unexpected = rows.filter((_, at) => !taken.has(at));
-  return { matched: taken.size, missing, rowCount: rows.length, unexpected };
+  return { missing, rowCount: rows.length, unexpected };
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -356,10 +350,11 @@ function answeredWithin<T>(step: Promise<T>, ms: number): Promise<T> {
  * Each declared row takes the first Inbox row it names that no declared row took before it; a
  * declared row that takes none is missing, and an Inbox row that none took is unexpected, a
  * second copy of a declared row included. A read that throws counts as a read and is tried again
- * to the same deadline; one read that does not answer within `deadlineMs` is a failed read, so
- * the wait ends within twice the deadline whatever the server does, and no read starts once the
- * deadline has passed. The abort of `signal` rejects with Interrupted at once, whether the helper
- * waits on a read or sleeps between reads.
+ * to the same deadline. Each read may take the time the deadline leaves when it starts, or one
+ * interval where less is left, and one that takes longer is a failed read; no read starts once the
+ * deadline has passed, so the wait ends within about the deadline and one interval whatever the
+ * server does. The abort of `signal` rejects with Interrupted at once, whether the helper waits on
+ * a read or sleeps between reads.
  */
 export async function awaitSeededInbox(
   declared: readonly SeededInboxRow[],
@@ -375,13 +370,15 @@ export async function awaitSeededInbox(
   for (;;) {
     reads += 1;
     try {
-      const step = answeredWithin((async () => read())(), deadlineMs);
+      // The time the deadline leaves this read, or one interval where less is left, so a read
+      // that hangs near the deadline holds the wait one interval past it at most.
+      const budget = Math.max(deadlineMs - (Date.now() - started), intervalMs);
+      const step = answeredWithin((async () => read())(), budget);
       answered = diffSeededInbox(declared, await untilAborted(step, signal));
       failure = undefined;
       if (answered.missing.length === 0 && answered.unexpected.length === 0) {
         return {
-          line: `inbox rows: ${answered.matched} of ${declared.length} declared rows matched in ${plural(reads, "read")}`,
-          matched: answered.matched,
+          line: `inbox rows: ${declared.length} of ${declared.length} declared rows matched in ${plural(reads, "read")}`,
           reads,
         };
       }
@@ -433,9 +430,7 @@ function seededInboxFailure(
             answered.unexpected.map((row) => {
               const on =
                 row.issue_key ??
-                (row.document?.name === undefined
-                  ? "no issue"
-                  : `the document ${row.document.name}`);
+                (row.document === undefined ? "no issue" : `the document ${row.document.name}`);
               return `ask ${row.id} on ${on} (block ${row.block_id ?? "none"})`;
             })
           ),

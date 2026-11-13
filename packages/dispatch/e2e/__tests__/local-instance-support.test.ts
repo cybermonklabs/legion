@@ -318,8 +318,13 @@ describe("awaitSeededInbox", () => {
   const shortSet: readonly InboxRowRead[] = [
     { block_id: null, id: "ask-blocking", issue_key: "CORE-2" },
     { block_id: null, id: "ask-snoozed", issue_key: "CORE-3" },
-    { id: "ask-rotate", issue_key: "CORE-4" },
-    { document: { name: "Runbook", slug: "runbook" }, id: "ask-runbook", issue_key: null },
+    { block_id: null, id: "ask-rotate", issue_key: "CORE-4" },
+    {
+      block_id: null,
+      document: { name: "Runbook", project: "CORE", slug: "runbook" },
+      id: "ask-runbook",
+      issue_key: null,
+    },
   ];
   const wholeSet: readonly InboxRowRead[] = [...shortSet, decisionRow];
   const missingDecision = "    - the spec decision block on CORE-1 (block b-9f3c1a)";
@@ -363,7 +368,6 @@ describe("awaitSeededInbox", () => {
       intervalMs: 20,
     });
     expect(match.reads).toBe(3);
-    expect(match.matched).toBe(5);
     expect(match.line).toBe("inbox rows: 5 of 5 declared rows matched in 3 reads");
   });
 
@@ -384,7 +388,8 @@ describe("awaitSeededInbox", () => {
   });
 
   test("every declared row and one more names the extra row and no missing row", async () => {
-    const inbox = reader(() => [...wholeSet, { id: "ask-extra", issue_key: "CORE-9" }]);
+    const extra: InboxRowRead = { block_id: null, id: "ask-extra", issue_key: "CORE-9" };
+    const inbox = reader(() => [...wholeSet, extra]);
     const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
     expect(message).toContain(
       [
@@ -522,6 +527,37 @@ describe("awaitSeededInbox", () => {
     ]);
   });
 
+  test("a read that hangs near the deadline holds the wait one interval past it at most", async () => {
+    // Short sets answer at once for the first 200 ms; the read that starts after that never
+    // answers, and may take only the time the deadline leaves it, not a whole deadline.
+    const started = Date.now();
+    let calls = 0;
+    const read = (): Promise<readonly InboxRowRead[]> => {
+      calls += 1;
+      return Date.now() - started < 200 ? Promise.resolve(shortSet) : new Promise<never>(() => {});
+    };
+    const message = await failureOf(awaitSeededInbox(declared, read, quick));
+    expect(Date.now() - started).toBeLessThan(450);
+    expect(calls).toBeGreaterThan(1);
+    const lines = message.split("\n");
+    expect(lines[0]).toMatch(
+      new RegExp(
+        `^inbox rows: the Inbox and the seed still disagree after \\d+\\.\\d s and ${calls} reads\\.$`
+      )
+    );
+    expect(lines.slice(1, -2)).toEqual([
+      "  missing (the seed declares it, the Inbox did not list it):",
+      missingDecision,
+      "  unexpected (the Inbox listed it, the seed declares no such row):",
+      "    - none",
+      "  the Inbox answered 4 rows; the seed declares 5.",
+    ]);
+    expect(lines.at(-2)).toMatch(
+      /^ {2}the last read failed: the read had not answered within 0\.\d s$/
+    );
+    expect(lines.at(-1)).toBe(owner);
+  });
+
   test("the wait ends at the deadline and starts no read after it", async () => {
     // Reads at 0 ms and at 200 ms; the second sleep is cut to the 100 ms the deadline leaves, so
     // no third read starts at 400 ms with no time left to answer in.
@@ -535,7 +571,12 @@ describe("awaitSeededInbox", () => {
   });
 
   test("an unexpected row on a document is named by the document", async () => {
-    const stray: InboxRowRead = { document: { name: "Notes", slug: "notes" }, id: "ask-notes" };
+    const stray: InboxRowRead = {
+      block_id: null,
+      document: { name: "Notes", project: "CORE", slug: "notes" },
+      id: "ask-notes",
+      issue_key: null,
+    };
     const inbox = reader(() => [...wholeSet, stray]);
     const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
     expect(message).toContain("    - ask ask-notes on the document Notes (block none)\n");
