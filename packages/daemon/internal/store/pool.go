@@ -107,8 +107,12 @@ func holdsConnection(ctx context.Context) bool {
 // for as long as the caller lives: ctx's deadline, cancellation and values, with a hold mark of
 // its own, always a fresh one. A worker that takes a connection — a transaction, a cursor — marks
 // only itself, so its siblings are still free to take theirs, and the pool still refuses each
-// worker a second connection of its own. Every goroutine of the daemon that runs beside others
-// takes one.
+// worker a second connection of its own. A goroutine that runs beside others and reaches this
+// pool takes one. A caller that takes none is one the guard cannot see, since a context nothing
+// marked holds no connection as far as the pool can tell (holdsConnection): the sandbox
+// launcher's frame loop is such a caller, deleting a restored workspace bundle on a context made
+// from context.Background() (runtime/sandbox/launcher.go, restoreReported), and the pool refuses
+// it nothing.
 //
 // It differs from WithTransactionTracking, this package's other mark, by never reusing ctx's:
 // that one hands back the mark ctx already carries, which siblings sharing it would set and
@@ -134,8 +138,10 @@ var loggedSites = struct {
 }{seen: map[[refusalDepth]uintptr]struct{}{}}
 
 // refusalDepth is how many frames of a refused call's stack, from the guard outwards, make up its
-// key. The frames nearest the guard are the ones that tell the paths into the pool apart; two
-// stacks that differ only beyond this depth share one line.
+// key. The frames nearest the guard — the guarded method, pgx's wrapper, a forwarder the compiler
+// keeps whole — are the same program counters on every path through them; the frames beyond them
+// are the ones that tell the paths into the pool apart, so two stacks that differ only beyond this
+// depth share one line.
 const refusalDepth = 32
 
 // logRefusal logs a refusal once per distinct calling stack, with that stack, which is what names

@@ -2339,8 +2339,10 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		return nil
 	})
 	// The daemon serves from the moment that goroutine has begun, which is what the latch
-	// records: /readyz answers 503 until here and 200 from here, and only the stop makes it 503
-	// again (api.Options.Stopping). The hook before the latch is the seam a test holds it at.
+	// records. While the boot runs the API is not served at all, so /readyz gives no answer;
+	// between that goroutine's start and the latch it answers 503, from here 200, and only the
+	// stop makes it 503 again (api.Options.Stopping). The hook before the latch is the seam a test
+	// holds it at.
 	group.Go(func() error {
 		select {
 		case <-serverStarted:

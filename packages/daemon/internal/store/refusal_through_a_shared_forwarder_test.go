@@ -27,10 +27,7 @@ func askThroughFromB(ctx context.Context, pool *Pool) error { return beginThroug
 // frames nearest the guard — the guarded method, pgx.BeginFunc, the forwarder — are the same
 // program counters on both paths, so only the frames beyond them tell the callers apart, and a log
 // keyed on the few frames nearest the pool would let the first caller's refusal silence the
-// second's. TestEachRefusingSiteLogsItsOwnLine passes under such a key, because the compiler
-// inlines its forwarder into each of its two callers and so gives each copy a counter of its own;
-// a forwarder the compiler keeps whole is the daemon's case. A caller that asks again logs nothing
-// more.
+// second's. A caller that asks again logs nothing more.
 func TestRefusalsThroughAForwarderTheCompilerKeepsWholeLogOneLineEach(t *testing.T) {
 	store := storeWith(t, map[string]string{"pool_max_conns": "1"})
 	pool := store.Pool()
