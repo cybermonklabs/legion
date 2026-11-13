@@ -102,13 +102,16 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	//
 	// ?assignee= filters on the person the ask waits on (askedOfPersonExpression), not on the
 	// issue's assignee: an ask handed to somebody is in that person's list and out of the
-	// assignee's. The ask's issue is joined by askReadFrom, which that expression reads.
+	// assignee's, and an ask on an issue nobody holds is in the list of the person its project
+	// defaults to. askReadFrom joins all three tables that expression reads - the ask's issue as
+	// i, its own document as ar and their project as p - so this read joins none of them itself
+	// and reads the document's columns off the shared join. `unassigned` is left standing for
+	// the caller that sends it: every question reaches a person now, so it answers nothing.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		select `+askReadColumns+`,
 		       i.key, i.title, i.assignee, i.priority, ar.project_key, ar.slug, ar.name,
 		       sn.snoozed_until
 		`+askReadFrom+`
-		left join artifacts ar on ar.id = a.artifact_id
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
 		where a.state = 'open'
 		  and (i.key is null or i.closed_at is null)

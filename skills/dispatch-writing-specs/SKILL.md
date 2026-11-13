@@ -63,9 +63,9 @@ For each spec, ask, comment and message:
 
 Choices—answered asks included—earn `decisions.md` `##` sections only if a disagreeing reader would act differently; keep others to one spec line each.
 
-- The heading names the choice; the text gives the reason and the options weighed.
+- The heading names the choice; the text gives the reason and options weighed.
 - Link each spec block it shaped, `dispatch://KEY/spec#b-<id>`, and a person's decision its ask, `dispatch://KEY/ask/<id>`.
-- An unsure section adds a paragraph starting `Unsure:`: what would change your mind.
+- An unsure section adds an `Unsure:` paragraph: what would change your mind.
 - A replaced section moves under a final `## Replaced` as a `###`.
 
 ## Old specs

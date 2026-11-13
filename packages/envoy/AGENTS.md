@@ -2496,30 +2496,30 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   done = `status='done'`), `active_at` (the subtree's newest `updated_at`), and its own `external_links`, still ordered by key.
 
 - Every issue has a nullable `assignee`:
-  the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person (`issues.assignee`, migration `0034`, indexed on open issues).
+  the **lowercase** email of the person every ask on it waits on until somebody hands that ask to another person, or, while it holds nobody, its project's default assignee (`issues.assignee`, migration `0034`, indexed on open issues).
   Both identity implementations name a person by lowercase email, so `model.CanonicalLogin` (`strings.ToLower(strings.TrimSpace(login))`) is the stored form and plain `=` compares it;
   the SPA lowercases the `/auth/whoami` viewer once and compares exact.
   `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` accept `assignee` (the PATCH's `json.RawMessage` tri-state:
   absent leaves it, `null` clears, a string is canonicalised and must name a row of `people` (migration `0068`:
   everyone who has signed in) — else `400 ASSIGNEE_NOT_ALLOWED` naming the email; a non-string is `400 INVALID_ISSUE`).
   Any authenticated actor may set it; the event's actor is who assigned it, and the whole issue rides in `issue.created` / `issue.updated`, so there is no `assigned_by`.
-  Absent on create, the default is the first match of:
+  Absent or `null` on create (both name nobody there, so only the `PATCH`'s `null` clears), the default is the first match of:
   a human actor's email; a personal token's `Owner`;
   the parent's assignee when it names someone;
-  the project's `default_assignee` when that still names a row of `people` (`projects.default_assignee`, migration `0116`;
-  a default left stale by a restore or a direct write falls through to nobody rather than refusing the create, so the check is one query on the create's own transaction and not `allowedLogin`);
-  null — so an issue the shared token creates with no assignee named and no parent assignee lands on the project's default, and one it creates where the project names none stays unassigned;
-  nothing back-fills issues already filed, an explicit `null` on the create still means nobody, and a daemon status PATCH (no `assignee` key) never touches it.
-  A project's default is set by a person alone, through `GET /api/v1/settings/project-default-assignees` and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`, or `null` to clear it;
-  `400 ASSIGNEE_NOT_ALLOWED` otherwise, `400 INVALID_PROJECT` for a body without `assignee` or one whose `assignee` is neither a string nor null, and a `settings.project_default_assignee.updated` event);
-  no agent command, flag or route sets it, which is deliberate (`api/project_default_assignee.go`).
+  the project's `default_assignee`, which every project names (`projects.default_assignee`, migrations `0116` and `20261111210103`;
+  the column is not null, and a default left stale by a restore or a direct write is used as it stands rather than refusing the create, so the step is the column the create's own transaction already read and not `allowedLogin`).
+  The chain therefore ends on a person: an issue the shared token creates with no assignee named and no parent assignee lands on the project's default.
+  Nothing back-fills issues already filed, and a daemon status PATCH (no `assignee` key) never touches it.
+  A new issue therefore always has an assignee, whatever the create sends; the one way to an issue nobody holds is `PATCH /api/v1/issues/{key}` with `{"assignee": null}`, so a test that needs one creates the issue and then clears it.
+  A project's default is moved by a person alone, through `GET /api/v1/settings/project-default-assignees` (every project, since every project names one) and `PUT /api/v1/projects/{key}/default-assignee` `{assignee}` (an email of a row of `people`; nothing clears a default, so an absent, null or blank `assignee` is `400 INVALID_PROJECT`, a login nobody has signed in with `400 ASSIGNEE_NOT_ALLOWED`, and the write appends a `settings.project_default_assignee.updated` event naming both people it moved rows between);
+  `POST /api/v1/projects` takes the project's first default, `default_assignee`, else the person creating it, else the person its credential acts for, holds whichever answers to a row of `people` (`400 ASSIGNEE_NOT_ALLOWED`; a broker-issued token's owner comes from the broker, not from `people`), refuses a call that can name none with `400 INVALID_PROJECT`, and answers the project plus the `default_assignee` it took (`createdProject`); `GET /api/v1/projects` lists no default, so the person-scoped settings read above is the one source of it (`api/project_default_assignee.go`, `api/projects.go`).
   `GET /api/v1/users` (needs the `person` scope) returns everyone in `people`, sorted by email, as `{users: [{login}]}` — the picker's options;
   `GET /api/v1/whoami` (any auth) returns `{kind: "user", login, scopes}` (the person's lowercase email) for a cookie/header caller or `{kind: "agent", owner, scopes}` for a bearer (`owner` is the personal token's owner by lowercase email, null under the shared token; `scopes` is the OAuth scopes the credential holds, `[]` for one that holds none) — what `dispatch whoami` reports.
   Issue reads (`GET /issues/{key}`, summaries, pinned) carry `assignee`, and so does the `issue` on every inbox row.
 
 - Every issue has a nullable claim: the session that intends to implement it (`issues.claimed_by` — the actor JSON
   — and `issues.claimed_at`, migration `0045`, both set or both null by `issues_claim_complete`).
-  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on).
+  It is on every issue read (`Issue.claim`, `IssueSummary.claim`, so the detail, the listing and the board rows all carry it) and is neither the `route` (where messages go) nor the `assignee` (the person an ask on the issue waits on until somebody hands it on, or, while the issue holds nobody, its project's default assignee).
   The whole rule lives in `api/issue_claim.go`.
   `POST /api/v1/issues/{key}/claim` (any authenticated actor) claims it:
   the claimant is the request's own actor, the same identity every other write carries
@@ -2837,7 +2837,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   A direct (issue-less) conversation keeps no `user_threads` row, so its `message.created` and `message.answered` name the thread root's author instead, the one person whose Inbox holds that conversation's Agent row (`api/thread_logins.go`, `directThreadLogins`), and `[]` when no person opened the thread.
   An `issue.updated` or `issue.closed` that moved the status or the assignee carries it too (`issueWriteThreadLogins`), as the sorted union of two sets:
   for a close or a reopen `events.IssueThreadLogins`, the logins with a row on one of the issue's open asks, which the Replies list leaves out while the issue is open and the ask waits on them, and `[]` for any other status move;
-  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other.
+  for an assignee move the assignee the issue was taken from and the one it was given to, since that same rule moves the rows of the asks nobody has handed on out of one Inbox and into the other, and a side where the issue holds nobody is the project's default assignee, whom a question on such an issue reaches (`issueWriteThreadLogins` resolves it, `api/thread_logins.go`).
   A login in both sets is named once, and a write that moved neither carries no `thread_logins` at all.
   `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved from the row it read (`api/state.go`), or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`askSnoozeEvent`, `api/ask_snooze.go`), whose payload is exactly `{login, changed: ["snoozed"]}`:
   the stream has no per-viewer filter, so every signed-in person and agent replays it, and it names no ask and no `state` of the writer's (the writer's tabs refetch their whole Inbox);
@@ -2876,14 +2876,14 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `GET /api/v1/inbox?assignee=me|unassigned|<email>` (one value, combining with `project`) narrows the inbox, which needs the `person` scope, by the person each ask waits on (`inboxAssigneeFilter`, `api/inbox.go`):
   `me` is the caller's lowercase email; an `<email>` is canonicalised (`strings.ToLower(strings.TrimSpace(...))`) before it is looked up in `people`, so a shared `?assignee=Alice@example.com` link never 400s, while an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`;
-  `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee)` is that login — the asks handed to them, and the asks on the issues assigned to them that nobody has handed on (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks nobody waits on, so an ask nobody was handed on an issue nobody holds **and every project-document ask nobody was handed** (a document has no assignee to fall back to); no value returns everything.
+  `me` / `<email>` keep the asks whose `coalesce(a.asked_of, i.assignee, p.default_assignee)` is that login — the asks handed to them, the asks on the issues assigned to them that nobody has handed on, and, for the person a project defaults to, the asks nobody has handed on that project's issues nobody holds and on its documents (`askedOfPersonExpression` in `api/ask_rows.go`, the one expression this filter, `listOpenAsks` and the Replies read's exclusion all share); `unassigned` keeps the asks the expression names nobody for, which every project naming a default assignee leaves none of; no value returns everything.
   This is the contract for shareable links and humans' scripts: the SPA asks for no assignee at all.
   It fetches the unfiltered inbox once (the one `["inbox"]` query every surface shares) and splits it client-side by the reader's own `?assignee=` filter, whose values are repeated on the page's URL and are a lowercase login or the literal `unassigned` (`features/refs/routes.ts`, `inAssigneeFilter` in `features/inbox/sections.ts`):
   no `assignee` at all is the reader's own work, every visit and nothing remembered, and the single value `everyone` is the cleared filter.
   The two `?assignee=` vocabularies spell their default the opposite way round on purpose
   — absent means everybody here and the reader alone there
   — because the page must keep reading the whole list: its counts stay about the reader while the list on screen widens.
-  A row's `Assign to me` PATCH is offered wherever an issue-owned row nobody waits on is listed, and a project-document row never carries one.
+  A row's `Assign to me` PATCH is offered wherever an issue-owned row nobody waits on is listed, which every project naming a default assignee leaves none of, and a project-document row never carries one.
 
 - `GET /api/v1/asks/open` takes exactly one scope selector.
   `?author_session=<session-id>` lists every active open ask authored by that session across open issues and unlinked project documents;
@@ -3073,7 +3073,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
     The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
 
   - A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
-    that is an open ask on an open issue that waits on the caller alone (`myRepliesOwner`, over `askedOfPersonExpression`: the person the ask was handed to, and the assignee of its issue until somebody hands it on), so an open ask on a project document, on an issue nobody holds, or on another person's issue and handed to nobody, is a Reply row here.
+    that is an open ask on an open issue that waits on the caller alone (`myRepliesOwner`, over `askedOfPersonExpression`: the person the ask was handed to, the assignee of its issue until somebody hands it on, and its project's default assignee while the issue holds nobody), so an open ask on another person's issue and handed to nobody, or on a project document another person's project defaults to, is a Reply row here.
     A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
     its row stays, since the Inbox hides it.
 

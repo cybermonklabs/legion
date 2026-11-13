@@ -523,8 +523,11 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 with no blocks counts as indexed, since it owes no nodes.
 
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
-document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`
-and the bearer, makes the project and the issue it needs, and runs ten assertions:
+document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
+the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
+acts for no person, so the project it creates must name the person its unowned work lands on
+(`400 INVALID_PROJECT` otherwise). It makes the project and the issue it needs, and runs ten
+assertions:
 `dispatch artifact --issue <KEY> --name "Launch notes"`, with neither `--path` nor `--content`,
 exits zero and says the document was made, naming its `dispatch://` reference; that reference
 reads back one version whose markdown is empty; `dispatch read --issue <KEY>` lists the document
@@ -544,9 +547,13 @@ stack when the command ends, exiting with the command's own status. From `packag
 
 ```bash
 DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harness.sh \
-  bash -c 'DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
-    bash e2e/acceptance/create-document.sh'
+  bash -c 'curl -sS -o /dev/null "http://127.0.0.1:$DISPATCH_E2E_PORT/auth/_dev/signin?login=alice" &&
+    DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
+    DISPATCH_DEFAULT_ASSIGNEE=alice bash e2e/acceptance/create-document.sh'
 ```
+
+The `curl` is the harness's dev sign-in (`/auth/_dev/signin`), which records `alice` as a person
+who has signed in, so the project may name her.
 
 `e2e-token` is the agent bearer the harness pins. Until cybermonklabs/legion#3435 the same thing
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
