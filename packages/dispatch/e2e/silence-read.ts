@@ -5,20 +5,9 @@
  *  that sends nothing for that long fails the read, naming its route.
  *
  *  It is a module of its own because the probe ends its process once its run is over, so a test
- *  cannot import the probe. It takes its timers as an argument, so
- *  `e2e/__tests__/silence-read.test.ts` moves the deadline on a clock of its own and reads each
- *  restart without waiting on a real one. */
-
-/** The two timer calls the read makes: the system's own unless a caller hands in others. */
-export interface Timers {
-  readonly setTimeout: (fire: () => void, ms: number) => unknown;
-  readonly clearTimeout: (handle: unknown) => void;
-}
-
-const systemTimers: Timers = {
-  clearTimeout: (handle) => clearTimeout(handle as Timer),
-  setTimeout: (fire, ms) => setTimeout(fire, ms),
-};
+ *  cannot import the probe. It calls the runtime's own `setTimeout` and `clearTimeout`, so
+ *  `e2e/__tests__/silence-read.test.ts` installs Bun's fake timers, moves the deadline with
+ *  `jest.advanceTimersByTime`, and reads each restart without waiting on a real clock. */
 
 /** What one read answered: its response, whose body is read, and that body as text. */
 export interface SilenceRead {
@@ -33,14 +22,13 @@ export interface SilenceRead {
 export async function readUntilSilent(
   route: string,
   request: (signal: AbortSignal) => Promise<Response>,
-  withinMs: number,
-  timers: Timers = systemTimers
+  withinMs: number
 ): Promise<SilenceRead> {
   const silence = new AbortController();
-  let timer = timers.setTimeout(() => silence.abort(), withinMs);
+  let timer = setTimeout(() => silence.abort(), withinMs);
   const arrived = () => {
-    timers.clearTimeout(timer);
-    timer = timers.setTimeout(() => silence.abort(), withinMs);
+    clearTimeout(timer);
+    timer = setTimeout(() => silence.abort(), withinMs);
   };
   let response: Response;
   let text = "";
@@ -62,7 +50,7 @@ export async function readUntilSilent(
       `the read of ${route} received nothing for ${withinMs / 1000} s (--read-within)`
     );
   } finally {
-    timers.clearTimeout(timer);
+    clearTimeout(timer);
   }
   return { response, text };
 }

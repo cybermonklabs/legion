@@ -111,6 +111,11 @@ test.skipIf(commandLines() === undefined)(
         await until(exited),
         `the runner did not exit inside the short bound of ${bounds.short} ms after SIGINT:\n${runnerLog()}`
       ).toBe(true);
+      // A worker's `runBounded` writes its cost line to the runner's log when its child ends,
+      // with `bound passed` when the child's own short bound ended it. That bound ends about when
+      // the wait above does, so were SIGINT to reach no worker, the bound would kill the sleeps
+      // and the runner would exit after it, inside that wait; the cost line says which ended them.
+      expect(runnerLog(), "a bound, not SIGINT, ended a child").not.toContain("bound passed");
 
       // A killed process can take a moment to leave the process table; a survivor stays, since
       // its sleep outlasts every wait of this row.

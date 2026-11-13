@@ -8,7 +8,7 @@ import { temporaryDirectories } from "@legion/test-fixtures/temporary-directorie
 import type { ServerWebSocket } from "bun";
 
 import { databaseUrlRefusal, Interrupted, Supervisor, shellQuote } from "../local-instance-support";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { bounds, eventually, rowLimit, runBounded } from "./bounded-subprocess";
 
 const makeDirectory = temporaryDirectories("local-instance-support");
 
@@ -22,27 +22,14 @@ function groupAlive(pgid: number): boolean {
   }
 }
 
-/** Polls `ready` until it holds or `ms` pass. Used only for what another process does — its write
- *  to a file, or the kernel reaping a killed process, which still answers `kill(pid, 0)` as a
- *  zombie until its parent or init collects it — with no event in this process to await. */
-async function eventually(ready: () => boolean | Promise<boolean>, ms = 3_000): Promise<boolean> {
-  const deadline = Date.now() + ms;
-  while (Date.now() < deadline) {
-    if (await ready()) return true;
-    await Bun.sleep(25);
-  }
-  return ready();
-}
-
-/** The pid a real child process writes to `path`. */
+/** The pid a real child process writes to `path`. A write another process makes raises no event
+ *  here, so the file is read until it holds one. */
 async function pidFrom(path: string): Promise<number> {
   const read = () =>
     Bun.file(path)
       .text()
       .catch(() => "");
-  if (!(await eventually(async () => /^\d+\s*$/.test(await read())))) {
-    throw new Error(`no pid in ${path}`);
-  }
+  await eventually(`a pid in ${path}`, async () => /^\d+\s*$/.test(await read()));
   return Number(await read());
 }
 
@@ -79,43 +66,66 @@ afterEach(async () => {
 });
 
 describe("Supervisor.stop", () => {
-  test("ends every process group it started, a grandchild included", async () => {
-    const pidFile = join(makeDirectory(), "leader.pid");
-    const made = supervisor();
-    const leader = made.start(
-      "leader",
-      ["bash", "-c", `sleep 60 & echo $! > ${pidFile}; wait`],
-      "/"
-    );
-    const quiet = made.start("quiet", ["sleep", "60"], "/");
-    const grandchild = await pidFrom(pidFile);
-    expect(groupAlive(pidOf(leader))).toBe(true);
-    expect(groupAlive(pidOf(quiet))).toBe(true);
+  test(
+    "ends every process group it started, a grandchild included",
+    async () => {
+      const pidFile = join(makeDirectory(), "leader.pid");
+      const made = supervisor();
+      const leader = pidOf(
+        made.start("leader", ["bash", "-c", `sleep 60 & echo $! > ${pidFile}; wait`], "/")
+      );
+      const quiet = pidOf(made.start("quiet", ["sleep", "60"], "/"));
+      const grandchild = await pidFrom(pidFile);
+      expect(groupAlive(leader)).toBe(true);
+      expect(groupAlive(quiet)).toBe(true);
 
-    await made.stop();
+      await made.stop();
 
-    expect(await eventually(() => !groupAlive(pidOf(leader)))).toBe(true);
-    expect(await eventually(() => !groupAlive(pidOf(quiet)))).toBe(true);
-    expect(await eventually(() => !processAlive(grandchild))).toBe(true);
-  });
+      // A killed process still answers `kill(pid, 0)` as a zombie until its parent or init
+      // reaps it, which raises no event here, so each is read until it is gone.
+      await eventually(`the group of the leader ${leader} to end`, () => !groupAlive(leader));
+      await eventually(`the group of the quiet process ${quiet} to end`, () => !groupAlive(quiet));
+      await eventually(`the grandchild ${grandchild} to end`, () => !processAlive(grandchild));
+    },
+    // Four waits this row ends at a bound itself, one after another: the grandchild's pid in its
+    // file, then the two groups and the grandchild leaving the process table.
+    rowLimit("short", "short", "short", "short")
+  );
 
-  test("returns as soon as the leaders exit, not after the force-kill delay", async () => {
-    const made = supervisor();
-    made.start("quiet", ["sleep", "60"], "/");
-    const started = Date.now();
-    await made.stop(30_000);
-    expect(Date.now() - started).toBeLessThan(5_000);
-  });
+  test(
+    "returns as soon as the leaders exit, not after the force-kill delay",
+    async () => {
+      const made = supervisor();
+      const quiet = made.start("quiet", ["sleep", "60"], "/");
+      const forced = await made.stop(30_000);
+      expect(forced, "the stop's force-kill ran: SIGTERM did not end the leader").toBe(false);
+      expect(groupAlive(pidOf(quiet)), "the leader's group outlived the stop").toBe(false);
+    },
+    {
+      // This row drives a supervisor's stop, whose force-kill fires at 30 s; the limit outlasts
+      // it, so a stop that takes that path fails on the assertion and not on this clock.
+      timeout: 60_000,
+    }
+  );
 
-  test("ends a foreground step that a stop interrupts", async () => {
-    const made = supervisor();
-    const step = made.run(["sleep", "60"], "/");
-    made.interrupt();
-    await expect(step).rejects.toBeInstanceOf(Interrupted);
-    const started = Date.now();
-    await made.stop();
-    expect(Date.now() - started).toBeLessThan(5_000);
-  });
+  test(
+    "ends a foreground step that a stop interrupts",
+    async () => {
+      const pidFile = join(makeDirectory(), "step.pid");
+      const made = supervisor();
+      const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep 60`], "/");
+      const pid = await pidFrom(pidFile);
+      made.interrupt();
+      await expect(step).rejects.toBeInstanceOf(Interrupted);
+      const forced = await made.stop();
+      expect(forced, "the stop's force-kill ran: SIGTERM did not end the step").toBe(false);
+      expect(groupAlive(pid), "the interrupted step's group outlived the stop").toBe(false);
+    },
+    // The wait for the step's pid in its file, which the short bound of `eventually` ends; the
+    // stop's force-kill, at 10 s, falls inside the headroom, so a stop that takes it fails on the
+    // assertion and not on this clock.
+    rowLimit("short")
+  );
 });
 
 describe("Supervisor.untilInterrupted", () => {
@@ -208,7 +218,9 @@ describe("agentViewRefusal", () => {
   });
 
   /** The answer `agentViewRefusal` gives for `sessionId` against `baseUrl`, read from a process
-   *  with the runtime's own WebSocket: its refusal, or null for none. */
+   *  with the runtime's own WebSocket: its refusal, or null for none. The first frame gets the
+   *  short bound, which the child's own bound ends too, so no row reads a stall of this machine
+   *  as Dispatch's silence. */
   async function refusalFrom(
     baseUrl: string,
     headers: Record<string, string>,
@@ -217,7 +229,7 @@ describe("agentViewRefusal", () => {
     const script =
       `const { agentViewRefusal } = await import(${JSON.stringify(supportModule)});\n` +
       `const answer = await agentViewRefusal(${JSON.stringify(baseUrl)}, ` +
-      `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)});\n` +
+      `${JSON.stringify(headers)}, ${JSON.stringify(sessionId)}, ${bounds.short});\n` +
       "process.stdout.write(JSON.stringify(answer ?? null));\n";
     const { code, named, stderr, stdout } = await runBounded({
       argv: [process.execPath, "-e", script],

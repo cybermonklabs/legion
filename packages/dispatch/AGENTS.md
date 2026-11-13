@@ -2025,17 +2025,20 @@ INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
 
-Every one-shot subprocess a row waits for, and every one a hook waits for except
-the psql of `e2e/psql.ts`, starts through `runBounded`
+Every one-shot subprocess a row or hook waits for, but the psql of
+`e2e/psql.ts` (the rows and hooks of `e2e/__tests__/psql-session.test.ts`),
+starts through `runBounded`
 (`e2e/__tests__/bounded-subprocess.ts`): it bounds the child, kills the child
 and every process it started when the bound passes (its descendants by parent
 pid, and on Linux every process whose environment carries the child's token),
 fails with a message naming the file that started the child, its command and
 how long it waited, and prints one line per child, with what that child cost,
-on the stderr of the run that started it. One edge is stated rather than
-bounded: on a machine with no `/proc`, the `ps` with which `bounded-subprocess.ts`
-and its test read the process table runs with no bound. Linux lists its
-processes under `/proc` and never runs it.
+on the stderr of the run that started it. Two subprocesses are stated edges
+rather than bounded: that psql, whose `sqlAt` `e2e/harness-postgres.ts` and
+`e2e/local-instance.ts` call too, so a bound on it would reach past this
+directory; and, on a machine with no `/proc`, the `ps` with which
+`bounded-subprocess.ts` and its test read the process table, which runs with no
+bound. Linux lists its processes under `/proc` and never runs that `ps`.
 The child stays in the process group of the run that started it, so an
 interrupted `bun test --parallel` takes it along
 (`e2e/__tests__/bounded-subprocess.test.ts`).
@@ -2044,16 +2047,25 @@ starts nothing), `listing` (300 000 ms,
 one `playwright test --list`), `generation` (330 000 ms,
 `bun e2e/tools/row-map.ts`, which starts two listings of its own) and
 `twoStackBuild` (1 800 000 ms, the child that builds two stacks). One rule
-derives a row's limit from them: `rowLimit(...)` sums the bounds of the
-children the row waits for one after another, counts a group written
-`{ atOnce: [...] }` as the largest bound in it, and adds 30 000 ms for the
-row's own work. Each argument is a bound name and never a number, so a wrong
-value is a compiler error rather than a red run. A row or hook that drives a
-process rather than waiting for one keeps a number, with the reason it is that
-long on the line directly above it: the six rows of
-`e2e/__tests__/delivery-live-probe.test.ts` that read the probe's lines and stop
-it with SIGINT, and the two hooks of
-`e2e/__tests__/psql-session.test.ts`. `e2e/row-limits.ts`, which
+derives a row's limit from them: `rowLimit(...)` sums the bounds of what the
+row waits for one after another - each child, and each wait the row ends at a
+bound itself, such as `eventually` of `bounded-subprocess.ts`, which reads a
+state another process reaches until it holds and fails naming that state once
+the short bound has passed - counts a group written `{ atOnce: [...] }` as the
+largest bound in it, and adds 30 000 ms for the row's own work. Each argument
+is a bound name and never a number, so a wrong value is a compiler error rather
+than a red run. A row or hook that drives a process rather than waiting for one
+states `rowLimit` too where every wait it makes ends at a bound: the
+interrupted-runner row of `e2e/__tests__/bounded-subprocess.test.ts` drives a
+`bun test` runner and states `rowLimit("short", "short", "short")` for its three
+polls, and the rows of `e2e/__tests__/local-instance-support.test.ts` that wait
+for its `Supervisor`'s processes state one for each `eventually`. Otherwise it
+keeps a number, with the reason it is that long on the line directly above it:
+the six rows of `e2e/__tests__/delivery-live-probe.test.ts` that read the
+probe's lines and stop it with SIGINT, the two hooks of
+`e2e/__tests__/psql-session.test.ts`, and the row of
+`local-instance-support.test.ts` whose limit outlasts a stop's 30 s force-kill.
+`e2e/row-limits.ts`, which
 `e2e/__tests__/row-limits.test.ts` runs over every file under that directory, at
 any depth, that the lane's `bun test` collects there - measured with bun 1.4.4
 as a name ending `.test`, `_test`, `.spec` or `_spec` and then `ts`, `tsx`,
@@ -2083,7 +2095,9 @@ names a row that waits that way: a bounded function passed as a value
 (`const rows = lane.then(rowsOf)`); a name a destructuring declaration binds
 (`const [lane] = [listing(...)]`); a name a property or a destructuring
 assignment writes (`state.lane = listing(...)`, `[lane] = [listing(...)]`); and
-a method of a `class`, static or not, that calls `runBounded`. A name bound to an
+a method of a class declaration, static or not, that calls `runBounded` or
+`listing` (a class expression or an object literal bound to a name is read,
+since that name's initializer holds the call). A name bound to an
 awaited call (`const options = await helpOptions()`) is no wait either, since it
 holds what the call answered, but only where the `await` is outermost:
 `const code = (await runBounded(...)).code` is read as a waiting name, so a row
@@ -2684,8 +2698,9 @@ assertion, so the command has to start on a server without that fix for the spec
 against it. What it runs on lives in `e2e/local-instance-support.ts`, which runs nothing on
 import: `Supervisor`, which starts each process and stops them all (Ctrl-C, a SIGTERM, a failure
 at any step), signalling every process group, SIGKILLing whatever still runs after 10 s, aborting
-the signal its psql calls carry, and returning once every leader has exited, and which
-`e2e/harness-start.ts` starts the harness's processes on, their output piped to it;
+the signal its psql calls carry, and returning once every leader has exited with whether it had
+to SIGKILL, and which `e2e/harness-start.ts` starts the harness's processes on, their output piped
+to it;
 `databaseUrlRefusal`, its own `DATABASE_URL` check; and `shellQuote`, for the commands it prints.
 `e2e/__tests__/local-instance-support.test.ts` (`bun run test`) drives them with real processes
 and no server. That check reads the URL with `new URL`, as libpq would only in part; the order
@@ -2712,9 +2727,10 @@ runs it as a process against a Bun websocket server that replays `packages/contr
 and holds the body it applies to `after.json`. It also reads the delay each close line names as
 `retry_ms`: 0 after a 4001, a dial at once, and at most `RECONNECT_SPREAD_MS` (two seconds) after
 a 1012, each followed by a second subscribe that resumes from the change the probe holds.
-`e2e/__tests__/silence-read.test.ts` (`bun run test`) holds the read's deadline on a clock it
-moves by hand: it starts over on the headers and on each piece of the body, and a read whose
-headers never come, or whose body falls silent, fails at the deadline, naming its route.
+`e2e/__tests__/silence-read.test.ts` (`bun run test`) holds the read's deadline on Bun's fake
+timers, which it moves with `jest.advanceTimersByTime`: the deadline starts over on the headers and
+on each piece of the body, and a read whose headers never come, or whose body falls silent, fails
+at the deadline, naming its route.
 
 The `webkit` Playwright project runs the rows tagged `@webkit` (`webkitTagged` in
 `e2e/playwright.config.ts`) of `e2e/collab-cursor.e2e.ts`, `e2e/deep-links.e2e.ts`,

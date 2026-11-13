@@ -6,7 +6,7 @@ import type { Server, Subprocess } from "bun";
 
 import type { DispatchProcess } from "../harness-processes";
 import type { ProxiedRequest, ProxiedSocket } from "../round-robin-proxy";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { eventually, rowLimit, runBounded } from "./bounded-subprocess";
 
 // The proxy runs as the harness runs it, a `bun` process of its own, and this file answers as the
 // two Dispatch processes it proxies and opens its websockets with `ws`'s client.
@@ -282,53 +282,61 @@ describe("round-robin proxy", () => {
     expect(await answeredBy("/who")).toBe("a");
   });
 
-  test("relays a websocket to its pinned process both ways, and logs it", async () => {
-    const pinned = openSocket({ Cookie: "dispatch-e2e-process=b" });
-    expect(await pinned.received(1)).toEqual(["opened on b"]);
-    pinned.socket.send("hello");
-    expect(await pinned.received(2)).toEqual(["opened on b", "b echoes hello"]);
-    expect(await proxySockets()).toEqual([
-      {
-        id: expect.any(Number),
-        open: true,
-        openedAt: expect.any(Number),
-        path: "/socket",
-        upstream: "b",
-      },
-    ]);
-    expect(b.seen.at(-1)?.host).toBe(`127.0.0.1:${proxyPort}`);
-    pinned.socket.close();
-    await pinned.closed;
-    // The proxy marks the row when its own side of the socket closes, of which this process sees
-    // no event; its log is read until it says so.
-    const deadline = Date.now() + 3_000;
-    while ((await proxySockets())[0]?.open !== false && Date.now() < deadline) await Bun.sleep(25);
-    expect((await proxySockets())[0]?.open).toBe(false);
+  test(
+    "relays a websocket to its pinned process both ways, and logs it",
+    async () => {
+      const pinned = openSocket({ Cookie: "dispatch-e2e-process=b" });
+      expect(await pinned.received(1)).toEqual(["opened on b"]);
+      pinned.socket.send("hello");
+      expect(await pinned.received(2)).toEqual(["opened on b", "b echoes hello"]);
+      const opened = await proxySockets();
+      expect(opened).toEqual([
+        {
+          id: expect.any(Number),
+          open: true,
+          openedAt: expect.any(Number),
+          path: "/socket",
+          upstream: "b",
+        },
+      ]);
+      expect(b.seen.at(-1)?.host).toBe(`127.0.0.1:${proxyPort}`);
+      pinned.socket.close();
+      await pinned.closed;
+      // The proxy marks the row when its own side of the socket closes, of which this process
+      // sees no event; its log is read until it says so.
+      await eventually(
+        `the proxy to log socket ${opened[0]?.id} (/socket, pinned to b) as closed`,
+        async () => (await proxySockets())[0]?.open === false
+      );
 
-    // Unpinned upgrades alternate on a turn of their own, logged in open order, and a server's
-    // close code reaches the browser.
-    const first = openSocket({});
-    expect(await first.received(1)).toEqual(["opened on a"]);
-    const second = openSocket({ "X-Dispatch-E2E-Process": "a" });
-    expect(await second.received(1)).toEqual(["opened on a"]);
-    const third = openSocket({});
-    expect(await third.received(1)).toEqual(["opened on b"]);
-    const logged = await proxySockets();
-    expect(logged.map((entry) => [entry.upstream, entry.open])).toEqual([
-      ["b", false],
-      ["a", true],
-      ["a", true],
-      ["b", true],
-    ]);
-    expect(logged.map((entry) => entry.id)).toEqual(
-      logged.map((entry) => entry.id).sort((left, right) => left - right)
-    );
-    first.socket.send("close 1012");
-    expect(await first.closed).toBe(1012);
-    second.socket.close();
-    third.socket.close();
-    await Promise.all([second.closed, third.closed]);
-  });
+      // Unpinned upgrades alternate on a turn of their own, logged in open order, and a server's
+      // close code reaches the browser.
+      const first = openSocket({});
+      expect(await first.received(1)).toEqual(["opened on a"]);
+      const second = openSocket({ "X-Dispatch-E2E-Process": "a" });
+      expect(await second.received(1)).toEqual(["opened on a"]);
+      const third = openSocket({});
+      expect(await third.received(1)).toEqual(["opened on b"]);
+      const logged = await proxySockets();
+      expect(logged.map((entry) => [entry.upstream, entry.open])).toEqual([
+        ["b", false],
+        ["a", true],
+        ["a", true],
+        ["b", true],
+      ]);
+      expect(logged.map((entry) => entry.id)).toEqual(
+        logged.map((entry) => entry.id).sort((left, right) => left - right)
+      );
+      first.socket.send("close 1012");
+      expect(await first.closed).toBe(1012);
+      second.socket.close();
+      third.socket.close();
+      await Promise.all([second.closed, third.closed]);
+    },
+    // The one wait this row ends at a bound itself: the proxy's log marking the pinned socket
+    // closed, which the short bound of `eventually` ends.
+    rowLimit("short")
+  );
 
   test("streams an event stream from its pinned process as it is written", async () => {
     const response = await get("/events", { "X-Dispatch-E2E-Process": "b" });

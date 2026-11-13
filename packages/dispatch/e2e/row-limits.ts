@@ -18,9 +18,13 @@
  * and states it as a call of `rowLimit`: WHAT A ROW WAITS FOR below.
  *
  * - `rowLimit(...)` is the way out for a row that WAITS for bounded children. It takes the names
- *   of the children, never a number, so the limit moves when a bound moves and a name that is
- *   not a bound is a compiler error rather than a red run.
- * - The reason is the way out for the few rows and hooks that DRIVE a process rather than wait
+ *   of bounds, never a number: one for each child the row waits for, and one for each wait the
+ *   row ends at a bound itself, such as an `eventually` of that module, which the short bound
+ *   ends. So the limit moves when a bound moves, and a name that is not a bound is a compiler
+ *   error rather than a red run. A row that drives a process may state it too, when every wait
+ *   of that row ends at a bound: the interrupted-runner row of `bounded-subprocess.test.ts`
+ *   drives a runner and states `rowLimit("short", "short", "short")` for its three polls.
+ * - The reason is the way out for the other rows and hooks that DRIVE a process rather than wait
  *   for one: a row that starts a server and stops it itself, a hook that calls a helper whose
  *   child is bounded nowhere. Nothing can derive those, so the writer says what the row drives
  *   and why that long is enough to see it.
@@ -53,7 +57,7 @@
  * - the second argument of `beforeAll`, `afterAll`, `beforeEach`, `afterEach` and
  *   `onTestFinished`, which are every export of `bun:test` that `test.d.ts` declares with a
  *   `HookOptions` limit, in the bun-types 1.4.2 this package installs and in 1.4.4 alike;
- * - the argument of `setDefaultTimeout`, which no file of this directory writes today. It is
+ * - the argument of `setDefaultTimeout`, which no test file of this directory writes. It is
  *   read because Bun accepts it, and a limit this rule did not read is a limit outside it;
  * - the argument of `jest.setTimeout`, which is that same file-wide limit under Jest's
  *   spelling. Bun honours it, and the bun suites of this repository write `jest.` in dozens of
@@ -119,9 +123,11 @@
  *   `[lane] = [listing(...)]`, `({ lane } = ...)` - because only an identifier is read as
  *   assigned, by `=`, `??=`, `||=` or `&&=`, so a row that awaits `state.lane`, or that `lane`,
  *   waits for nothing here;
- * - a method of a `class`, static or not, that calls `runBounded` or `listing`: the file's own
- *   functions are its function declarations and its variables bound to an arrow or a function
- *   expression, and a call through a member - `Helpers.run()` - reaches none of them;
+ * - a method of a class declaration, static or not, that calls `runBounded` or `listing`: the
+ *   file's own functions are its function declarations and its variables bound to an arrow or a
+ *   function expression, and a call through a member - `Helpers.run()` - reaches none of them. A
+ *   class expression or an object literal bound to a name is read, since that name's initializer
+ *   holds the call;
  * - a bounded function passed as a value - `.map(runBounded)`, `.map(listing)`, a waiting
  *   function of the file's own handed to another call - which is no call the scan sees.
  *

@@ -691,7 +691,7 @@ test(
 // A body that arrives in 16 pieces, 0.25 s apart, is read whole and compared. The read gets the
 // page's own deadline, `REQUEST_DEADLINE_MS`, so no stall of the pod between two pieces turns
 // the verdict. That the deadline starts over on the headers and on each piece, so a body longer
-// than the deadline is read whole, is `silence-read.test.ts`'s, on a clock it moves by hand.
+// than the deadline is read whole, is `silence-read.test.ts`'s, on Bun's fake timers.
 test(
   "a --compare read whose body keeps arriving is read whole, however long it takes",
   async () => {
@@ -728,7 +728,8 @@ test(
   },
   {
     // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
-    // runs after that under its own deadline, which this limit outlasts twice over.
+    // runs after that. `REQUEST_DEADLINE_MS` bounds each silence of the read, not the whole read,
+    // and this limit is two of those silence deadlines.
     timeout: 2 * REQUEST_DEADLINE_MS,
   }
 );

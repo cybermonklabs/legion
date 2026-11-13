@@ -1,29 +1,33 @@
-/** The module every one-shot subprocess a row of this directory waits for starts through, and
- *  every one a hook waits for but the psql of `e2e/psql.ts`: the argv, the working directory, the
- *  environment the caller chose, how the pipes are read, the bound that stops a child that is
- *  stuck, and the line the run that started a child prints on its own stderr when that child
- *  ends. It also holds the limit a row states for itself, which is read from the bounds of the
- *  children that row waits for.
+/** The module that starts every one-shot subprocess a row or hook of this directory waits for,
+ *  but the psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`):
+ *  the argv, the working directory, the environment the caller chose, how the pipes are read, the
+ *  bound that stops a child that is stuck, and the line the run that started a child prints on its
+ *  own stderr when that child ends. It also holds the limit a row states for itself, which is read
+ *  from the bounds of what that row waits for, and `eventually`, the wait a row makes for a state
+ *  another process reaches, which the short bound ends.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
  * would kill a process its row is still using: the probe the six driven rows of
  * `delivery-live-probe.test.ts` read line by line and stop, the runner the interrupted-runner row
  * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
  * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, and the processes
- * `local-instance-support.test.ts` starts through its `Supervisor`. One subprocess a row can wait
- * for runs outside it, as a stated edge: on a machine with no `/proc`, the `ps` that reads the
- * process table, here (`processTable`) and in `bounded-subprocess.test.ts`, runs with no bound.
- * Linux lists its processes under `/proc` and never runs that `ps`.
+ * `local-instance-support.test.ts` starts through its `Supervisor`. Two subprocesses a row can
+ * wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts`, whose `sqlAt`
+ * `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that psql would
+ * reach past this directory. The other is the `ps` that reads the process table on a machine
+ * with no `/proc`, here (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no
+ * bound. Linux lists its processes under `/proc` and never runs that `ps`.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
  * module under `__tests__/` runs nowhere by itself, and `e2e/tools/row-map.ts` can import it, as
  * it already imports `e2e/__tests__/playwright-listing.ts`.
  *
- * What a bound is. A bound stops a child that is stuck. It is no budget for a slow one. Nothing
- * in this suite reads how long a child takes, so a child that is slow and ends is not a defect.
- * A bound exists so that a child which will never end fails with a name, and fails before the
- * job that runs it is killed from outside.
+ * What a bound is. A bound stops a child that is stuck. It is no budget for a slow one. No row
+ * fails because a child is slow; the one reading of a child's time, the `--minutes` row of
+ * `delivery-live-probe.test.ts`, holds only that it ended no sooner than its 600 ms. So a child
+ * that is slow and ends is not a defect. A bound exists so that a child which will never end
+ * fails with a name, and fails before the job that runs it is killed from outside.
  *
  * The rule for each value: each bound is at least three times the largest reading of its kind.
  * The readings behind `short`, `listing` and `generation` were taken under load in a pod with two
@@ -104,8 +108,9 @@ interface AtOnce {
  *  argument is never a number. A number is how this directory wrote its limits before, and each
  *  of those numbers was measured from one file run alone, which is the defect this module
  *  answers: under the whole-suite shape one of them fired falsely. The names also say, in the
- *  row's own source, which children that row waits for, and they make a wrong value a compiler
- *  error rather than a red run. */
+ *  row's own source, what that row waits for: each child, and each wait the row ends at a bound
+ *  itself, such as an `eventually` below, which the short bound ends. They make a wrong value a
+ *  compiler error rather than a red run. */
 export function rowLimit(...waits: readonly (BoundName | AtOnce)[]): number {
   const spent = waits.map((wait) =>
     typeof wait === "string"
@@ -113,6 +118,27 @@ export function rowLimit(...waits: readonly (BoundName | AtOnce)[]): number {
       : wait.atOnce.reduce((largest, name) => Math.max(largest, bounds[name]), 0)
   );
   return spent.reduce((total, ms) => total + ms, 0) + rowHeadroom;
+}
+
+/** Reads `holds` every 25 ms until it answers true. A state another process reaches - a write to
+ *  a file, a process leaving the table, a log line - raises no event a row can await, so the row
+ *  reads it until it is there. The short bound only ends a wait for a state that never comes: once
+ *  it has passed, this throws naming `what`, the state the row waited for. A row that waits here
+ *  names `"short"` in its `rowLimit` for each such wait, so the row's clock fires after this one.
+ */
+export async function eventually(
+  what: string,
+  holds: () => boolean | Promise<boolean>
+): Promise<void> {
+  const deadline = performance.now() + bounds.short;
+  while (!(await holds())) {
+    if (performance.now() > deadline) {
+      throw new Error(
+        `waited the short bound of ${bounds.short} ms for ${what}, and it never came`
+      );
+    }
+    await Bun.sleep(25);
+  }
 }
 
 /** What every line this module writes on stderr starts with. It is how a caller that starts
