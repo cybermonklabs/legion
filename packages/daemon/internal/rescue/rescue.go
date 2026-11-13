@@ -458,7 +458,7 @@ func check(ctx context.Context, req Request, dir string) shimwire.RescueWorkspac
 	case ownBranch != "":
 		local = []bookmark{{name: own, commit: ownBranch}}
 	}
-	bookmarks, err := run.bookmarks(clone, own, local, remoteBranches)
+	bookmarks, err := run.bookmarks(clone, own, local, remoteBranches, held)
 	if err != nil {
 		return fail(err)
 	}
@@ -779,18 +779,31 @@ const bookmarkTemplate = `if(remote, "", if(conflict, ` +
 	`if(normal_target, name ++ " " ++ normal_target.commit_id() ++ "\n")))`
 
 // bookmarks is the bookmarks of listed — the local bookmarks of the workspace's own line
-// (ownLine) — that a rescue commit's trailers name, in name order: the issue's own, own, always,
-// and each other less each that the remote advertises under the same name at the same commit. A
-// put-back that set such a bookmark would only move it to where the remote has it, which can be
-// behind what the new pod fetched, and `main` is one of them. A bookmark ahead of the remote, or
-// one the remote does not have, is the issue's work.
+// (ownLine) — that a rescue commit's trailers name, in name order: the issue's own, own, always;
+// each other that the remote has no branch of; and each other that is ahead of the remote's branch
+// of its name, whose commit holds work that branch lacks. A bookmark is behind its branch when its
+// commit is, or is an ancestor of, the branch's tip as the remote advertises it, where the clone
+// holds that tip, or the clone's remote-tracking ref of the branch, which is what the pod last
+// fetched of it. A bookmark whose branch has neither in the clone cannot be shown behind, and is
+// named.
+//
+// A put-back sets only a bookmark that carries the issue's work or that the remote does not have.
+// One the remote has and that carries nothing its branch lacks would only move the new pod's copy
+// back, behind what that pod fetched, and `main` is one of them: at the remote's commit, or behind
+// it where the remote's branch moved on after the pod last fetched it. The clone often lacks the
+// remote's newer tip, so the remote-tracking ref stands in for it. Each bookmark is compared with
+// its own branch alone: `main` ahead of the remote's main is the issue's work even where another
+// branch of the remote, the issue's own among them, holds its commit. The push reads what the
+// remote holds from the remote alone (check), and a remote-tracking ref read here changes nothing
+// it pushes: a bookmark's commit is on the own line, so it is pushed when the remote lacks it, and
+// a bookmark left out loses only a place at or behind what the pod fetched of that branch.
 //
 // Each bookmark is named at the commit that holds its work (standsFor), as the working copy is,
 // and only then compared with the remote. `legion/<KEY>` on jj's empty working-copy commit with no
 // description, where provisioning sets it and where a read that takes no snapshot still sees it
 // while the role's edits are in no commit, is so named at the commit under it: the empty commit
 // is in no push and on no remote, and a put-back could not find it.
-func (r runner) bookmarks(clone, own string, listed []bookmark, remoteBranches map[string]string) ([]bookmark, error) {
+func (r runner) bookmarks(clone, own string, listed []bookmark, remoteBranches map[string]string, held []string) ([]bookmark, error) {
 	commits := make([]string, len(listed))
 	for i, b := range listed {
 		commits[i] = b.commit
@@ -799,11 +812,47 @@ func (r runner) bookmarks(clone, own string, listed []bookmark, remoteBranches m
 	if err != nil {
 		return nil, err
 	}
+	mapped := make([]bookmark, len(listed))
+	var tracking []string
+	for i, b := range listed {
+		mapped[i] = bookmark{name: b.name, commit: stand[b.commit]}
+		if b.name != own && remoteBranches[b.name] != "" {
+			tracking = append(tracking, "refs/remotes/origin/"+b.name)
+		}
+	}
+	// The clone's remote-tracking ref of each branch those bookmarks name, by the branch's name;
+	// one the clone lacks is not listed.
+	fetched := map[string]string{}
+	if len(tracking) > 0 {
+		out, err := r.git(clone, nil, append([]string{"for-each-ref", "--format=%(refname) %(objectname)"}, tracking...)...)
+		if err != nil {
+			return nil, err
+		}
+		for line := range strings.Lines(out) {
+			ref, sha, _ := strings.Cut(strings.TrimSpace(line), " ")
+			fetched[strings.TrimPrefix(ref, "refs/remotes/origin/")] = sha
+		}
+	}
 	var named []bookmark
-	for _, b := range listed {
-		b.commit = stand[b.commit]
-		if b.name != own && remoteBranches[b.name] == b.commit {
-			continue
+	for _, b := range mapped {
+		if tip := remoteBranches[b.name]; b.name != own && tip != "" {
+			// What the clone holds of the remote's branch of the bookmark's name.
+			var branch []string
+			if slices.Contains(held, tip) {
+				branch = append(branch, tip)
+			}
+			if sha := fetched[b.name]; sha != "" {
+				branch = append(branch, sha)
+			}
+			if len(branch) > 0 {
+				ahead, err := r.git(clone, nil, append([]string{"rev-list", "--max-count=1", b.commit, "--not"}, branch...)...)
+				if err != nil {
+					return nil, err
+				}
+				if ahead == "" {
+					continue
+				}
+			}
 		}
 		named = append(named, b)
 	}

@@ -545,6 +545,84 @@ func TestRescueNamesTheIssuesBookmarkOnAnEmptyWorkingCopyAtTheCommitUnderIt(t *t
 	}
 }
 
+// A rescue commit names a bookmark other than the issue's own only when it is ahead of the remote's
+// branch of its name or the remote has no branch of its name: a put-back that set one at or behind
+// that branch would move the new pod's copy back. Local `main` behind the remote's, which moved
+// after the pod last fetched it so that the clone lacks its tip, is not named. `main` moved ahead
+// onto an own commit is, and stays named where only the issue's own branch on the remote holds
+// that commit, since a bookmark is compared with its own branch alone; and so is a bookmark the
+// remote has no branch of, on an own commit or on a commit the remote holds.
+func TestRescueNamesNoBookmarkTheRemoteHasThatCarriesNoWorkOfItsOwn(t *testing.T) {
+	// ownWork commits work the remote lacks on the workspace's own line, over main, and is it.
+	ownWork := func(d *rescuetest.Disk) string {
+		d.Write(d.Workspace, "feature.txt", "the issue's own work\n")
+		d.JJ("commit", "-m", "the issue's own work")
+		return d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	}
+	// named is the bookmarks the rescue commit d's check pushes names.
+	named := func(t *testing.T, d *rescuetest.Disk) []string {
+		t.Helper()
+		b, _ := pushed(t, d, only(t, d, d.Check(context.Background(), prefix, target)), "")
+		return trailers(d, b.Commit, rescue.TrailerBookmark)
+	}
+
+	t.Run("main behind the remote's, which moved after the pod fetched it", func(t *testing.T) {
+		d := rescuetest.New(t, issue)
+		remoteOnFailure(t, d)
+		moved := d.Run(d.Remote, "git", "commit-tree", d.Base+"^{tree}", "-p", d.Base, "-m", "main moves on after the pod fetched it")
+		d.Run(d.Remote, "git", "update-ref", "refs/heads/main", moved, d.Base)
+		ownWork(d)
+		if main := d.JJ("log", "--no-graph", "-r", `bookmarks(exact:"main")`, "-T", "commit_id"); main != d.Base {
+			t.Fatalf("the workspace's main is %q, want %s, behind the remote's %s: the case does not stand", main, d.Base, moved)
+		}
+		if objects := strings.Fields(d.Run(d.Clone, "git", "cat-file", "--batch-all-objects", "--batch-check=%(objectname)")); slices.Contains(objects, moved) {
+			t.Fatalf("the clone holds the remote's main %s: the case does not stand", moved)
+		}
+		if got, want := named(t, d), []string{d.Branch + " " + d.Base}; !slices.Equal(got, want) {
+			t.Errorf("the rescue commit names the bookmarks %q, want %q alone: main carries nothing the remote's main at %s lacks", got, want, moved)
+		}
+	})
+
+	t.Run("main moved ahead onto an own commit", func(t *testing.T) {
+		d := rescuetest.New(t, issue)
+		remoteOnFailure(t, d)
+		work := ownWork(d)
+		d.JJ("bookmark", "set", "main", "-r", work)
+		if got, want := named(t, d), []string{d.Branch + " " + d.Base, "main " + work}; !slices.Equal(got, want) {
+			t.Errorf("the rescue commit names the bookmarks %q, want %q: main carries work the remote's main lacks", got, want)
+		}
+	})
+
+	t.Run("main moved ahead onto an own commit only the issue's branch on the remote holds", func(t *testing.T) {
+		d := rescuetest.New(t, issue)
+		remoteOnFailure(t, d)
+		work := ownWork(d)
+		d.JJ("bookmark", "set", d.Branch, "-r", work)
+		d.JJ("git", "push", "--bookmark", d.Branch)
+		d.JJ("bookmark", "set", "main", "-r", work)
+		if branch, main := d.RemoteBranch(d.Branch), d.RemoteBranch("main"); branch != work || main != d.Base {
+			t.Fatalf("the remote holds %s at %s and main at %s, want %s and %s: the case does not stand", d.Branch, branch, main, work, d.Base)
+		}
+		// More work, so that the check has something to push.
+		d.Write(d.Workspace, "more.txt", "more of the issue's own work\n")
+		d.JJ("commit", "-m", "more of the issue's own work")
+		if got, want := named(t, d), []string{d.Branch + " " + work, "main " + work}; !slices.Equal(got, want) {
+			t.Errorf("the rescue commit names the bookmarks %q, want %q: main carries work the remote's main lacks, whatever another branch holds", got, want)
+		}
+	})
+
+	t.Run("bookmarks the remote has no branch of", func(t *testing.T) {
+		d := rescuetest.New(t, issue)
+		remoteOnFailure(t, d)
+		work := ownWork(d)
+		d.JJ("bookmark", "create", "side-note", "-r", work)
+		d.JJ("bookmark", "create", "starting-point", "-r", d.Base)
+		if got, want := named(t, d), []string{d.Branch + " " + d.Base, "side-note " + work, "starting-point " + d.Base}; !slices.Equal(got, want) {
+			t.Errorf("the rescue commit names the bookmarks %q, want %q: the remote has neither name, so both are the issue's", got, want)
+		}
+	})
+}
+
 // jj's working-copy commit can be an empty merge with no description (`jj new A B`): holdingWork
 // keeps a merge, and ownHeads drops the empty commit, so the merge is no tip and is in no push.
 // The rescue commit stands for it, since its parents are the merge's heads, and names its own
