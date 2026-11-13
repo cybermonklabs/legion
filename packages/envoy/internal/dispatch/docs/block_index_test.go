@@ -2230,6 +2230,127 @@ func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *test
 	}
 }
 
+// Both arms of the block-index tick that write a document's rows - the owed arm indexing its
+// blocks (indexOwedDocument) and the window arm writing its windows (windowDocument) - take the
+// document owner's lock before they read what they write from (lockArtifactOwner), the lock every
+// writer of the document holds from before its first read. The test holds that lock and requires
+// the tick to wait for it having written nothing.
+//
+// The window arm writes its windows in one statement and appends no event, so waiting is enough:
+// without the lock it would not wait at all. The owed arm's write phase is a queued batch whose
+// first statements take locks of their own, so an owed arm that lost its read-phase lock still
+// waits, holding no transaction id; what it loses is the re-read under the lock. So the holder is
+// another indexer of the same version: while the arm waits it records the version indexed, as an
+// index of it does, and commits. Read under the lock, the document is owed nothing and the arm
+// indexes nothing; read before it, the arm indexes a version already indexed.
+func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	for _, arm := range []struct {
+		name string
+		// ready leaves the document owed this arm's work and no other's.
+		ready func(t *testing.T, service *Service)
+		// meanwhile, where the row has one, is the other writer's write the holder commits
+		// while the tick waits.
+		meanwhile func(t *testing.T, holder pgx.Tx, document string)
+		// wrote fails the test unless the tick did what it owed once the lock was given back.
+		wrote func(t *testing.T, tick BlockIndexTick)
+	}{
+		{
+			name:  "the owed arm meeting an index written while it waited",
+			ready: func(*testing.T, *Service) {},
+			meanwhile: func(t *testing.T, holder pgx.Tx, document string) {
+				if _, err := holder.Exec(context.Background(), `
+					update document_block_versions set version = (
+						select max(number) from artifact_versions where artifact_id = $1 and markdown is not null
+					) where artifact_id = $1
+				`, document); err != nil {
+					t.Fatalf("record the document's version indexed: %v", err)
+				}
+			},
+			wrote: func(t *testing.T, tick BlockIndexTick) {
+				if tick.Documents != 0 {
+					t.Fatalf("the tick indexed %d documents (%#v) after another writer indexed the held one while it "+
+						"waited, want none: it read what the document owed before the document's owner lock",
+						tick.Documents, tick)
+				}
+			},
+		},
+		{
+			name: "the window arm",
+			ready: func(t *testing.T, service *Service) {
+				if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
+					t.Fatalf("first tick = %#v, want the document's blocks indexed", tick)
+				}
+				// Its windows are dropped and it is marked owed them, as a route that removes
+				// them marks it, so the next tick's one arm with work is the window arm.
+				if _, err := service.store.Pool.Exec(context.Background(),
+					`delete from embeddings where kind = $1`, refs.DocumentWindowKind); err != nil {
+					t.Fatalf("delete the document's windows: %v", err)
+				}
+				if _, err := service.store.Pool.Exec(context.Background(),
+					`update document_block_versions set windows_owed_at = coalesce(windows_owed_at, now())`); err != nil {
+					t.Fatalf("mark the document owed its windows: %v", err)
+				}
+			},
+			wrote: func(t *testing.T, tick BlockIndexTick) {
+				if tick.Windows != 1 {
+					t.Fatalf("the tick windowed %d owners (%#v), want the held document", tick.Windows, tick)
+				}
+			},
+		},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			database, service := blockIndexService(t)
+			ctx := context.Background()
+			document := createOwedDocument(t, database, service, "", "notes", "# Notes\n\nA paragraph.\n", "")
+			settle(t, database, document)
+			arm.ready(t, service)
+			var issueKey *string
+			if err := database.Pool.QueryRow(ctx, `select issue_key from artifacts where id = $1`, document).Scan(&issueKey); err != nil {
+				t.Fatalf("read the document's owner: %v", err)
+			}
+			holder, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the holder: %v", err)
+			}
+			defer holder.Rollback(ctx)
+			if err := store.LockOwner(ctx, holder, *store.OwnerOf(issueKey, &document)); err != nil {
+				t.Fatalf("hold the document's owner lock: %v", err)
+			}
+			type answer struct {
+				tick BlockIndexTick
+				err  error
+			}
+			ticked := make(chan answer, 1)
+			go func() {
+				tick, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
+				ticked <- answer{tick: tick, err: err}
+			}()
+			if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the block-index tick", ticked); answered {
+				t.Fatalf("the tick answered (%#v, %v) while this test held the document's owner lock: %s wrote under no owner lock",
+					early.tick, early.err, arm.name)
+			} else if holdingXid != 0 {
+				t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+			}
+			if arm.meanwhile != nil {
+				arm.meanwhile(t, holder, document)
+			}
+			// Committed: a row's meanwhile is the other writer's write, which the tick must meet.
+			if err := holder.Commit(ctx); err != nil {
+				t.Fatalf("release the owner lock: %v", err)
+			}
+			select {
+			case got := <-ticked:
+				if got.err != nil {
+					t.Fatalf("the tick: %v", got.err)
+				}
+				arm.wrote(t, got.tick)
+			case <-time.After(30 * time.Second):
+				t.Fatal("the tick never finished once the owner lock was released")
+			}
+		})
+	}
+}
+
 // An edit a build without the window path makes during the deploy re-indexes an item's blocks
 // and writes no window. The windows left behind hold the old text and cover blocks the item may
 // no longer have, and the tick would delete the whole-text row standing behind them. What the

@@ -66,7 +66,8 @@ type lockedItemWrite struct {
 	// one-connection pool of its own onto the same database.
 	database *store.Store
 	// owner is the owner of the row the writer writes, whose lock the test holds
-	// (store.OwnerOf): every row of this table writes a row of an issue's, so it is that issue's.
+	// (store.OwnerOf): every row of this table writes a row of an issue's, so it is that issue's;
+	// a row of the route table (route_owner_lock_test.go) may name a project's instead.
 	owner store.Owner
 	// pid is the backend the writer runs on, the one connection of its store.
 	pid uint32
@@ -222,52 +223,59 @@ var itemRowLockTable = []itemRowLockCase{
 // writers it lists, and TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one.
 func TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites(t *testing.T) {
 	for _, writer := range itemRowLockTable {
-		t.Run(writer.name, func(t *testing.T) {
-			ctx := context.Background()
-			write := writer.ready(t)
-			holder, err := write.database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("begin the holder transaction: %v", err)
-			}
-			defer holder.Rollback(ctx)
-			if err := store.LockOwner(ctx, holder, write.owner); err != nil {
-				t.Fatalf("hold the owner lock %s: %v", write.owner.LockKey(), err)
-			}
-
-			answered := make(chan string, 1)
-			go func() { answered <- write.call() }()
-			if answer, early := storetest.WaitForQueuedBehind(t, holder, write.pid, answered, itemRowOwnerLockQueued); early {
-				t.Fatalf("%s answered %s while this test held %s, the owner lock of %s: it writes that "+
-					"row under no owner lock, so a writer holding the owner does not exclude it, and "+
-					"main's `for no key update` of the item row did. Take the owner's lock "+
-					"(store.LockOwner, refs.LockItemOwner) before the write.",
-					writer.writer(), answer, write.owner.LockKey(), write.writes)
-			}
-			if holdsTransactionID(t, holder, write.pid) {
-				t.Fatalf("%s waits for %s, the owner lock of %s, with a transaction id already open: it "+
-					"wrote before it locked, so what it wrote landed under a writer holding that owner. "+
-					"Take the owner's lock in the read phase, before the first write.",
-					writer.writer(), write.owner.LockKey(), write.writes)
-			}
-
-			if write.meanwhile != nil {
-				write.meanwhile(t, holder)
-			}
-			// Committed, not rolled back: a row's meanwhile is the other writer's write, and the
-			// writer queued behind this lock must meet it. A holder with no meanwhile wrote
-			// nothing, so its commit and its rollback leave the same database behind.
-			if err := holder.Commit(ctx); err != nil {
-				t.Fatalf("release the owner lock: %v", err)
-			}
-			select {
-			case <-answered:
-			case <-time.After(itemRowOwnerLockFinish):
-				t.Fatalf("%s never answered within %s of the owner lock being released",
-					writer.writer(), itemRowOwnerLockFinish)
-			}
-			write.wrote(t)
-		})
+		t.Run(writer.name, func(t *testing.T) { holdWriterBehindOwnerLock(t, writer.writer(), writer.ready(t)) })
 	}
+}
+
+// holdWriterBehindOwnerLock is one row of a table of writers held behind an owner lock - this
+// file's, or the route table's (route_owner_lock_test.go): it holds write's owner lock in a
+// transaction of its own, runs the writer, and requires it to wait for that lock having written
+// nothing, then gives the lock back (running the row's meanwhile first, where it has one) and
+// requires the writer to finish and write what it meant to. writer names it for the failures.
+func holdWriterBehindOwnerLock(t *testing.T, writer string, write lockedItemWrite) {
+	t.Helper()
+	ctx := context.Background()
+	holder, err := write.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder transaction: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if err := store.LockOwner(ctx, holder, write.owner); err != nil {
+		t.Fatalf("hold the owner lock %s: %v", write.owner.LockKey(), err)
+	}
+
+	answered := make(chan string, 1)
+	go func() { answered <- write.call() }()
+	if answer, early := storetest.WaitForQueuedBehind(t, holder, write.pid, answered, itemRowOwnerLockQueued); early {
+		t.Fatalf("%s answered %s while this test held %s, the owner lock of %s: it writes that "+
+			"row under no owner lock, so a writer holding the owner does not exclude it, and "+
+			"main's row lock did. Take the owner's lock (store.LockOwner, refs.LockItemOwner) "+
+			"before the write.",
+			writer, answer, write.owner.LockKey(), write.writes)
+	}
+	if holdsTransactionID(t, holder, write.pid) {
+		t.Fatalf("%s waits for %s, the owner lock of %s, with a transaction id already open: it "+
+			"wrote before it locked, so what it wrote landed under a writer holding that owner. "+
+			"Take the owner's lock in the read phase, before the first write.",
+			writer, write.owner.LockKey(), write.writes)
+	}
+
+	if write.meanwhile != nil {
+		write.meanwhile(t, holder)
+	}
+	// Committed, not rolled back: a row's meanwhile is the other writer's write, and the
+	// writer queued behind this lock must meet it. A holder with no meanwhile wrote
+	// nothing, so its commit and its rollback leave the same database behind.
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("release the owner lock: %v", err)
+	}
+	select {
+	case <-answered:
+	case <-time.After(itemRowOwnerLockFinish):
+		t.Fatalf("%s never answered within %s of the owner lock being released",
+			writer, itemRowOwnerLockFinish)
+	}
+	write.wrote(t)
 }
 
 // holdsTransactionID reports whether the backend pid holds a transaction id: it has written

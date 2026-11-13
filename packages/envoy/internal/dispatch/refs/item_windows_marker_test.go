@@ -141,6 +141,68 @@ func TestTheTriggerOwesAnItemItsWindowsAndWritingThemClearsIt(t *testing.T) {
 	}
 }
 
+// The window arm writes an item's windows under the item's owner lock (WriteItemWindows,
+// LockItemOwner), the lock every writer of the item's text holds from before its first read, so
+// it reads the text its windows are cut from as that writer left it. It appends no event, so that
+// lock is the only one it takes: the test holds it and requires the arm to wait for it having
+// written nothing, and to write the windows once it is given back.
+func TestTheWindowArmWaitsForTheItemsOwnerLockHoldingNoTransactionID(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	fixture, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the fixture's transaction: %v", err)
+	}
+	createReferenceProject(t, fixture, "CORE")
+	createReferenceIssue(t, fixture, "CORE-1", "CORE")
+	if err := fixture.Commit(ctx); err != nil {
+		t.Fatalf("commit the fixture: %v", err)
+	}
+	var id string
+	if err := database.Pool.QueryRow(ctx, markedItems[0].insert).Scan(&id); err != nil {
+		t.Fatalf("insert the comment: %v", err)
+	}
+	indexOwedItem(t, database, ItemComment, id, "the insert")
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("hold the comment's owner lock: %v", err)
+	}
+	windowed := make(chan error, 1)
+	go func() {
+		windowed <- func() error {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				return err
+			}
+			defer tx.Rollback(ctx)
+			if _, err := WriteItemWindows(ctx, tx, ItemComment, id); err != nil {
+				return err
+			}
+			return tx.Commit(ctx)
+		}()
+	}()
+	if err, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the window arm", windowed); early {
+		t.Fatalf("the window arm answered (%v) while this test held the comment's owner lock: it wrote the windows "+
+			"under no owner lock", err)
+	} else if holdingXid != 0 {
+		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none", holdingXid)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the owner lock: %v", err)
+	}
+	if err := <-windowed; err != nil {
+		t.Fatalf("write the comment's windows: %v", err)
+	}
+	if windows := windowIDsOf(t, database, ItemComment, id); len(windows) == 0 {
+		t.Fatal("the comment holds no window after the arm was let through")
+	}
+}
+
 // A comment the index holds at no block keeps no marker. A comment whose body is empty holds
 // none - api's createCommentFor takes such a comment when it carries a suggestion - and so
 // does one whose last block an edit removed, whose block rows are all `position is null`.

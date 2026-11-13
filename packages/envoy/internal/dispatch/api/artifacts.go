@@ -608,12 +608,14 @@ func (s *server) storeArtifact(
 			artifact.Role = *role
 		}
 	}
-	// A project document's owner is the artifact itself, and until here this transaction has
-	// not taken its lock: the issue branch above locks its issue, but this one only read its
-	// project. Every writer that takes the owner's lock at all takes it before the room lock -
-	// the durable writers never take it - and the event this upload appends takes it after the
-	// document write has taken the room. Without this line the upload would run room -> owner
-	// against a settlement's owner -> room, and Postgres would break the cycle with a 500.
+	// A project artifact's owner is the artifact itself, and until here this transaction has not
+	// taken its lock: the issue branch above locks its issue, but this one only read its project.
+	// For a document the document service takes that lock itself, before the room, when the write
+	// below joins the document (docs' joinLiveWrite, lockArtifactOwner), so it is not this line that
+	// keeps the upload from running room -> owner against a settlement's owner -> room. A file is
+	// written by this route alone, with no document service call, and this line is the one lock it
+	// takes before its version's insert; without it the upload would meet the owner's lock only in
+	// its event's append, after that insert, holding a transaction id.
 	if target.IssueKey == nil && target.Session == "" && !created {
 		if err := s.requireOpenOwner(r.Context(), tx, ownerForArtifact(artifact)); err != nil {
 			s.writeHandlerError(w, err)

@@ -787,8 +787,10 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 		name string
 		// seeded is the attempt's outcome (seedDelivery).
 		seeded string
-		// claimFirst takes the attempt's claim, as a sender's claim transaction does, and
-		// commits it only once the outbox waits on the comment's owner lock to settle it.
+		// claimFirst takes the attempt's claim, as a sender's claim transaction does - the
+		// comment's owner lock (the api's lockedCommentForDelivery), then the attempt's update -
+		// and commits it only once the outbox waits on that owner lock to settle it, holding no
+		// transaction id (settleAbandoned takes the lock before its update).
 		claimFirst bool
 		wantTopics []string
 		// wantHeld is the destination of each fallback row the publish leaves behind.
@@ -836,8 +838,8 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 					t.Fatalf("begin the claim: %v", beginErr)
 				}
 				defer claim.Rollback(context.Background())
-				if _, err := claim.Exec(context.Background(), `select 1 from issues where key = 'T-1' for no key update`); err != nil {
-					t.Fatalf("lock the comment's owner: %v", err)
+				if err := store.LockOwner(context.Background(), claim, store.IssueOwner("T-1")); err != nil {
+					t.Fatalf("take the comment's owner lock: %v", err)
 				}
 				if _, err := claim.Exec(context.Background(), `
 					update comment_deliveries set claimed_at = now() where comment_id = $1
@@ -846,16 +848,13 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				}
 				published := make(chan error, 1)
 				go func() { published <- publishing() }()
-				waitFor(t, 10*time.Second, "the outbox waiting on the owner lock to settle the attempt", func() bool {
-					var waiting int
-					if err := database.Pool.QueryRow(context.Background(), `
-						select count(*) from pg_stat_activity
-						where datname = current_database() and wait_event_type = 'Lock'
-					`).Scan(&waiting); err != nil {
-						t.Fatalf("read lock waits: %v", err)
-					}
-					return waiting > 0
-				})
+				if early, answered, holdingXid := storetest.AwaitOwnerLockWaiter(t, database,
+					"the outbox settling the abandoned attempt", published); answered {
+					t.Fatalf("the publish answered %v while the claim held the comment's owner lock", early)
+				} else if holdingXid != 0 {
+					t.Fatalf("the outbox waits on the comment's owner lock with a transaction id already open: it " +
+						"settled the attempt before it took that lock")
+				}
 				if err := claim.Commit(context.Background()); err != nil {
 					t.Fatalf("commit the claim: %v", err)
 				}

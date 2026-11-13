@@ -194,8 +194,8 @@ func TestAMovedOwedRowStaysOwedAndIsNotIndexed(t *testing.T) {
 // row, and draining it walks every source whose text belongs to that document - for a spec, every
 // message, ask and comment of its issue - where a text that writes no `#id` has nothing the
 // re-index would move. So the text is read with no lock first and only a text that holds a
-// candidate has its row taken `for no key update`, the lock an edit of that text holds: a source
-// one holds is passed over at once rather than waited for.
+// candidate takes its owner's lock, the lock an edit of that text holds: a source whose owner an
+// edit holds is passed over at once rather than waited for.
 func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -218,8 +218,8 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 		t.Fatalf("begin the edit: %v", err)
 	}
 	defer edit.Rollback(ctx)
-	if _, err := edit.Exec(ctx, `select 1 from comments where id = $1 for no key update`, quiet); err != nil {
-		t.Fatalf("hold the comment's row as an edit does: %v", err)
+	if err := store.LockOwner(ctx, edit, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("hold the comment's owner lock as an edit does: %v", err)
 	}
 
 	bounded, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -229,10 +229,69 @@ func TestTheScopeDrainReadsASourceBeforeItLocksIt(t *testing.T) {
 	if err != nil || indexed {
 		t.Fatalf("the scope drain of a comment an edit holds = %v (%v), want it passed over without waiting", indexed, err)
 	}
-	// A text that writes a `#id` is still read under its own row and re-indexed from what that
-	// read answers: the unlocked read decides only whether to open the transaction.
+	// A text that writes a `#id` is still read under its owner's lock and re-indexed from what
+	// that read answers: the unlocked read decides only whether to open the transaction. The edit
+	// is let go first, since this drain waits for it (TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock).
+	if err := edit.Rollback(ctx); err != nil {
+		t.Fatalf("release the owner lock: %v", err)
+	}
 	if indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", citing, refsGrammarServer); err != nil || !indexed {
 		t.Fatalf("the scope drain of a comment that writes a `#id` = %v (%v), want it re-indexed", indexed, err)
+	}
+}
+
+// A text worth a re-index is read again under its source's owner lock, the lock an edit of that
+// text holds from before its first read to its commit (readSourceUnderOwner), so the scope drain
+// re-indexes the text the edit wrote rather than the one it read before the lock. The test holds
+// the owner lock as the edit does, lets the drain queue behind it, and commits an edit that drops
+// the comment's `#id`: under the lock the drain reads the edited text, finds nothing to move and
+// writes nothing; read before the lock it would index the text the edit replaced.
+func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	seedRefsGrammarIssue(t, database)
+	var comment string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into comments (issue_key, author, body)
+		values ('CORE-1', '{"kind":"user","id":"alice"}', 'See #q1.')
+		returning id::text
+	`).Scan(&comment); err != nil {
+		t.Fatalf("write the comment: %v", err)
+	}
+	edit, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the edit: %v", err)
+	}
+	defer edit.Rollback(ctx)
+	if err := store.LockOwner(ctx, edit, store.IssueOwner("CORE-1")); err != nil {
+		t.Fatalf("take the comment's owner lock as an edit does: %v", err)
+	}
+
+	drained := make(chan drainAnswer, 1)
+	go func() {
+		indexed, err := ReindexScopeSource(ctx, database.Pool, "comment", comment, refsGrammarServer)
+		drained <- drainAnswer{indexed: indexed, err: err}
+	}()
+	if answer, early, holdingXid := storetest.AwaitOwnerLockWaiter(t, database, "the scope drain", drained); early {
+		t.Fatalf("the scope drain answered (indexed %v, error %v) without waiting for the comment's owner lock, which the edit holds",
+			answer.indexed, answer.err)
+	} else if holdingXid != 0 {
+		t.Fatalf("%d backends wait on the owner lock holding a transaction id, want none: the drain reads and plans before its first write", holdingXid)
+	}
+	if _, err := edit.Exec(ctx, `update comments set body = 'No question cited.' where id = $1`, comment); err != nil {
+		t.Fatalf("edit the comment: %v", err)
+	}
+	if err := edit.Commit(ctx); err != nil {
+		t.Fatalf("commit the edit: %v", err)
+	}
+	select {
+	case answer := <-drained:
+		if answer.err != nil || answer.indexed {
+			t.Fatalf("the scope drain after the edit = indexed %v (%v), want nothing indexed: the edited text writes no `#id`, "+
+				"so a drain that indexed it read the text before its owner lock", answer.indexed, answer.err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the scope drain never finished after the edit released the owner lock")
 	}
 }
 

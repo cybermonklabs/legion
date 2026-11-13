@@ -526,7 +526,7 @@ func TestAKeyedCloseWhoseSettlementIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(
 
 // closeCommitHold is the document service with a pause between a close's commit and its sweep: the
 // sweep's own Join, the first document call it makes, which comes once the close's transaction has
-// committed and before the sweep locks the issue's row (sweepClosedIssueAsksTx), closes committed
+// committed and before the sweep takes the issue's owner lock (sweepClosedIssueAsksTx), closes committed
 // and returns only once release is closed. The close's own transaction joins first, and that join
 // passes straight through: the count of joins since the hold was installed is what tells the two
 // apart, and only the sweep's pauses.
@@ -545,12 +545,12 @@ func (h *closeCommitHold) Join(ctx context.Context, tx pgx.Tx) (context.Context,
 	return h.API.Join(ctx, tx)
 }
 
-// A keyed close whose sweep, after its commit, waits on the issue's row ends at the keyed run's
-// bound too, and answers the close it committed. The sweep takes the issue's row in a transaction
+// A keyed close whose sweep, after its commit, waits on the issue's owner lock ends at the keyed
+// run's bound too, and answers the close it committed. The sweep takes that lock in a transaction
 // of its own (sweepClosedIssueAsksTx); on context.WithoutCancel of the keyed request's context it
-// waited for as long as another writer held the row, past the bound, holding the keyed run's
+// waited for as long as another writer held the lock, past the bound, holding the keyed run's
 // background-work slot all the while.
-func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.T) {
+func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesOwnerLockEndsAtItsRunsBound(t *testing.T) {
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.requestKeyRunLimit = time.Second
 	issue := createInteractionIssue(t, handler, "TEST", "Swept while its row is held", "Context\n")
@@ -571,16 +571,16 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.
 		close(hold.release)
 		t.Fatal("the close did not commit within 15 s")
 	}
-	// Another writer takes the issue's row between the close's commit and its sweep.
+	// Another writer takes the issue's owner lock between the close's commit and its sweep.
 	holder, err := database.Pool.Begin(ctx)
 	if err != nil {
 		close(hold.release)
 		t.Fatalf("begin the holder's transaction: %v", err)
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
-	if _, err := holder.Exec(ctx, `select 1 from issues where key = $1 for no key update`, issue.Key); err != nil {
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(issue.Key)); err != nil {
 		close(hold.release)
-		t.Fatalf("hold the issue's row: %v", err)
+		t.Fatalf("hold the issue's owner lock: %v", err)
 	}
 	close(hold.release)
 	select {
@@ -590,7 +590,7 @@ func TestAKeyedCloseWhoseSweepIsHeldOnTheIssuesRowEndsAtItsRunsBound(t *testing.
 				response.Code, response.Body.String())
 		}
 	case <-time.After(15 * time.Second):
-		t.Fatal("a keyed close's sweep still waited on the held issue row 15 s after its run's 1 s bound")
+		t.Fatal("a keyed close's sweep still waited on the held owner lock 15 s after its run's 1 s bound")
 	}
 	var closed bool
 	if err := database.Pool.QueryRow(ctx,

@@ -720,3 +720,69 @@ func TestInboxReadRacingAnotherMarkAll(t *testing.T) {
 		}
 	}
 }
+
+// A Mark all read that moved threads of two projects appends one event on each, and takes both
+// projects' owner locks in one statement, sorted by lock key, before the first append
+// (commitInboxMarks, events.Broker.LockOwners). It never holds one project's lock while it waits
+// for the other's against a writer that takes them in that order. The test is that writer: the two
+// projects are named so that their events are appended in the opposite order to their lock keys',
+// it holds the project whose lock sorts first, and once the press waits it takes the other. A press
+// whose appends took the projects as they reached them would hold the second project's lock while
+// it waited for the first's, and Postgres would break the cycle as a deadlock.
+func TestAMarkAllOverTwoProjectsTakesTheirLocksInLockKeyOrder(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	ctx := context.Background()
+	// Two project keys whose order by name, which the events follow, is the opposite of their
+	// order by lock key.
+	candidates := []string{"PA", "PB", "PC", "PD", "PE", "PF", "PG", "PH"}
+	var named, sorted string
+	for _, first := range candidates {
+		for _, second := range candidates {
+			if first >= second || named != "" {
+				continue
+			}
+			var inverted bool
+			if err := database.Pool.QueryRow(ctx, `select hashtext($1) > hashtext($2)`,
+				store.ProjectOwner(first).LockKey(), store.ProjectOwner(second).LockKey()).Scan(&inverted); err != nil {
+				t.Fatalf("order the lock keys: %v", err)
+			}
+			if inverted {
+				named, sorted = first, second
+			}
+		}
+	}
+	if named == "" {
+		t.Fatal("no two candidate projects order differently by name and by lock key")
+	}
+	for _, project := range []string{named, sorted} {
+		issue := createInteractionIssue(t, handler, project, "Unread in "+project, "A spec")
+		seedUnreadThread(t, handler, "/api/v1/issues/"+issue.Key+"/comments", "Read me in "+project+"?")
+	}
+
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the other writer: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	if err := store.LockOwner(ctx, holder, store.ProjectOwner(sorted)); err != nil {
+		t.Fatalf("hold %s's owner lock: %v", sorted, err)
+	}
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		answered <- postInboxRead(t, handler, "alice", map[string]any{"read_through": time.Now().UTC().Format(time.RFC3339Nano)})
+	}()
+	if early, answeredEarly, _ := storetest.AwaitOwnerLockWaiter(t, database, "the Mark all read", answered); answeredEarly {
+		t.Fatalf("the press answered %d %s while this test held %s's owner lock", early.Code, early.Body.String(), sorted)
+	}
+	if err := store.LockOwner(ctx, holder, store.ProjectOwner(named)); err != nil {
+		t.Fatalf("the other writer could not take %s's owner lock behind %s's: %v; the press held %s's lock while "+
+			"it waited for %s's, against the lock-key order", named, sorted, err, named, sorted)
+	}
+	if err := holder.Commit(ctx); err != nil {
+		t.Fatalf("commit the other writer: %v", err)
+	}
+	if response := awaitResponse(t, answered); response.Code != http.StatusOK || markedBy(t, response) != 2 {
+		t.Fatalf("the press once the other writer committed: status=%d body=%s, want both threads marked",
+			response.Code, response.Body.String())
+	}
+}
