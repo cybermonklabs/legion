@@ -56,7 +56,8 @@ Each item below names a script, then what it proves.
 
 - `stage1-skeleton.sh`
 
-  `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
+  `legion start` boots against a local Postgres, serves `/healthz` and `GET /legion/v1/state`, answers `GET /readyz` 200 once it serves, read after `/healthz` at the first boot and again after the restart, since the readiness latch is one-way and the booting process's own, so a daemon that answers `/healthz` while it never latches is what each of the two reads catches;
+  answers `legion state` with the 21-row capability report on it (`resource-limits` open under tmux, carrying the `capabilities.decided` line to write;
   `pool-capacity` present, since tmux runs no probe pod), registers itself in the Go daemon's own legions registry, survives a restart against the same store with its first boot time intact, and refuses an unreachable Postgres by the host it could not reach and never by the password
 
 - `stage2-tmux-supervision.sh`
@@ -282,7 +283,8 @@ Each item below names a script, then what it proves.
   a refused summary and an already compacted session are reported to the caller, with the owed task sent again all the same;
   a compaction that ran puts the run of provider-error turns back to zero, so six more such turns tell the project's controller a second time;
   a suspended, a stopped, a failed and a Claude Code worker, a worker in a turn and role `controller` are each refused in their own words through both doors;
-  and a fresh session starts the phase worker on its issue's current phase task and the root architect on its catch-up.
+  a fresh session starts the phase worker on its issue's current phase task and the root architect on its catch-up;
+  and a fresh session starts a worker whose pane's process group was killed out from under a daemon that took no report of that death, the planner through the operator's command and the root architect through the controller's door, where the same request against the same pane while its process is alive and in a turn is refused.
   Needs an Oh My Pi (`LEGION_OMP_PATH`); no cluster, no Claude Code and no tmux, so a Legion pod and a devbox both run it
 
 - `role-prompt-rule.sh`
@@ -486,6 +488,12 @@ After each healthy start the run checks that the socket the daemon serves on is 
 the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/proc/*/fd`):
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
+After each healthy start the run also reads `GET /readyz` and requires 200, the daemon's own account of having reached serving (the `servingLatch` the boot sets once its runtime is built, its launcher acceptor installed and the goroutine that serves this API begun), over a route that carries no token and reads no database.
+It polls that read for 5 seconds, because the daemon sets the latch on a goroutine of its own that starts when the serving goroutine does, so `/healthz` can be answered in the instant before it runs;
+a daemon that answers `/healthz` and never latches fails the run all the same.
+It is read at the first boot and again after the restart, never at one of them alone:
+the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered whether or not the latch was set — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
+
 After any exit — pass, failure, or an interrupt
 — the `EXIT` trap removes the container and signals the daemon and the keeper;
 `docker ps -a --filter name=legion-e2e-pg` comes back empty and nothing is left holding the run's port.
@@ -495,7 +503,7 @@ A failed run prints the daemon's log (`<work>/logs/daemon.log`).
 
 Every step is fatal and names its reason:
 a keeper that never held a port, the refusal that does not name its host, a first tmux that is a script or mise itself while `mise which tmux` names no tmux (`real_bin_path` refuses), a daemon that exits before it answers `/healthz` (the run stops at once and names the daemon's exit status), a `/healthz` that never answers (each poll times out after 2 s:
-the kept port queues a request no daemon accepts), a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
+the kept port queues a request no daemon accepts), a `/readyz` that answers anything but 200 at either boot (the failure names the status it got and the body with it, which says whether the daemon called itself starting or stopping), a socket held by any process but the daemon and its keeper, a state document that is not boot 1 with cap 4 and no issues, a registry without exactly one entry for this run, a `firstBootAt` that moved across the restart, a daemon that ignored a stop (SIGKILLed on the way out) or exited non-zero on one.
 `stop_daemon` reads and judges the exit status, because `daemon.Run` returns 0 on a cancelled context — a non-zero status there is a defect, not a stop.
 
 Two notes on what the script had to learn about its own surface:
@@ -4269,9 +4277,9 @@ It is a script of its own rather than more steps of [`provider-error-retry.sh`](
 the two runs would otherwise share a wall clock, and this one starts four panes and waits out a compaction its endpoint holds.
 It runs on any Linux host with `go`, `awk`, `tar`, `bun` (after `bun install` at the checkout's root) and `python3` (for [`lib/loopback-dsn.py`](#libloopback-dsnpy)) — no Docker, no cluster, no kube context, no Claude Code and no tmux, so a Legion pod and a devbox both run it.
 `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN` are required and mean what they mean for [`provider-error-retry.sh`](#provider-error-retrysh), the DSN's host must be loopback as it must there, and the broker is the run's own.
-A whole run took 186 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 138 s of it, and a cold cache adds the driver's own build:
-four panes each start Oh My Pi once, each of the three phase workers answers the task its phase's start left pending on its claim, and the one wait is step 5's held summary — Oh My Pi writes a split turn's summary in two passes, the stand-in holds each for 35 s, and that compaction answers after about 70 s.
-Nothing else waits on a clock: the provider-error ladder's own gaps are the sibling proof's subject, and this one never waits a rung out, since a newer task takes the place of the one a wait stands for.
+A whole run took 176 s measured in a Legion worker pod (omp/18.16.0) with a warm Go build cache, the driver 152 s of it, and a cold cache adds the driver's own build:
+four panes start Oh My Pi once each and the five fresh sessions of steps 7 and 8 start one more each, each of the three phase workers answers the task its phase's start left pending on its claim, and the one wait is step 5's held summary — Oh My Pi writes a split turn's summary in two passes, the stand-in holds each for 35 s, and that compaction answers after about 70 s.
+Nothing else waits on a clock bar step 8, which releases each of its two holds just after a pass of the runtime's own two-second observation sweep: the provider-error ladder's own gaps are the sibling proof's subject, and this one never waits a rung out, since a newer task takes the place of the one a wait stands for.
 The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'s.
 
 | check | what it holds |
@@ -4279,7 +4287,7 @@ The four checks below are [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh)'
 | `prerequisites` | `LEGION_TEST_PG_DSN` is set (the DSN itself is not printed), `go`, `awk` and `python3` are on PATH, the DSN names a loopback host ([`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s `require_loopback_dsn` reads it, and a host that is not `127.0.0.1`, `localhost` or `::1` ends the run with exit 2 before the driver is built), and a `nats-server` is named or installed; the script itself refuses a missing or non-executable `LEGION_OMP_PATH` before this |
 | `broker` | that `nats-server`, with JetStream, listening on 127.0.0.1 and ready |
 | `driver` | a test binary of `TestTheOperatorAndTheControllerCompactAClaimsSessionAndStartItFreshLive` (`internal/daemon/claim_compaction_live_test.go`, `-tags e2e`) |
-| `proof` | the seven steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
+| `proof` | the eight steps below, each printing what it drove and what it read back between its own `== <name>` and `ok <name>` |
 
 The driver boots the whole daemon through `run`, the function `legion start` calls, and seeds four issues, each its own tree: a planner's, an implementer's, a root architect's and a tester's, each with its worker mid-launch, plus a `reviewer` claim stopped and never launched.
 Each of the three phase workers is seeded holding the task its phase's start left pending on its claim, and the root architect's issue stands in `accepting`, the phase whose role is the architect and in which no phase worker runs.
@@ -4307,6 +4315,12 @@ snapcompact is a method these panes could run, and the only thing that keeps a c
 | `step5-a-held-summary-outlasts-the-rpc-timeout-and-refuses-a-fresh-session` | `legion claims compact` at a tester whose stand-in holds every summary answer for 35 s | the caller's real answer after about 70 s, past `worker_rpc_timeout_seconds` and past 30 s; a `fresh_session` asked for during it refused `CLAIM_IN_A_TURN` through both doors and a second compaction refused in its own words; the ladder's own 30 s rung come due inside the compaction having sent nothing; and the owed task gone at the compaction's end, once |
 | `step6-every-refusal-gets-its-own-message-through-both-doors` | a summary the endpoint refuses every time, a worker in a turn, a role `worker_backends` runs on Claude Code, role `controller`, and a suspended, a stopped and a failed worker | the refused summary reported 200 `compacted: false` with the owed task sent again and no run reset; and `CLAIM_IN_A_TURN`, `CLAIM_NOT_ON_OMP`, `INVALID_ROLE` and `CLAIM_NOT_RUNNING` each word for word through both doors |
 | `step7-a-fresh-session-starts-each-worker-anew-with-what-its-issue-owes-it` | `legion claims retry --claim <token> --fresh-session` at the stopped planner, asked again while the daemon refuses it — admission starts a stopped worker that holds a slot in its phase and owes no task again by itself, and the operation reaches no claim whose launch is in flight — then the controller's `fresh_session` at the root architect | each relaunched with no session to resume and running in a session that is not the one it recorded; the planner sent a task of its issue's current phase; the architect's new launch told its tree's catch-up; and the daemon's own line naming which door asked for each |
+| `step8-a-fresh-session-starts-a-worker-whose-process-is-gone` | the planner and the root architect, each in a turn its stand-in holds open, their panes' whole process groups killed with the driver's runtime holding its own reports of the claim back, then `legion claims retry --claim <token> --fresh-session` for the planner and the controller's `fresh_session` for the architect | each refused `CLAIM_IN_A_TURN` through both doors while its process is alive and in that turn; the daemon's read of the killed process answering uncertain, no death of the claim judged, and the claim still stored `working` over it; then 200, a new pane in a session that is not the one it recorded, and the task of the dead turn back marked interrupted — the planner's the task of its issue's current phase, and the architect's new launch told its tree's catch-up |
+
+Step 8's window is one no pane can be asked to produce: a process died and no report of that death ever reached the daemon, which is what a lifecycle refusal or a daemon restart leaves, and what makes a claim stand stored `working` over nothing.
+A daemon that hears of the death repairs the worker itself — the worker stream's connection closes, it probes the process, finds it gone and relaunches it — so the step holds the driver's runtime back over that one claim while it kills the pane: every report of the claim is dropped, and every read of its process answers `uncertain`, the verdict that is no statement about a process at all, which the daemon records nothing of and asks again at its probe interval.
+The process itself really dies, by `SIGKILL` to the whole process group, and the hold ends before the request, so what finds that process gone is the read the recovery makes at the request and nothing else.
+The hold ends just after a pass of the runtime's own observation sweep, which is what leaves the request a whole sweep interval to be the next thing that reads the process.
 
 What the proof stands in for lies outside the rule:
 the broker is a native `nats-server`, GitHub is the REST stand-in the whole-daemon drivers share, Dispatch is their board (`liveDispatch`, in `internal/daemon/live_proof_test.go`), Envoy's listener is the package's `noticeListener`, the two Apps' tokens are placeholders, and each pane's provider is a stand-in.

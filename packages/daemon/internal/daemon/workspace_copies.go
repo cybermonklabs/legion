@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -433,6 +434,13 @@ func (w *workflowRuntime) copyWorkspaceAtPush(issue string) {
 // (takeRunningCopy), so a copy owed to a turn's end holds up neither the copy that owed it nor
 // anything else. Before the run starts and once it has ended no copy is started at all. noRole is
 // the level the copy logs an issue with no live role to ask at (takeRunningCopy).
+//
+// The goroutine takes a hold mark of its own for the store's pool (store.ForConcurrentWorker),
+// as every loop of the daemon's run does: copies of different issues run beside each other and
+// beside those loops, and each reads the claims and writes its row through the pool, so a mark
+// shared with any of them would have the pool refuse one its first connection while another held
+// one, and an unmarked context would leave the pool unable to refuse a copy a second connection
+// of its own. The run it is made from holds no connection, so a fresh mark sees everything.
 func (w *workflowRuntime) startRunningCopy(issue string, claims []supervise.Claim, noRole slog.Level) {
 	run, ok := w.copies.running()
 	if !ok {
@@ -440,7 +448,7 @@ func (w *workflowRuntime) startRunningCopy(issue string, claims []supervise.Clai
 		return
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(run, w.runningCopyBudget())
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(run), w.runningCopyBudget())
 		defer cancel()
 		w.takeRunningCopy(ctx, issue, claims, noRole)
 	}()

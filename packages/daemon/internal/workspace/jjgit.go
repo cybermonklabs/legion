@@ -3,6 +3,7 @@ package workspace
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -85,11 +86,6 @@ func OutputLines(out string) []string {
 	return kept
 }
 
-// commandWaitDelay bounds the wait for a jj or git child's output once that child has exited or
-// been killed at its budget: a process of its own that holds the pipe open past it is left behind
-// rather than kept waited on.
-const commandWaitDelay = time.Second
-
 // RunCommand runs one jj or git command of the workspace within the caller's budget and returns
 // its trimmed standard output. dir is the directory the command runs in, which is the workspace
 // its -R or --git-dir names: jj searches upward from the directory it runs in for the closest
@@ -97,17 +93,17 @@ const commandWaitDelay = time.Second
 // wherever the caller's process stands would read a repository nobody named (docs/testing.md).
 // stdin is fed to the command, and nil is an empty standard input. started is when the caller's
 // budget began, which a timeout's report names. A failure's report ends with a note on each
-// stale git lock it names (staleGitLockNote). The command timed out only when the budget ended
-// it: once the command has exited on its own, commandWaitDelay can hold Run open past the budget
-// for a child still holding the command's pipes, and the command's own exit is then its answer. A
-// command that never started because an earlier one on the same budget spent it timed out too,
-// while a command the caller stopped by cancelling its context, rather than the budget ending
-// it, reports its exit, not a timeout.
+// stale git lock it names (StaleGitLockNote). The command timed out only when the budget ended
+// it: once the command has exited on its own, procgroup.WaitDelay can hold Run open past the
+// budget for a child still holding the command's pipes, and the command's own exit is then its
+// answer. A command that never started because an earlier one on the same budget spent it timed
+// out too, while a command the caller stopped by cancelling its context, rather than the budget
+// ending it, reports its exit, not a timeout.
 //
 // The save (internal/shim) and the restore (internal/launcher) both run here: they run the same
 // two tools over the same workspace, and a restore wedged on a stale index.lock or on a git
-// child that holds the pipe past the budget needs the same note and the same WaitDelay the save
-// has.
+// child that holds the pipe past the budget needs the same note and the same stop and wait the
+// save has.
 func RunCommand(ctx context.Context, budget time.Duration, started time.Time, env []string, dir string, stdin []byte, args []string) (string, error) {
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.Env = env
@@ -117,13 +113,20 @@ func RunCommand(ctx context.Context, budget time.Duration, started time.Time, en
 	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	cmd.WaitDelay = commandWaitDelay
-	killed := procgroup.KilledByContext(cmd)
+	// The budget's end stops the command the way every other git and jj of this package is
+	// stopped: SIGTERM to the command's own process group, a grace for a git that handles it to
+	// remove the lock files it holds, then SIGKILL to the group, and procgroup.WaitDelay as the
+	// bound on the wait for a child that still holds the pipes once the command itself has gone
+	// (procgroup.Configure, which also answers whether that stop is what ended the command).
+	killed := procgroup.Configure(cmd)
 	err := cmd.Run()
 	command := strings.Join(args, " ")
-	// The budget ended the command only when its kill is what ended it (procgroup.KilledByContext,
+	// The budget ended the command only when that stop is what ended it (procgroup.Configure,
 	// never the deadline having passed by the time Run returned) and the budget is what ended ctx,
-	// which is how execRunner reads its own TimedOut (config.go).
+	// which is how execRunner reads its own TimedOut (config.go). It is read before the run's own
+	// error is propagated: exec reports a command whose Cancel succeeded and which then exited
+	// cleanly as the context's error, which is what a git that handles its SIGTERM and exits 0
+	// inside the grace does.
 	timedOut := (killed() && errors.Is(ctx.Err(), context.DeadlineExceeded)) ||
 		(cmd.Process == nil && errors.Is(err, context.DeadlineExceeded))
 	if runErr := procgroup.Err(err); runErr != nil && !timedOut {
@@ -133,7 +136,7 @@ func RunCommand(ctx context.Context, budget time.Duration, started time.Time, en
 		return strings.TrimSpace(stdout.String()), nil
 	}
 	report := strings.TrimSpace(stderr.String())
-	if note := staleGitLockNote(report, time.Now()); note != "" {
+	if note := StaleGitLockNote(report, time.Now()); note != "" {
 		report += "\n" + note
 	}
 	if timedOut {
@@ -154,15 +157,41 @@ var gitLockReports = []*regexp.Regexp{
 	regexp.MustCompile(`Unable to create '([^']+)': File exists`),
 }
 
-// staleGitLockNote is one line for each git lock file output names that is still on disk: its
+// staleGitLockNoteFile is the note's wording, held in a data file beside this one rather than in
+// a string literal here because packages/pi-shared's own copy of this note is held to that
+// wording by a test that reads it and compares the two (git-lock.test.ts): a data file is one
+// text both languages read as it stands, where a Go literal is one this package could rewrap or
+// split over a const block at any time, breaking a test in another package.
+//
+// It holds the note's one line and the newline that ends that line, which the note itself does
+// not carry: the template below is this text without that newline, and the other side strips
+// the same one byte, so the two notes are equal byte for byte.
+//
+// The numbers in it are internal/launcher's gitLockGuard (15 minutes) and gitLockInterval (a
+// minute), which this package cannot read: internal/launcher imports this one. A test there
+// renders this note and asserts both numbers, so a change of either without a change of this
+// wording fails (TestStaleGitLockNoteCarriesTheLaunchersSweepNumbers).
+//
+//go:embed stale-git-lock-note.txt
+var staleGitLockNoteFile string
+
+// staleGitLockNoteText is that wording as a format template, with the lock's path and its age in
+// that order: the data file without the newline that ends its only line.
+var staleGitLockNoteText = strings.TrimSuffix(staleGitLockNoteFile, "\n")
+
+// StaleGitLockNote is one line for each git lock file output names that is still on disk: its
 // path, how long ago it was last written, and what becomes of it. A git or jj interrupted
-// mid-write leaves its lock, and every later write of what it locks fails on it. In a pod no
-// process removes it while the pod runs, since another role's git, in a container whose
-// processes this one cannot see, may hold it; replacing the issue's pod does (`workspace-init
-// provision`, cmd/legion/workspace_init.go). Under tmux nothing removes it. The Legion tools'
-// staleGitLockNote (packages/pi-shared/src/git-lock.ts) words the same note for its own jj
-// calls. Empty when output names no lock, or each one it names is already gone.
-func staleGitLockNote(output string, now time.Time) string {
+// mid-write leaves its lock, and every later write of what it locks fails on it. In an issue pod
+// the launcher of the roles container removes such a lock once no process of the container holds
+// it open and it is more than 15 minutes old, and looks again every minute
+// (internal/launcher's gitLockSweep), and the pod's `workspace-init provision` removes every lock
+// it finds before any container starts (RemoveStaleGitLocks, stalelock.go): the role's answer is
+// to run its command again, never to remove the file, which another role's live git may hold.
+// Under tmux nothing removes it, and the last sentence is what stands where a pod's image
+// predates that sweep. The Legion tools' staleGitLockNote
+// (packages/pi-shared/src/git-lock.ts) words the same note for its own jj calls. Empty when
+// output names no lock, or each one it names is already gone.
+func StaleGitLockNote(output string, now time.Time) string {
 	var locks, notes []string
 	for _, report := range gitLockReports {
 		for _, match := range report.FindAllStringSubmatch(output, -1) {
@@ -176,11 +205,7 @@ func staleGitLockNote(output string, now time.Time) string {
 		if err != nil {
 			continue
 		}
-		notes = append(notes, fmt.Sprintf("git lock %s was last written %s ago and blocks this command. "+
-			"Do not remove it while the issue's pod runs: another role's git, which this container cannot see, may hold it. "+
-			"Replacing the issue's pod removes it. "+
-			"Under the tmux runtime nothing removes it: remove it by hand only once no git or jj process on the host is using the repository.",
-			lock, now.Sub(info.ModTime()).Round(time.Second)))
+		notes = append(notes, fmt.Sprintf(staleGitLockNoteText, lock, now.Sub(info.ModTime()).Round(time.Second)))
 	}
 	return strings.Join(notes, "\n")
 }

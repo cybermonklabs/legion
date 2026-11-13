@@ -371,24 +371,35 @@ export function createLegionTool(deps: {
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
-        "The answer is empty when the claim came back and nothing else is to be said, and names why nothing restarted the " +
-        "phase (phaseNotRestarted) when the claim came back owing no task and the workflow refused that restart: the claim is " +
-        "running, and no work was handed to it. " +
-        "The daemon refuses it for a claim it records as working, which may be in a turn " +
-        "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
-        "of it found gone, where no turn is running (CLAIM_IN_A_TURN as well), for a claim a " +
+        "The answer is empty when the claim came back and nothing else is to be said. phaseNotRestarted says why nothing " +
+        "restarted the claim's phase, where the claim came back owing no task and the workflow refused that restart: the " +
+        "claim is running, and no work was handed to it. It says what was refused, where this request stopped the claim " +
+        "and a step that would have started it again was refused, and the state that left the claim in: read that state " +
+        "in read_state, and ask for a fresh session again only where the claim is suspended. " +
+        "It reaches a claim stored working that no process stands behind: the daemon reads that claim's process when the " +
+        "request arrives, suspends the claim where it stands, and starts it again with the task its dead turn held. " +
+        "The daemon refuses it for a claim whose process that read finds running " +
+        "(CLAIM_IN_A_TURN), for a claim whose session is being compacted, which is not read at " +
+        "all (CLAIM_IN_A_TURN), for a claim whose process the runtime would not answer for, for " +
+        "one that records no process to read, and for one that moved under the request and that a second read " +
+        "finds no longer working or gone once more, each left exactly as the request found it " +
+        "(CLAIM_UNSETTLED; a claim that moved is otherwise answered as that second read finds it), for a claim a " +
         "suspension is held over, in whatever state the hold found it (CLAIM_IN_A_TURN where " +
         "the claim is working, CLAIM_UNSETTLED where it is not), for a claim between states — " +
         "one queued, one whose launch is in flight, and one left working under a relaunch the " +
         "wake pacing parked (CLAIM_UNSETTLED) — and for role controller. " +
         "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
         "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
-        "whatever task it owes again. Try compact before fresh_session for a claim that stays stuck. The answer says " +
-        "whether the session was compacted and, when it was not, why; the claim is back either way. The daemon refuses " +
-        "it for a claim that is suspended, failed or retired (CLAIM_NOT_RUNNING: fresh_session " +
-        "reaches that one), for a claim it records as working, which may be in a turn " +
-        "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
-        "of it found gone, where no turn is running (CLAIM_IN_A_TURN), for a claim a " +
+        "whatever task it owes again. Try compact first for a claim whose session a provider keeps refusing, and " +
+        "fresh_session for a claim no process stands behind, which compact refuses and fresh_session reaches. The answer " +
+        "says whether the session was compacted and, when it was not, why; the claim is back either way. The daemon " +
+        "refuses it for a claim that is suspended, failed or retired, and for one stored working " +
+        "that no process stands behind (CLAIM_NOT_RUNNING: fresh_session reaches both), for a " +
+        "claim whose process the daemon reads as running (CLAIM_IN_A_TURN), for a claim whose " +
+        "session is being compacted already (CLAIM_IN_A_TURN), for a claim whose process the " +
+        "runtime would not answer for, for one that records no process to read, and for one " +
+        "that moved out of working while the request was made " +
+        "(CLAIM_UNSETTLED), for a claim a " +
         "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
         "where it is not), for a claim between states — one queued, one whose launch is in " +
         "flight, one whose agent has registered and is not ready yet, which fresh_session " +

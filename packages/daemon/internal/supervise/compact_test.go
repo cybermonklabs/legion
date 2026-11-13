@@ -158,17 +158,20 @@ func TestAClaimBeingCompactedIsBusyUntilTheCompactionEnds(t *testing.T) {
 	}
 }
 
-// waitForCompacting waits until the machine reports the claim being compacted.
+// waitForCompacting waits until the machine reports the claim being compacted and the compaction
+// has reached the connection held: the machine reports the claim compacting as it takes it,
+// before it asks Oh My Pi (Machine.Compact), so a test that moves the claim at that report alone
+// can move it before the ask and read the answer of a compaction that never began.
 func waitForCompacting(t *testing.T, h *harness) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if c := h.m.View().Claim; c.Compacting && c.State == StateWorking {
+		if c := h.m.View().Claim; c.Compacting && c.State == StateWorking && h.conn.CompactsHeld() > 0 {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("the claim never reported itself being compacted")
+	t.Fatal("the claim never reported itself being compacted with the compaction held at its connection")
 }
 
 // A turn that ends while the session is being compacted leaves the claim exactly where it is: a
@@ -492,13 +495,14 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 // does the claim stands stored working over a process that is gone.
 //
 // What that claim records of its process is the verdict that raised the relaunch, kept where
-// every verdict is judged and read by both recovery doors (Claim.ProcessGone,
-// reportedProcess): state, the compaction in flight, the suspension held and the wake waiting
-// are the rest of what either door reads of a working claim (api's refuseState, freshSession),
-// and a claim genuinely in a turn reads the same in all four, so the fifth is the whole of
-// what tells the two apart. Without it both doors answer such a claim "is in a turn", which it
-// is not — the turn is over, its process gone, and what raises the next relaunch is the next
-// report of that process.
+// every verdict is judged (Claim.ProcessGone, reportedProcess): state, the compaction in
+// flight, the suspension held and the wake waiting all read as a claim genuinely in a turn
+// reads, so this record is the whole of what the machine's own side has to tell the two apart,
+// and a suspension that reaches such a claim lands where it arrives on it (holdSuspension).
+// It is memory, so it is no answer for a recovery door: a restart forgets it, and both doors
+// read the process itself at the moment of the request instead (ReadProcess, api's
+// refuseWorkingClaim). What ends this window is a launch, raised by the next report of that
+// process or by the fresh session that stops the claim and starts it again.
 //
 // This case was TestAParkedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn, which
 // held that nothing of the claim told the two apart: that is the gap this round closes, so the

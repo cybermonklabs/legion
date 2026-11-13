@@ -99,10 +99,10 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	}
 }
 
-// A RunCommand command that exits on its own did not time out, however long commandWaitDelay then
-// holds the run open for a child still holding its output pipes: its exit is its answer. In the
-// first case the budget is 100 ms short of commandWaitDelay, so the run always returns past it,
-// while the command still has 900 ms to exit under load; a run that read a timeout from the
+// A RunCommand command that exits on its own did not time out, however long procgroup.WaitDelay
+// then holds the run open for a child still holding its output pipes: its exit is its answer. In
+// the first case the budget is 100 ms short of procgroup.WaitDelay, so the run always returns past
+// it, while the command still has 900 ms to exit under load; a run that read a timeout from the
 // deadline having passed would report jj's own exit 3 as a timeout. In the second the command
 // exits 0 well inside its budget; a run that took exec.ErrWaitDelay for a failure would report
 // that success as an error. (Ported with RunCommand's own semantics from the shim's
@@ -113,7 +113,7 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 		budget  time.Duration
 		wantErr string
 	}{
-		"an exit 3, the pipes held past the budget": {3, commandWaitDelay - 100*time.Millisecond, "Command failed (exit 3)"},
+		"an exit 3, the pipes held past the budget": {3, procgroup.WaitDelay - 100*time.Millisecond, "Command failed (exit 3)"},
 		"an exit 0 inside the budget":               {0, time.Minute, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -128,8 +128,8 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *tes
 			out, err := RunCommand(ctx, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
 			elapsed := time.Since(started)
 
-			if elapsed < commandWaitDelay {
-				t.Fatalf("the run returned after %s, inside commandWaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
+			if elapsed < procgroup.WaitDelay {
+				t.Fatalf("the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
 			}
 			if testCase.wantErr == "" {
 				if err != nil || out != "answered" {
