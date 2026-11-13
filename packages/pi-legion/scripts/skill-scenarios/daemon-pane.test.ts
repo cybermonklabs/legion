@@ -372,6 +372,14 @@ const SUBSTITUTE_ENGINES = [
     says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
   },
   {
+    // Three arguments, the engine's own message among them: a reading that takes any call of
+    // two or more reads the sentence out of a call whose third argument it never looked at.
+    file: "three-arguments",
+    shape: "a refused call of three arguments",
+    call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf("the %s does not run phase %s of %s", fact.Role, issue.Phase, issue.Key), cause)',
+    says: 'holds no refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Sprintf(…)) call',
+  },
+  {
     file: "other-printer",
     shape: "a message another printer built",
     call: 'refused("HANDOFF_NOT_CURRENT_PHASE", fmt.Errorf("%s may not complete %s", fact.Role, issue.Phase))',
@@ -493,6 +501,33 @@ test("worker-pane.ts refuses a world that names no default branch", () => {
     path.resolve(import.meta.dir, "../../../.."),
   ]);
   expect(built.stderr.toString()).toContain(`${dir}/world.json is no world`);
+  expect(built.exitCode).toBe(2);
+  expect(existsSync(path.join(dir, "worker.env"))).toBe(false);
+});
+
+// And a world.json that is no JSON at all is refused the same way, by the one reader every
+// program of the run reads the world with (gh-call.ts's `worldOf`). Catches: a reader whose
+// `JSON.parse` throws uncaught, which ends the program with a stack trace and exit 1 rather than
+// the documented "is no world" and 2 the gh stand-in gives for the same file — a reader of the
+// run's output then has a crash where it should have the file and the program that stopped.
+test("worker-pane.ts refuses a world.json that is no JSON, naming the file", () => {
+  const dir = path.join(rig, "worker-pane-no-json");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "world.json"), "{not json");
+  writeFileSync(path.join(dir, "base.env"), "");
+  const built = Bun.spawnSync([
+    "bun",
+    path.join(import.meta.dir, "worker-pane.ts"),
+    dir,
+    path.join(dir, "base.env"),
+    "13399",
+    "rig-profile",
+    "skillsrig",
+    "LWEVAL-1",
+    "tester",
+    path.resolve(import.meta.dir, "../../../.."),
+  ]);
+  expect(built.stderr.toString()).toStartWith(`worker-pane.ts: ${dir}/world.json is no world: `);
   expect(built.exitCode).toBe(2);
   expect(existsSync(path.join(dir, "worker.env"))).toBe(false);
 });

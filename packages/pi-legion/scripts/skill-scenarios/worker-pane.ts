@@ -10,12 +10,13 @@
 //                  <checkout>
 //
 // The repository the pane's addressing names and the branch it gives as the default are the run's
-// own world's, read from <run dir>/world.json through the one reader the daemon stand-in reads it
-// with (daemon-pane.ts's `worldOf`; rig.sh's worker world comment).
+// own world's, read from <run dir>/world.json through the one reader every program of the run
+// reads it with (gh-call.ts's `worldOf`; rig.sh's worker world comment).
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { isLegionRole } from "@legion/contracts";
-import { workerPane, worldOf } from "./daemon-pane";
+import { workerPane } from "./daemon-pane";
+import { worldOf } from "./gh-call";
 
 const [runDir, baseEnvFile, port, profile, project, issue, role, checkout] = Bun.argv.slice(2);
 if (

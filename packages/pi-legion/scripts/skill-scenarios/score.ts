@@ -32,15 +32,17 @@ import { z } from "zod";
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
 // How gh reads a call's verb, its body and the two review endpoints, in the module the gh
-// stand-in answers that same call by (gh-call.ts).
+// stand-in answers that same call by (gh-call.ts), and the world every program of the run reads.
 import {
   createdHead,
   createdState,
   flagValue,
   isPost,
+  readWorld,
   reviewsRoute,
   sentBody,
   submitsReview,
+  type World,
 } from "./gh-call";
 import {
   CheckableFile,
@@ -109,16 +111,15 @@ const Call = z.looseObject({
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
 });
-/** rig.sh's worker_fixture: the world a worker run works in, on the run's own issue `key`;
- * `head` is the PR's head, the implementer's code commit. Every worker scenario reads it —
- * tester-proof, reviewer-text-findings and threads-closed. */
-const World = z.object({
-  key: z.string(),
-  repo: z.string(),
-  pr: z.number(),
-  branch: z.string(),
-  head: z.string(),
-});
+/** rig.sh's worker_fixture's <run>/world.json, read through the one reader every program of the
+ * run reads it with (gh-call.ts's `readWorld`). Every worker scenario reads it — tester-proof,
+ * reviewer-text-findings and threads-closed — and a file that is no world is a rig error of the
+ * run, thrown here as every other unreadable record of a run is. */
+function worldIn(runDir: string): World {
+  const read = readWorld(runDir);
+  if ("why" in read) throw new Error(`${runDir}/world.json is no world: ${read.why}`);
+  return read.world;
+}
 /** `seed.ts capture-handoffs`: every handoff record of the run's issue, newest first, each with the
  * body Dispatch stores (the exact text its writer sent). */
 const Handoffs = z.array(
@@ -807,7 +808,7 @@ function changedFiles(runDir: string, from: string, to: string): string[] {
  * failure. `ref`: the agent read skill://legion-worker/references/pr-body.md, where the line is
  * defined. */
 function testerProof(runDir: string, run: string, label: string, heads: string[]): Row {
-  const world = json(path.join(runDir, "world.json"), World);
+  const world = worldIn(runDir);
   const calls = parsed(path.join(runDir, CALLS), Call);
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
   const entries = session(runDir);
@@ -1041,7 +1042,7 @@ function reviewOf(
  * last push onto the world's branch before that left there (<run>/pushes.log), or the world's
  * own head before any. It is the tip a create naming no head is read at (`reviewOf`), as the gh
  * stand-in reads it off its remote at the call. */
-function headAt(runDir: string, world: z.infer<typeof World>): (at: string) => string {
+function headAt(runDir: string, world: World): (at: string) => string {
   const pushes = pushesOf(runDir).filter((push) => push.ref === `refs/heads/${world.branch}`);
   return (at) => {
     const began = instant(at, "a gh call's time");
@@ -1173,18 +1174,13 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
  * after an approval until GitHub reports the head `CLEAN`, `UNSTABLE` or `HAS_HOOKS`
  * (`workflow/review.go`'s `reviewRound`), and rig.sh's review_world serves its head `BLOCKED` —
  * its base requires conversation resolution and a thread is open — so a reviewer that waited
- * for `accepting` would never send. The
- * rule asks for
- * no read of the record before the wake, so the score asks for none: the condition this
- * scorer held until then — a `read_record` after the approval answering `accepting`, and the
- * publish ordered after that answer, by the cell's own call for a read an `eval` cell took — went
- * with the gate it served, and so did the rig error of a read whose answer held no record. The
- * wake is ordered against the approval's own time, the time the gh stand-in recorded the call
- * that submitted it at.
+ * for `accepting` would never send. The rule asks for no read of the record before the wake, so
+ * the score asks for none, and the wake is ordered against the approval's own time, the time
+ * the gh stand-in recorded the call that submitted it at.
  * `ref`: the agent read skill://legion-worker/references/merge-gate.md, where the rule is
  * defined. */
 function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
-  const world = json(path.join(runDir, "world.json"), World);
+  const world = worldIn(runDir);
   const calls = parsed(path.join(runDir, CALLS), Call);
   const reviews = reviewsIn(
     calls.filter((call) => call.as === "gh" && call.exit === 0),
@@ -1631,7 +1627,7 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
  * where the loop, the one reply per thread and the one thread per resolving call are defined. */
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
-  const world = json(path.join(runDir, "world.json"), World);
+  const world = worldIn(runDir);
   const threads = json(path.join(runDir, "threads.json"), Threads);
   const calls = parsed(path.join(runDir, CALLS), Call).filter(
     (call) => call.as === "gh" && call.exit === 0
@@ -4628,7 +4624,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   // the one reader). A world.json that does not parse is its own run's rig error, below.
   const heads = (existsSync(runsDir) ? readdirSync(runsDir) : []).flatMap((run) => {
     try {
-      return [json(path.join(runsDir, run, "world.json"), World).head];
+      return [worldIn(path.join(runsDir, run)).head];
     } catch {
       return [];
     }

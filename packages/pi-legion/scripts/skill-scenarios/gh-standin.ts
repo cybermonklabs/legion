@@ -35,7 +35,6 @@
 // always been (score.ts's `unscored`). No score reads the line itself.
 //   gh-standin.ts gh <args...>
 //   gh-standin.ts gh --open   (what `$R/bin/gh --open` runs: the wrapper inserts the program word)
-//   gh-standin.ts --open
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 // How a call's verb, its flags and its body are read, and the two review endpoints: one reader
@@ -58,6 +57,7 @@ import {
   submitsReview,
   submittedState,
   valueAt,
+  worldOf,
 } from "./gh-call";
 import { CALLS, openingLine } from "./run-records";
 
@@ -80,13 +80,6 @@ const Fixtures = z.looseObject({
   ),
 });
 
-/** The part of rig.sh's <run>/world.json this stand-in reads: the repository whose pull request
- * the run's world holds, the issue branch of the run's own bare remote, whose tip is the pull
- * request's head, and the branch it is open against, which is the other side of its diff. None
- * has a default: rig.sh's fixture_write writes all three into every world it builds, so a world
- * missing one is a world this stand-in cannot serve. */
-const World = z.looseObject({ repo: z.string(), branch: z.string(), base: z.string() });
-
 const run = process.env.SKILL_SCENARIO_RUN;
 if (!run) {
   console.error("gh-standin: SKILL_SCENARIO_RUN is unset");
@@ -104,10 +97,9 @@ function openRecord(): void {
 const invocation = Bun.argv.slice(2);
 // `--open` is rig.sh asking for that line alone, before any agent of the run has made a call:
 // `$R/bin/gh --open`, the stand-in reached the way the pane's PATH reaches it, where the wrapper
-// inserts the program word, and `gh-standin.ts --open` by this file's path. It is that flag on
-// its own in either form, so no call of an agent's is taken for it — and `gh --open` is no
-// command gh itself answers.
-if (invocation.at(-1) === "--open" && invocation.length <= 2) {
+// inserts the program word. It is that flag on its own after that word, so no call of an
+// agent's is taken for it — and `gh --open` is no command gh itself answers.
+if (invocation.length === 2 && invocation[0] === "gh" && invocation[1] === "--open") {
   openRecord();
   process.exit(0);
 }
@@ -116,6 +108,16 @@ const at = new Date().toISOString();
 openRecord();
 const fixtures = Fixtures.parse(JSON.parse(readFileSync(`${run}/fixtures.json`, "utf8")));
 const routes = fixtures.routes;
+/** The run's world (gh-call.ts's `World`, the one schema every program of the run reads it
+ * by), or undefined when the run has none. This stand-in is the one reader that answers with no
+ * world rather than exiting: a scenario that builds no world writes no world.json, and its calls
+ * are answered from the routes alone, with the fixture's own head. Only a missing file is "no
+ * world". A world.json that is there and is no world is the rig's own fault, and reading it as
+ * none would serve the fixture's frozen head and diff to every call: a pushing role would read a
+ * head that is not its own and stop, and a reviewer would read the diff without the fix it was
+ * sent to read, with nothing anywhere saying why. So that file ends the call with 2, as it ends
+ * every other program of the run (`worldOf`). */
+const world = existsSync(`${run}/world.json`) ? worldOf(run, "gh-standin") : undefined;
 
 let stdin: string | undefined;
 const readStdin = async () => {
@@ -209,26 +211,6 @@ function exit(status: number): never {
   );
   process.exit(status);
 }
-/** The run's world (rig.sh's worker_fixture), or undefined when the run has none: a scenario
- * that builds no world writes no world.json, and a call of its own reads the fixture's answer.
- * Only a missing file is "no world". A world.json that does not parse is the rig's own fault, and
- * reading it as none would serve the fixture's frozen head and diff to every call: a pushing role
- * would read a head that is not its own and stop, and a reviewer would read the diff without the
- * fix it was sent to read, with nothing anywhere saying why. So it exits with an error instead. */
-function worldOf(): z.infer<typeof World> | undefined {
-  if (!existsSync(`${run}/world.json`)) return undefined;
-  const text = readFileSync(`${run}/world.json`, "utf8");
-  let why = "";
-  try {
-    const read = World.safeParse(JSON.parse(text));
-    if (read.success) return read.data;
-    why = read.error.message;
-  } catch (error) {
-    why = String(error);
-  }
-  console.error(`gh-standin: ${run}/world.json is no world: ${why}`);
-  process.exit(2);
-}
 /** What `git -C <run>/remote.git <args...>` prints, or undefined when the command fails: the
  * run's own bare remote, read at the call. A run with no remote of its own fails every call. */
 function fromRemote(...args: string[]): string | undefined {
@@ -241,7 +223,6 @@ function fromRemote(...args: string[]): string | undefined {
 // every pushing role do, must see its own commit. The tip is read from the run's bare remote at
 // the call, and a remote the run has not got leaves the fixture's value as it is.
 function branchTip(): string | undefined {
-  const world = worldOf();
   return world === undefined ? undefined : fromRemote("rev-parse", `refs/heads/${world.branch}`);
 }
 // What GitHub serves for `gh pr diff` is the pull request's diff as it stands, so the answer is
@@ -254,7 +235,6 @@ function branchTip(): string | undefined {
 // routes, where no world of rig.sh writes a `gh pr diff` (its round_world), so what such a call
 // gets is the 404 below.
 function branchDiff(nameOnly: boolean): string | undefined {
-  const world = worldOf();
   if (world === undefined) return undefined;
   return fromRemote("diff", ...(nameOnly ? ["--name-only"] : []), world.base, world.branch);
 }
@@ -262,12 +242,6 @@ function branchDiff(nameOnly: boolean): string | undefined {
  * append. A ref may carry dots, and `...` is the separator, so each side is everything up to the
  * last `...`. */
 const COMPARE = /^\/?repos\/[^/]+\/[^/]+\/compare\/([^?]+)\.\.\.([^?]+)(?:\?.*)?$/;
-// The submit endpoint of one review and the reviews route of one pull request —
-// `…/pulls/<n>/reviews/<id>/events` and `…/pulls/<n>/reviews` — are read by `submitsReview` and
-// `reviewsRoute` (gh-call.ts). Each carries the repository it is of, which is read against the
-// run's own world's (`worldOf`): a review of another repository's pull request is no review of
-// this one, and answering such a call from this record would tell a round that posted to
-// `other/widgets` that this world's review was submitted.
 /** Whether the call asks for the comparison as a diff rather than as JSON: `gh api -H "Accept:
  * application/vnd.github.v3.diff"`, the media type the API documents for a diff, and the
  * `vnd.github.diff` spelling GitHub takes for the same answer. */
@@ -435,7 +409,7 @@ function reviewSubmission(): Record<string, unknown> | undefined {
   if (as !== "gh" || args[0] !== "api" || !isPost(args)) return undefined;
   // The repository of the run's own world: a submit on another repository's pull request is no
   // submit of this run's review, and a run that builds no world has no review of its own.
-  const repo = worldOf()?.repo;
+  const repo = world?.repo;
   if (repo === undefined) return undefined;
   const id = args.map((arg) => submitsReview(arg, repo)).find((named) => named !== undefined);
   if (id === undefined) return undefined;
@@ -538,7 +512,7 @@ function routeAnswer(match: string | null | undefined): Record<string, unknown> 
  * at another head. */
 function reviewCreate(): { state: string; head: string | undefined } | undefined {
   if (as !== "gh" || args[0] !== "api" || !isPost(args)) return undefined;
-  const repo = worldOf()?.repo;
+  const repo = world?.repo;
   if (repo === undefined || !args.some((arg) => reviewsRoute(arg, repo))) return undefined;
   const sent = sentBody({ argv: args, stdin, files }) ?? {};
   const state = createdState(sent);
@@ -559,7 +533,7 @@ const REVIEW_READ = /^\/?repos\/(.+)\/pulls\/\d+\/reviews\/(\d+)(?:\?.*)?$/;
  * (`text-only-head-3` and `defect-base-3` of review 5887659447). */
 function reviewRead(): Record<string, unknown> | undefined {
   if (as !== "gh" || args[0] !== "api" || methodOf(args) !== "GET") return undefined;
-  const repo = worldOf()?.repo;
+  const repo = world?.repo;
   if (repo === undefined) return undefined;
   const id = args.map((arg) => REVIEW_READ.exec(arg)).find((named) => named?.[1] === repo)?.[2];
   const review = id === undefined ? undefined : ownReviews(repo).byId.get(id);
@@ -583,7 +557,7 @@ const own = submitted ?? reviewRead();
  * checks concluded on — tells `gh pr checks`, the pull request's own `statusCheckRollup` and
  * the check-runs route one thing. */
 function headRuns(): CheckRun[] | undefined {
-  const repo = worldOf()?.repo;
+  const repo = world?.repo;
   const tip = branchTip();
   return repo === undefined || tip === undefined ? undefined : checkRunsOn(routes, repo, tip);
 }
@@ -629,7 +603,6 @@ const PR_REVIEW_STATE: Record<string, string> = {
 // call names or, naming none, the checkout's own: the world's, where a route of the world
 // answers it.
 if (route !== undefined && as === "gh" && args[0] === "pr" && args[1] === "review") {
-  const world = worldOf();
   const named = flagValue(args, ["-R", "--repo"]);
   const state = args.map((arg) => PR_REVIEW_STATE[arg]).find((one) => one !== undefined);
   const tip = branchTip();

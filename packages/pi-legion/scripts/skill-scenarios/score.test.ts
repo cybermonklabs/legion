@@ -106,6 +106,7 @@ const worldOf = (pr: string) =>
     repo: "example/widgets",
     pr: 1001,
     branch: "legion/LWEVAL-1",
+    base: "main",
     head: pr,
   });
 const world = worldOf(head);
@@ -6401,6 +6402,19 @@ fixRun("threads-closed-text-fixes-head-72", {
     { at: "2026-09-30T17:30:05.000Z", path: "/legion/v1/claims/ready", status: 204 },
   ]),
 });
+// head-100: head-72's death, with the claim boot's sentence the whole of the half's output — no
+// prefix before it and no line end after it — where both hosts write it as `[legion] <line>\n`.
+// The reading is the sentence wherever it falls: from the first character, and to the end of
+// the output when no line ends it.
+fixRun("threads-closed-text-fixes-head-100", {
+  "calls.jsonl": calls(closedBoth.slice(0, 1)),
+  "out-implementer.txt":
+    "claim boot failed at claims/ready after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED",
+  "published.jsonl": bus(),
+  "daemon.log": calls([
+    { at: "2026-09-30T17:30:01.000Z", path: "/legion/v1/claims/register", status: 200 },
+  ]),
+});
 // head-73 and head-74: the loop done above the head the push made, with every name of that head
 // written as its first seven characters (head-73) and as its first six (head-74) — the two
 // replies, the two body entries, the implementer's wake of the reviewer and the reviewer's wake
@@ -7282,6 +7296,16 @@ test("threads-closed: a half that died in its claim boot is a rig error, not a f
     "threads-closed-text-fixes-head-72\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed at claimRole after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:05.000Z)"
   );
   expect(out).not.toMatch(/threads-closed-text-fixes-head-72\tpass=/);
+});
+
+// And the sentence read wherever it falls in that output (head-100): at its first character,
+// and running to its end with no line end after it. Catches: a reading that takes a sentence at
+// the start of the output for no sentence, which scores the dead half as behaviour, and one
+// that reads the last line of the output only up to a line end it does not have.
+test("threads-closed: a claim boot sentence that is the half's whole output is read whole", () => {
+  expect(out).toContain(
+    "threads-closed-text-fixes-head-100\trig error: the agent of <run>/out-implementer.txt died in its claim boot, so nothing it did is its own behaviour: claim boot failed at claims/ready after claims/register registered legion-skills1-lweval-1-implementer with the daemon at http://127.0.0.1:38411; exiting so the daemon launches it again: ECONNREFUSED (the run's last recorded daemon request: 2026-09-30T17:30:01.000Z)"
+  );
 });
 
 // Catches: a scorer that counts a reply on each thread and never reads what it says, so a reply

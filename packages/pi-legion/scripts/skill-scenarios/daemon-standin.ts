@@ -79,8 +79,8 @@ import {
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
 import { z } from "zod";
-import { DAEMON_MODULE, runDaemonPane, worldOf } from "./daemon-pane";
-import { mergeStateOn, routeFor } from "./gh-call";
+import { DAEMON_MODULE, notCurrentPhase, runDaemonPane } from "./daemon-pane";
+import { mergeStateOn, routeFor, worldOf } from "./gh-call";
 import { CALLS, openingLine } from "./run-records";
 
 const GRANT_TTL_MS = 60_000;
@@ -105,11 +105,12 @@ if (!isLegionRole(role)) {
   process.exit(2);
 }
 /** The run's world, read through the one reader every program of the run reads it with
- * (daemon-pane.ts's `worldOf`): this stand-in answers a `read_record` out of it, the record's
+ * (gh-call.ts's `worldOf`): this stand-in answers a `read_record` out of it, the record's
  * `repo` and `defaultBranch` being the repository the world is on and the branch its pull
- * request is open against. */
-const world = worldOf(runDir, "daemon-standin");
-const { repo, base } = world;
+ * request is open against; and it reads the round's outcome off the issue branch of the run's
+ * own remote, whose tip is the pull request's head, and the pull request's number, whose
+ * reviews the world's routes answer. */
+const { repo, base, branch: BRANCH, pr: PR } = worldOf(runDir, "daemon-standin");
 /** The owner of the run's repository, which is the one owner the project maps. */
 const [REPO_OWNER = ""] = repo.split("/");
 if (REPO_OWNER === "" || !repo.includes("/")) {
@@ -132,31 +133,19 @@ const [ROLE_PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phas
  * every completion is refused `HANDOFF_NOT_CURRENT_PHASE` (`handle`'s `handoff/complete`). */
 const PHASE = phaseArg === "" ? ROLE_PHASE : phaseArg;
 /** The daemon's own refusal of a completion of a phase this role does not run, its code and its
- * message, read from the daemon's code at boot (daemon-pane.go's `refusal`) rather than written
- * here: the skill has the worker quote that sentence to its architect. It is read only for a
- * run started in a phase its role does not work, which is the only run that can serve it, and a
- * daemon whose refusal this cannot read fails the boot rather than the completion — including
- * one that prints anything but the two lines, since a refusal half read is a sentence the
- * daemon never sends. */
-interface Refusal {
-  readonly code: string;
-  readonly message: string;
-}
-function refusalAtBoot(phase: string): Refusal {
-  const [code, message] = runDaemonPane(DAEMON_MODULE, [
-    "refusal",
-    "not-current-phase",
-    role,
-    phase,
-    issue,
-  ]).split("\n");
-  if (code === undefined || code === "" || message === undefined || message === "") {
+ * message, read from the daemon's code at boot (daemon-pane.ts's `notCurrentPhase`) rather than
+ * written here: the skill has the worker quote that sentence to its architect. It is read only
+ * for a run started in a phase its role does not work, which is the only run that can serve it,
+ * and a daemon whose refusal that cannot read fails the boot rather than the completion. */
+function refusalAtBoot(phase: string) {
+  const refusal = notCurrentPhase(DAEMON_MODULE, role, phase, issue);
+  if (refusal === undefined) {
     console.error(
       `daemon-standin: daemon-pane printed no code and message for the refusal of ${role}'s completion in ${phase}`
     );
     process.exit(2);
   }
-  return { code, message };
+  return refusal;
 }
 const NOT_CURRENT_PHASE = PHASE === ROLE_PHASE ? undefined : refusalAtBoot(PHASE);
 /** `GET /legion/v1/state`: the one issue the worker holds, standing in the phase this stand-in
@@ -251,15 +240,6 @@ const stateIn = (phase: string) =>
  * head the pull request is still waiting for. */
 let servedPhase = PHASE;
 
-/** The part of the run's world.json this stand-in reads beyond the record's two names: the
- * issue branch of the run's own remote, whose tip is the pull request's head, and the pull
- * request's number, whose reviews the world's routes answer. */
-const issueBranch = z.object({ branch: z.string(), pr: z.number() }).safeParse(world);
-if (!issueBranch.success) {
-  console.error(`daemon-standin: ${runDir}/world.json is no world: ${issueBranch.error.message}`);
-  process.exit(2);
-}
-const { branch: BRANCH, pr: PR } = issueBranch.data;
 /** The routes of the run's world and the merge state it reports for each head (rig.sh's
  * fixture_write), read afresh at each look, since the gh stand-in rewrites the file when a call
  * edits the pull request's body. A run with no fixtures.json has no world to read and no round

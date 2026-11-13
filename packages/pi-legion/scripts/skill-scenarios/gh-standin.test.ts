@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { sentBody } from "./gh-call";
 
 // GitHub answers the pull request's head as the commit its branch points at, and the worker skill
@@ -13,6 +14,19 @@ import { sentBody } from "./gh-call";
 // run's own bare remote at the call, and serves the pull request's diff from it too.
 const STANDIN = path.join(import.meta.dir, "gh-standin.ts");
 const made: string[] = [];
+/** rig.sh's own functions and top-level assignments, read out of the script: the routes every
+ * world shares are fixture_write's, built here by running it, as rig.test.ts builds its worlds,
+ * so no copy of them lives in this file to drift from the script. */
+const RIG = path.join(import.meta.dir, "rig.sh");
+const fn = scriptFunctions(RIG);
+/** rig.sh's own top-level assignment of `name`, the line as the script writes it. */
+function assignment(name: string): string {
+  const found = new RegExp(`^${name}=.*$`, "m").exec(readFileSync(RIG, "utf8"));
+  if (found === null) throw new Error(`rig.sh assigns no ${name} at the start of a line`);
+  return found[0];
+}
+/** The login every answer of a world names a user by (rig.sh's `world_login`). */
+const WORLD_LOGIN = assignment("world_login").replace(/^world_login='(.*)'$/, "$1");
 
 afterEach(() => {
   for (const dir of made.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -27,11 +41,15 @@ function git(dir: string, ...args: string[]): string {
   return result.stdout.toString().trim();
 }
 
-/** A run directory with the pull-request route of rig.sh's worker_fixture. With `fixture` it is
- * the run of a scenario that builds a worker world: a world.json and a bare remote of its own
- * whose issue branch holds two commits. Without it, it is the run of a scenario that builds
- * none, which has neither — rig.sh writes the world and opens the remote together
- * (worker_fixture), so no run of this rig has one and not the other. */
+/** A run directory holding the routes rig.sh's fixture_write writes for every world, run here
+ * against a pull request whose head is the first of two commits and whose body is "a body".
+ * With `fixture` it is the run of a scenario that builds a worker world: the world.json
+ * fixture_write writes and a bare remote of its own whose issue branch holds those two commits.
+ * Without it, it is the run of a scenario that builds none, which has neither — rig.sh writes
+ * the world and opens the remote together (worker_fixture), so no run of this rig has one and
+ * not the other. No world routes `gh pr diff` (rig.sh's round_world): the diff is the run's own
+ * remote's. No world routes the submit of a review either: the stand-in answers that from what
+ * the run has already done (gh-standin.ts's reviewSubmission). */
 function runDir(options: { fixture: boolean }): { dir: string; first: string; second: string } {
   const dir = mkdtempSync(path.join(tmpdir(), "gh-standin-"));
   made.push(dir);
@@ -47,67 +65,29 @@ function runDir(options: { fixture: boolean }): { dir: string; first: string; se
   git(work, "commit", "-qm", "docs: the text fix");
   const second = git(work, "rev-parse", "HEAD");
   git(work, "update-ref", "refs/heads/legion/LWEVAL-1", first);
+  const written = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      [
+        fn("fixture_write"),
+        fn("concluded_checks"),
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
+        assignment("world_login"),
+        'C1=$2 body="a body" worker_pr=1001 worker_pr_url=https://example.invalid/pull/1001',
+        "fixture_write '[]' '\"\"' '[]'",
+      ].join("\n"),
+      "-",
+      dir,
+      first,
+    ],
+    { env: { ...process.env } }
+  );
+  if (written.exitCode !== 0) throw new Error(`fixture_write: ${written.stderr.toString()}`);
   if (options.fixture) {
     git(dir, "clone", "-q", "--bare", work, path.join(dir, "remote.git"));
     git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", first);
-    writeFileSync(
-      path.join(dir, "world.json"),
-      JSON.stringify({
-        key: "LWEVAL-1",
-        repo: "example/widgets",
-        branch: "legion/LWEVAL-1",
-        base: "main",
-        head: first,
-      })
-    );
-  }
-  // The routes rig.sh's fixture_write writes, in the shapes it writes them: the pull request as
-  // one object for `gh pr view`, the same object in a list for `gh pr list`, which is GitHub's
-  // answer to a listing of the open pull requests of a branch, the edit route a body edit
-  // needs a match of before the stand-in keeps the new body, the create of a review, whose id is
-  // what a create's answer carries here — 6001, as in review_world, where approved_world routes a
-  // create of its own ahead of it with 5002 — the PATCH of the pull request, answered with the
-  // pull request, and the route every other call that creates something falls to. The last
-  // three are chosen by the call's verb and by no regex of their own (`methods`), as
-  // fixture_write chooses them. No
-  // route for `gh pr diff`, as no world of rig.sh writes one (rig.sh's round_world): the diff is
-  // the run's own remote's. No route for the submit of a review either, which no world routes
-  // now: the stand-in answers that from what the run has already done (gh-standin.ts's
-  // reviewSubmission).
-  const pull = { number: 1001, headRefOid: first, head: { sha: first }, body: "a body" };
-  writeFileSync(
-    path.join(dir, "fixtures.json"),
-    JSON.stringify({
-      routes: [
-        { match: "^gh pr view", stdout: pull },
-        { match: "^gh pr list", stdout: [pull] },
-        { match: "^gh pr edit", stdout: "https://example.invalid/pull/1001#issuecomment-1" },
-        {
-          match: "^gh api .*pulls/1001/reviews([ ?]|$)",
-          methods: ["POST"],
-          stdout: {
-            id: 6001,
-            html_url: "https://example.invalid/pull/1001#pullrequestreview-6001",
-            user: { login: "widgets-reviewer[bot]" },
-          },
-        },
-        { match: "^gh api .*pulls/1001([ ?]|$)", methods: ["PATCH"], stdout: pull },
-        {
-          match: "^gh api ",
-          methods: ["POST", "PATCH", "PUT"],
-          stdout: { id: 6001, html_url: "https://example.invalid/pull/1001#issuecomment-6001" },
-        },
-        // The reviews already on the pull request, which rig.sh's fixture_write answers with an
-        // array too: the route a read of that path falls to, under the POST route above, so a
-        // call that names GET is answered here and a call that submits is not.
-        { match: "^gh api .*pulls/1001/reviews", stdout: [] },
-        // The pull request read through the api, which rig.sh's fixture_write writes last of
-        // its pull-request routes, under the reviews route above: the same object, whose head
-        // the REST shape carries as `head.sha` beside `headRefOid`.
-        { match: "^gh api .*pulls/1001", stdout: pull },
-      ],
-    })
-  );
+  } else rmSync(path.join(dir, "world.json"));
   return { dir, first, second };
 }
 
@@ -256,6 +236,13 @@ test("a create with no body leaves a pending review, at the pull request's own h
   const { dir, first } = runDir({ fixture: true });
   const created = apiPost(dir, REVIEWS);
   expect(created.exitCode).toBe(0);
+  // And the create is answered with that review as GitHub holds it: pending, at the head the
+  // pull request was at, which the body named none of.
+  expect(JSON.parse(created.stdout.toString())).toMatchObject({
+    id: 6001,
+    state: "PENDING",
+    commit_id: first,
+  });
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(0);
   expect(JSON.parse(submit.stdout.toString())).toEqual({
@@ -277,7 +264,7 @@ test("a create is answered with the review's state and the head it was created a
   expect(JSON.parse(pending.stdout.toString())).toEqual({
     id: 6001,
     html_url: "https://example.invalid/pull/1001#pullrequestreview-6001",
-    user: { login: "widgets-reviewer[bot]" },
+    user: { login: WORLD_LOGIN },
     state: "PENDING",
     commit_id: second,
   });
@@ -396,23 +383,32 @@ const CREATE_BODY =
 // any of these 200 with a review — an `approve` or a `PENDING` answered `{id, html_url}` and exit
 // 0, where GitHub answers 422 — and one that leaves a pending review behind a refused create, so
 // the submit after it was answered with a review GitHub never had. An APPROVE needs no body and a
-// COMMENT with one is taken.
+// COMMENT with one is taken. An event that is no string — a number, sent in an `--input` file —
+// and one GitHub has no name for (`DISMISS`) are refused as `approve` is, and none of them leaves
+// the pending review a create with no event leaves.
 test("a create GitHub refuses is refused 422, and leaves no review", () => {
   const { dir, first } = runDir({ fixture: true });
   const body = path.join(dir, "changes.json");
   writeFileSync(body, JSON.stringify({ commit_id: first, event: "REQUEST_CHANGES" }));
-  for (const [fields, refusal] of [
+  const numbered = path.join(dir, "numbered.json");
+  writeFileSync(numbered, JSON.stringify({ commit_id: first, event: 1 }));
+  const refused = [
     [["-f", "event=approve", "-f", "body=looks good"], CREATE_EVENT],
     [["-f", "event=PENDING"], CREATE_EVENT],
+    [["-f", "event=DISMISS"], CREATE_EVENT],
+    [["--input", numbered], CREATE_EVENT],
     [["-f", "event=REQUEST_CHANGES"], CREATE_BODY],
     [["-f", "event=COMMENT", "-f", "body="], CREATE_BODY],
     [["--input", body], CREATE_BODY],
-  ] as const)
+  ] as const;
+  for (const [fields, refusal] of refused)
     expect([fields, ghCall(dir, "api", "--method", "POST", REVIEWS, ...fields)]).toEqual([
       fields,
       { code: 1, out: "", err: refusal },
     ]);
-  expect(recordedCalls(dir).map((call) => call.review)).toEqual(Array(5).fill(undefined));
+  expect(recordedCalls(dir).map((call) => call.review)).toEqual(
+    Array(refused.length).fill(undefined)
+  );
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE");
   expect(submit.exitCode).toBe(1);
   expect(submit.stderr.toString()).toContain("Can not submit a review that is not pending.");
@@ -456,14 +452,14 @@ test("a GET of a review this run created answers that review as it stands", () =
     id: 6001,
     state: "PENDING",
     commit_id: first,
-    user: "widgets-reviewer[bot]",
+    user: WORLD_LOGIN,
     body: "two findings",
   });
   const submit = apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=APPROVE", "-f", "body=ok");
   expect(submit.exitCode).toBe(0);
   expect([read().code, JSON.parse(read().out)]).toEqual([
     0,
-    { id: 6001, state: "APPROVED", commit_id: first, user: "widgets-reviewer[bot]", body: "ok" },
+    { id: 6001, state: "APPROVED", commit_id: first, user: WORLD_LOGIN, body: "ok" },
   ]);
   expect(ghCall(dir, "api", `${REVIEWS}/5001`)).toEqual({ code: 0, out: "[]", err: "" });
 });
@@ -490,8 +486,9 @@ test("a create's -F body=@file carries the file's text", () => {
 // stand-in and the score read a create's body with (gh-call.ts's `sentBody`). Catches: a
 // reader that keeps `comments[][path]` as a flat key, which scored a review whose inline
 // comments were written as fields `doc=false workflow=false`, and one that reads `@path` as the
-// value. A `-f`/`--raw-field` value is sent as written, and a file the record does not hold
-// stays as written too.
+// value. A `-f`/`--raw-field` value is sent as written, a file the record does not hold stays
+// as written too, and a value holding `=` is everything after the first one: a reader that cut
+// it at the second sent `a` for `sum=a=b`.
 test("a body written as fields is gh's: nested keys, arrays of objects, and -F key=@file as the file's text", () => {
   const comments = [
     "-f",
@@ -525,6 +522,8 @@ test("a body written as fields is gh's: nested keys, arrays of objects, and -F k
         "raw=@notes.md",
         "-F",
         "gone=@gone.md",
+        "-f",
+        "sum=a=b",
       ],
       files: { "notes.md": "two findings\n" },
     })
@@ -539,6 +538,7 @@ test("a body written as fields is gh's: nested keys, arrays of objects, and -F k
     nested: { key: "v" },
     raw: "@notes.md",
     gone: "@gone.md",
+    sum: "a=b",
   });
   expect(sentBody({ argv: ["api", REVIEWS, "-F", "body=@-"], stdin: "from stdin" })).toEqual({
     body: "from stdin",
@@ -569,6 +569,96 @@ test("a PATCH of the pull request's body answers the pull request, carrying the 
   expect(ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe(
     "from a file"
   );
+});
+
+// Every body edit gh takes leaves the pull request that body, and the call's record carries it
+// as `body`, which is what the score reads the round's body from (score.ts's threadsClosed takes
+// the last call that kept one): the PATCH pr-body.md prescribes, `-F body=@body.md`, among them.
+// Each spelling is a run of its own, so a spelling the stand-in reads as no edit leaves the body
+// the world began with. The text holds an `=`, which a field's value keeps whole. Catches: the
+// PATCH read under another verb, or only with or only without the leading slash; a `-F` or
+// `--field` value of `@path` kept as the text `@path`; a `-f` one read out of the file it names,
+// where gh sends it as written; `--input` read in one spelling of the flag; and each `gh pr
+// edit` flag dropped, or read in one spelling of it — `--body-file` read as `--body` with the
+// text `-file` among them. Any of these leaves a round that followed the rule with no fixed
+// body, and its threads line fails.
+test("every body edit gh takes leaves the pull request that body, and the record carries it", () => {
+  const text = "the body after the edit, where a=b";
+  const pull = "repos/example/widgets/pulls/1001";
+  for (const [name, edit, wanted] of [
+    ["the prescribed PATCH", (md) => ["api", "--method", "PATCH", pull, "-F", `body=@${md}`], text],
+    [
+      "-X PATCH, leading slash",
+      () => ["api", "-X", "PATCH", `/${pull}`, "-f", `body=${text}`],
+      text,
+    ],
+    ["--method=patch --input", (_, json) => ["api", "--method=patch", pull, "--input", json], text],
+    ["--input=", (_, json) => ["api", "--method", "PATCH", pull, `--input=${json}`], text],
+    ["--field @", (md) => ["api", "-X", "PATCH", pull, "--field", `body=@${md}`], text],
+    ["--field= @", (md) => ["api", "-X", "PATCH", pull, `--field=body=@${md}`], text],
+    ["-f @ as written", (md) => ["api", "-X", "PATCH", pull, "-f", `body=@${md}`], "@"],
+    ["pr edit --body", () => ["pr", "edit", "1001", "--body", text], text],
+    ["pr edit --body=", () => ["pr", "edit", "1001", `--body=${text}`], text],
+    ["pr edit -b", () => ["pr", "edit", "1001", "-b", text], text],
+    ["pr edit -b=", () => ["pr", "edit", "1001", `-b=${text}`], text],
+    ["pr edit -F", (md) => ["pr", "edit", "1001", "-F", md], text],
+    ["pr edit --body-file", (md) => ["pr", "edit", "1001", "--body-file", md], text],
+    ["pr edit --body-file=", (md) => ["pr", "edit", "1001", `--body-file=${md}`], text],
+  ] as [string, (md: string, json: string) => string[], string][]) {
+    const { dir } = runDir({ fixture: true });
+    const md = path.join(dir, "body.md");
+    writeFileSync(md, text);
+    const json = path.join(dir, "body.json");
+    writeFileSync(json, JSON.stringify({ body: text }));
+    const kept = wanted === "@" ? `@${md}` : wanted;
+    const edited = ghCall(dir, ...edit(md, json));
+    const read = ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body");
+    expect([name, edited.code, read.out, recordedCalls(dir)[0]?.body]).toEqual([
+      name,
+      0,
+      kept,
+      kept,
+    ]);
+  }
+  // Fourteen runs, each a world and two stand-in calls: longer than bun's five-second default.
+}, 60_000);
+
+// A `body` field on a call that is no PATCH of the pull request edits nothing: a POST of that
+// path is another call, and GitHub keeps the body. Catches: the edit read off the path and the
+// field whatever the verb, which would leave a round that posted a comment there reading its
+// comment back as the pull request's body.
+test("a body field on a POST of the pull request edits no body", () => {
+  const { dir } = runDir({ fixture: true });
+  const posted = ghCall(
+    dir,
+    "api",
+    "-X",
+    "POST",
+    "repos/example/widgets/pulls/1001",
+    "-f",
+    "body=x"
+  );
+  expect(posted.code).toBe(0);
+  expect(ghCall(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toBe("a body");
+  expect(recordedCalls(dir)[0]).not.toHaveProperty("body");
+});
+
+// gh hands a comment's or a review's text over in a file with `--body-file` too, and the record
+// keeps that file's text beside the call, which is where the score reads what a comment says
+// (score.ts's `carriesField`). Catches: a recorder that stores the file of `--input` alone, or
+// reads `--body-file` in one spelling of it, so a comment written into a file reads as a call
+// that said nothing.
+test("a comment's --body-file is recorded with the file's text, in either spelling", () => {
+  for (const flag of [
+    (file: string) => ["--body-file", file],
+    (file: string) => [`--body-file=${file}`],
+  ]) {
+    const { dir } = runDir({ fixture: true });
+    const file = path.join(dir, "comment.md");
+    writeFileSync(file, "the reply, which names the fix");
+    expect(ghCall(dir, "pr", "comment", "1001", ...flag(file)).code).toBe(0);
+    expect(recordedCalls(dir)[0]?.files).toEqual({ [file]: "the reply, which names the fix" });
+  }
 });
 
 // The verb decides what the call is, in every spelling gh takes it in and by the reader the
@@ -724,7 +814,7 @@ test("a create and a submit on another repository's pull request are no review o
   expect(ours.stderr.toString()).toContain("Can not submit a review that is not pending.");
 });
 // `gh pr list --open` is a call of the run, not rig.sh asking for the record's opening line.
-// That ask is `--open` on its own, in the two forms worker_boot can reach this file by, and a
+// That ask is `gh --open`, the flag alone after the program word the wrapper inserts, and a
 // stand-in that took the flag wherever it fell — or at the end of a call of any length —
 // answered this listing with nothing, recorded no call, and left the score reading a role that
 // looked for its pull request as one that made no call at all.
@@ -732,7 +822,10 @@ test("gh pr list --open is a call of the run and no ask for the opening line", (
   const { dir, first } = runDir({ fixture: true });
   const listed = ghCall(dir, "pr", "list", "--open");
   expect(listed.code).toBe(0);
-  expect(JSON.parse(listed.out)).toEqual([
+  // The listing itself, read before it is parsed, so a stand-in that answered nothing fails on
+  // this assertion rather than on the parse.
+  expect(listed.out).toStartWith("[");
+  expect(JSON.parse(listed.out)).toMatchObject([
     { number: 1001, headRefOid: first, head: { sha: first }, body: "a body" },
   ]);
   const recorded = readFileSync(path.join(dir, "calls.jsonl"), "utf8")
@@ -756,6 +849,24 @@ test("the pull request's head is the tip of the run's own remote", () => {
 test("a run with no worker fixture keeps the route's own head", () => {
   const { dir, first } = runDir({ fixture: false });
   expect(headOf(dir)).toBe(first);
+});
+
+// A run with no world has no review of its own, so the submit of one is no submit this stand-in
+// answers from its record: it falls to the routes, as every call of such a run does. Catches: a
+// stand-in that refuses it 422 as the submit of a review that is not pending, which reads a run
+// that holds no world as one that holds a world with no review in it.
+test("a run with no worker fixture leaves the submit of a review to the routes", () => {
+  const { dir } = runDir({ fixture: false });
+  expect(
+    ghCall(dir, "api", "--method", "POST", `${REVIEWS}/6001/events`, "-f", "event=APPROVE")
+  ).toEqual({
+    code: 0,
+    out: JSON.stringify({
+      id: 6001,
+      html_url: "https://example.invalid/pull/1001#issuecomment-6001",
+    }),
+    err: "",
+  });
 });
 
 /** What the stand-in answers for `gh <args...>` in run directory `dir`, as `by` if the run names
@@ -845,10 +956,16 @@ const recordedCalls = (dir: string) =>
 // GitHub) and a review of another repository's pull request among them.
 test("each call that leaves a review records the state and head it was answered with, and no other call does", () => {
   const { dir, first } = runDir({ fixture: true });
+  // The world's own `gh pr review` route, set aside for the first call, which no route answers.
+  const file = path.join(dir, "fixtures.json");
+  const fixtures = JSON.parse(readFileSync(file, "utf8")) as { routes: { match: string }[] };
+  const reviewing = fixtures.routes.findIndex((route) => route.match.includes("review|"));
+  const [shared] = fixtures.routes.splice(reviewing, 1);
+  expect(shared?.match).toBe("^gh pr (edit|comment|review|ready)");
+  writeFileSync(file, JSON.stringify(fixtures));
   answer(dir, ["pr", "review", "1001", "--approve"]);
-  const fixtures = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8"));
-  fixtures.routes.unshift({ match: "^gh pr review", stdout: "https://example.invalid/pull/1001" });
-  writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify(fixtures));
+  fixtures.routes.splice(reviewing, 0, shared ?? { match: "" });
+  writeFileSync(file, JSON.stringify(fixtures));
   const body = path.join(dir, "review.json");
   writeFileSync(body, JSON.stringify({ commit_id: first, event: "APPROVE", body: "approved" }));
   expect(apiPost(dir, REVIEWS, "--input", body).exitCode).toBe(0);
@@ -942,12 +1059,15 @@ test("the head's checks are the world's check runs on the remote's tip, for gh p
 // Catches: a record nothing opens, where a run whose agents called no gh and no bun leaves no
 // calls.jsonl and scores as the rig error of a record nothing wrote rather than as the run that
 // called nothing (score.ts's `unscored`). rig.sh's worker_boot asks for that line with `--open`
+// through the pane's own gh, whose wrapper inserts the program word (`gh-standin.ts gh --open`),
 // before its agent runs, as it starts the publish recorder, which writes its own `recording`
 // line; a second ask adds nothing, since the record is already open.
 test("--open opens the record with one line and records no call", () => {
   const { dir } = runDir({ fixture: true });
   const open = () =>
-    Bun.spawnSync(["bun", STANDIN, "--open"], { env: { ...process.env, SKILL_SCENARIO_RUN: dir } });
+    Bun.spawnSync(["bun", STANDIN, "gh", "--open"], {
+      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+    });
   const recorded = () =>
     readFileSync(path.join(dir, "calls.jsonl"), "utf8")
       .split("\n")
@@ -1020,7 +1140,9 @@ test("a comparison the run's remote cannot resolve is 404, as GitHub answers it"
 // it with the two refs' diff would tell a caller a write it never made had succeeded. The verb
 // is read here as the score reads it on the same call (score.ts's `methodOf`), so each spelling
 // gh takes is that write: written against the flag, in lower case, and as a field with no
-// method at all, which gh sends as a POST.
+// method at all, which gh sends as a POST; and a PATCH and a PUT, the other two verbs the route
+// every write falls to answers (rig.sh's fixture_write), so a comparison answered for every verb
+// but POST fails here too.
 test("a POST to the compare path is no comparison", () => {
   const { dir, first, second } = runDir({ fixture: true });
   const range = `repos/example/widgets/compare/${first}...${second}`;
@@ -1028,6 +1150,8 @@ test("a POST to the compare path is no comparison", () => {
   for (const verb of [
     ["--method", "POST"],
     ["--method=post"],
+    ["-X", "PATCH"],
+    ["-X", "PUT"],
     ["-XPOST"],
     ["-f", "per_page=100"],
   ]) {
@@ -1149,27 +1273,35 @@ test("a listing's elements each carry the run's own head, the kept body and the 
   expect(JSON.parse(listed("body"))).toEqual([{ body: "the edited body" }]);
 });
 
-/** The stderr the route a call falls to carries, as a world writes one for the call it wrote
- * that route for (rig.sh's fixture_write gives the base-protection route GitHub's own 404). */
-function routeStderr(dir: string, text: string): void {
+/** The stderr and the exit the routes a POST falls to carry, as a world writes a refusal for the
+ * call it wrote a route for (rig.sh's fixture_write gives the base-protection route GitHub's own
+ * 404 and exit 1). The routes are chosen by the verbs they answer (`methods`), which is how
+ * fixture_write names a POST route: selected by the text of their regex, no route of a world
+ * ever got the refusal, and the row below could not fail. */
+function routeRefusal(dir: string, text: string): void {
   const file = path.join(dir, "fixtures.json");
   const fixtures = JSON.parse(readFileSync(file, "utf8")) as {
-    routes: { match: string; stderr?: string }[];
+    routes: { match: string; methods?: string[]; stderr?: string; exit?: number }[];
   };
-  for (const route of fixtures.routes) if (route.match.includes("POST")) route.stderr = text;
+  const posts = fixtures.routes.filter((route) => route.methods?.includes("POST"));
+  expect(posts.map((route) => route.match)).toEqual([
+    "^gh api .*pulls/1001/reviews([ ?]|$)",
+    "^gh api ",
+  ]);
+  for (const route of posts) Object.assign(route, { stderr: text, exit: 1 });
   writeFileSync(file, JSON.stringify(fixtures));
 }
 
-// Catches: a stand-in that prints the matched route's stderr beside its own answer to a submit.
-// The submit of a pending review is answered from what this run has already done and not from
-// a route, so the text of whatever route the call fell to — the generic POST, written for the
-// calls that create things — belongs to another call: a reviewer that submitted its pending
-// review would read a refusal on stderr beside the review object and the 0 it exited with, and
-// read the approval it had just made as a call that failed.
-test("a submit answered from the run's own record prints no route's stderr", () => {
+// Catches: a stand-in that prints the matched route's stderr beside its own answer to a submit,
+// or exits as that route does. The submit of a pending review is answered from what this run
+// has already done and not from a route, so the text and the status of whatever route the call
+// fell to — the generic POST, written for the calls that create things — belong to another
+// call: a reviewer that submitted its pending review would read a refusal on stderr beside the
+// review object, or an exit of 1, and read the approval it had just made as a call that failed.
+test("a submit answered from the run's own record prints no route's stderr and exits 0", () => {
   const { dir, first } = runDir({ fixture: true });
-  routeStderr(dir, "gh: Unprocessable Entity (HTTP 422)\nthe route's own refusal\n");
   createPending(dir, { commit_id: first, body: "two findings" });
+  routeRefusal(dir, "gh: Unprocessable Entity (HTTP 422)\nthe route's own refusal\n");
   const submit = ghCall(
     dir,
     "api",

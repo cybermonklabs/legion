@@ -5,7 +5,7 @@ import { LegionStateResponse } from "@legion/contracts/legion-api";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
-import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
+import { DAEMON_MODULE, notCurrentPhase, refusalIn } from "./daemon-pane";
 
 // The stand-in asks the daemon's own functions for the phase its role works, which `go run`
 // compiles, so a host with no go runs none of this.
@@ -14,21 +14,6 @@ const skip = skipWithout("go");
 // The run directory, reserved at module scope: `temporaryDirectory` registers the hook that
 // makes it, and a hook cannot be registered from inside a test.
 const work = temporaryDirectory("skill-scenarios-standin");
-
-/** The daemon's own refusal of a completion of a phase `role` does not run, as daemon-pane.go
- * reads it out of the daemon's source: its code, then its message. The stand-in answers from
- * that same reading, and daemon-pane.test.ts holds the reading to what the daemon's own
- * engine.go writes, so no copy of the sentence lives in this rig. */
-function notCurrentPhase(role: string, phase: string, issue: string) {
-  const [code = "", message = ""] = runDaemonPane(DAEMON_MODULE, [
-    "refusal",
-    "not-current-phase",
-    role,
-    phase,
-    issue,
-  ]).split("\n");
-  return { code, error: message };
-}
 
 /** The repository rig.sh's worker world is on and the branch its pull request is open against
  * (its `worker_repo` and `worker_base`, which fixture_write writes into every world.json): the
@@ -525,7 +510,12 @@ test.skipIf(skip)(
     try {
       const refused = await daemon.complete(false);
       expect(refused.status).toBe(409);
-      expect(await refused.json()).toEqual(notCurrentPhase("implementer", "accepting", "LWEVAL-1"));
+      // The daemon's own refusal, read out of its source by the reader the stand-in answers
+      // from (daemon-pane.ts's `notCurrentPhase`), and daemon-pane.test.ts holds that reading
+      // to what the daemon's own engine.go writes, so no copy of the sentence lives in this rig.
+      const refusal = notCurrentPhase(DAEMON_MODULE, "implementer", "accepting", "LWEVAL-1");
+      expect(refusal).toBeDefined();
+      expect(await refused.json()).toEqual({ code: refusal?.code, error: refusal?.message });
       // Nothing moved: the issue stands where it stood, as the refusal says.
       expect(await daemon.phase()).toBe("accepting");
     } finally {
@@ -596,3 +586,26 @@ test.skipIf(skip)(
   },
   600_000
 );
+
+// What daemon-pane.go's `refusal not-current-phase` prints is two lines, the code and then the
+// daemon's message, and the stand-in answers a completion of a phase its role does not run with
+// exactly that pair or refuses to boot (`refusalAtBoot`). Catches: a printout half read taken
+// for a refusal — no message, an empty code, or a message that runs onto a third line, each a
+// sentence the daemon never sends — which no row that starts the stand-in on today's daemon can
+// reach, since that daemon prints the two lines. No go is needed: this reads the printout alone.
+test("a refusal printout is the code and the message on two lines of their own, or no refusal", () => {
+  const message = "issue LWEVAL-1 is in accepting, which implementer does not run";
+  expect(refusalIn(`HANDOFF_NOT_CURRENT_PHASE\n${message}\n`)).toEqual({
+    code: "HANDOFF_NOT_CURRENT_PHASE",
+    message,
+  });
+  for (const printed of [
+    "",
+    "HANDOFF_NOT_CURRENT_PHASE\n",
+    "HANDOFF_NOT_CURRENT_PHASE\n\n",
+    `\n${message}\n`,
+    `HANDOFF_NOT_CURRENT_PHASE\n${message}`,
+    `HANDOFF_NOT_CURRENT_PHASE\n${message}\nand a third line\n`,
+  ])
+    expect([printed, refusalIn(printed)]).toEqual([printed, undefined]);
+});

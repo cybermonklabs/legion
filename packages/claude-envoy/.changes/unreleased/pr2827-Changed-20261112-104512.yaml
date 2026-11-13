@@ -1,9 +1,10 @@
 kind: Changed
 body: |-
-  The line a Legion session leaves when its claim boot stops it now names the step that failed —
-  `claims/register`, `afterRegister`, `setCapability`, `claims/ready`, `onRoleRegained` or
+  The line a Legion session leaves when its claim boot stops it after the registration now names
+  the step that failed — `afterRegister`, `setCapability`, `claims/ready`, `onRoleRegained` or
   `claimRole` — so a reader of the log can tell which call stopped the session. One sentence
   served all of them before, and a refused dial reported in it could not be read as the daemon's
-  or as Envoy's.
+  or as Envoy's. A registration the daemon refuses keeps its own line,
+  `claims/register registration failed (<status>)`.
   The daemon that registration was made with is named in the same line, as its scheme, host and
   port alone: a `daemon_url` may carry userinfo, and no credential of it is written to the log.

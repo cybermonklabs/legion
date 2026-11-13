@@ -218,8 +218,9 @@ test("a failure in the boot's own steps names that step and the daemon it dialle
 // carry userinfo — the daemon's own `baseURL` refuses a query and a fragment and nothing else
 // (`packages/daemon/internal/config/config.go`) — and this line reaches the pane's log and the
 // operator reading it, so a credential in that address would be read by everyone who reads
-// either. What the line names is the scheme, the host and the port, which is the daemon's own
-// reading of that setting wherever it shows it (`internal/api/settings.go`'s `endpointOf`).
+// either. What the line names is the scheme, the host and the port alone; the daemon's own
+// masking of that setting (`internal/api/settings.go`'s `endpointOf`) keeps the path and writes
+// `xxxxx@`, and this line keeps neither.
 test("a host whose endpoint carries userinfo logs the masked address and not the credential", async () => {
   // The userinfo is built rather than written: the shared public leak check reads a URL
   // carrying a password as a credential, whatever the host, and refuses the push that adds it.
@@ -235,6 +236,33 @@ test("a host whose endpoint carries userinfo logs the masked address and not the
     `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at http://daemon.test:13370; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
   ]);
   expect(lines.join("\n")).not.toContain(password);
+});
+
+// And the two addresses the masking cannot read a host out of, each reported as `xxxxx`: one
+// `new URL` refuses (no scheme), and one it reads with an empty host (a scheme, then text with
+// no `//`), where `protocol//host` would print `legion://`. Catches: either branch dropped — the
+// first prints the address as it stands, credential and all, and the second prints a scheme
+// with no host, which names no daemon. The client dials the address it was made with, so the
+// host here reports an address of its own beside it, as one configured that way would.
+test("a host whose endpoint is no URL, or names no host, logs xxxxx and not the credential", async () => {
+  const password = ["pw", "example"].join("-");
+  for (const endpoint of [
+    `//legion:${password}@daemon.test:13370`,
+    `legion:${password}@daemon.test:13370`,
+  ]) {
+    const { host, lines } = claimHost({
+      ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
+    });
+
+    await bootLegionClaim({ ...host, daemon: { ...host.daemon, endpoint } });
+
+    expect([endpoint, lines]).toEqual([
+      endpoint,
+      [
+        `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at xxxxx; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
+      ],
+    ]);
+  }
 });
 
 // One row per step of the boot that no other row fails in, since the sentence above names a

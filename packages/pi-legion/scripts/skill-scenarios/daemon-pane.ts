@@ -7,34 +7,12 @@
  * table has not always had the same name; its comment says so. `workerPane` builds a phase
  * worker's whole pane environment over it.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
-import { z } from "zod";
-
-/** The part of rig.sh's <run>/world.json the pane and the daemon stand-in each read: the
- * repository the world is on and the branch its pull request is open against, which the record
- * the stand-in answers names and the pane's own addressing names. Neither has a default, here or
- * in the gh stand-in that reads the same file: fixture_write writes both into every world it
- * builds, so a world missing one is a world no part of the run can serve. */
-const World = z.looseObject({ repo: z.string(), base: z.string() });
-
-/** The world `runDir` holds, read here for every program of a run that needs it rather than by
- * each of them: the pane composer's caller (worker-pane.ts) and the daemon stand-in read the one
- * world, and two readings of it are two worlds. A file that is no world ends the program with 2,
- * naming it and `program`, the caller's own name, since a reader of the run's output has to know
- * which program stopped. */
-export function worldOf(runDir: string, program: string): z.infer<typeof World> {
-  const read = World.safeParse(
-    JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")) as unknown
-  );
-  if (read.success) return read.data;
-  console.error(`${program}: ${runDir}/world.json is no world: ${read.error.message}`);
-  process.exit(2);
-}
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -64,6 +42,37 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/** The daemon's refusal of a completion of a phase the completing role does not run: its code
+ * and the daemon's own message for it. */
+export interface Refusal {
+  readonly code: string;
+  readonly message: string;
+}
+
+/** The refusal daemon-pane.go's `refusal not-current-phase` printed as `printed`, or undefined
+ * when it printed anything but what that command prints: the code, then the message, each a
+ * non-empty line of its own. Fewer lines, an empty one, or more than two are a refusal half
+ * read, which is a sentence the daemon never sends, so the caller reads such a printout as none
+ * rather than answering part of it. */
+export function refusalIn(printed: string): Refusal | undefined {
+  const [code = "", message = "", ...rest] = printed.split("\n");
+  if (code === "" || message === "" || rest.length !== 1 || rest[0] !== "") return undefined;
+  return { code, message };
+}
+
+/** The daemon's own refusal of `role`'s completion while the issue `issue` stands in `phase`,
+ * read out of `module`'s source by daemon-pane.go (`refusalIn`), or undefined when that
+ * printout is no refusal. The daemon stand-in answers such a completion with it and its tests
+ * read it the same way, so no copy of the sentence and no second reading of it lives here. */
+export function notCurrentPhase(
+  module: string,
+  role: string,
+  phase: string,
+  issue: string
+): Refusal | undefined {
+  return refusalIn(runDaemonPane(module, ["refusal", "not-current-phase", role, phase, issue]));
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot

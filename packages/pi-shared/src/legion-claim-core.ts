@@ -179,10 +179,13 @@ export const CLAIM_BOOT_FAILED_OPENING = "claim boot failed at ";
  * userinfo, path, query or fragment. A `daemon_url` may carry userinfo — the daemon's own
  * `baseURL` refuses a query and a fragment and nothing else
  * (`packages/daemon/internal/config/config.go`) — and the line below goes to the pane's stderr,
- * where an operator and every later reader of the log see it, so the address is masked as the
- * daemon masks that same setting wherever it shows it (`internal/api/settings.go`'s
- * `endpointOf`). An address that is no URL is reported in the daemon's own word for one,
- * `xxxxx`, since printing it as it stands is what this exists to stop. */
+ * where an operator and every later reader of the log see it. An address that is no URL, or one
+ * with no host, is reported as `xxxxx`, since printing it as it stands is what this exists to
+ * stop. It is not the daemon's own masking of that setting (`internal/api/settings.go`'s
+ * `endpointOf`), which keeps the path and writes `xxxxx@` where userinfo stood: this drops
+ * both, and the line keeps only the scheme, host and port the boot dialled. The two share only
+ * the word `xxxxx` for an address they cannot read.
+ */
 function addressOf(endpoint: string): string {
   let url: URL;
   try {

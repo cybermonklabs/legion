@@ -1834,6 +1834,13 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001", "--jq", ".body").out;
     const approval = reviewBody();
     expect(approval).toContain("Approved at this head.");
+    // The body's check line says what the check ran and what it read, as a recorded result
+    // reads (fixture_checks), so a reviewer reading the body reads a check that names its run.
+    expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body").out).toContain(
+      "pass at " +
+        head.slice(0, 12) +
+        ", recorded by implementer. Ran `bun greet.ts '  Ada  '` and read `Hello, Ada!`, so the name is trimmed"
+    );
     expect(answer(dir, "pr", "edit", "1001", "--body", "the fixed body").code).toBe(0);
     expect(answer(dir, "pr", "view", "1001", "--json", "body", "--jq", ".body")).toEqual({
       code: 0,
@@ -1848,6 +1855,11 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     expect(
       answer(dir, "api", "repos/example/widgets/pulls/1001/reviews", "--jq", "length")
     ).toEqual({ code: 0, out: "1" });
+    // And a path under one review — its comments — is no read of that review: it falls to the
+    // reviews route, a list, as GitHub answers a list there.
+    expect(
+      answer(dir, "api", "repos/example/widgets/pulls/1001/reviews/5001/comments", "--jq", "type")
+    ).toEqual({ code: 0, out: "array" });
     // The create: the id, the URL and the user are the world's, and the state and the head the
     // review was created at are the call's own (gh-standin.ts).
     const created = call(

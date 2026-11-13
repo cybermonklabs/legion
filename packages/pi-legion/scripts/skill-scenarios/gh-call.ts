@@ -3,11 +3,57 @@
 // these readings and score.ts scores that same call by them, so one spelling of one verb and one
 // body is read one way by the world and by the score: a call the stand-in answered as a
 // submission and the score read as a read of the route — or the other way round — is a run scored
-// against a world that answered it something else.
+// against a world that answered it something else. The world the run keeps (`World`) is read
+// here for the same reason: every program of a run reads it through this one schema.
 //
 // It is a module of its own rather than part of the scorer because the stand-in is the `gh` a
 // worker pane's PATH resolves to: every gh call an agent makes runs it, and importing the scorer
 // for these readings loaded its 4,900 lines and all of its imports on each one.
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { z } from "zod";
+
+/** rig.sh's <run>/world.json, as its fixture_write writes it into every world it builds: the
+ * run's own issue `key`, the repository the world is on, the number of its pull request, the
+ * issue branch of the run's own bare remote, the branch the pull request is open against, and
+ * `head`, the pull request's head when the run began, the implementer's code commit. This is the
+ * one schema of that file: the gh stand-in, the daemon stand-in, the pane composer
+ * (worker-pane.ts) and the scorer each read it here, so no part of the run reads a world another
+ * part would refuse. No key has a default: fixture_write writes all six, so a world missing one
+ * is a world the rig wrote wrongly, which every reader refuses rather than guess. */
+export const World = z.looseObject({
+  key: z.string(),
+  repo: z.string(),
+  pr: z.number(),
+  branch: z.string(),
+  base: z.string(),
+  head: z.string(),
+});
+export type World = z.infer<typeof World>;
+
+/** `runDir`'s world.json (`World`), or why it is none: a file that is missing, is no JSON, or
+ * lacks a key. It throws nothing, so each reader says what a file that is no world means for
+ * it: a program of the run exits (`worldOf`), and the scorer makes it the run's rig error. */
+export function readWorld(runDir: string): { world: World } | { why: string } {
+  let text: unknown;
+  try {
+    text = JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8"));
+  } catch (error) {
+    return { why: error instanceof Error ? error.message : String(error) };
+  }
+  const read = World.safeParse(text);
+  return read.success ? { world: read.data } : { why: read.error.message };
+}
+
+/** The world `runDir` holds, for a program of the run that cannot work without it. A file that
+ * is no world ends the program with 2, naming the file, why, and `program`, the caller's own
+ * name, since a reader of the run's output has to know which program stopped. */
+export function worldOf(runDir: string, program: string): World {
+  const read = readWorld(runDir);
+  if ("world" in read) return read.world;
+  console.error(`${program}: ${runDir}/world.json is no world: ${read.why}`);
+  process.exit(2);
+}
 
 /** Whether `arg` is the reviews route of `repo`'s pull request: `repos/<owner>/<repo>/pulls/<n>/
  * reviews`, with or without the leading slash `gh api` takes either way, and of that repository

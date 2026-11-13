@@ -285,6 +285,7 @@ describe("a removal larger than Bun's own hook default allows", () => {
     const root = join(work, "root");
     mkdirSync(root);
     const measurement = join(work, "removal.json");
+    const sizing = join(work, "sizing.json");
     writeFileSync(
       join(work, "slow.test.ts"),
       `import { afterEach, expect, test } from "bun:test";
@@ -305,32 +306,48 @@ afterEach(() => {
 test("makes a tree whose removal outlasts Bun's five-second hook default", () => {
   // Sized from this host's own removal rate rather than from a count or from the clock the
   // making ran on: a GitHub runner made 20,000 entries in six seconds and removed them in 3.4,
-  // so a tree grown until the making had run six seconds was removed well inside five on it.
-  // The calibration below removes a small tree of its own, reads how many entries a millisecond
-  // that host removes, and makes the number of entries that takes fifteen seconds to remove,
-  // three times the default the row is about. A host three times faster than its own
-  // calibration still outlasts five seconds; one so fast that even the cap is removed inside
-  // five fails the caller's assertion by name rather than passing in silence.
-  const scratch = join(${JSON.stringify(root)}, "calibration");
-  mkdirSync(scratch);
-  const CALIBRATION = 4_000;
-  for (let made = 0; made < CALIBRATION; made += 1) {
-    const held = join(scratch, "d" + made);
-    mkdirSync(held);
-    writeFileSync(join(held, "held.txt"), "x");
+  // so a tree grown until the making had run six seconds was removed well inside five on it,
+  // and a tree capped at 200,000 entries is removed inside five on a host that removes 40 or
+  // more a millisecond. The calibration removes a tree of its own, grown until its removal takes
+  // 200 ms, which a millisecond clock cannot read wrongly by more than a few per cent, and the
+  // tree is then the number of entries that host takes more than fifteen seconds to remove,
+  // three times the default the row is about: a host three times faster than its own
+  // calibration still outlasts five seconds.
+  //
+  // There is no cap on the count, since a count is what a fast host outgrew. What bounds the
+  // disk is the time the making may take, MAKE_BOUND_MS: a tree is never larger than what this
+  // host makes in four minutes, and four minutes of making, fifteen seconds of removal and the
+  // fixture's 120-second hook bound fit the row's ten minutes. A host that cannot make the tree
+  // in that time stops there, and the caller fails by name on the count it made against the
+  // count it aimed for, rather than on a removal too small to say anything.
+  const MAKE_BOUND_MS = 240_000;
+  const began = performance.now();
+  const grow = (into: string, count: number): number => {
+    let made = 0;
+    while (made < count && performance.now() - began < MAKE_BOUND_MS) {
+      const held = join(into, "d" + made);
+      mkdirSync(held);
+      writeFileSync(join(held, "held.txt"), "x");
+      made += 1;
+    }
+    return made;
+  };
+  let perMs = 0;
+  for (let calibration = 2_000; ; calibration *= 2) {
+    const scratch = join(${JSON.stringify(root)}, "calibration-" + calibration);
+    mkdirSync(scratch);
+    const made = grow(scratch, calibration);
+    const removalBegan = performance.now();
+    rmSync(scratch, { recursive: true, force: true });
+    const took = Math.max(performance.now() - removalBegan, 0.001);
+    perMs = made / took;
+    if (took >= 200 || made < calibration) break;
   }
-  const removalBegan = Date.now();
-  rmSync(scratch, { recursive: true, force: true });
-  const perMs = CALIBRATION / Math.max(1, Date.now() - removalBegan);
-  const target = Math.min(200_000, Math.max(20_000, Math.ceil(perMs * 15_000)));
+  const target = Math.ceil(perMs * 15_000) + 1;
 
   tree = make("tree");
-  for (let made = 0; made < target; made += 1) {
-    const held = join(tree, "d" + made);
-    mkdirSync(held);
-    writeFileSync(join(held, "held.txt"), "x");
-  }
-  expect(target).toBeGreaterThanOrEqual(20_000);
+  const made = grow(tree, target);
+  writeFileSync(${JSON.stringify(sizing)}, JSON.stringify({ made, target, perMs }));
   startedAt = Date.now();
 }, 600_000);
 `
@@ -341,14 +358,21 @@ test("makes a tree whose removal outlasts Bun's five-second hook default", () =>
     });
     const output = `${run.stdout.toString()}${run.stderr.toString()}`;
     // Defaults that fail the row: a run whose hook was killed part-way writes no measurement,
-    // since Bun runs no later hook of a scope once one of them is killed.
+    // since Bun runs no later hook of a scope once one of them is killed, and a run that never
+    // reached the making writes no sizing.
     const measured = existsSync(measurement)
       ? (JSON.parse(readFileSync(measurement, "utf8")) as { tree: string; removalMs: number })
       : { tree: "", removalMs: 0 };
+    const sized = existsSync(sizing)
+      ? (JSON.parse(readFileSync(sizing, "utf8")) as { made: number; target: number })
+      : { made: 0, target: -1 };
     // Read before the leftovers are cleared, so the fact the row reports is the child run's.
     const removedWhole = measured.tree !== "" && !existsSync(measured.tree);
     rmSync(root, { recursive: true, force: true });
 
+    // The tree is the size its calibration asked for: a host that could not make it inside the
+    // making bound fails here, by name, rather than on a removal too small to outlast five seconds.
+    expect(sized.made).toBe(sized.target);
     expect(output).toContain("1 pass");
     expect(run.exitCode).toBe(0);
     expect(measured.removalMs).toBeGreaterThan(5_000);
