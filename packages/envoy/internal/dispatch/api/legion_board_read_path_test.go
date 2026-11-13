@@ -484,12 +484,12 @@ func TestNoCodeOnTheBoardsReadPathComputesAFact(t *testing.T) {
 	}
 	t.Logf("search 1, a call into the fact computation (%s): %d lines of %d files read, %d matched",
 		computesAFact, lines, len(boardReadPathFiles), len(hits))
-	control, controlLines := searchSource(t, []string{"legion_metrics.go"}, computesAFact, nil)
+	control, controlLines := searchSource(t, []string{"../legionfacts/facts.go"}, computesAFact, nil)
 	if len(control) == 0 {
-		t.Errorf("the control found no call in legion_metrics.go, which computes the metrics, so search 1 proves nothing")
+		t.Errorf("the control found no call in legionfacts/facts.go, which computes the facts, so search 1 proves nothing")
 	}
 	for _, hit := range control {
-		t.Logf("search 1's control (legion_metrics.go, the route that computes): %s", hit)
+		t.Logf("search 1's control (legionfacts/facts.go, the consumer's computation): %s", hit)
 	}
 	t.Logf("search 1's control read %d lines and matched %d", controlLines, len(control))
 

@@ -149,20 +149,20 @@ func TestAnAdmittedRootHoldingASlotIsDesignAndTheRestIsQueue(t *testing.T) {
 		observe(legion.FieldSlot, hour(2), "0").
 		observeString(legion.FieldPhase, hour(4), "planning")
 
-	report := Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24))
+	w := windowOf(fixture(hour(-24), hour(24), root), ScopeAll)
 
-	row := report.WorkTime.Issues[0]
-	if row.Hours != 6 {
-		t.Errorf("work time = %g h, want 6: hours 1 to 8 less the queued hour 1 to 2", row.Hours)
+	row := w.fact(t, "INFRA-1")
+	if row.WorkHours != 6 {
+		t.Errorf("work time = %g h, want 6: hours 1 to 8 less the queued hour 1 to 2", row.WorkHours)
 	}
 	if row.QueuedHours != 1 {
 		t.Errorf("queued hours = %g, want 1: the admitted hour the root held no slot through", row.QueuedHours)
 	}
-	if got := barOf(t, report, "architect").Hours; got != 2 {
+	if got := barOf(t, w, "architect").Hours; got != 2 {
 		t.Errorf("the architect bar = %g h, want 2: the admitted stretch the root holds a slot through is its design, hours 2 to 4",
 			got)
 	}
-	if got := barOf(t, report, "planner").Hours; got != 4 {
+	if got := barOf(t, w, "planner").Hours; got != 4 {
 		t.Errorf("the planner bar = %g h, want 4: hours 4 to 8", got)
 	}
 	partitionsItsWorkTime(t, root)
@@ -172,14 +172,14 @@ func TestAnAdmittedRootHoldingASlotIsDesignAndTheRestIsQueue(t *testing.T) {
 // work-time row, and its five segments add up to its seven bars.
 func partitionsItsWorkTime(t *testing.T, issue *Issue) {
 	t.Helper()
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
-	if len(report.WorkTime.Issues) != 1 {
-		t.Fatalf("work-time rows = %d, want the one issue", len(report.WorkTime.Issues))
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
+	if timed := w.timed(); len(timed) != 1 {
+		t.Fatalf("issues with a work time = %v, want the one issue", timed)
 	}
-	work := report.WorkTime.Issues[0].Hours
+	work := w.fact(t, issue.Key).WorkHours
 
 	var bars, segments float64
-	for _, bar := range report.PhaseTime.Bars {
+	for _, bar := range w.phaseTime(t).Bars {
 		bars += bar.Hours
 		segments += bar.Segments.WaitingOnPerson + bar.Segments.InATurn +
 			bar.Segments.CIWait + bar.Segments.WaitingOnChildren + bar.Segments.Idle

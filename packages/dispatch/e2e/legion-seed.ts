@@ -114,9 +114,11 @@ export async function seedLegionFixture(stateUrl: string): Promise<void> {
   );
 }
 
-/** What the four metrics on the Delivery page count: one Legion tree that finished inside the
- *  page's window, written as a fortnight of reading and of Dispatch's own event log would have
- *  left it (`packages/envoy/internal/dispatch/legion/metrics`).
+/** What the four metrics on the Delivery page count: one Legion tree that finished in the last
+ *  two days, written as a fortnight of reading and of Dispatch's own event log would have left
+ *  it. The facts consumer stores its issues' facts and the day-row refresher folds them into the
+ *  project's Legion evals (`packages/envoy/internal/dispatch/legion/metrics`, `evals`), which is
+ *  what the section reads.
  *
  *  The root ACME-6 was designed by an architect and closed; its child ACME-7, which that
  *  architect filed while designing it, was implemented, reviewed, sent back, implemented again
@@ -124,7 +126,7 @@ export async function seedLegionFixture(stateUrl: string): Promise<void> {
  *  on the architect, implementer, reviewer and merger bars, a review round and a send-back, and
  *  a filing in the tree at design. The two are in no column of the board — their phase is
  *  `done` — so the board's own specs read the same fixture as before. */
-export async function seedLegionMetricsCorpus(): Promise<void> {
+export async function seedLegionFinishedTree(): Promise<void> {
   const session = (role: string, issue: string) =>
     `'{"kind":"session","id":"s-${role}","origin":{"session_title":"Legion ${role} · ${issue}"}}'`;
   const root = "ACME-6";

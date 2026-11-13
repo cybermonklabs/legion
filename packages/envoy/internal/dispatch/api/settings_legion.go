@@ -182,19 +182,12 @@ func (s *server) putLegionProjectSettings(w http.ResponseWriter, r *http.Request
 }
 
 // legionProject is the {project} of the path, once it is a project key and a project of that key
-// exists; an unknown one is the 404 NOT_FOUND every unknown row is.
+// exists: a badly spelled key is 400 LEGION_SETTING_INPUT, and an unknown project the 404
+// NOT_FOUND every unknown row is.
 func (s *server) legionProject(w http.ResponseWriter, r *http.Request) (string, bool) {
-	return s.legionProjectNamed(w, r, strings.TrimSpace(r.PathValue("project")), "LEGION_SETTING_INPUT")
-}
-
-// legionProjectNamed is project once it is a project key and a project of that key exists. code
-// is the refusal a badly spelled key carries, which the two routes that ask differ on: the
-// metrics route's `INVALID_QUERY` for a query parameter, and the settings route's
-// `LEGION_SETTING_INPUT` for a path segment. An unknown project is the 404 NOT_FOUND every
-// unknown row is.
-func (s *server) legionProjectNamed(w http.ResponseWriter, r *http.Request, project, code string) (string, bool) {
+	project := strings.TrimSpace(r.PathValue("project"))
 	if !projectKeyPattern.MatchString(project) {
-		writeError(w, code, http.StatusBadRequest, projectKeyProblem("project", project))
+		writeError(w, "LEGION_SETTING_INPUT", http.StatusBadRequest, projectKeyProblem("project", project))
 		return "", false
 	}
 	if err := s.deps.Store.Pool.QueryRow(r.Context(), `select key from projects where key = $1`, project).Scan(new(string)); err != nil {

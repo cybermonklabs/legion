@@ -3081,12 +3081,6 @@ Each item below names a path with its method and identity, then its purpose.
   The bearer is Dispatch's own projected Kubernetes service-account token, minted for the daemon's audience, which `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names and the relay reads at call time, so a rotation needs no restart; unset, it sends no bearer and whatever the daemon answers is what the caller sees.
   `404 LEGION_NOT_CONFIGURED` when the project names no daemon, `503 LEGION_DAEMON_UNAVAILABLE` when it could not be reached.
 
-- `/api/v1/legion/metrics?project=&from=&to=&scope=` (GET; cookie, trusted header, or bearer)
-
-  The Delivery page's Legion section for one project, the first naming a daemon when `project` is left out, over `[from, to)` (default the last 7 days) and `scope=all|roots|children`.
-  Over the issues that closed in the window with Legion phase work: the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week.
-  `400 INVALID_QUERY` for a malformed window or scope, `404 NOT_FOUND` for a project that does not exist.
-
 - `/api/v1/projects/{key}/legion/board` (GET; cookie, trusted header, or bearer)
 
   The Legion view on the Issues page for the project the path names, from what the sampler recorded of that project's daemon and from the per-issue Legion facts the facts consumer stored.

@@ -1,18 +1,19 @@
 // The Legion view on the project Issues page, its settings control, the Settings page's own
-// Legion daemon field, the live push, `/pipeline` and the Delivery page's chart controls
-// (dispatch://INFRA-1077, acceptance A1). Every spec is tagged `@legion`, so `--grep @legion`
-// runs this file's work and nothing else.
+// Legion daemon field, the live push, `/pipeline` and the Delivery page's Legion section and chart
+// controls (dispatch://INFRA-1077, acceptance A1; dispatch://INFRA-2916, R14). Every spec is tagged
+// `@legion`, so `--grep @legion` runs this file's work and nothing else.
 //
 // The board reads only what Dispatch recorded of the project's daemon, so the fixture writes those
 // rows (`legion-seed.ts`); the settings control is the one place that does call the daemon, through
 // Dispatch's relay, so that spec stands a fake daemon up and reads what reached it.
-import { baseUrl, userHeaders } from "./api";
+import type { EvalListResponse } from "../web/src/api/types";
+import { baseUrl, createProject, userHeaders } from "./api";
 import { PIPELINE_SECTION_URL, seedPipelineFixture } from "./delivery-seed";
 import {
   LEGION_PROJECT,
   pushLegionObservation,
+  seedLegionFinishedTree,
   seedLegionFixture,
-  seedLegionMetricsCorpus,
   seedLegionProject,
   startFakeLegionDaemon,
 } from "./legion-seed";
@@ -362,7 +363,7 @@ test("every chart on the Delivery page shows its table, its graph again and a co
   const daemon = await startFakeLegionDaemon({});
   await seedPipelineFixture();
   await seedLegionFixture(daemon.url);
-  await seedLegionMetricsCorpus();
+  await seedLegionFinishedTree();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
   try {
@@ -399,72 +400,198 @@ test("every chart on the Delivery page shows its table, its graph again and a co
   }
 });
 
-// Spec R3/R4 and the Design's "The Delivery page", section 1: the Legion section draws the four
-// metrics — work time to merge, phase time by worker type, rework, and splitting and
-// follow-ups — each through the one chart component, under a project picker and a toggle for
-// all issues, roots or children. The fixture's tree is one root and one child that finished in
-// the window (`seedLegionMetricsCorpus`).
+/** One read of a project's Legion evals over `[from, to)`, or over the route's own default window
+ *  where none is given, as `GET /api/v1/projects/{key}/evals?kind=legion` answers it. */
+async function readLegionEvals(
+  project: string,
+  window: { from: string; to: string } | null
+): Promise<EvalListResponse> {
+  const url = new URL(`/api/v1/projects/${encodeURIComponent(project)}/evals`, baseUrl);
+  url.searchParams.set("kind", "legion");
+  if (window !== null) {
+    url.searchParams.set("from", window.from);
+    url.searchParams.set("to", window.to);
+  }
+  const response = await fetch(url, { headers: await userHeaders("alice") });
+  if (!response.ok) throw new Error(`GET ${url.pathname} failed: ${response.status}`);
+  return (await response.json()) as EvalListResponse;
+}
+
+/** How long the Legion evals of a seeded history take to be built: the facts consumer's sweep,
+ *  every 30 s whatever wakes it (`legionfacts.SweepEvery`), stores the issues' facts, the day-row
+ *  refresher, ten seconds apart at most (`evals.RefresherGap`), folds them into day rows, and a
+ *  project written straight into Postgres has its evals seeded on that refresher's pass. Two
+ *  sweeps and two passes, with room. */
+const legionEvalsBuilt = 150_000;
+
+/** The window from the first day the project's work-time eval holds data to the midnight after
+ *  today, once its count over that window is `finished`: a window that starts before a series'
+ *  first day reads no value at all (`evalSeriesOf`, api/evals.go), so the page is opened over the
+ *  days the history holds. */
+async function legionWindow(
+  project: string,
+  finished: number
+): Promise<{ from: string; to: string }> {
+  const today = new Date();
+  const to = new Date(
+    Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1)
+  ).toISOString();
+  let window = { from: "", to };
+  await expect
+    .poll(
+      async () => {
+        const hours = (read: EvalListResponse) =>
+          read.items
+            ?.find((item) => item.definition.slug === "legion-work-time")
+            ?.series?.find((one) => one.series === "hours");
+        const since = hours(await readLegionEvals(project, null))?.data_since;
+        if (since === null || since === undefined) return null;
+        window = { from: `${since}T00:00:00Z`, to };
+        return hours(await readLegionEvals(project, window))?.window?.n ?? null;
+      },
+      { intervals: [2_000], timeout: legionEvalsBuilt }
+    )
+    .toBe(finished);
+  return window;
+}
+
+// Spec R3/R4 and the Design's "The Delivery page", section 1, as dispatch://INFRA-2916's R14 moved
+// it onto the eval registry: the Legion section draws the four metrics — work time to merge, phase
+// time by worker type, rework, and splitting and follow-ups — of the project with a daemon, each
+// through the one chart component, with the roots and the children cuts beside every issue and no
+// toggle between them. The fixture's tree is one root and one child that finished
+// (`seedLegionFinishedTree`); the numbers are the project's Legion evals the server builds from
+// it, so the row waits for them and opens the page over the days they hold.
+// SLOW(>=2s): it waits for the facts consumer's sweep and the day-row refresher to build the evals it draws.
 test("the Delivery page's Legion section draws the four metrics @legion", async ({ browser }) => {
+  test.setTimeout(legionEvalsBuilt + 60_000);
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);
-  await seedLegionMetricsCorpus();
+  await seedLegionFinishedTree();
+  const window = await legionWindow(LEGION_PROJECT, 2);
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
   try {
-    await page.goto("/delivery");
+    await page.goto(
+      `/delivery?from=${encodeURIComponent(window.from)}&to=${encodeURIComponent(window.to)}`
+    );
     const section = page.getByRole("region", { name: "Legion: issue to merge" });
     await expect(section).toBeVisible();
+    const block = section.locator(`[data-legion-project="${LEGION_PROJECT}"]`);
+    await expect(block).toBeVisible();
 
     // One card per metric, each drawing its numbers through `Chart`, so each has the
     // graph-or-table toggle and the compare control every chart on this page has.
-    for (const [metric, label] of [
+    for (const [metric, title] of [
       ["work_time", "Work time to merge"],
       ["phase_time", "Phase time by worker type"],
       ["rework", "Rework"],
       ["splitting", "Splitting and follow-ups"],
     ]) {
-      const card = section.locator(`[data-legion-metric="${metric}"]`);
+      const label = `${LEGION_PROJECT}: ${title}`;
+      const card = block.locator(`[data-legion-metric="${metric}"]`);
       await expect(card).toBeVisible();
       await expect(card.locator(`[data-chart="${label}"]`)).toBeVisible();
       await expect(card.getByRole("group", { name: `${label} view` })).toBeVisible();
       await expect(card.locator(`select[data-chart-compare="${label}"]`)).toBeVisible();
     }
-    await expect(section.locator("[data-legion-metric]")).toHaveCount(4);
+    await expect(block.locator("[data-legion-metric]")).toHaveCount(4);
 
     // The headline numbers of the two issues that finished: both are counted, the child's
     // review round and send-back are on the rework card, and the child the architect filed
-    // while designing the root is on the splitting card.
+    // while designing the root is on the splitting card, in the children cut.
     const figure = (metric: string, label: string) =>
-      section.locator(`[data-legion-metric="${metric}"] [data-legion-figure="${label}"]`);
+      block.locator(`[data-legion-metric="${metric}"] [data-legion-figure="${label}"]`);
     await expect(figure("work_time", "Issues finished")).toHaveText("2");
     // Two issues finished: the root with no review round, the child with one.
     await expect(figure("rework", "Median review rounds")).toHaveText("0.5");
+    await expect(figure("rework", "Median review rounds, roots")).toHaveText("0.0");
+    await expect(figure("rework", "Median review rounds, children")).toHaveText("1.0");
     await expect(figure("rework", "Sent back at least once")).toHaveText("50.0%");
     await expect(figure("splitting", "Issues filed")).toHaveText("1");
+    await expect(figure("splitting", "Issues filed, roots")).toHaveText("0");
+    await expect(figure("splitting", "Issues filed, children")).toHaveText("1");
     await expect(figure("splitting", "Roots finished")).toHaveText("1");
 
     // The worker types the child's work was shared out over, on the phase-time card's table,
     // and the count of issues each bar holds hours for: a bar's median runs over every finished
     // issue, one the role never worked counting as zero, so that count is what keeps a median
-    // of 0 readable as a population most issues are not in.
-    const phaseTime = section.locator('[data-legion-metric="phase_time"]');
+    // of 0 readable as a population most issues are not in. The cuts are columns beside it.
+    const phaseTime = block.locator('[data-legion-metric="phase_time"]');
     await phaseTime.getByRole("button", { name: "Table" }).click();
-    const table = phaseTime.locator('[data-chart-table="Phase time by worker type"]');
+    const table = phaseTime.locator(
+      `[data-chart-table="${LEGION_PROJECT}: Phase time by worker type"]`
+    );
     await expect(table.locator("td", { hasText: "implementer" }).first()).toBeVisible();
     await expect(table.locator("th", { hasText: "Worker type" }).first()).toBeVisible();
     await expect(table.locator("th", { hasText: "Issues with hours" }).first()).toBeVisible();
+    await expect(table.locator("th", { hasText: "Hours, roots" }).first()).toBeVisible();
+    await expect(table.locator("th", { hasText: "Hours, children" }).first()).toBeVisible();
 
-    // The toggle reads the metrics again for the roots alone: one of the two finished.
-    await section.getByRole("button", { name: "Roots" }).click();
-    await expect(figure("work_time", "Issues finished")).toHaveText("1");
-    await expect(section.locator("[data-legion-metrics-scope]")).toHaveAttribute(
-      "data-legion-metrics-scope",
-      "roots"
-    );
+    // No toggle and no picker: every cut is drawn, and every project with a daemon is a block.
+    await expect(section.getByRole("button", { name: "Roots" })).toHaveCount(0);
+    await expect(section.getByLabel("Legion project")).toHaveCount(0);
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
 
-    // The project picker names the one project with a daemon.
-    await expect(section.locator("[data-legion-metrics-project]")).toHaveValue(LEGION_PROJECT);
+/** The Legion metrics route dispatch://INFRA-2916 deleted, which the row below refuses a request
+ *  of. It is written by its segments so that a search of the repository for a caller of that
+ *  path (k14) finds none, this guard against one included. */
+const DELETED_LEGION_METRICS = ["", "api", "v1", "legion", "metrics"].join("/");
+
+// dispatch://INFRA-2916's R14 (k14's browser half): the Legion section reads the eval routes and
+// draws one block for each project with a Legion setting, with no first-project default. Two
+// projects are made through the API, which seeds each one's evals, and each names a daemon; the
+// page's requests are recorded from before it opens. The base head read the deleted metrics
+// route (DELETED_LEGION_METRICS) for the first project alone, which this row refuses three ways:
+// a request naming that route, no request of GET /api/v1/evals, and fewer blocks than projects
+// with a setting.
+// @pr: The Delivery page's Legion section is the one reader of the cross-project eval read, on a page a person reads.
+test("the Delivery page's Legion section reads the eval routes and draws one block for each project with a Legion setting @legion @pr", async ({
+  browser,
+}) => {
+  const daemon = await startFakeLegionDaemon({});
+  for (const key of ["ACME", "WIDGET"]) {
+    await createProject({ key, name: key });
+    const named = await fetch(new URL(`/api/v1/settings/legion/${key}`, baseUrl), {
+      body: JSON.stringify({ state_url: daemon.url }),
+      headers: { "Content-Type": "application/json", ...(await userHeaders("alice")) },
+      method: "PUT",
+    });
+    expect(named.status).toBe(200);
+  }
+  const listed = await fetch(new URL("/api/v1/settings/legion", baseUrl), {
+    headers: await userHeaders("alice"),
+  });
+  const projects = ((await listed.json()) as { project: string }[]).map((one) => one.project);
+  expect([...projects].sort()).toEqual(["ACME", "WIDGET"]);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const requested: URL[] = [];
+  page.on("request", (request) => requested.push(new URL(request.url())));
+
+  try {
+    await page.goto("/delivery");
+    const section = page.getByRole("region", { name: "Legion: issue to merge" });
+    await expect(section.locator("[data-legion-project]")).toHaveCount(projects.length);
+    for (const project of projects) {
+      const block = section.locator(`[data-legion-project="${project}"]`);
+      await expect(block).toBeVisible();
+      await expect(block.locator("[data-legion-metric]")).toHaveCount(4);
+    }
+
+    expect(requested.filter((url) => url.pathname.startsWith(DELETED_LEGION_METRICS))).toEqual([]);
+    const evals = requested.filter((url) => url.pathname === "/api/v1/evals");
+    expect(evals.length).toBeGreaterThan(0);
+    // Every read names every project with a setting and the Legion kind: no project is picked.
+    for (const url of evals) {
+      expect(url.searchParams.getAll("project").sort()).toEqual([...projects].sort());
+      expect(url.searchParams.get("kind")).toBe("legion");
+    }
   } finally {
     await context.close();
     await daemon.close();

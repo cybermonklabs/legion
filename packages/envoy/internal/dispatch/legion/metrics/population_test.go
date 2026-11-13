@@ -22,8 +22,9 @@ func after(hours float64) time.Time {
 }
 
 // corpus writes the event log, handoffs and observations of one finished child of one root, the
-// shapes Read gathers: a session titled by its role and issue, status snapshots, a handoff, the
-// sampler's observations, a merged pull request, and an issue the implementer filed in the tree.
+// shapes the reads gather: a session titled by its role and issue, status snapshots, a handoff,
+// the sampler's observations, a merged pull request, and an issue the implementer filed in the
+// tree.
 func corpus(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -83,12 +84,12 @@ func corpus(t *testing.T) *store.Store {
 	return database
 }
 
-// TestReadGathersEveryFactTheRulesRead: one read over a seeded event log carries the role events,
-// the statuses, the ask turn, the handoff, the observations, the merge time and the filing, and
-// the report computed from it is the one the rules describe.
-func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
+// TestReadProjectGathersEveryFactTheRulesRead: the facts' read over a seeded event log carries the
+// role events, the statuses, the ask turn, the handoff, the observations, the merge time and the
+// filing, and the facts and the folds of the evals over it are the ones the rules describe.
+func TestReadProjectGathersEveryFactTheRulesRead(t *testing.T) {
 	database := corpus(t)
-	population, err := Read(t.Context(), database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadProject(t.Context(), database.Pool, nil, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -118,24 +119,24 @@ func TestReadGathersEveryFactTheRulesRead(t *testing.T) {
 		t.Fatalf("the filings are %+v, want the child the architect filed and the follow-up the implementer filed", population.Filed)
 	}
 
-	report := Compute(population, ScopeAll, after(24))
-	if report.Finished != 1 || report.WorkTime.Issues[0].Key != "INFRA-2" {
-		t.Fatalf("the report counted %d issues (%+v), want the child alone", report.Finished, report.WorkTime.Issues)
+	w := windowOf(population, ScopeAll)
+	if len(w.finished) != 1 || w.finished[0] != "INFRA-2" {
+		t.Fatalf("the window finished %v, want the child alone", w.finished)
 	}
 	// Nine hours from the first worker event to the close, less the two parked ones.
-	if row := report.WorkTime.Issues[0]; row.Hours != 7 || row.ParkedHours != 2 {
-		t.Errorf("the child's work time = %g hours with %g parked, want 7 and 2", row.Hours, row.ParkedHours)
+	if row := w.fact(t, "INFRA-2"); row.WorkHours != 7 || row.ParkedHours != 2 {
+		t.Errorf("the child's work time = %g hours with %g parked, want 7 and 2", row.WorkHours, row.ParkedHours)
 	}
 	// The turn the daemon recorded runs from hour 1 to hour 3, and the issue was parked from
 	// hour 2, so one of its two hours is off the bar with the rest of the parked time: the bar's
 	// seven hours are the work time's own.
-	bar := barOf(t, report, "implementer")
+	bar := barOf(t, w, "implementer")
 	if bar.Segments.InATurn != 1 || bar.Segments.WaitingOnPerson != 1 || bar.Hours != 7 {
 		t.Errorf("the implementer bar = %g hours, %+v, want seven hours with the unparked hour of the turn and the hour of the ask on the person",
 			bar.Hours, bar.Segments)
 	}
 	classed := map[string]string{}
-	for _, row := range report.Splitting.Filed {
+	for _, row := range w.filed {
 		classed[row.Key] = row.Class
 	}
 	// The architect filed the child before its own first implementer event, and the child's
@@ -163,7 +164,7 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 	`, after(-1)); err != nil {
 		t.Fatalf("seed the other root: %v", err)
 	}
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadProject(ctx, database.Pool, nil, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -175,13 +176,13 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 	}
 }
 
-// TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach: the same rule for an issue no
-// read of the window covers. The metrics read the event log, the handoffs and the observations
-// of the issues the window could have finished and their trees (scopeKeys), and an open issue in
-// none of those carries no observation of its own; the daemon's `tree` for it is a fact of the
-// project all the same, and the Legion view reads it project-wide. Reading it for the window's
-// issues alone put one issue in two trees: the board's and the metrics'.
-func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.T) {
+// TestADaemonsTreeFieldNamesTheRootOfAnIssueTheReadDoesNotReach: the same rule for an issue a
+// read's scope does not reach. ReadIssues reads the event log, the handoffs and the observations
+// of the trees of the issues it recomputes (treeScopeKeys), and an open issue in none of those
+// carries no observation of its own there; the daemon's `tree` for it is a fact of the project
+// all the same, and the Legion view reads it project-wide. Reading it for the scope's issues
+// alone put one issue in two trees: the board's and the facts'.
+func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheReadDoesNotReach(t *testing.T) {
 	database := corpus(t)
 	ctx := t.Context()
 	exec := func(sql string, args ...any) {
@@ -190,8 +191,9 @@ func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.
 			t.Fatalf("seed (%s): %v", sql, err)
 		}
 	}
-	// A tree of its own, beside the one the corpus holds: none of these closed in the window,
-	// none filed anything in it and none is a filer's issue, so scopeKeys reaches no key of it.
+	// A tree of its own, beside the one the corpus holds: none of these is in the child's tree,
+	// none filed anything and none is a filer's issue, so the scope of a read of the child
+	// reaches no key of it.
 	exec(`insert into issues (key, project_key, number, title, status, rank, created_by, created_at)
 		values ('INFRA-6', 'INFRA', 6, 'An unrelated parent', 'in_progress', 'r', '{"kind":"user","id":"alice"}'::jsonb, $1)`, after(-1))
 	exec(`insert into issues (key, project_key, number, title, status, rank, parent_key, created_by, created_at)
@@ -204,12 +206,12 @@ func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheWindowDoesNotReach(t *testing.
 	exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ('INFRA', 'INFRA-7', $1, '"INFRA-8"'::jsonb, $2)`, legion.FieldTree, after(2))
 
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadIssues(ctx, database.Pool, nil, "INFRA", []string{"INFRA-2"}, nil, after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
 	if marks := population.Issues["INFRA-7"].Observed; len(marks) != 0 {
-		t.Fatalf("the window's observation read carried %v of INFRA-7, so the issue is not the one this test is about", marks)
+		t.Fatalf("the scope's observation read carried %v of INFRA-7, so the issue is not the one this test is about", marks)
 	}
 	if root := population.TreeRoot("INFRA-7"); root != "INFRA-8" {
 		t.Fatalf("the open issue's tree root = %q, want the INFRA-8 the daemon named for it", root)
@@ -259,7 +261,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	event("INFRA-2", 10, "ask.opened", session("Legion implementer · INFRA-9"), `{"id":"ask-3"}`, after(8))
 	event("INFRA-2", 11, "ask.answered", `{"kind":"user","id":"alice"}`, `{"id":"ask-3"}`, after(9))
 
-	population, err := Read(ctx, database.Pool, nil, "INFRA", after(-2), after(24))
+	population, err := ReadProject(ctx, database.Pool, nil, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -276,7 +278,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	}
 	// The child's seven bar hours: the unparked hour of its turn, the two hours of the asks its
 	// own tree opened, and four idle. The hour of the ask the other tree opened is idle too.
-	bar := barOf(t, Compute(population, ScopeAll, after(24)), "implementer")
+	bar := barOf(t, windowOf(population, ScopeAll), "implementer")
 	if bar.Hours != 7 || bar.Segments.WaitingOnPerson != 2 || bar.Segments.InATurn != 1 || bar.Segments.Idle != 4 {
 		t.Fatalf("the implementer bar = %g hours, %+v, want seven hours with two waiting on a person", bar.Hours, bar.Segments)
 	}

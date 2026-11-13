@@ -12,11 +12,11 @@ import (
 
 // TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithItsTree: the consumer
 // writes one issue_filings row per issue a Legion session of the project filed, each carrying the
-// class, the filer and the filer's phase metrics.Compute's splitting table gives that filing, and
-// the filed issue's tree root as the same population places it. The first pass reads the history
-// whole; a later pass reads four new filings off the events feed, one of each class beside the
-// rig's own, one of them of an issue of another project; and a pass after a filed issue's parent
-// link moves rewrites that filing's root and no other filing.
+// class, the filer and the filer's phase metric 4 gives that filing over a whole read of the
+// project's history, and the filed issue's tree root as the same population places it. The
+// first pass reads the history whole; a later pass reads four new filings off the events feed,
+// one of each class beside the rig's own, one of them of an issue of another project; and a pass
+// after a filed issue's parent link moves rewrites that filing's root and no other filing.
 func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithItsTree(t *testing.T) {
 	run := newConsumer(t, 3)
 	project := run.fixture.Project
@@ -83,23 +83,20 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 		outside, added[outside].Class, across, added[across].Class, outside, added[outside].RootKey, moved[outside].RootKey)
 }
 
-// compareFilings holds the stored filings of project to the ones metrics.Compute's splitting
-// table answers for that project over the whole history, field by field, and each stored root to
-// the tree the same population places the filed issue in: Compute's own roots scope keeps a
-// filing exactly where its filed issue is the root of its tree.
+// compareFilings holds the stored filings of project to the ones metric 4 classes over a whole
+// read of the project's history (metrics.ReadProject, metrics.ProjectFilings), field by field,
+// and each stored root to the tree the same population places the filed issue in, which is what
+// the roots cut keeps a filing by: exactly where its filed issue is the root of its tree.
 func compareFilings(t *testing.T, run *consumer, project, when string, stored map[string]Filing) {
 	t.Helper()
-	population, err := metrics.Read(t.Context(), run.database.Pool, nil, project, run.fixture.From.Add(-24*time.Hour), run.at)
+	population, err := metrics.ReadProject(t.Context(), run.database.Pool, nil, project, run.at)
 	if err != nil {
 		t.Fatalf("%s: read the history of %s: %v", when, project, err)
 	}
-	report := metrics.Compute(population, metrics.ScopeAll, run.at)
 	roots := map[string]bool{}
-	for _, filed := range metrics.Compute(population, metrics.ScopeRoots, run.at).Splitting.Filed {
-		roots[filed.Key] = true
-	}
 	want := map[string]Filing{}
-	for _, filed := range report.Splitting.Filed {
+	for _, filed := range metrics.ProjectFilings(population) {
+		roots[filed.Key] = metrics.InCut(metrics.ScopeRoots, filed.Root == filed.Key)
 		want[filed.Key] = Filing{
 			Project: project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer,
 			FilerIssue: filed.FilerIssue, FilerPhase: filed.FilerPhase, Class: filed.Class,
@@ -107,7 +104,7 @@ func compareFilings(t *testing.T, run *consumer, project, when string, stored ma
 		}
 	}
 	if got, wanted := slices.Sorted(maps.Keys(stored)), slices.Sorted(maps.Keys(want)); !slices.Equal(got, wanted) {
-		t.Errorf("%s: the stored filings are %v, want the %v Compute counts", when, got, wanted)
+		t.Errorf("%s: the stored filings are %v, want the %v metric 4 classes", when, got, wanted)
 	}
 	classes := map[string]int{}
 	for key, filing := range want {
@@ -117,10 +114,10 @@ func compareFilings(t *testing.T, run *consumer, project, when string, stored ma
 			t.Errorf("%s: %s is stored as %s, want %s", when, key, showFiling(got), showFiling(filing))
 		}
 		if (got.RootKey == key) != roots[key] {
-			t.Errorf("%s: %s is stored under the root %s, and Compute's roots scope keeps it %t", when, key, got.RootKey, roots[key])
+			t.Errorf("%s: %s is stored under the root %s, and the roots cut keeps it %t", when, key, got.RootKey, roots[key])
 		}
 	}
-	t.Logf("%s: %d stored filings of %s compared with Compute's splitting table, by class %v", when, len(want), project, classes)
+	t.Logf("%s: %d stored filings of %s compared with metric 4's filings of the history, by class %v", when, len(want), project, classes)
 }
 
 // sameFiling is whether two filings hold the same values, the moment compared as an instant.

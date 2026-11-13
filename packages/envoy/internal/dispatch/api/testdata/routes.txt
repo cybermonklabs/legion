@@ -111,7 +111,6 @@ POST /api/v1/issues/{key}/results any
 GET /api/v1/issues/{key}/subscribers any
 DELETE /api/v1/issues/{key}/subscribers/{session_id} any
 GET /api/v1/issues/{key}/summary any
-GET /api/v1/legion/metrics any
 PUT /api/v1/legion/{project}/settings any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any

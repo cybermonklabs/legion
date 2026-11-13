@@ -14,7 +14,7 @@ import (
 // project's `evals-md`.
 //
 // An entry's definition is its code (R5): its source is `computed:` and the one exported function
-// that computes its value, the fold the eval routes and the delivery and Legion routes all call
+// that computes its value, the fold the eval routes and the delivery routes all call
 // (or, for unowned-p0, the function that counts it), and its number_rule is empty, since the
 // function is the rule. The prose about the number is its section's method block, written from
 // the code the source names: the question and the decision it changes, how it is measured, what

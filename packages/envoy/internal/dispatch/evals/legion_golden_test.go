@@ -18,10 +18,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
-// goldenComputeFiles are the reports metrics.Compute answered at the base head 02a7b3c6 over one
-// legiontest history, one file per window holding the three scopes' reports, recorded before the
-// Legion folds replaced its aggregation (legion/metrics/golden_record_test.go, which nothing runs
-// again: run after the change, it would record the new code's answer).
+// goldenComputeFiles are the reports the base head's Legion section route answered at 02a7b3c6
+// (metrics.Compute, since deleted) over one legiontest history, one file per window holding the
+// three scopes' reports, recorded before the Legion folds replaced its aggregation
+// (legion/metrics/golden_record_test.go, deleted with it: run after the change, it would have
+// recorded the new code's answer).
 var goldenComputeFiles = filepath.Join("..", "legion", "metrics", "testdata", "golden_compute", "*.json")
 
 // goldenReports is one golden file.
@@ -37,8 +38,72 @@ type goldenReports struct {
 		From time.Time `json:"from"`
 		To   time.Time `json:"to"`
 	} `json:"window"`
-	Scopes  []metrics.Scope           `json:"scopes"`
-	Reports map[string]metrics.Report `json:"reports"`
+	Scopes  []metrics.Scope         `json:"scopes"`
+	Reports map[string]goldenReport `json:"reports"`
+}
+
+// goldenReport is one scope's report in the shape the base head's route wrote it, in the fields
+// this comparison reads: the issues that finished, the work time with its table of issues, the
+// seven bars and the idle share, the rework figures with their table, and the splitting weeks,
+// table and root figures.
+type goldenReport struct {
+	Finished int `json:"finished"`
+	WorkTime struct {
+		MedianHours float64 `json:"median_hours"`
+		P90Hours    float64 `json:"p90_hours"`
+		Issues      []struct {
+			Key         string     `json:"key"`
+			Root        bool       `json:"root"`
+			StartedAt   time.Time  `json:"started_at"`
+			ClosedAt    time.Time  `json:"closed_at"`
+			MergedAt    *time.Time `json:"merged_at"`
+			Hours       float64    `json:"hours"`
+			ParkedHours float64    `json:"parked_hours"`
+			QueuedHours float64    `json:"queued_hours"`
+		} `json:"issues"`
+	} `json:"work_time"`
+	PhaseTime struct {
+		Bars []struct {
+			Role                string           `json:"role"`
+			Hours               float64          `json:"hours"`
+			Issues              int              `json:"issues"`
+			MedianHoursPerIssue float64          `json:"median_hours_per_issue"`
+			Segments            metrics.Segments `json:"segments"`
+		} `json:"bars"`
+		IdleShare float64 `json:"idle_share"`
+	} `json:"phase_time"`
+	Rework struct {
+		MedianReviewRounds          float64 `json:"median_review_rounds"`
+		SentBackShare               float64 `json:"sent_back_share"`
+		HoursAfterFirstReview       float64 `json:"hours_after_first_review"`
+		MedianHoursAfterFirstReview float64 `json:"median_hours_after_first_review"`
+		Issues                      []struct {
+			Key                         string  `json:"key"`
+			ReviewRounds                int     `json:"review_rounds"`
+			SentBack                    bool    `json:"sent_back"`
+			ImplementingHoursAfterFirst float64 `json:"implementing_hours_after_first_review"`
+			TestingHoursAfterFirst      float64 `json:"testing_hours_after_first_review"`
+		} `json:"issues"`
+	} `json:"rework"`
+	Splitting struct {
+		Weeks []struct {
+			Week     time.Time      `json:"week"`
+			Filed    map[string]int `json:"filed"`
+			Finished int            `json:"finished"`
+		} `json:"weeks"`
+		Filed []struct {
+			Key        string    `json:"key"`
+			At         time.Time `json:"at"`
+			Class      string    `json:"class"`
+			Filer      string    `json:"filer"`
+			FilerIssue string    `json:"filer_issue"`
+			FilerPhase string    `json:"filer_phase"`
+		} `json:"filed"`
+		FinishedRoots                int     `json:"finished_roots"`
+		ChildrenPerRoot              float64 `json:"children_per_root"`
+		MedianHoursRootsWithChildren float64 `json:"median_hours_roots_with_children"`
+		MedianHoursRootsNoChildren   float64 `json:"median_hours_roots_without_children"`
+	} `json:"splitting"`
 }
 
 // The tolerances of the comparison: the spec's 0.1 hour for an hour figure, and a share (or the
@@ -308,7 +373,7 @@ func compareLegionWindows(t *testing.T, r rig, project string, windows []goldenR
 }
 
 // compareFolds compares every number of report with the folds of parts in cut.
-func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut metrics.Scope, report metrics.Report) {
+func compareFolds(check *legionCheck, parts map[string][]measures.DayPart, cut metrics.Scope, report goldenReport) {
 	finished := float64(report.Finished)
 
 	work := metrics.FoldWorkTime(parts[SlugLegionWorkTime], cut)
@@ -431,7 +496,7 @@ func orRoots(fold *metrics.RootsFold) *metrics.RootsFold {
 // the work-time and rework rows with the issue_facts rows of the issues that closed in it, and the
 // splitting rows with the issue_filings rows of the filings made in it. A table's title and
 // priority are the issue's own columns, which no stored row holds, so they are left out.
-func compareTables(check *legionCheck, closed []legionfacts.Row, filed []legionfacts.Filing, cut metrics.Scope, report metrics.Report) {
+func compareTables(check *legionCheck, closed []legionfacts.Row, filed []legionfacts.Filing, cut metrics.Scope, report goldenReport) {
 	rows := map[string]legionfacts.Row{}
 	timed := 0
 	for _, row := range closed {

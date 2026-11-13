@@ -16,13 +16,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// goldenPartsFile is the per-issue parts metrics.Compute's window aggregation took from each
-// finished issue at the base head, recorded before the parts were split out of it
-// (legion/metrics/golden_record_test.go, which nothing runs again: once the split landed it
-// would record the new code's answer and stop being the oracle).
+// goldenPartsFile is the per-issue parts the base head's window aggregation (metrics.Compute,
+// since deleted) took from each finished issue, recorded before the parts were split out of it
+// (legion/metrics/golden_record_test.go, deleted with it: once the split landed it would have
+// recorded the new code's answer and stopped being the oracle).
 var goldenPartsFile = filepath.Join("..", "legion", "metrics", "testdata", "golden_issue_parts.json")
 
-// goldenParts is that file: the history it was recorded over and each finished issue's parts.
+// goldenParts is that file: the history it was recorded over and each finished issue's parts, in
+// the shapes the base head's report wrote them.
 type goldenParts struct {
 	Head string `json:"head"`
 	Spec struct {
@@ -31,13 +32,43 @@ type goldenParts struct {
 		Now     time.Time `json:"now"`
 	} `json:"spec"`
 	Issues map[string]struct {
-		WorkTime *metrics.WorkTimeIssue `json:"work_time"`
-		Bars     []metrics.RoleBar      `json:"bars"`
-		Rework   metrics.ReworkIssue    `json:"rework"`
-		Children int                    `json:"children"`
-		TreeRoot string                 `json:"tree_root"`
-		Root     bool                   `json:"root"`
+		WorkTime *goldenWorkTime `json:"work_time"`
+		Bars     []goldenBar     `json:"bars"`
+		Rework   goldenRework    `json:"rework"`
+		Children int             `json:"children"`
+		TreeRoot string          `json:"tree_root"`
+		Root     bool            `json:"root"`
 	} `json:"issues"`
+}
+
+// goldenWorkTime is one issue's work-time row as the golden file holds it.
+type goldenWorkTime struct {
+	Root        bool       `json:"root"`
+	StartedAt   time.Time  `json:"started_at"`
+	ClosedAt    time.Time  `json:"closed_at"`
+	MergedAt    *time.Time `json:"merged_at"`
+	Hours       float64    `json:"hours"`
+	ParkedHours float64    `json:"parked_hours"`
+	QueuedHours float64    `json:"queued_hours"`
+}
+
+// goldenBar is one bar of one issue as the golden file holds it: the bar of a population of that
+// issue alone, so its median per issue is the issue's own hours on it and its issues are one or
+// none.
+type goldenBar struct {
+	Role                string           `json:"role"`
+	Hours               float64          `json:"hours"`
+	Issues              int              `json:"issues"`
+	MedianHoursPerIssue float64          `json:"median_hours_per_issue"`
+	Segments            metrics.Segments `json:"segments"`
+}
+
+// goldenRework is one issue's rework row as the golden file holds it.
+type goldenRework struct {
+	ReviewRounds                int     `json:"review_rounds"`
+	SentBack                    bool    `json:"sent_back"`
+	ImplementingHoursAfterFirst float64 `json:"implementing_hours_after_first_review"`
+	TestingHoursAfterFirst      float64 `json:"testing_hours_after_first_review"`
 }
 
 // goldenHoursTolerance is how far a stored hour figure may stand from the recorded one: the
@@ -46,10 +77,10 @@ const goldenHoursTolerance = 0.1
 
 // TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead: for the history the golden
 // file was recorded over, every per-issue value the facts store, written by WriteProject and read
-// back by Read, equals the part metrics.Compute's window aggregation took from that issue at the
-// base head: the work-time row, each of the seven bars with its five segments, the rework row,
-// the children and the tree. A part that moves when the code that computes it is split out of
-// the aggregation fails here, whichever of the stored columns it lands in.
+// back by Read, equals the part the base head's window aggregation took from that issue: the
+// work-time row, each of the seven bars with its five segments, the rework row, the children and
+// the tree. A part that moves when the code that computes it is split out of the aggregation
+// fails here, whichever of the stored columns it lands in.
 func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.T) {
 	raw, err := os.ReadFile(goldenPartsFile)
 	if err != nil {
@@ -136,7 +167,7 @@ func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.
 }
 
 // goldenIssueCount is the bar's issue count for one issue: one where any of its bar spans fall
-// on the bar, which is what RoleBar.Issues counts for an issue alone.
+// on the bar, which is what a bar's issue count counts for an issue alone.
 func goldenIssueCount(part metrics.BarPart) int {
 	if part.HoldsHours {
 		return 1

@@ -1,10 +1,13 @@
-// Package metrics computes the Delivery page's four Legion measures — work time to merge, phase
-// time by worker type, rework, and splitting and follow-ups (dispatch://INFRA-1077, the spec's
-// "The four Legion metrics" and "Rule details").
+// Package metrics computes the Legion measures — work time to merge, phase time by worker type,
+// rework, and splitting and follow-ups (dispatch://INFRA-1077, the spec's "The four Legion
+// metrics" and "Rule details"), and slot wait and idle time by role (dispatch://INFRA-2916, D3):
+// each issue's facts, which legionfacts stores, and the six folds the Legion evals read over the
+// day parts built from those facts (folds.go).
 //
-// It is split the way api/delivery_pipeline.go is split: Read makes every database and GitHub read
-// one answer needs, and Compute turns that population into the answer and touches nothing, so the
-// route and the live hub share one body rather than two implementations of the rules.
+// It is split the way api/delivery_pipeline.go is split: ReadProject and ReadIssues make every
+// database and GitHub read a computation needs, and ProjectFacts and ProjectFilings turn that
+// population into the facts and touch nothing, so every reader of the facts shares one body
+// rather than two implementations of the rules.
 //
 // Two disciplines run through it:
 //
@@ -126,7 +129,9 @@ type Filed struct {
 	Ancestors []string
 }
 
-// Population is every fact one metrics answer is computed from.
+// Population is every fact one computation of the facts reads. From and To are the window it
+// covers: From is the zero time for both reads, which run from the project's beginning, and To is
+// the moment an open issue's hours run to.
 type Population struct {
 	Project string
 	From    time.Time
@@ -138,8 +143,7 @@ type Population struct {
 	Keys   []string
 
 	// Filed is every issue a Legion session of the project created that the read covers, in
-	// creation order: the window's (Read), the whole history's (ReadProject) or the named filed
-	// issues' (ReadIssues).
+	// creation order: the whole history's (ReadProject) or the named filed issues' (ReadIssues).
 	Filed []Filed
 
 	// reported is every issue of the project the daemon reports — the issues the sampler
@@ -157,30 +161,16 @@ type Population struct {
 	askTurns []askTurn
 }
 
-// Read is every database and GitHub read one metrics answer makes: the project's issues, the
-// Legion phase work the event log records — for every issue of the project, which is what places
-// an issue in a tree, and in the window's scope per role, which is what a metric counts — the
-// handoffs and observations of the window's issues, the issues of the project the daemon
-// reports, the issues Legion sessions created in the window, and the merge time of each finished
-// issue's pull request.
-//
-// github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
-// reach leaves that issue with none, since no metric's rule is written in terms of one.
-func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, from, to, func(ctx context.Context, p *Population) error {
-		return p.readFiled(ctx, pool, project, from, to)
-	}, func(p *Population) []string {
-		return p.scopeKeys(from, to)
-	})
-}
-
 // ReadProject is the population of every issue of the project, open or closed, up to now: what
 // the per-issue facts read (ProjectFacts). Its window runs from the beginning to now, so an open
-// issue's hours run to now, and its scope is every issue of the project rather than the issues a
-// window names. Its filings are every issue a Legion session of the project ever filed
-// (ProjectFilings), whose filers are issues of the project and so inside that scope.
+// issue's hours run to now, and its scope is every issue of the project. Its filings are every
+// issue a Legion session of the project ever filed (ProjectFilings), whose filers are issues of
+// the project and so inside that scope.
+//
+// github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
+// reach leaves that issue with none, since no measure's rule is written in terms of one.
 func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, now time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, time.Time{}, now, func(ctx context.Context, p *Population) error {
+	return read(ctx, pool, github, project, now, func(ctx context.Context, p *Population) error {
 		return p.readFiled(ctx, pool, project, time.Time{}, now)
 	}, func(p *Population) []string {
 		return p.Keys
@@ -199,18 +189,18 @@ func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client
 // working as well, because a filing's class and its filer's phase read that issue's timeline
 // (classify). The facts of the keys asked for are the same whatever the scope adds around them.
 func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, keys, filed []string, now time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, time.Time{}, now, func(ctx context.Context, p *Population) error {
+	return read(ctx, pool, github, project, now, func(ctx context.Context, p *Population) error {
 		return p.readFiledIssues(ctx, pool, project, filed)
 	}, func(p *Population) []string {
 		return p.treeScopeKeys(slices.Concat(keys, p.filerKeys()))
 	})
 }
 
-// read is the body the three readers share. filed reads the population's filings, before the
-// scope is chosen because the scope holds each filer's issue, and scope names which issues the
-// seven detail reads cover.
-func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, filed func(ctx context.Context, p *Population) error, scope func(*Population) []string) (*Population, error) {
-	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}}
+// read is the body the two readers share, over the window from the beginning to `to`. filed
+// reads the population's filings, before the scope is chosen because the scope holds each
+// filer's issue, and scope names which issues the seven detail reads cover.
+func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, to time.Time, filed func(ctx context.Context, p *Population) error, scope func(*Population) []string) (*Population, error) {
+	population := &Population{Project: project, To: to, Issues: map[string]*Issue{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
 	}
@@ -381,21 +371,6 @@ func (p *Population) readFilings(ctx context.Context, pool *store.Pool, project,
 		p.Filed = append(p.Filed, one)
 	}
 	return nil
-}
-
-// scopeKeys is every issue the event, handoff and observation reads cover: the issues that could
-// have finished in the window, every issue each one shares a tree with by the one tree rule
-// (treeScopeKeys), and the issues the window's filings name as their filer, whose phase at the
-// filing metric 4 reports.
-func (p *Population) scopeKeys(from, to time.Time) []string {
-	seeds := make([]string, 0, len(p.Keys)+len(p.Filed))
-	for _, key := range p.Keys {
-		issue := p.Issues[key]
-		if issue.ClosedAt != nil && !issue.ClosedAt.Before(from) && issue.ClosedAt.Before(to) {
-			seeds = append(seeds, key)
-		}
-	}
-	return p.treeScopeKeys(append(seeds, p.filerKeys()...))
 }
 
 // filerKeys is the issue each filing's filer was working, for every filing the population read,
@@ -984,9 +959,9 @@ func (p *Population) readPhaseWork(ctx context.Context, pool *store.Pool) error 
 
 // hasPhaseWork is whether this read carried Legion phase work of the issue: an event of a
 // session titled `Legion <role> · <its key>`, or a handoff, among the window's scope. The rule
-// that picks which finished issues a metric counts reads this and not isLegionIssue (compute.go's
-// finishedInWindow): an issue the daemon reports and no role ever worked finished nothing,
-// however its tree reads.
+// that picks which finished issues a measure counts reads this and not isLegionIssue
+// (ProjectFacts, whose issues closed in a window are the ones it finished): an issue the daemon
+// reports and no role ever worked finished nothing, however its tree reads.
 func (p *Population) hasPhaseWork(issue *Issue) bool {
 	return len(issue.FirstRoleEvent) > 0 || len(issue.Handoffs) > 0
 }

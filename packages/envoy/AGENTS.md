@@ -255,13 +255,13 @@ Each item below names a task and where its code is, then notes on it.
   `delivery/reconcile_backfill.go`'s `backfillRuns` fills older runs' `head_branch` and `event` once, and deploy runs' `created_at` once more under its own step;
   a pull request ships with the earliest-finishing successful production deploy whose run GitHub created after its merge (`delivery/containment.go`, `DeliveryRun.Created`)
 
-- **Where Legion's time goes**: `internal/dispatch/legion/`, `internal/dispatch/legionfacts/`, `api/settings_legion.go`, `api/legion_board.go`, `api/legion_metrics.go`
+- **Where Legion's time goes**: `internal/dispatch/legion/`, `internal/dispatch/legionfacts/`, `api/settings_legion.go`, `api/legion_board.go`
 
   A per-project setting names the Legion daemon whose `GET /legion/v1/state` Dispatch reads (`store.go`, `GET /api/v1/settings/legion` and `PUT`/`DELETE /api/v1/settings/legion/{project}`), and `PUT /api/v1/legion/{project}/settings` relays an operator's `legion.yaml` change back to it, as the ServiceAccount token `DISPATCH_LEGION_DAEMON_TOKEN_FILE` names (`client.go`; `docs/kubernetes.md`, "The settings route").
   `sampler.go` reads each configured daemon's state every minute, one replica at a time under the `legion-state` lease, and records what moved (`state.go`, migration `20261103170923_legion_state`);
-  `metrics/` computes from those records what `GET /api/v1/legion/metrics` serves the Delivery page's Legion section, and `api/legion_board.go` what `GET /api/v1/projects/{key}/legion/board` serves the Issues page's Legion view.
   `metrics/breakdown.go`'s `ProjectFacts` is the one computation of an issue's Legion facts, and `legionfacts/` stores them as rows of `issue_facts`: one leased loop recomputes the issues whose inputs moved, sweeps every open issue, whose facts grow with the clock, and logs each write on the `delivery_changes` feed under the kind `issue_facts`, so every view built on the facts is woken.
-  The board reads those rows and computes nothing, and `legion/board_rules.go` holds the two card rules the route and the stored rows share.
+  `metrics/folds.go`'s day builders turn the stored facts of each day into the six Legion evals' day rows (`evals/legion_days.go`), and its folds fold a window's rows for `GET /api/v1/projects/{key}/evals?kind=legion` and `GET /api/v1/evals?kind=legion`, which the Delivery page's Legion section reads.
+  `api/legion_board.go` serves the Issues page's Legion view as `GET /api/v1/projects/{key}/legion/board`: it reads the stored facts and computes nothing, and `legion/board_rules.go` holds the two card rules the route and the stored rows share.
 
 - **`issue.deployed`: a merged pull request reached production**: `internal/dispatch/delivery/deployed.go`
 

@@ -37,7 +37,7 @@ func TestTheLiveBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 		{860, "The top, which the daemon reports", "a", "", true},
 		{861, "The tracking issue the renamed session wrote on", "b", "INFRA-860", false},
 		{862, "The bottom, which the daemon reports", "c", "INFRA-861", true},
-		{863, "Its closed child, which brings the chain into the window", "d", "INFRA-862", false},
+		{863, "Its closed child", "d", "INFRA-862", false},
 	} {
 		key := seedLegionIssue(t, rig.database, "INFRA", issue.number, issue.title, issue.rank, nil, issue.parent)
 		if issue.reported {
@@ -61,7 +61,7 @@ func TestTheLiveBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 	if err := json.Unmarshal(snapshot.Body, &live); err != nil {
 		t.Fatalf("read the live board: %v", err)
 	}
-	population, err := metrics.Read(t.Context(), rig.database.Pool, nil, "INFRA", now.Add(-14*24*time.Hour), now)
+	population, err := metrics.ReadProject(t.Context(), rig.database.Pool, nil, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}

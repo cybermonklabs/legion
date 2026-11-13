@@ -28,10 +28,6 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 	population := fixture(hour(-24), hour(24), root, child)
 
 	facts := ProjectFacts(population)
-	work := map[string]WorkTimeIssue{}
-	for _, row := range Compute(population, ScopeAll, hour(24)).WorkTime.Issues {
-		work[row.Key] = row
-	}
 	// The root waited on its child from hour 3 to hour 5, and the child waited on none.
 	waited := map[string]float64{"INFRA-1": 2, "INFRA-2": 0}
 	for key, row := range facts {
@@ -39,7 +35,7 @@ func TestTheFactsShareOutEachIssuesBarHours(t *testing.T) {
 		for _, spent := range row.PhaseHours {
 			sum += spent
 		}
-		want := work[key].Hours - work[key].QueuedHours - waited[key]
+		want := row.WorkHours - row.QueuedHours - waited[key]
 		if math.Abs(sum-want) > 0.001 {
 			t.Errorf("%s holds %g h by phase, want its bar hours %g: %v", key, sum, want, row.PhaseHours)
 		}

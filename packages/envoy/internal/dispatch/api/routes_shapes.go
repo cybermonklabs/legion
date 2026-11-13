@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
-	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -165,20 +164,6 @@ type deliveryPipelineQuery struct {
 	From string `query:"from"`
 	// To is the window's end, RFC3339, exclusive; absent it is now.
 	To string `query:"to"`
-}
-
-// legionMetricsQuery is GET /api/v1/legion/metrics's query: the project, the window every
-// delivery route reads the same way, and which of the project's issues the answer counts.
-type legionMetricsQuery struct {
-	// Project is the project whose issues are counted; absent, it is the first project that
-	// names a daemon, and a key no project holds is 400 INVALID_QUERY.
-	Project string `query:"project"`
-	// From is the window's start, RFC3339; absent it is seven days before To.
-	From string `query:"from"`
-	// To is the window's end, RFC3339, exclusive; absent it is now.
-	To string `query:"to"`
-	// Scope is which of the project's Legion issues are counted; absent it is all.
-	Scope string `query:"scope" enum:"all,roots,children"`
 }
 
 // evalListQuery is GET /api/v1/projects/{key}/evals's query: the window and the compare range,
@@ -690,9 +675,6 @@ var routeShapes = map[string]routeShape{
 		Opaque: "the Legion daemon's own answer, relayed byte for byte with its status: the " +
 			"per-key verdicts of its operator settings route, which Dispatch does not model",
 		OpaqueContentType: "application/json",
-	},
-	"GET /api/v1/legion/metrics": {
-		Status: http.StatusOK, Response: metrics.Report{}, Params: legionMetricsQuery{},
 	},
 	"GET /api/v1/projects/{key}/legion/board": {
 		Status: http.StatusOK, Response: legionBoardResponse{},

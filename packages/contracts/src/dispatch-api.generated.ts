@@ -1771,23 +1771,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v1/legion/metrics": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** @description The Delivery page's Legion section for ?project= (the first project naming a daemon when none is given), [from, to) (default the last 7 days) and ?scope=all|roots|children: over the issues that closed in the window with Legion phase work, the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle in that order, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week; 400 INVALID_QUERY for a malformed window or scope, 404 NOT_FOUND for a project that does not exist. */
-    get: operations["getApiV1LegionMetrics"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v1/legion/{project}/settings": {
     parameters: {
       query?: never;
@@ -5428,101 +5411,6 @@ export interface components {
       /** Format: date-time */
       since: null | string;
     };
-    LegionFiledIssue: {
-      /** Format: date-time */
-      at: string;
-      /** @enum {string} */
-      class: "in_tree_at_design" | "in_tree_later" | "out_of_tree" | "by_the_controller";
-      /** @enum {string} */
-      filer:
-        | "architect"
-        | "planner"
-        | "implementer"
-        | "tester"
-        | "reviewer"
-        | "merger"
-        | "controller";
-      filer_issue: string;
-      /** @enum {string} */
-      filer_phase:
-        | ""
-        | "queued"
-        | "design"
-        | "planning"
-        | "implementing"
-        | "testing"
-        | "reviewing"
-        | "accepting"
-        | "merging"
-        | "awaiting_person"
-        | "held"
-        | "done";
-      key: string;
-      title: string;
-    };
-    LegionMetricsResponse: {
-      /** Format: date-time */
-      computed_at: string;
-      finished: number;
-      /** Format: date-time */
-      from: string;
-      phase_time: components["schemas"]["LegionPhaseTime"];
-      project: string;
-      rework: components["schemas"]["LegionRework"];
-      /** @enum {string} */
-      scope: "all" | "roots" | "children";
-      splitting: components["schemas"]["LegionSplitting"];
-      /** Format: date-time */
-      to: string;
-      work_time: components["schemas"]["LegionWorkTime"];
-    };
-    LegionPhaseTime: {
-      bars: components["schemas"]["LegionRoleBar"][] | null;
-      /** Format: double */
-      idle_share: number;
-    };
-    LegionRework: {
-      /** Format: double */
-      hours_after_first_review: number;
-      issues: components["schemas"]["LegionReworkIssue"][] | null;
-      /** Format: double */
-      median_hours_after_first_review: number;
-      /** Format: double */
-      median_review_rounds: number;
-      /** Format: double */
-      sent_back_share: number;
-    };
-    LegionReworkIssue: {
-      /** Format: double */
-      implementing_hours_after_first_review: number;
-      key: string;
-      review_rounds: number;
-      sent_back: boolean;
-      /** Format: double */
-      testing_hours_after_first_review: number;
-    };
-    LegionRoleBar: {
-      /** Format: double */
-      hours: number;
-      issues: number;
-      /** Format: double */
-      median_hours_per_issue: number;
-      /** @enum {string} */
-      role: "architect" | "planner" | "implementer" | "tester" | "reviewer" | "merger" | "no_role";
-      segments: components["schemas"]["LegionSegments"];
-    };
-    LegionSegments: {
-      /** Format: double */
-      ci_wait: number;
-      /** Format: double */
-      idle: number;
-      /** Format: double */
-      in_a_turn: number;
-      /** Format: double */
-      waiting_on_children: number;
-      /** Format: double */
-      waiting_on_person: number;
-    };
     LegionSetting: {
       created_by: components["schemas"]["Actor"];
       project: string;
@@ -5535,50 +5423,6 @@ export interface components {
       changes: {
         [key: string]: unknown;
       } | null;
-    };
-    LegionSplitting: {
-      /** Format: double */
-      children_per_root: number;
-      filed: components["schemas"]["LegionFiledIssue"][] | null;
-      finished_roots: number;
-      /** Format: double */
-      median_hours_roots_with_children: number;
-      /** Format: double */
-      median_hours_roots_without_children: number;
-      weeks: components["schemas"]["LegionSplittingWeek"][] | null;
-    };
-    LegionSplittingWeek: {
-      filed: {
-        [key: string]: number;
-      } | null;
-      finished: number;
-      /** Format: date-time */
-      week: string;
-    };
-    LegionWorkTime: {
-      issues: components["schemas"]["LegionWorkTimeIssue"][] | null;
-      /** Format: double */
-      median_hours: number;
-      /** Format: double */
-      p90_hours: number;
-    };
-    LegionWorkTimeIssue: {
-      /** Format: date-time */
-      closed_at: string;
-      /** Format: double */
-      hours: number;
-      key: string;
-      /** Format: date-time */
-      merged_at: null | string;
-      /** Format: double */
-      parked_hours: number;
-      priority: null | number;
-      /** Format: double */
-      queued_hours: number;
-      root: boolean;
-      /** Format: date-time */
-      started_at: string;
-      title: string;
     };
     ListUsersResponse: {
       users: components["schemas"]["DispatchUser"][] | null;
@@ -10900,42 +10744,6 @@ export interface operations {
       };
     };
   };
-  getApiV1LegionMetrics: {
-    parameters: {
-      query?: {
-        project?: string;
-        from?: string;
-        to?: string;
-        scope?: "all" | "roots" | "children";
-        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
-        session?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description OK */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["LegionMetricsResponse"];
-        };
-      };
-      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
-      default: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorBody"];
-        };
-      };
-    };
-  };
   putApiV1LegionByProjectSettings: {
     parameters: {
       query?: {
@@ -14319,19 +14127,8 @@ export type LegionBoardHeader = components["schemas"]["LegionBoardHeader"];
 export type LegionBoardResponse = components["schemas"]["LegionBoardResponse"];
 export type LegionBoardWait = components["schemas"]["LegionBoardWait"];
 export type LegionBoardWaiting = components["schemas"]["LegionBoardWaiting"];
-export type LegionFiledIssue = components["schemas"]["LegionFiledIssue"];
-export type LegionMetricsResponse = components["schemas"]["LegionMetricsResponse"];
-export type LegionPhaseTime = components["schemas"]["LegionPhaseTime"];
-export type LegionRework = components["schemas"]["LegionRework"];
-export type LegionReworkIssue = components["schemas"]["LegionReworkIssue"];
-export type LegionRoleBar = components["schemas"]["LegionRoleBar"];
-export type LegionSegments = components["schemas"]["LegionSegments"];
 export type LegionSetting = components["schemas"]["LegionSetting"];
 export type LegionSettingsRelayInput = components["schemas"]["LegionSettingsRelayInput"];
-export type LegionSplitting = components["schemas"]["LegionSplitting"];
-export type LegionSplittingWeek = components["schemas"]["LegionSplittingWeek"];
-export type LegionWorkTime = components["schemas"]["LegionWorkTime"];
-export type LegionWorkTimeIssue = components["schemas"]["LegionWorkTimeIssue"];
 export type ListUsersResponse = components["schemas"]["ListUsersResponse"];
 export type LiveWritePauseState = components["schemas"]["LiveWritePauseState"];
 export type MachineLookupRequest = components["schemas"]["MachineLookupRequest"];

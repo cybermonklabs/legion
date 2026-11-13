@@ -12,9 +12,8 @@ import (
 // <Measure>Day) turns the facts of the issues that finished on one UTC day, and the filings of
 // that day, into the day's parts, and one exported fold (the functions named Fold<Measure>) turns
 // any set of those parts into the answer, reading no database. The refresher stores the parts as
-// eval_days rows (evals/legion_days.go) and the eval routes fold a window's rows; Compute builds
-// the parts of its own window and folds them through the same functions, so the Legion section
-// and the eval routes read one rule.
+// eval_days rows (evals/legion_days.go) and the eval routes fold a window's rows, which is what
+// the Delivery page's Legion section reads.
 //
 // A part folds the per-issue values IssueFacts holds (factsOf), which issue_facts stores: each
 // finished issue's work time, its part of each of the seven bars, its idle hours in each role,
@@ -25,17 +24,17 @@ import (
 // (`<series>`), the roots of their trees (`<series>:roots`, an issue whose tree root is itself)
 // and the rest (`<series>:children`). A filing is cut by the filed issue's tree. The splitting
 // eval's root figures (SeriesRoots, SeriesHoursWithChildren, SeriesHoursWithoutChildren) count
-// roots alone whatever the cut, as the section's toggle left them unchanged: their `:roots` cut
-// is their all cut, and they have no `:children` cut, which therefore reads no data.
+// roots alone whatever the cut, as metric 4 counts them: their `:roots` cut is their all cut, and
+// they have no `:children` cut, which therefore reads no data.
 //
 // A sample series holds one value per finished issue of the day: its work time, its hours on a
 // bar (zero on a bar no hour of it fell on), its idle hours in a role, its slot wait, its review
 // rounds, its hours after its first review, or a finished root's work time. Its fold merges the
 // parts' sample lists and reads measures.Quantile over the merge, never the mean of the days'
 // quantiles. A count is a sum, and a share is the summed numerator over the summed denominator.
-// Every number a fold answers is rounded to four decimals, as every number of a Report is
-// (round). A set that holds no part of a fold's series reads no value (nil), never 0; a part built
-// for a cut no issue of the day is in is a zero part, and reads as zero counts and no quantile.
+// Every number a fold answers is rounded to four decimals (round). A set that holds no part of a
+// fold's series reads no value (nil), never 0; a part built for a cut no issue of the day is in
+// is a zero part, and reads as zero counts and no quantile.
 
 // The series of the six Legion evals before their cut (CutSeries). legion-phase-time's series
 // are its seven bars' roles (architect, planner, implementer, tester, reviewer, merger and
@@ -90,8 +89,8 @@ func FilingSeries(class string) string {
 }
 
 // InCut is whether an item counts in cut: every item in the all cut, a root in the roots cut and
-// any other item in the children cut. It is the one statement of the section's scope toggle
-// (inScope), of the eval's cuts and of the issues the eval items route answers for a cut.
+// any other item in the children cut. It is the one statement of the eval's cuts, which the day
+// builders cut their parts by and the eval items route answers the issues of a cut by.
 func InCut(cut Scope, root bool) bool {
 	switch cut {
 	case ScopeRoots:
@@ -167,7 +166,7 @@ func WorkTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 // PhaseTimeDay is legion-phase-time's parts of one UTC day from the facts of the issues that
 // finished on it: in each cut, one part per bar holding every issue's hours on the bar as a
 // sample, zero where no hour of the issue fell on it, so each bar's median is over the same
-// issues (phaseTime); the bar's five segments, summed over the issues that hold hours on it, and
+// issues (metric 2); the bar's five segments, summed over the issues that hold hours on it, and
 // how many those are (CountIssues) are its counts.
 func PhaseTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 	parts := make([]measures.DayPart, 0, len(cuts)*len(bars))
@@ -264,7 +263,7 @@ func ReworkDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 // finished on it and the filings made on it: in each cut, each class's filings (every class
 // present) and the issues that finished; and in the all and roots cuts alike, the roots that
 // finished with their children, and the work time of each of those roots that has one, those
-// with children apart from those with none (splitting).
+// with children apart from those with none (metric 4).
 func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []measures.DayPart {
 	parts := make([]measures.DayPart, 0, len(cuts)*(len(classes)+1)+3*2)
 	for _, cut := range cuts {
@@ -444,7 +443,7 @@ type PhaseTimeFold struct {
 }
 
 // FoldPhaseTime is legion-phase-time over parts, cut by cut
-// (computed:legion/metrics.FoldPhaseTime): the seven bars of metric 2 (phaseTime), each with its
+// (computed:legion/metrics.FoldPhaseTime): the seven bars of metric 2 (bars), each with its
 // segments summed, and the idle share, the bars' rounded idle hours over their rounded hours;
 // nil when parts hold no part of any bar's series in the cut.
 func FoldPhaseTime(parts []measures.DayPart, cut Scope) *PhaseTimeFold {
@@ -502,7 +501,7 @@ type ReworkFold struct {
 }
 
 // FoldRework is legion-rework over parts, cut by cut (computed:legion/metrics.FoldRework): metric
-// 3's review rounds, share sent back and hours after the first review (rework); nil when parts
+// 3's review rounds, share sent back and hours after the first review (reworkOf); nil when parts
 // hold no part of any of its three series in the cut.
 func FoldRework(parts []measures.DayPart, cut Scope) *ReworkFold {
 	fold := ReworkFold{
@@ -558,7 +557,7 @@ type SplittingFold struct {
 // FoldSplitting is legion-splitting over parts, cut by cut
 // (computed:legion/metrics.FoldSplitting): metric 4's filings by class and the issues that
 // finished, in total and by the week (weekStart) of each part's day, a week counted where it
-// holds a filing or a finished issue (splitting); and the root figures; nil when parts hold no
+// holds a filing or a finished issue; and the root figures; nil when parts hold no
 // part of any of its series in the cut.
 func FoldSplitting(parts []measures.DayPart, cut Scope) *SplittingFold {
 	fold := &SplittingFold{Filed: make(map[string]int, len(classes))}

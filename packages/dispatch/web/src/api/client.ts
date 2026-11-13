@@ -1653,14 +1653,6 @@ export class DispatchApiClient {
     }
   }
 
-  /** The Delivery page's Legion section: the four metrics over the issues of `project` that
-   *  closed in `[from, to)` with Legion phase work, counted over all of them, its roots or its
-   *  children. A deployment where no project names a daemon answers an empty report rather than
-   *  a refusal, and an unknown project is `400 INVALID_QUERY`. */
-  getLegionMetrics(query: Query<"/api/v1/legion/metrics", "get">) {
-    return this.read("/api/v1/legion/metrics", {}, query);
-  }
-
   /** One page of a project's evals, each with its current definition, each listed series'
    *  statistics over `[from, to)` and over the compare range (`compare_from`, `compare_to`, both
    *  or neither), the verdict of its target and the per-day array of each headline series: every

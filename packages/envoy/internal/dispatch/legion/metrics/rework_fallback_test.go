@@ -38,15 +38,15 @@ func TestReviewRoundsStillCountStatusEntriesWhenTheOnlyObservationFollowsTheClos
 		// The one mark the first sampler pass leaves on an issue that closed hours ago.
 		observeString("phase", hour(12), "done")
 
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
+	w := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll)
 
-	row := report.Rework.Issues[0]
+	row := w.fact(t, "INFRA-1")
 	if row.ReviewRounds != 3 {
 		t.Errorf("review rounds = %d, want 3: the issue has three entries into needs_review and no observation of any hour of its life",
 			row.ReviewRounds)
 	}
-	if report.Rework.MedianReviewRounds != 3 {
-		t.Errorf("median review rounds = %g, want 3", report.Rework.MedianReviewRounds)
+	if median := medianOf(w.rework(t).ReviewRounds); median != 3 {
+		t.Errorf("median review rounds = %g, want 3", median)
 	}
 }
 
@@ -75,17 +75,16 @@ func TestASendBackIsCountedFromTheStatusHistoryBeforeObservations(t *testing.T) 
 		statusAt(hour(3), "needs_review").
 		statusAt(hour(9), "done")
 
-	report := Compute(fixture(hour(-24), hour(24), sentBack, straight), ScopeAll, hour(24))
+	w := windowOf(fixture(hour(-24), hour(24), sentBack, straight), ScopeAll)
 
-	for _, row := range report.Rework.Issues {
-		want := row.Key == "INFRA-1"
-		if row.SentBack != want {
-			t.Errorf("%s sent_back = %t, want %t", row.Key, row.SentBack, want)
+	for _, key := range w.finished {
+		want := key == "INFRA-1"
+		if sent := w.fact(t, key).SentBack; sent != want {
+			t.Errorf("%s sent_back = %t, want %t", key, sent, want)
 		}
 	}
-	if report.Rework.SentBackShare != 0.5 {
-		t.Errorf("sent-back share = %g, want 0.5: one of the two issues went back to implementing after a review",
-			report.Rework.SentBackShare)
+	if share := valueOf(w.rework(t).SentBack.Share); share != 0.5 {
+		t.Errorf("sent-back share = %g, want 0.5: one of the two issues went back to implementing after a review", share)
 	}
 }
 
@@ -111,23 +110,20 @@ func TestARetroSendBackCountsAsOneAndMarksImplementing(t *testing.T) {
 		statusAt(hour(4), "retro").
 		statusAt(hour(9), "done")
 
-	report := Compute(fixture(hour(-24), hour(24), fromRetro, straight), ScopeAll, hour(24))
+	w := windowOf(fixture(hour(-24), hour(24), fromRetro, straight), ScopeAll)
 
-	for _, row := range report.Rework.Issues {
-		want := row.Key == "INFRA-1"
-		if row.SentBack != want {
-			t.Errorf("%s sent_back = %t, want %t: only the issue whose retro was written over counts", row.Key, row.SentBack, want)
+	for _, key := range w.finished {
+		want := key == "INFRA-1"
+		if sent := w.fact(t, key).SentBack; sent != want {
+			t.Errorf("%s sent_back = %t, want %t: only the issue whose retro was written over counts", key, sent, want)
 		}
 	}
-	if report.Rework.SentBackShare != 0.5 {
-		t.Errorf("sent-back share = %g, want 0.5", report.Rework.SentBackShare)
+	if share := valueOf(w.rework(t).SentBack.Share); share != 0.5 {
+		t.Errorf("sent-back share = %g, want 0.5", share)
 	}
 	// The two hours between that `in_progress` and the next `testing` are implementing, not the
 	// merger's: an `in_progress` after retro names a phase where an admission's does not.
-	hours := map[string]float64{}
-	for _, bar := range report.PhaseTime.Bars {
-		hours[bar.Role] = bar.Hours
-	}
+	hours, _ := w.hoursPerBar(t)
 	if hours["implementer"] < 2 {
 		t.Errorf("the implementer's bar holds %g h, want at least the two hours after the send-back from retro", hours["implementer"])
 	}
@@ -154,16 +150,14 @@ func TestTheHoursAfterTheFirstReviewReadTheStatusHistoryBeforeObservations(t *te
 		statusAt(hour(9), "done").
 		observeString("phase", hour(12), "done")
 
-	report := Compute(fixture(hour(-24), hour(24), issue), ScopeAll, hour(24))
-
-	row := report.Rework.Issues[0]
-	if row.ImplementingHoursAfterFirst != 2 {
+	row := windowOf(fixture(hour(-24), hour(24), issue), ScopeAll).fact(t, "INFRA-1")
+	if row.ImplementingHoursAfterFirstReview != 2 {
 		t.Errorf("implementing hours after the first review = %g, want 2: the issue was in in_progress from hour 4 to hour 6, after the review at hour 3",
-			row.ImplementingHoursAfterFirst)
+			row.ImplementingHoursAfterFirstReview)
 	}
-	if row.TestingHoursAfterFirst != 1 {
+	if row.TestingHoursAfterFirstReview != 1 {
 		t.Errorf("testing hours after the first review = %g, want 1: the issue was in testing from hour 6 to hour 7",
-			row.TestingHoursAfterFirst)
+			row.TestingHoursAfterFirstReview)
 	}
 }
 
@@ -189,12 +183,12 @@ func TestAFilingUnderAGrandchildOfTheFilersRootIsInTheTree(t *testing.T) {
 		{Key: "INFRA-3", At: hour(10), Filer: legion.SessionTitle{Role: "architect", Issue: "INFRA-1"}, Parent: "INFRA-2", Ancestors: nil},
 	}
 
-	report := Compute(population, ScopeAll, hour(48))
+	filed := windowOf(population, ScopeAll).filed
 
-	if len(report.Splitting.Filed) != 1 {
-		t.Fatalf("filed rows = %d, want 1", len(report.Splitting.Filed))
+	if len(filed) != 1 {
+		t.Fatalf("filed rows = %d, want 1", len(filed))
 	}
-	if class := report.Splitting.Filed[0].Class; class != ClassInTreeLater {
+	if class := filed[0].Class; class != ClassInTreeLater {
 		t.Errorf("INFRA-3 is classed %q, want %q: it is under INFRA-2, which is under the filer's own issue",
 			class, ClassInTreeLater)
 	}
