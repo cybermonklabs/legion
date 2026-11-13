@@ -304,6 +304,45 @@ func TestPodUpdateSuspensionHoldsThePodPastTheBoundUntilTheOperatorResumes(t *te
 	wantField(t, bounded[0], "unanswered", claim.RoleTester)
 }
 
+// Both claims answer, and the operator suspends the tester after its answer. The suspension holds
+// the pod past the bound. Once the operator resumes the tester, the pod is replaced, and the
+// answers end the round: the bound is past, but no claim is unanswered and no turn runs, so the
+// bound did not end it. The R8 line `supervise pod update replaced at the bound` says that the
+// bound ended a round, and the production check greps it, so it must not be written here. The
+// line that every replacement writes is written, with atTheBound false.
+func TestPodUpdateBoundLineIsNotWrittenWhenTheAnswersEndARoundPastItsBound(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.signal(claim.RoleTester, "a1b2c3d")
+	rig.suspendByOperator(claim.RoleTester)
+
+	rig.clockAt(podUpdateBound.Add(time.Minute))
+	rig.tick()
+	rig.tick()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("at %s, past the bound, the pod was replaced %d times under the operator's suspension of the tester", rig.clock.Now(), len(calls))
+	}
+
+	rig.resumeInPod(claim.RoleTester)
+	rig.awaitReplacement(1, "once the operator resumed the tester, past the bound, with every claim answered")
+
+	replaced := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(replaced) != 1 {
+		t.Fatalf("the replacement was logged %d times, want once: %+v", len(replaced), replaced)
+	}
+	if at := replaced[0]["atTheBound"]; at != false {
+		t.Fatalf("the replacement line says atTheBound=%v, want false: every claim had answered and no turn ran", at)
+	}
+	if bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(bounded) != 0 {
+		t.Fatalf("the sweep logged a bounded end %+v for a round its answers ended", bounded)
+	}
+}
+
 // The only claim of the round is the one an operator suspends, after the sweep read the claims:
 // the snapshot records the pod, the claim as its machine holds it records no process. Past the
 // bound the pod is not replaced, at that sweep or at the podless sweeps after it, and the
