@@ -1202,17 +1202,36 @@ On such a daemon, an update round or a message wake can take the author of the c
   does, records the death in the runtime's words, not the suspension. The claim records it
   (the `ended_work` column of its row), and the first prompt the next process is sent carries a
   sentence naming it: in front of the task the claim holds, or, for a claim that holds none, alone
-  in a delivery of the daemon's own (`supervise: the claim holds no task at its ready; a delivery
-  of the daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and
-  which a newer task replaces while no prompt of it is outstanding). A root architect's catch-up
-  opens with the same sentence, and the daemon-launched controller reads it in front of its start
-  message. A claim whose fresh session has not yet been told of the session it abandoned is the
-  exception: that session's sentence, which says that everything of the old session is gone,
-  goes in front of its first task instead, and it gets no delivery of the daemon's own and no
-  sentence in its catch-up. A process that left no activity report is told that the daemon has no
-  report of its background work, so its subagents and background jobs are gone. The record is
-  marked told once a turn confirms a prompt that carried it, or the abandoned session's sentence
-  in its place. Nothing to do; the agent checks what that work did before it repeats it.
+  in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
+  daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
+  newer task replaces while no prompt of it is outstanding). That delivery is also given when the
+  claim's held task is dropped at its send: the issue left the task's phase, the task's update
+  round is over, or a root architect's held task names nothing any more. A root
+  architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
+  in front of its start message. A process whose newest activity report is older than the start
+  of its last turn, or that left none, is told that the daemon has no report of its background
+  work, so the subagents and background jobs of that turn are gone. Nothing to do; the agent
+  checks what that work did before it repeats it.
+- **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
+  **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
+  at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn
+  confirms a prompt that carried its sentence, and never when Oh My Pi only acknowledges the
+  prompt, since it can acknowledge and then answer busy. Nothing to do.
+- **`supervise: the turn that took the prompt telling the agent what became of its earlier work
+  was another's; the next prompt tells it again`** at Info, with the `delivery`, is that
+  confirmation taken back: the turn that confirmed the task was another input's (an Envoy
+  notice's, say), or its prompt came to nothing. The record is untold again, and the next
+  prompt carries the sentence. Nothing to do.
+- **`supervise: the claim abandons its session, so the record of what the old session's process
+  ended is not told to the fresh agent; the abandoned session's sentence says that work is
+  gone`** at Info is a fresh session: the claim's first task names the session it left behind,
+  and the record of the old process's end is marked told with no prompt. A record written later,
+  of the fresh session's own process, is told after the abandoned session's sentence, in the
+  same prompt. Nothing to do.
+- **`supervise: the daemon's own delivery of a relaunch's record has nothing to say, since that
+  record no longer tells; it is dropped rather than sent`** at Info is a `relaunch:` delivery
+  that the claim still held when its record was told by other means, as a fresh session's
+  start tells it. Nothing to do.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The
