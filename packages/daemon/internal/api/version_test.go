@@ -59,3 +59,21 @@ func TestPodUpdateContractIsTheContractThatIntroducedTheOp(t *testing.T) {
 			supervise.PodUpdateContract, DaemonAPIVersion)
 	}
 }
+
+// supervise.TaskTakeContract is the contract that brought the take (the task, task-seen and take
+// routes, and `unseenTaskValues` on the state), and supervise cannot read DaemonAPIVersion. So
+// the number is written here with the entry of api/version.go that introduced the take, pinned
+// rather than bounded for the reason TestPodUpdateContractIsTheContractThatIntroducedTheOp gives:
+// a merge that renumbers this change moves its entry, this constant and supervise's together, and
+// a later contract bump changes none of them.
+func TestTaskTakeContractIsTheContractThatIntroducedTheTake(t *testing.T) {
+	const introducedTheTake = 106
+	if supervise.TaskTakeContract != introducedTheTake {
+		t.Fatalf("supervise.TaskTakeContract = %d, want %d, the contract whose entry in version.go introduced the take",
+			supervise.TaskTakeContract, introducedTheTake)
+	}
+	if supervise.TaskTakeContract > DaemonAPIVersion {
+		t.Fatalf("supervise.TaskTakeContract = %d, above DaemonAPIVersion %d: no worker could take a task",
+			supervise.TaskTakeContract, DaemonAPIVersion)
+	}
+}

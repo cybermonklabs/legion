@@ -110,6 +110,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	c := m.Claim()
 	s.log.Info("api: claim registered", "claim", c.Token, "generation", launch.Generation,
 		"session", req.SessionID, "agent", req.AgentID, "pluginContract", req.PluginContract)
+	current := s.currentTask(ctx, m)
 	writeJSON(w, http.StatusOK, claim.RegisterResponse{
 		ClaimToken:   c.Token,
 		Tree:         c.Tree,
@@ -118,7 +119,25 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 		Generation:   launch.Generation,
 		Secret:       secret,
 		PromptAgents: s.promptAgentsList(),
+		Task:         current.Task,
+		Finished:     current.Finished,
 	})
+}
+
+// currentTask is the claim's value and finished number as the registration answers them
+// (claim.RegisterResponse.Task, Finished). The registration is recorded by now, and its secret
+// with it, so a bucket the daemon cannot read does not refuse it: that would cost the worker its
+// launch for a value it is handed again anyway. The answer then carries no value and the failure
+// is logged; the worker learns the value from its relay, and a value nobody reported seeing is
+// written again once per first bound (supervise's takeBoundOver), which the relay hands it.
+func (s *server) currentTask(ctx context.Context, m *supervise.Machine) claim.TaskResponse {
+	current, err := m.CurrentTask(ctx)
+	if err != nil {
+		s.log.Warn("api: the registration answers no task value: the task bucket could not be read",
+			"claim", m.Claim().Token, "error", err)
+		return claim.TaskResponse{Finished: m.View().TaskFinished}
+	}
+	return taskResponseOf(current)
 }
 
 // promptAgentsList is Options.PromptAgents as the registration answers it: never nil, so a role
@@ -130,8 +149,10 @@ func (s *server) promptAgentsList() []string {
 	return s.promptAgents
 }
 
-// ready is the agent saying it can be prompted; its machine sends the pending delivery, if any,
-// once the claim's connection is registered. A ready that carries the session's capability report
+// ready is the agent saying it has booted. It sends nothing: a task reaches a worker as its
+// claim's value, which the worker takes once its host is idle (claims/take), and the machine's
+// ready only writes that value again where a take it refused for the claim's not being ready
+// asked at it (supervise's finishReady). A ready that carries the session's capability report
 // (LEGION-663) hands it, normalised, to Options.CapabilityReported once the claim has taken the
 // ready: what the report says is never a reason to refuse the ready — the daemon runs the session
 // and reports what it lacks — and a row the table has no live row for is dropped and logged by its
@@ -231,15 +252,18 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 // provider, with its own sequence within the launch generation. The daemon keeps the report and
 // derives the claim's run of refused turns from the reports it holds (supervise's turnOutcome),
 // failing the claim once that run reaches the launch failure limit; the answer says what the run
-// now is and whether this report failed the claim.
+// now is and whether this report failed the claim. A report that names the number of the task the
+// claim's worker took (`task`) finishes that task, unless it carries the provider error the turn
+// ended in (`providerError`), which keeps the task under its number and starts the wait before
+// its value is written again (supervise's reportedTask, providerErrored).
 //
-// The caller is the claim's, proved one of two ways. An Oh My Pi session's pi-legion holds the
-// registration's secret and names the claim with it, as the ready and the exit do. The Claude
-// bridge holds no secret — its pane's registration is claude-envoy's, inside Claude Code, and the
-// secret never leaves that process — so it presents the launch's own boot token, the 0600 file
-// its pane is told, which the daemon resolves to that launch's claim exactly as a registration's
-// is resolved. A body carrying both, or neither, is refused: each says who is calling, and a
-// caller that cannot say is not answered.
+// The caller is the claim's, proved one of two ways (claimCaller). An Oh My Pi session's pi-legion
+// holds the registration's secret and names the claim with it, as the ready and the exit do. The
+// Claude bridge holds no secret — its pane's registration is claude-envoy's, inside Claude Code,
+// and the secret never leaves that process — so it presents the launch's own boot token, the 0600
+// file its pane is told, which the daemon resolves to that launch's claim exactly as a
+// registration's is resolved. A body carrying both, or neither, is refused: each says who is
+// calling, and a caller that cannot say is not answered.
 func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	var req claim.TurnOutcomeRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireGeneration(w, req.Generation) {
@@ -255,8 +279,13 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorBody(fmt.Sprintf("outcome %q is neither %q nor %q", req.Outcome, claim.TurnClean, claim.TurnRefused)))
 		return
 	}
-	token, m, ok := s.turnOutcomeCaller(w, r, req)
-	if !ok {
+	caller, named := req.Caller()
+	token, m, refusal := s.claimCaller(r, "turn outcome", caller, named, req.Generation)
+	if refusal != nil {
+		writeJSON(w, refusal.status, errorBody(refusal.message))
+		return
+	}
+	if _, bySecret := caller.(claim.AgentCaller); bySecret && s.refuseIfStaleClaim(w, r, m.Claim()) {
 		return
 	}
 	ctx, decided := s.decision(r, token)
@@ -264,6 +293,7 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	err := m.Handle(ctx, supervise.RequestTurnOutcome{
 		Claim: token, Generation: req.Generation, Sequence: req.Sequence,
 		Refused: req.Outcome == claim.TurnRefused, Message: req.Message,
+		Task: req.Task, ProviderError: providerErrorOf(req.ProviderError),
 	})
 	if err != nil {
 		s.claimFailure(w, "turn outcome", token, err)
@@ -278,69 +308,112 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
 }
 
-// turnOutcomeCaller is the claim a turn outcome is reported for and its machine: the claim the
-// body names, authenticated by the registration's secret, or the claim the launch's boot token
-// resolves to (claim.TurnOutcomeRequest's two caller types). It writes the refusal itself when
-// the body names neither identity, both, or one the daemon does not recognise.
-func (s *server) turnOutcomeCaller(w http.ResponseWriter, r *http.Request, req claim.TurnOutcomeRequest) (claim.Token, *supervise.Machine, bool) {
-	if caller, named := req.Caller(); named {
+// providerErrorOf is a turn outcome's provider error as the claim's machine reads it, nil for a
+// report that carries none.
+func providerErrorOf(pe *claim.ProviderError) *supervise.ProviderError {
+	if pe == nil {
+		return nil
+	}
+	return &supervise.ProviderError{
+		Status: pe.Status, Provider: pe.Provider, Model: pe.Model, Message: pe.Message, Retryable: pe.Retryable,
+	}
+}
+
+// callerRefusal is why a worker's request was not resolved to a claim (claimCaller): the status
+// the route answers with, the code the task routes name it by (taskRefusal), and the sentence.
+type callerRefusal struct {
+	status        int
+	code, message string
+}
+
+// refusalOf is a claim refusal as a callerRefusal, with the code the task routes name it by.
+func refusalOf(refusal claim.Refusal) *callerRefusal {
+	return &callerRefusal{status: refusal.Status, code: refusalCode(refusal), message: refusal.Message}
+}
+
+// refusalCode is the code the task routes answer a claim refusal under (taskRefusal): the
+// sentence alone is what the other claim routes answer, and those four sentences are a contract
+// with the plugins that this does not reword.
+func refusalCode(refusal claim.Refusal) string {
+	switch refusal {
+	case claim.InvalidBootToken:
+		return "INVALID_BOOT_TOKEN"
+	case claim.InvalidSecret:
+		return "INVALID_SESSION_SECRET"
+	case claim.StaleGeneration:
+		return "STALE_GENERATION"
+	case claim.SameAgentRefusal:
+		return "SESSION_MISMATCH"
+	default:
+		return "CLAIM_REFUSED"
+	}
+}
+
+// claimCaller is the claim a worker's request names its caller for, and its machine: the claim
+// the body names, authenticated by the registration's secret, or the claim the launch's boot
+// token resolves to (claim.Caller's two types). request names the request in a refusal's
+// sentence. The refusal is returned rather than written, since the turn outcome answers it as
+// every claim route does, by its sentence, and the three task routes in the coded shape
+// (taskRefusal).
+//
+// A stale plugin is no part of the resolution: the turn outcome refuses a stale claim's secret
+// itself (refuseIfStaleClaim), and the task routes answer a stale claim as any other (take.go).
+func (s *server) claimCaller(r *http.Request, request string, caller claim.Caller, named bool, generation uint64) (claim.Token, *supervise.Machine, *callerRefusal) {
+	if named {
 		switch caller := caller.(type) {
 		case claim.BootCaller:
-			return s.turnOutcomeByBootToken(w, r, caller, req.Generation)
+			return s.callerByBootToken(r, request, caller, generation)
 		case claim.AgentCaller:
-			return s.turnOutcomeBySecret(w, r, caller)
+			return s.callerBySecret(caller)
 		}
 	}
 	// The body named neither caller, or both — and, were a third ever added to claim without
 	// this route, one this route cannot act on, which is the same answer.
-	writeJSON(w, http.StatusBadRequest, errorBody("a turn outcome names its caller with claimToken, sessionId and secret, or with bootToken; give one"))
-	return "", nil, false
+	return "", nil, &callerRefusal{status: http.StatusBadRequest, code: "INVALID_CALLER",
+		message: fmt.Sprintf("a %s names its caller with claimToken, sessionId and secret, or with bootToken; give one", request)}
 }
 
-// turnOutcomeByBootToken is the claim of the launch a boot token was minted for, held to the same
-// two rules the shim's hello on that token is held to (stream's Listener.hello): a token of a
-// launch the claim has moved past is refused, and so is a report for any generation but that
-// launch's. A pane left running from a replaced launch — one the daemon could not stop, one whose
-// container outlived its stop — would otherwise add its provider's refusals to the run the daemon
-// counts for the pane that replaced it, and fail a claim whose own agent is working.
-func (s *server) turnOutcomeByBootToken(w http.ResponseWriter, r *http.Request, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, bool) {
+// callerByBootToken is the claim of the launch a boot token was minted for, held to the same two
+// rules the shim's hello on that token is held to (stream's Listener.hello): a token of a launch
+// the claim has moved past is refused, and so is a request for any generation but that launch's.
+// A pane left running from a replaced launch — one the daemon could not stop, one whose container
+// outlived its stop — would otherwise add its provider's refusals to the run the daemon counts for
+// the pane that replaced it, and fail a claim whose own agent is working, or take a task for a
+// claim whose own worker holds it.
+func (s *server) callerByBootToken(r *http.Request, request string, caller claim.BootCaller, generation uint64) (claim.Token, *supervise.Machine, *callerRefusal) {
 	launch, known, err := s.bootTokens.Resolve(r.Context(), caller.BootToken)
 	if err != nil {
-		s.log.Error("api: resolve a turn outcome's boot token", "error", err)
-		writeJSON(w, http.StatusInternalServerError, errorBody("turn outcome failed: the daemon could not resolve the boot token"))
-		return "", nil, false
+		s.log.Error("api: resolve a caller's boot token", "request", request, "error", err)
+		return "", nil, &callerRefusal{status: http.StatusInternalServerError, code: "BOOT_TOKEN_UNAVAILABLE",
+			message: request + " failed: the daemon could not resolve the boot token"}
 	}
 	m, supervised := s.supervisor.Machine(launch.Claim)
 	if !known || launch.Stale || !supervised {
-		writeJSON(w, claim.InvalidBootToken.Status, claim.InvalidBootToken)
-		return "", nil, false
+		return "", nil, refusalOf(claim.InvalidBootToken)
 	}
 	if generation != launch.Generation {
-		s.log.Warn("api: refused a turn outcome reported for another generation", "claim", launch.Claim,
-			"launch", launch.Generation, "reported", generation)
-		writeJSON(w, claim.StaleGeneration.Status, claim.StaleGeneration)
-		return "", nil, false
+		s.log.Warn("api: refused a request made for another generation than its boot token's launch", "request", request,
+			"claim", launch.Claim, "launch", launch.Generation, "reported", generation)
+		return "", nil, refusalOf(claim.StaleGeneration)
 	}
-	return launch.Claim, m, true
+	return launch.Claim, m, nil
 }
 
-// turnOutcomeBySecret is the claim the body names, authenticated by the secret its registration
-// was issued, as the ready and the exit are.
-func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, caller claim.AgentCaller) (claim.Token, *supervise.Machine, bool) {
-	if !requireFields(w,
-		field{"claimToken", string(caller.ClaimToken)}, field{"sessionId", caller.SessionID}, field{"secret", caller.Secret},
-	) {
-		return "", nil, false
+// callerBySecret is the claim the body names, authenticated by the secret its registration was
+// issued, as the ready and the exit are.
+func (s *server) callerBySecret(caller claim.AgentCaller) (claim.Token, *supervise.Machine, *callerRefusal) {
+	for _, f := range []field{
+		{"claimToken", string(caller.ClaimToken)}, {"sessionId", caller.SessionID}, {"secret", caller.Secret},
+	} {
+		if strings.TrimSpace(f.value) == "" {
+			return "", nil, &callerRefusal{status: http.StatusBadRequest, code: "MISSING_FIELD", message: f.name + " is required"}
+		}
 	}
 	m, _, ok := s.authenticated(caller.ClaimToken, caller.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
-		return "", nil, false
+		return "", nil, refusalOf(claim.InvalidSecret)
 	}
-	if s.refuseIfStaleClaim(w, r, m.Claim()) {
-		return "", nil, false
-	}
-	return caller.ClaimToken, m, true
+	return caller.ClaimToken, m, nil
 }
 
 // activity is a live role's session reporting what it is doing, after each of its turns and

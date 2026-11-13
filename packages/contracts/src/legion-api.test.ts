@@ -41,6 +41,12 @@ import {
   LegionSessionActivity,
   LegionSignOffRequest,
   LegionStateResponse,
+  LegionTakeRequest,
+  LegionTakeResponse,
+  LegionTaskRequest,
+  LegionTaskResponse,
+  LegionTaskSeenRequest,
+  LegionTurnOutcomeRequest,
   LegionTurnOutcomeResponse,
   LegionWaveReleaseRequest,
   LegionWaveReleaseResponse,
@@ -68,6 +74,12 @@ const schemas: Record<string, z.ZodType> = {
   // `claim.TurnOutcomeResponse`: what a producer's report of one turn comes back as, the run of
   // refused turns the claim now ends with and whether this report failed it.
   "turn-outcome.json": LegionTurnOutcomeResponse,
+  // `claim.TaskResponse`: what `claims/task` answers a claim whose bucket holds no value (`task`
+  // null), and `claim.TakeResponse`, one fixture for each outcome of a take (contract 106).
+  "task.json": LegionTaskResponse,
+  "take-accepted.json": LegionTakeResponse,
+  "take-refused.json": LegionTakeResponse,
+  "take-dropped.json": LegionTakeResponse,
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
@@ -1253,6 +1265,73 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
+    // The task routes (contract 106), each under the agent's secret form and the bridge's boot
+    // token form, and the turn outcome that names the task and the provider error it ended in.
+    [
+      "task read",
+      LegionTaskRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer_208",
+        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+        generation: 5,
+      },
+    ],
+    ["task read by boot token", LegionTaskRequest, { bootToken: "boot-208", generation: 5 }],
+    [
+      "task seen",
+      LegionTaskSeenRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        number: 4,
+        epoch: "2026-11-13T16:21:44Z",
+        revision: 12,
+      },
+    ],
+    [
+      "take",
+      LegionTakeRequest,
+      {
+        claimToken: "legion-legion-legion-208-implementer",
+        sessionId: "ses_implementer_208",
+        secret: "U3VwZXJ2aXNlZEJ5TGVnaW9u",
+        generation: 5,
+        number: 4,
+        epoch: "2026-11-13T16:21:44Z",
+        revision: 12,
+      },
+    ],
+    [
+      "take by boot token",
+      LegionTakeRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        number: 4,
+        epoch: "2026-11-13T16:21:44Z",
+        revision: 12,
+      },
+    ],
+    [
+      "turn outcome of a task",
+      LegionTurnOutcomeRequest,
+      {
+        bootToken: "boot-208",
+        generation: 5,
+        sequence: 3,
+        outcome: "refused",
+        message: "overloaded",
+        task: 4,
+        providerError: {
+          status: 529,
+          provider: "anthropic",
+          model: "claude-opus",
+          message: "overloaded",
+          retryable: true,
+        },
+      },
+    ],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -1578,6 +1657,60 @@ test("the register golden names the task agents the role's prompts dispatch", ()
   const mutated = fixture("register.json") as Record<string, unknown>;
   delete mutated.promptAgents;
   expect(LegionRegisterResponse.safeParse(mutated).success).toBeFalse();
+});
+
+// A worker holds its claim's value from its registration and from `claims/task` (contract 106):
+// the value, or null where the bucket holds none, beside the number of the last task the claim
+// finished. Both keys are always written, so neither may be left out, and a value always names a
+// task and a revision.
+test("the register golden and the task read carry the claim's value and its finished number", () => {
+  const registration = LegionRegisterResponse.parse(fixture("register.json"));
+  expect(registration.task).toEqual({
+    number: 4,
+    epoch: "2026-11-13T16:21:44.123456789Z",
+    revision: 12,
+  });
+  expect(registration.finished).toBe(3);
+
+  const read = LegionTaskResponse.parse(fixture("task.json"));
+  expect(read).toEqual({ task: null, finished: 4 });
+
+  for (const key of ["task", "finished"]) {
+    const withoutKey = fixtureBody("register.json");
+    delete withoutKey[key];
+    expect(
+      LegionRegisterResponse.safeParse(withoutKey).success,
+      `register without ${key}`
+    ).toBeFalse();
+    const readWithoutKey = fixtureBody("task.json");
+    delete readWithoutKey[key];
+    expect(
+      LegionTaskResponse.safeParse(readWithoutKey).success,
+      `task read without ${key}`
+    ).toBeFalse();
+  }
+  const noTask = { ...fixtureBody("task.json"), task: { number: 0, epoch: "e", revision: 1 } };
+  expect(LegionTaskResponse.safeParse(noTask).success).toBeFalse();
+});
+
+// A take is answered one of three ways (contract 106), each written by the Go side: accepted with
+// the text the worker runs, refused naming the hold, or dropped. An accepted answer without its
+// text and a refused one without its hold are refused; a hold a later daemon names is read.
+test("the take goldens are its three answers", () => {
+  expect(LegionTakeResponse.parse(fixture("take-accepted.json")).outcome).toBe("accepted");
+  expect(LegionTakeResponse.parse(fixture("take-refused.json"))).toEqual({
+    outcome: "refused",
+    hold: "stale-plugin",
+  });
+  expect(LegionTakeResponse.parse(fixture("take-dropped.json"))).toEqual({ outcome: "dropped" });
+
+  expect(LegionTakeResponse.safeParse({ outcome: "accepted" }).success).toBeFalse();
+  expect(LegionTakeResponse.safeParse({ outcome: "refused" }).success).toBeFalse();
+  expect(LegionTakeResponse.safeParse({ outcome: "queued" }).success).toBeFalse();
+  expect(
+    LegionTakeResponse.safeParse({ outcome: "refused", hold: "a-hold-a-later-daemon-names" })
+      .success
+  ).toBeTrue();
 });
 
 test("the ready golden carries the session's capability report", () => {

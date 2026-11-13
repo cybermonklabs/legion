@@ -927,8 +927,9 @@ func golden(t *testing.T, name string, value any) {
 	}
 }
 
-// The register response is what the plugin reads its claim, its secret and the task agents its
-// role's prompts dispatch from.
+// The register response is what the plugin reads its claim, its secret, the task agents its
+// role's prompts dispatch and its claim's current task from: a claim holding task 4 at revision
+// 12 of the bucket's epoch, having finished task 3.
 func TestRegisterResponseGolden(t *testing.T) {
 	golden(t, "register.json", claim.RegisterResponse{
 		ClaimToken:   "legion-legion-legion-208-architect",
@@ -938,7 +939,25 @@ func TestRegisterResponseGolden(t *testing.T) {
 		Generation:   3,
 		Secret:       "U3VwZXJ2aXNlZEJ5TGVnaW9u",
 		PromptAgents: []string{"deep-worker", "oracle", "plan-gap-analyst", "plan-reviewer", "thermonuclear-code-quality", "thermonuclear-deep-review"},
+		Task:         &claim.TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44.123456789Z", Revision: 12},
+		Finished:     3,
 	})
+}
+
+// What `claims/task` answers a claim whose bucket holds no value: `task` is null, never absent,
+// beside the number of the last task the claim finished. The register golden above holds the
+// value's own shape.
+func TestTaskResponseGolden(t *testing.T) {
+	golden(t, "task.json", claim.TaskResponse{Finished: 4})
+}
+
+// What `claims/take` answers, one fixture for each outcome: the accepted take's text, the hold a
+// refused take met, and a dropped take, which carries neither.
+func TestTakeResponseGolden(t *testing.T) {
+	golden(t, "take-accepted.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeAccepted),
+		Text: "Implement LEGION-209 on its branch, then complete the phase with legion handoff_complete."})
+	golden(t, "take-refused.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeRefused), Hold: supervise.HoldStalePlugin})
+	golden(t, "take-dropped.json", claim.TakeResponse{Outcome: string(supervise.TakeOutcomeDropped)})
 }
 
 // The ready request is what the plugin posts once its session can be prompted, and again carrying

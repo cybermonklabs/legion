@@ -999,10 +999,23 @@ export const LegionStateResponse = z.object({
 export type LegionState = z.output<typeof LegionStateResponse>;
 export type LegionIssue = LegionState["issues"][string];
 
+/** `claim.TaskValue` — a claim's value as the task bucket holds it: `number`, the task the daemon's
+ * record owes the claim, and the `epoch` and `revision` of the write that put it there. The epoch
+ * is the bucket's creation time, an opaque string a worker only compares: a bucket created again
+ * counts its revisions from 1 again, so a revision is read only beside its epoch. */
+const legionTaskValue = z.object({
+  number: z.number().int().positive(),
+  epoch: nonEmptyString,
+  revision: z.number().int().positive(),
+});
+
 /** `claim.RegisterResponse`, the body of `POST /legion/v1/claims/register`: the claim the agent
  * holds, the secret its ready and exit authenticate with, and `promptAgents`, the sorted names of
  * the task agents the role's prompts dispatch — what the session's subagents check measures its
- * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`. */
+ * discovered agents against (contract 21). Never null: a role whose prompts name none gets `[]`.
+ * `task` and `finished` are what `POST /legion/v1/claims/task` answers (`LegionTaskResponse`),
+ * read once the registration is recorded, so the worker holds its claim's value before its ready
+ * (contract 106). */
 export const LegionRegisterResponse = z.object({
   claimToken: nonEmptyString,
   tree: nonEmptyString,
@@ -1011,6 +1024,8 @@ export const LegionRegisterResponse = z.object({
   generation: z.number().int().positive(),
   secret: nonEmptyString,
   promptAgents: z.array(nonEmptyString),
+  task: legionTaskValue.nullable(),
+  finished: z.number().int().nonnegative(),
 });
 
 export type LegionRegistration = z.output<typeof LegionRegisterResponse>;
@@ -1044,25 +1059,53 @@ export const LegionReadyRequest = z.strictObject({
 
 export type LegionReadyRequestBody = z.output<typeof LegionReadyRequest>;
 
+/** `claim.ProviderError` — how a provider failed the turn a turn outcome reports: the HTTP status
+ * of the provider request that failed (0 when it had none, as a content-filter refusal has none),
+ * the provider and model it went to, the provider's message, and whether the agent called it
+ * retryable. The daemon decides by the status alone; the rest is logged. */
+const legionProviderError = z.strictObject({
+  status: z.number().int().nonnegative(),
+  provider: z.string(),
+  model: z.string(),
+  message: z.string(),
+  retryable: z.boolean(),
+});
+
 /** The half of `claim.TurnOutcomeRequest` that is the turn rather than the caller: `sequence` is
  * the producer's own count of the turns it has ended at `generation`, from 1, and the daemon
  * keeps the report under the pair, so a report that arrives late or out of order lands in its own
  * place and the run of refused turns it derives is the same either way. `message` is what the
- * provider said about a refusal, and a clean turn carries none. */
+ * provider said about a refusal, and a clean turn carries none. `task` is the number of the take
+ * whose turn this was, absent for a turn of no task: the report that names the claim's taken task
+ * finishes it, unless it carries `providerError`, which keeps the task under its number and starts
+ * the wait before its value is written again (contract 106). */
 const turnOutcomeFields = {
   generation: z.number().int().positive(),
   sequence: z.number().int().positive(),
   outcome: z.enum(["clean", "refused"]),
   message: z.string().optional(),
+  task: z.number().int().positive().optional(),
+  providerError: legionProviderError.optional(),
 };
+
+/** `claim.AgentCaller` — the worker inside the agent's own session, which holds the secret its
+ * registration was issued and names the claim with it, as the ready does. */
+const agentCaller = {
+  claimToken: nonEmptyString,
+  sessionId: nonEmptyString,
+  secret: nonEmptyString,
+};
+
+/** `claim.BootCaller` — the worker beside the agent rather than inside it, which holds no secret
+ * (`legion claude-bridge`): it presents the launch's own boot token, which names the same claim,
+ * and the route holds it to that launch's generation. */
+const bootCaller = { bootToken: nonEmptyString };
 
 /** `claim.AgentCaller`'s report: the producer inside the agent's own session — pi-legion's
  * `agent_end` hook for an Oh My Pi session — which holds the secret its registration was issued
  * and names the claim with it, as the ready does. */
 export const LegionTurnOutcomeAgentRequest = z.strictObject({
-  claimToken: nonEmptyString,
-  sessionId: nonEmptyString,
-  secret: nonEmptyString,
+  ...agentCaller,
   ...turnOutcomeFields,
 });
 
@@ -1072,7 +1115,7 @@ export const LegionTurnOutcomeAgentRequest = z.strictObject({
  * it to that launch: a token of a launch the claim has moved past, and a report for any other
  * generation, are refused. */
 export const LegionTurnOutcomeBootRequest = z.strictObject({
-  bootToken: nonEmptyString,
+  ...bootCaller,
   ...turnOutcomeFields,
 });
 
@@ -1097,6 +1140,71 @@ export const LegionTurnOutcomeResponse = z.object({
 });
 
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
+
+/** A task route's body under either caller a turn outcome takes (`claim.Caller`): the agent's
+ * secret form or the bridge's boot-token form, each refusing a key it does not name. */
+function eitherCaller<Fields extends z.ZodRawShape>(fields: Fields) {
+  return z.union([
+    z.strictObject({ ...agentCaller, ...fields }),
+    z.strictObject({ ...bootCaller, ...fields }),
+  ]);
+}
+
+/** The value a seen report or a take names: the task `number` and the `epoch` and `revision` of
+ * the value the worker was handed. */
+const taskValueFields = {
+  generation: z.number().int().positive(),
+  number: z.number().int().positive(),
+  epoch: nonEmptyString,
+  revision: z.number().int().positive(),
+};
+
+/** `claim.TaskRequest`, the body of `POST /legion/v1/claims/task`: a worker reading its claim's
+ * value, at a new epoch of its relay or when it gains its role again (contract 106). */
+export const LegionTaskRequest = eitherCaller({ generation: z.number().int().positive() });
+
+export type LegionTaskRequestBody = z.output<typeof LegionTaskRequest>;
+
+/** `claim.TaskResponse`, the answer of `POST /legion/v1/claims/task`: the claim's value as the
+ * bucket holds it now, null where it holds none, and the number of the last task the claim
+ * finished, 0 for none (contract 106). */
+export const LegionTaskResponse = z.object({
+  task: legionTaskValue.nullable(),
+  finished: z.number().int().nonnegative(),
+});
+
+export type LegionTask = z.output<typeof LegionTaskResponse>;
+
+/** `claim.TaskSeenRequest`, the body of `POST /legion/v1/claims/task-seen`, answered 204: the
+ * worker reporting the value it was handed, whether or not its host is idle (contract 106). */
+export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
+
+export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
+
+/** `claim.TakeRequest`, the body of `POST /legion/v1/claims/take`: the worker asking, because its
+ * host is idle, to take the task its value names. A take with no answer — a refused, reset or
+ * closed connection, a DNS failure, no answer in 5 minutes, or a 502, 503 or 504 that names no
+ * `code` — is sent again unchanged, and a take of a number already accepted whose turn has not
+ * started is answered the same text again (contract 106). */
+export const LegionTakeRequest = eitherCaller(taskValueFields);
+
+export type LegionTakeRequestBody = z.output<typeof LegionTakeRequest>;
+
+/** `claim.TakeResponse`, the answer of `POST /legion/v1/claims/take` (supervise's `TakeAnswer`):
+ * `accepted` with the `text` the worker runs as its turn's user message, `refused` naming the
+ * `hold` that stands (the daemon writes the value again once none does), or `dropped`, the task no
+ * longer owed and its value deleted. `hold` is read as a string, not an enum of today's holds
+ * (`not-owed`, `in-turn`, `not-ready`, `issue-in-turn`, `suspension`, `update-round`,
+ * `launch-waits`, `stale-plugin`, `root-hears`, `provider-error`, `adoption`), since a worker acts
+ * on none of them by name and a hold a later daemon adds must not refuse the answer (contract
+ * 106). */
+export const LegionTakeResponse = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("accepted"), text: nonEmptyString }),
+  z.object({ outcome: z.literal("refused"), hold: nonEmptyString }),
+  z.object({ outcome: z.literal("dropped") }),
+]);
+
+export type LegionTake = z.output<typeof LegionTakeResponse>;
 
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
  * worker's answer to its pod's update task, which says it has pushed everything it wants kept and
@@ -1275,18 +1383,16 @@ export const LegionErrorResponse = z.object({
   code: nonEmptyString.optional(),
 });
 
-/** `api.DeliveryView` — the claim's pending task; `deliveredAt` is the latest acknowledgement of
- * this task's prompt, and with it whether the agent may have read the task (a refusal of that
- * prompt clears it, since an agent that refused it never read it), and `confirmedAt` the turn a
- * send started, each absent until it happens. `phase` is the issue phase the task was queued for, which is what
- * says whether it is still the work to do; a task of no phase — an operator's own, an
+/** `api.DeliveryView` — the claim's pending task; `confirmedAt` is when the task was recorded as
+ * taken (an accepted take), absent until it is. No prompt is acknowledged since contract 106, so
+ * the view carries no `deliveredAt`. `phase` is the issue phase the task was queued for, which is
+ * what says whether it is still the work to do; a task of no phase — an operator's own, an
  * architect's — carries none. */
 const legionDeliveryView = z.object({
   id: nonEmptyString,
   task: nonEmptyString,
   phase: z.enum(LEGION_WORKFLOW_PHASES).optional(),
   queuedAt: timestamp,
-  deliveredAt: timestamp.optional(),
   confirmedAt: timestamp.optional(),
   interrupted: z.literal(true).optional(),
   /** How many sends of this task came back without reaching a turn, when the last of them failed

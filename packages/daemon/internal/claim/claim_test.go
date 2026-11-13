@@ -60,13 +60,16 @@ func TestWireMemberNames(t *testing.T) {
 				Generation:   3,
 				Secret:       "sec-1",
 				PromptAgents: []string{"plan-gap-analyst", "scout"},
+				Task:         &TaskValue{Number: 4, Epoch: "2026-11-13T16:21:44Z", Revision: 12},
+				Finished:     3,
 			},
 			want: `{"claimToken":"legion-omp-LEGION-208-architect","tree":"LEGION-208",` +
 				`"issue":"LEGION-208","role":"architect","generation":3,"secret":"sec-1",` +
-				`"promptAgents":["plan-gap-analyst","scout"]}`,
+				`"promptAgents":["plan-gap-analyst","scout"],` +
+				`"task":{"number":4,"epoch":"2026-11-13T16:21:44Z","revision":12},"finished":3}`,
 		},
 		{
-			name: "register response with no prompt agents",
+			name: "register response with no prompt agents and no task",
 			value: RegisterResponse{
 				ClaimToken:   "legion-omp-LEGION-208-merger",
 				Tree:         "LEGION-208",
@@ -78,7 +81,53 @@ func TestWireMemberNames(t *testing.T) {
 			},
 			want: `{"claimToken":"legion-omp-LEGION-208-merger","tree":"LEGION-208",` +
 				`"issue":"LEGION-208","role":"merger","generation":1,"secret":"sec-3",` +
-				`"promptAgents":[]}`,
+				`"promptAgents":[],"task":null,"finished":0}`,
+		},
+		{
+			name:  "task request by boot token",
+			value: TaskRequest{BootCaller: BootCaller{BootToken: "boot-1"}, Generation: 2},
+			want:  `{"bootToken":"boot-1","generation":2}`,
+		},
+		{
+			name:  "task response with no value",
+			value: TaskResponse{Finished: 4},
+			want:  `{"task":null,"finished":4}`,
+		},
+		{
+			name: "task-seen request by boot token",
+			value: TaskSeenRequest{BootCaller: BootCaller{BootToken: "boot-1"}, Generation: 2,
+				Number: 4, Epoch: "2026-11-13T16:21:44Z", Revision: 12},
+			want: `{"bootToken":"boot-1","generation":2,"number":4,"epoch":"2026-11-13T16:21:44Z","revision":12}`,
+		},
+		{
+			name: "take request by secret",
+			value: TakeRequest{AgentCaller: AgentCaller{ClaimToken: "legion-omp-LEGION-208-tester", SessionID: "ses_tester_208",
+				Secret: "sec-2"}, Generation: 4, Number: 4, Epoch: "2026-11-13T16:21:44Z", Revision: 12},
+			want: `{"claimToken":"legion-omp-LEGION-208-tester","sessionId":"ses_tester_208","secret":"sec-2",` +
+				`"generation":4,"number":4,"epoch":"2026-11-13T16:21:44Z","revision":12}`,
+		},
+		{
+			name:  "accepted take response",
+			value: TakeResponse{Outcome: "accepted", Text: "the task"},
+			want:  `{"outcome":"accepted","text":"the task"}`,
+		},
+		{
+			name:  "refused take response",
+			value: TakeResponse{Outcome: "refused", Hold: "in-turn"},
+			want:  `{"outcome":"refused","hold":"in-turn"}`,
+		},
+		{
+			name: "turn outcome naming its task and the provider error it ended in",
+			value: TurnOutcomeRequest{BootCaller: BootCaller{BootToken: "boot-1"}, Generation: 2, Sequence: 3,
+				Outcome: TurnRefused, Message: "overloaded", Task: 4,
+				ProviderError: &ProviderError{Status: 529, Provider: "anthropic", Model: "claude-opus", Message: "overloaded", Retryable: true}},
+			want: `{"bootToken":"boot-1","generation":2,"sequence":3,"outcome":"refused","message":"overloaded","task":4,` +
+				`"providerError":{"status":529,"provider":"anthropic","model":"claude-opus","message":"overloaded","retryable":true}}`,
+		},
+		{
+			name:  "turn outcome of no task",
+			value: TurnOutcomeRequest{BootCaller: BootCaller{BootToken: "boot-1"}, Generation: 2, Sequence: 3, Outcome: TurnClean},
+			want:  `{"bootToken":"boot-1","generation":2,"sequence":3,"outcome":"clean"}`,
 		},
 		{
 			name: "ready request",

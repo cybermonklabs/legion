@@ -48,16 +48,18 @@ type TaskValue struct {
 }
 
 // TaskTakeContract is the plugin contract at which a worker takes its task rather than being
-// sent it (dispatch://INFRA-2811): the contract this change's entry in internal/api's
-// version.go declares, and the one whose state body first carries `unseenTaskValues` (R5's
-// claims whose value nobody reported seeing). internal/api serves a caller in a pod whose claims
-// record a contract below it the state without that key (stateFor, withoutUnseenTaskValues).
+// sent it (dispatch://INFRA-2811): the contract whose entry in internal/api's version.go brings
+// the take, task and task-seen routes, and the one whose state body first carries
+// `unseenTaskValues` (R5's claims whose value nobody reported seeing). internal/api serves a
+// caller in a pod whose claims record a contract below it the state without that key (stateFor,
+// withoutUnseenTaskValues), and a claim whose plugin declares a contract below it cannot take a
+// task at all.
 //
 // It lives here rather than beside DaemonAPIVersion because internal/api imports this package,
-// as PodUpdateContract does. It is the first number above the base's 98; api.DaemonAPIVersion is
-// raised to it with the routes a worker takes through, and a merge that renumbers this change
+// as PodUpdateContract does, and internal/api's own test pins the two to one number
+// (TestTaskTakeContractIsTheContractThatIntroducedTheTake): a merge that renumbers this change
 // moves both together.
-const TaskTakeContract = 99
+const TaskTakeContract = 106
 
 // The origins of a task: the source that queued it (Delivery.Origin). A request names its own
 // (RequestDeliver.Origin); one that names none is read as originOf says.

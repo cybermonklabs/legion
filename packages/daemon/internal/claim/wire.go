@@ -25,6 +25,10 @@ type RegisterRequest struct {
 // capability hash is persisted before the response is written, so a daemon that restarts one
 // instruction later still recognises this agent. A session that registers with the controller
 // capability holds no claim and gets api.ControllerRegisterResponse instead.
+//
+// Task and Finished are what POST /legion/v1/claims/task answers (TaskResponse), read once the
+// registration is recorded, so a worker that registers holds its claim's value before its ready
+// and takes the task as soon as its host is idle (dispatch://INFRA-2811).
 type RegisterResponse struct {
 	ClaimToken Token  `json:"claimToken"`
 	Tree       string `json:"tree"`
@@ -35,6 +39,10 @@ type RegisterResponse struct {
 	// PromptAgents is the sorted names of every task agent the role's prompts dispatch; never
 	// null on the wire, so a role whose prompts name none answers an empty list.
 	PromptAgents []string `json:"promptAgents"`
+	// Task is the claim's value as the task bucket holds it now, null where it holds none.
+	Task *TaskValue `json:"task"`
+	// Finished is the number of the last task the claim finished, 0 for none.
+	Finished uint64 `json:"finished"`
 }
 
 // ReadyRequest says the agent has finished booting and can be prompted. It is a separate call
@@ -106,11 +114,12 @@ const (
 	TurnRefused = "refused"
 )
 
-// TurnOutcomeCaller is one of the two identities a turn outcome is reported under, and the type
-// of whichever one its body named (TurnOutcomeRequest.Caller). They are two types rather than
-// five fields of one, so the route reads the identity the caller gave rather than guessing from
-// which fields are filled in which combination.
-type TurnOutcomeCaller interface{ isTurnOutcomeCaller() }
+// Caller is one of the two identities a claim route's worker calls under — the turn outcome and
+// the three task routes (TaskRequest, TaskSeenRequest, TakeRequest) — and the type of whichever
+// one its body named (each request's Caller). They are two types rather than five fields of one,
+// so the route reads the identity the caller gave rather than guessing from which fields are
+// filled in which combination.
+type Caller interface{ isCaller() }
 
 // AgentCaller is the producer inside the agent's own session, which holds the secret its
 // registration was issued and names the claim with it, as the ready and the exit do: pi-legion's
@@ -129,8 +138,8 @@ type BootCaller struct {
 	BootToken string `json:"bootToken,omitempty"`
 }
 
-func (AgentCaller) isTurnOutcomeCaller() {}
-func (BootCaller) isTurnOutcomeCaller()  {}
+func (AgentCaller) isCaller() {}
+func (BootCaller) isCaller()  {}
 
 // named is whether a body named this identity at all. Any one of the agent's three fields counts:
 // a body that named two of them meant this identity and gave it incompletely, which the route
@@ -141,11 +150,30 @@ func (c AgentCaller) named() bool {
 
 func (c BootCaller) named() bool { return c.BootToken != "" }
 
+// callerOf is the identity a body named, and false when it named both or neither: each says who
+// is calling, and a caller that cannot say is not answered.
+func callerOf(agent AgentCaller, boot BootCaller) (Caller, bool) {
+	if agent.named() == boot.named() {
+		return nil, false
+	}
+	if boot.named() {
+		return boot, true
+	}
+	return agent, true
+}
+
 // TurnOutcomeRequest is the outcome of one turn, reported by the producer that ended it.
 // Sequence is that producer's own count of the turns it has ended at Generation, from 1, and the
 // daemon keeps the report under the pair: a report that arrives late or out of order lands in its
 // own place, and the run of refused turns the daemon derives is the same either way. Message is
 // what the provider said about a refusal, and is left out of a clean turn.
+//
+// Task is the number of the task whose turn this was — the number of the take that started it —
+// and 0, left out, for a turn of no task. The report that names the number of the claim's taken
+// task is what finishes it; one that names another number, or none, finishes nothing.
+// ProviderError is the provider error the turn ended in, left out for none: a report that names
+// the task and carries one keeps the task under its number and starts the wait before its value
+// is written again, rather than finishing it (supervise's reportedTask).
 //
 // The caller is exactly one of AgentCaller and BootCaller, embedded so that each is a shape of
 // its own on the wire as well as in Go (@legion/contracts' LegionTurnOutcomeRequest is the same
@@ -153,22 +181,29 @@ func (c BootCaller) named() bool { return c.BootToken != "" }
 type TurnOutcomeRequest struct {
 	AgentCaller
 	BootCaller
-	Generation uint64 `json:"generation"`
-	Sequence   uint64 `json:"sequence"`
-	Outcome    string `json:"outcome"`
-	Message    string `json:"message,omitempty"`
+	Generation    uint64         `json:"generation"`
+	Sequence      uint64         `json:"sequence"`
+	Outcome       string         `json:"outcome"`
+	Message       string         `json:"message,omitempty"`
+	Task          uint64         `json:"task,omitempty"`
+	ProviderError *ProviderError `json:"providerError,omitempty"`
 }
 
-// Caller is the identity the body named, and false when it named both or neither: each says who
-// is calling, and a caller that cannot say is not answered.
-func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
-	if r.AgentCaller.named() == r.BootCaller.named() {
-		return nil, false
-	}
-	if r.BootCaller.named() {
-		return r.BootCaller, true
-	}
-	return r.AgentCaller, true
+// Caller is the identity the body named, and false when it named both or neither.
+func (r TurnOutcomeRequest) Caller() (Caller, bool) { return callerOf(r.AgentCaller, r.BootCaller) }
+
+// ProviderError is how a provider failed the turn a turn outcome reports: the HTTP status of the
+// provider request that failed (0 when it had none, as a content-filter refusal has none), the
+// provider and the model that request went to, the provider's message, and whether the agent
+// called the failure retryable. The status alone decides what the daemon does with it
+// (supervise's providerErrored); the rest is logged, and the model is named in the controller's
+// notice.
+type ProviderError struct {
+	Status    int    `json:"status"`
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Message   string `json:"message"`
+	Retryable bool   `json:"retryable"`
 }
 
 // TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
@@ -179,6 +214,76 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`
+}
+
+// TaskValue is a claim's value as the task bucket holds it: the number of the task the record
+// owes the claim, and the epoch and revision of the write that put it there. A revision is read
+// only beside its epoch, because a bucket created again counts its revisions from 1 again.
+type TaskValue struct {
+	Number   uint64 `json:"number"`
+	Epoch    string `json:"epoch"`
+	Revision uint64 `json:"revision"`
+}
+
+// TaskRequest is the body of POST /legion/v1/claims/task: a worker reading its claim's value, at a
+// new epoch of its relay or when it gains its role again, under either caller (Caller) and the
+// launch generation it runs at.
+type TaskRequest struct {
+	AgentCaller
+	BootCaller
+	Generation uint64 `json:"generation"`
+}
+
+// Caller is the identity the body named, and false when it named both or neither.
+func (r TaskRequest) Caller() (Caller, bool) { return callerOf(r.AgentCaller, r.BootCaller) }
+
+// TaskResponse is what POST /legion/v1/claims/task answers, and what the registration carries
+// (RegisterResponse): the claim's value as the bucket holds it now, null where it holds none, and
+// the number of the last task the claim finished, 0 for none.
+type TaskResponse struct {
+	Task     *TaskValue `json:"task"`
+	Finished uint64     `json:"finished"`
+}
+
+// TaskSeenRequest is the body of POST /legion/v1/claims/task-seen: the worker reporting that it
+// was handed its claim's value at this epoch and revision, naming the number the value names,
+// whether or not its host is idle. It is answered 204.
+type TaskSeenRequest struct {
+	AgentCaller
+	BootCaller
+	Generation uint64 `json:"generation"`
+	Number     uint64 `json:"number"`
+	Epoch      string `json:"epoch"`
+	Revision   uint64 `json:"revision"`
+}
+
+// Caller is the identity the body named, and false when it named both or neither.
+func (r TaskSeenRequest) Caller() (Caller, bool) { return callerOf(r.AgentCaller, r.BootCaller) }
+
+// TakeRequest is the body of POST /legion/v1/claims/take: the worker asking, because its host is
+// idle, to take the task Number, the one its value at this epoch and revision names. A worker
+// sends the same take again when it had no answer (a refused, reset or closed connection, a DNS
+// failure, no answer in 5 minutes, or a 502, 503 or 504 that names no code), and a take of a
+// number already accepted whose turn has not started is answered the same text again.
+type TakeRequest struct {
+	AgentCaller
+	BootCaller
+	Generation uint64 `json:"generation"`
+	Number     uint64 `json:"number"`
+	Epoch      string `json:"epoch"`
+	Revision   uint64 `json:"revision"`
+}
+
+// Caller is the identity the body named, and false when it named both or neither.
+func (r TakeRequest) Caller() (Caller, bool) { return callerOf(r.AgentCaller, r.BootCaller) }
+
+// TakeResponse is what POST /legion/v1/claims/take answers: the outcome — `accepted`, `refused` or
+// `dropped`, supervise's TakeOutcome — the text an accepted take runs as its turn's user message,
+// and the name of the hold a refused take met (supervise's Hold… names).
+type TakeResponse struct {
+	Outcome string `json:"outcome"`
+	Text    string `json:"text,omitempty"`
+	Hold    string `json:"hold,omitempty"`
 }
 
 // ActivityRequest is a live role's session reporting what it is doing, after each of its turns

@@ -947,6 +947,8 @@ async function claimPane(options: {
     generation: 2,
     secret: `secret-${sessionId}`,
     promptAgents: options.promptAgents ?? [],
+    task: null,
+    finished: 0,
   };
   const bootToken = `boot-${sessionId}`;
   const stateDir = paneStateDirectory();

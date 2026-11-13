@@ -1376,4 +1376,42 @@ package api
 // request again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 98
+//
+// 106: INFRA-2811 -- a claim's task is a value its worker takes, not a prompt the daemon pushes.
+// The daemon writes a claim's value, `{"task": <number>}` under the claim's token in the
+// `legion_tasks` bucket, which the listener relays to the session holding that role, and the
+// worker asks to take the number once its host is idle: `POST /legion/v1/claims/take`
+// `{…caller, generation, number, epoch, revision}` answers 200 with `{outcome: "accepted", text}`,
+// `{outcome: "refused", hold}` or `{outcome: "dropped"}`, the caller being either form
+// `claims/turn-outcome` takes (`{claimToken, sessionId, secret}`, or `{bootToken}`, held to its
+// launch's generation); `POST /legion/v1/claims/task-seen`, the same body, reports the value the
+// worker was handed and answers 204; and `POST /legion/v1/claims/task` `{…caller, generation}`
+// answers `{task: {number, epoch, revision} | null, finished}`, the value the bucket holds and
+// the number of the last task the claim finished. The register answer carries the same two keys,
+// so a worker holds its value before its ready. `claims/turn-outcome` takes `task`, the number of
+// the take whose turn it reports, which finishes that task, and `providerError`
+// (`{status, provider, model, message, retryable}`), which keeps the task under its number and
+// starts the wait before its value is written again. The three task routes refuse in the coded
+// shape (`{code, error}`), so a worker that sends a take or a seen report again on a 502, 503 or
+// 504 naming no code never reads a refusal of the daemon's own as an outage; and none of them
+// refuses a stale plugin with the stale-contract 409: a stale claim's take is refused with the
+// hold `stale-plugin`, and its read and its seen report are answered as any claim's.
+// The prompt frames are gone: the daemon sends no task over the worker stream, so `claims/ready`
+// sends nothing, a shim's prompt answer is no frame of the stream, and a plugin before this
+// contract, which waits on a prompt, can take no task (supervise.TaskTakeContract). The operator
+// claim view's delivery loses `deliveredAt`, since no prompt is acknowledged; the failure causes
+// gain `never_reconnected`, a claim a daemon restart restored ready, idle or working whose shim
+// never said hello within the registration deadline while its process lived; and
+// `GET /legion/v1/state` carries `unseenTaskValues`, every running claim whose value nobody
+// reported seeing for a whole first bound (`{claim, issue, role, task, writtenAt}`), which a
+// caller from a pod whose claims record a contract below 106 is served the body without (api's
+// stateFor, withoutUnseenTaskValues), as one below 98 is served the admission block without
+// `held`; the sixteen strips compose. Its settings carry `worker_take_timeout_seconds` and
+// `worker_turn_start_timeout_seconds`, keys of legion.yaml, which move no contract of their own.
+// (The branch's base declares 98. By the census this change's orchestrator read on 2026-11-13,
+// main declares 104 at b601d25b and the open pull requests declare 105, 107, 108 and 110 through
+// 114, so 106 is the lowest number above main's that no open head declares. Read the base's own
+// number and every open pull request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 106
