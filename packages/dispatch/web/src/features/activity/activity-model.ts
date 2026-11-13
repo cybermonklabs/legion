@@ -1,5 +1,12 @@
 import type { Actor, DispatchEvent } from "../../api/types";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
+import { payloadTree } from "./event-trees";
+
+/** The question an ask event quotes, with the reading Go sent of it: the one stored text an
+ *  ask event's line draws, so the line draws that reading and parses nothing (`QuotedPart`). */
+function quotedQuestion(event: DispatchEvent, question: string): AgentPart {
+  return { markdown: question, tree: payloadTree(event, "payload.question") };
+}
 
 export function dateKey(iso: string): string {
   const date = new Date(iso);
@@ -119,6 +126,10 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `edited ${event.payload.name} v${event.payload.from_version} to v${event.payload.to_version}`;
     case "comment.created":
       if (event.payload.ask_id !== null) {
+        // The question this comment answers, which the comment's payload names in a field of
+        // its own: it is no stored text of this event, so its trees hold no reading of it
+        // (`api/event_trees.go` reads a comment event for its body alone) and this one quote
+        // is parsed.
         return ["replied to “", { markdown: event.payload.ask_question ?? "an ask" }, "”"];
       }
       if (event.payload.reply_to !== null) return "replied to a comment";
@@ -154,27 +165,31 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
     case "ask.resolved":
       return askResolutionParts(event.payload.resolution);
     case "ask.opened":
-      return ["asked “", { markdown: event.payload.question }, "”"];
+      return ["asked “", quotedQuestion(event, event.payload.question), "”"];
     case "ask.anchor_refreshed":
       return event.payload.anchor?.orphaned
-        ? ["made an ask lose its quote: “", { markdown: event.payload.question }, "”"]
-        : ["re-anchored an ask after an edit: “", { markdown: event.payload.question }, "”"];
+        ? ["made an ask lose its quote: “", quotedQuestion(event, event.payload.question), "”"]
+        : [
+            "re-anchored an ask after an edit: “",
+            quotedQuestion(event, event.payload.question),
+            "”",
+          ];
     case "ask.edited":
-      return ['edited the question "', { markdown: event.payload.question }, '"'];
+      return ['edited the question "', quotedQuestion(event, event.payload.question), '"'];
     case "ask.handed_back":
-      return ["handed “", { markdown: event.payload.question }, "” back for approval"];
+      return ["handed “", quotedQuestion(event, event.payload.question), "” back for approval"];
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
       // assignee of its own issue, which is where an ask with no `asked_of` waits.
       return [
         "handed “",
-        { markdown: event.payload.question },
+        quotedQuestion(event, event.payload.question),
         `” to ${event.payload.asked_of ?? "the issue's assignee"}`,
       ];
     case "ask.answered":
       return event.payload.previous_answer === undefined
-        ? ["answered “", { markdown: event.payload.question }, "”"]
-        : ["changed the answer to “", { markdown: event.payload.question }, "”"];
+        ? ["answered “", quotedQuestion(event, event.payload.question), "”"]
+        : ["changed the answer to “", quotedQuestion(event, event.payload.question), "”"];
     case "message.created":
       return "sent a message";
     case "message.delivery":

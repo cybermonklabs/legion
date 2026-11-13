@@ -277,8 +277,18 @@ export function DocumentPreview({
   // The document's own parse policies, which are this hook's defaults: a single newline inside a
   // paragraph is a space (hard-wrapped Markdown is one paragraph), and a line of raw HTML leaves
   // the source to the literal-text fallback rather than drawing as text.
-  // The document's own text is drawn from its markdown: the preview holds the text the socket
-  // carried, which no answer of the server's sent a tree for.
+  // This is the one surface of the dashboard that draws a stored text and parses it rather than
+  // drawing the reading Go sent (`e2e/parse-count.e2e.ts` counts the parses of every other one
+  // and holds each to zero). The text read does carry a reading - `GET /artifacts/{id}/text`
+  // answers `markdown_tree` beside `markdown` - and this element draws neither the whole of
+  // that text nor it alone: its first pass is a prefix of the markdown (`leadingBlocks`), and
+  // its second is the whole document, which is the one body on this page that must never be
+  // built on the reader's own thread (`theWorkerOrNothing`, and the module comment above).
+  // Drawing a tree is synchronous and has no worker behind it (`renderWithEngine`), so a draw
+  // of 406,000 characters' worth of nodes would land in one task of the reader's, in the very
+  // wait this element exists to shorten; parsed, it costs the page nothing at all, and where
+  // the server drew the opening blocks into the page this element draws nothing anyway. A tree
+  // belongs here the day the engine can draw one off the page's thread.
   const { isFallback, isPending, portals } = useRenderedMarkdown(
     root,
     source ?? "",

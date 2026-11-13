@@ -39,75 +39,75 @@
     -->
     <script>
       (() => {
-        // On `window` rather than in this closure, because the bundle's own handler reads it:
-        // `installChunkFailureRecovery` (src/features/shell/DeploymentResilience.tsx) is
-        // installed from the boot chunk, one `import()` behind the entry
-        // (src/features/shell/boot.ts), so a reload this script starts for a preload that
-        // failed before that has already fired `beforeunload` by the time the bundle's own
-        // `beforeunload` listener exists. Without this the bundle would read the page as
-        // staying, ask for a second reload of the same failure, and spend two of the tab's
-        // three on it.
-        window.__dispatchPageIsLeaving = false;
-        function markLeaving() {
-          window.__dispatchPageIsLeaving = true;
-        }
-        window.addEventListener("beforeunload", markLeaving);
-        window.addEventListener("pagehide", markLeaving);
-        window.addEventListener("pageshow", () => {
-          window.__dispatchPageIsLeaving = false;
-        });
-        if (window.navigation) {
-          window.navigation.addEventListener("navigate", (event) => {
-            if (!event.destination.sameDocument && event.downloadRequest === null) {
-              window.__dispatchPageIsLeaving = true;
-            }
-          });
-        }
-        window.addEventListener(
-          "error",
-          (event) => {
-            var element = event.target;
-            var url;
-            if (element instanceof HTMLScriptElement) {
-              url = element.src;
-            } else if (
-              element instanceof HTMLLinkElement &&
-              (element.rel === "stylesheet" || element.rel === "modulepreload")
-            ) {
-              url = element.href;
-            } else {
-              return;
-            }
-            if (url.indexOf(`${window.location.origin}/assets/`) !== 0) {
-              return;
-            }
-            if (window.__dispatchPageIsLeaving || !navigator.onLine) {
-              return;
-            }
-            var now = Date.now();
-            var stored;
-            try {
-              stored = JSON.parse(window.sessionStorage.getItem("dispatch.chunk-reloads") || "[]");
-            } catch {
-              stored = [];
-            }
-            var recent = (Array.isArray(stored) ? stored : []).filter(
-              (time) => typeof time === "number" && now - time < 5 * 60 * 1000
-            );
-            if (recent.length >= 3) {
-              return;
-            }
-            recent.push(now);
-            try {
-              window.sessionStorage.setItem("dispatch.chunk-reloads", JSON.stringify(recent));
-            } catch {
-              return;
-            }
-            window.location.reload();
-          },
-          true
-        );
-      })();
+              // On `window` rather than in this closure, because the bundle's own handler reads it:
+              // `installChunkFailureRecovery` (src/features/shell/DeploymentResilience.tsx) is
+              // installed from the boot chunk, one `import()` behind the entry
+              // (src/features/shell/boot.ts), so a reload this script starts for a preload that
+              // failed before that has already fired `beforeunload` by the time the bundle's own
+              // `beforeunload` listener exists. Without this the bundle would read the page as
+              // staying, ask for a second reload of the same failure, and spend two of the tab's
+              // three on it.
+              window.__dispatchPageIsLeaving = false;
+              function markLeaving() {
+                window.__dispatchPageIsLeaving = true;
+              }
+              window.addEventListener("beforeunload", markLeaving);
+              window.addEventListener("pagehide", markLeaving);
+              window.addEventListener("pageshow", () => {
+                window.__dispatchPageIsLeaving = false;
+              });
+              if (window.navigation) {
+                window.navigation.addEventListener("navigate", (event) => {
+                  if (!event.destination.sameDocument && event.downloadRequest === null) {
+                    window.__dispatchPageIsLeaving = true;
+                  }
+                });
+              }
+              window.addEventListener(
+                "error",
+                (event) => {
+                  var element = event.target;
+                  var url;
+                  if (element instanceof HTMLScriptElement) {
+                    url = element.src;
+                  } else if (
+                    element instanceof HTMLLinkElement &&
+                    (element.rel === "stylesheet" || element.rel === "modulepreload")
+                  ) {
+                    url = element.href;
+                  } else {
+                    return;
+                  }
+                  if (url.indexOf(`${window.location.origin}/assets/`) !== 0) {
+                    return;
+                  }
+                  if (window.__dispatchPageIsLeaving || !navigator.onLine) {
+                    return;
+                  }
+                  var now = Date.now();
+                  var stored;
+                  try {
+                    stored = JSON.parse(window.sessionStorage.getItem("dispatch.chunk-reloads") || "[]");
+                  } catch {
+                    stored = [];
+                  }
+                  var recent = (Array.isArray(stored) ? stored : []).filter(
+                    (time) => typeof time === "number" && now - time < 5 * 60 * 1000
+                  );
+                  if (recent.length >= 3) {
+                    return;
+                  }
+                  recent.push(now);
+                  try {
+                    window.sessionStorage.setItem("dispatch.chunk-reloads", JSON.stringify(recent));
+                  } catch {
+                    return;
+                  }
+                  window.location.reload();
+                },
+                true
+              );
+            })();
     </script>
     <!--
       The document's own text, asked for while this page is still being parsed.
@@ -148,41 +148,41 @@
     -->
     <script>
       (() => {
-        var opened =
-          /^\/issues\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)\/artifacts?\/([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(
-            window.location.pathname
-          );
-        if (opened === null) {
-          return;
-        }
-        var pinned = new URLSearchParams(window.location.search).get("v");
-        if (pinned !== null && pinned !== "" && !/^[1-9][0-9]*$/.test(pinned)) {
-          return;
-        }
-        var path = `/api/v1/issues/${opened[1]}/artifacts/${opened[2]}/text`;
-        var early = new AbortController();
-        // How long this waits for the answer's headers, matching REQUEST_DEADLINE_MS in
-        // src/api/client.ts: Dispatch silent that long cannot be reached. The body is the
-        // client's to bound, as every read's body is, and the client's own deadline covers this
-        // read from the moment it takes it.
-        var silence = setTimeout(() => early.abort(), 30000);
-        window.__dispatchEarlyDocumentRead = {
-          abort: (reason) => {
-            clearTimeout(silence);
-            early.abort(reason);
-          },
-          path: path,
-          response: fetch(path, { credentials: "same-origin", signal: early.signal }).then(
-            (response) => {
-              clearTimeout(silence);
-              return response;
-            }
-          ),
-        };
-        // Nothing waits on it until the page takes it, so its refusal is answered here rather
-        // than left to the window as an unhandled rejection.
-        window.__dispatchEarlyDocumentRead.response.catch(() => undefined);
-      })();
+              var opened =
+                /^\/issues\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)\/artifacts?\/([a-z0-9]+(?:-[a-z0-9]+)*)$/.exec(
+                  window.location.pathname
+                );
+              if (opened === null) {
+                return;
+              }
+              var pinned = new URLSearchParams(window.location.search).get("v");
+              if (pinned !== null && pinned !== "" && !/^[1-9][0-9]*$/.test(pinned)) {
+                return;
+              }
+              var path = `/api/v1/issues/${opened[1]}/artifacts/${opened[2]}/text`;
+              var early = new AbortController();
+              // How long this waits for the answer's headers, matching REQUEST_DEADLINE_MS in
+              // src/api/client.ts: Dispatch silent that long cannot be reached. The body is the
+              // client's to bound, as every read's body is, and the client's own deadline covers this
+              // read from the moment it takes it.
+              var silence = setTimeout(() => early.abort(), 30000);
+              window.__dispatchEarlyDocumentRead = {
+                abort: (reason) => {
+                  clearTimeout(silence);
+                  early.abort(reason);
+                },
+                path: path,
+                response: fetch(path, { credentials: "same-origin", signal: early.signal }).then(
+                  (response) => {
+                    clearTimeout(silence);
+                    return response;
+                  }
+                ),
+              };
+              // Nothing waits on it until the page takes it, so its refusal is answered here rather
+              // than left to the window as an unhandled rejection.
+              window.__dispatchEarlyDocumentRead.response.catch(() => undefined);
+            })();
     </script>
     <!--
       How much room the server's own draw of a document leaves on each side, read before that
@@ -217,33 +217,33 @@
     -->
     <script>
       (() => {
-        var stored;
-        var drawn;
-        var style;
-        var room;
-        try {
-          stored = window.localStorage.getItem("dispatch.shell.layout");
-        } catch {
-          return;
-        }
-        if (stored === null) {
-          return;
-        }
-        drawn = stored.split("/");
-        style = document.documentElement.style;
-        if (drawn[0] === "rail") {
-          style.setProperty("--first-screen-margin-inset", "5rem");
-        } else if (/^[0-9]{1,4}$/.test(drawn[0])) {
-          room = Math.max(280, Math.floor(window.innerWidth * 0.6));
-          style.setProperty(
-            "--first-screen-margin-inset",
-            `calc(${Math.min(Math.max(Number(drawn[0]), 280), room)}px + 1.5rem)`
-          );
-        }
-        if (drawn[1] === "rail") {
-          style.setProperty("--first-screen-sidebar-inset", "5rem");
-        }
-      })();
+              var stored;
+              var drawn;
+              var style;
+              var room;
+              try {
+                stored = window.localStorage.getItem("dispatch.shell.layout");
+              } catch {
+                return;
+              }
+              if (stored === null) {
+                return;
+              }
+              drawn = stored.split("/");
+              style = document.documentElement.style;
+              if (drawn[0] === "rail") {
+                style.setProperty("--first-screen-margin-inset", "5rem");
+              } else if (/^[0-9]{1,4}$/.test(drawn[0])) {
+                room = Math.max(280, Math.floor(window.innerWidth * 0.6));
+                style.setProperty(
+                  "--first-screen-margin-inset",
+                  `calc(${Math.min(Math.max(Number(drawn[0]), 280), room)}px + 1.5rem)`
+                );
+              }
+              if (drawn[1] === "rail") {
+                style.setProperty("--first-screen-sidebar-inset", "5rem");
+              }
+            })();
     </script>
   </head>
   <body>
@@ -333,31 +333,31 @@
     </script>
     <script>
       (() => {
-        var chunks = window.__dispatchAddressChunks;
-        var pathname = window.location.pathname;
-        // The two addresses that open a document, as the router parses them
-        // (`parseIssuePath` and `parseProjectPath` in src/features/refs/routes.ts): every issue
-        // address, whose Spec tab is a document and whose artifact addresses are documents, and
-        // a project document's own page. Every other address needs the app and its first reads,
-        // which is what `app` holds and what the two lists above begin with.
-        var needed = /^\/issues\/[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*(\/|$)/.test(pathname)
-          ? chunks.issue
-          : /^\/projects\/[^/]+\/documents\/[^/]+$/.test(pathname)
-            ? chunks.document
-            : chunks.app;
-        if (needed === undefined) {
-          return;
-        }
-        for (let index = 0; index < needed.length; index += 1) {
-          const link = document.createElement("link");
-          link.rel = "modulepreload";
-          // The entry's own script tag carries `crossorigin`, and a preload that does not match
-          // it is a second fetch rather than the same one.
-          link.crossOrigin = "anonymous";
-          link.href = needed[index];
-          document.head.appendChild(link);
-        }
-      })();
+              var chunks = window.__dispatchAddressChunks;
+              var pathname = window.location.pathname;
+              // The two addresses that open a document, as the router parses them
+              // (`parseIssuePath` and `parseProjectPath` in src/features/refs/routes.ts): every issue
+              // address, whose Spec tab is a document and whose artifact addresses are documents, and
+              // a project document's own page. Every other address needs the app and its first reads,
+              // which is what `app` holds and what the two lists above begin with.
+              var needed = /^\/issues\/[A-Z][A-Z0-9]{1,9}-[1-9][0-9]*(\/|$)/.test(pathname)
+                ? chunks.issue
+                : /^\/projects\/[^/]+\/documents\/[^/]+$/.test(pathname)
+                  ? chunks.document
+                  : chunks.app;
+              if (needed === undefined) {
+                return;
+              }
+              for (let index = 0; index < needed.length; index += 1) {
+                const link = document.createElement("link");
+                link.rel = "modulepreload";
+                // The entry's own script tag carries `crossorigin`, and a preload that does not match
+                // it is a second fetch rather than the same one.
+                link.crossOrigin = "anonymous";
+                link.href = needed[index];
+                document.head.appendChild(link);
+              }
+            })();
     </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>

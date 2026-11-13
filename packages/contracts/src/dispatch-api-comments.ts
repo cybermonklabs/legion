@@ -7,7 +7,6 @@ import {
   anchorPositionFields,
   InboundActorSchema,
 } from "./dispatch-api-core";
-import { ASK_TURNS, DELIVERY_CAPABILITIES } from "./dispatch-constants";
 import {
   carriedBodyFields,
   ReplyBlockSchema,
@@ -15,6 +14,7 @@ import {
   threadLoginsFields,
   WrittenReplyBlockSchema,
 } from "./dispatch-api-refs";
+import { ASK_TURNS, DELIVERY_CAPABILITIES } from "./dispatch-constants";
 
 /**
  * The comment: the row, who it mentions, how each mention was delivered, and the payloads of

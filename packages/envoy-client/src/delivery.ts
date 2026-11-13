@@ -537,7 +537,7 @@ export function carriedItem(
         ? ("message" as const)
         : undefined;
   if (resource === undefined || !isObject(event.payload)) return undefined;
-  const id = event.payload["id"];
+  const id = event.payload.id;
   if (typeof id !== "string" || id === "") return undefined;
   return { resource, id, issueKey: event.issue_key };
 }
@@ -547,9 +547,7 @@ export function carriedItem(
  *  bus refused the event and the outbox published a stand-in with its long fields dropped
  *  (`payload_omitted`). Either way the item itself answers the rest. */
 export function bodyWasCut(payload: unknown): boolean {
-  return (
-    isObject(payload) && (payload["body_truncated"] === true || payload["payload_omitted"] === true)
-  );
+  return isObject(payload) && (payload.body_truncated === true || payload.payload_omitted === true);
 }
 
 /** The Dispatch route that answers the whole item an event names. */
@@ -563,7 +561,7 @@ function wholeItemRoute(item: CarriedItem): string {
 function carriedBodyNote(event: DispatchEvent): string | undefined {
   if (!bodyWasCut(event.payload)) return undefined;
   const what =
-    isObject(event.payload) && event.payload["payload_omitted"] === true
+    isObject(event.payload) && event.payload.payload_omitted === true
       ? "this event carries no body: it was too large for the bus"
       : "the body is its first part only";
   const item = carriedItem(event);

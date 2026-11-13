@@ -6,6 +6,7 @@ import { fixture, type PmdocFixture } from "../../__tests__/pmdoc-fixtures";
 import type { BlockSchema } from "../../api/types";
 import * as schemaModule from "../doc/schema";
 import {
+  loadedEngine,
   type MarkdownRendering,
   parseAheadOfTheRender,
   parsesInTheWorker,
@@ -213,14 +214,16 @@ describe("the answer cache and the raw-HTML policy", () => {
   });
 });
 
-// What the warm-up is for, beyond the chunk and the schema: a fresh engine's first parse builds
-// the parser for the pair of policies it is asked for and takes micromark through V8's
-// interpreter for the first time, and on a phone at 4x CPU throttling that first parse was
-// 469 ms of the React commit that mounts a document's page, against 9 ms for a parse with one
-// behind it (dispatch://INFRA-341, R11). The warm-up pays it, in a task of its own; this row is
-// what says the parse is still in it.
+// What the warm-up is for, and what it is not. It loads the schema and the headless chunk and
+// builds the engine from them, early, where nothing waits; it parses nothing. It used to take
+// a body of its own through the fresh engine, so that the first parse's parser build - 469 ms
+// of a React commit on a phone at 4x CPU throttling (dispatch://INFRA-341, R11) - was spent
+// off every commit. That parse is gone: a page that draws stored texts parses no markdown at
+// all now (`e2e/parse-count.e2e.ts` counts the parses of fifteen surfaces and holds every one
+// of them to zero), and the one body still parsed on R11's own path is parsed off the commit
+// by `parseAheadOfTheRender` below. This row is what keeps the load silent.
 describe("the engine's warm-up", () => {
-  test("takes a parse through the engine it built, so no surface's first render pays for it", async () => {
+  test("builds the engine without parsing anything, so a page that draws trees parses nothing", async () => {
     const built = headlessModule.createHeadlessProof;
     const parsed: string[] = [];
     const create = spyOn(headlessModule, "createHeadlessProof").mockImplementation(
@@ -244,10 +247,9 @@ describe("the engine's warm-up", () => {
     try {
       await warmMarkdownRenderer();
 
-      expect(parsed).toHaveLength(1);
-      // Wide enough to be worth parsing: a heading, a paragraph, a list, a fence and a table.
-      expect(parsed[0]).toContain("# A heading");
-      expect(parsed[0].split("\n\n").length).toBeGreaterThanOrEqual(5);
+      expect(parsed).toEqual([]);
+      // And the engine it built is the one a render in this task draws with.
+      expect(loadedEngine()).toBeDefined();
     } finally {
       create.mockRestore();
       load.mockRestore();
@@ -286,7 +288,8 @@ describe("a body parsed ahead of the render", () => {
     const body = "# The lease ledger\n\nThe paragraph a reader meets first.\n";
     try {
       await parseAheadOfTheRender(body);
-      // The warm-up body and this one: everything the engine has parsed so far.
+      // Everything the engine has parsed so far, which is this body alone: its load parses
+      // nothing.
       const before = parsed.length;
       expect(parsed.at(-1)).toBe(body);
 

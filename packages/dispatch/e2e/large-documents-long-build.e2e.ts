@@ -94,9 +94,8 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
     void measuring.then(noteClosed, noteClosed);
 
     // The reader has the document's own draw, and no editor is being built behind it.
-    await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
-      { timeout: 240_000 }
-    );
+    const theDraw = page.locator('[aria-label="Document text"] [data-block-id]').first();
+    await expect(theDraw).toBeAttached({ timeout: 240_000 });
     await expect(documentEditor(page)).toHaveCount(0);
     // A window that stays open cannot be awaited: this is the hold above, long enough that a
     // window closing at the page's own end would have closed inside it (`heldAfterTheDrawMs`).
@@ -106,6 +105,29 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
       "the measurement closed its window with no editor on the page: it read the longest task " +
         "of the draw's own screenful and none of the build"
     ).toBe(false);
+
+    // The reader scrolls the document onto the screen, as a reader of this page on a phone must:
+    // the issue's header, its tabs and the document's own controls stand 706 px down a 664 px
+    // viewport, so at the top of the page no block of the document is on the screen at all - the
+    // blocks the server drew included. The measurement times the editor's first block where the
+    // reader can see it (`firstBlockSelector`, `e2e/large-documents-page.ts`), so with nobody
+    // scrolling it waits its whole wait out on a block 42 px under the fold and times none of
+    // the build this row is about.
+    //
+    // To the foot of the screen rather than to the top of it, and here rather than when the draw
+    // first landed. Both are about where the browser keeps the reader while the build fills the
+    // page: scrolled this far the top of the viewport is still the page's own header, which is
+    // what the reader is held against, and the editor's blocks land under it in the place the
+    // draw's blocks are giving up (`DocumentPreview`'s `takesTheBuiltBlocks`) - the editor's
+    // first block drawn where the draw's first block stands now. Scrolled so that block is at
+    // the top instead, the reader is held against the document itself and the build's first
+    // batch goes in above them: the editor's first block is then 1,076 px over the fold and
+    // stays there for the whole build. Later than the draw's own painting, because until this
+    // line it is still putting the rest of the document in and holding the reader through it
+    // (`readers-place.ts`), which leaves a reader scrolled here deep in the document; from this
+    // line it paints no more, since the release below begins the build and the draw stops in
+    // that same task (`building`).
+    await theDraw.evaluate((block) => block.scrollIntoView({ block: "end" }));
 
     // Released, the build runs, the editor opens, and only then does the window close.
     await transport.release();

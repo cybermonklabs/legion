@@ -70,9 +70,9 @@ export async function newDpopKey(): Promise<DpopKey> {
         htu: targetUri(request.url),
         iat: Math.floor(Date.now() / 1000),
       };
-      if (request.nonce !== undefined && request.nonce !== "") claims["nonce"] = request.nonce;
+      if (request.nonce !== undefined && request.nonce !== "") claims.nonce = request.nonce;
       if (request.accessToken !== undefined && request.accessToken !== "") {
-        claims["ath"] = await accessTokenHash(request.accessToken);
+        claims.ath = await accessTokenHash(request.accessToken);
       }
       return await new SignJWT(claims)
         .setProtectedHeader({ typ: "dpop+jwt", alg: ALGORITHM, jwk: publicJwk })

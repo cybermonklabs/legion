@@ -127,39 +127,27 @@ const engines = new Map<number, Promise<MarkdownEngine>>();
 let readyEngine: MarkdownEngine | undefined;
 
 /**
- * A body short enough to cost nothing and wide enough to take a parse through the constructs a
- * document's first screenful is made of: a heading, a paragraph with emphasis, code and a
- * reference in it, a list, a fenced code block and a table.
+ * The engine is handed back as it was built, with no parse behind it.
  *
  * A fresh engine's first parse costs what none after it does: `parseMarkdown` builds the parser
  * for the pair of policies it is asked for - a `ParserState` over the whole remark processor
  * (`lib-headless.ts`) - and takes micromark's tokenizer, its constructs and mdast's compiler
  * through V8's interpreter for the first time. Measured on this pod with a CDP trace, `iphone`
  * at 4x CPU throttling, the document preview's first screenful - 2,000 characters - cost 469 ms
- * parsed through a fresh engine, inside the React commit that mounts the issue page, where a
- * parse with one behind it is a few milliseconds (dispatch://INFRA-341, R11). So an engine is
- * handed back with that parse behind it, in the task that built it, where nothing is waiting:
- * the warm-up (`warmMarkdownRenderer`) is what makes that task an early one. It is parsed under
- * the document's own pair of policies - the one on the path a document's first block waits on -
- * and most of what it pays for, every construct micromark tokenizes, is the same code whatever
- * the policies. A body the engine refuses answers `undefined`; this one it does not.
+ * parsed through a fresh engine, against a few milliseconds for a parse with one behind it
+ * (dispatch://INFRA-341, R11). This module used to spend that here, on a body of its own, so
+ * that no surface's first render paid it.
+ *
+ * It no longer does, for two reasons, and neither a warm-up body nor any other parse belongs
+ * back in this load. A page that draws stored texts parses no markdown at all now: every one of
+ * them is drawn from the reading Go sent beside it (`renderWithEngine`), which is what
+ * `e2e/parse-count.e2e.ts` holds every surface of the dashboard to, so a parse made here is a
+ * parse that page would never otherwise make. And the one body still parsed on the path R11
+ * measures - a document's first screenful, where the server drew no first screen - is already
+ * parsed in a task where nothing waits (`parseAheadOfTheRender`, called from the task that
+ * text arrives in): that parse is the first through its engine and pays the build itself, off
+ * every commit, which is all the warm-up ever bought.
  */
-const WARM_UP_BODY = `# A heading
-
-A paragraph with *emphasis*, \`code\` and a [reference](dispatch://CORE-1).
-
-- one
-- two
-
-\`\`\`ts
-const a = 1;
-\`\`\`
-
-| a | b |
-| --- | --- |
-| 1 | 2 |
-`;
-
 function loadEngine(blockSchema: BlockSchema): Promise<MarkdownEngine> {
   const cached = engines.get(blockSchema.version);
   if (cached !== undefined) {
@@ -182,7 +170,6 @@ function loadEngine(blockSchema: BlockSchema): Promise<MarkdownEngine> {
       )
     )
     .then((engine) => {
-      engine.parse(WARM_UP_BODY, "space", "refuse");
       readyEngine = engine;
       return engine;
     });
@@ -191,9 +178,9 @@ function loadEngine(blockSchema: BlockSchema): Promise<MarkdownEngine> {
 }
 
 /** Loads the schema and headless Proof chunk before Markdown-bearing UI needs to render, and
- *  with them the engine they build, whose parser is built and taken through a parse as it is
- *  created (`WARM_UP_BODY`), so no surface's first render pays for that. The parse worker is
- *  not one of them: a page that draws no long body downloads none of it.
+ *  with them the engine they build, which parses nothing as it is created (the note above
+ *  `loadEngine`). The parse worker is not one of them: a page that draws no long body
+ *  downloads none of it.
  *
  *  The chunk is asked for before the schema read is awaited, not after it: the engine needs
  *  both, neither needs the other, and reading them one after the other put 461 KB of download

@@ -525,8 +525,8 @@ const RESULT_SHAPE_RULE =
 function resultProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
-  if (typeof input["retract"] === "string") {
-    const reason = input["reason"];
+  if (typeof input.retract === "string") {
+    const reason = input.reason;
     if (typeof reason !== "string" || reason.trim() === "") {
       return "retract needs reason, the words that say why the result is wrong.";
     }
@@ -535,7 +535,7 @@ function resultProblem(value: unknown): string | undefined {
     }
     return undefined;
   }
-  if (input["reason"] !== undefined) {
+  if (input.reason !== undefined) {
     return "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.";
   }
   const missing = RESULT_REQUIRED_FIELDS.filter((field) => input[field] === undefined);

@@ -34,13 +34,7 @@ import { AskApprovalLink } from "./AskApprovalLink";
 import { AskHeader, hasUrgencyNotch } from "./AskHeader";
 import { AskOptionList } from "./AskOptionList";
 
-export function AskEditHistory({
-  ask,
-  edits,
-}: {
-  ask: Ask;
-  edits: AskEditWithTrees[];
-}): ReactNode {
+export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEditWithTrees[] }): ReactNode {
   if (ask.edited_at === null) {
     return null;
   }

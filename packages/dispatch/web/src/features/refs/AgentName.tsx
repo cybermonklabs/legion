@@ -8,7 +8,7 @@ import {
 import { Fragment, type ReactNode, useMemo } from "react";
 import { generatePath, Link } from "react-router-dom";
 
-import type { Actor, AskResolution } from "../../api/types";
+import type { Actor, AskResolution, DisplayTree } from "../../api/types";
 import {
   focusVisibleRing,
   inlineWarningText,
@@ -417,8 +417,15 @@ type ArtifactPart = { artifact: string };
  *  answers - as its author wrote it: `AgentParts` hands it to `quote`, which draws it formatted
  *  (`MarkdownPreview` at one line), so `**held**` reads as bold `held` rather than as its
  *  source. The drawing is the host's because this module sits under `MarkdownPreview`'s own
- *  imports and cannot import it back. */
-type QuotedPart = { markdown: string };
+ *  imports and cannot import it back.
+ *
+ *  `tree` is the reading Go made of that stored text, which the preview draws instead of
+ *  parsing the markdown (`e2e/parse-count.e2e.ts` counts a page that parses one). It is absent
+ *  only where the answer carried no reading of this text: a question a comment event names in
+ *  a field of its own (`payload.ask_question`), which is no stored text of that event and so
+ *  has no tree in its map (`api/event_trees.go`), and any answer from a server older than the
+ *  trees. The preview then parses the markdown, as every view of a text with no tree does. */
+type QuotedPart = { markdown: string; tree?: DisplayTree };
 
 function isQuoted(part: AgentPart): part is QuotedPart {
   return typeof part !== "string" && "markdown" in part;
@@ -442,7 +449,7 @@ export function AgentParts({
 }: {
   artifact?: (name: string) => ReactNode;
   parts: readonly AgentPart[];
-  quote?: (markdown: string) => ReactNode;
+  quote?: (markdown: string, tree: DisplayTree | undefined) => ReactNode;
 }): ReactNode {
   const quotes = parts.some(isQuoted);
   const drawPart = (part: AgentPart): ReactNode => {
@@ -450,7 +457,7 @@ export function AgentParts({
       return quotes ? <span className="whitespace-pre-wrap">{part}</span> : part;
     }
     if (isQuoted(part)) {
-      return quote === undefined ? part.markdown : quote(part.markdown);
+      return quote === undefined ? part.markdown : quote(part.markdown, part.tree);
     }
     if ("artifact" in part) {
       return artifact === undefined ? part.artifact : artifact(part.artifact);

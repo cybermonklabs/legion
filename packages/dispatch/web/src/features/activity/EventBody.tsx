@@ -3,7 +3,7 @@ import { answerSelected } from "@legion/contracts/dispatch-constants";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import type { DispatchEvent, DisplayTree } from "../../api/types";
+import type { DispatchEvent } from "../../api/types";
 import { linkText, textMutedOnSurface, textPrimaryOnSurface } from "../../theme/classes";
 import { AskOptionList } from "../inbox/AskOptionList";
 import { eventDescription } from "../issue/event-description";
@@ -14,6 +14,7 @@ import { buildIssuePath, buildReferencePath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { LineParts } from "./ActivityLine";
+import { payloadTree } from "./event-trees";
 
 type AskEvent = Extract<DispatchEvent, { type: "ask.opened" | "ask.answered" | "ask.resolved" }>;
 
@@ -21,15 +22,6 @@ export function isAskEvent(event: DispatchEvent): event is AskEvent {
   return (
     event.type === "ask.opened" || event.type === "ask.answered" || event.type === "ask.resolved"
   );
-}
-
-/** The tree of one stored text an event's payload carries, by that text's path in the envelope
- *  (`payload.body`, `payload.resolution.reason`). A payload keeps the shape every reader of the
- *  message bus knows, so its trees ride beside it in `trees` rather than on it
- *  (`api/event_trees.go`); a frame from a Dispatch older than the map carries none, and the
- *  body then renders as its own literal text. */
-function payloadTree(event: DispatchEvent, path: string): DisplayTree | undefined {
-  return event.trees?.[path];
 }
 
 function AskEventBody({

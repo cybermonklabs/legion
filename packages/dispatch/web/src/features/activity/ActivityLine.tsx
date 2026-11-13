@@ -26,7 +26,9 @@ export function LineParts({
     <AgentParts
       artifact={artifact}
       parts={description}
-      quote={(markdown) => <MarkdownPreview className="min-w-0" lines={1} markdown={markdown} />}
+      quote={(markdown, tree) => (
+        <MarkdownPreview className="min-w-0" lines={1} markdown={markdown} tree={tree} />
+      )}
     />
   );
 }
