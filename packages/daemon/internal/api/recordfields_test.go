@@ -142,6 +142,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
 			StartedAt: at.Add(-time.Minute), EndedAt: at.Add(-30 * time.Second),
 		},
+		ActivityAt: at.Add(-3 * time.Minute), ActivityBackground: true,
+		ActivityKinds: []string{"async-job"}, ActivityNextReminderAt: at.Add(10 * time.Minute),
 	}
 	fields := reflect.ValueOf(current)
 	for i := range fields.NumField() {
