@@ -20,34 +20,33 @@ export function CommandBarSection(): ReactNode {
   const settings = useQuery(goingSettingsQuery());
   // A save Dispatch refused: what it said, and the value it refused, which Retry sends again.
   const [refusal, setRefusal] = useState<{ readonly message: string; readonly on: boolean }>();
+  // The value the person pressed, drawn until Dispatch answers the save. It is the component's own
+  // state, so the box changes in the press itself; a read of the setting that was out when the
+  // person pressed cannot draw the old value over it, however that read ends.
+  const [pressed, setPressed] = useState<boolean>();
   const key = goingSettingsQuery().queryKey;
-  // One press: the value chosen, and the setting as the page drew it before, which a refusal
-  // puts back.
-  type Press = { readonly on: boolean; readonly previous: GoingSettings | undefined };
-  const save = useKeyedWrite<GoingSettings, Press>({
+  const save = useKeyedWrite<GoingSettings, boolean>({
     inline: true,
-    label: ({ on }) =>
-      on ? "Ask before every command-bar write" : "Command-bar writes run at once",
-    onError: (error, { on, previous }) => {
-      queryClient.setQueryData(key, previous);
+    label: (on) => (on ? "Ask before every command-bar write" : "Command-bar writes run at once"),
+    onError: (error, on) => {
+      setPressed(undefined);
       setRefusal({ message: apiErrorMessage(error, "The setting did not reach Dispatch."), on });
     },
     onSuccess: (saved) => {
-      if (saved === null) void queryClient.invalidateQueries({ queryKey: key });
-      else queryClient.setQueryData(key, saved);
+      if (saved !== null) {
+        queryClient.setQueryData(key, saved);
+        setPressed(undefined);
+        return;
+      }
+      void queryClient.invalidateQueries({ queryKey: key }).finally(() => setPressed(undefined));
     },
-    request: ({ on }) => goingSettingsRequest({ confirm_writes: on }),
+    request: (on) => goingSettingsRequest({ confirm_writes: on }),
     target: () => "going-settings",
   });
-  // The checkbox is drawn from the query, so the choice goes into it in the press itself, before
-  // the write starts: a box that waited for Dispatch's answer would show no change when clicked.
-  // A read still out is cancelled first, so its answer cannot draw the old value over the choice.
   const choose = (on: boolean) => {
-    void queryClient.cancelQueries({ queryKey: key });
-    const previous = queryClient.getQueryData<GoingSettings>(key);
-    queryClient.setQueryData<GoingSettings>(key, { confirm_writes: on });
+    setPressed(on);
     setRefusal(undefined);
-    save.mutate({ on, previous });
+    save.mutate(on);
   };
 
   return (
@@ -74,7 +73,7 @@ export function CommandBarSection(): ReactNode {
       {settings.data === undefined ? null : (
         <label className={`mt-4 flex items-center gap-2 text-sm ${textPrimaryOnCanvas}`}>
           <input
-            checked={settings.data.confirm_writes}
+            checked={pressed ?? settings.data.confirm_writes}
             className="size-4 cursor-pointer"
             onChange={(event) => choose(event.target.checked)}
             type="checkbox"
