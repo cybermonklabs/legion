@@ -1,0 +1,230 @@
+// Command architecture-check judges one directory of Dispatch architecture notes, a checkout's
+// .dispatch/architecture, by the rules the Dispatch server's importer applies to that directory
+// on GitHub. Every rule is the notes package's: which entries are notes (notes.FileKind and
+// notes.IsNote), how large a note may be (notes.CheckSize) and whether the set is valid
+// (notes.Parse). The command states none of its own.
+//
+// Usage:
+//
+//	architecture-check [--allow-empty] <directory>
+//
+// It names the directory by its absolute path and answers in one of three ways, whose lines the
+// composite action .github/actions/architecture-check reads:
+//
+//   - Exit 0, the set is valid: standard output holds one line,
+//     "architecture-check: <directory>: <n> notes, the set is valid".
+//   - Exit 1, the set is refused: standard error holds one line for each problem, each naming its
+//     note, and standard output the line "architecture-check: <directory>: <n> notes, the set is
+//     refused".
+//   - Exit 2, the directory does not exist, cannot be read or holds no note, or the arguments are
+//     not one directory: standard error holds one line naming the directory and which case it is,
+//     or the usage line, and no count line is printed.
+//
+// Each entry of the directory that is not a note is a warning on standard error, since the
+// importer passes over it in silence and its author expects it to count; a warning changes no
+// exit status. With --allow-empty, a directory that does not exist or holds no note is the empty
+// set, which the parser accepts: exit 0 with a count of 0, for a repository with no note yet.
+package main
+
+import (
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
+)
+
+const usage = "usage: architecture-check [--allow-empty] <directory>"
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+// run judges the directory args name and answers the exit status: 0 for a valid set, 1 for a
+// refused one, 2 for a directory it cannot judge or arguments that do not name one directory.
+func run(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("architecture-check", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.Usage = func() {
+		fmt.Fprintln(stderr, usage)
+		flags.PrintDefaults()
+	}
+	allowEmpty := flags.Bool("allow-empty", false, "read a directory that does not exist or holds no note as the empty set, which is valid")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
+		return 2
+	}
+	if flags.NArg() != 1 {
+		fmt.Fprintf(stderr, "architecture-check: want one directory argument, got %d\n", flags.NArg())
+		flags.Usage()
+		return 2
+	}
+	dir, err := filepath.Abs(flags.Arg(0))
+	if err != nil {
+		fmt.Fprintf(stderr, "architecture-check: %s: cannot be read: %v\n", flags.Arg(0), err)
+		return 2
+	}
+
+	files, rejects, err := buildSet(os.DirFS(dir), dir)
+	for _, entry := range rejects {
+		fmt.Fprintf(stderr, "architecture-check: warning: %s: not a note (%s); the importer passes over it\n", entry.path, entry.kind)
+	}
+	var refused *sizeRefusal
+	switch {
+	case errors.As(err, &refused):
+		return refuse(stdout, stderr, dir, refused.held, refused.problems)
+	case errors.Is(err, errNoDirectory) && *allowEmpty:
+		// Git keeps no empty directory, so a repository with no note yet has no directory at all,
+		// and the server reads a missing directory as the empty model.
+	case err != nil:
+		fmt.Fprintf(stderr, "architecture-check: %s: %v\n", dir, err)
+		return 2
+	case len(files) == 0 && !*allowEmpty:
+		fmt.Fprintf(stderr, "architecture-check: %s: holds no note\n", dir)
+		return 2
+	}
+	if _, err := notes.Parse(files); err != nil {
+		return refuse(stdout, stderr, dir, len(files), problems(err))
+	}
+	fmt.Fprintf(stdout, "architecture-check: %s: %s, the set is valid\n", dir, count(len(files)))
+	return 0
+}
+
+// rejected is an entry of the directory that notes.IsNote rejected, which the command warns of:
+// its absolute path and its kind.
+type rejected struct {
+	path string
+	kind notes.Kind
+}
+
+// errNoDirectory is the set builder's answer for a directory that does not exist.
+var errNoDirectory = errors.New("does not exist")
+
+// unreadable is the set builder's answer for a directory or a note it could not read: exit 2,
+// "cannot be read".
+type unreadable struct{ err error }
+
+func (u *unreadable) Error() string { return "cannot be read: " + u.err.Error() }
+func (u *unreadable) Unwrap() error { return u.err }
+
+// sizeRefusal is the bound's refusal of a set: one notes.CheckSize error for each note above
+// notes.MaxFileSize, each naming the note's absolute path. It is exit 1, a refused set, as a
+// notes.Parse problem is; held is the number of notes the set holds, for the count line, and no
+// note of it was parsed.
+type sizeRefusal struct {
+	held     int
+	problems []error
+}
+
+func (r *sizeRefusal) Error() string   { return errors.Join(r.problems...).Error() }
+func (r *sizeRefusal) Unwrap() []error { return r.problems }
+
+// buildSet reads the note set of the directory fsys holds, whose absolute path is dir: each entry
+// notes.FileKind and notes.IsNote accept, by name, with its content, and each entry they reject,
+// in name order. It checks the size of every note with notes.CheckSize before it reads any, as the
+// server's GitHub reader refuses a listing before any blob read, and the length of each note it
+// read again, as that reader checks each blob; either refusal is a *sizeRefusal and answers no
+// files. A directory that does not exist is errNoDirectory, and any other failure to read it or a
+// note an *unreadable.
+func buildSet(fsys fs.FS, dir string) (map[string][]byte, []rejected, error) {
+	entries, err := fs.ReadDir(fsys, ".")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil, errNoDirectory
+	}
+	if err != nil {
+		return nil, nil, cannotRead(dir, err)
+	}
+	var rejects []rejected
+	var names []string
+	var refusals []error
+	for _, entry := range entries {
+		kind := notes.FileKind(entry.Type())
+		if !notes.IsNote(entry.Name(), kind) {
+			rejects = append(rejects, rejected{path: filepath.Join(dir, entry.Name()), kind: kind})
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, rejects, cannotRead(dir, err)
+		}
+		if err := notes.CheckSize(filepath.Join(dir, entry.Name()), info.Size()); err != nil {
+			refusals = append(refusals, err)
+		}
+		names = append(names, entry.Name())
+	}
+	if len(refusals) > 0 {
+		return nil, rejects, &sizeRefusal{held: len(names), problems: refusals}
+	}
+	files := make(map[string][]byte, len(names))
+	for _, name := range names {
+		content, err := fs.ReadFile(fsys, name)
+		if err != nil {
+			return nil, rejects, cannotRead(dir, err)
+		}
+		if err := notes.CheckSize(filepath.Join(dir, name), int64(len(content))); err != nil {
+			refusals = append(refusals, err)
+		}
+		files[name] = content
+	}
+	if len(refusals) > 0 {
+		return nil, rejects, &sizeRefusal{held: len(names), problems: refusals}
+	}
+	return files, rejects, nil
+}
+
+// cannotRead is the set builder's *unreadable for err. os.DirFS names a path in its error
+// relative to the directory, so cannotRead makes it absolute, as every path the command prints is.
+func cannotRead(dir string, err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) && !filepath.IsAbs(pathErr.Path) {
+		pathErr.Path = filepath.Join(dir, filepath.FromSlash(pathErr.Path))
+	}
+	return &unreadable{err: err}
+}
+
+// problems splits notes.Parse's refusal into its problems: the errors.Join it answers holds one
+// error for each.
+func problems(err error) []error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		return joined.Unwrap()
+	}
+	return []error{err}
+}
+
+// refuse prints a refused set of held notes, each problem as one line of standard error and then
+// the count line on standard output, and answers exit 1.
+func refuse(stdout, stderr io.Writer, dir string, held int, problems []error) int {
+	for _, problem := range problems {
+		fmt.Fprintf(stderr, "architecture-check: %s: %s\n", dir, oneLine(problem.Error()))
+	}
+	fmt.Fprintf(stdout, "architecture-check: %s: %s, the set is refused\n", dir, count(held))
+	return 1
+}
+
+// oneLine writes a problem whose text spans several lines, as yaml.v3's "unmarshal errors:"
+// answer for an unknown key does, as one line: its lines trimmed of surrounding space, the empty
+// ones dropped, and the rest joined with "; ".
+func oneLine(text string) string {
+	var lines []string
+	for line := range strings.Lines(text) {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return strings.Join(lines, "; ")
+}
+
+// count is the count line's "<n> notes", with "note" for one.
+func count(n int) string {
+	if n == 1 {
+		return "1 note"
+	}
+	return fmt.Sprintf("%d notes", n)
+}
