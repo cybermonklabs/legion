@@ -349,10 +349,24 @@ var (
 // in the page's own lateral join, over the rows of one page and the few blocks each window covers,
 // never over every candidate; a keyword row and an issue carry no covers, so the join answers
 // nothing for them.
-func searchPageAndTailSQL(legsSource string) string {
+//
+// A covered block is named only where the acting person may see it, by the registry's own
+// predicate over the block's node (refs.VisibleEnd, bound at seen, the parameter the acting
+// credential is bound at): the hit is the best covered block the reader may see, and a window
+// whose every block is hidden from them names none. A row's own predicate is its item's or its
+// document's, so a visible document's window can cover a block its author keeps to themselves,
+// and naming that block would answer its id and its link to a reader who may not see it. The
+// block's node kind is its owner's block kind - `block` for a document's, `<kind>_block` for a
+// comment's, an ask's or a message's (refs.ItemKind.BlockKind) - and its id is the address the
+// store keys it by: `<ref_key>#<block>` for a document's block, `<kind>/<uuid>#<block>` for an
+// item's (refs.ParseItemBlockNode).
+func searchPageAndTailSQL(legsSource string, seen int) string {
+	visibleBlock := refs.VisibleEnd(`case r.kind when 'document' then 'block' else r.kind || '_block' end`,
+		`case r.kind when 'document' then ar.ref_key else r.kind || '/' || r.id end || '#' || covered.block_id`,
+		true, searchParam(seen))
 	return fmt.Sprintf(`page as (
   select l.*, f.score, f.own_lead
-    from %s l join fused f using (kind, id)
+    from %[1]s l join fused f using (kind, id)
    order by f.score desc, case when f.own_lead then l.id end, l.updated_at desc, l.id
    limit $3 offset $6
 )
@@ -404,11 +418,12 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
                                  where x.message_id = r.id::uuid and x.block_id = covered.block_id)
         end as text
       ) block
+     where %[2]s
      order by ts_rank_cd(to_tsvector('english', search_text(coalesce(block.text, ''))), q.tsq) desc, covered.ord
      limit 1
   ) hit on true
  order by r.score desc, case when r.own_lead then r.id end, r.updated_at desc, r.id
-`, legsSource)
+`, legsSource, visibleBlock)
 }
 
 // searchQuery scores every kind of content on one list, so a page holds the query's best matches
@@ -529,7 +544,7 @@ legs as (
   select (select coalesce(sum(matches), 0) from (select max(matches) as matches from legs group by kind) each_kind) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailSQL("legs")
+` + searchPageAndTailSQL("legs", seen)
 }
 
 // searchWindowLimit is the LIMIT a window arm's candidate CTE takes, searchWindowCandidates as
@@ -886,7 +901,7 @@ totals as (
   select (select count(*) from (select distinct kind, id from kinds) u) as total,
          (select count(*) from fused) as reachable
 ),
-` + searchPageAndTailSQL("legs_unique")
+` + searchPageAndTailSQL("legs_unique", seen)
 }
 
 // searchMeaningCommentArm is searchQueryMeaningBody's comment arm. It is two arms, not one,

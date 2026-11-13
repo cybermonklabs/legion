@@ -237,7 +237,7 @@ func TestGoingItemTextReadsOnePageInOneStatement(t *testing.T) {
 // lateral reads a hit's text with: the two must stay in sync, so that the text a model is given
 // for a hit is the text search ranked and showed the reader a snippet of.
 func TestGoingItemTextCoversSearchsOwnKinds(t *testing.T) {
-	page := searchPageAndTailSQL("legs")
+	page := searchPageAndTailSQL("legs", searchSeenParam)
 	for _, kind := range []string{"issue", "document", "comment", "ask", "message"} {
 		arm := "when '" + kind + "' then"
 		if !strings.Contains(goingItemTextQuery, arm) {
