@@ -371,10 +371,10 @@ plant_behaviour "$dir" "printf 'ran once\\n'; printf 'x\\n' | grep zzz | cat" '{
 honest_result "a search that found nothing in a stage before the last passes" replay-command "$(fixture_run "$dir" --replay)"
 
 # 25. A read that failed before &&. A command before && or || sets no ERR trap and no
-# PIPESTATUS of the row's last pipeline, so `ls /nonexistent-ioc && true` failed unseen;
-# the function hook that wraps ls records it. A search that missed before && passes.
+# PIPESTATUS of the row's last pipeline, so `cat /nonexistent-ioc && true` failed unseen;
+# the function hook that wraps cat records it. A search that missed before && passes.
 dir="$(fresh failed-before-and)"
-plant_behaviour "$dir" "ls /nonexistent-ioc && true; printf 'ran once\\n'" '{"contains":"ran once"}'
+plant_behaviour "$dir" "cat /nonexistent-ioc && true; printf 'ran once\\n'" '{"contains":"ran once"}'
 case_result "a failed read before && fails the row" replay-command "$(fixture_run "$dir" --replay)"
 dir="$(fresh missed-before-and)"
 plant_behaviour "$dir" "grep -q zzz /dev/null && true; printf 'ran once\\n'" '{"contains":"ran once"}'
@@ -391,14 +391,14 @@ dir="$(fresh bound-two-numbers)"
 plant_behaviour "$dir" "printf '1\\n2\\n'" '{"at_least":"5"}'
 case_result "a bound over two numbers on two lines fails the row" replay-command "$(fixture_run "$dir" --replay)"
 
-# 27. A declared status is the one status a program may exit with. ls exits 2 on a path
-# it cannot read, so IOC_EXPECT_STATUS=1 does not cover it and the read fails the row;
-# IOC_EXPECT_STATUS=2 declares exactly that status and passes.
+# 27. A declared status is the one status a program may exit with. cat exits 1 on a path
+# it cannot read, so IOC_EXPECT_STATUS=2 does not cover it and the read fails the row;
+# IOC_EXPECT_STATUS=1 declares exactly that status and passes.
 dir="$(fresh declared-status-differs)"
-plant_behaviour "$dir" "IOC_EXPECT_STATUS=1 ls /nonexistent-ioc; printf 'ran once\\n'" '{"contains":"ran once"}'
+plant_behaviour "$dir" "IOC_EXPECT_STATUS=2 cat /nonexistent-ioc; printf 'ran once\\n'" '{"contains":"ran once"}'
 case_result "a status other than the declared one fails the row" replay-command "$(fixture_run "$dir" --replay)"
 dir="$(fresh declared-status-holds)"
-plant_behaviour "$dir" "IOC_EXPECT_STATUS=2 ls /nonexistent-ioc; printf 'ran once\\n'" '{"contains":"ran once"}'
+plant_behaviour "$dir" "IOC_EXPECT_STATUS=1 cat /nonexistent-ioc; printf 'ran once\\n'" '{"contains":"ran once"}'
 honest_result "the declared status passes" replay-command "$(fixture_run "$dir" --replay)"
 
 # 28. An exit status beside one predicate over the output: both hold or the row fails.
@@ -408,11 +408,11 @@ honest_result "the declared status passes" replay-command "$(fixture_run "$dir" 
 # form in which a row claims a failure (exit, which these cases first planted, ends the
 # shell and is a form the evaluator does not admit).
 dir="$(fresh exit-and-message)"
-plant_behaviour "$dir" "printf 'ran once\\n'; IOC_EXPECT_STATUS=2 ls /nonexistent-ioc 2>/dev/null" '{"exit":2,"contains":"ran once"}'
+plant_behaviour "$dir" "printf 'ran once\\n'; IOC_EXPECT_STATUS=1 cat /nonexistent-ioc 2>/dev/null" '{"exit":1,"contains":"ran once"}'
 out="$(fixture_run "$dir" --replay)"
 honest_result "an exit status beside a message that both hold passes" 'replay-command|predicate-form' "$out"
 dir="$(fresh exit-other-message)"
-plant_behaviour "$dir" "printf 'other\\n'; IOC_EXPECT_STATUS=2 ls /nonexistent-ioc 2>/dev/null" '{"exit":2,"contains":"ran once"}'
+plant_behaviour "$dir" "printf 'other\\n'; IOC_EXPECT_STATUS=1 cat /nonexistent-ioc 2>/dev/null" '{"exit":1,"contains":"ran once"}'
 case_result "an exit status beside a message the output does not carry fails the row" replay-command "$(fixture_run "$dir" --replay)"
 
 # 29. A group in a stage of the final pipeline exits with its last command's status, so
@@ -424,7 +424,7 @@ dir="$(fresh group-ends-in-miss)"
 plant_behaviour "$dir" "{ printf 'ran once\\n'; grep zzz /dev/null; } | cat" '{"contains":"ran once"}'
 honest_result "a group whose last command is a search that found nothing passes" replay-command "$(fixture_run "$dir" --replay)"
 dir="$(fresh group-ends-in-failure)"
-plant_behaviour "$dir" "{ printf 'ran once\\n'; ls /nonexistent-ioc; } | cat" '{"contains":"ran once"}'
+plant_behaviour "$dir" "{ printf 'ran once\\n'; cat /nonexistent-ioc; } | cat" '{"contains":"ran once"}'
 case_result "a group whose last command is a read that failed fails the row" replay-command "$(fixture_run "$dir" --replay)"
 
 # 30. A program named by its path, or run through the command builtin, is still a program
@@ -470,24 +470,24 @@ pair() {
     honest_result "$name: the honest form passes" replay-command "$(fixture_run "$dir" --replay)"
 }
 pair "a simple command before ;" \
-    "ls /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" \
+    "cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" \
     "grep -q zzz /dev/null; printf 'ran once\\n'"
 pair "an element before ||" \
-    "ls /nonexistent-ioc 2>/dev/null || printf 'ran once\\n'" \
+    "cat /nonexistent-ioc 2>/dev/null || printf 'ran once\\n'" \
     "grep -q zzz /dev/null || printf 'ran once\\n'"
 pair "a command on the line before" \
     "true
-ls /nonexistent-ioc 2>/dev/null || printf 'ran once\\n'" \
+cat /nonexistent-ioc 2>/dev/null || printf 'ran once\\n'" \
     "true
 grep -q zzz /dev/null || printf 'ran once\\n'"
 pair "a subshell" \
-    "(ls /nonexistent-ioc 2>/dev/null); printf 'ran once\\n'" \
+    "(cat /nonexistent-ioc 2>/dev/null); printf 'ran once\\n'" \
     "(grep -q zzz /dev/null); printf 'ran once\\n'"
 pair "a for loop" \
-    "for f in a; do ls /nonexistent-ioc 2>/dev/null; done; printf 'ran once\\n'" \
+    "for f in a; do cat /nonexistent-ioc 2>/dev/null; done; printf 'ran once\\n'" \
     "for f in a; do grep -q zzz /dev/null; done; printf 'ran once\\n'"
 pair "a command substitution" \
-    "x=\"\$(ls /nonexistent-ioc 2>/dev/null)\"; printf 'ran once\\n'" \
+    "x=\"\$(cat /nonexistent-ioc 2>/dev/null)\"; printf 'ran once\\n'" \
     "x=\"\$(grep zzz /dev/null)\"; printf 'ran once\\n'"
 pair "xargs running a program" \
     "printf '/nonexistent-ioc\\n' | xargs cat 2>/dev/null; printf 'ran once\\n'" \
@@ -632,6 +632,124 @@ done
 dir="$(fresh underscore-name-admitted)"
 plant_behaviour "$dir" "_x=once; printf 'ran %s\\n' \"\$_x\"" '{"contains":"ran once"}'
 honest_result "a name that starts with _, \$_x, is a parameter and passes" replay-command "$(fixture_run "$dir" --replay)"
+
+# 44-49 come from the fifth review of the pull request. Each fault plants into
+# f-behaviour-1 a failed read that the gate must catch, and each passed the gate at
+# 6f3da565d1, which ran the program or the form unrecorded; each is now refused, and the
+# case asks for the refusal by name. Where the review wrote the read with ls, which no row
+# runs and the gate now refuses, the review's form is planted as it wrote it and again
+# with cat, so that the case tests the rule it plants. refused_read <name> <command>
+# <refusal, an extended regular expression> [python] plants one; admitted_read <name>
+# <command> [python] plants the honest form beside it, which passes. With python the run
+# sets IOC_PY, which env.sh sets and the fixture does not.
+refused_read() {
+    local dir out
+    dir="$(fresh "$1")"
+    plant_behaviour "$dir" "$2" '{"contains":"ran once"}'
+    if [ "${4:-}" = python ]; then
+        out="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
+    else
+        out="$(fixture_run "$dir" --replay)"
+    fi
+    case_result "a failed read is refused by name: $2" "replay-command: f-behaviour-1 runs $3" "$out"
+}
+admitted_read() {
+    local dir out
+    dir="$(fresh "$1")"
+    plant_behaviour "$dir" "$2" '{"contains":"ran once"}'
+    if [ "${3:-}" = python ]; then
+        out="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
+    else
+        out="$(fixture_run "$dir" --replay)"
+    fi
+    honest_result "the admitted form passes: $2" replay-command "$out"
+}
+
+# 44. The program xargs runs is held to every rule a command word is held to. At
+# 6f3da565d1 it was read by its name alone, so a shell given a string, a shell other than
+# sh, env running a program and find -exec each ran after xargs with no rule read, and
+# the read inside each was recorded by nobody: sh, bash and find exit 0, and so does
+# xargs. The honest form, xargs running cat over a file that exists, passes.
+refused_read xargs-sh-ls "printf 'x\\n' | xargs sh -c 'ls /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'sh -c, a command given to a shell'
+refused_read xargs-sh "printf 'x\\n' | xargs sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'sh -c, a command given to a shell'
+refused_read xargs-bash "printf 'x\\n' | xargs bash -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'bash, a shell other than sh'
+refused_read xargs-env "printf 'x\\n' | xargs env sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'env running a program'
+refused_read xargs-find "printf '' | xargs find . -maxdepth 0 -exec cat /nonexistent-ioc 2>/dev/null \\; ; printf 'ran once\\n'" 'find, whose -exec runs a program'
+admitted_read xargs-cat "printf '/dev/null\\n' | xargs cat; printf 'ran once\\n'"
+
+# 45. xargs's options are read from the closed table of the options the rows use, -0 and
+# -n. At 6f3da565d1 an option of xargs it did not know was taken for one with no value,
+# so after --max-args the value 1 was read as the program and sh -c ran unread, and -I{}
+# was stepped over with no rule read after it. Each option the table does not hold is
+# now refused by name; the rows' own options pass.
+refused_read xargs-replace "printf 'x\\n' | xargs -I{} sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'xargs -I[{][}], an option of xargs the evaluator does not admit'
+refused_read xargs-max-args "printf 'x\\n' | xargs --max-args 1 sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'xargs --max-args, an option of xargs the evaluator does not admit'
+admitted_read xargs-rows-options "printf '/dev/null\\0' | xargs -0 -n 1 cat; printf 'ran once\\n'"
+
+# 46. A shell whose script is a stream under /dev/ or /proc/ reads its commands from it,
+# as a shell with no script reads its input. sh /dev/stdin was admitted at 6f3da565d1 as
+# a shell running a script file, and the read in the commands it read from the pipe
+# was recorded by nobody. A script file the row writes and runs passes.
+refused_read sh-dev-stdin "printf 'cat /nonexistent-ioc 2>/dev/null; true\\n' | sh /dev/stdin; printf 'ran once\\n'" 'sh /dev/stdin, a script under /dev/ or /proc/'
+refused_read sh-proc-fd "printf 'cat /nonexistent-ioc 2>/dev/null; true\\n' | sh /proc/self/fd/0; printf 'ran once\\n'" 'sh /proc/self/fd/0, a script under /dev/ or /proc/'
+admitted_read sh-script-file "printf 'true\\n' > ioc-script.sh; sh ioc-script.sh; printf 'ran once\\n'"
+
+# 47. The declared status is written only before one command. At 6f3da565d1 export was
+# a program like any other, so `export IOC_EXPECT_STATUS=2` set the declared status for
+# every later program, and the failed read after it was exempted. export is refused as a
+# program the table does not hold; the prefix the header allows passes.
+refused_read export-status-ls "export IOC_EXPECT_STATUS=2; ls /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'export, which changes the shell'
+refused_read export-status "export IOC_EXPECT_STATUS=1; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'export, which changes the shell'
+refused_read for-status "for IOC_EXPECT_STATUS in 1; do cat /nonexistent-ioc 2>/dev/null; done; printf 'ran once\\n'" 'for IOC_EXPECT_STATUS, a loop that assigns IOC_EXPECT_STATUS'
+admitted_read prefix-status "IOC_EXPECT_STATUS=1 cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'"
+
+# 48. No row touches a name the gate records with. At 6f3da565d1 unset deleted the
+# function that records cat, an assignment, a redirection or printf -v pointed the record
+# at /dev/null or emptied it, and an assignment to a program variable, alone or before
+# the command, ran python past its shim or sent the shim's record to /dev/null; each read
+# after it failed unrecorded. Each is refused, naming the name; a program variable used
+# as a command word, as the rows use it, passes.
+refused_read unset-ls "unset -f ls; ls /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'unset, which changes the shell'
+refused_read unset-cat "unset -f cat; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'unset, which changes the shell'
+refused_read record-assigned "__ioc_failed=/dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" '__ioc_failed=/dev/null, an assignment to __ioc_failed'
+refused_read record-redirected "cat /nonexistent-ioc 2>/dev/null; true >\"\$__ioc_failed\"; printf 'ran once\\n'" '.__ioc_failed, a redirection target that reads __ioc_failed'
+refused_read record-printf-v "printf -v __ioc_failed /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf -v, which assigns a variable'
+refused_read program-variable-assigned "IOC_PY=python3; \$IOC_PY -c 'import sys; sys.exit(3)'; printf 'ran once\\n'" 'IOC_PY=python3, an assignment to IOC_PY' python
+refused_read shim-record-prefix "__IOC_FAILED=/dev/null \$IOC_PY -c 'import sys; sys.exit(3)'; printf 'ran once\\n'" '__IOC_FAILED=/dev/null, an assignment to __IOC_FAILED' python
+admitted_read program-variable-word "\$IOC_PY -c 'print(1)'; printf 'ran once\\n'" python
+
+# 49. A program is admitted by its entry of the table, one per program name the rows run,
+# and every other name is refused. At 6f3da565d1 a program named by a bare word was
+# admitted unless a list of refused words held it, so hash, which no row runs, pointed
+# cat at true and the read of cat passed. head, which no row runs either, is refused by
+# name (6f3da565d1 wrapped it, so it caught head's own failed read).
+refused_read hash-cat "hash -p /bin/true cat; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'hash, a program the evaluator does not admit'
+refused_read head-unused "head -c 0 /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'head, a program the evaluator does not admit'
+
+# 50-51 break a scratch copy of check.sh, as 41-42 do. The names the gate records with are
+# held in one place each: PROGRAM_VARIABLES, from which the shims, the classifier's
+# entries, install-pinned's RESOLVABLE and the reserved names are built, and
+# RUNNER_PREFIXES, which every name of the runner starts with.
+#
+# 50. A program variable taken out of PROGRAM_VARIABLES leaves the header's list of
+# reserved names, and --admitted fails the list by name. At 6f3da565d1 the variable left
+# only the shims, and the classifier still admitted it as a command word with no shim.
+plant_gate program-variable-dropped '/^PROGRAM_VARIABLES=/s/ IOC_TC_PY\(:python\)\{0,1\}"/" # IOC_TC_PY dropped by check.test.sh/' '" # IOC_TC_PY dropped by check.test.sh' holds
+case_result "a program variable taken out of PROGRAM_VARIABLES fails --admitted" 'admitted-reserved: the header' "$(bash "$GATE" --admitted 2>&1)"
+
+# 51. A name of the runner that starts with no prefix of RUNNER_PREFIXES is one no row
+# is kept from touching, and --admitted fails it by name.
+plant_gate runner-name-unreserved 's/__ioc_stages/__gate_stages/g' '__gate_stages' holds
+case_result "a name of the runner that no reserved prefix covers fails --admitted" 'admitted-reserved: the runner or the shims record with a name no prefix of RUNNER_PREFIXES reserves: __gate_stages' "$(bash "$GATE" --admitted 2>&1)"
+
+# 52. A script path a variable builds could name a stream as well: X=/dev/stdin and then
+# sh "$X" reads its commands from the pipe. A script's path is held to a literal file,
+# or one under $IOC_EVID, ending in .sh, so the path built from $X is refused by name.
+# The one real row runs sh "$IOC_EVID/concord-build-run.sh"; a script under $IOC_EVID
+# that the row writes passes (the fixture sources no env.sh, so the row sets IOC_EVID).
+# The expected text is an extended regular expression, so each $ of the message is a dot.
+refused_read sh-variable-path "X=/dev/stdin; printf 'cat /nonexistent-ioc 2>/dev/null; true\\n' | sh \"\$X\"; printf 'ran once\\n'" 'sh .X, a script path that is no literal file and not under .IOC_EVID'
+admitted_read sh-evid-script "IOC_EVID=\"\$PWD\"; printf 'true\\n' > \"\$IOC_EVID/ioc-script.sh\"; sh \"\$IOC_EVID/ioc-script.sh\"; printf 'ran once\\n'"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
