@@ -1,8 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
@@ -25,6 +22,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useUserPreference } from "../shell/userPreference";
+import { useShownQuery } from "../writes/shown-query";
 import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
@@ -60,19 +58,19 @@ export function ProjectPage(): ReactNode {
   );
   const route = parseProjectPath(location.pathname, location.search);
   const projectKey = route?.project;
-  const inbox = useQuery({
+  const inbox = useShownQuery({
     queryKey: ["inbox", projectKey],
     queryFn: () => api.getInbox(projectKey),
     enabled: projectKey !== undefined,
   });
   // Whose questions the pill counts, read as every other surface that counts work waiting on
   // the reader reads it.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const projects = useQuery(projectsQuery());
+  const viewer = useShownQuery(whoAmIQuery()).data?.login;
+  const projects = useShownQuery(projectsQuery());
   const project = projects.data?.find((candidate) => candidate.key === route?.project);
   // Whether the project has an architecture source decides where the bare project path opens
   // and whether the Architecture tab exists at all: one read of its source list.
-  const sources = useQuery({
+  const sources = useShownQuery({
     ...projectArchitectureSourcesQuery(projectKey ?? ""),
     enabled: projectKey !== undefined,
   });

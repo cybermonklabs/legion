@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { notifyManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -1898,6 +1898,49 @@ test("a refused hand-on keeps its row in the reader's own list, with the reason 
     await waitFor(() => expect(rowIds()).toEqual([]), { timeout: 4000 });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   } finally {
+    unmount();
+    handAskTo.mockRestore();
+    people.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+  }
+});
+
+// The same hold when Dispatch refuses at once, under TanStack's own scheduler, which hands its
+// observers their news a task later (the suite runs it synchronously, `__tests__/setup.ts`). The
+// hand-on is composed over the Inbox's read as its write joins the store, before the card hears
+// its own press is pending, so the card registers with the list at the press: a registration a
+// commit later would come after the row had left the list with the card that wrote.
+test("a hand-on refused at once keeps its row and its reason in the reader's own list", async () => {
+  const user = userEvent.setup();
+  const mine = issueAsk({
+    asked_of: "alice",
+    id: "ask-mine",
+    issue: { assignee: "bob", key: "CORE-4", title: "Bob's issue" },
+    issue_key: "CORE-4",
+    question: "Hand this on?",
+  });
+  const rows = [mine];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const getAsk = mockAskReads(rows);
+  const people = mockPeople();
+  const handAskTo = answerAskHandOns().mockRejectedValue(
+    new ApiError(409, {
+      code: "ASK_NOT_OPEN",
+      error: "only open asks may be handed to another person",
+    })
+  );
+  const { unmount } = renderInbox("/");
+  try {
+    await screen.findByText("Hand this on?");
+    const control = within(rowOf("ask-mine")).getByLabelText("Hand this question to");
+    notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+    await user.selectOptions(control, "bob");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("only open asks may be handed to another person");
+    expect(rowIds()).toEqual(["ask-mine"]);
+  } finally {
+    notifyManager.setScheduler((callback) => callback());
     unmount();
     handAskTo.mockRestore();
     people.mockRestore();
@@ -4667,6 +4710,50 @@ test("a snooze the column's head writes keeps that column on its row, in flight 
     ).toBeTruthy();
     expect(selectedIds()).toEqual(["ask-a"]);
   } finally {
+    unmount();
+    narrow();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// The browser's row (`e2e/inbox.e2e.ts`, "a refused snooze wraps beside its own control"): the
+// list holds the one question, the reader snoozes it from the column's head and Dispatch refuses
+// it at once. The snooze is composed over the Inbox's read the moment its write joins the store,
+// before TanStack has told the control its own press is pending - TanStack hands its observers
+// their news a task later, which this row restores for the press in place of the suite's
+// synchronous scheduler (`__tests__/setup.ts`) - so the list must hear that the row is held from
+// the press itself: an effect a commit later comes after the row has left the bands, the
+// selection with it, and the head's refusal is unmounted with the control that wrote.
+test("a snooze of the only row, refused at once, keeps its refusal and Retry in the column's head", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [inboxIssue("ask-a", "CORE-1", "Which approach?")];
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new ApiError(400, { code: "INVALID_SNOOZE", error: "snoozed_until must be in the future" })
+  );
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  const { unmount } = renderInbox("/");
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    notifyManager.setScheduler((callback) => setTimeout(callback, 0));
+    await user.selectOptions(
+      within(pane).getByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
+    const head = await waitFor(() => within(screen.getByTestId("inbox-pane")).getByRole("alert"));
+    expect(head).toHaveTextContent("snoozed_until must be in the future");
+    expect(
+      within(screen.getByTestId("inbox-pane")).getByRole("button", { name: "Retry" })
+    ).toBeTruthy();
+    expect(selectedIds()).toEqual(["ask-a"]);
+  } finally {
+    notifyManager.setScheduler((callback) => callback());
     unmount();
     narrow();
     getAsk.mockRestore();

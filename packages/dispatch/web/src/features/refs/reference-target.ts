@@ -7,9 +7,7 @@ import {
   type QueryStatus,
   queryOptions,
   type UseQueryResult,
-  useQuery,
 } from "@tanstack/react-query";
-
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
@@ -26,6 +24,7 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { useShownQuery } from "../writes/shown-query";
 import { itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
 import {
@@ -388,7 +387,7 @@ export interface WholeRouteRead {
 export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): WholeRouteRead {
   const origin = window.location.origin;
   const prefix = route === undefined ? undefined : prefixReference(route);
-  const resolution = useQuery({ ...referencesQuery(prefix), enabled: prefix !== undefined });
+  const resolution = useShownQuery({ ...referencesQuery(prefix), enabled: prefix !== undefined });
   return {
     prefix,
     resolution,
@@ -446,24 +445,24 @@ export function useReferenceData(
       : record?.kind === "document" && record.item?.kind === "comment"
         ? record.item.id
         : undefined;
-  const issue = useQuery({
+  const issue = useShownQuery({
     ...issueSummaryQuery(summaryKey),
     enabled: summaryKey !== undefined,
   });
-  const messageQueryResult = useQuery({
+  const messageQueryResult = useShownQuery({
     ...messageQuery(message?.key, message?.id),
     enabled: message !== undefined,
   });
-  const projectDocument = useQuery({
+  const projectDocument = useShownQuery({
     ...documentSummaryQuery(document?.project, document?.slug),
     enabled: document !== undefined,
   });
-  const sessionArtifact = useQuery({
+  const sessionArtifact = useShownQuery({
     ...agentArtifactQuery(agentArtifact?.session, agentArtifact?.slug),
     enabled: agentArtifact !== undefined,
     select: agentReferenceArtifact,
   });
-  const block = useQuery({
+  const block = useShownQuery({
     ...blockQuery(blockReference),
     enabled: blockReference !== undefined,
   });
@@ -475,12 +474,12 @@ export function useReferenceData(
         : (issue.data?.documents ?? []).find(
             (candidate) => route?.kind === "artifact" && candidate.slug === route.slug
           );
-  const text = useQuery({
+  const text = useShownQuery({
     ...artifactTextQuery(artifact?.id, version),
     enabled: options.text && artifact?.kind === "doc",
   });
-  const ask = useQuery({ ...askQuery(askId), enabled: askId !== undefined });
-  const comment = useQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
+  const ask = useShownQuery({ ...askQuery(askId), enabled: askId !== undefined });
+  const comment = useShownQuery({ ...commentQuery(commentId), enabled: commentId !== undefined });
   return {
     issue: issue.data,
     artifact,
@@ -519,8 +518,8 @@ export function useBlockDocument(
   const project = named?.kind === "document" ? named : undefined;
   const issueKey =
     named !== undefined && named.kind !== "document" && "key" in named ? named.key : undefined;
-  const issue = useQuery({ ...issueSummaryQuery(issueKey), enabled: issueKey !== undefined });
-  const projectDocument = useQuery({
+  const issue = useShownQuery({ ...issueSummaryQuery(issueKey), enabled: issueKey !== undefined });
+  const projectDocument = useShownQuery({
     ...documentSummaryQuery(project?.project, project?.slug),
     enabled: project !== undefined,
   });
@@ -720,7 +719,7 @@ export function useReferencePath(route: DispatchReferenceRoute): string;
 export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined;
 export function useReferencePath(route: DispatchReferenceRoute | undefined): string | undefined {
   const specKey = route !== undefined && needsSpecSlug(route) ? route.key : undefined;
-  const issue = useQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
+  const issue = useShownQuery({ ...issueSummaryQuery(specKey), enabled: specKey !== undefined });
   return route === undefined ? undefined : buildReferencePath(route, summarySpec(issue.data)?.slug);
 }
 

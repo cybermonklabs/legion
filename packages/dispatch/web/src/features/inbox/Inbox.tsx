@@ -1,6 +1,5 @@
 import { INBOX_DISMISSED_PAGE } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery } from "@tanstack/react-query";
 import {
   type FocusEvent,
   type ReactNode,
@@ -12,7 +11,6 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -51,6 +49,7 @@ import { closestMatching, focusedMatching, roveFocus } from "../shell/roving";
 import { READING_PANE_QUERY, useMediaQuery } from "../shell/useDialog";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { useThreadOrder } from "../threads/thread-order";
+import { useShownQuery } from "../writes/shown-query";
 import { AskCard } from "./AskCard";
 import { InboxOwnerLink, ThreadOwnerLine } from "./AskOwnerLink";
 import { AssignToMe } from "./AssignToMe";
@@ -655,8 +654,8 @@ export function Inbox({
   const paneShown = pane && wideEnoughForPane;
   // One inbox query, shared with the nav badge, the sidebar, the agents page and the margin; the
   // list below is a client-side partition of it, so an answered row leaves every surface at once.
-  const inbox = useQuery(inboxQuery());
-  const whoAmI = useQuery(whoAmIQuery());
+  const inbox = useShownQuery(inboxQuery());
+  const whoAmI = useShownQuery(whoAmIQuery());
   /** Which of the reader's two lists is showing: their Inbox, or what they have dismissed out of
    *  it. A thread stays in the Inbox, read or not, until it is dismissed. */
   const show: InboxShow = filter.show ?? "inbox";

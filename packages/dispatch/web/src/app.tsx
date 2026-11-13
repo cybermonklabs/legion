@@ -1,7 +1,6 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
-
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
@@ -66,6 +65,7 @@ import { useDocumentTitle } from "./features/shell/useDocumentTitle";
 import { useKeyboardFit } from "./features/shell/useKeyboardFit";
 import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userPreference";
 import { Sidebar } from "./features/sidebar/Sidebar";
+import { useShownQuery } from "./features/writes/shown-query";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
@@ -512,7 +512,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
   const inboxCount = useInboxCount();
-  const unreadReplies = totalUnreadReplies(useQuery(userAgentStateQuery()).data);
+  const unreadReplies = totalUnreadReplies(useShownQuery(userAgentStateQuery()).data);
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
@@ -1026,7 +1026,7 @@ async function heldWritesOfGoneHolder(queryClient: QueryClient, login: string): 
 
 export function AuthGate(): ReactNode {
   const queryClient = useQueryClient();
-  const whoAmI = useQuery(whoAmIQuery());
+  const whoAmI = useShownQuery(whoAmIQuery());
   // A sign-in check that comes back 401 ends this page's session: every read it holds was made
   // for the person who has gone, and the sign-in that follows - in this tab or another - answers
   // with an `event_head` of its own, which the feed resumes from. So the cache is emptied as a

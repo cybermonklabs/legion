@@ -2184,7 +2184,7 @@ test("IssuePage's pin stays shown over a read of the viewer's state that lands w
     await user.click(within(view.container).getByRole("button", { name: "Pin issue" }));
     await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
     await act(() => queryClient.refetchQueries({ queryKey: ["user-state"] }));
-    expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.pinned).toBe(true);
+    expect(writesOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]?.pinned).toBe(true);
     expect(within(view.container).getByRole("button", { name: "Unpin issue" })).toBeTruthy();
   } finally {
     await act(async () => {
@@ -2232,7 +2232,7 @@ test("IssuePage's pin answer keeps a Conversation pin waiting behind it on the s
     await waitFor(() =>
       expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(true)
     );
-    expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]).toMatchObject({
+    expect(writesOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]).toMatchObject({
       dismissed: [pinnedItemMarker("comment-1")],
       pinned: true,
     });
@@ -2249,8 +2249,8 @@ test("IssuePage's pin answer keeps a Conversation pin waiting behind it on the s
 });
 
 // R7 and R10 of dispatch://INFRA-299. The header's pin lands while another issue's pin is out,
-// and its answer is merged into the viewer's state - into Dispatch's copy of it, not over the
-// state as it stands, which carries the other pin. So once that pin is refused and the state
+// and its answer is merged into the viewer's state, which holds Dispatch's answers alone, the
+// other pin being composed over it as it is read. So once that pin is refused and the state
 // cannot be read again, the page shows the header's pin and not the one Dispatch refused.
 test("IssuePage's pin answer merged while another issue's pin is out stays once that pin is refused and the read fails", async () => {
   const user = userEvent.setup();
@@ -2265,7 +2265,7 @@ test("IssuePage's pin answer merged while another issue's pin is out stays once 
   });
   queryClient.setQueryData(["issues", "pinned"], []);
   const view = renderIssuePage("/issues/CORE-1/conversation", undefined, undefined, queryClient);
-  const state = () => queryClient.getQueryData<UserState>(["user-state"]);
+  const state = () => writesOf(queryClient).shown<UserState>(["user-state"]);
 
   try {
     await within(view.container).findByRole("heading", { level: 1, name: issue.title });

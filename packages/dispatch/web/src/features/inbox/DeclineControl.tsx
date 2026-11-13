@@ -23,7 +23,6 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDialog } from "../shell/useDialog";
-import { writesOf } from "../writes/write-store";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
 import { invalidateOwnerReads } from "./owner-reads";
 
@@ -171,7 +170,7 @@ export function DeclineControl({
       setOpen(false);
       // The card reads its ask from the thread, so the record it swaps to is this decline.
       if (declined !== null) {
-        writesOf(queryClient).answer<AskRead>(["ask-thread", ask.id], (current) =>
+        queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
           current === undefined ? undefined : { ...current, ask: declined }
         );
       }

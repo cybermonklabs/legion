@@ -1,7 +1,5 @@
 import { isLegionRole, LEGION_ROLES, type LegionRole } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
   IssueCollaboratorAgent,
@@ -21,6 +19,7 @@ import {
 } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 
 /** The tab's three sections, in the order the reader meets them. Each holds the server's own
  *  order, which the contract states: the registry's agents first, by role in workflow order and
@@ -111,7 +110,7 @@ function Worked({
  * click from the conversation it had; a person is their login as plain text, as everywhere.
  */
 export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode {
-  const query = useQuery(issueCollaboratorsQuery(issueKey));
+  const query = useShownQuery(issueCollaboratorsQuery(issueKey));
   if (query.isPending) {
     return <p className={textMutedOnCanvas}>Loading collaborators…</p>;
   }

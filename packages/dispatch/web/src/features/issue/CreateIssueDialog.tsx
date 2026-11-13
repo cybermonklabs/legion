@@ -1,8 +1,7 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-
 import { ApiError, issueCreateRequest } from "../../api/client";
 import { projectsQuery } from "../../api/queries";
 import type { CreateIssueInput } from "../../api/types";
@@ -27,6 +26,7 @@ import {
 import { buildIssuePath, routeProjectOf } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { RelatedItems } from "./RelatedItems";
 
@@ -49,7 +49,7 @@ export function CreateIssueDialog({ onClose }: { onClose: () => void }): ReactNo
   const queryClient = useQueryClient();
   const titleRef = useRef<HTMLInputElement>(null);
   const dialog = useDialog<HTMLFormElement>({ initialFocusRef: titleRef, onClose, open: true });
-  const projects = useQuery(projectsQuery());
+  const projects = useShownQuery(projectsQuery());
   const routeProject = routeProjectOf(location.pathname);
   const [project, setProject] = useState<string | undefined>(undefined);
   const [title, setTitle] = useState("");

@@ -1,11 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { useLocation } from "react-router-dom";
-
 import { agentArtifactQuery } from "../refs/reference-target";
 import { parseAgentArtifactPath } from "../refs/routes";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownQuery } from "../writes/shown-query";
 import { ArtifactDetails } from "./ArtifactDetails";
 import { ArtifactBlobView, ArtifactHeader } from "./ArtifactHeader";
 import { ArtifactQueryStates } from "./ArtifactQueryStates";
@@ -20,7 +19,7 @@ import { ArtifactQueryStates } from "./ArtifactQueryStates";
 export function AgentArtifactPage(): ReactNode {
   const location = useLocation();
   const route = parseAgentArtifactPath(location.pathname, location.search);
-  const artifact = useQuery({
+  const artifact = useShownQuery({
     ...agentArtifactQuery(route?.session, route?.slug),
     enabled: route !== undefined,
   });

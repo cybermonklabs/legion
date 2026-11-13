@@ -1,9 +1,8 @@
 import { expect, type Mock, test } from "bun:test";
-import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-
 import { settle } from "../../__tests__/fake-clock";
 import { memoryFiles, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -11,6 +10,7 @@ import { ApiError, issuePatchRequest, type WriteBounds } from "../../api/client"
 import { mergeIssue } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
+import { useShownQuery } from "../writes/shown-query";
 import { WriteStorage } from "../writes/write-storage";
 import { plainWrite, Writes, writesOf } from "../writes/write-store";
 import { issuePriority } from "./issue-priority";
@@ -101,7 +101,7 @@ function Surface({
   /** What a read of the issue answers; left out, the cache is the test's to seed. */
   read?: () => Promise<IssueDetails>;
 }): ReactNode {
-  const cached = useQuery<IssueDetails>({
+  const cached = useShownQuery<IssueDetails>({
     queryKey: detailKey,
     queryFn: read,
     staleTime: Number.POSITIVE_INFINITY,
@@ -266,7 +266,7 @@ test("a waiting pick discarded in Pending changes leaves the screen on the pick 
     });
     await act(settle);
     expect(writes.rows().map((row) => row.status)).toEqual(["sending"]);
-    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
     expect(select("Board card").value).toBe("0");
 
     await act(async () => {
@@ -295,9 +295,10 @@ function failingRead(): { read: () => Promise<IssueDetails>; tries: () => number
 
 // R10, the reproduced defect of review round 4. The same discard, but the store's read again
 // fails - offline, a 5xx - as it does when a save stuck offline is why a pick waited long enough
-// to be discarded. The store put back the issue as Dispatch last gave it, with the save still out
-// shown over it, before it read again, so the failed read leaves every surface on the pick that
-// is out: never on the discarded pick, which nothing will send.
+// to be discarded. The cache holds the issue as Dispatch last gave it, and the discarded pick
+// simply stops being composed over it while the save still out goes on being composed, so the
+// failed read leaves every surface on the pick that is out: never on the discarded pick, which
+// nothing will send.
 test("a waiting pick discarded while the issue cannot be read leaves the screen on the pick that is out", async () => {
   const first = Promise.withResolvers<Issue>();
   const patchIssue = answerSaves(first.promise);
@@ -326,7 +327,7 @@ test("a waiting pick discarded while the issue cannot be read leaves the screen 
     expect(tries()).toBe(1);
     expect(client.getQueryState(detailKey)?.status).toBe("error");
     expect(writes.rows().map((row) => row.status)).toEqual(["sending"]);
-    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
     expect(select("Board card").value).toBe("0");
     expect(select("Issue page").value).toBe("0");
 
@@ -378,7 +379,7 @@ test("two surfaces' picks both refused while the issue cannot be read leave the 
     // Each refusal read the issue again, and each read failed.
     expect(tries()).toBeGreaterThan(0);
     expect(client.getQueryState(detailKey)?.status).toBe("error");
-    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(1);
+    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(1);
     expect(select("Board card").value).toBe("1");
     expect(select("Issue page").value).toBe("1");
   } finally {
@@ -420,7 +421,7 @@ test("a pick that landed, then a newer pick refused while the issue cannot be re
     expect(sentPriorities(patchIssue)).toEqual([0, 2]);
     expect(writes.rows()).toEqual([]);
     expect(client.getQueryState(detailKey)?.status).toBe("error");
-    expect(client.getQueryData<IssueDetails>(detailKey)?.priority).toBe(0);
+    expect(writesOf(client).shown<IssueDetails>(detailKey)?.priority).toBe(0);
     expect(select("Board card").value).toBe("0");
     expect(select("Issue page").value).toBe("0");
   } finally {
@@ -468,9 +469,9 @@ test("a pick that has not gone out is sent after a reload inside the store's res
 });
 
 // R7 and R10. Another field's save answers while a priority pick is out, and the answer is merged
-// into the issue (`mergeIssue`) - into Dispatch's copy of it, not over the issue as it stands,
-// which carries the pick. So once the pick is refused and the issue cannot be read, the page
-// shows the merged answer, and not the priority Dispatch refused.
+// into the issue (`mergeIssue`) - into the cache, which holds Dispatch's issue alone, the pick
+// being composed over it as it is read. So once the pick is refused and the issue cannot be read,
+// the page shows the merged answer, and not the priority Dispatch refused.
 test("an issue answer merged while a pick is out stays once the pick is refused and the issue cannot be read", async () => {
   const client = pageClient();
   const refused = Promise.withResolvers<Issue>();
@@ -482,7 +483,7 @@ test("an issue answer merged while a pick is out stays once the pick is refused 
     queryKey: detailKey,
     staleTime: Number.POSITIVE_INFINITY,
   }).subscribe(() => {});
-  const shown = () => client.getQueryData<IssueDetails>(detailKey);
+  const shown = () => writesOf(client).shown<IssueDetails>(detailKey);
   try {
     const pick = writesOf(client).run({
       detail: null,
@@ -515,9 +516,9 @@ test("an issue answer merged while a pick is out stays once the pick is refused 
 
 // R10. A read that lands while a pick is out and already holds the picked priority - another
 // person set the same value, or the pick was made and its answer is still on its way - is
-// Dispatch's answer even though it equals the screen, which the issue read's rule hands back as
-// the object the cache held. So once the pick is refused and every read fails, the page shows
-// the priority Dispatch gave, two, and not the one before the pick.
+// Dispatch's answer even though it equals what the person sees. So once the pick is refused and
+// every read fails, the page shows the priority Dispatch gave, two, and not the one before the
+// pick.
 test("a read equal to the screen while a pick is out is Dispatch's answer once the pick is refused and reads fail", async () => {
   const client = pageClient();
   const refused = Promise.withResolvers<Issue>();
@@ -533,7 +534,7 @@ test("a read equal to the screen while a pick is out is Dispatch's answer once t
         : Promise.reject(new Error("Failed to fetch")),
     staleTime: Number.POSITIVE_INFINITY,
   }).subscribe(() => {});
-  const shown = () => client.getQueryData<IssueDetails>(detailKey);
+  const shown = () => writesOf(client).shown<IssueDetails>(detailKey);
   try {
     const pick = writesOf(client).run({
       detail: null,
@@ -564,11 +565,11 @@ test("a read equal to the screen while a pick is out is Dispatch's answer once t
 });
 
 // R7 and R10. An answer older than the issue Dispatch last gave - a slow PATCH answer of another
-// field, merged after a read that saw the issue later (`mergeIssue`) - is kept out of Dispatch's
-// copy of the issue by the issue read's own rule, as it is kept out of the cache with no pick on
-// screen, and the store's drawing of the pick is never judged by that rule. So once the pick is
-// refused and every read fails, the page shows the priority Dispatch last confirmed, at the time
-// it confirmed it, and not the refused pick.
+// field, merged after a read that saw the issue later (`mergeIssue`) - is kept out of the cache by
+// the issue read's own rule, which judges Dispatch's issue alone: the pick is composed over it as
+// it is read, never written into it. So once the pick is refused and every read fails, the page
+// shows the priority Dispatch last confirmed, at the time it confirmed it, and not the refused
+// pick.
 test("an older issue answer merged while a pick is out leaves the issue Dispatch last gave once the pick is refused and reads fail", async () => {
   const client = pageClient();
   const refused = Promise.withResolvers<Issue>();
@@ -584,7 +585,7 @@ test("an older issue answer merged while a pick is out leaves the issue Dispatch
         : Promise.reject(new Error("Failed to fetch")),
     staleTime: Number.POSITIVE_INFINITY,
   }).subscribe(() => {});
-  const shown = () => client.getQueryData<IssueDetails>(detailKey);
+  const shown = () => writesOf(client).shown<IssueDetails>(detailKey);
   try {
     await client.refetchQueries({ queryKey: detailKey });
     expect(shown()).toMatchObject({ priority: 3, updated_at: later });

@@ -1,10 +1,12 @@
-import { readdirSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import ts from "typescript";
 
 /**
- * Reading the app's own source as JavaScript reads it, for the rows that hold a rule no type can
- * hold: which modules the app ships, which stretches of one are code rather than comment or
- * string, and where an object literal a call is written over ends.
+ * Reading the app's own source as the compiler reads it, for the rows that hold a rule no type can
+ * hold: which modules the app ships, and each one parsed by TypeScript itself, so a name in a
+ * comment, a string, a regex literal or JSX text is never taken for code, and an apostrophe in JSX
+ * text or a quote in a regex literal hides nothing after it.
  */
 
 /** `web/src`, the root every path named here is read from. */
@@ -29,146 +31,47 @@ export function shippedSources(): readonly string[] {
   return shipped;
 }
 
-/** Whether each index of `source` is code: a name a doc comment or a string holds is no call.
- *  A template's `${…}` is code, read as any code is, up to the brace that closes it. */
-export function codeMask(source: string): readonly boolean[] {
-  const mask: boolean[] = [];
-  let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  // The brace depth each open `${…}` began at, innermost last: the `}` back at that depth takes
-  // the scan back into its template.
-  const substitutions: number[] = [];
-  let depth = 0;
-  for (let index = 0; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    mask.push(mode === "code");
-    if (mode === "line") {
-      if (ch === "\n") mode = "code";
-      continue;
-    }
-    if (mode === "block") {
-      if (ch === "*" && next === "/") {
-        mode = "code";
-        mask.push(false);
-        index += 1;
-      }
-      continue;
-    }
-    if (mode === "`" && ch === "$" && next === "{") {
-      mask.push(false);
-      index += 1;
-      substitutions.push(depth);
-      depth += 1;
-      mode = "code";
-      continue;
-    }
-    if (mode === "'" || mode === '"' || mode === "`") {
-      if (ch === "\\") {
-        mask.push(false);
-        index += 1;
-      } else if (ch === mode) mode = "code";
-      continue;
-    }
-    if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (substitutions.at(-1) === depth) {
-        substitutions.pop();
-        mode = "`";
-      }
-    } else if (ch === "/" && next === "/") mode = "line";
-    else if (ch === "/" && next === "*") mode = "block";
-    else if (ch === "'" || ch === '"' || ch === "`") mode = ch;
-  }
-  return mask;
+/** Every module the app ships, by its path under `web/src`, with its text. */
+export function shippedTexts(): ReadonlyMap<string, string> {
+  return new Map(
+    shippedSources().map((path) => [path, readFileSync(join(webSrc, path), "utf8")] as const)
+  );
 }
 
-/** An object literal a call is written over: its text and the fields it writes at its own level.
- *  A field of an object nested in it - the one a `rowQuery(…)` spread into it names - is not
- *  this object's. */
-export interface ObjectLiteral {
-  readonly text: string;
-  readonly fields: ReadonlyMap<string, string>;
+/** `source`, the module at `path`, parsed as the compiler parses it: a `.tsx` module as TSX, any
+ *  other as TypeScript, where `<T>(value: T) => value` is a generic function and not JSX. */
+export function parsed(path: string, source: string): ts.SourceFile {
+  const kind = path.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  return ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, kind);
 }
 
-/** The object literal that starts at `open` in `source`, read as JavaScript reads it: a brace in
- *  a string, a template, a comment or a template's `${…}` is not a brace of the object. */
-export function objectAt(source: string, open: number, where: string): ObjectLiteral {
-  const fields = new Map<string, string>();
-  let depth = 0;
-  let nesting = 0;
-  let word = "";
-  let field: { readonly name: string; readonly from: number } | undefined;
-  const templates: number[] = [];
-  let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  const close = (end: number) => {
-    if (field !== undefined) fields.set(field.name, source.slice(field.from, end).trim());
-    field = undefined;
+/** Every node of `file`, parents before their children, in source order. */
+export function nodesOf(file: ts.SourceFile): ts.Node[] {
+  const nodes: ts.Node[] = [];
+  const visit = (node: ts.Node) => {
+    nodes.push(node);
+    ts.forEachChild(node, visit);
   };
-  for (let index = open; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    if (mode === "line") {
-      if (ch === "\n") mode = "code";
-      continue;
-    }
-    if (mode === "block") {
-      if (ch === "*" && next === "/") {
-        mode = "code";
-        index += 1;
-      }
-      continue;
-    }
-    if (mode === "'" || mode === '"') {
-      if (ch === "\\") index += 1;
-      else if (ch === mode) mode = "code";
-      continue;
-    }
-    if (mode === "`") {
-      if (ch === "\\") index += 1;
-      else if (ch === "`") mode = "code";
-      else if (ch === "$" && next === "{") {
-        templates.push(depth);
-        depth += 1;
-        index += 1;
-        mode = "code";
-      }
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      mode = "line";
-      index += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      mode = "block";
-      index += 1;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      mode = ch;
-      continue;
-    }
-    if (ch === "(" || ch === "[") nesting += 1;
-    else if (ch === ")" || ch === "]") nesting -= 1;
-    else if (ch === "{") depth += 1;
-    else if (ch === "}") {
-      depth -= 1;
-      if (templates.at(-1) === depth) {
-        templates.pop();
-        mode = "`";
-        continue;
-      }
-      if (depth === 0) {
-        close(index);
-        return { fields, text: source.slice(open, index + 1) };
-      }
-    } else if (ch === ":" && depth === 1 && nesting === 0 && word !== "") {
-      field = { from: index + 1, name: word };
-    } else if (ch === "," && depth === 1 && nesting === 0) {
-      close(index);
-    }
-    word = /[A-Za-z0-9_$"]/u.test(ch) ? `${word}${ch}` : "";
+  visit(file);
+  return nodes;
+}
+
+/** `file`'s path and the line `node` starts on, counted from one: `path:line`. */
+export function siteOf(file: ts.SourceFile, node: ts.Node): string {
+  return `${file.fileName}:${file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1}`;
+}
+
+/** The name a property is written under, where it is written as a name or a string: `a.b`'s `b`,
+ *  `a["b"]`'s, `{ b: c }`'s and `{ b }`'s. A name computed at run time has none. */
+export function writtenName(node: ts.Node): string | undefined {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (ts.isElementAccessExpression(node)) {
+    const { argumentExpression } = node;
+    return ts.isStringLiteralLike(argumentExpression) ? argumentExpression.text : undefined;
   }
-  throw new Error(`${where}: the object literal never closes`);
+  if (ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent)) {
+    const name = node.propertyName ?? node.name;
+    return ts.isIdentifier(name) || ts.isStringLiteralLike(name) ? name.text : undefined;
+  }
+  return undefined;
 }

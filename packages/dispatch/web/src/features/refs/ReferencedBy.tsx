@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
-
 import type { GraphEdge } from "../../api/types";
 import {
   borderDefault,
@@ -10,6 +8,7 @@ import {
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useShownQuery } from "../writes/shown-query";
 import { blockFragment, isBlockItemKind } from "./block-reference";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
@@ -222,7 +221,7 @@ export function ReferencedBy({
    *  and then the panel is its own heading. */
   toggle?: { id: string };
 }): ReactNode {
-  const query = useQuery(referencesQuery(reference));
+  const query = useShownQuery(referencesQuery(reference));
   const groups = groupBySource(query.data?.edges ?? []);
 
   return (

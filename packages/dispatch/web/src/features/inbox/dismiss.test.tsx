@@ -22,6 +22,7 @@ import {
 import type { InboxRow, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
+import { writesOf } from "../writes/write-store";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
 import {
@@ -184,14 +185,14 @@ test("a count answer landing while the press is out is lowered once, whether or 
   await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
   await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
   await waitFor(() => expect(rowIds()).toEqual(["reply:c9"]));
-  await waitFor(() => expect(client.getQueryData<number>(countKey)).toBe(4));
+  await waitFor(() => expect(writesOf(client).shown<number>(countKey)).toBe(4));
 
   // An answer read before Dispatch made the dismiss: the count is still five there.
   await readCount(5);
-  expect(client.getQueryData<number>(countKey)).toBe(4);
+  expect(writesOf(client).shown<number>(countKey)).toBe(4);
   // An answer that already counts the dismiss: four, which is not lowered again.
   await readCount(4);
-  expect(client.getQueryData<number>(countKey)).toBe(4);
+  expect(writesOf(client).shown<number>(countKey)).toBe(4);
 
   settle.resolve({ dismissed: 1 });
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));

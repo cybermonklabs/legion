@@ -1,9 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-
 import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary } from "../../theme/classes";
+import { useShownQuery } from "../writes/shown-query";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectWrapper } from "./badge-select";
 import { reservedOpenTextWidth } from "./reserved-width";
 import { useIssueAssignee } from "./useIssueAssignee";
@@ -34,7 +33,7 @@ export function AssigneeControl({
   issueKey: string;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
-  const users = useQuery({ ...usersQuery(), enabled: wanted });
+  const users = useShownQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
   const write = useIssueAssignee(issueKey);
   const logins = (users.data ?? []).map((user) => user.login);

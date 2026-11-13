@@ -19,10 +19,9 @@
 // `?at=` is the test and screenshot hook: the page forwards it to the route, which then names the
 // seven days ending on at's day and looks back 24 hours from it, so a fixture dated in the past
 // renders as "today", and a failure's age is measured from it. The page never writes it.
-import { useQuery } from "@tanstack/react-query";
+
 import { type ReactNode, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-
 import { isDeliveryNotConfigured } from "../../api/client";
 import { deliveryPipelineQuery } from "../../api/queries";
 import type {
@@ -46,6 +45,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownQuery } from "../writes/shown-query";
 import { formatDue, formatDuration, formatRate } from "./lib/format";
 import { formatAge } from "./lib/freshness";
 import { SourceFreshness } from "./SourceFreshness";
@@ -61,7 +61,7 @@ export function PipelinePage(): ReactNode {
   useDocumentTitle("Pipeline · Dispatch");
   const [params] = useSearchParams();
   const at = params.get("at");
-  const query = useQuery(
+  const query = useShownQuery(
     deliveryPipelineQuery(at === null ? { kind: "pipeline" } : { kind: "pipeline", at })
   );
   // The page's "now": a pinned at, else the clock, so a failure's age is from the moment the

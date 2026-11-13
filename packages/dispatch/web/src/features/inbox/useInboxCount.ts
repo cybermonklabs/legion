@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
-
 import { myRepliesCountQuery } from "../../api/queries";
 import { useIsHuman } from "../../hooks/useIsHuman";
+import { useShownQuery } from "../writes/shown-query";
 import { useNeedsYouCount } from "./BlockedOnYou";
 
 /** How many of the Inbox's thread rows are unread: the `total` of
@@ -11,7 +10,7 @@ import { useNeedsYouCount } from "./BlockedOnYou";
  *  browser holds, so nothing without it asks. Its own module, so the shell reads it without
  *  loading the Inbox. */
 export function useUnreadThreadCount(): number {
-  return useQuery({ ...myRepliesCountQuery(), enabled: useIsHuman() }).data ?? 0;
+  return useShownQuery({ ...myRepliesCountQuery(), enabled: useIsHuman() }).data ?? 0;
 }
 
 /** The one number the Inbox entry carries, wherever it is drawn - the sidebar's rail and the

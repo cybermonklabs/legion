@@ -10,8 +10,8 @@ import { type IssueFieldWrite, inboxKey, useIssueFieldWrite } from "./useIssueFi
  * The one way the SPA writes an issue's assignee. The issue header's picker and the inbox's
  * "Assign to me" share this: the new login lands in the issue detail, every project issue list
  * and every inbox row that belongs to the issue (so a row the Inbox's assignee filter judges by
- * that login moves in or out of the list at once), the store shows it there again over each
- * answer that lands while the write is live (R7) and stops drawing it if it fails, and the lists
+ * that login moves in or out of the list at once), the store composes it there over each answer
+ * that lands while the write is live (R7) and stops composing it if it fails, and the lists
  * refetch once the server has answered (see `useIssueFieldWrite`).
  *
  * An inbox row is judged by the person it waits on, which the server answers as

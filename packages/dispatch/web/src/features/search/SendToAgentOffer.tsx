@@ -1,11 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { issueQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { claimHoldingFromRead } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
+import { useShownQuery } from "../writes/shown-query";
 import { useWrites } from "../writes/write-store";
 import { barNoteClassName, type Offer, refusalText, useWordsState } from "./offer";
 import { type SendToAgent, sendToAgent } from "./send-to-agent";
@@ -72,7 +71,10 @@ export function useSendToAgentOffer({
   readonly words: string;
 }): Offer | undefined {
   const writes = useWrites();
-  const detail = useQuery({ ...issueQuery(issue), enabled: issue !== undefined && words !== "" });
+  const detail = useShownQuery({
+    ...issueQuery(issue),
+    enabled: issue !== undefined && words !== "",
+  });
   const claim = detail.data?.claim;
   const registry = useAgentRegistry(claim?.actor.kind === "session");
   const text = useAgentText();

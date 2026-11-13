@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Navigate, useLocation } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
@@ -12,6 +10,7 @@ import { ambiguousItems } from "../issue/useItemLanding";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { useWholeRouteRead } from "../refs/reference-target";
 import type { DispatchReferenceRoute } from "../refs/routes";
+import { useShownQuery } from "../writes/shown-query";
 
 /** The item a document address names, as `?comment=` or `?ask=` writes it. Its id may be written
  *  short, which only the reference it stands for can resolve. */
@@ -98,7 +97,7 @@ export function ArtifactDocument({
   onVersionChange: (version: number | null) => void;
   version: number | undefined;
 }): ReactNode {
-  const user = useQuery(whoAmIQuery());
+  const user = useShownQuery(whoAmIQuery());
   const selected: SelectedItem | undefined =
     commentId === undefined
       ? askId === undefined
@@ -114,7 +113,7 @@ export function ArtifactDocument({
       ? { document: artifact.id, issue: owner.key }
       : { artifact: owner.artifactId }
   );
-  const comments = useQuery({
+  const comments = useShownQuery({
     queryKey: commentsKey,
     queryFn: () =>
       owner.kind === "issue"
@@ -122,7 +121,7 @@ export function ArtifactDocument({
         : api.listArtifactComments(owner.artifactId),
     enabled: commentId !== undefined,
   });
-  const ask = useQuery({
+  const ask = useShownQuery({
     queryKey: ["ask", askRead],
     queryFn: () => {
       if (askRead === undefined) {

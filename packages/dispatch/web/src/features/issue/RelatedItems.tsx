@@ -1,7 +1,5 @@
 import { relatedCheckFormOf, relatedCheckSearchWords } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useState } from "react";
-
 import { api } from "../../api/client";
 import type { SearchOwner, Suggestions, WriteSuggestion } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -15,6 +13,7 @@ import {
 import { statusText } from "../project/board-model";
 import { AskHitStatus } from "../search/AskHitStatus";
 import { kindLabel, searchResultKind } from "../search/search-model";
+import { useShownQuery } from "../writes/shown-query";
 import { RELATED_DEBOUNCE_MS, RELATED_TITLE_MIN } from "./related-timing";
 
 /**
@@ -34,7 +33,7 @@ function useRelatedItems(project: string, title: string) {
   // copy, so the section empties the moment the reader clears the box and nothing restates the
   // rule outside this hook.
   const shown = project !== "" && trimmed.length >= RELATED_TITLE_MIN;
-  const query = useQuery({
+  const query = useShownQuery({
     enabled,
     // This check opts out of the app's `staleTime: 30_000` (`web/src/main.tsx`) and of
     // react-query's five-minute `gcTime`: nothing invalidates this key, and the answer is

@@ -10,7 +10,6 @@ import {
 } from "@tanstack/react-query";
 
 import { beginInboxFetch, finishInboxFetch } from "../features/inbox/ask-thread-freshness";
-import { answerSharing, keptOut } from "../features/writes/write-store";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
 import { api } from "./client";
@@ -36,9 +35,9 @@ export const whoAmIQuery = () =>
   });
 
 /** Every ask the viewer can see, as the Inbox lists them. The Inbox lists every project's
- *  issues, so a write of an issue or an ask that is live shows its change again over each
- *  answer of this read (R7 of dispatch://INFRA-299, `features/writes/write-store.ts`): the
- *  answer arrives whole and the person's unsaved change is still on it. */
+ *  issues, so a write of an issue or an ask that is live is composed over each answer of this
+ *  read (R7 of dispatch://INFRA-299, `features/writes/write-store.ts`): the answer arrives whole
+ *  and the person's unsaved change is still on it. */
 export const inboxQuery = () =>
   queryOptions({
     queryKey: ["inbox"],
@@ -84,13 +83,10 @@ function olderIssue(next: unknown, cached: unknown): boolean {
  * after the write's own answer was put in its place (`mergeIssue`). Such an answer is older than
  * the cached issue, and is dropped: the cache never takes an issue whose `updated_at` is earlier
  * than the one it holds, as the event log never lets a fetched page take back the events above
- * its head (`mergeEventPages`). The rule is the query's own, so it holds for every answer the key
- * takes: a read from any of its views, and a PATCH's answer, merged through the write store
- * (`Writes.answer`). Where a live pick is drawn on the issue, the rule judges an answer against
- * Dispatch's copy of the issue, never the screen with the pick over it, and never judges the
- * store's drawing of the pick at all (`answerSharing`). The issue it keeps is marked kept out
- * (`keptOut`), so the write store takes that read for no answer, where an answer merely equal to
- * the cached issue is Dispatch's all the same.
+ * its head (`mergeEventPages`). The rule is the query's own, so it holds for every writer of the
+ * key: a read from any of its views, and a PATCH's answer (`mergeIssue`). The cache holds only
+ * Dispatch's answers - a live pick is composed over the issue as it is read, never written into
+ * the cache - so the rule always judges an answer against Dispatch's issue.
  */
 export const issueQuery = (key: string | undefined) =>
   queryOptions({
@@ -99,9 +95,8 @@ export const issueQuery = (key: string | undefined) =>
       if (key === undefined) throw new Error("An issue read needs the issue's key.");
       return api.getIssue(key);
     },
-    structuralSharing: answerSharing((held, next) =>
-      olderIssue(next, held) ? keptOut(held) : replaceEqualDeep(held, next)
-    ),
+    structuralSharing: (cached: unknown, next: unknown) =>
+      olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
 /** What each requirement of the issue's spec lacks (`GET /api/v1/issues/{key}/coverage`), which
@@ -305,7 +300,7 @@ export const architectureTreeQuery = (project: string) =>
 
 /** Every repository mapped to a project, read by the Settings page's table and by the issue
  *  header's repository picker: one key, so a mapping saved in Settings shows in the picker. A
- *  live mapping write (`repo-mapping:<owner/repo>`) shows its change again over each answer. */
+ *  live mapping write (`repo-mapping:<owner/repo>`) is composed over each answer. */
 export const repoProjectsQuery = () =>
   queryOptions({
     queryKey: ["repo-projects"],
@@ -322,8 +317,8 @@ export const projectDefaultAssigneesQuery = () =>
     queryFn: () => api.listProjectDefaultAssignees(),
   });
 
-/** The prefix every project issue list shares, whatever its labels: what a write applies its
- *  optimistic change to, and what an event refresh tests every project's list under. */
+/** The prefix every project issue list shares, whatever its labels: what a write composes its
+ *  change over, and what an event refresh tests every project's list under. */
 export const projectListsKey = ["issues", "project"] as const;
 
 /** The sidebar's list of the issues the viewer pinned: the one key the pin write, the sidebar
@@ -344,9 +339,9 @@ export function projectIssuesQueryKey(project: string, labels: readonly string[]
  * A project's issue list - plain, or server-filtered by labels - shared by the Board, the List,
  * the filter strip and the issue header's label picker. Every observer sets the query's function,
  * so each one takes it from here. An answer landing while a write of one of this project's
- * issues is live arrives whole, and that write shows its change over it again - a board move, a
- * header field, a components save, an issue create - so the server's older value never undoes
- * what the person picked and every other row of the answer is drawn (R7 of
+ * issues is live arrives whole, and that write's change is composed over it as it is read - a
+ * board move, a header field, a components save, an issue create - so the server's older value
+ * never undoes what the person picked and every other row of the answer is shown (R7 of
  * dispatch://INFRA-299).
  */
 export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>

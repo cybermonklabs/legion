@@ -1,10 +1,10 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { api } from "../../api/client";
 import type { PersonSignInResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 import { shortThumbprint, signInsQuery } from "./signins";
 
@@ -42,7 +42,7 @@ const columns: readonly RevocableColumn<PersonSignInResp>[] = [
  */
 export function SignInsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const signIns = useQuery({ ...signInsQuery(), select: (data) => data.signins ?? [] });
+  const signIns = useShownQuery({ ...signInsQuery(), select: (data) => data.signins ?? [] });
 
   return (
     <RevocableList

@@ -1,5 +1,5 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -52,8 +52,8 @@ import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { writesOf } from "../writes/write-store";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
@@ -306,16 +306,16 @@ export function ProofDocument({
   // block of this document changes it in place, firing no event of the browser's own.
   const { hash: routedHash } = useLocation();
   const documentRef = buildDispatchReference(documentRoute(artifact));
-  const blockSchemaQuery = useQuery({
+  const blockSchemaQuery = useShownQuery({
     queryFn: loadBlockSchema,
     queryKey: ["block-schema"],
     staleTime: Number.POSITIVE_INFINITY,
   });
-  const artifactQuery = useQuery({
+  const artifactQuery = useShownQuery({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
   });
-  const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
+  const liveTextQuery = useShownQuery(liveTextQueryOptions(artifact.id));
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
   const repairUpload = useArtifactUpload(
@@ -360,16 +360,16 @@ export function ProofDocument({
   const repairError = page && admission?.kind === "repair" ? admission : undefined;
   const rebuildError = page && admission?.kind === "rebuild" ? admission : undefined;
   const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
-  const blockReferencesQuery = useQuery({
+  const blockReferencesQuery = useShownQuery({
     ...artifactBlocksQuery(artifact.id),
     enabled: version === undefined,
   });
-  const versionQuery = useQuery({
+  const versionQuery = useShownQuery({
     enabled: version !== undefined,
     queryKey: ["artifact", artifact.id, "version", version],
     queryFn: () => api.getArtifactVersion(artifact.id, version ?? 0),
   });
-  const asksQuery = useQuery({
+  const asksQuery = useShownQuery({
     queryKey: owner.kind === "issue" ? ["asks", owner.key] : ["artifact", artifact.id, "asks"],
     queryFn: () =>
       owner.kind === "issue" ? api.listIssueAsks(owner.key) : api.listArtifactAsks(artifact.id),
@@ -399,7 +399,7 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      writesOf(queryClient).answer<Artifact>(["artifact", artifact.id], (current) => {
+      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
         const source = current ?? artifact;
         return {
           ...source,

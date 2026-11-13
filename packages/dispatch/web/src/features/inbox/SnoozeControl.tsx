@@ -18,9 +18,12 @@ import { useAskSnooze } from "./useAskSnooze";
  * A snooze folds its row out of the list, which would unmount this control and take its
  * `Snoozing…` and its refusal with it - so, exactly as `AssignToMe` does for the optimistic
  * assignment that can drop a row out of the assignee filter, it tells the Inbox while its write
- * is live and the Inbox keeps the row rendered until it settles. The fold is the feedback for a
- * snooze that lands; a snooze the
- * server refuses rolls the row back with the reason still attached to it.
+ * is live and the Inbox keeps the row rendered until it settles. It tells it at the press: the
+ * store composes the snooze over the Inbox's read as the write joins, before TanStack tells this
+ * control its own press is pending, so a registration made from that state a commit later would
+ * come after the fold had already dropped the row, the column's selection and this control. The
+ * fold is the feedback for a snooze that lands; a snooze the server refuses rolls the row back
+ * with the reason still attached to it.
  *
  * `label` names the row for assistive tech; the Inbox passes the issue key or the document.
  */
@@ -32,8 +35,10 @@ export function SnoozeControl({
 }: {
   askId: string;
   label: string;
-  /** Registers this row while its write is in flight or failed; unregistered once it settles
-   *  cleanly or the control unmounts. */
+  /** Registers this row while its write is in flight or failed: at the press, since the snooze
+   *  folds the row as its write joins the store, and from the write's own state, which the
+   *  press's commit already reads as pending. Unregistered once the write settles cleanly or the
+   *  control unmounts. */
   onLive: (askId: string, live: boolean) => void;
   /** The row's own snooze while its moment is still ahead; null on an ordinary row. */
   snoozedUntil: string | null;
@@ -45,6 +50,11 @@ export function SnoozeControl({
     onLive(askId, true);
     return () => onLive(askId, false);
   }, [askId, live, onLive]);
+  /** Makes the press, the row held from it (`onLive`). */
+  const submit = (until: string | null) => {
+    onLive(askId, true);
+    write.submit(until);
+  };
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
   // replaces, so it takes a line of its own rather than drawing over the issue key.
   const failure = write.failed ? (
@@ -84,7 +94,7 @@ export function SnoozeControl({
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
           disabled={write.pending}
-          onClick={() => write.submit(null)}
+          onClick={() => submit(null)}
           type="button"
         >
           {pendingLabel ?? "Un-snooze"}
@@ -106,7 +116,7 @@ export function SnoozeControl({
           data-inbox-snooze=""
           onChange={(event) => {
             const preset = SNOOZE_PRESETS.find((option) => option.id === event.target.value);
-            if (preset !== undefined) write.submit(preset.until(new Date()));
+            if (preset !== undefined) submit(preset.until(new Date()));
           }}
           value=""
         >

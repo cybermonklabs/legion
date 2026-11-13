@@ -1,6 +1,5 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-
 import {
   apiErrorMessage,
   architectureSourceDeleteRequest,
@@ -24,6 +23,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
@@ -59,8 +59,8 @@ export function ArchitectureSourcesSection(): ReactNode {
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("main");
   const submitGuard = useSubmitGuard();
-  const sources = useQuery(architectureSourcesQuery());
-  const projects = useQuery(projectsQuery());
+  const sources = useShownQuery(architectureSourcesQuery());
+  const projects = useShownQuery(projectsQuery());
   // The form shows a refused save beside the repository it was refused over. Every write of one
   // source - its save, its removal and its refresh - stands in that row's line
   // (`architecture-source:<project>/<owner/repo>`), so they go out in press order.

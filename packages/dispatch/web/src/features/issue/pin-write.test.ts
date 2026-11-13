@@ -59,10 +59,10 @@ test("another sign-in lets go of the last pin's answer", async () => {
     | undefined;
   const sent = await nextPinAfter((client) => {
     writesOf(client).signedIn("bob");
-    // The dropped pin stops being drawn as a refused one does: the page shows the state Dispatch
+    // The dropped pin stops being composed as a refused one does: the page shows the state Dispatch
     // last confirmed - alice's first pin, which it made - and reads it again.
     rolledBack = {
-      dismissed: client.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.dismissed,
+      dismissed: writesOf(client).shown<UserState>(["user-state"])?.["CORE-1"]?.dismissed,
       readAgain: client.getQueryState(["user-state"])?.isInvalidated,
     };
   });
@@ -122,7 +122,7 @@ test("a pin shows its change again over an answer to the viewer's state", async 
     () => Promise.withResolvers<UserIssueState>().promise
   );
   const dismissedOf = (issueKey: string) =>
-    client.getQueryData<UserState>(["user-state"])?.[issueKey]?.dismissed;
+    writesOf(client).shown<UserState>(["user-state"])?.[issueKey]?.dismissed;
   try {
     await client.fetchQuery(userStateQuery());
     writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
@@ -136,7 +136,7 @@ test("a pin shows its change again over an answer to the viewer's state", async 
     await settle();
 
     expect(dismissedOf("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
-    expect(client.getQueryData<UserState>(["user-state"])?.["CORE-2"]?.last_read_seq).toBe(9);
+    expect(writesOf(client).shown<UserState>(["user-state"])?.["CORE-2"]?.last_read_seq).toBe(9);
   } finally {
     writesOf(client).clear();
     getMyState.mockRestore();
@@ -145,7 +145,7 @@ test("a pin shows its change again over an answer to the viewer's state", async 
 });
 
 // R10 of dispatch://INFRA-299. Nothing awaits a pin's press to undo it: a refused pin stops being
-// drawn, so the page shows the viewer's state as Dispatch last gave it, before the state is read
+// composed, so the page shows the viewer's state as Dispatch last gave it, before the state is read
 // again. Where that read fails - offline, a 5xx - the page shows no pin Dispatch never took.
 test("a refused pin leaves the state Dispatch last gave when the read again fails", async () => {
   const client = signedIn("alice");
@@ -159,7 +159,7 @@ test("a refused pin leaves the state Dispatch last gave when the read again fail
   );
   // A surface drawing the viewer's state, so the read again goes out.
   const unsubscribe = new QueryObserver(client, userStateQuery()).subscribe(() => {});
-  const dismissed = () => client.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.dismissed;
+  const dismissed = () => writesOf(client).shown<UserState>(["user-state"])?.["CORE-1"]?.dismissed;
   try {
     await client.fetchQuery(userStateQuery());
     writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
@@ -183,8 +183,8 @@ test("a refused pin leaves the state Dispatch last gave when the read again fail
 });
 
 // R10 of dispatch://INFRA-299. What a refused pin leaves on the page is the state as Dispatch
-// last gave it. Another issue's pin landing while this one is out is merged into the store's copy
-// of the state (`storeIssueState`), never over the state as it stands, which carries this pin's
+// last gave it. Another issue's pin landing while this one is out is merged into the viewer's
+// state (`storeIssueState`), which holds Dispatch's answers alone, never this pin's
 // change: the merge is Dispatch's answer for CORE-2 alone, not for CORE-1. So when this pin is
 // refused and the read again fails, CORE-1 must show what Dispatch last gave it, not the pin
 // Dispatch refused.
@@ -204,7 +204,7 @@ test("a refused pin does not leave another issue's pin answer carrying it while 
   // A surface drawing the viewer's state, so the read again goes out.
   const unsubscribe = new QueryObserver(client, userStateQuery()).subscribe(() => {});
   const dismissed = (issueKey: string) =>
-    client.getQueryData<UserState>(["user-state"])?.[issueKey]?.dismissed;
+    writesOf(client).shown<UserState>(["user-state"])?.[issueKey]?.dismissed;
   try {
     await client.fetchQuery(userStateQuery());
     writePin(client, "CORE-1", { id: "ask:a", op: "pin" });

@@ -242,9 +242,9 @@ export function useCommentActionQueue({ onMutate, onSuccess, shows }: CommentAct
             const mine = await earlier.wait(bounds.signal);
             // What the card shows while the action is out is written as it goes out, so an
             // action cleared behind a failure never showed anything. From there the change is
-            // the store's: it shows it again over each answer that lands on a cache it wrote
-            // until this action settles (R7 of dispatch://INFRA-299), and stops drawing it if
-            // the action leaves without landing (R10). An action the store let go or held while
+            // the store's: it composes it over each answer that lands on a cache it names until
+            // this action settles (R7 of dispatch://INFRA-299), and stops composing it if the
+            // action leaves without landing (R10). An action the store let go or held while
             // `onMutate` ran - either aborts this attempt - is sent no more than one let go or
             // held while it waited.
             await onMutate?.(input);

@@ -1,9 +1,10 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { issueQuery, projectIssuesQuery } from "../../api/queries";
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
+import { useShownQuery } from "../writes/shown-query";
 import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 
 /** How many parent reads the ancestry walk keeps in flight. A project that has been running a
@@ -29,9 +30,9 @@ export function useProjectIssueItems(
 ) {
   const queryClient = useQueryClient();
   const text = useAgentText();
-  const everyIssue = useQuery({ ...projectIssuesQuery(project, []), enabled: wantsDone });
+  const everyIssue = useShownQuery({ ...projectIssuesQuery(project, []), enabled: wantsDone });
   const doneLoaded = wantsDone && everyIssue.data !== undefined;
-  const openIssues = useQuery({
+  const openIssues = useShownQuery({
     ...projectIssuesQuery(project, [], true),
     enabled: !doneLoaded,
   });
@@ -47,7 +48,7 @@ export function useProjectIssueItems(
       ),
     ];
   }, [all]);
-  const ancestry = useQuery({
+  const ancestry = useShownQuery({
     queryKey: ["issue-ancestors", project, ...missingParents],
     enabled: missingParents.length > 0,
     retry: false,

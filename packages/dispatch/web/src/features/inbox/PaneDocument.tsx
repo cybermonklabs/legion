@@ -8,9 +8,8 @@
  * placement problem, and the same pane.
  */
 
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
 import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
-
 import { api } from "../../api/client";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, AuthenticatedUser } from "../../api/types";
@@ -19,6 +18,7 @@ import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { liveTextQueryOptions, ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
 import { cancelBlockScroll, scrollBlockToTop, scrollElementToTop } from "../doc/scroll-block";
+import { useShownQuery } from "../writes/shown-query";
 import { holdSection, type SectionHold } from "./pane-placement";
 
 /**
@@ -225,18 +225,18 @@ function useDocumentAtBlock({
   const placement = useRef<{ hold: SectionHold; item: string } | undefined>(undefined);
   const settled = useSettled(artifactId);
 
-  const user = useQuery(whoAmIQuery()).data;
-  const issue = useQuery({
+  const user = useShownQuery(whoAmIQuery()).data;
+  const issue = useShownQuery({
     ...issueQuery(issueKey ?? undefined),
     enabled: issueKey !== null,
   });
-  const artifactQuery = useQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
+  const artifactQuery = useShownQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
   // The read the document page's own editor is admitted by: the server answers it `409
   // DOC_SCHEMA` for a tree outside the Proof schema, and the page offers a repair or a rebuild
   // for what it says. A column beside a list offers neither, so it reads the text itself, under
   // the page's own key, and falls back to the card rather than mounting a document that cannot
   // open.
-  const textQuery = useQuery({ ...liveTextQueryOptions(artifactId), enabled: settled });
+  const textQuery = useShownQuery({ ...liveTextQueryOptions(artifactId), enabled: settled });
 
   const artifact = artifactQuery.data;
   // A document whose own admission failed after this column's read succeeded falls back too: the

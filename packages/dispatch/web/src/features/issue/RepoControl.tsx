@@ -1,10 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useId, useState } from "react";
-
 import { apiErrorMessage } from "../../api/client";
 import { repoProjectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { badgeLow, badgePrimary, textSecondaryOnSurface } from "../../theme/classes";
+import { useShownQuery } from "../writes/shown-query";
 import { badgeSelectBadge, badgeSelectOverlay, badgeSelectRailWrapper } from "./badge-select";
 import { reservedOpenTextWidth } from "./reserved-width";
 import { useIssueRepo } from "./useIssueRepo";
@@ -41,7 +40,7 @@ export function RepoControl({
   resolvedRepo: string | null;
 }): ReactNode {
   const [wanted, setWanted] = useState(false);
-  const mappings = useQuery({
+  const mappings = useShownQuery({
     ...repoProjectsQuery(),
     enabled: wanted || resolvedRepo === null,
   });

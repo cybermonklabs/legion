@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -8,7 +7,6 @@ import {
   useRef,
   useState,
 } from "react";
-
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
@@ -22,6 +20,7 @@ import { loadBlockSchema } from "../doc/schema";
 import { scrollElementToTop } from "../doc/scroll-block";
 import { VersionView } from "../doc/VersionView";
 import { MarkdownBody } from "../refs/MarkdownBody";
+import { useShownQuery } from "../writes/shown-query";
 import { AskCard } from "./AskCard";
 import { isDecisionAsk } from "./ask-decision";
 import type { InboxListRow } from "./list-row";
@@ -164,17 +163,17 @@ function ApprovalBody({
   const approvedVersion = approval.approved?.version;
 
   const { blockSchema: runtimeBlockSchema } = useContext(DocumentRuntime);
-  const blockSchemaQuery = useQuery({
+  const blockSchemaQuery = useShownQuery({
     queryFn: loadBlockSchema,
     queryKey: ["block-schema"],
     staleTime: Number.POSITIVE_INFINITY,
   });
   const blockSchema = runtimeBlockSchema ?? blockSchemaQuery.data;
-  const user = useQuery(whoAmIQuery()).data;
-  const artifactQuery = useQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
+  const user = useShownQuery(whoAmIQuery()).data;
+  const artifactQuery = useShownQuery({ ...artifactQueryOptions(artifactId), enabled: settled });
   // The version the request is marked against: the document's last approval by any person, read
   // under the document page's own version key, as today's card reads it (`EarlierApproval`).
-  const baselineQuery = useQuery({
+  const baselineQuery = useShownQuery({
     enabled: settled && approvedVersion !== undefined,
     queryFn: () => {
       if (approvedVersion === undefined) {
@@ -204,7 +203,7 @@ function ApprovalBody({
   // The version the column draws, read under the key `VersionView` reads it by: both readers
   // share the one cache entry, so naming it here costs the page no second request, and the
   // answer tells the column when the text it shows has landed.
-  const versionQuery = useQuery({
+  const versionQuery = useShownQuery({
     enabled: settled && latestVersion !== undefined,
     queryFn: () => {
       if (latestVersion === undefined) {

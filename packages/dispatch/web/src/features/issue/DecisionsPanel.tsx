@@ -1,7 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { api, decisionKeepRequest, issueCommentRequest } from "../../api/client";
 import type {
   Artifact,
@@ -30,8 +29,8 @@ import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { writesOf } from "../writes/write-store";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -401,7 +400,7 @@ function WaitingDecision({
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      writesOf(queryClient).answer<IssueDecisions>(["decisions", issueKey], (view) =>
+      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
         view === undefined
           ? view
           : {
@@ -505,7 +504,7 @@ export function DecisionsPanel({
   isClosed: boolean;
   issueKey: string;
 }): ReactNode {
-  const view = useQuery({
+  const view = useShownQuery({
     queryFn: () => api.getIssueDecisions(issueKey),
     queryKey: ["decisions", issueKey],
   });

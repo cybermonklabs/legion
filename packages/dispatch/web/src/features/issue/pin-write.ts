@@ -78,11 +78,11 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
 }
 
 /** Puts the viewer's state of `issueKey` Dispatch answered with - a pin's, a header pin's, a read
- *  mark's - into the viewer's state (`["user-state"]`), so every surface reads it at once: into
- *  Dispatch's copy of it while a pin shows a change there (`Writes.answer`), so a pin of any
- *  issue still out stays drawn over it and none is carried into Dispatch's copy. */
+ *  mark's - into the viewer's state (`["user-state"]`), so every surface reads it at once. The
+ *  cache holds only Dispatch's answers, so a pin of any issue still out stays composed over it
+ *  and none is carried into Dispatch's state. */
 export function storeIssueState(client: QueryClient, issueKey: string, next: UserIssueState): void {
-  writesOf(client).answer<UserState>(["user-state"], (current) => ({
+  client.setQueryData<UserState>(["user-state"], (current) => ({
     ...current,
     [issueKey]: next,
   }));
@@ -91,15 +91,14 @@ export function storeIssueState(client: QueryClient, issueKey: string, next: Use
 /**
  * A pin or an unpin, one write of the store each, ordered on its issue (`pin:<issue>`), shown in
  * the shell's indicator and kept across a reload. The write shows its change on `["user-state"]`
- * at the press, and the store draws it over each answer that lands there while it is out
+ * from the press, and the store composes it over each answer that lands there while it is out
  * (`writePin`); once the issue's last pin lands, the state Dispatch answered is merged into the
- * store's copy of the viewer's state (`Writes.answer`) - never over the state as it stands, which
- * carries every other live pin - and the next pin reads the state afresh. A refused, discarded or
- * dropped one stops being drawn, as every write's change does: the page shows the state Dispatch
- * last gave, with every other live pin over it, and reads it again - so a read that fails leaves
- * no pin Dispatch never took on screen - and the next pin reads the state afresh. The states
- * pins' answers left go with the person signed in (`reset`), so another person's next pin never
- * writes over them.
+ * viewer's state, which holds Dispatch's answers alone, and the next pin reads the state afresh. A
+ * refused, discarded or dropped one stops being composed, as every write's change does: the page
+ * shows the state Dispatch last gave, with every other live pin over it, and reads it again - so
+ * a read that fails leaves no pin Dispatch never took on screen - and the next pin reads the
+ * state afresh. The states pins' answers left go with the person signed in (`reset`), so another
+ * person's next pin never writes over them.
  */
 const pinWrite = defineWriteKind<PinWrite>({
   kept: keptPin,
@@ -122,18 +121,20 @@ const pinWrite = defineWriteKind<PinWrite>({
 });
 
 /** Pins or unpins one item of `issueKey` for the viewer: one write of the store, which shows the
- *  pin on the page's state at once and again over each answer that lands there until it settles,
- *  made behind every pin of that issue still out. The operation may be derived from the stored
- *  `dismissed` list at the moment of the write, which is what a toggle needs. */
+ *  pin on the page's state at once and composes it over each answer that lands there until it
+ *  settles, made behind every pin of that issue still out. The operation may be derived from the
+ *  `dismissed` list the person sees at the moment of the write (`Writes.shown`: Dispatch's state
+ *  with every live pin over it), which is what a toggle needs. */
 export function writePin(
   client: QueryClient,
   issueKey: string,
   operation: PinStateOperation | ((dismissed: string[]) => PinStateOperation)
 ): void {
-  const pressed = stateForIssue(client.getQueryData<UserState>(["user-state"]), issueKey);
+  const writes = writesOf(client);
+  const pressed = stateForIssue(writes.shown<UserState>(["user-state"]), issueKey);
   const applied = typeof operation === "function" ? operation(pressed.dismissed ?? []) : operation;
   const detail = { issueKey, operation: applied };
-  writesOf(client)
+  writes
     .run({
       detail,
       kind: pinWrite,

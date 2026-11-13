@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { architectureTreeQuery, projectArchitectureSourcesQuery } from "../../api/queries";
 import type { Issue } from "../../api/types";
 import {
@@ -15,6 +13,7 @@ import {
 } from "../../theme/classes";
 import { ComponentPicker } from "../architecture/ComponentPicker";
 import { buildIssuePath } from "../refs/routes";
+import { useShownQuery } from "../writes/shown-query";
 import { useIssueComponents } from "./useIssueComponents";
 
 /**
@@ -36,9 +35,9 @@ export function IssueComponentsLine({
   issue: Pick<Issue, "components" | "key" | "project" | "status" | "title">;
 }): ReactNode {
   const { components } = issue;
-  const sources = useQuery(projectArchitectureSourcesQuery(issue.project));
+  const sources = useShownQuery(projectArchitectureSourcesQuery(issue.project));
   const [pickerOpen, setPickerOpen] = useState(false);
-  const tree = useQuery({ ...architectureTreeQuery(issue.project), enabled: pickerOpen });
+  const tree = useShownQuery({ ...architectureTreeQuery(issue.project), enabled: pickerOpen });
   const write = useIssueComponents(issue);
   const inheritedFrom =
     components.inherited_from === null ? null : (

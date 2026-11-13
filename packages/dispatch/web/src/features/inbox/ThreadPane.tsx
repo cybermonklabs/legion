@@ -10,13 +10,12 @@
  */
 
 import { inboxThreadRow } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { askThreadQuery } from "../../api/queries";
 import type { MyReplyRow, MyReplyThreadRow } from "../../api/types";
 import { textPrimaryOnCanvas } from "../../theme/classes";
 import type { ProofDocumentProps } from "../doc/ProofDocument";
+import { useShownQuery } from "../writes/shown-query";
 import { isDecisionAsk } from "./ask-decision";
 import { DocumentPane, PaneFrame } from "./PaneDocument";
 import { questionLine } from "./question-line";
@@ -119,7 +118,7 @@ function ThreadDocumentBody({
  *  shows its card, with its answer and its thread. */
 function AskThreadPane({ thread }: { thread: MyReplyThreadRow }): ReactNode {
   // The card's own key, so the card below reads no second copy of the same thread.
-  const read = useQuery(askThreadQuery(thread.thread_id));
+  const read = useShownQuery(askThreadQuery(thread.thread_id));
   const ask = read.data?.ask;
   if (ask !== undefined && isDecisionAsk(ask)) {
     return (

@@ -1,7 +1,7 @@
-import { type Query, type QueryClient, queryOptions, useQuery } from "@tanstack/react-query";
-
+import { type Query, type QueryClient, queryOptions } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import type { CredentialPendingResponse, CredentialPendingRow } from "../../api/types";
+import { useShownQuery } from "../writes/shown-query";
 
 /** How long a credential request may sit unseen on an open tab before the poll below notices it:
  *  short enough that an approver waiting on it never feels the wait, long enough that one GET a
@@ -61,7 +61,7 @@ export interface CredentialRequests {
  *  Inbox's empty state and every `Needs you` count read it here, so none of them can count a
  *  request another does not show. */
 export function useCredentialRequests(): CredentialRequests {
-  const pending = useQuery(credentialPendingQuery());
+  const pending = useShownQuery(credentialPendingQuery());
   if (pending.isPending) return { requests: [], status: "loading" };
   if (pending.isLoadingError) return { requests: [], status: "failed" };
   return { requests: pending.data?.pending ?? [], status: "listed" };

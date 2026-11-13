@@ -1,8 +1,8 @@
-import { type UseQueryResult, useQuery } from "@tanstack/react-query";
-
+import type { UseQueryResult } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import type { ProjectDocumentRoute } from "../refs/routes";
+import { useShownQuery } from "../writes/shown-query";
 
 /**
  * The project document a route names, by `project/slug`. The `["artifact-ref", …]` key is the
@@ -12,7 +12,7 @@ import type { ProjectDocumentRoute } from "../refs/routes";
 export function useProjectArtifact(
   route: ProjectDocumentRoute | undefined
 ): UseQueryResult<Artifact> {
-  return useQuery({
+  return useShownQuery({
     enabled: route !== undefined,
     queryKey: ["artifact-ref", `${route?.project}/${route?.slug}`],
     queryFn: () => {

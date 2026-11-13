@@ -1,6 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo, useState } from "react";
-
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import type { AskApproval } from "../../api/types";
@@ -9,6 +7,7 @@ import { dangerText, textMutedOnSurface } from "../../theme/classes";
 import { ChangeView } from "../doc/ChangeView";
 import { cutDecisionBlocks } from "../doc/decision-blocks";
 import { AgentName } from "../refs/AgentName";
+import { useShownQuery } from "../writes/shown-query";
 
 /**
  * What changed between the version a human approved and the version the request names, with every
@@ -27,11 +26,11 @@ function ApprovedChangeView({
   artifactId: string;
   version: number;
 }): ReactNode {
-  const before = useQuery({
+  const before = useShownQuery({
     queryKey: ["artifact", artifactId, "version", approvedVersion],
     queryFn: () => api.getArtifactVersion(artifactId, approvedVersion),
   });
-  const after = useQuery({
+  const after = useShownQuery({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });

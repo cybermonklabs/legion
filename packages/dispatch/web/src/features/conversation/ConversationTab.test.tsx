@@ -1528,7 +1528,7 @@ test("a comment's Reply names its session author's mention as the picker does", 
 
   try {
     await screen.findByText("Comment B");
-    await waitFor(() => expect(queryClient.getQueryData(["agents"])).toBeDefined());
+    await waitFor(() => expect(writesOf(queryClient).shown(["agents"])).toBeDefined());
     const composer = screen.getByRole("form", { name: "Comment composer" });
     const field = within(composer).getByRole<HTMLTextAreaElement>("textbox", { name: "Comment" });
     await user.click(within(turn("comment-a")).getByRole("button", { name: "Reply" }));
@@ -2318,7 +2318,9 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     const [first, second] = putIssueState.mock.calls;
     expect(second?.[2]?.key).toBe(first?.[2]?.key);
     await waitFor(() =>
-      expect(queryClient.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq).toBe(7)
+      expect(
+        writesOf(queryClient).shown<UserState>(["user-state"])?.["CORE-1"]?.last_read_seq
+      ).toBe(7)
     );
   } finally {
     view.unmount();
@@ -2330,8 +2332,8 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
 });
 
 // R7 and R10 of dispatch://INFRA-299. The read mark lands while another issue's pin is out, and
-// its answer is merged into the viewer's state - into Dispatch's copy of it, not over the state
-// as it stands, which carries the pin. So once the pin is refused and the state cannot be read
+// its answer is merged into the viewer's state, which holds Dispatch's answers alone, the pin
+// being composed over it as it is read. So once the pin is refused and the state cannot be read
 // again, the page shows the mark and not the pin Dispatch refused.
 test("a read mark's answer merged while another issue's pin is out stays once the pin is refused and the read fails", async () => {
   const viewport = installIntersectionObserver();
@@ -2352,7 +2354,7 @@ test("a read mark's answer merged while another issue's pin is out stays once th
   // A surface drawing the viewer's state, so the read again goes out.
   const unsubscribe = new QueryObserver(queryClient, userStateQuery()).subscribe(() => {});
   const view = render(tab({ "CORE-1": issueState([], 1) }, true, queryClient));
-  const state = () => queryClient.getQueryData<UserState>(["user-state"]);
+  const state = () => writesOf(queryClient).shown<UserState>(["user-state"]);
 
   try {
     await screen.findByText("Newest");

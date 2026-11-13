@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import ts from "typescript";
 
 import { answerRoute } from "../../__tests__/send-answers";
-import { codeMask, objectAt, shippedSources } from "../../__tests__/source-scan";
+import { nodesOf, parsed, shippedSources, siteOf } from "../../__tests__/source-scan";
 import type { Ask } from "../../api/types";
 import { useOutstandingAnswerWrite } from "../inbox/outstanding-answers";
 import { useAskSnooze } from "../inbox/useAskSnooze";
@@ -18,60 +19,54 @@ import { writesOf } from "./write-store";
  * for one of two things - the row it writes (`WriteSpec.target`, `useKeyedWrite`'s `target`) or
  * the reason it names none (`unlined`, in its own value) - so a write that leaves both out does
  * not compile. Where a type cannot hold that door, this file does: it reads every `writes.run`
- * and `useKeyedWrite` call of `web/src` that the app ships and names any that carries neither,
- * and it reads the lines those calls name and holds them to the grammar `<row type>:<row id>`.
- * A call may spread its line in rather than write it out, as `...(<value> satisfies WriteLine)`:
- * the compiler holds that value to `WriteLine` at the call itself, so that call is one a type
- * reaches, and it is read as a call that names its line.
+ * and `useKeyedWrite` call of `web/src` that the app ships, as the compiler parses it
+ * (`source-scan.ts`), and names any that carries neither, and it reads the lines those calls name
+ * and holds them to the grammar `<row type>:<row id>`. A call may spread its line in rather than
+ * write it out, as `...(<value> satisfies WriteLine)`: the compiler holds that value to
+ * `WriteLine` at the call itself, so that call is one a type reaches, and it is read as a call
+ * that names its line.
  */
 
 /** One write a module makes: where it is written, and the object its press names. */
 interface WriteCall {
   readonly at: string;
-  readonly spec: string;
+  readonly spec: ts.ObjectLiteralExpression;
+  readonly file: ts.SourceFile;
 }
 
 /** Every `writes.run({…})`, `useKeyedWrite({…})` and `useSendMarkOnce({…})` of `source`, generic
- *  forms (`useKeyedWrite<Answer, Variables>({…})`) among them. A `.run()` that is not one of
- *  these - a keymap row's, a session switch's - names no object literal and is no write of the
- *  store. */
+ *  forms (`useKeyedWrite<Answer, Variables>({…})`) among them. A `.run()` that names no object
+ *  literal - a keymap row's, a session switch's - is no write of the store. */
 function writeCalls(path: string, source: string): readonly WriteCall[] {
-  const calls: WriteCall[] = [];
-  const code = codeMask(source);
-  const names = /useKeyedWrite|useSendMarkOnce|\.run\b/gu;
-  for (const found of source.matchAll(names)) {
-    const start = found.index ?? 0;
-    // The hooks' own declarations are no calls of them: their parameter lists are destructured
-    // objects, which read like a press from here.
-    if (
-      code[start] !== true ||
-      source.slice(Math.max(0, start - 10), start).includes("function ")
-    ) {
-      continue;
+  const file = parsed(path, source);
+  return nodesOf(file).flatMap((node) => {
+    if (!ts.isCallExpression(node)) return [];
+    const callee = node.expression;
+    const name = ts.isIdentifier(callee)
+      ? callee
+      : ts.isPropertyAccessExpression(callee) && callee.name.text === "run"
+        ? callee.name
+        : undefined;
+    if (name === undefined || !["useKeyedWrite", "useSendMarkOnce", "run"].includes(name.text)) {
+      return [];
     }
-    const end = start + found[0].length;
-    const ahead = source.slice(end, end + 800);
-    const call = ahead.indexOf("({");
-    if (call === -1) continue;
-    const between = ahead.slice(0, call).trim();
-    const generic = between === "" || (between.startsWith("<") && between.endsWith(">"));
-    if (!generic || between.includes("(") || between.includes(")")) continue;
-    const line = source.slice(0, end).split("\n").length;
-    calls.push({
-      at: `${path}:${line}`,
-      spec: objectAt(source, end + call + 1, `${path}:${line}`).text,
-    });
-  }
-  return calls;
+    const [spec] = node.arguments;
+    if (spec === undefined || !ts.isObjectLiteralExpression(spec)) return [];
+    return [{ at: siteOf(file, name), file, spec }];
+  });
 }
 
-/** The field of `spec` named `name`, as its text, or undefined where the object has none; a
- *  field written in shorthand (`unlined,`) is its own name. */
-function field(spec: string, name: string): string | undefined {
-  const at = new RegExp(`(^|[{,\\s])${name}\\s*[:,}]`, "u").exec(spec);
-  if (at === null) return undefined;
-  if (!at[0].trimEnd().endsWith(":")) return name;
-  return spec.slice(at.index + at[0].length).trim();
+/** The field of `spec` named `name`, as the text of its value, or undefined where the object has
+ *  none at its own level; a field written in shorthand (`unlined,`) is its own name. */
+function field({ file, spec }: WriteCall, name: string): string | undefined {
+  for (const property of spec.properties) {
+    if (property.name === undefined || !ts.isIdentifier(property.name)) continue;
+    if (property.name.text !== name) continue;
+    if (ts.isShorthandPropertyAssignment(property)) return name;
+    if (ts.isPropertyAssignment(property)) return property.initializer.getText(file);
+    return property.getText(file);
+  }
+  return undefined;
 }
 
 /** The line a `target` expression names, as a template with its row id written `<id>`, or
@@ -86,8 +81,16 @@ function lineOf(target: string): string | undefined {
 /** The value a spec spreads its line in from, where it spreads one as `...(<value> satisfies
  *  WriteLine)`. A spread written any other way names no line here, since nothing holds it to
  *  one. */
-function spreadLine(spec: string): string | undefined {
-  return /\.\.\.\(\s*([^()]+?)\s+satisfies\s+WriteLine\s*\)/u.exec(spec)?.[1];
+function spreadLine({ file, spec }: WriteCall): string | undefined {
+  for (const property of spec.properties) {
+    if (!ts.isSpreadAssignment(property)) continue;
+    let value = property.expression;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    if (ts.isSatisfiesExpression(value) && value.type.getText(file) === "WriteLine") {
+      return value.expression.getText(file);
+    }
+  }
+  return undefined;
 }
 
 /** The sends that name no row, which R6 does not reach: they keep the names they have. */
@@ -112,10 +115,10 @@ test("every write of web/src names its row or says why it names none", () => {
   expect(calls.length).toBeGreaterThan(30);
   const silent = calls
     .filter(
-      ({ spec }) =>
-        field(spec, "target") === undefined &&
-        field(spec, "unlined") === undefined &&
-        spreadLine(spec) === undefined
+      (call) =>
+        field(call, "target") === undefined &&
+        field(call, "unlined") === undefined &&
+        spreadLine(call) === undefined
     )
     .map(({ at }) => at);
   expect(silent).toEqual([]);
@@ -127,11 +130,12 @@ test("every write of web/src names its row or says why it names none", () => {
 test("the lines web/src names are the rows of the grammar", () => {
   const lines = new Set<string>();
   const built: string[] = [];
-  for (const { at, spec } of calls) {
-    const target = field(spec, "target");
+  for (const call of calls) {
+    const { at } = call;
+    const target = field(call, "target");
     // A line spread in is built rather than written out, whichever of the two it holds.
     if (target === undefined) {
-      if (spreadLine(spec) !== undefined) built.push(at);
+      if (spreadLine(call) !== undefined) built.push(at);
       continue;
     }
     const line = lineOf(target);

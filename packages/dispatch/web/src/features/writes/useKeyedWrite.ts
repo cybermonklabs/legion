@@ -9,8 +9,8 @@ import { useCallback, useRef, useState } from "react";
 import type { WriteBounds, WriteRequest } from "../../api/client";
 import { pressKey, type StoppedPress, stoppedPress } from "./keyed-write";
 import {
+  type FromPress,
   plainWrite,
-  type ShownAhead,
   useWrites,
   type WriteChange,
   type WriteLine,
@@ -39,14 +39,14 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
   /** Why this write's answer carries something shown once and never again, for a write of that
    *  kind, which a reload drops rather than sends again (`WriteSpec.answerShownOnce`). */
   readonly answerShownOnce?: string;
-  /** The change this press shows, for a write that shows one: the store shows it as the write
-   *  joins - after `onMutate` - and draws it over each answer that lands on a cache it wrote
-   *  while the write is live (R7 of dispatch://INFRA-299, `WriteSpec.shows`); a write that
-   *  leaves without landing stops being drawn, and the caches it wrote are read again, so
-   *  `onError` rolls none of them back itself. A change shown at the press, ahead of a write
-   *  that waits behind a mutation scope, is named as `Writes.showAhead` handed it back. A write
-   *  that shows nothing names none. */
-  readonly shows?: (variables: TVariables) => WriteChange | ShownAhead;
+  /** The change this press shows, for a write that shows one: the store composes it over every
+   *  read of a cache it names from the moment the write joins - after `onMutate` - while the
+   *  write is live (R7 of dispatch://INFRA-299, `WriteSpec.shows`); a write that leaves without
+   *  landing stops being composed, and the caches it named are read again, so `onError` rolls
+   *  none of them back itself. A change composed from the press, ahead of a write that waits
+   *  behind a mutation scope, is named as `Writes.fromPress` handed it back. A write that shows
+   *  nothing names none. */
+  readonly shows?: (variables: TVariables) => WriteChange | FromPress;
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made, and the line it is ordered on: by an attempt of its own (`write`, under
@@ -94,7 +94,7 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * made under a key of its own and tried under it until Dispatch decides it, shown by the shell's
  * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`).
  * The mutation settles with Dispatch's answer - `null` for a landing without one - its refusal, or
- * `SendStoppedError` once the reader stops it. What `shows` drew leaves the screen on anything
+ * `SendStoppedError` once the reader stops it. What `shows` composed leaves the screen on anything
  * but a landing; what else the surface drew at the press is its own to undo. A `mutate` of
  * the same variables a press the reader stopped was made with is that press made again, under its
  * key - Dispatch may have taken it, and answers the key with what it did - while one after

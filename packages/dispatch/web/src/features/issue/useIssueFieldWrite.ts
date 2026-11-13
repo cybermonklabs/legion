@@ -97,12 +97,12 @@ function stillInLine(row: Write, issue: string, field: string): boolean {
  * Every pick joins the store's line when it is pressed: one write of its own on the issue's line,
  * kept with the request it will send, so picks reach the server in press order whatever becomes
  * of the control - another page, an unmount, a reload - and none the person saw is lost. The
- * store shows the pick as the write joins and shows it again over each answer that lands on one
+ * store composes the pick from the moment the write joins over each answer that lands on one
  * of those caches while the write is live (R7 of dispatch://INFRA-299), so an answer composed
  * before the pick arrives whole - every other row of it with it - and leaves the person's own
  * change on screen. A pick that leaves without landing - refused, discarded in Pending changes,
- * taken by a sign-out - stops being drawn, as every write's change does: each cache it wrote is
- * the store's copy of what Dispatch last gave it with every other live write's change over it,
+ * taken by a sign-out - stops being composed, as every write's change does: each cache it named
+ * reads as what Dispatch last gave it with every other live write's change over it,
  * newer picks of the field among them, and is read again (R10), so a read that fails leaves the
  * screen on the value the server last confirmed rather than on a pick nothing will send. The
  * engine keeps no snapshot of its own. It merges the server's answer and reads the issue again
@@ -120,8 +120,7 @@ export function useIssueFieldWrite<Value>(
     name: string;
     patch: (value: Value) => UpdateIssueInput;
     /** Shows the value on each cache that draws it, through the store's own `Shown`: the store
-     *  calls this at the press and again over each answer that lands on one of those caches
-     *  while the write is live. */
+     *  composes this over every read of one of those caches while the write is live. */
     show: (value: Value, shown: Shown) => void;
     /** What the shell's indicator names one save of this field. */
     label: (value: Value) => string;
@@ -178,8 +177,8 @@ export function useIssueFieldWrite<Value>(
       label: field.label(value),
       presentation: "indicator",
       request: issuePatchRequest(issueKey, field.patch(value)),
-      // The pick is shown here, by the store, so it is shown again over each answer that lands
-      // on one of the caches it writes until this write settles (R7), and stops being drawn if
+      // The pick is shown here, by the store, so it is composed over each answer that lands on
+      // one of the caches it names until this write settles (R7), and stops being composed if
       // it leaves without landing (R10): this engine undoes nothing itself.
       shows: (shown) => field.show(value, shown),
       target: `issue:${issueKey}`,
@@ -221,7 +220,7 @@ export function useIssueFieldWrite<Value>(
         if (error instanceof WriteDiscardedError) {
           return;
         }
-        // The pick is drawn no longer: the screen is the value the server last confirmed, with
+        // The pick is composed no longer: the screen is the value the server last confirmed, with
         // every live write's change over it - a newer pick of this field among them - read again.
         const refusal = error instanceof Error ? error : new Error(String(error));
         stopped.current = stoppedPress(key, value, refusal) ?? stopped.current;

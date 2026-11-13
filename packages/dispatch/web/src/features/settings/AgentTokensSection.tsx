@@ -1,7 +1,6 @@
 import { DISPATCH_SCOPES } from "@legion/contracts";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-
 import {
   agentTokenCreateRequest,
   agentTokenRevokeRequest,
@@ -32,8 +31,8 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { writesOf } from "../writes/write-store";
 import {
   settingsSubmitButton,
   settingsTableHead,
@@ -178,7 +177,7 @@ export function AgentTokensSection(): ReactNode {
   /** When the token list was last read again after a mint whose answer was lost. */
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
   const { copy, reset: resetCopyStatus, status: copyStatus } = useCopyFeedback();
-  const tokens = useQuery(agentTokensQuery());
+  const tokens = useShownQuery(agentTokensQuery());
   // The form shows a refused mint beside the name it was refused over. A mint names no token
   // until Dispatch answers it, so it stands in the line of the list it adds a row to
   // (`agent-tokens:me`), where a change to what a token may do and a revoke stand in that
@@ -213,7 +212,7 @@ export function AgentTokensSection(): ReactNode {
         return;
       }
       const { token, ...safeToken } = created;
-      writesOf(queryClient).answer<AgentToken[]>(agentTokensQueryKey, (current = []) => [
+      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) => [
         safeToken,
         ...current,
       ]);
@@ -226,7 +225,7 @@ export function AgentTokensSection(): ReactNode {
     request: (id: string) => agentTokenRevokeRequest(id),
     target: (id) => `agent-token:${id}`,
     onSuccess: (_result, id) => {
-      writesOf(queryClient).answer<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === id ? { ...token, revoked_at: new Date().toISOString() } : token
         )
@@ -242,7 +241,7 @@ export function AgentTokensSection(): ReactNode {
       agentTokenScopesRequest(input.id, input.scopes),
     target: (input) => `agent-token:${input.id}`,
     onSuccess: (updated, input) => {
-      writesOf(queryClient).answer<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
         )

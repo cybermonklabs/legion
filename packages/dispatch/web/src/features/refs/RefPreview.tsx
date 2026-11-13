@@ -1,8 +1,7 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
-
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type { DisplayTree } from "../../api/types";
@@ -17,6 +16,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { type IssueStatus, statusLabel } from "../project/board-model";
+import { useShownQuery } from "../writes/shown-query";
 import { AgentName } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { MarkdownPreview } from "./MarkdownPreview";
@@ -360,9 +360,9 @@ function Body({
  *  asks and the spec, and holds that read only while it is shown. */
 function IssuePreview({ route }: { route: DispatchReferenceRoute }): ReactNode {
   const key = "key" in route ? route.key : undefined;
-  const { data: issue } = useQuery({ ...issueQuery(key), enabled: key !== undefined });
+  const { data: issue } = useShownQuery({ ...issueQuery(key), enabled: key !== undefined });
   const spec = primarySpec(issue);
-  const specText = useQuery({
+  const specText = useShownQuery({
     ...artifactTextQuery(spec?.id, undefined),
     enabled: spec?.kind === "doc",
   });

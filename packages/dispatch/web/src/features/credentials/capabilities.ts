@@ -1,6 +1,6 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
-
+import { queryOptions } from "@tanstack/react-query";
 import { api } from "../../api/client";
+import { useShownQuery } from "../writes/shown-query";
 
 /** What the credential pages may offer against this deployment's secrets broker. The server
  *  relays it from the broker's own RFC 8414 metadata behind a cache of its own, so a page asks
@@ -19,6 +19,6 @@ export const credentialCapabilitiesQuery = () =>
  *  a broker it could not reach itself, so a failure here is Dispatch's own and the page it would
  *  lead to would not load either. */
 export function useMachineCodePage(): boolean {
-  const capabilities = useQuery(credentialCapabilitiesQuery());
+  const capabilities = useShownQuery(credentialCapabilitiesQuery());
   return capabilities.data?.machine_code_page ?? false;
 }

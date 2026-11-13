@@ -1,7 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-
 import { whoAmIQuery } from "../../api/queries";
+import { useShownQuery } from "../writes/shown-query";
 
 /** A name a browser keeps something under for one signed-in person: a choice they made, and the
  *  bar's recent items (`features/search/recents.ts`), which are theirs the same way. The Inbox's
@@ -73,7 +72,7 @@ export function useUserPreference<T>(
   write: (value: T) => string,
   options?: UserPreferenceOptions<T>
 ): [T, (next: T) => void] {
-  const whoAmI = useQuery(whoAmIQuery());
+  const whoAmI = useShownQuery(whoAmIQuery());
   const login = whoAmI.data?.login;
   const identity: UserPreferenceIdentity =
     login !== undefined ? "resolved" : whoAmI.isPending ? "pending" : "failed";

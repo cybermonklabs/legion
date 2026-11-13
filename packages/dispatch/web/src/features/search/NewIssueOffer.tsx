@@ -1,7 +1,7 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { newIssueSettingsQuery } from "../../api/queries";
+import { useShownQuery } from "../writes/shown-query";
 import { useWrites, type Writes } from "../writes/write-store";
 import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
 import { barNoteClassName, type Offer, type OfferRow, refusalText, useWordsState } from "./offer";
@@ -61,7 +61,7 @@ export function useNewIssueOffer({
   // The two settings decide what the press writes, so the row waits for them: a press made
   // without them would file an issue carrying neither the label nor the session the deployment
   // asked for. A read that failed leaves the bar offering nothing, as it does with no project.
-  const settings = useQuery({
+  const settings = useShownQuery({
     ...newIssueSettingsQuery(),
     enabled: offered && project !== undefined,
   });

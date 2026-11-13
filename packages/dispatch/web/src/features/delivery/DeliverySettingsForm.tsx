@@ -1,6 +1,5 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
-
 import { apiErrorMessage, deliverySettingsRequest } from "../../api/client";
 import { deliverySettingsQuery } from "../../api/queries";
 import { isLiveQuery } from "../../api/query-refresh";
@@ -14,6 +13,7 @@ import {
   settingsMonoInput,
   settingsSubmitButton,
 } from "../settings/classes";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** The characters that separate the entries of a list field, as a character class's body: line
@@ -115,7 +115,7 @@ interface DeliverySettingsFormProps {
  * form in place of a timeline it cannot read yet, shows the timeline once the save succeeds.
  */
 export function DeliverySettingsForm({ initial }: DeliverySettingsFormProps): ReactNode {
-  const settings = useQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
+  const settings = useShownQuery({ ...deliverySettingsQuery(), enabled: initial === undefined });
   let record = initial;
   if (record === undefined) {
     if (settings.isPending) {

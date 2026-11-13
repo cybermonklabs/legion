@@ -1,5 +1,5 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the mouse and pointer presses that drive dnd-kit, the key inside one of those drags, the clicks whose boolean return it reads, and the bare focus that has a control read its options
@@ -13,7 +13,6 @@ import {
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches, answerIssueStates } from "../../__tests__/send-answers";
@@ -36,6 +35,7 @@ import { PriorityControl } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { useShownQuery } from "../writes/shown-query";
 import { plainWrite, writesOf } from "../writes/write-store";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
@@ -274,7 +274,7 @@ test("a failed move rolls the board back, refetches it and tells the truth about
       keyedAttempt
     );
     expect(hook.result.current.error).toBe(staleBoardMessage);
-    expect(queryClient.getQueryData<IssueSummary[]>(queryKey)).toEqual(issues);
+    expect(writesOf(queryClient).shown<IssueSummary[]>(queryKey)).toEqual(issues);
     expect(queryClient.getQueryState(queryKey)?.isInvalidated).toBe(true);
   } finally {
     hook.unmount();
@@ -321,7 +321,7 @@ test("two rapid moves on one board run one after the other, the second from the 
     });
     // Both optimistic placements are on the board before either request is answered...
     expect(
-      (queryClient.getQueryData(queryKey) as IssueSummary[])
+      (writesOf(queryClient).shown(queryKey) as IssueSummary[])
         .filter((item) => item.status === "todo")
         .map((item) => item.key)
     ).toEqual(["CORE-3", "CORE-2", "CORE-1"]);
@@ -354,10 +354,10 @@ test("two rapid moves on one board run one after the other, the second from the 
   }
 });
 
-// R7 of dispatch://INFRA-299. A drop's placement is shown in the press's tick, ahead of its write
-// (`Writes.showAhead`), in the press's place among the board's live changes: a drop made while an
-// earlier one is unanswered keeps its own place, since the store draws the earlier drop and then
-// this one over the board as Dispatch gave it, as they were placed.
+// R7 of dispatch://INFRA-299. A drop's placement is composed from the press's tick, ahead of its
+// write (`Writes.fromPress`), in the press's place among the board's live changes: a drop made
+// while an earlier one is unanswered keeps its own place, since the store composes the earlier
+// drop and then this one over the board as Dispatch gave it, as they were placed.
 test("a second drop while the first is unanswered leaves both cards where they were dropped", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const queryKey = ["issues", "project", "CORE"] as const;
@@ -369,7 +369,7 @@ test("a second drop while the first is unanswered leaves both cards where they w
     issue({ key: "CORE-5", rank: "e", status: "in_progress", title: "Echo" }),
   ]);
   const todoKeys = () =>
-    (queryClient.getQueryData(queryKey) as IssueSummary[])
+    (writesOf(queryClient).shown(queryKey) as IssueSummary[])
       .filter((item) => item.status === "todo")
       .map((item) => item.key);
   const answers: ((answer: Issue) => void)[] = [];
@@ -409,11 +409,11 @@ test("a second drop while the first is unanswered leaves both cards where they w
   }
 });
 
-// R10 of dispatch://INFRA-299 under two drops. A drop made while an earlier one is live is shown
-// ahead of its write (`Writes.showAhead`), and the store keeps the board as Dispatch last gave it
-// - with the earlier drop written in once Dispatch made it - apart from the screen. With every
-// read of the board failing from then on, a refused drop simply stops being drawn: the earlier
-// card stays where it was dropped and the refused card is drawn where Dispatch has it.
+// R10 of dispatch://INFRA-299 under two drops. A drop made while an earlier one is live is
+// composed from its press (`Writes.fromPress`), and the cache holds the board as Dispatch last gave
+// it - with the earlier drop written in once Dispatch made it. With every read of the board
+// failing from then on, a refused drop simply stops being composed: the earlier card stays where
+// it was dropped and the refused card shows where Dispatch has it.
 test("a drop refused behind an earlier drop, with the board unreadable, stops drawing only the refused card", async () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
@@ -427,7 +427,7 @@ test("a drop refused behind an earlier drop, with the board unreadable, stops dr
     issue({ key: "CORE-5", rank: "e", status: "in_progress", title: "Echo" }),
   ]);
   const keysIn = (status: string) =>
-    (queryClient.getQueryData(queryKey) as IssueSummary[])
+    (writesOf(queryClient).shown(queryKey) as IssueSummary[])
       .filter((item) => item.status === status)
       .map((item) => item.key);
   const listIssues = spyOn(api, "listIssues").mockRejectedValue(new Error("offline"));
@@ -439,7 +439,7 @@ test("a drop refused behind an earlier drop, with the board unreadable, stops dr
   // The board on screen reads the list, so the reads the moves ask for go out.
   const hook = renderHook(
     () => {
-      useQuery(projectIssuesQuery("CORE", []));
+      useShownQuery(projectIssuesQuery("CORE", []));
       return useBoardMoves("CORE");
     },
     {
@@ -859,7 +859,7 @@ const raceDetails: IssueDetails = {
 /** The issue's own read, as the header draws it from the issue rather than from a list: the
  *  priority a write of it shows its change on, and the title the same answer carries. */
 function IssueDetail(): ReactNode {
-  const details = useQuery(issueQuery("CORE-1"));
+  const details = useShownQuery(issueQuery("CORE-1"));
   if (details.data === undefined) {
     return null;
   }
@@ -875,7 +875,7 @@ function IssueDetail(): ReactNode {
  *  the issue header draws them from the issue: what the reader sees while a write of either
  *  field is out, and what a list answer that lands over it would change. */
 function ListFields(): ReactNode {
-  const list = useQuery(projectIssuesQuery("CORE", []));
+  const list = useShownQuery(projectIssuesQuery("CORE", []));
   const row = (list.data ?? []).find((entry) => entry.key === "CORE-1");
   if (row === undefined) {
     return null;
@@ -896,7 +896,7 @@ function ListFields(): ReactNode {
 /** The Inbox's own read, each row with the priority control the Inbox draws on it and the person
  *  it waits on, which is its issue's assignee until somebody hands the ask on. */
 function InboxRows(): ReactNode {
-  const inbox = useQuery(inboxQuery());
+  const inbox = useShownQuery(inboxQuery());
   return (
     <ul aria-label="Inbox rows">
       {(inbox.data ?? []).map((row) => (
@@ -1548,7 +1548,7 @@ test("a cache emptied before the answer lands, as a reload leaves it, carries th
     await waitFor(() => expect(race.listIssues.mock.calls.length).toBeGreaterThan(1));
     await waitFor(() =>
       expect(
-        (race.queryClient.getQueryData<IssueSummary[]>(boardListKey) ?? []).map((row) => [
+        (writesOf(race.queryClient).shown<IssueSummary[]>(boardListKey) ?? []).map((row) => [
           row.key,
           row.priority,
         ])
@@ -1581,7 +1581,7 @@ test("a list answer landing under an unanswered move keeps the card where it was
   const listIssues = spyOn(api, "listIssues").mockResolvedValue(board);
   const hook = renderMoves(queryClient);
   const todoKeys = () =>
-    (queryClient.getQueryData<IssueSummary[]>(boardListKey) ?? [])
+    (writesOf(queryClient).shown<IssueSummary[]>(boardListKey) ?? [])
       .filter((row) => row.status === "todo")
       .map((row) => row.key);
   try {
@@ -2177,7 +2177,9 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
       keyedAttempt
     );
     expect(
-      queryClient.getQueryData<IssueSummary[]>(labelledKey)?.map((entry) => entry.key)
+      writesOf(queryClient)
+        .shown<IssueSummary[]>(labelledKey)
+        ?.map((entry) => entry.key)
     ).toEqual(["CORE-1", "CORE-4", "CORE-3"]);
     // The unfiltered list's ranks changed too: both queries refetch.
     expect(queryClient.getQueryState(labelledKey)?.isInvalidated).toBe(true);

@@ -2,7 +2,6 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { myRepliesOwnerQuery, whoAmIQuery } from "../../api/queries";
 import type { MyReplyAgentRow, MyReplyThreadRow } from "../../api/types";
-import { writesOf } from "../writes/write-store";
 import type { RepliesOwner } from "./useMarkThreadRead";
 
 /** One unread thread row for `threadId`, as `GET /api/v1/me/replies` answers it: a Reply row,
@@ -83,17 +82,16 @@ export function seedUnread(
   owner: RepliesOwner,
   threadIds: readonly string[]
 ): void {
-  const writes = writesOf(queryClient);
-  writes.answer(whoAmIQuery().queryKey, () => ({
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
     event_head: "0",
     kind: "user",
     login: "alice",
-  }));
-  writes.answer(myRepliesOwnerQuery(owner).queryKey, () => ({
+  });
+  queryClient.setQueryData(myRepliesOwnerQuery(owner).queryKey, {
     as_of: "2026-10-12T00:00:00Z",
     limit: 200,
     offset: 0,
     rows: threadIds.map((id) => replyRow(id)),
     total: threadIds.length,
-  }));
+  });
 }

@@ -1,7 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
@@ -20,6 +19,7 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
@@ -38,7 +38,7 @@ export function DocumentPage(): ReactNode {
     }
   }, []);
   const artifact = useProjectArtifact(documentRoute);
-  const subscribers = useQuery({
+  const subscribers = useShownQuery({
     enabled: artifact.data !== undefined,
     queryKey: ["subscribers", artifact.data?.id],
     queryFn: () => {

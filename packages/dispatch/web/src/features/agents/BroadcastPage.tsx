@@ -1,7 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
-
 import { api } from "../../api/client";
 import type {
   Agent,
@@ -39,6 +38,7 @@ import { useAgents } from "../conversation/useAgents";
 import { AgentName, type AgentPart, AgentParts, useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 import { deliveryAttempts } from "./attempts";
@@ -179,7 +179,7 @@ export function BroadcastPage(): ReactNode {
   const location = useLocation();
   const excluded = exclusionsFromState(location.state);
   const { agents, current } = useAgents(true, true);
-  const broadcast = useQuery({
+  const broadcast = useShownQuery({
     queryFn: () => api.getBroadcast(id),
     // Keyed under ["broadcast"], the prefix every issue-less message event invalidates, so a
     // recipient's delivery receipt or reply lands here without a poll.

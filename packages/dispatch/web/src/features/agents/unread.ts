@@ -1,6 +1,5 @@
-import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-
 import { agentStateRequest } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
 import type {
@@ -11,8 +10,8 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
+import { useShownQuery } from "../writes/shown-query";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
-import { writesOf } from "../writes/write-store";
 
 /** The badge an unread count wears wherever it shows: the navigation, the compact header, and
  *  the agent's row. */
@@ -81,15 +80,14 @@ export function useUnreadAtOpen(
 }
 
 /** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
- *  every badge and row reads it at once: into Dispatch's copy of it while a pin shows a change
- *  there (`Writes.answer`), so a pin of another session still out stays over it and none is
- *  carried into what that pin's refusal leaves. */
+ *  every badge and row reads it at once. The cache holds only Dispatch's answers, so a pin of
+ *  another session still out is composed over this one as it is read. */
 export function storeAgentState(
   queryClient: QueryClient,
   sessionId: string,
   next: UserAgentState
 ): void {
-  writesOf(queryClient).answer<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+  queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));
@@ -109,7 +107,7 @@ function useSendReadMark<V>(
   input: (value: V) => UserAgentStateInput
 ): void {
   const queryClient = useQueryClient();
-  const unread = useQuery(userAgentStateQuery()).data?.[sessionId]?.unread_replies ?? 0;
+  const unread = useShownQuery(userAgentStateQuery()).data?.[sessionId]?.unread_replies ?? 0;
   useSendMarkOnce({
     mark: value === undefined ? undefined : { key: dedupeKey(value), value: input(value) },
     onSuccess: (next) => storeAgentState(queryClient, sessionId, next),

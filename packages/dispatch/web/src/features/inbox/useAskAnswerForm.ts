@@ -1,6 +1,5 @@
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
-
 import {
   ApiError,
   apiErrorMessage,
@@ -12,8 +11,8 @@ import { whoAmIQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, AskWithTrees } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { writesOf } from "../writes/write-store";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
 import {
@@ -102,7 +101,7 @@ export function useAskAnswerForm({
   onAnswered,
 }: UseAskAnswerFormOptions) {
   const queryClient = useQueryClient();
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useShownQuery(whoAmIQuery()).data?.login;
   // Each AskCard instance owns its answer field label so cards with the same
   // ask id never collide when a responsive transition briefly renders both.
   const answerFieldId = `${useId()}-answer`;
@@ -133,7 +132,7 @@ export function useAskAnswerForm({
   // and so does every thread on an issue whose claim or route moved while it was in flight.
   const refreshInitialThread =
     initialThread !== undefined && hasPendingAskThreadInvalidation(queryClient, ask);
-  const threadQuery = useQuery({
+  const threadQuery = useShownQuery({
     ...queryOptions<AskRead, Error>({
       queryKey: ["ask-thread", ask.id],
       queryFn: () => getAskThread(ask.id),
@@ -151,7 +150,7 @@ export function useAskAnswerForm({
   const answers = threadQuery.data?.answers ?? [];
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
-  // Inbox, drawn no more once refused, and the hold that keeps the question where the reader
+  // Inbox, composed no more once refused, and the hold that keeps the question where the reader
   // pressed it are the decline's too, and are written once beside the hold itself.
   const mutation = useOutstandingAnswerWrite({
     askId: ask.id,
@@ -197,7 +196,7 @@ export function useAskAnswerForm({
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          writesOf(queryClient).answer<AskRead>(["ask-thread", ask.id], (current) =>
+          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
             current === undefined
               ? undefined
               : {

@@ -89,7 +89,7 @@ test("a pin stays shown over an answer to the viewer's agent state that lands wh
   const put = answerAgentStates().mockImplementation(
     () => Promise.withResolvers<UserAgentState>().promise
   );
-  const states = () => queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey);
+  const states = () => writesOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey);
   const hook = renderHook(() => useAgentPinWrite(), {
     wrapper: ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client: queryClient }, children),
@@ -120,7 +120,7 @@ test("a pin stays shown over an answer to the viewer's agent state that lands wh
 });
 
 // R10 of dispatch://INFRA-299. A pin's press undoes nothing itself: a refused pin stops being
-// drawn, so the page shows the agent state as Dispatch last gave it, before the state is read
+// composed, so the page shows the agent state as Dispatch last gave it, before the state is read
 // again. Where that read fails - offline, a 5xx - no session is left pinned on the page.
 test("a refused pin leaves the agent state Dispatch last gave when the read again fails", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -149,7 +149,9 @@ test("a refused pin leaves the agent state Dispatch last gave when the read agai
       expect(queryClient.getQueryState(userAgentStateQuery().queryKey)?.status).toBe("error")
     );
     expect(
-      pinnedAgentSessions(queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey))
+      pinnedAgentSessions(
+        writesOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey)
+      )
     ).toEqual([]);
   } finally {
     hook.unmount();
@@ -160,8 +162,8 @@ test("a refused pin leaves the agent state Dispatch last gave when the read agai
 });
 
 // R7 and R10 of dispatch://INFRA-299. Another session's state a PUT answered with - a read mark,
-// a Clear - is merged while a pin is out (`storeAgentState`), into Dispatch's copy of the agent
-// state rather than over the state as it stands, which carries the pin. So once the pin is
+// a Clear - is merged while a pin is out (`storeAgentState`), into the agent state the cache
+// holds, Dispatch's alone, the pin being composed over it as it is read. So once the pin is
 // refused and the read again fails, the page shows that answer and no pin Dispatch never took.
 test("an agent state answer merged while a pin is out stays once the pin is refused and the read fails", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -180,7 +182,7 @@ test("an agent state answer merged while a pin is out stays once the pin is refu
     wrapper: ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client: queryClient }, children),
   });
-  const states = () => queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey);
+  const states = () => writesOf(queryClient).shown<UserAgentStates>(userAgentStateQuery().queryKey);
   try {
     await queryClient.fetchQuery(userAgentStateQuery());
     let made: Promise<boolean> | undefined;

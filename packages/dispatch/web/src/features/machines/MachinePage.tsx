@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
-
 import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { useCappedSearchParam } from "../../lib/query-param";
@@ -24,6 +22,7 @@ import { buildAgentsMachinePath, parseMachinePath } from "../refs/routes";
 import { relativeTimeLabel } from "../refs/Timestamp";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownQuery } from "../writes/shown-query";
 import {
   chosenWindowId,
   type MachineTmuxServer,
@@ -88,10 +87,10 @@ function MachineView({ host }: { host: string }): ReactNode {
   // What the viewer is owed, read once for the page from the two queries the shell already
   // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
   // the four states, and the page adds no request of its own.
-  const inbox = useQuery(inboxQuery());
+  const inbox = useShownQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
-  const agentState = useQuery(userAgentStateQuery()).data;
+  const viewer = useShownQuery(whoAmIQuery()).data?.login;
+  const agentState = useShownQuery(userAgentStateQuery()).data;
   const counts = useMemo<PaneCounts>(
     () => ({
       asksForYou: tallyBySession(waitingOnYou(inbox.data ?? [], viewer)),

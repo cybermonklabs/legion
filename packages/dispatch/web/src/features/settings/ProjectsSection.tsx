@@ -1,8 +1,7 @@
 import { PROJECT_NAME_MAX } from "@legion/contracts";
 import type { Mutation } from "@tanstack/react-query";
-import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutationState, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-
 import { api, apiErrorMessage } from "../../api/client";
 import {
   projectDefaultAssigneesQuery,
@@ -25,8 +24,8 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { writesOf } from "../writes/write-store";
 import {
   settingsFieldLabel,
   settingsMonoInput,
@@ -50,7 +49,7 @@ export function ProjectsSection(): ReactNode {
   // picked", not "nobody", and reads as the viewer below.
   const [projectAssignee, setProjectAssignee] = useState<string | null>(null);
   const projectSubmitGuard = useSubmitGuard();
-  const projects = useQuery(projectsQuery());
+  const projects = useShownQuery(projectsQuery());
   // The form shows a refused create beside the key it was refused over.
   const createProject = useKeyedWrite({
     inline: true,
@@ -70,16 +69,16 @@ export function ProjectsSection(): ReactNode {
       setProjectAssignee(null);
     },
   });
-  const defaults = useQuery(projectDefaultAssigneesQuery());
+  const defaults = useShownQuery(projectDefaultAssigneesQuery());
   // The people list is read only once a reader reaches for a picker, as `AssigneeControl` does
   // it, so opening Settings makes no request for it.
   const [wantUsers, setWantUsers] = useState(false);
-  const users = useQuery({ ...usersQuery(), enabled: wantUsers });
+  const users = useShownQuery({ ...usersQuery(), enabled: wantUsers });
   const defaultAssignees = new Map((defaults.data ?? []).map((row) => [row.project, row.assignee]));
   const logins = (users.data ?? []).map((user) => user.login);
   // The server takes the person creating the project when the call names nobody, so that is what
   // the form starts on; the reader may pick anyone else who has signed in.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useShownQuery(whoAmIQuery()).data?.login;
   const newProjectAssignee = projectAssignee ?? viewer ?? "";
   const submitProject = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -399,7 +398,7 @@ function useDefaultAssigneeWrite(project: string): {
       if (saved === null || "superseded" in saved) {
         return;
       }
-      writesOf(queryClient).answer<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
+      queryClient.setQueryData<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
         if (rows === undefined) {
           return rows;
         }

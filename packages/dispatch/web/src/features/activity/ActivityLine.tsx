@@ -1,12 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-
 import { issueQuery } from "../../api/queries";
 import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
+import { useShownQuery } from "../writes/shown-query";
 
 type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;
 
@@ -60,7 +59,7 @@ function SavedVersionLine({
   event: ArtifactVersionEvent;
   issueKey: string;
 }): ReactNode {
-  const issue = useQuery(issueQuery(issueKey));
+  const issue = useShownQuery(issueQuery(issueKey));
   const artifact: Artifact | undefined = issue.data?.artifacts?.find(
     ({ id }) => id === event.payload.artifact_id
   );

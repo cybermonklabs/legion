@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { issueQuery } from "../../api/queries";
 import type {
   ArchitectureComponentRead,
@@ -29,6 +27,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 import { expansionStorageKey, placeChild, splitWork } from "./architecture-model";
 
 function readExpansion(storageKey: string): string[] {
@@ -315,7 +314,7 @@ function IssueChildren({
   rowSearch: (id: string) => string;
   tree: ArchitectureTree;
 }): ReactNode {
-  const detail = useQuery(issueQuery(parent));
+  const detail = useShownQuery(issueQuery(parent));
   if (detail.isPending) {
     return <p className={`px-3 pb-2 text-xs ${textMutedOnSurface}`}>Loading children…</p>;
   }

@@ -17,8 +17,8 @@ export interface IssuePriorityWrite {
 /**
  * The one way the SPA writes an issue's priority. Every surface that renders it (issue header,
  * board cards, list rows, inbox rows) shares this: the new value lands in the issue detail,
- * every project issue list and every inbox query that shows the issue, the store shows it there
- * again over each answer that lands while the write is live (R7) and stops drawing it if it
+ * every project issue list and every inbox query that shows the issue, the store composes it
+ * there over each answer that lands while the write is live (R7) and stops composing it if it
  * fails, and the lists refetch once the server has answered (see `useIssueFieldWrite`).
  */
 export function useIssuePriority(issueKey: string): IssuePriorityWrite {

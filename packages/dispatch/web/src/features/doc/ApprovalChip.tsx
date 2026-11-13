@@ -1,6 +1,5 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
-
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { Artifact, ArtifactApproval } from "../../api/types";
@@ -27,6 +26,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
@@ -76,7 +76,7 @@ function ReviewsDialog({
   onClose: () => void;
 }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
-  const reviews = useQuery({
+  const reviews = useShownQuery({
     queryFn: () => api.listArtifactReviews(artifactId),
     queryKey: ["artifact-reviews", artifactId],
   });

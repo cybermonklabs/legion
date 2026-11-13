@@ -1,7 +1,5 @@
 import { parseBlockPointerValue } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
-
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact, ArtifactBlock } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -12,6 +10,7 @@ import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
 import { useReferenceTarget } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute, parseNodeReference } from "../refs/routes";
+import { useShownQuery } from "../writes/shown-query";
 
 /** The `block[]` attribute `name` of `block` as the pointers it holds; empty for a block that
  *  carries none and for a value the server would refuse, which no stored block holds. */
@@ -74,7 +73,7 @@ interface PlanTask {
 function Tasks({ artifact }: { artifact: Artifact }): ReactNode {
   // The same key the document's own block read uses, so a tab opened after the document is
   // already answered.
-  const blocks = useQuery(artifactBlocksQuery(artifact.id));
+  const blocks = useShownQuery(artifactBlocksQuery(artifact.id));
   const data = blocks.data;
   const tasks = useMemo<readonly PlanTask[]>(() => {
     if (data === undefined) {

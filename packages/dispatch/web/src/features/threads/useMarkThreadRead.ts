@@ -1,11 +1,11 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-
 import { threadReadRequest } from "../../api/client";
 import { myRepliesKey, myRepliesOwnerQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { type DwellRef, useDwell } from "../shell/useDwell";
+import { useShownQuery } from "../writes/shown-query";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { unreadWrites } from "./thread-layout";
 
@@ -81,7 +81,7 @@ export function useMarkThreadRead({
   // never asks, so never cycles on a 403.
   const human = useIsHuman();
   const watching = enabled && human && owner !== undefined && newestShownAt !== undefined;
-  const unreadSet = useQuery({ ...myRepliesOwnerQuery(owner ?? NO_OWNER), enabled: watching });
+  const unreadSet = useShownQuery({ ...myRepliesOwnerQuery(owner ?? NO_OWNER), enabled: watching });
   const rows = unreadSet.data;
   // This thread's own row of that set, which says both that it is unread and what in it is.
   const row = watching

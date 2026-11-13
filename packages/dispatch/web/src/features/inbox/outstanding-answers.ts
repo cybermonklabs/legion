@@ -59,8 +59,8 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
    *  that leaves both alone. Read once, as the write goes, so the change it shows is exactly
    *  what that press took out. Every write does by default. */
   readonly removesRow?: () => boolean;
-  /** Called once the removal has stopped being drawn, so a refusal the surface reads is read on
-   *  the list Dispatch last gave. */
+  /** Called once the removal has stopped being composed, so a refusal the surface reads is read
+   *  on the list Dispatch last gave. */
   readonly onError?: (error: Error, variables: TVariables) => void;
   readonly onSettled?: () => void;
   readonly onSuccess?: (data: TData | null) => void;
@@ -80,9 +80,9 @@ export interface OutstandingAnswerWriteOptions<TData, TVariables> {
  * that lands on the Inbox's read while the write is live (R7 of dispatch://INFRA-299): the
  * answer arrives whole and the question the reader has answered does not come back under their
  * own answer. Whether this press removes the row at all is `removesRow`, read once as the write
- * goes and held with the change it shows. A refused one stops being drawn: the Inbox's read is
- * the store's copy of what Dispatch last gave it with every other live write's change over it,
- * and is read again (R10).
+ * goes and held with the change it shows. A refused one stops being composed: the Inbox's read
+ * is what Dispatch last gave it with every other live write's change over it, and is read again
+ * (R10).
  *
  * The write is inline (`useKeyedWrite`): the surface that wrote shows the refusal itself, over
  * what the reader wrote, so the shell's indicator carries the write only while it is out. The

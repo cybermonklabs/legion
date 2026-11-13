@@ -1,12 +1,11 @@
 import type { BlockMark } from "@legion/proof-editor";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-
 import { api, documentReadRequest } from "../../api/client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
+import { useShownQuery } from "../writes/shown-query";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
-import { writesOf } from "../writes/write-store";
 
 /** What a stale block says when the reader rests on it. */
 export const STALE_BLOCK_TITLE = "A decision that shaped this block changed after it.";
@@ -129,9 +128,9 @@ export function useSpecMarks({
   shownVersion: number | undefined;
 }): { changed: ChangedSinceRead | undefined; marks: readonly BlockMark[] } {
   const queryClient = useQueryClient();
-  const decisions = useQuery(issueDecisionsQuery(issueKey, enabled));
+  const decisions = useShownQuery(issueDecisionsQuery(issueKey, enabled));
   const readKey = ["document-read", artifact.id] as const;
-  const read = useQuery({
+  const read = useShownQuery({
     enabled,
     queryFn: () => api.getDocumentRead(artifact.id),
     queryKey: readKey,
@@ -145,12 +144,12 @@ export function useSpecMarks({
   }
   const readVersion = readAtOpen?.version ?? null;
   const specReference = `dispatch://${issueKey}/spec`;
-  const parts = useQuery({
+  const parts = useShownQuery({
     enabled: enabled && readVersion !== null,
     queryFn: () => api.getReferences(specReference, { kind: "part_of" }),
     queryKey: ["references", "to", specReference, "part_of"],
   });
-  const blocks = useQuery({
+  const blocks = useShownQuery({
     enabled: enabled && readVersion !== null,
     queryFn: () => api.getArtifactBlocks(artifact.id),
     queryKey: ["artifact", artifact.id, "blocks"],
@@ -175,7 +174,7 @@ export function useSpecMarks({
       enabled && readAtOpen !== undefined && shownVersion !== undefined
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
-    onSuccess: (result) => writesOf(queryClient).answer(readKey, () => result),
+    onSuccess: (result) => queryClient.setQueryData(readKey, result),
     request: (version) => documentReadRequest(artifact.id, version),
     shouldSend: true,
     target: `read:document:${artifact.id}`,

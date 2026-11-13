@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -9,7 +8,6 @@ import {
   useRef,
   useState,
 } from "react";
-
 import { type ArtifactOwner, api } from "../../api/client";
 import { usersQuery } from "../../api/queries";
 import type { Ask, AskRead, AskUrgency } from "../../api/types";
@@ -54,6 +52,7 @@ import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
+import { useShownQuery } from "../writes/shown-query";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -194,7 +193,10 @@ function useFormRef(): [
  * the optimistic `waiting_on_person` takes the row out of the Inbox's own list the moment the
  * write starts (`isMine`, `inAssigneeFilter`): without the hold this card would be unmounted
  * before the server answered, and a refusal would put the row back with a fresh card that
- * never failed, so the reader would see it return and no reason. The hold comes from the list
+ * never failed, so the reader would see it return and no reason. It asks at the press, as
+ * `AssignToMe` does: the store composes the hand-on over the Inbox's read as the write joins,
+ * before TanStack tells this card its own press is pending, so a hold asked for from that state a
+ * commit later would come after the row had left the list. The hold comes from the list
  * itself, through the context it provides (`hand-on-live.ts`), rather than from a prop every
  * host passes down: the card the reader pressed can be one the Inbox never rendered itself -
  * the decision block its reading column draws through the document page - and a prop that
@@ -206,7 +208,7 @@ function useFormRef(): [
  */
 function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
-  const people = useQuery({ ...usersQuery(), enabled: wanted });
+  const people = useShownQuery({ ...usersQuery(), enabled: wanted });
   const want = () => setWanted(true);
   const write = useAskHandOn(ask);
   const onLive = useContext(AskHandOnLiveContext);
@@ -252,7 +254,9 @@ function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): Re
           data-ask-hand-on={ask.id}
           onChange={(event) => {
             const { value } = event.target;
-            if (value !== "") write.submit(value);
+            if (value === "") return;
+            onLive(ask.id, true);
+            write.submit(value);
           }}
           onFocus={want}
           onMouseDown={(event) => event.stopPropagation()}

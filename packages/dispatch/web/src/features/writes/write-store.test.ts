@@ -26,6 +26,7 @@ import {
   type WriteBounds,
   type WriteRequest,
 } from "../../api/client";
+import { DispatchQueryClient } from "../../api/query-client";
 import { reachable, routeOf, unreachable } from "../../api/reachability";
 import {
   KEYED_SEND_ATTEMPT_MS,
@@ -2047,7 +2048,7 @@ test("a Retry shows a refused write's change again as it rejoins its line", asyn
 
       writes.retry(row(writes)?.id ?? 0);
       expect(row(writes)?.status).toBe("sending");
-      expect(client.getQueryData<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
     } finally {
       writes.clear();
       tab.close();
@@ -2066,8 +2067,8 @@ function readAgain(client: QueryClient, key: readonly unknown[]): boolean | unde
 }
 
 // R10 of dispatch://INFRA-299. A Retry's change has no press behind it: the first refusal settled
-// that press, and the store put its change back then. So once the Retry is refused in its turn,
-// the store reads again the caches its change wrote, and only those.
+// that press, and the store stopped composing its change then. So once the Retry is refused in
+// its turn, the store reads again the caches its change named, and only those.
 test("a Retry refused again reads again the caches its change wrote", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -2093,13 +2094,14 @@ test("a Retry refused again reads again the caches its change wrote", async () =
       client.setQueryData(["user-state"], { pinned: false });
 
       writes.retry(row(writes)?.id ?? 0);
-      expect(client.getQueryData<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
       await settle();
       expect(row(writes)?.status).toBe("refused");
       expect(readAgain(client, ["user-state"])).toBe(true);
       expect(readAgain(client, ["inbox"])).toBe(false);
 
-      // Its change stopped being drawn and was read again at that refusal: Discard reads nothing.
+      // Its change stopped being composed and was read again at that refusal: Discard reads
+      // nothing.
       client.setQueryData(["user-state"], { pinned: false });
       expect(writes.discard(row(writes)?.id ?? 0)).toBe(true);
       expect(readAgain(client, ["user-state"])).toBe(false);
@@ -2111,7 +2113,7 @@ test("a Retry refused again reads again the caches its change wrote", async () =
 });
 
 // A Retry waiting its turn behind another write of its row, never sent, is the reader's to
-// discard: the store puts its change back and reads its caches again.
+// discard: the store stops composing its change and reads its caches again.
 test("a discarded Retry that waited its turn reads again the caches its change wrote", async () => {
   await onFakeClock(async () => {
     const tab = keptTab();
@@ -2141,7 +2143,7 @@ test("a discarded Retry that waited its turn reads again the caches its change w
 
       writes.retry(row(writes)?.id ?? 0);
       expect(row(writes)).toMatchObject({ sent: false, status: "queued" });
-      expect(client.getQueryData<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
+      expect(writes.shown<{ pinned: boolean }>(["user-state"])).toEqual({ pinned: true });
       expect(writes.discard(row(writes)?.id ?? 0)).toBe(true);
       expect(readAgain(client, ["user-state"])).toBe(true);
     } finally {
@@ -2151,7 +2153,7 @@ test("a discarded Retry that waited its turn reads again the caches its change w
   });
 });
 
-/** The viewer's state of CORE-1 as these rows draw it: its pin and its read mark, under the
+/** The viewer's state of CORE-1 as these rows compose it: its pin and its read mark, under the
  *  sequence Dispatch last gave it. */
 interface PinAndMark {
   readonly pinned: boolean;
@@ -2203,7 +2205,7 @@ async function retriedBesideAMark(retried: () => Promise<unknown>) {
   writes.retry(pin?.id ?? 0);
   // Dispatch's state, read while both are out: it has taken neither, and its sequence moved on.
   client.setQueryData<PinAndMark>(["user-state"], { pinned: false, read: false, seq: 2 });
-  expect(client.getQueryData<PinAndMark>(["user-state"])).toEqual({
+  expect(writes.shown<PinAndMark>(["user-state"])).toEqual({
     pinned: true,
     read: true,
     seq: 2,
@@ -2212,16 +2214,16 @@ async function retriedBesideAMark(retried: () => Promise<unknown>) {
 }
 
 // R10 of dispatch://INFRA-299. A Retry refused in its turn has no press waiting on it, and its
-// change simply stops being drawn: the page is what Dispatch last gave the cache, with the live
-// mark shown over it, before the store reads again: a read that fails - offline, a 5xx - leaves
-// the page on that, never on the pin Dispatch refused twice.
+// change simply stops being composed: the page is what Dispatch last gave the cache, with the
+// live mark composed over it, before the store reads again: a read that fails - offline, a 5xx -
+// leaves the page on that, never on the pin Dispatch refused twice.
 test("a Retry refused again leaves Dispatch's last answer, live writes over it, before reading again", async () => {
   await onFakeClock(async () => {
     const { client, tab, writes } = await retriedBesideAMark(() => Promise.reject(verdict));
     try {
       await settle();
       expect(writes.rows().map((write) => write.status)).toEqual(["refused", "sending"]);
-      expect(client.getQueryData<PinAndMark>(["user-state"])).toEqual({
+      expect(writes.shown<PinAndMark>(["user-state"])).toEqual({
         pinned: false,
         read: true,
         seq: 2,
@@ -2234,10 +2236,10 @@ test("a Retry refused again leaves Dispatch's last answer, live writes over it, 
   });
 });
 
-// R10. A Retry taken by a sign-out has no press to put its change back either: the store puts
-// back what Dispatch last gave the cache - the mark, taken with it, is not shown over it - and
-// reads again, so a read that fails leaves neither change on the page.
-test("a Retry taken by a sign-out puts back Dispatch's last answer before reading again", async () => {
+// R10. A Retry taken by a sign-out has no press waiting on it either, and its change, with the
+// mark taken beside it, simply stops being composed: the page is what Dispatch last gave the
+// cache, and the store reads again, so a read that fails leaves neither change on the page.
+test("a Retry taken by a sign-out leaves Dispatch's last answer on the page before reading again", async () => {
   await onFakeClock(async () => {
     const { client, tab, writes } = await retriedBesideAMark(
       () => Promise.withResolvers<never>().promise
@@ -2246,7 +2248,7 @@ test("a Retry taken by a sign-out puts back Dispatch's last answer before readin
       await settle();
       writes.clear();
       expect(writes.rows()).toEqual([]);
-      expect(client.getQueryData<PinAndMark>(["user-state"])).toEqual({
+      expect(writes.shown<PinAndMark>(["user-state"])).toEqual({
         pinned: false,
         read: false,
         seq: 2,
@@ -2265,11 +2267,11 @@ interface RowPage {
   readonly rows: readonly string[];
 }
 
-// R7 and R10 of dispatch://INFRA-299. A "Show more" read while a change is shown on an infinite
-// read - a restore taking a row out of the Dismissed list - is answered by TanStack with the pages
-// the cache held, which carry that change, and the page that arrived after them. Only that page
-// is Dispatch's, so once the restore is refused and every read fails, the list shows Dispatch's
-// first page whole, the row the restore took out among it, with the page that arrived after it.
+// R7 and R10 of dispatch://INFRA-299. A "Show more" read while a change is composed on an
+// infinite read - a restore taking a row out of the Dismissed list - is built by TanStack from the
+// pages the cache holds, which are Dispatch's alone, and the page that arrived after them. So once
+// the restore is refused and every read fails, the list shows Dispatch's first page whole, the
+// row the restore took out among it, with the page that arrived after it.
 test("a page read more while a change is shown on an infinite read leaves Dispatch's pages once the write is refused and reads fail", async () => {
   const tab = keptTab();
   const client = signedIn();
@@ -2294,8 +2296,7 @@ test("a page read more while a change is shown on an infinite read leaves Dispat
   await client.prefetchInfiniteQuery(read);
   const observer = new InfiniteQueryObserver(client, read);
   const unsubscribe = observer.subscribe(() => {});
-  const rows = () =>
-    client.getQueryData<InfiniteData<RowPage>>(key)?.pages.map((page) => page.rows);
+  const rows = () => writes.shown<InfiniteData<RowPage>>(key)?.pages.map((page) => page.rows);
   const refused = Promise.withResolvers<never>();
   try {
     const restore = writes.run({
@@ -2326,6 +2327,156 @@ test("a page read more while a change is shown on an infinite read leaves Dispat
     expect(rows()).toEqual([["a", "b"], ["c"]]);
   } finally {
     unsubscribe();
+    writes.clear();
+    tab.close();
+  }
+});
+
+/** A row of round six's review of dispatch://INFRA-299's pull request, the reviewer's own probe:
+ *  `DispatchQueryClient`, where the read again a refusal asks for waits for the page still out,
+ *  and a real `fetchNextPage`. */
+function dispatchClient(): QueryClient {
+  const client = new DispatchQueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  return client;
+}
+
+/** A restore of thread `a` that shows itself on the Dismissed list at `key`, whose attempt
+ *  answers `answer`. */
+function restoreOfA(writes: Writes, key: readonly unknown[], answer: () => Promise<unknown>) {
+  return writes.run({
+    detail: null,
+    kind: plainWrite,
+    label: "Thread a restored",
+    presentation: "indicator",
+    shows: (shown) =>
+      shown.on<InfiniteData<RowPage>>(key, (pages) => ({
+        ...pages,
+        pages: pages.pages.map((page) => ({
+          ...page,
+          rows: page.rows.filter((id) => id !== "a"),
+        })),
+      })),
+    unlined: offLine,
+    write: attemptOf(put, answer),
+  });
+}
+
+// R10 of dispatch://INFRA-299, round six's High: Restore on the Dismissed list, then Show more,
+// then the restore refused while that page is still loading, then the read again failing. The
+// page is built from the pages the cache holds, which are Dispatch's alone, so it arrives with
+// Dispatch's first page whole under it, and the refused restore is composed nowhere: Dispatch's
+// row comes back and stays.
+test("a restore refused while a Show more is loading leaves Dispatch's row on the list once the read again fails", async () => {
+  const tab = keptTab();
+  const client = dispatchClient();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  const key = ["me", "replies", "inbox", "dismissed"];
+  const page = Promise.withResolvers<RowPage>();
+  let online = true;
+  const read = {
+    getNextPageParam: (last: RowPage) => last.next,
+    initialPageParam: "first",
+    queryFn: ({ pageParam }: { pageParam: unknown }) => {
+      if (!online) return Promise.reject(new Error("Failed to fetch"));
+      return pageParam === "first"
+        ? Promise.resolve<RowPage>({ next: "second", rows: ["a", "b"] })
+        : page.promise;
+    },
+    queryKey: key,
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  };
+  await client.prefetchInfiniteQuery(read);
+  const observer = new InfiniteQueryObserver(client, read);
+  const unsubscribe = observer.subscribe(() => {});
+  const rows = () => writes.shown<InfiniteData<RowPage>>(key)?.pages.map((one) => one.rows);
+  const refused = Promise.withResolvers<never>();
+  try {
+    const restore = restoreOfA(writes, key, () => refused.promise);
+    expect(rows()).toEqual([["b"]]);
+
+    const more = observer.fetchNextPage();
+    online = false;
+    refused.reject(verdict);
+    await expect(restore).rejects.toThrow();
+    expect(rows()).toEqual([["a", "b"]]);
+
+    page.resolve({ next: undefined, rows: ["c"] });
+    await more;
+    await waitFor(() => expect(client.getQueryState(key)?.status).toBe("error"));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    expect(rows()).toEqual([["a", "b"], ["c"]]);
+  } finally {
+    unsubscribe();
+    writes.clear();
+    tab.close();
+  }
+});
+
+/** A page of an offset-paged read, as the Answers page pages its rows. */
+interface OffsetPage {
+  readonly offset: number;
+  readonly rows: readonly string[];
+  readonly total: number;
+}
+
+// R7 of dispatch://INFRA-299, round six's Minor: an offset-paged list with a live change taking a
+// row out. The next page's offset is read off Dispatch's pages, which the change never touches,
+// so Show more reads the page after them and the person sees it arrive.
+test("a live change taking a row out of an offset-paged list leaves Show more reading the next page", async () => {
+  const tab = keptTab();
+  const client = dispatchClient();
+  const writes = new Writes(client, tab.page(), memoryFiles());
+  const key = ["me", "answers"];
+  const all = ["a", "b", "c"];
+  const read = {
+    getNextPageParam: (last: OffsetPage) =>
+      last.offset + last.rows.length < last.total ? last.offset + last.rows.length : undefined,
+    initialPageParam: 0,
+    queryFn: ({ pageParam }: { pageParam: number }) =>
+      Promise.resolve<OffsetPage>({
+        offset: pageParam,
+        rows: all.slice(pageParam, pageParam + 2),
+        total: all.length,
+      }),
+    queryKey: key,
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
+  };
+  await client.prefetchInfiniteQuery(read);
+  const observer = new InfiniteQueryObserver(client, read);
+  const unsubscribe = observer.subscribe(() => {});
+  const rows = () => writes.shown<InfiniteData<OffsetPage>>(key)?.pages.map((one) => one.rows);
+  const held = Promise.withResolvers<never>();
+  try {
+    void writes
+      .run({
+        detail: null,
+        kind: plainWrite,
+        label: "Answer a hidden",
+        presentation: "indicator",
+        shows: (shown) =>
+          shown.on<InfiniteData<OffsetPage>>(key, (pages) => ({
+            ...pages,
+            pages: pages.pages.map((one) => ({
+              ...one,
+              rows: one.rows.filter((id) => id !== "a"),
+            })),
+          })),
+        unlined: offLine,
+        write: attemptOf(put, () => held.promise),
+      })
+      .catch(() => {});
+    expect(rows()).toEqual([["b"]]);
+    expect(observer.getCurrentResult().hasNextPage).toBe(true);
+
+    await observer.fetchNextPage();
+    expect(rows()).toEqual([["b"], ["c"]]);
+    expect(observer.getCurrentResult().hasNextPage).toBe(false);
+  } finally {
+    unsubscribe();
+    held.reject(verdict);
     writes.clear();
     tab.close();
   }

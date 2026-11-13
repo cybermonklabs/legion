@@ -1,8 +1,7 @@
 import { itemFromSearch } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-
 import type { WriteBounds } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery, whoAmIQuery } from "../../api/queries";
@@ -15,6 +14,7 @@ import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
 import { COMPACT_VIEWPORT_QUERY, PHONE_VIEWPORT_QUERY } from "../shell/useDialog";
+import { useShownQuery } from "../writes/shown-query";
 import type { MarginComposer } from "./CommentsTab";
 import type { MarginSheetModel } from "./MarginSheet";
 import {
@@ -149,8 +149,8 @@ export function useMarginSheet(): MarginSheetModel {
     if (sheetThreadKey !== undefined) store.discard(marginReplySendKey(sheetThreadKey));
   }, [sheetReplySendingNow, sheetThreadKey, store]);
   const marginRef = useRef<HTMLElement>(null);
-  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
-  const viewer = useQuery(whoAmIQuery());
+  const issue = useShownQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
+  const viewer = useShownQuery(whoAmIQuery());
   const visibleArtifact =
     documentRoute === undefined
       ? routeArtifactSlug === undefined

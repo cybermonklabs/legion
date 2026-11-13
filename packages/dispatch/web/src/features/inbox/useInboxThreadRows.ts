@@ -1,9 +1,8 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type RefObject, useMemo } from "react";
-
 import { dismissedThreadsQuery, inboxThreadsQuery } from "../../api/queries";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import type { InboxShow } from "../refs/routes";
+import { useShownInfiniteQuery, useShownQuery } from "../writes/shown-query";
 import type { InboxListRow } from "./list-row";
 import { useMotionHold } from "./motion-hold";
 
@@ -46,11 +45,11 @@ export function useInboxThreadRows({
   // signed-in browser holds, so the list only asks once the sign-in read says the principal is a
   // user; neither read is made for the view that is not showing.
   const human = useIsHuman();
-  const threads = useQuery({
+  const threads = useShownQuery({
     ...inboxThreadsQuery(),
     enabled: human && !asksOnly && show === "inbox",
   });
-  const dismissed = useInfiniteQuery({
+  const dismissed = useShownInfiniteQuery({
     ...dismissedThreadsQuery(),
     enabled: human && !asksOnly && show === "dismissed",
   });

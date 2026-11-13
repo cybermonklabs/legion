@@ -1,6 +1,5 @@
-import { hashKey, type MutationKey, useQuery, useQueryClient } from "@tanstack/react-query";
+import { hashKey, type MutationKey, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
-
 import { api } from "../../api/client";
 import { agentMessagesQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
@@ -22,6 +21,7 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
 import { useSessionSends } from "../conversation/useSessionSends";
 import { focusOnDocument } from "../shell/roving";
+import { useShownQuery } from "../writes/shown-query";
 import { AGENT_ROW_SELECTOR, ISSUE_PICKER_SELECTOR } from "./keyboard";
 
 /** A reply the agent composer answers: the quoted message and the conversation it belongs to
@@ -160,7 +160,7 @@ export function AgentMessageComposer({
     if (commits === 0) return;
     box.current?.querySelector("textarea")?.focus();
   }, [commits]);
-  const issues = useQuery({
+  const issues = useShownQuery({
     enabled: issuePickerOpen,
     queryFn: () => api.listIssues({ open: true }),
     queryKey: ["agents", "issue-picker"],

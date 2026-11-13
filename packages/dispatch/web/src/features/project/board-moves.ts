@@ -5,7 +5,7 @@ import { ApiError, issuePatchRequest } from "../../api/client";
 import { projectIssuesQueryKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { type ShownAhead, useWrites } from "../writes/write-store";
+import { type FromPress, useWrites } from "../writes/write-store";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 
 export const staleBoardMessage =
@@ -24,11 +24,11 @@ type Drop =
       readonly index: number;
     };
 
-/** One move as its write holds it: the card, the drop's placement the board showed at the press
- *  - which the write takes over as it joins the store - and the PATCH body naming the neighbours
- *  it was dropped between. */
+/** One move as its write holds it: the card, the drop's placement the board composed from the
+ *  press - which the write takes over as it joins the store - and the PATCH body naming the
+ *  neighbours it was dropped between. */
 interface BoardMove {
-  readonly ahead: ShownAhead;
+  readonly pressed: FromPress;
   readonly input: UpdateIssueInput;
   readonly key: string;
 }
@@ -51,21 +51,22 @@ function placeDrop(
  * The one path every board move takes - pointer, touch and keyboard drops alike. `moveCard`
  * places the card where it was dropped, sends the PATCH naming the visible neighbours, and
  * refetches the project list once the server has answered. The placement is the write's own
- * change: the drop's rule run against the list as it stands, shown at the press ahead of the
- * write (`Writes.showAhead`) and drawn by the store over each answer that lands on that list
- * while the move is unanswered (R7 of dispatch://INFRA-299) - the card keeps the place the person
- * dropped it at and every other card's move the answer carries arrives with it. Moves on one
- * board are serialised through a single mutation scope, so a second drop computes its neighbours
- * from the first drop's placement and never overtakes it on the wire. A failed move stops being
- * drawn - the board is Dispatch's copy of it with every other live move over it (R10) - and the
- * list is read again, and the board says so: a stale rank (`RANK_INPUT`, the neighbours moved
- * under the drag) gets `staleBoardMessage`; anything else the server's message.
+ * change: the drop's rule run against the list as it stands, composed from the press
+ * (`Writes.fromPress`) over each answer that lands on that list while the move is unanswered (R7
+ * of dispatch://INFRA-299) - the card keeps the place the person dropped it at and every other
+ * card's move the answer carries arrives with it. Moves on one board are serialised through a
+ * single mutation scope, so a second drop computes its neighbours from the board as the person
+ * sees it, the first drop's placement composed in (`Writes.shown`), and never overtakes it on the
+ * wire. A failed move stops being composed - the board is Dispatch's list with every other live
+ * move over it (R10) - and the list is read again, and the board says so: a stale rank
+ * (`RANK_INPUT`, the neighbours moved under the drag) gets `staleBoardMessage`; anything else the
+ * server's message.
  *
  * With filters active, `labels` names the query the board actually renders (the same key the
- * List shares), so the optimistic write, its leaving and refetch hit the list on screen; a
- * successful move also refetches the unfiltered list, whose rank changed too. `isVisible` is the
- * board's filter predicate: insertion indices count visible cards, the PATCH names visible
- * neighbours, and hidden issues keep their cache positions.
+ * List shares), so the drop, its leaving and refetch hit the list on screen; a successful move
+ * also refetches the unfiltered list, whose rank changed too. `isVisible` is the board's filter
+ * predicate: insertion indices count visible cards, the PATCH names visible neighbours, and hidden
+ * issues keep their cache positions.
  */
 export function useBoardMoves(
   project: string,
@@ -87,7 +88,7 @@ export function useBoardMoves(
   const writes = useWrites();
   const [error, setError] = useState<string>();
   const queryKey = projectIssuesQueryKey(project, labels);
-  // The board says why a move was refused, over the card the store no longer draws moved. A
+  // The board says why a move was refused, over the card the store no longer composes moved. A
   // move is one write to its issue, so it goes in press order with every other write to that
   // issue (`issue:<KEY>`) - the header's status, its fields, a components save.
   const patch = useKeyedWrite({
@@ -96,15 +97,16 @@ export function useBoardMoves(
     target: ({ key }) => `issue:${key}`,
     request: ({ input, key }) => issuePatchRequest(key, input),
     scope: { id: `board:${project}` },
-    /** The drop, shown at its press (`commit`) and taken over by the write as it joins. */
-    shows: ({ ahead }) => ahead,
+    /** The drop, composed from its press (`commit`) and taken over by the write as it joins. */
+    shows: ({ pressed }) => pressed,
   });
   const { mutateAsync } = patch;
   /** Commits one drop: the card placed where it was dropped, the PATCH, the refusal said, refetch
    *  once it settles - the one tail `moveCard` and `moveCardToLane` share. */
   const commit = useCallback(
     async (key: string, drop: Drop) => {
-      const previous = queryClient.getQueryData<IssueSummary[]>(queryKey);
+      // The board as the person sees it: every earlier drop still out composed over Dispatch's.
+      const previous = writes.shown<IssueSummary[]>(queryKey);
       if (previous === undefined) {
         return;
       }
@@ -112,21 +114,21 @@ export function useBoardMoves(
       if (moved === undefined) {
         return;
       }
-      // Neither awaited: the cancel takes effect synchronously, and the card must be where it
-      // was dropped in this tick - the board's own scope holds a second drop's write until the
-      // first answers - so the drop is shown here, ahead of its write (`Writes.showAhead`), in
-      // the press's place among the board's live changes: drawn over every earlier drop still
-      // out, as it was placed, and over every answer that lands before its write joins. The
-      // refetch below restores what the cancel drops.
+      // The card must be where it was dropped in this tick - the board's own scope holds a second
+      // drop's write until the first answers - so the drop is composed from here
+      // (`Writes.fromPress`), in the press's place among the board's live changes: over every
+      // earlier drop still out, as it was placed, and over every answer that lands before its
+      // write joins. A read already out was asked before this press; the refetch below reads the
+      // board again.
       void queryClient.cancelQueries({ queryKey, exact: true });
-      const ahead = writes.showAhead((shown) => {
+      const pressed = writes.fromPress((shown) => {
         shown.on<IssueSummary[]>(
           queryKey,
           (current) => placeDrop(current, key, drop, isVisible)?.issues ?? current
         );
       });
       try {
-        await mutateAsync({ ahead, input: moved.input, key });
+        await mutateAsync({ input: moved.input, key, pressed });
         setError(undefined);
         if (labels.length > 0) {
           await queryClient.invalidateQueries({ queryKey: projectIssuesQueryKey(project, []) });
@@ -140,7 +142,7 @@ export function useBoardMoves(
             : "Could not move the card."
         );
       } finally {
-        ahead.release();
+        pressed.release();
         await queryClient.invalidateQueries({ queryKey });
       }
     },

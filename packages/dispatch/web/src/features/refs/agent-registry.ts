@@ -1,8 +1,8 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
-
 import { api, isAgentListRefilling } from "../../api/client";
 import type { Agent } from "../../api/types";
+import { useShownQuery } from "../writes/shown-query";
 
 /**
  * The agent registry (`GET /api/v1/agents`: the sessions the Envoy listener lists, as of
@@ -94,7 +94,7 @@ export function useRegistryPolling(active: boolean): void {
 /** The one owner of the registry's refresh cadence, mounted once in the app shell. */
 export function AgentRegistryPoller(): null {
   const wanted = useSyncExternalStore(subscribePolling, pollingWanted, pollingWanted);
-  useQuery({
+  useShownQuery({
     ...agentsQuery(),
     enabled: wanted,
     refetchInterval: wanted ? AGENT_REGISTRY_POLL_MS : false,
@@ -129,7 +129,7 @@ export interface AgentRegistry {
  */
 export function useAgentRegistry(enabled: boolean): AgentRegistry {
   useRegistryPolling(enabled);
-  const { data, error, isError, isPending } = useQuery({
+  const { data, error, isError, isPending } = useShownQuery({
     ...agentsQuery(),
     enabled,
     refetchOnMount: false,

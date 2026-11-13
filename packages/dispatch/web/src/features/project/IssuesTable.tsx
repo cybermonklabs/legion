@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { userStateQuery } from "../../api/queries";
@@ -14,6 +13,7 @@ import {
 import { useAgentRegistry } from "../refs/agent-registry";
 import { setSelectedIssues } from "../search/bar-scope";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
+import { useShownQuery } from "../writes/shown-query";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
@@ -53,7 +53,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const layout = useTableLayout(project, ISSUE_TABLE_COLUMNS);
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
-  const userState = useQuery(userStateQuery());
+  const userState = useShownQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
   const [openFilter, setOpenFilter] = useState<string>();
 

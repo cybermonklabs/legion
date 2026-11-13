@@ -1,7 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
-
 import { api, type WriteBounds } from "../../api/client";
 import { commentsQueryKey, inboxQuery, issueQuery, userStateQuery } from "../../api/queries";
 import type {
@@ -28,6 +27,7 @@ import {
   pinnedEventIds,
 } from "../issue/pins";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
+import { useShownQuery } from "../writes/shown-query";
 import { useAnsweredAsks } from "./useAnsweredAsks";
 import { type CommentAction, useCommentActionQueue } from "./useCommentActionQueue";
 
@@ -326,7 +326,7 @@ export function useMarginItems(
   const commentsKey = commentsQueryKey(
     owner?.kind === "document" ? { artifact: owner.artifactId } : { issue: owner?.key }
   );
-  const asks = useQuery(inboxQuery());
+  const asks = useShownQuery(inboxQuery());
   const inboxOpenAsks = useMemo(
     () =>
       (asks.data ?? []).filter(
@@ -340,7 +340,7 @@ export function useMarginItems(
       ),
     [asks.data, owner]
   );
-  const comments = useQuery({
+  const comments = useShownQuery({
     queryKey: commentsKey,
     queryFn: () => {
       if (owner === undefined) {
@@ -352,11 +352,11 @@ export function useMarginItems(
     },
     enabled: owner !== undefined,
   });
-  const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
+  const userState = useShownQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
   const dismissed =
     owner?.kind === "issue" ? (userState.data?.[owner.key]?.dismissed ?? NO_PINS) : NO_PINS;
   const pinnedIds = pinnedEventIds(dismissed);
-  const pinned = useQuery({
+  const pinned = useShownQuery({
     enabled: owner?.kind === "issue" && tab === "pinned" && pinnedIds.length > 0,
     queryKey: ["events", issueKey, "margin-pinned", pinnedIds],
     queryFn: () => {
@@ -375,7 +375,7 @@ export function useMarginItems(
     () => pinnedMarkers.filter((marker) => marker.kind === "message").map((marker) => marker.id),
     [pinnedMarkers]
   );
-  const pinnedMessages = useQuery({
+  const pinnedMessages = useShownQuery({
     enabled: owner?.kind === "issue" && tab === "pinned" && pinnedMessageIds.length > 0,
     queryKey: ["issue-messages", issueKey, "margin-pinned", pinnedMessageIds],
     queryFn: () => {
@@ -483,7 +483,7 @@ export function useMarginItems(
   // once that spec is on screen, since the issue page keeps it mounted under the Conversation.
   const showsDecisions =
     owner?.kind === "issue" && visibleArtifact?.primary === true && documentShown;
-  const decisionsView = useQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
+  const decisionsView = useShownQuery(issueDecisionsQuery(issueKey ?? "", showsDecisions));
   const decisions = useMemo<DecisionMarginItem[]>(() => {
     if (!showsDecisions) return [];
     const decisionItems = (decisionsView.data?.decisions ?? []).flatMap((decision) => {
@@ -531,8 +531,8 @@ export function useMarginItems(
     () => [...needsYou.map((ask) => ({ ask, kind: "ask" as const })), ...items],
     [items, needsYou]
   );
-  // A refused action stops being drawn: the comments are the store's copy of what Dispatch last
-  // gave them, every other live action over them, read again (R10 of dispatch://INFRA-299).
+  // A refused action stops being composed: the comments are what Dispatch last gave them, every
+  // other live action over them, read again (R10 of dispatch://INFRA-299).
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue({
     // A read already out was asked before this action went out.
     onMutate: () => queryClient.cancelQueries({ queryKey: commentsKey }),

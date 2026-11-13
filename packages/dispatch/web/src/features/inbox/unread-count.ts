@@ -11,17 +11,16 @@
  * twice. A thread that arrives while a press is out is held under the bound until the press's own
  * read of the count, once its answer lands, sets it.
  *
- * The bound of each press is read when it is shown, from the presses live then. A press made
+ * The bound of each press is read when it is composed, from the presses live then. A press made
  * leaves and takes its rows out of the count before every earlier press still out: Dispatch has
- * taken them, whatever becomes of those; and it leaves in the count Dispatch last gave, which the
- * store keeps apart from the screen, its own drop alone (`madeUnreadCount`), never the bound of a
- * press still out beside it, which the store goes on drawing over that count. A refused press
- * leaves at once and takes its rows out of the bound of every later press still out, and the
- * store draws the count again (`Writes.redraw`): the count Dispatch last gave (`Writes.#copies`)
- * under the bound of every press still out. The store reads the count again as the press leaves,
- * whose answer counts every press Dispatch made and is drawn under every press still out; while
- * that read is out, or once it fails, the count drawn from Dispatch's last is what the badge
- * shows.
+ * taken them, whatever becomes of those; and it leaves in the count the cache holds, Dispatch's
+ * own, its own drop alone (`madeUnreadCount`), never the bound of a press still out beside it,
+ * which the store goes on composing over that count. A refused press leaves at once and takes its
+ * rows out of the bound of every later press still out, and the store composes the count again
+ * (`Writes.recompose`): the count Dispatch last gave under the bound of every press still out.
+ * The store reads the count again as the press leaves, whose answer counts every press Dispatch
+ * made and is composed under every press still out; while that read is out, or once it fails, the
+ * count composed from Dispatch's last is what the badge shows.
  */
 
 import type { QueryClient } from "@tanstack/react-query";
@@ -57,15 +56,16 @@ const dropOfPress = new WeakMap<object, UnreadDrop>();
 
 /**
  * Registers the press made with `press` that takes `taken` unread threads out of the count, at
- * its press and before it shows its change. Undefined while the count has not been read, where
- * there is nothing to drop; the count's first answer is then Dispatch's own.
+ * its press and before it shows its change: the count before it is the count the person sees
+ * (`Writes.shown`), every press still out composed over Dispatch's. Undefined while the count has
+ * not been read, where there is nothing to drop; the count's first answer is then Dispatch's own.
  */
 export function pressUnreadDrop(
   client: QueryClient,
   taken: number,
   press: object
 ): UnreadDrop | undefined {
-  const before = client.getQueryData<number>(myRepliesCountQuery().queryKey);
+  const before = writesOf(client).shown<number>(myRepliesCountQuery().queryKey);
   if (before === undefined) return undefined;
   const drop: UnreadDrop = { before, taken };
   liveDrops(client).push(drop);
@@ -74,11 +74,11 @@ export function pressUnreadDrop(
 }
 
 /**
- * The change every press that drops the count shows on it, at its press and over every answer the
- * store shows it again over: the count held under the bound of every press live when it is shown,
- * the count before that press less its own rows. The store shows each live press in the order
- * they were pressed, and each holds the count under the same bounds, so a count shown over again
- * is the same count however many presses are out.
+ * The change every press that drops the count shows on it, composed over every answer the count
+ * takes while the press is live: the count held under the bound of every press live when it is
+ * composed, the count before that press less its own rows. The store composes each live press in
+ * the order they were pressed, and each holds the count under the same bounds, so a count
+ * composed again is the same count however many presses are out.
  */
 export function shownUnreadCount(client: QueryClient): (count: number) => number {
   return (count) =>
@@ -90,10 +90,10 @@ export function shownUnreadCount(client: QueryClient): (count: number) => number
 
 /**
  * What the press made with `press` leaves of the count Dispatch last gave once Dispatch made it
- * (`Shown.on`'s `made`, which the store writes into its copy of the count): its own drop alone -
- * at most the count before every press still out ahead of it, less the rows this press took -
- * and never the bound of a press still out beside it, which the store goes on drawing over the
- * copy while that press is out. A press that registered no drop leaves the count as it is.
+ * (`Shown.on`'s `made`, which the store writes into the count's cache): its own drop alone - at
+ * most the count before every press still out ahead of it, less the rows this press took - and
+ * never the bound of a press still out beside it, which the store goes on composing over the
+ * count while that press is out. A press that registered no drop leaves the count as it is.
  */
 export function madeUnreadCount(client: QueryClient, press: object): (count: number) => number {
   return (count) => {
@@ -108,10 +108,10 @@ export function madeUnreadCount(client: QueryClient, press: object): (count: num
 
 /**
  * The press of `drop` was refused, or let go with nothing made: it leaves, every press after it
- * stops counting its rows, and the count is drawn again under the bound of every press still
- * live (`Writes.redraw`) - the store stopped drawing this press as it left, and its own bound
- * would otherwise hold the count down until the next answer. It leaves here rather than when
- * its write settles for the same reason.
+ * stops counting its rows, and the count is composed again under the bound of every press still
+ * live (`Writes.recompose`) - the store stopped composing this press as it left, and its own
+ * bound would otherwise hold the count down until the next answer. It leaves here rather than
+ * when its write settles for the same reason.
  */
 export function refusedUnreadDrop(client: QueryClient, drop: UnreadDrop | undefined): void {
   if (drop === undefined) return;
@@ -120,7 +120,7 @@ export function refusedUnreadDrop(client: QueryClient, drop: UnreadDrop | undefi
   if (at === -1) return;
   live.splice(at, 1);
   for (const later of live.slice(at)) later.before += drop.taken;
-  writesOf(client).redraw(myRepliesCountQuery().queryKey);
+  writesOf(client).recompose();
 }
 
 /** The write of `drop`'s press settled, either way: it no longer holds the count. A refused one

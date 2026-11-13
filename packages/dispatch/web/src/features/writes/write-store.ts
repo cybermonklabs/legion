@@ -1,11 +1,9 @@
 import { DISPATCH_LOGIN_CHANGED } from "@legion/contracts";
 import {
   hashKey,
-  type InfiniteData,
   type Query,
   type QueryClient,
   type QueryKey,
-  replaceEqualDeep,
   useQueryClient,
 } from "@tanstack/react-query";
 import { useRef, useSyncExternalStore } from "react";
@@ -213,29 +211,29 @@ export type WriteLine =
     };
 
 /**
- * The caches one change writes, and the one way a write writes them: a change names each cache
- * it shows itself on, so the store knows which answers that write must show it over again
- * (R7 of dispatch://INFRA-299). Every change is a function of the cache as it stands, never of
- * a value read before it: `change` is handed the data the cache holds now - the answer, once one
- * has landed - and answers with the data the person's change leaves. A cache holding nothing is
- * left holding nothing: there is no row there to change, and the answer that fills it is shown
- * over in its turn.
+ * The caches one change is composed on, and the one way a write shows itself: a change names each
+ * cache it shows itself on, and every read of that cache composes it over the data Dispatch last
+ * gave it while the write is live (R7 of dispatch://INFRA-299). Every change is a function of the
+ * cache as it stands, never of a value read before it: `change` is handed Dispatch's data - the
+ * answer, once one has landed - with every live change pressed before it over it, and answers
+ * with the data the person's change leaves. A cache holding nothing is left holding nothing:
+ * there is no row there to change, and the answer that fills it is composed over in its turn.
  */
 export interface Shown {
   /** Shows the change on the cache at `key`. `made`, where given, is what the change leaves in
-   *  Dispatch's copy of that cache once Dispatch has made the write (`Writes.#keepMade`), for a
-   *  change whose drawing holds more than its own write: the unread count's, held under the
-   *  bound of every press still out, of which Dispatch made this press's drop alone. Left out,
-   *  the change itself. */
+   *  that cache once Dispatch has made the write (`Writes.#keepMade`), for a change whose
+   *  composition holds more than its own write: the unread count's, held under the bound of
+   *  every press still out, of which Dispatch made this press's drop alone. Left out, the change
+   *  itself. */
   on<T>(key: QueryKey, change: (data: T) => T, made?: (data: T) => T): void;
   /** Shows it on every cache whose key starts with `key` - a project's issue lists, the Inbox's
    *  reads - including one read for the first time after the press, since the answer that fills
-   *  it is shown over too. */
+   *  it is composed over too. */
   under<T>(key: QueryKey, change: (data: T) => T): void;
 }
 
-/** A change a write shows: the same call at the press and over each answer that lands on a cache
- *  it wrote, until the write settles. A write that shows nothing names none. */
+/** A change a write shows: the same call for every read of a cache it names, until the write
+ *  settles. A write that shows nothing names none. */
 export type WriteChange = (shown: Shown) => void;
 
 /** One write to make: its kind and record, what the indicator names it, where it shows, the line
@@ -284,16 +282,16 @@ interface WriteSpecBase<D, K> {
    *  it again, as it drops a `DELETE` on a line (`droppedOnReload`): a repeat Dispatch took would
    *  make what its answer shows with no press left to take that answer. */
   readonly answerShownOnce?: string;
-  /** The change this write shows, for a write that shows one. The store shows it at the press,
+  /** The change this write shows, for a write that shows one. The store shows it from the press,
    *  before anything goes out, and keeps it on the screen while the write is live - over each
-   *  answer that lands on a cache it wrote, and again as a Retry puts it back in its line - by
-   *  drawing each such cache as Dispatch's copy of it with every live change over it
-   *  (`Writes.#draw`); a write that leaves its line without landing simply stops being drawn. A
-   *  change its surface showed at the press, before the write could join the store, is named
-   *  here as what `Writes.showAhead` handed back, and the write takes it over where it stands.
-   *  A write that shows nothing - a read mark, a create that only asks for a list again - leaves
-   *  it out. */
-  readonly shows?: WriteChange | ShownAhead;
+   *  answer that lands on a cache it names, and again as a Retry puts it back in its line - by
+   *  composing it over Dispatch's data at every read of such a cache (`Writes.overlay`), never
+   *  by writing it into the cache; a write that leaves its line without landing simply stops
+   *  being composed. A change its surface composed from the press, before the write could join
+   *  the store, is named here as what `Writes.fromPress` handed back, and the write takes it over
+   *  where it stands. A write that shows nothing - a read mark, a create that only asks for a
+   *  list again - leaves it out. */
+  readonly shows?: WriteChange | FromPress;
 }
 
 /** What became of a write, told once the store's rows say so: it landed (with Dispatch's
@@ -369,149 +367,45 @@ interface Entry {
   showing: Showing | undefined;
 }
 
-/** A change on the screen: the call that shows it, the caches it wrote, and its place among the
- *  changes drawn on them. */
+/** A change on the screen: the call that shows it, the caches it names, and its place among the
+ *  changes composed on them. */
 interface Showing {
   readonly change: WriteChange;
-  /** Where it is drawn among the live changes on a cache: the store's order (`joined`), so the
-   *  last to be pressed is the last to be seen. A change shown ahead of its write keeps its
-   *  press's place (`Writes.showAhead`); a Retry moves it to the back. */
+  /** Where it is composed among the live changes on a cache: the store's order (`joined`), so
+   *  the last to be pressed is the last to be seen. A change composed from its press before its
+   *  write joined keeps its press's place (`Writes.fromPress`); a Retry moves it to the back. */
   order: number;
-  /** The caches it wrote by name, as it named them (`Shown.on`), hashed as TanStack hashes a
-   *  key. */
-  readonly exact: Set<string>;
-  /** The key every cache it wrote by prefix starts with (`Shown.under`), so a cache an answer
-   *  fills for the first time is drawn with it too. */
-  readonly under: QueryKey[];
+  /** The caches it names by key (`Shown.on`), hashed as TanStack hashes a key. */
+  readonly exact: ReadonlySet<string>;
+  /** The key every cache it names by prefix starts with (`Shown.under`). */
+  readonly under: readonly QueryKey[];
 }
 
-/** A change a surface showed at its press for a write that joins the store only later
- *  (`Writes.showAhead`), which that write names as its change (`WriteSpec.shows`). */
-export interface ShownAhead {
-  /** Stops showing the change, for a press whose write never joined the store; nothing once
+/** `change` in place `order`, with the caches it names read off it once: what a refusal reads
+ *  again and what a landing writes its made change into. */
+function showingOf(change: WriteChange, order: number): Showing {
+  const exact = new Set<string>();
+  const under: QueryKey[] = [];
+  change({
+    on: (key) => {
+      exact.add(hashKey(key));
+    },
+    under: (key) => {
+      if (!under.some((head) => hashKey(head) === hashKey(key))) under.push(key);
+    },
+  });
+  return { change, exact, order, under };
+}
+
+/** A change a surface composed from its press for a write that joins the store only later
+ *  (`Writes.fromPress`), which that write names as its change (`WriteSpec.shows`). */
+export interface FromPress {
+  /** Stops composing the change, for a press whose write never joined the store; nothing once
    *  the write has taken it over. */
   readonly release: () => void;
 }
 
-/** What the store keeps of a cache a live change is drawn on: the data Dispatch last gave it,
- *  and the data the store last drew there from it - the screen, against which a query's own rule
- *  for its answers no longer judges them (`answerSharing`). */
-interface Copy {
-  data: unknown;
-  drawn: unknown;
-}
-
-/** The copy each screen the store drew was drawn from, by that screen's data, for as long as it
- *  is the screen of a copy the store holds (`Copy.drawn`). */
-const copyDrawnAs = new WeakMap<object, Copy>();
-
-/** The copy the store holds whose screen is `cached`, a cache's data, if it is one. */
-function copyUnder(cached: unknown): Copy | undefined {
-  if (typeof cached !== "object" || cached === null) return undefined;
-  const copy = copyDrawnAs.get(cached);
-  return copy?.drawn === cached ? copy : undefined;
-}
-
-/** Whether a store is drawing a cache now, so the cache writes it makes are answers neither to
- *  the store (`Writes.#answered`) nor to a query's rule (`answerSharing`): TanStack runs a
- *  cache's rule and tells its listeners in the very call that writes it. */
-let drawing = false;
-
-/** The data a query's own rule handed back in place of an answer it kept out (`keptOut`), until
- *  the store reads the cache write that carries it (`Writes.#answered`). */
-const keptOutAnswers = new WeakSet<object>();
-
-/**
- * Marks `held`, the data a query's `structuralSharing` hands back in place of a fetch's answer
- * it keeps out - an issue older than the one held (`issueQuery`'s `olderIssue`) - so the store
- * takes that fetch for no answer and leaves its copy of the cache as it is. Every other answer,
- * the very object the cache held among them - TanStack's `replaceEqualDeep` hands it back for an
- * answer equal to it - is Dispatch's data and becomes the copy. Answers `held`.
- */
-export function keptOut<T>(held: T): T {
-  if (typeof held === "object" && held !== null) keptOutAnswers.add(held);
-  return held;
-}
-
-/** Whether `judged`, what a query's rule handed back for an answer, is data it kept out in that
- *  answer's place (`keptOut`). The mark is read once: reading it takes it off. */
-function heldOut(judged: unknown): boolean {
-  return typeof judged === "object" && judged !== null && keptOutAnswers.delete(judged);
-}
-
-/**
- * `rule`, a query's `structuralSharing` - the rule it takes an answer by, as `issueQuery`'s keeps
- * out an issue older than the one held - set beneath the write store's copies, as every such
- * rule on a cache a write shows a change on is. Where a live change is drawn on the cache, an
- * answer is judged against Dispatch's copy of it, never against the screen, which carries that
- * change: one the rule keeps out leaves the screen as it stands, marked kept out so the store
- * keeps its copy (`Writes.#answered`), and one it takes is what the store takes as the copy. The
- * store's own drawing is no answer, and the rule never sees it: the screen drawn is shared with
- * the one before it, as TanStack shares any data.
- */
-export function answerSharing(
-  rule: (held: unknown, next: unknown) => unknown
-): (cached: unknown, next: unknown) => unknown {
-  return (cached, next) => {
-    if (drawing) return replaceEqualDeep(cached, next);
-    const copy = copyUnder(cached);
-    if (copy === undefined) return rule(cached, next);
-    const judged = rule(copy.data, next);
-    return heldOut(judged) ? keptOut(cached) : judged;
-  };
-}
-
-/** `next`, an answer merged into `held`, Dispatch's copy of `query`'s cache, as the query's own
- *  rule takes it (`structuralSharing`): TanStack runs that rule on every write of the cache, but
- *  a merge into the copy is made off the screen, so the store runs it there itself. */
-function judgedAnswer(query: Query, held: unknown, next: unknown): unknown {
-  const { structuralSharing } = query.options;
-  if (typeof structuralSharing === "function") return structuralSharing(held, next);
-  return structuralSharing === false ? next : replaceEqualDeep(held, next);
-}
-
-/**
- * `held`, Dispatch's copy of an infinite query's cache, with the one page a fetch-more has just
- * read (`fetchNextPage`, `previous` for `fetchPreviousPage`). TanStack builds that fetch's answer
- * from the pages the cache held as it started - the screen, every live change drawn in - with the
- * page that arrived at their end, so only that page and its param are Dispatch's, added where
- * TanStack adds them, up to the query's `maxPages`. It is the page Dispatch's own pages lead to
- * (`getNextPageParam`, `getPreviousPageParam`); a fetch that read none - there was none to read,
- * and TanStack answers with the pages it started from - leaves the copy as it is, and one that
- * started from no pages at all read every page from the first, so its answer is the copy whole.
- */
-function pageFetched(
-  query: Query,
-  held: InfiniteData<unknown>,
-  answer: InfiniteData<unknown>,
-  previous: boolean
-): InfiniteData<unknown> {
-  if (held.pages.length === 0) return answer;
-  const edge = (data: InfiniteData<unknown>) => (previous ? 0 : data.pages.length - 1);
-  const rule: unknown = Reflect.get(
-    query.options,
-    previous ? "getPreviousPageParam" : "getNextPageParam"
-  );
-  if (typeof rule !== "function" || answer.pages.length === 0) return held;
-  const at = edge(held);
-  const param: unknown = rule(held.pages[at], held.pages, held.pageParams[at], held.pageParams);
-  const arrived = answer.pageParams[edge(answer)];
-  if (param === undefined || param === null || hashKey([param]) !== hashKey([arrived])) {
-    return held;
-  }
-  const max = query.options.maxPages ?? 0;
-  const add = <T>(items: readonly T[], item: T): T[] => {
-    const added = previous ? [item, ...items] : [...items, item];
-    if (max <= 0 || added.length <= max) return added;
-    return previous ? added.slice(0, -1) : added.slice(1);
-  };
-  return {
-    pageParams: add(held.pageParams, arrived),
-    pages: add(held.pages, answer.pages[edge(answer)]),
-  };
-}
-
-/** Whether `showing` wrote `query`'s cache, by name or by prefix, so it is drawn there. */
+/** Whether `showing` names `query`'s cache, by key or by prefix. */
 function wrote(showing: Showing, query: Query): boolean {
   return (
     showing.exact.has(query.queryHash) ||
@@ -520,12 +414,12 @@ function wrote(showing: Showing, query: Query): boolean {
 }
 
 /** Whether `entry`'s change is on the screen: a live write that shows one, whether or not a
- *  press still waits for it. One that is not live has not been drawn since it last settled. */
-function shownLive(entry: Entry): boolean {
+ *  press still waits for it. One that is not live is composed nowhere. */
+function shownLive(entry: Entry): entry is Entry & { readonly showing: Showing } {
   return entry.showing !== undefined && liveWrite(entry.write);
 }
 
-/** Whether `write` may still reach Dispatch, which is while its change is shown again: waiting
+/** Whether `write` may still reach Dispatch, which is while its change is composed: waiting
  *  its turn, out, or late - `stopping` among them, since the attempt already out may still land.
  *  A refused write is not, nor a made one, and a discarded write is held no longer. The one rule
  *  every engine that reads the store's rows asks it by, and a view of a write - a broadcast's
@@ -539,37 +433,46 @@ function startsWith(key: QueryKey, head: QueryKey): boolean {
   return key.length >= head.length && hashKey(key.slice(0, head.length)) === hashKey(head);
 }
 
-/** A `Shown` that runs each change it is handed for `query`'s cache alone, through `apply` - as
- *  it is drawn while its write is live, or, `made`, as it is left once Dispatch made the write -
- *  and passes over every change named for another cache. */
+/** A `Shown` that runs each change it is handed for the cache at `key` (hashed `hash`) alone,
+ *  through `apply` - as it is composed while its write is live, or, `made`, as it is left once
+ *  Dispatch made the write - and passes over every change named for another cache. */
 function onlyOn(
-  query: Query,
+  key: QueryKey,
+  hash: string,
   made: boolean,
   apply: (change: (data: unknown) => unknown) => void
 ): Shown {
   return {
-    on: <T>(key: QueryKey, change: (data: T) => T, left?: (data: T) => T) => {
+    on: <T>(named: QueryKey, change: (data: T) => T, left?: (data: T) => T) => {
       const applied = made ? (left ?? change) : change;
-      if (hashKey(key) === query.queryHash) apply(applied as (data: unknown) => unknown);
+      if (hashKey(named) === hash) apply(applied as (data: unknown) => unknown);
     },
-    under: <T>(key: QueryKey, change: (data: T) => T) => {
-      if (startsWith(query.queryKey, key)) apply(change as (data: unknown) => unknown);
+    under: <T>(head: QueryKey, change: (data: T) => T) => {
+      if (startsWith(key, head)) apply(change as (data: unknown) => unknown);
     },
   };
 }
 
-/** `data`, a cache's data, with the part of `showing` named for `query`'s cache shown over it -
- *  as it is drawn, or, `made`, as Dispatch's making of its write leaves it (`Shown.on`). A cache
- *  holding nothing is left holding nothing: there is no row there to change. */
-function shownOn(query: Query, showing: Showing, data: unknown, made: boolean): unknown {
+/** `data`, the data of the cache at `key`, with the part of `showing` named for that cache over
+ *  it - as it is composed, or, `made`, as Dispatch's making of its write leaves it (`Shown.on`).
+ *  A cache holding nothing is left holding nothing: there is no row there to change. */
+function shownOn(
+  key: QueryKey,
+  hash: string,
+  showing: Showing,
+  data: unknown,
+  made: boolean
+): unknown {
   let shown = data;
   showing.change(
-    onlyOn(query, made, (change) => {
+    onlyOn(key, hash, made, (change) => {
       if (shown !== undefined) shown = change(shown);
     })
   );
   return shown;
 }
+
+const NO_SHOWINGS: readonly Showing[] = Object.freeze([]);
 
 const NO_WRITES: readonly Write[] = Object.freeze([]);
 
@@ -645,17 +548,19 @@ export class Writes {
    *  Dispatch still named them (`releaseUnsettled`), each with the time until which a lapse of
    *  theirs is that sign-out landing late rather than a lapse. */
   readonly #unsettledSignOuts = new Map<string, number>();
-  /** Dispatch's copy of each cache a live change is drawn on, by its hash: the data Dispatch
-   *  last gave it, kept apart from the screen, which is that copy with every live change shown
-   *  over it (`#draw`). Taken as the first live change is shown there (`#showEverywhere`),
-   *  replaced by each answer that lands there whole - a fetch, a socket's snapshot
-   *  (`#answered`) - merged into by each answer a surface or a kind merges (`answer`), and
-   *  given the change of each write Dispatch made (`#keepMade`). A cache no live change is
-   *  drawn on any more is left on its copy, which is let go. */
-  readonly #copies = new Map<string, Copy>();
-  /** The changes surfaces showed at their presses whose writes have not joined yet
-   *  (`showAhead`). */
-  readonly #ahead = new Map<ShownAhead, Showing>();
+  /** The changes surfaces composed from their presses whose writes have not joined yet
+   *  (`fromPress`). */
+  readonly #pressed = new Map<FromPress, Showing>();
+  /** Every live change, in the store's order (`joined`): what every read of a cache composes
+   *  over Dispatch's data. One array until a change starts or stops being composed. */
+  #live: readonly Showing[] = NO_SHOWINGS;
+  /** Counted up each time `#live` is taken afresh, so every reader composes again
+   *  (`useShownQuery`). */
+  #version = 0;
+  /** The overlay of each cache read since `#live` was last taken, by its hash: each holds the
+   *  last data it composed and what it composed, so a tree prediction or a row filter runs once
+   *  per answer and per composition, not once per reader and per render. */
+  readonly #overlays = new Map<string, (data: unknown) => unknown>();
 
   constructor(
     client: QueryClient,
@@ -665,19 +570,6 @@ export class Writes {
     this.#client = client;
     this.#kept = kept;
     this.#files = files;
-    // Every cache write from outside the store is an answer of Dispatch's - a fetch, a socket's
-    // snapshot - and becomes the copy of a cache a live change is drawn on (`#answered`); a
-    // surface merging an answer into such a cache goes through `answer`. The store's own drawing
-    // is not one (`#whileShowing`).
-    client.getQueryCache().subscribe((event) => {
-      if (event.type === "removed") {
-        const copy = this.#copies.get(event.query.queryHash);
-        if (copy !== undefined) copy.drawn = undefined;
-        this.#copies.delete(event.query.queryHash);
-      } else if (event.type === "updated" && event.action.type === "success") {
-        this.#answered(event.query, event.action.manual === true);
-      }
-    });
     watcher?.(this);
   }
 
@@ -701,248 +593,147 @@ export class Writes {
     return () => this.#outcomes.delete(listener);
   };
 
-  /**
-   * Takes the cache write `query` has just taken from outside the store as Dispatch's data for
-   * that cache - a fetch's answer, a socket's snapshot - where a live change is drawn: it becomes
-   * the cache's copy, and the cache is drawn again as that copy with every live change over it,
-   * so the last to be pressed is the last to be seen (R7 of dispatch://INFRA-299). A merge made
-   * over the cache as it stands would carry every live change into the copy, so a surface merges
-   * through `answer` instead (`no-direct-cache-writes.test.ts`); `manual` is such a write, made
-   * with `setQueryData` rather than by a fetch.
-   *
-   * A fetch is Dispatch's whole, a refetch of an infinite query's every page among them, but for
-   * a fetch-more (`fetchNextPage`, `fetchPreviousPage`): TanStack builds its answer from the
-   * pages the cache held - the screen - with the page that arrived added, and only that page is
-   * Dispatch's to take into the copy (`pageFetched`).
-   *
-   * A fetch the query's own rule kept out - an issue older than Dispatch's copy of it
-   * (`issueQuery`), judged against that copy (`answerSharing`), whose rule marks the data it
-   * hands back instead (`keptOut`) - leaves the cache on what the store drew, and is no answer to
-   * keep. Every other answer is: one equal to what the store drew, which TanStack hands back as
-   * the very object the cache held, says Dispatch already holds what the live changes show, and
-   * becomes the copy as any answer does.
-   *
-   * Nothing recurs: every cache write the store makes runs inside `#whileShowing`, and TanStack
-   * tells its cache's listeners of a write in the very call that makes it, so each of those
-   * returns here at once.
-   */
-  #answered(query: Query, manual: boolean): void {
-    const { data, fetchMeta } = query.state;
-    // The mark is read once, whoever wrote the cache, so it never outlives the write it was for.
-    const kept = heldOut(data);
-    if (drawing || kept) return;
-    const hash = query.queryHash;
-    const copy = this.#copies.get(hash);
-    // A write made with `setQueryData` leaves the last fetch's own `fetchMeta` on the query.
-    const more = manual ? undefined : fetchMeta?.fetchMore;
-    if (copy === undefined) {
-      if (this.#liveOn(query).length === 0) return;
-      this.#copies.set(hash, { data, drawn: undefined });
-    } else if (more === undefined) {
-      copy.data = data;
-    } else {
-      const held = copy.data as InfiniteData<unknown>;
-      const answer = data as InfiniteData<unknown>;
-      copy.data = pageFetched(query, held, answer, more.direction === "backward");
-    }
-    this.#draw(query);
-  }
-
-  /** Every live change drawn on `query`'s cache, in the store's order: the change of each live
-   *  write that wrote it, and each change shown ahead of its write. Live is `queued`, `sending`
-   *  and `late`, `stopping` among them, because the attempt already out may still land; a write
-   *  that was refused, discarded or made is not. */
-  #liveOn(query: Query): Showing[] {
-    const showings = [...this.#ahead.values()];
-    for (const entry of this.#entries.values()) {
-      if (entry.showing !== undefined && liveWrite(entry.write)) showings.push(entry.showing);
-    }
-    return showings.filter((showing) => wrote(showing, query)).sort((a, b) => a.order - b.order);
-  }
-
-  /** Draws `query`'s cache as its copy with every live change on it shown over it, in the
-   *  store's order: each change is the same call its press made, so what is drawn is the change
-   *  itself and never a value computed before it. A cache no live change is drawn on any more
-   *  is left on its copy, which the store lets go; one with no copy held nothing when a change
-   *  was shown there, and is drawn once an answer fills it (`#answered`).
-   *
-   *  The draw is no answer: it meets no rule of the query's (`answerSharing`), and it leaves the
-   *  cache as old as Dispatch's last answer left it and still owed a read it was owed, so that a
-   *  press does not make a stale cache look freshly read. One made for an answer merged into the
-   *  copy (`answered`, from `answer`) is that answer's, and dates the cache as `setQueryData`
-   *  does. */
-  #draw(query: Query, answered = false): void {
-    const hash = query.queryHash;
-    const copy = this.#copies.get(hash);
-    if (copy === undefined) return;
-    const live = this.#liveOn(query);
-    const screen = live.reduce((data, showing) => shownOn(query, showing, data, false), copy.data);
-    const { dataUpdatedAt, isInvalidated } = query.state;
-    this.#whileShowing(() => {
-      if (answered) this.#client.setQueryData(query.queryKey, screen);
-      else {
-        this.#client.setQueryData(query.queryKey, screen, { updatedAt: dataUpdatedAt });
-        if (isInvalidated) query.invalidate();
-      }
-    });
-    if (live.length === 0) {
-      this.#copies.delete(hash);
-      copy.drawn = undefined;
-      return;
-    }
-    copy.drawn = query.state.data;
-    if (typeof copy.drawn === "object" && copy.drawn !== null) copyDrawnAs.set(copy.drawn, copy);
-  }
-
-  /** Draws again every cache `showing` wrote: as it stops being shown, or as the rule it is
-   *  drawn by changes. */
-  #drawWhere(showing: Showing): void {
-    const cache = this.#client.getQueryCache();
-    for (const query of cache.findAll({ predicate: (query) => wrote(showing, query) })) {
-      this.#draw(query);
-    }
-  }
-
-  /** Runs `show`, which writes into the caches, as the store's own drawing: no cache write it
-   *  makes is read as an answer (`drawing`, `#answered`). */
-  #whileShowing(show: () => void): void {
-    const was = drawing;
-    drawing = true;
-    try {
-      show();
-    } finally {
-      drawing = was;
-    }
-  }
+  /** Which composition of the live changes the page reads now: counted up each time a change
+   *  starts or stops being composed, and read by every hook read (`useShownQuery`) so it
+   *  composes again. The same number while only a write's progress or its row changes. */
+  readonly version = (): number => this.#version;
 
   /**
-   * Merges an answer of Dispatch's into `key`'s cache - a write's answer, an event's patch, any
-   * value of Dispatch's a surface or a kind writes over what the cache holds. Where a live change
-   * is drawn on that cache, the merge is made into Dispatch's copy of it, never into the screen,
-   * and taken by the rules the query takes any answer by (`structuralSharing`, `judgedAnswer`),
-   * against that copy: one they keep out - an issue older than the copy (`issueQuery`) - leaves
-   * the copy as it is, and otherwise the cache is drawn again with every live change over the
-   * merged copy. Anywhere else it is made into the cache as it stands, which holds Dispatch's data
-   * alone, through those same rules. `merge` is handed `undefined` for a cache that holds
-   * nothing, and answering `undefined` leaves the cache as it is, as `setQueryData` does. The one
-   * way the page writes into a cache a write shows a change on (`no-direct-cache-writes.test.ts`).
+   * What every read of the cache at `key` hands the page in place of the cache's own data:
+   * Dispatch's data - the cache holds nothing else - with every live change named for that cache
+   * composed over it in the store's order (`joined`), so the last pressed is the last seen (R7 of
+   * dispatch://INFRA-299). Each change is the same call its press made, run over the data as the
+   * changes before it leave it, so what is composed is the change itself and never a value
+   * computed before it. Nothing is written into the cache, so an answer that lands is simply
+   * the data the next read composes over, a page a fetch-more reads is built from Dispatch's own
+   * pages, and a write that leaves its line without landing simply stops being composed (R10):
+   * nothing is put back, because nothing was overwritten.
+   *
+   * The function is one value for as long as the composition holds (`version`), and hands back
+   * the same value for the same data, so a hook read's `select` reruns only when the data or the
+   * composition changes, and the compose step runs once for every reader of the cache.
    */
-  answer<T>(key: QueryKey, merge: (data: T | undefined) => T | undefined): void {
+  overlay(key: QueryKey): (data: unknown) => unknown {
     const hash = hashKey(key);
-    const copy = this.#copies.get(hash);
-    const query = this.#client.getQueryCache().get(hash);
-    if (copy === undefined || query === undefined) {
-      this.#client.setQueryData<T>(key, merge);
-      return;
-    }
-    const merged = merge(copy.data as T);
-    if (merged === undefined) return;
-    const judged = judgedAnswer(query, copy.data, merged);
-    if (heldOut(judged)) return;
-    copy.data = judged;
-    this.#draw(query, true);
+    const held = this.#overlays.get(hash);
+    if (held !== undefined) return held;
+    const live = this.#live;
+    let last: { readonly data: unknown; readonly shown: unknown } | undefined;
+    const overlay = (data: unknown): unknown => {
+      if (data === undefined || live.length === 0) return data;
+      if (last !== undefined && Object.is(last.data, data)) return last.shown;
+      const shown = live.reduce(
+        (over: unknown, showing) => shownOn(key, hash, showing, over, false),
+        data
+      );
+      last = { data, shown };
+      return shown;
+    };
+    this.#overlays.set(hash, overlay);
+    return overlay;
   }
 
-  /** Draws `key`'s cache again, for a change whose rule reads more than the cache - the unread
+  /** The cache at `key` as the person sees it: Dispatch's data with every live change over it
+   *  (`overlay`), for a read made outside React that must see what the person sees - the board's
+   *  neighbours and drop indices, the pin's toggle, the rows a mark-all or a dismiss takes, the
+   *  count an unread press drops from. A read that wants Dispatch's answer reads the cache. */
+  shown<T>(key: QueryKey): T | undefined {
+    return this.overlay(key)(this.#client.getQueryData(key)) as T | undefined;
+  }
+
+  /** Composes every cache again, for a change whose rule reads more than the cache - the unread
    *  count's bounds, once a refused press has left them (`refusedUnreadDrop`). */
-  redraw(key: QueryKey): void {
-    const query = this.#client.getQueryCache().get(hashKey(key));
-    if (query !== undefined) this.#draw(query);
+  recompose(): void {
+    this.#recompose(true);
+  }
+
+  /** Takes the live changes afresh - each live write's that shows one, and each composed from a
+   *  press - in the store's order; a set that differs from the one held, or `force`, counts the
+   *  version up and lets every overlay go. Says whether it did. */
+  #compose(force: boolean): boolean {
+    const live = [...this.#pressed.values()];
+    for (const entry of this.#entries.values()) {
+      if (shownLive(entry)) live.push(entry.showing);
+    }
+    live.sort((a, b) => a.order - b.order);
+    const held = this.#live;
+    if (!force && live.length === held.length && live.every((one, at) => one === held[at])) {
+      return false;
+    }
+    this.#live = live.length === 0 ? NO_SHOWINGS : live;
+    this.#version += 1;
+    this.#overlays.clear();
+    return true;
+  }
+
+  /** `#compose`, telling every listener of a new composition. */
+  #recompose(force: boolean): void {
+    if (!this.#compose(force)) return;
+    for (const listener of this.#listeners) listener();
   }
 
   /**
-   * Shows `change` at the press of a write that joins the store only later, and hands back what
-   * that write names as its change (`WriteSpec.shows`): the board's drop, whose write waits
+   * Composes `change` from the press of a write that joins the store only later, and hands back
+   * what that write names as its change (`WriteSpec.shows`): the board's drop, whose write waits
    * behind the board's mutation scope (R8 of dispatch://INFRA-299) for the drop before it. The
-   * change is drawn from the press, in the press's place among the live changes and over every
-   * answer that lands meanwhile, and the write takes it over where it stands as it joins. A
-   * press whose write never joined lets it go (`ShownAhead.release`).
+   * change is composed from the press, in the press's place among the live changes and over
+   * every answer that lands meanwhile, and the write takes it over where it stands as it joins.
+   * A press whose write never joined lets it go (`FromPress.release`).
    */
-  showAhead(change: WriteChange): ShownAhead {
-    const showing: Showing = { change, exact: new Set(), order: this.#nextJoin(), under: [] };
-    const ahead: ShownAhead = {
+  fromPress(change: WriteChange): FromPress {
+    const showing = showingOf(change, this.#nextJoin());
+    const pressed: FromPress = {
       release: () => {
-        if (this.#ahead.delete(ahead)) this.#drawWhere(showing);
+        if (this.#pressed.delete(pressed)) this.#recompose(false);
       },
     };
-    this.#ahead.set(ahead, showing);
-    this.#showEverywhere(showing);
-    return ahead;
+    this.#pressed.set(pressed, showing);
+    this.#recompose(false);
+    return pressed;
   }
 
-  /** The change `shows` names for a write joining in place `joined`: a change of its own, drawn
-   *  in that place, or one shown ahead of it, taken over where it stands - nothing where its
-   *  surface let that go first. */
-  #showingOf(shows: WriteChange | ShownAhead | undefined, joined: number): Showing | undefined {
+  /** The change `shows` names for a write joining in place `joined`: a change of its own,
+   *  composed in that place, or one composed from its press, taken over where it stands -
+   *  nothing where its surface let that go first. */
+  #showingOf(shows: WriteChange | FromPress | undefined, joined: number): Showing | undefined {
     if (shows === undefined) return undefined;
-    if (typeof shows === "function") {
-      return { change: shows, exact: new Set(), order: joined, under: [] };
-    }
-    const ahead = this.#ahead.get(shows);
-    this.#ahead.delete(shows);
-    return ahead;
+    if (typeof shows === "function") return showingOf(shows, joined);
+    const pressed = this.#pressed.get(shows);
+    this.#pressed.delete(shows);
+    return pressed;
   }
 
-  /** Shows `showing`, if there is one, on every cache it names, recording each, so the store
-   *  knows which caches it is drawn on: a cache's data as it stands before the first live change
-   *  is shown there, which is Dispatch's alone, is kept as its copy, and the cache is drawn. A
-   *  cache holding nothing is left holding nothing - there is no row there to change - and the
-   *  answer that fills it is drawn in its turn (`wrote`). At the press, as a surface names its
-   *  change at its turn (`shows`), as a Retry puts a write back in its line, and for a change
-   *  shown ahead of its write. */
-  #showEverywhere(showing: Showing | undefined): void {
-    if (showing === undefined) return;
-    const cache = this.#client.getQueryCache();
-    const named = new Set<Query>();
-    showing.change({
-      on: (key) => {
-        const hash = hashKey(key);
-        showing.exact.add(hash);
-        const query = cache.get(hash);
-        if (query !== undefined) named.add(query);
-      },
-      under: (key) => {
-        const hash = hashKey(key);
-        if (!showing.under.some((head) => hashKey(head) === hash)) showing.under.push(key);
-        for (const query of cache.findAll({ queryKey: key })) named.add(query);
-      },
-    });
-    for (const query of named) {
-      const { queryHash, state } = query;
-      if (!this.#copies.has(queryHash) && state.data !== undefined) {
-        this.#copies.set(queryHash, { data: state.data, drawn: undefined });
-      }
-      this.#draw(query);
-    }
-  }
-
-  /** Writes the change of `entry`, which Dispatch has just made, into the copy of every cache it
-   *  was drawn on, and draws each again with it no longer live: Dispatch's answer to it may
-   *  never be merged there - a kind leaves that to the newest write of its row still out, a
-   *  surface reads the cache again instead - so until an answer replaces it, the change is part
-   *  of what Dispatch last gave, and a later write that leaves without landing leaves it on the
-   *  screen. */
+  /** Writes the change of `entry`, which Dispatch has just made, into every cache it names that
+   *  holds data - a plain cache write of what its making leaves (`Shown.on`'s `made`) - before it
+   *  stops being composed: Dispatch's answer to it may never be merged there - a kind leaves that
+   *  to the newest write of its row still out, a surface reads the cache again instead - so until
+   *  an answer replaces it, the change is part of what Dispatch last gave, and a later write that
+   *  leaves without landing leaves it on the screen. The write keeps the cache as old as its last
+   *  answer left it and still owed a read it was owed, so a landing never makes a stale cache
+   *  look freshly read. */
   #keepMade(entry: Entry): void {
     const { showing } = entry;
     if (showing === undefined) return;
     const cache = this.#client.getQueryCache();
     for (const query of cache.findAll({ predicate: (query) => wrote(showing, query) })) {
-      const copy = this.#copies.get(query.queryHash);
-      if (copy !== undefined) copy.data = shownOn(query, showing, copy.data, true);
-      this.#draw(query);
+      const { data, dataUpdatedAt, isInvalidated } = query.state;
+      if (data === undefined) continue;
+      const made = shownOn(query.queryKey, query.queryHash, showing, data, true);
+      this.#client.setQueryData(query.queryKey, made, { updatedAt: dataUpdatedAt });
+      if (isInvalidated) query.invalidate();
     }
   }
 
   /** Shows `change` for the write `id`, and holds it with that write: a surface that shows its
    *  change when the write's turn comes rather than at its press - a comment action, which waits
-   *  for the actions pressed before it - names it here, and the store draws it in that write's
-   *  place among the live changes until the write settles. A write the store no longer holds
-   *  shows nothing. */
+   *  for the actions pressed before it - names it here, and the store composes it in that
+   *  write's place among the live changes until the write settles. A write the store no longer
+   *  holds shows nothing. */
   shows(id: number, change: WriteChange): void {
     const entry = this.#entries.get(id);
     if (entry === undefined) return;
-    entry.showing = { change, exact: new Set(), order: entry.write.joined, under: [] };
-    this.#showEverywhere(entry.showing);
+    entry.showing = showingOf(change, entry.write.joined);
+    this.#recompose(false);
   }
 
   /** Makes `spec`'s write, stamped with the person signed in now, and answers with Dispatch's 2xx,
@@ -1021,11 +812,8 @@ export class Writes {
       this.#keepFile(entry, key, login, spec.file, () => this.#keep(entry));
     }
     // The change is shown here, before anything goes out and in the task the press ran in, so
-    // the person sees it at once; the store draws it over each answer that lands on one of the
-    // caches it names, until this write settles (`#draw`). The store holds the entry first, since
-    // it draws the changes of the writes it holds.
-    this.#entries.set(entry.write.id, entry);
-    this.#showEverywhere(entry.showing);
+    // the person sees it at once: the entry joins its line and every read of a cache the change
+    // names composes it from now on (`overlay`), until this write settles.
     this.#join(entry, "sending");
     return press.promise as Promise<T | null>;
   }
@@ -1094,7 +882,6 @@ export class Writes {
       uploaded: undefined,
     };
     if (entry.showing !== undefined) entry.showing.order = entry.write.joined;
-    this.#showEverywhere(entry.showing);
     this.#join(entry, "sending");
   }
 
@@ -1130,11 +917,11 @@ export class Writes {
    *  write that is out, or that went out before and waits to go again, is not the reader's to
    *  drop: it may have reached Dispatch, so it stays until Dispatch answers or the reader stops
    *  it. A waiting one still shows its change, press or not, and its press is refused with no
-   *  failure to show - its surface may not even be on screen - so the store draws every cache
-   *  that change was on without it, Dispatch's copy with every other live change over it - a
-   *  pick that replaced it among them - and reads them again (`#undo`), so a read that fails
-   *  leaves no discarded change on the screen. A refused one stopped being drawn as it was
-   *  refused. */
+   *  failure to show - its surface may not even be on screen - so the store stops composing that
+   *  change, every cache it named reads as Dispatch's data with every other live change over it
+   *  - a pick that replaced it among them - and the store reads them again (`#undo`), so a read
+   *  that fails leaves no discarded change on the screen. A refused one stopped being composed
+   *  as it was refused. */
   discard(id: number): boolean {
     const entry = this.#entries.get(id);
     if (entry === undefined) return false;
@@ -1626,14 +1413,15 @@ export class Writes {
     this.#join(entry, late ? "late" : "sending");
   }
 
-  /** The write `entry` landed with `answer` (`null` for a landing with none): it leaves, or stays
-   *  made for its kind to show, its change is kept as Dispatch's (`#keepMade`), and its kind
-   *  refreshes what it wrote. */
+  /** The write `entry` landed with `answer` (`null` for a landing with none): its change is
+   *  written into the caches it named as Dispatch's (`#keepMade`), it leaves, or stays made for
+   *  its kind to show, and its kind refreshes what it wrote. */
   #landed(entry: Entry, answer: unknown): void {
     const kind = kinds.get(entry.write.kind);
     const awaited = entry.press !== undefined;
     entry.press?.resolve(answer);
     entry.press = undefined;
+    this.#keepMade(entry);
     if (kind?.keepsMade === true && answer !== null) {
       clearTimeout(entry.expiry);
       this.#forget(entry);
@@ -1641,7 +1429,6 @@ export class Writes {
     } else {
       this.#remove(entry);
     }
-    this.#keepMade(entry);
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
     else if (!awaited || answer === null) void this.#client.invalidateQueries();
     this.#emit({ answer, kind: "landed", write: entry.write });
@@ -1653,7 +1440,7 @@ export class Writes {
    *  refused because someone else is signed in goes with every write of its login, and the page
    *  reads who is signed in again. A refused sign-out leaves its person signed in, so every write
    *  of theirs it held goes on. Whether or not a press still waits for it, the store stops
-   *  drawing its change and reads the caches it was on again (`#undo`); no surface rolls it
+   *  composing its change and reads the caches it named again (`#undo`); no surface rolls it
    *  back itself. */
   #refused(entry: Entry, refusal: Error): void {
     const shown = shownLive(entry);
@@ -1693,9 +1480,9 @@ export class Writes {
 
   /** Takes every one of `entries` out of the store first, then lets each go wherever it stood: its
    *  trying stops, its press is refused, nothing of it is kept, and its kind undoes what it showed
-   *  of it - the store drawing, and reading again, the caches of a change still on the screen
-   *  (`#undo`). Once the rows no longer hold them, it tells each one's outcome (`taken`).
-   *  Starts nothing, and answers the targets whose lines it took writes from. */
+   *  of it - the store reading again the caches of a change still on the screen, which stops
+   *  being composed (`#undo`). Once the rows no longer hold them, it tells each one's outcome
+   *  (`taken`). Starts nothing, and answers the targets whose lines it took writes from. */
   #take(entries: readonly Entry[]): Set<string | undefined> {
     const taken = entries.filter((entry) => this.#entries.get(entry.write.id) === entry);
     for (const entry of taken) this.#entries.delete(entry.write.id);
@@ -1716,17 +1503,16 @@ export class Writes {
   }
 
   /** Undoes what `entry` showed as it leaves its line - refused, discarded or taken - as `write`:
-   *  its kind's `undone`, then, for a change still on the screen (`shown`), every cache it was
-   *  drawn on drawn again without it - Dispatch's copy with every other live change over it,
-   *  what the person sees until the read again answers and goes on seeing where it fails,
-   *  offline or a 5xx (R10 of dispatch://INFRA-299) - and a read of every such cache. Nothing is
-   *  put back: the change was never written into the copy. The one place the three exits pair
-   *  the three. */
+   *  its kind's `undone`, then, for a change still on the screen (`shown`), a read of every cache
+   *  it named. The change stops being composed as the store's rows let it go, so every such cache
+   *  reads as Dispatch's data with every other live change over it - what the person sees until
+   *  the read again answers, and goes on seeing where it fails, offline or a 5xx (R10 of
+   *  dispatch://INFRA-299). Nothing is put back: the change was never written into the cache.
+   *  The one place the three exits pair the two. */
   #undo(entry: Entry, write: Write, shown: boolean): void {
     kinds.get(write.kind)?.undone?.(this.#client, write);
     if (!shown || entry.showing === undefined) return;
     const { showing } = entry;
-    this.#drawWhere(showing);
     // Dispatch's answer takes in what changed meanwhile - a thread that arrived, another
     // device's pick - but the screen depends on it for nothing.
     void this.#client.invalidateQueries({ predicate: (query) => wrote(showing, query) });
@@ -1801,11 +1587,14 @@ export class Writes {
     if (this.#entries.get(write.id) === entry) this.#publish();
   }
 
+  /** Takes the rows afresh, and the live changes with them (`#compose`), and tells every
+   *  listener. */
   #publish(): void {
     const rows = [...this.#entries.values()]
       .map((entry) => entry.write)
       .sort((a, b) => a.id - b.id);
     this.#rows = rows.length === 0 ? NO_WRITES : rows;
+    this.#compose(false);
     for (const listener of this.#listeners) listener();
   }
 
@@ -1872,22 +1661,6 @@ export function writesOf(client: QueryClient): Writes {
     stores.set(client, store);
   }
   return store;
-}
-
-/** Fails `key`'s query as a failed refetch does, with `failure`, keeping the data it holds: a
- *  live view Dispatch stopped answering (`createLiveSocket`). The one write into a query's state
- *  beside its data the page makes, kept in this module with every other, since none outside it
- *  writes a query's state (`no-direct-cache-writes.test.ts`). */
-export function failQuery(client: QueryClient, key: QueryKey, failure: Error): void {
-  const query = client.getQueryCache().find({ exact: true, queryKey: key });
-  query?.setState({
-    ...query.state,
-    error: failure,
-    errorUpdateCount: query.state.errorUpdateCount + 1,
-    errorUpdatedAt: Date.now(),
-    fetchFailureReason: failure,
-    status: "error",
-  });
 }
 
 /** Has `watch` told of every store made from now on (none when `undefined`), for the unit tests'

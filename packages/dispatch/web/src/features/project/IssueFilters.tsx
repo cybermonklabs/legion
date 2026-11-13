@@ -1,7 +1,5 @@
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-
 import { projectIssuesQuery } from "../../api/queries";
 import { Chip } from "../../components/Chip";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -12,6 +10,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { useUserPreference } from "../shell/userPreference";
+import { useShownQuery } from "../writes/shown-query";
 import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 
@@ -49,7 +48,7 @@ export function IssueFilters({ project }: { project: string }): ReactNode {
     setFiltersExpanded(open);
     if (!open) setOpenPicker(undefined);
   };
-  const allIssues = useQuery(projectIssuesQuery(project, []));
+  const allIssues = useShownQuery(projectIssuesQuery(project, []));
   const availableLabels = useMemo(
     () =>
       [...new Set((allIssues.data ?? []).flatMap((issue) => issue.labels ?? []))].sort(

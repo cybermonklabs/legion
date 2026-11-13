@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
@@ -31,6 +29,7 @@ import { ApprovalChip } from "../doc/ApprovalChip";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildIssuePath, buildProjectPath, documentRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 
 function documentUpdatedAt(document: Artifact): string {
   return document.versions?.at(-1)?.created_at ?? document.created_at;
@@ -99,7 +98,7 @@ function DocumentRow({ document }: { document: Artifact }): ReactNode {
 export function DocumentList({ project }: { project: string }): ReactNode {
   // Documents upload the moment a file is picked or dropped; there is no staging step here.
   const upload = useArtifactUpload({ project }, { immediate: true });
-  const documents = useQuery({
+  const documents = useShownQuery({
     queryKey: ["project", project, "artifacts"],
     queryFn: () => api.listProjectArtifacts(project, true),
   });

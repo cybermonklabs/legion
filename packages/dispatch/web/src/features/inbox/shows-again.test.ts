@@ -1,13 +1,13 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-
 import { settle } from "../../__tests__/fake-clock";
 import { answerAskAnswers, answerAskHandOns, answerAskSnoozes } from "../../__tests__/send-answers";
 import { ApiError, api, askAnswerRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, InboxRow } from "../../api/types";
+import { useShownQuery } from "../writes/shown-query";
 import { writesOf } from "../writes/write-store";
 import { issueAsk } from "./inbox-fixture";
 import { useOutstandingAnswerWrite } from "./outstanding-answers";
@@ -61,7 +61,7 @@ function renderInboxWrite<T>(use: () => T) {
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
   client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const hook = renderHook(() => ({ inbox: useQuery(inboxQuery()), write: use() }), {
+  const hook = renderHook(() => ({ inbox: useShownQuery(inboxQuery()), write: use() }), {
     wrapper: ({ children }: { children: ReactNode }) =>
       createElement(QueryClientProvider, { client }, children),
   });

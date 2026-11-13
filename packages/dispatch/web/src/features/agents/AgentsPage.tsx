@@ -1,6 +1,6 @@
 import { DELIVERY_CAPABILITIES } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   type RefObject,
@@ -13,7 +13,6 @@ import {
   useState,
 } from "react";
 import { Link } from "react-router-dom";
-
 import { api } from "../../api/client";
 import {
   agentMessagesQuery,
@@ -78,6 +77,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { closestMatching, focusOnDocument } from "../shell/roving";
 import { MD_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentMessageComposer, type AgentReply, agentSendKey } from "./AgentMessageComposer";
 import { AGENT_GROUP_LABELS, AGENT_GROUPS, type AgentGroup, agentGroup } from "./agent-groups";
@@ -373,8 +373,8 @@ function AgentMessageList({
   replyDisabled: boolean;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const messages = useQuery(agentMessagesQuery(agent.session_id));
-  const agentState = useQuery(userAgentStateQuery());
+  const messages = useShownQuery(agentMessagesQuery(agent.session_id));
+  const agentState = useShownQuery(userAgentStateQuery());
   const [showOlder, setShowOlder] = useState(false);
   const [showCleared, setShowCleared] = useState(false);
   const clearedBefore = agentState.data?.[agent.session_id]?.cleared_before;
@@ -1407,9 +1407,9 @@ export function AgentsPage(): ReactNode {
   // row: it decides what each row's directory shows, and a list of two hundred rows is two
   // hundred listeners otherwise.
   const mdViewport = useMediaQuery(MD_VIEWPORT_QUERY);
-  const inbox = useQuery(inboxQuery());
+  const inbox = useShownQuery(inboxQuery());
   // Until `/auth/whoami` answers, no question is counted as the reader's.
-  const viewer = useQuery(whoAmIQuery()).data?.login;
+  const viewer = useShownQuery(whoAmIQuery()).data?.login;
   // The pins are the person's, not this browser's (INFRA-812): the Agents page reads them from
   // the viewer's agent state and writes them to Dispatch, so a pin made here is in the rail and
   // in the person's other browsers at once.
@@ -1418,7 +1418,7 @@ export function AgentsPage(): ReactNode {
   // The viewer's own state for each session, which the rows already read for their unread
   // badges: one query, one answer, and the replies they have not read are what put a session in
   // Needs you beside the asks that wait on them.
-  const agentStates = useQuery(userAgentStateQuery()).data ?? {};
+  const agentStates = useShownQuery(userAgentStateQuery()).data ?? {};
   // The first card number: the reader's own work with this session - a question whose next move
   // is a person's and which waits on them. One meaning for every count of what waits on
   // the reader, wherever it is shown.

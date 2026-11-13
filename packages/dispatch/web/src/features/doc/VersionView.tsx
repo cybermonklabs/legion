@@ -1,8 +1,7 @@
 import type { DocumentJSON } from "@legion/proof-editor";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Doc } from "yjs";
-
 import { isText } from "../../api/artifact-version";
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
@@ -11,6 +10,7 @@ import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { watchPicturePath } from "../refs/reference-target";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
+import { useShownQuery } from "../writes/shown-query";
 import { AskBlockCard } from "./AskBlockCard";
 import { type ChangeBaseline, changeMarksAgainst } from "./change-marks";
 import { colorForLogin } from "./connection";
@@ -60,7 +60,7 @@ export function VersionView({
   const [highlightMissing, setHighlightMissing] = useState(false);
   const [renderError, setRenderError] = useState<string | undefined>(undefined);
   const { createEditor } = useContext(DocumentRuntime);
-  const versionQuery = useQuery({
+  const versionQuery = useShownQuery({
     queryKey: ["artifact", artifactId, "version", version],
     queryFn: () => api.getArtifactVersion(artifactId, version),
   });
@@ -70,7 +70,7 @@ export function VersionView({
   // built again while the reader reads. This view reads the person at build time only, so the
   // login - equal to itself across re-reads - is both what the editor needs and the signal
   // that it has arrived.
-  const login = useQuery(whoAmIQuery()).data?.login;
+  const login = useShownQuery(whoAmIQuery()).data?.login;
   const queryClient = useQueryClient();
   // The server's reading of this version's text, in its version mode: what the editor draws,
   // with no parse of its own. `DisplayTree` is the same JSON `DocumentJSON` describes - one

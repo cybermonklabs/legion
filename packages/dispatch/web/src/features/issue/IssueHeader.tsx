@@ -1,5 +1,5 @@
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   type FormEvent,
   type KeyboardEvent,
@@ -9,7 +9,6 @@ import {
   useState,
 } from "react";
 import { Link } from "react-router-dom";
-
 import {
   AGENT_LIST_REFILLING,
   api,
@@ -61,6 +60,7 @@ import { CopyRefButton } from "../refs/CopyRefButton";
 import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
@@ -90,7 +90,7 @@ const routeHint =
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
- *  indicator, and a refused pick stops being drawn, where every other header field holds its
+ *  indicator, and a refused pick stops being composed, where every other header field holds its
  *  draft and says why itself. */
 function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
   return input !== undefined && Object.keys(input).length === 1 && input.status !== undefined;
@@ -163,7 +163,7 @@ export function IssueHeader({
   const [subscribersOpen, setSubscribersOpen] = useState(false);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const agentText = useAgentText();
-  const subscribers = useQuery({
+  const subscribers = useShownQuery({
     queryKey: ["subscribers", issue.key],
     queryFn: () => api.getIssueSubscribers(issue.key),
   });
@@ -196,9 +196,9 @@ export function IssueHeader({
   });
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
-  // stops being drawn. Every field write goes in the issue's line (`issue:<key>`), so an older one
-  // still being tried never lands after a newer one, whatever left the page meanwhile. A landing
-  // with no answer to give is merged by reading the issue again.
+  // stops being composed. Every field write goes in the issue's line (`issue:<key>`), so an older
+  // one still being tried never lands after a newer one, whatever left the page meanwhile. A
+  // landing with no answer to give is merged by reading the issue again.
   const updateIssue = useKeyedWrite({
     inline: (input) => !statusPickOnly(input),
     label: (input) => issueUpdateLabel(issue.key, input),
@@ -276,7 +276,7 @@ export function IssueHeader({
   // rather than claiming a gate it has not read. Only a root issue has steps at all
   // (`gatedStepEntries`), so a child issue does not ask for the list: a disabled query still
   // reads whatever the shared cache holds, and a child draws the single chip either way.
-  const projects = useQuery({ ...projectsQuery(), enabled: issue.parent === null });
+  const projects = useShownQuery({ ...projectsQuery(), enabled: issue.parent === null });
   const projectRow = projects.data?.find((candidate) => candidate.key === issue.project);
   const entries = gatedStepEntries(projectRow, issue);
   // Which document a step reviews is `gated-steps.ts`'s to say, so the chip asks the drawn
@@ -291,11 +291,11 @@ export function IssueHeader({
   const pinGuard = useSubmitGuard();
   // The header's pin writes the same row as the Conversation's and the Activity tab's pins, so it
   // goes in that row's line (`pin:<key>`, `features/issue/pin-write.ts`): one row, one line. Its
-  // change is the issue's `pinned` alone, over the row as it stands (`shows`), so the store draws
-  // it over each answer that lands there while it is live, draws a pin waiting behind it over the
-  // row Dispatch answers it with, and leaves the row Dispatch last gave if it leaves without
-  // landing (R7 and R10 of dispatch://INFRA-299). Its answer is merged into the store's copy of
-  // the state (`storeIssueState`), never over the state as it stands.
+  // change is the issue's `pinned` alone, over the row as it stands (`shows`), so the store
+  // composes it over each answer that lands there while it is live, composes a pin waiting behind
+  // it over the row Dispatch answers it with, and leaves the row Dispatch last gave if it leaves
+  // without landing (R7 and R10 of dispatch://INFRA-299). Its answer is merged into the viewer's
+  // state, which holds Dispatch's answers alone (`storeIssueState`).
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     request: (pinned: boolean) => issueStateRequest(issue.key, { pinned }),

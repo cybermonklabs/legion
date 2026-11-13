@@ -1,7 +1,6 @@
-import { infiniteQueryOptions, useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { infiniteQueryOptions } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { askThreadQuery } from "../../api/queries";
 import type { MyAnswerRow, MyAnswersResponse } from "../../api/types";
@@ -24,6 +23,7 @@ import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownInfiniteQuery, useShownQuery } from "../writes/shown-query";
 
 const PAGE_SIZE = 50;
 
@@ -31,7 +31,7 @@ const PAGE_SIZE = 50;
  *  card's own thread query uses, so one fetch serves both; mounted in `change` mode, the card
  *  opens its form seeded with the current answer. */
 function ChangeAnswerCard({ askId }: { askId: string }): ReactNode {
-  const thread = useQuery(askThreadQuery(askId));
+  const thread = useShownQuery(askThreadQuery(askId));
   if (thread.isPending) return <LoadingSkeleton label="Loading the ask" />;
   if (thread.isError) {
     return (
@@ -135,7 +135,7 @@ function AnswerRow({
 export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
-  const answers = useInfiniteQuery(
+  const answers = useShownInfiniteQuery(
     infiniteQueryOptions({
       getNextPageParam: (last: MyAnswersResponse) =>
         last.offset + (last.rows ?? []).length < last.total

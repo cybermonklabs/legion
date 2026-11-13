@@ -1,6 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { issueResultsQuery } from "../../api/queries";
 import type {
   Artifact,
@@ -25,6 +23,7 @@ import { AgentName } from "../refs/AgentName";
 import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 
 /**
  * The one line that answers the gate's question for a check: whether a pass of it stands at
@@ -326,7 +325,7 @@ function Check({ check }: { check: CheckBlock }): ReactNode {
 }
 
 function Checks({ issueKey }: { issueKey: string }): ReactNode {
-  const results = useQuery(issueResultsQuery(issueKey));
+  const results = useShownQuery(issueResultsQuery(issueKey));
 
   if (results.isPending) {
     return (

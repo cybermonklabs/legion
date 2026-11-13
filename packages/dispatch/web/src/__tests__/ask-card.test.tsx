@@ -20,6 +20,7 @@ import { AskCard } from "../features/inbox/AskCard";
 import { AskReplyComposer } from "../features/inbox/AskThread";
 import type { OwnedAsk } from "../features/inbox/ask-name";
 import { Inbox } from "../features/inbox/Inbox";
+import { writesOf } from "../features/writes/write-store";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { graphNode } from "./graph-fixture";
@@ -1337,10 +1338,10 @@ test("AskCard's inbox entry is listed again if an optimistic answer fails", asyn
     await user.click(await view.findByRole("radio", { name: "Ship" }));
     await user.click(view.getByRole("button", { name: "Answer" }));
 
-    await waitFor(() => expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([]));
+    await waitFor(() => expect(writesOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([]));
     rejectAnswer(new Error("offline"));
     await waitFor(() =>
-      expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([inboxInput])
+      expect(writesOf(queryClient).shown<InboxRow[]>(["inbox"])).toEqual([inboxInput])
     );
   } finally {
     view.unmount();

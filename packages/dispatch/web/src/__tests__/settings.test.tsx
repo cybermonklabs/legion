@@ -401,8 +401,8 @@ test("a mapping answer landing while a Default pick waits its turn keeps the pic
 
 // R7 and R10 of dispatch://INFRA-299. A new mapping's save lands while a Default pick of another
 // repository is out - made on another surface of the page, since this one takes one mapping
-// press at a time - and its answer is merged into the list: into Dispatch's copy of it, not over
-// the list as it stands, which carries the pick. So once the pick is refused and the list cannot
+// press at a time - and its answer is merged into the list, which holds Dispatch's answers alone,
+// the pick being composed over it as it is read. So once the pick is refused and the list cannot
 // be read again, the page shows the new mapping and the default Dispatch last gave.
 test("a mapping answer merged while a Default pick is out stays once the pick is refused and the read fails", async () => {
   const user = userEvent.setup();
@@ -439,8 +439,8 @@ test("a mapping answer merged while a Default pick is out stays once the pick is
     // From here on the mappings cannot be read: every read again fails, and the page says so
     // over the list, so what the list holds is read from its cache.
     const mapping = (repo: string) =>
-      page.queryClient
-        .getQueryData<RepoProject[]>(["repo-projects"])
+      writesOf(page.queryClient)
+        .shown<RepoProject[]>(["repo-projects"])
         ?.find((row) => row.repo === repo);
     page.listRepoProjects.mockRejectedValue(new Error("offline"));
     await user.click(screen.getByLabelText("Repository"));

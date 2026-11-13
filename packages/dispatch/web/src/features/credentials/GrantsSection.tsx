@@ -1,10 +1,10 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { api } from "../../api/client";
 import type { ApproverGrantResp } from "../../api/types";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
+import { useShownQuery } from "../writes/shown-query";
 import { credentialGrantsQuery } from "./grants";
 import { type RevocableColumn, RevocableList } from "./RevocableList";
 
@@ -91,7 +91,7 @@ const columns: readonly RevocableColumn<ApproverGrantResp>[] = [
  */
 export function GrantsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const grants = useQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
+  const grants = useShownQuery({ ...credentialGrantsQuery(), select: (data) => data.grants ?? [] });
 
   return (
     <RevocableList

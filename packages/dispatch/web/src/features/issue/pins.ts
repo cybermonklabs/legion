@@ -68,7 +68,7 @@ export function stateForIssue(state: UserState | undefined, issueKey: string): U
 }
 
 /** `state` with the issue's `pinned` set to `pinned`, and nothing else of it changed: what a pin
- *  shows, drawn over Dispatch's copy of the row while the pin's write is live. */
+ *  shows, composed over Dispatch's row while the pin's write is live. */
 export function withPinned(
   state: UserState | undefined,
   issueKey: string,

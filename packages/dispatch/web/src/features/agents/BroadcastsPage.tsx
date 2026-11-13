@@ -1,7 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-
 import { api } from "../../api/client";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -20,12 +18,13 @@ import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { Timestamp } from "../refs/Timestamp";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownQuery } from "../writes/shown-query";
 
 /** Every broadcast this Dispatch has sent, newest first, so one sent minutes ago is reachable
  *  again after the sender navigated away from it. */
 export function BroadcastsPage(): ReactNode {
   useDocumentTitle("Broadcasts · Dispatch");
-  const broadcasts = useQuery({
+  const broadcasts = useShownQuery({
     queryFn: () => api.listBroadcasts(),
     queryKey: ["broadcast", "list"],
   });

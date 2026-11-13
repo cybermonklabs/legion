@@ -1,7 +1,6 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-
 import { architectureSourceSyncRequest } from "../../api/client";
 import { architectureSourcesQuery, architectureTreeQuery } from "../../api/queries";
 import type {
@@ -39,6 +38,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { sourceLine } from "../settings/ArchitectureSourcesSection";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, roveFocus } from "../shell/roving";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AttachmentLists, type AttachmentView } from "./AttachmentLists";
 import {
@@ -114,7 +114,7 @@ function usePaneState(): {
  */
 export function ArchitecturePage({ project }: { project: string }): ReactNode {
   const queryClient = useQueryClient();
-  const tree = useQuery(architectureTreeQuery(project));
+  const tree = useShownQuery(architectureTreeQuery(project));
   // A rejected model comes back 200 with the reason in last_error; either way the tree's source
   // line settles from the refetch. A refusal of the request itself is the shell's to show, with
   // every other write's (`PendingWritesIndicator`).

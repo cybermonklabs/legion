@@ -1,7 +1,6 @@
-import { type MutationKey, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type MutationKey, queryOptions, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { api, issueStateRequest, type WriteBounds } from "../../api/client";
 import { commentsQueryKey, whoAmIQuery } from "../../api/queries";
 import type {
@@ -61,6 +60,7 @@ import { ViewportAnchor } from "../shell/ViewportAnchor";
 import { threadLayout } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 import { Avatar } from "./Avatar";
@@ -401,7 +401,7 @@ const handoffPre = `mt-1 max-h-64 overflow-auto rounded-md p-2 text-xs whitespac
  *  row, the `proof` list one row per entry. A version never changes once written, so the read
  *  is kept for the page's life. A body that is not a JSON object is shown as the text it is. */
 function HandoffFields({ handoffId, id }: { handoffId: string; id: string }): ReactNode {
-  const handoff = useQuery({
+  const handoff = useShownQuery({
     queryKey: ["handoff", handoffId],
     queryFn: () => api.getHandoff(handoffId),
     staleTime: Number.POSITIVE_INFINITY,
@@ -927,7 +927,7 @@ export function ConversationTab({
   const store = useHeldSends();
   // Comments whose card's own reply the store holds, out or refused.
   const heldCardReplies = useHeldSendsUnder(threadRepliesSendKey(sendKey));
-  const viewer = useQuery(whoAmIQuery());
+  const viewer = useShownQuery(whoAmIQuery());
   // The four reads the list is built from, each the issue's whole set: a conversation is listed
   // however old it is, which no window of the event log could promise.
   // The comments are the read the margin already holds for this issue, under the key it owns
@@ -936,22 +936,22 @@ export function ConversationTab({
   // for it, where the margin and a document's decision blocks render the ask alone and read
   // `["asks", issueKey]` without one. Hence a key of its own - beneath that prefix, so every
   // `invalidateQueries({ queryKey: ["asks", key] })` already written reaches this read too.
-  const asks = useQuery({
+  const asks = useShownQuery({
     queryKey: ["asks", issueKey, "thread"],
     queryFn: () => api.listIssueAskThreads(issueKey, "all"),
   });
-  const comments = useQuery(
+  const comments = useShownQuery(
     queryOptions({
       queryKey: commentsQueryKey({ issue: issueKey }),
       queryFn: () => api.listComments(issueKey),
     })
   );
-  const messages = useQuery({
+  const messages = useShownQuery({
     queryKey: ["issue-messages", issueKey],
     queryFn: () => api.listIssueMessages(issueKey),
   });
   // Each version of each phase handoff, without its body; a card reads its body when expanded.
-  const handoffs = useQuery({
+  const handoffs = useShownQuery({
     queryKey: ["handoffs", issueKey],
     queryFn: () => api.listHandoffs(issueKey),
   });
@@ -959,12 +959,12 @@ export function ConversationTab({
   const lastReadSeq = issueState.last_read_seq;
   // The watermark as a moment: the first event the reader has not read. One row - the list is
   // ordered by activity, not by sequence, so the log is read for this and for the head alone.
-  const unreadBoundary = useQuery({
+  const unreadBoundary = useShownQuery({
     queryKey: ["events", issueKey, "unread-boundary", lastReadSeq],
     queryFn: () => api.getIssueEvents(issueKey, { after: lastReadSeq, limit: 1 }),
   });
   // The issue's head: what a dwell on the newest conversation marks read.
-  const head = useQuery({
+  const head = useShownQuery({
     queryKey: ["events", issueKey, "head"],
     queryFn: () => api.getIssueEvents(issueKey, { limit: 1, order: "desc" }),
   });
@@ -1190,9 +1190,8 @@ export function ConversationTab({
   });
   useSendMarkOnce({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
-    // Into Dispatch's copy of the viewer's state while a pin of any issue shows a change there
-    // (`storeIssueState`), so that pin stays drawn over the mark's answer and none is carried
-    // into it.
+    // Into the viewer's state, which holds Dispatch's answers alone (`storeIssueState`), so a pin
+    // of any issue still out stays composed over the mark's answer and none is carried into it.
     onSuccess: (next, mark) => storeIssueState(queryClient, mark.issueKey, next),
     request: (mark: { issueKey: string; seq: number }) =>
       issueStateRequest(mark.issueKey, { last_read_seq: mark.seq }),

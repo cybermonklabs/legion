@@ -42,6 +42,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useWrites } from "../writes/write-store";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import {
@@ -169,7 +170,8 @@ function withoutRows(
 /** What a press took, read at the press: the drop it made in the unread count
  *  (`unread-count.ts`), and the rows it took out of the view it was made in. Only one of the two
  *  views is written: a dismiss is made in the Inbox, a restore in the Dismissed view. A refused
- *  press stops being drawn on them, as every change the store shows does (`WriteSpec.shows`). */
+ *  press stops being composed on them, as every change the store shows does
+ *  (`WriteSpec.shows`). */
 interface DismissPress {
   readonly drop: UnreadDrop | undefined;
   /** What left the Inbox's own read. */
@@ -207,8 +209,8 @@ export interface InboxDismiss {
  * Inbox owns it rather than each control, because the write takes the row - and with it every
  * control drawn on it - off the page, so a refusal owned by the row would be unmounted before it
  * arrived. The drawer mounts its own Inbox, so it gets its own. A refused press stops being
- * drawn: the views it wrote are the store's copies of what Dispatch last gave them, every other
- * live write's change over them (R10 of dispatch://INFRA-299), and `unread-count.ts` takes the
+ * composed: the views it wrote are what Dispatch last gave them, every other live write's change
+ * over them (R10 of dispatch://INFRA-299), and `unread-count.ts` takes the
  * press's drop off the count.
  *
  * `onSettled` is told the rows one press named once Dispatch has decided it, either way: the
@@ -221,6 +223,7 @@ export function useInboxDismiss({
   readonly onSettled?: (ids: readonly string[]) => void;
 } = {}): InboxDismiss {
   const queryClient = useQueryClient();
+  const writes = useWrites();
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
   const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const inboxKey = inboxThreadsQuery().queryKey;
@@ -263,8 +266,8 @@ export function useInboxDismiss({
       // restore takes them out of the Dismissed read's pages. The other view is read again when
       // the answer lands, so a press never has to guess what the row looks like on the far side
       // of it.
-      const pages = queryClient.getQueryData<DismissedPages>(dismissedKey);
-      const answer = queryClient.getQueryData<MyRepliesResponse>(inboxKey);
+      const pages = writes.shown<DismissedPages>(dismissedKey);
+      const answer = writes.shown<MyRepliesResponse>(inboxKey);
       const restoring = input.restore === true;
       const dismissed =
         restoring && pages !== undefined

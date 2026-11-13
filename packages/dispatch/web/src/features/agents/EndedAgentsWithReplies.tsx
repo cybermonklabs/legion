@@ -1,11 +1,10 @@
-import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-
 import { userAgentStateQuery } from "../../api/queries";
 import type { Agent } from "../../api/types";
 import { LabelPill } from "../../components/Pill";
 import { borderDefault, card, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
+import { useShownQuery } from "../writes/shown-query";
 
 import { unreadRepliesLabel } from "./unread";
 
@@ -16,7 +15,7 @@ import { unreadRepliesLabel } from "./unread";
  * one the viewer can clear, and a reply is never lost because its session ended.
  */
 export function EndedAgentsWithReplies({ live }: { live: readonly Agent[] }): ReactNode {
-  const states = useQuery(userAgentStateQuery()).data ?? {};
+  const states = useShownQuery(userAgentStateQuery()).data ?? {};
   const ended = Object.entries(states)
     .map(([sessionID, state]) => [sessionID, state.unread_replies ?? 0] as const)
     .filter(

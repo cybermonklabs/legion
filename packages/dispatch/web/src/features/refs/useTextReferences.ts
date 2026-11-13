@@ -1,5 +1,5 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
+import { useShownQueries, useShownQuery } from "../writes/shown-query";
 
 import type { ReferenceLinking } from "./RefLink";
 import {
@@ -70,7 +70,7 @@ export function useTextReferences(
 
   // `combine` is held to its last answer by structural sharing, so these keep one identity
   // while the set of issues that exist is unchanged, however often the queries report.
-  const issues = useQueries({
+  const issues = useShownQueries({
     queries: keys.map((key) => ({ ...issueSummaryQuery(key), retry: false })),
     combine: (summaries): readonly string[] =>
       keys.filter((_, index) => summaries[index]?.isSuccess === true),
@@ -78,7 +78,7 @@ export function useTextReferences(
 
   // Only a text that writes a `#id` asks for the map (`needs.questions`), and only one that
   // names the record its text is can: the route answers for a source, not for a page.
-  const questionRead = useQuery({
+  const questionRead = useShownQuery({
     ...questionsQuery(source),
     enabled: questions && source !== undefined,
   });
@@ -87,7 +87,7 @@ export function useTextReferences(
     [questionRead.data]
   );
 
-  const items = useQueries({
+  const items = useShownQueries({
     queries: prefixes.map((reference) => ({ ...referencesQuery(reference), retry: false })),
     combine: (resolutions): Readonly<Record<string, string>> => {
       const resolved: Record<string, string> = {};

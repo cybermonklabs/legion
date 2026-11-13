@@ -1,6 +1,5 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
-
 import { api, type WriteBounds } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
@@ -11,6 +10,7 @@ import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteR
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
@@ -239,7 +239,7 @@ export function AskRecipients({
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
   // while rather than refetched on every mount and focus; the event feed's invalidation still
   // refreshes it.
-  const subscribersQuery = useQuery({
+  const subscribersQuery = useShownQuery({
     enabled: subscription !== undefined && human,
     queryKey: ["subscribers", subscription?.id],
     queryFn: () => {

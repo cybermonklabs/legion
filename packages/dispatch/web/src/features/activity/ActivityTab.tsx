@@ -1,6 +1,5 @@
-import { replaceEqualDeep, useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import { replaceEqualDeep, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
-
 import { api } from "../../api/client";
 import { type EventPages, mergeEventPages } from "../../api/event-feed";
 import type { UserState } from "../../api/types";
@@ -19,7 +18,7 @@ import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
-import { answerSharing } from "../writes/write-store";
+import { useShownInfiniteQuery } from "../writes/shown-query";
 import { ActivityLine } from "./ActivityLine";
 import { buildActivityItems, dateKey } from "./activity-model";
 
@@ -36,7 +35,7 @@ interface ActivityTabProps {
  */
 export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
   const queryClient = useQueryClient();
-  const log = useInfiniteQuery({
+  const log = useShownInfiniteQuery({
     initialPageParam: null as number | null,
     queryKey: ["events", issueKey],
     queryFn: ({ pageParam }) =>
@@ -48,14 +47,12 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
     // (mergeEventPages, prependEventToLog); it is still a full page with older events beneath it.
     getNextPageParam: (page) => (page.length >= 200 ? page.at(-1)?.seq : undefined),
     // The feed (api/event-feed.ts) prepends events as they are published; a refetch whose read
-    // predates one of them must not take it back. Set beneath the write store's copies, as every
-    // rule is (`answerSharing`).
-    structuralSharing: answerSharing((current, incoming) =>
+    // predates one of them must not take it back.
+    structuralSharing: (current, incoming) =>
       replaceEqualDeep(
         current,
         mergeEventPages(current as EventPages | undefined, incoming as EventPages)
-      )
-    ),
+      ),
   });
   const issueState = stateForIssue(state, issueKey);
   const events = useMemo(() => log.data?.pages.flat() ?? [], [log.data]);

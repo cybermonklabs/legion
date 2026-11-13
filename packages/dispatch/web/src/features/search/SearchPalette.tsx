@@ -1,6 +1,5 @@
 import { snippetSegments } from "@legion/contracts/dispatch-snippet";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
-import { useQuery } from "@tanstack/react-query";
 import {
   Fragment,
   type KeyboardEvent,
@@ -11,7 +10,6 @@ import {
   useState,
 } from "react";
 import { useNavigate } from "react-router-dom";
-
 import { projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Project, SearchResult, SearchResultKind } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -46,6 +44,7 @@ import {
 import { appKeymap, DIALOG_SCOPE, type KeymapAction, useKeymap } from "../shell/keymap";
 import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
+import { useShownQuery } from "../writes/shown-query";
 import { AskHitStatus } from "./AskHitStatus";
 import { NEW_ISSUE_GROUP_ID, useNewIssueOffer } from "./NewIssueOffer";
 import { barNoteClassName, type Offer, type OfferRow } from "./offer";
@@ -420,7 +419,7 @@ function PaletteDialog({
   // The person's recent items, read from the browser on the render that opens the bar: the
   // keystroke that opens it makes no request, which is what lets the list paint at once. They
   // are one person's own, so they wait for the signed-in identity the shell already read.
-  const whoAmI = useQuery(whoAmIQuery());
+  const whoAmI = useShownQuery(whoAmIQuery());
   const [recents] = useState(() => readRecents(whoAmI.data?.login));
   // The rows this open offers, decided on its first render, while focus is still on whatever
   // opened the bar, since `useDialog` moves it into the input after that commit. Read any
@@ -462,7 +461,7 @@ function PaletteDialog({
   } = useTieredSearch({ enabled: queryEnabled, request: narrowed, words: searchText });
   // The project chip's own list, which every open of the bar offers, and the rows a query that
   // names a project leads to.
-  const projects = useQuery(projectsQuery());
+  const projects = useShownQuery(projectsQuery());
   const results = search.data?.results ?? emptyResults;
   // What search made of the words, read from its own answer rather than parsed a second time
   // here, and whether meaning search ran at all. A Dispatch that predates either field answers

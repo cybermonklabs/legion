@@ -1,6 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useMemo, useState } from "react";
-
 import { projectIssuesQuery } from "../../api/queries";
 import { MultiSelect } from "../../components/MultiSelect";
 import { TruncatedText } from "../../components/TruncatedText";
@@ -12,6 +10,7 @@ import {
   surfaceMutedStrongBg,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useShownQuery } from "../writes/shown-query";
 import { reservedOpenTextWidth } from "./reserved-width";
 
 const maxLabelLength = 40;
@@ -82,7 +81,7 @@ export function IssueLabels({
   const [inputError, setInputError] = useState<string | null>(null);
   // The same list the project's issues table and IssueBoard load for this project, so opening
   // the popover on a page that already has it fetches nothing.
-  const issues = useQuery({ ...projectIssuesQuery(project, []), enabled: open });
+  const issues = useShownQuery({ ...projectIssuesQuery(project, []), enabled: open });
   const options = useMemo(
     () =>
       uniqueLabels([

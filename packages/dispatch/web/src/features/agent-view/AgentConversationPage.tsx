@@ -1,8 +1,7 @@
 import { DELIVERY_CAPABILITIES, type MessageDeliveryMode } from "@legion/contracts";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { Link } from "react-router-dom";
-
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
@@ -30,6 +29,7 @@ import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentNam
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { SendStoppedError } from "../writes/keyed-write";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
@@ -134,11 +134,11 @@ export function AgentConversationPage({
   // `dispatch message` command, which the stream shows only as a `bash` tool call whose arguments
   // hold that command. Without these the thread would show replies to messages the human cannot
   // see, and no replies at all.
-  const stored = useQuery(agentMessagesQuery(sessionId));
+  const stored = useShownQuery(agentMessagesQuery(sessionId));
   // Seeing them is reading them, so only the view the person is looking at marks them read, as
   // the Agents page's collapsed row does.
   useMarkRepliesRead(sessionId, front ? stored.data : undefined);
-  const viewer = useQuery(whoAmIQuery()).data;
+  const viewer = useShownQuery(whoAmIQuery()).data;
   // The header's switch, one at a time; while one waits for the session's answer neither picker
   // nor Send takes another, so this page's next prompt reaches the session after the switch.
   const sessionSwitch = useSessionSwitch(sessionId, stored.data);

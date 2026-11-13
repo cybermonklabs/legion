@@ -1,11 +1,10 @@
 import { itemFromSearch } from "@legion/contracts";
-import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
-
 import { primarySpec, roleDocument } from "../../api/issue-cache";
 import { issueQuery, userStateQuery } from "../../api/queries";
 import { type IssueRoute, isPrimaryDocumentArtifactRoute, issueTabForRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
+import { useShownQuery } from "../writes/shown-query";
 
 export function useIssueDetail(route: IssueRoute) {
   const { search } = useLocation();
@@ -16,8 +15,8 @@ export function useIssueDetail(route: IssueRoute) {
   const commentId = queryItem?.kind === "comment" ? queryItem.id : undefined;
   const askId = queryItem?.kind === "ask" ? queryItem.id : undefined;
   const highlightTerm = firstHighlightTerm(query.get("q") ?? "");
-  const issue = useQuery(issueQuery(route.key));
-  const state = useQuery(userStateQuery());
+  const issue = useShownQuery(issueQuery(route.key));
+  const state = useShownQuery(userStateQuery());
   const planArtifact = roleDocument(issue.data, "plan");
   const verificationArtifact = roleDocument(issue.data, "verification");
   const primaryArtifact = primarySpec(issue.data);

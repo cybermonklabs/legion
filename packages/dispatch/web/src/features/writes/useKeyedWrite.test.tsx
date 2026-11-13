@@ -79,7 +79,7 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
 
 // W27. A write that landed with no answer to give - Dispatch answered its key `409 KEY_COMMITTED` -
 // is a success with no data: the surface's `onSuccess` runs with `null`, nothing it showed stops
-// being drawn early, nothing shows as failed, and `mutateAsync` resolves.
+// being composed early, nothing shows as failed, and `mutateAsync` resolves.
 test("a write answered KEY_COMMITTED succeeds with null: no error, and what it showed stays", async () => {
   const tab = keptTab();
   const answerAsk = answerAskAnswers().mockRejectedValue(

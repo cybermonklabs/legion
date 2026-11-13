@@ -31,6 +31,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useWrites } from "../writes/write-store";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import {
@@ -121,8 +122,8 @@ export interface MarkAllRead {
 /**
  * The Inbox's **Mark all read**, for one list: its own filters, its own read mark, its own
  * optimistic apply. The drawer mounts its own Inbox, so it gets its own. A refused press stops
- * being drawn: the list is the store's copy of what Dispatch last gave it with every other live
- * write's change over it (R10 of dispatch://INFRA-299), and `unread-count.ts` takes the press's
+ * being composed: the list is what Dispatch last gave it with every other live write's change
+ * over it (R10 of dispatch://INFRA-299), and `unread-count.ts` takes the press's
  * drop off the count.
  *
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
@@ -150,6 +151,7 @@ export function useMarkAllRead({
   readonly rows: readonly InboxListRow[];
 }): MarkAllRead {
   const queryClient = useQueryClient();
+  const writes = useWrites();
   const [refused, setRefused] = useState(false);
   const threadsKey = inboxThreadsQuery().queryKey;
   const countKey = myRepliesCountQuery().queryKey;
@@ -170,7 +172,7 @@ export function useMarkAllRead({
     onMutate: (input) => {
       setRefused(false);
       // The rows the press takes out of the unread count, counted once, here.
-      const threads = queryClient.getQueryData<MyRepliesResponse>(threadsKey);
+      const threads = writes.shown<MyRepliesResponse>(threadsKey);
       return {
         drop:
           threads === undefined

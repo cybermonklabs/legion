@@ -1,7 +1,6 @@
 import { canonicalRepo } from "@legion/contracts/repo";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
-
 import { apiErrorMessage, repoProjectDeleteRequest, repoProjectRequest } from "../../api/client";
 import { projectsQuery, repoProjectsQuery } from "../../api/queries";
 import type { RepoProject } from "../../api/types";
@@ -22,8 +21,8 @@ import { credentialPendingQuery } from "../credentials/pending";
 import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { useShownQuery } from "../writes/shown-query";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { useWrites } from "../writes/write-store";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
 import {
@@ -69,18 +68,17 @@ function withMapping(current: RepoProject[], mapping: RepoProject): RepoProject[
 export function SettingsPage(): ReactNode {
   useDocumentTitle("Settings · Dispatch");
   const queryClient = useQueryClient();
-  const writes = useWrites();
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
-  const mappings = useQuery(repoProjectsQuery());
-  const projects = useQuery(projectsQuery());
+  const mappings = useShownQuery(repoProjectsQuery());
+  const projects = useShownQuery(projectsQuery());
   // `null` is a Dispatch with no secrets broker, where Live grants has nothing to list.
-  const credentialsAvailable = useQuery(credentialPendingQuery());
+  const credentialsAvailable = useShownQuery(credentialPendingQuery());
   // Both mapping writes show their refusal on the row they changed, and both stand in that
   // row's line (`repo-mapping:<owner/repo>`), so a save and a removal of one mapping go out in
-  // press order. A refused one stops being drawn: the list as Dispatch last gave it, every other
-  // live mapping write over it (R10 of dispatch://INFRA-299).
+  // press order. A refused one stops being composed: the list as Dispatch last gave it, every
+  // other live mapping write over it (R10 of dispatch://INFRA-299).
   const putMapping = useKeyedWrite<RepoProject, MappingInput>({
     request: ({ repo, ...input }) => repoProjectRequest(repo, input),
     target: ({ repo }) => `repo-mapping:${repo}`,
@@ -95,9 +93,9 @@ export function SettingsPage(): ReactNode {
     },
     // A read already out was asked before this press.
     onMutate: () => queryClient.cancelQueries({ queryKey: ["repo-projects"] }),
-    /** The mapping this press shows, written into the list as it stands - so an answer this is
-     *  shown over again carries the mapping, and every other mapping that answer brought with
-     *  it stays (R7). */
+    /** The mapping this press shows, composed over the list as it stands - so an answer it is
+     *  composed over carries the mapping, and every other mapping that answer brought with it
+     *  stays (R7). */
     shows: (variables) => (shown) => {
       shown.on<RepoProject[]>(["repo-projects"], (current) => {
         const existing = current.find((mapping) => mapping.repo === variables.repo);
@@ -117,11 +115,11 @@ export function SettingsPage(): ReactNode {
       });
     },
     // A landing with no answer keeps the optimistic row; `onSettled` reads them all again. The
-    // answer is merged into the store's copy of the list (`Writes.answer`), so another mapping
-    // write still out stays over it and none is carried into what that write's refusal leaves.
+    // cache holds only Dispatch's answers, so another mapping write still out stays composed over
+    // the merged list.
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        writes.answer<RepoProject[]>(["repo-projects"], (current = []) =>
+        queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
           withMapping(current, mapping)
         );
       }
@@ -151,8 +149,8 @@ export function SettingsPage(): ReactNode {
     },
     // A read already out was asked before this press.
     onMutate: () => queryClient.cancelQueries({ queryKey: ["repo-projects"] }),
-    /** The removal this press shows: the row out of the list as it stands, so an answer this is
-     *  shown over again loses it too while every other mapping it carries stays. */
+    /** The removal this press shows: the row out of the list as it stands, so an answer it is
+     *  composed over loses it too while every other mapping it carries stays. */
     shows: (repo) => (shown) => {
       shown.on<RepoProject[]>(["repo-projects"], (current) =>
         current.filter((mapping) => mapping.repo !== repo)

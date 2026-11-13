@@ -1009,8 +1009,15 @@ test("the head's Snooze registers its write, so the list keeps the row the colum
       "tomorrow"
     );
     // The optimistic snooze folds the row into Later and the column follows the list, so a
-    // head that kept its write to itself would be unmounted with the row it wrote about.
-    await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
+    // head that kept its write to itself would be unmounted with the row it wrote about. It
+    // registers at the press, before the snooze is composed over the list, and again from the
+    // write's own state; the list's hold is a set, so the second changes nothing.
+    await waitFor(() =>
+      expect(snoozeLiveness).toEqual([
+        ["ask-a", true],
+        ["ask-a", true],
+      ])
+    );
   } finally {
     held.resolve({ snoozed_until: "2026-10-31T09:00:00Z" });
     view.unmount();
@@ -1040,8 +1047,14 @@ test("the column's card registers its hand-on, so the list keeps the row the col
     // The control sits in the card, not in the head, so the registration reaches the list
     // through the context the Inbox provides rather than through a prop of this column's: the
     // optimistic `waiting_on_person` takes the row out of that list as the write starts, and
-    // the card that wrote is the only surface a refusal is shown on.
-    await waitFor(() => expect(handOnLiveness).toEqual([["ask-a", true]]));
+    // the card that wrote is the only surface a refusal is shown on. It registers at the press,
+    // before the hand-on is composed over the list, and again from the write's own state.
+    await waitFor(() =>
+      expect(handOnLiveness).toEqual([
+        ["ask-a", true],
+        ["ask-a", true],
+      ])
+    );
   } finally {
     held.resolve({ ...row, asked_of: null, waiting_on_person: "bob" });
     view.unmount();
