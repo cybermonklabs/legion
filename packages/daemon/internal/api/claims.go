@@ -354,11 +354,16 @@ func (s *server) turnOutcomeBySecret(w http.ResponseWriter, r *http.Request, cal
 //
 // It refuses exactly as its siblings do — a blank field with the field's name, a claim this
 // daemon does not hold or a wrong secret with claim.InvalidSecret, a stale plugin with the
-// stale-contract 409 — and answers 204, as ready and exit do. A report of a launch that is gone
-// by the time it is written, a relaunch having moved the claim on after the check, is refused
-// with claim.InvalidSecret too, since its secret was that launch's. A report the daemon cannot
-// write is a 500 the session's next one replaces: a claim with no report after its last turn is
-// never released, so nothing lost here costs anything but a release.
+// stale-contract 409 — and answers 204, as ready and exit do. A relaunch can move the claim on
+// after the check, while the report is on its way to the store, and what the report is answered
+// then depends on when the store's statement began (store.Store.PutClaimActivity). One that began
+// after the launch's write committed finds no row at its launch and is refused with
+// claim.InvalidSecret too, since its secret was that launch's. One whose update waited behind the
+// row lock that write held writes nothing, since the update checks the generation again against
+// the row the launch committed, and answers 204, since the store answers from the row as the
+// statement found it. Neither is written onto the new launch. A report the daemon cannot write is
+// a 500 the session's next one replaces: a claim with no report after its last turn is never
+// released, so nothing lost here costs anything but a release.
 func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	var req claim.ActivityRequest
 	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,

@@ -22,11 +22,15 @@ func workerSilentEventID(token claim.Token, generation uint64, lastStep time.Tim
 }
 
 // workerBackgroundEventID is the identity of one standing report of background work: the claim
-// token, the claim's launch and the moment of the report. A session reports only when its reading
-// changes (packages/pi-legion/extensions/legion.ts), so a hung job leaves one report and one
-// notice. It is not the last step, which a hung job freezes too: an id keyed on it would be spent
-// the first minute the silence bound passed, hours before the background bound, and nobody
-// would be told.
+// token, the claim's launch and the moment of the report. A session reports when its reading
+// changes and at the end of each of its turns (packages/pi-legion/extensions/legion.ts: its
+// five-second interval sends a reading when it changed, or when the last one did not reach the
+// daemon, and its `session_stop` handler sends one whatever it says), so a hung job of a worker
+// that takes no turn leaves one report standing and one notice, and a turn the worker takes while
+// the job runs leaves a report of a later moment, which is a notice of its own once it too has
+// stood past the bound. It is not the last step, which a hung job freezes too: an id keyed on it
+// would be spent the first minute the silence bound passed, hours before the background bound,
+// and nobody would be told.
 func workerBackgroundEventID(token claim.Token, generation uint64, reported time.Time) string {
 	return fmt.Sprintf("worker-background:%s:%d:%s", token, generation, reported.UTC().Format(time.RFC3339Nano))
 }

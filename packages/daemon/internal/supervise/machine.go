@@ -426,8 +426,9 @@ type Claim struct {
 	ProviderErrorRun int
 	// Step is what the daemon last saw this claim's agent do, as the tool frames of its stream
 	// report it. It is written by the store's PutClaimStep alone and read back with the claim;
-	// no write a machine makes carries it or erases it, exactly as a session's activity report
-	// is held.
+	// no write a machine makes carries it or erases it, a launch's included: the store's putClaim
+	// names none of its eight columns. The activity report below is held the same way but for
+	// that one write, which clears the report and leaves the step as it stood.
 	Step StepRecord
 	// ActivityAt, ActivityBackground, ActivityKinds and ActivityNextReminderAt are what the
 	// process this claim runs now last reported it was doing (POST /legion/v1/claims/activity):
@@ -440,10 +441,10 @@ type Claim struct {
 	// The store's putClaim sets all four to their zero values on a write that moves Generation
 	// (launchNow), because the report describes the process that made it and the launch replaces
 	// that process; and a report is written only onto the launch whose secret the route
-	// authenticated it with, so one a dead process sent around its relaunch is refused rather
-	// than written over that clear. So a worker displaced into a replacement pod while a
-	// background task of its own ran is read as a session that has reported nothing, not as one
-	// still waiting on that task.
+	// authenticated it with, so one a dead process sent around its relaunch is never written over
+	// that clear, whatever the route answers it (store's PutClaimActivity). So a worker displaced
+	// into a replacement pod while a background task of its own ran is read as a session that has
+	// reported nothing, not as one still waiting on that task.
 	//
 	// The daemon's minute sweep reads them off the live claim, which is the only reading it has
 	// of what a quiet worker says it is waiting on (internal/daemon's tellSilentPhaseWorkers,

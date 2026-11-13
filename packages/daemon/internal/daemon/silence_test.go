@@ -844,8 +844,9 @@ func (r *podUpdateRig) reportsNothingRunning(role claim.Role) {
 // half would write is exactly what an architect must never get for a worker that is busy.
 //
 // A second sweep adds neither notice nor row: the fact's identity is the claim token, its launch
-// and the moment of the report (workerBackgroundEventID), a session reports only when its reading
-// changes, and a duplicate applies nothing. That is R6 of dispatch://INFRA-3163.
+// and the moment of the report (workerBackgroundEventID), a session whose report reached the
+// daemon sends none of a later moment until it takes a turn or its reading changes, and a
+// duplicate applies nothing. That is R6 of dispatch://INFRA-3163.
 func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testing.T) {
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer

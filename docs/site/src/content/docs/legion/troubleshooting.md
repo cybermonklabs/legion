@@ -1150,6 +1150,39 @@ On such a daemon, an update round or a message wake can take the author of the c
   `supervise: claim failed`, `supervise: the agent reported its exit`, `supervise: the process
   speaks another plugin contract; relaunching it onto the current plugin`, or `supervise: the
   update round is over for this claim`, each of which says what became of the turn instead.
+- **`supervise: the agent's busy answer records the claim working; its task waits for the end of
+  the turn the agent is in`** at Info, with the `delivery` and the prompts still `outstanding`, is
+  Oh My Pi answering a prompt with `Agent is already processing`: at the send, after its
+  acknowledgement, or in the prompt's result. That answer means the session is in a prompt, so a
+  ready or idle claim is recorded `working`, with a `supervise: a turn started` line that names no
+  delivery, and its task is held for that turn's end rather than sent again at every sweep and
+  hello. When the turn's own start comes, **`supervise: the turn a busy answer recorded has
+  begun`** says so, with the delivery it confirms, and writes no second start line. When no start
+  or end of the turn is ever read, the next sweep asks the agent: **`supervise: the agent is in no
+  prompt; the turn its busy answer recorded is over`** ends the turn and sends the task, and
+  `supervise: the agent did not say whether the turn its busy answer recorded is over; the claim
+  stays working and the next sweep asks again` is an ask nobody answered. Nothing to do.
+- **`supervise: the agent refused the prompt; it is busy with the turn of an earlier prompt of
+  this task, whose result settles the task`** (and the same line for an acknowledged prompt, and
+  for `Oh My Pi ran no turn for the prompt`) is a re-send of a task whose first prompt Oh My Pi
+  acknowledged and is still preparing: its pre-turn work, such as a memory recall, outlasted the
+  daemon's five-second wait for the turn. The first prompt stays outstanding, its late turn
+  confirms the task, and its result retires it, so a completion made in that turn is accepted and
+  the task is not sent again after it. Nothing to do.
+- **`supervise: the relaunch ended work the agent had running`** at Warn, with the `cause`,
+  whether a `turn` and the task's turn (`taskTurn`) were cut off, the `background` work and its
+  `kinds` the process last reported, and whether it `reported` at all, is a relaunch, a
+  suspension or a failure that ended the process while work of its agent ran. The claim records it
+  (the `ended_work` column of its row), and the first prompt the next process is sent carries a
+  sentence naming it: in front of the task the claim holds, or, for a claim that holds none, alone
+  in a delivery of the daemon's own (`supervise: the claim holds no task at its ready; a delivery
+  of the daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and
+  which a newer task replaces while no prompt of it is outstanding). A root architect's catch-up
+  opens with the same sentence, and the daemon-launched controller reads it in front of its start
+  message. A process that left no activity report is told that the daemon has no report of its
+  background work, so its subagents and background jobs are gone. The record is marked told once
+  a turn confirms a prompt that carried it. Nothing to do; the agent checks what that work did
+  before it repeats it.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The

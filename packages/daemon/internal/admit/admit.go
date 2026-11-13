@@ -613,18 +613,25 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 // (record.SilentIssue.BackgroundSince). workflow.PhaseWorkerOwedTurn answers the half of both
 // only the store can answer.
 //
-// The silence handlers read the same rules over the same record, so the list and the
-// `worker-silent` and `worker-background-stalled` notices the architects were sent name the
-// same workers, with one difference: a handler also refuses a fact whose generation is not the
-// issue's current one (workflow's phaseWorkerRecord), a term the tick never meets, because it
-// reads each issue at its current generation.
+// The silence handlers read the same rules over the same record, so the list names the workers
+// the `worker-silent` and `worker-background-stalled` notices to the architects name, with two
+// differences. A handler also refuses a fact whose run is not the issue's current generation
+// (workflow's phaseWorkerRecord), and the sweep gives each fact the claim's serving run
+// (supervise.Claim.ServingRun). The tick weighs no such term: it reads each worker's claim by its
+// token alone (record.Postgres.RoleRuns, whose key's generation picks only the queued starts read
+// beside the claim), and the claim it reads carries no serving run (record.RoleClaim), so the list
+// can name a worker whose claim still serves an earlier run of the issue, whose fact the handler
+// refuses. And the sweep that applies those facts runs once a minute (internal/daemon's
+// reconcileOrphans, at orphanSweepInterval), so a tick can name a worker that passed its bound
+// since the last sweep up to a minute before the next one writes its architect's notice.
 //
-// Why the controller is told at all, when the issue's own architect already was: that architect
-// may be failed or gone, so its notice reaches nobody, and the controller is the role that holds
-// `fresh_session` and reads the whole project (this root's architect ruled it on 2026-11-12,
-// dispatch://INFRA-3163). The tick carries the list. The state route gains no field for it; the
-// state's settings gain the two bounds, `worker_silence_minutes` and `worker_background_hours`,
-// as two keys of a loose object, so no daemon API contract number is taken for either.
+// Why the controller is told at all, when the issue's own architect already was or is within the
+// minute: that architect may be failed or gone, so its notice reaches nobody, and the controller
+// is the role that holds `fresh_session` and reads the whole project (this root's architect ruled
+// it on 2026-11-12, dispatch://INFRA-3163). The tick carries the list. The state route gains no
+// field for it; the state's settings gain the two bounds, `worker_silence_minutes` and
+// `worker_background_hours`, as two keys of a loose object, so no daemon API contract number is
+// taken for either.
 //
 // What that costs, plainly: record.DecodeOutboxPayload refuses a field and a notice kind it
 // does not know, so a daemon of an older release that met a queued row carrying this list, or a

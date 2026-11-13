@@ -70,15 +70,23 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // its own view (IdleClaim).
 //
 // It writes only onto the launch the report belongs to, generation: a report of the claim's
-// earlier launch — a dead process's, authenticated just before the relaunch and written just
-// after the launch's clear — is refused rather than written over the new process's empty report,
-// and answered as unknown, as the route answers a secret of a launch that is gone.
+// earlier launch — a dead process's, authenticated just before the relaunch — is never written
+// over the launch's clear and the new process's empty report, since the update's own condition
+// names the generation.
 //
 // A report older than the one recorded is dropped rather than written: a session fires its
 // reports without an in-flight guard, so an earlier reading can land after a later one, and the
-// pod would then be released on a reading the session has already replaced. It answers whether
-// the store holds the claim at generation at all, which a later report of a claim the daemon has
-// forgotten or relaunched does not.
+// pod would then be released on a reading the session has already replaced.
+//
+// It answers whether the store held the claim at generation when the statement began, which is
+// not always whether it wrote. The answer is the outer select's, read from the snapshot the
+// statement took as it began, while an update that waits on a row lock checks its condition
+// again against the row the lock's holder committed (Postgres's READ COMMITTED). So a report of
+// the earlier launch whose statement began after the launch's write committed finds no row at
+// generation and is answered unknown, as the route answers a secret of a launch that is gone;
+// and one whose update waited behind that write's row lock writes nothing, since the row it
+// reads again is at the next generation, and is answered known all the same, so the route
+// answers it 204. A report dropped as older than the one recorded is answered known too.
 //
 // The report's own clock is bounded to the daemon's, as the listener's is (decodeListenerWake):
 // the session chooses every field of what it sends, and one reading dated ahead of the daemon's
