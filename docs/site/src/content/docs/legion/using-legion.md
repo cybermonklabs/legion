@@ -34,7 +34,7 @@ questions, approve the spec, and review the pull request. Everything happens in
    not queue it.
 
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
-every slot is taken, the issue waits in `todo` and takes the next free slot in the board's order.
+every slot is taken, the issue waits in `todo` for a free slot, in the order the line gives it ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A slot is one issue the daemon has started, a root or a child, so a tree of four started issues
 holds four of them. An issue takes its slot when the daemon starts it and keeps it
 until it is done or leaves the workflow,

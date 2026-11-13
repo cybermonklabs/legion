@@ -1450,8 +1450,9 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 // waits on another issue (record.LineFacts.Waits, the pass's own judgement by blockers.waitsOf),
 // and reports the issues it took one from. It is the release for a wait, beside releaseSlots,
 // which frees the row of an issue that needs none at all (record.NeedsSlot): an issue this one
-// frees goes on working and keeps its place in the line, so the row comes back to it by itself
-// when the wait ends, which is why the two are written apart and why this one marks the issue.
+// frees goes on working and keeps its place in the line, so it takes a row again by itself in
+// that place once the promotion sees its wait end and a row is free (promoteHolds), which is why
+// the two are written apart and why this one marks the issue.
 // The cap counts the issues Legion is working on, and an issue waiting for another issue to
 // finish is not one of them, so its row goes to the line and it stands there for a row of its
 // own again. Nothing else of it moves —

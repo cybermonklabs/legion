@@ -137,8 +137,8 @@ later than the close, set the list again at that point rather than letting the i
 
 This does not change the rule above:
 a child that waits on another repository's merged change is released after that merge, not held by
-a link, because a link releases the child at its blocker's close, which is before you can name the
-merged commit.
+a link, because a link starts the child no earlier than its blocker's close, which is before you
+can name the merged commit.
 Releasing a child too early starts work that cannot build;
 a `blocked_by` link on a started issue takes a slot from work already under way, which stops
 nothing.
