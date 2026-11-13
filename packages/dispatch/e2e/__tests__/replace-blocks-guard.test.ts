@@ -10,11 +10,17 @@
  *  printed the string whole: a URL whose password was `abc/def+ghi` put `abc/def+ghi` on stderr.
  *  A generated password is often base64, which holds `/`.
  *
- *  Two rules hold the guard. A password a masker can find is masked, whichever of `/`, `?` or `@`
- *  it holds. And a refusal never prints a connection string it could not mask: a string the masker
- *  cannot parse is named by the reason for its refusal alone, so the next spelling nobody thought
- *  of fails closed rather than to a log. The rows that held before stay as controls of the first
- *  rule.
+ *  At legion/INFRA-1520 cef244c6de41 the masker learned the last `@` and a placeholder for what it
+ *  cannot parse, and a password still reached stderr wherever its name was spelled in a way the
+ *  masker did not match: `?Password=`, `?pass%57ord=` and the keyword `PASSWORD=`. libpq refuses
+ *  each of those strings, but the leak comes first: the secret is on stderr whether or not the
+ *  string would ever have connected. A masker decides there is no password by matching a name, and
+ *  every near-miss name is a string it then prints in full, so the rule these rows hold is that a
+ *  refusal names what is wrong and prints no part of the connection string, masked or not.
+ *
+ *  Every row asserts the two things that matter: the refusal (exit 2) and no secret on stderr. No
+ *  row asserts a masked form such as `postgres://***@`, which the rule leaves nothing to print.
+ *  The rows that held before this round hold the same measure as before.
  *
  *  No row starts a Dispatch: every string is refused before the instance would start.
  */
@@ -78,6 +84,21 @@ for (const { shape, databaseUrl, secret } of [
     databaseUrl: withPassword("ab@cd", "?db%6Eame=mine"),
     secret: "ab@cd",
   },
+  {
+    shape: "a password parameter spelled with a capital letter",
+    databaseUrl: "postgres://127.0.0.1:5433/?Password=sekrit&db%6Eame=mine",
+    secret: "sekrit",
+  },
+  {
+    shape: "a password parameter whose name escapes a capital letter",
+    databaseUrl: "postgres://127.0.0.1:5433/?pass%57ord=sekrit&db%6Eame=mine",
+    secret: "sekrit",
+  },
+  {
+    shape: "the keyword form with the keyword in capitals",
+    databaseUrl: "host=127.0.0.1 PASSWORD=sekrit dbname=mine",
+    secret: "sekrit",
+  },
 ]) {
   test(
     `a refusal writes no password to stderr: ${shape}`,
@@ -85,9 +106,9 @@ for (const { shape, databaseUrl, secret } of [
       const { code, stderr } = await refusing(databaseUrl);
       expect(
         { code, printed: stderr.includes(secret) },
-        "The refusal wrote the password to stderr. Find a URL's userinfo through the last `@` " +
-          "before the host, not through the first `/` or `?` after `//`, which a raw password " +
-          "can hold."
+        "The refusal wrote the password to stderr. A refusal names what is wrong and prints no " +
+          "part of the connection string: a masker that decides by a name's spelling prints the " +
+          "next spelling it does not know."
       ).toEqual({ code: 2, printed: false });
     },
     refusalTimeout
@@ -95,17 +116,17 @@ for (const { shape, databaseUrl, secret } of [
 }
 
 test(
-  "a refusal of a string the masker cannot parse names the reason and none of the string",
+  "a refusal of a string no reader can parse names the reason and none of the string",
   async () => {
-    // A person who meant user:password and left the host out: no `@` for a masker to find, no
-    // database for the guard to read, so the guard refuses it and the masker cannot tell where a
+    // A person who meant user:password and left the host out: no `@` to find, no database for the
+    // guard to read, so the guard refuses it, and no reading of the string can tell where a
     // password would stand.
     const afterScheme = "zz-unparseable:qq";
     const { code, stderr } = await refusing(`postgres://${afterScheme}`);
     expect(
       { code, printed: stderr.includes(afterScheme) },
-      "A string the masker could not parse reached stderr whole. A masker that fails open is " +
-        "no masker: print a fixed placeholder for a string it cannot mask, and the reason."
+      "The refused string reached stderr whole. A refusal names what is wrong and prints no part " +
+        "of the connection string."
     ).toEqual({ code: 2, printed: false });
   },
   refusalTimeout
