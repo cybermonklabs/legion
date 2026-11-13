@@ -278,6 +278,34 @@ test("a comment the turn posted is recorded undone and not deleted", async ({ pa
   ]);
 });
 
+// SLOW(>=2s): a decision, an answer, a write, and a wait that proves no second write follows.
+test("a submit pressed twice, and again once the turn landed, runs each write of the turn once", async ({
+  page,
+}) => {
+  modelsLane();
+  test.setTimeout(120_000);
+  const key = await seedOne();
+  const body = "The grease is on order.";
+  await scriptTurn("dispatch_comment", [{ body, issue: key }]);
+  const writes = countGoingWrites(page);
+
+  await openBarOver(page, "/projects/CORE/issues");
+  await askAndWait(page, "say on the bearing grease issue that the grease is on order");
+  await expect(operationRow(page)).toBeVisible();
+  await submitOperation(page);
+  await submitOperation(page);
+  await landed(page, 1);
+  await submitOperation(page);
+  // An absence window: the turn has landed, and no submit may write it again.
+  await page.waitForTimeout(1_000);
+
+  expect(writes.bodies.map((sent) => [sent.offer, sent.invocation])).toEqual([
+    ["dispatch_comment", 0],
+  ]);
+  expect((await listComments(key)).filter((comment) => comment.body === body)).toHaveLength(1);
+  expect((await newestRun()).writes ?? []).toHaveLength(1);
+});
+
 // SLOW(>=2s): two turns, each a decision, an answer, a write, a page load and an undo.
 test("undo writes a document's version back and an ask's text back", async ({ page }) => {
   modelsLane();
