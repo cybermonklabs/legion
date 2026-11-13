@@ -94,21 +94,33 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 97's merge wait
-(INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's answer about
-merging the pull request's head carries `mergeWait`, the head the round waits on, the merge state
-the record holds for that head, when that state was last read, when GitHub last moved the pull
-request, how many of the fence's check runs are that head's own, and the head and state the
-architect and the reviewer were told of; an issue whose round waits on nothing there carries no
-such key, and a caller from a pod below 97 is served every issue without `mergeWait`), after
-contract 94 (INFRA-2800: an issue carries `phaseEntry` and `givenEntry`, the entry the role of its
-current phase stands on and the entry that role was given, and a caller from a pod below 94 is
-served every issue without them), contract 87 (INFRA-3219: a claim view carries `leakCheckCause`, the sentence its launch was
-refused with because the shared public leak check could not be installed, and a caller from a pod
-below 87 is served every claim view without it) and contract 86 (dispatch://INFRA-714:
-the phase vocabulary loses `awaiting_merge`, a pull request carries `mergeState` in place of
-`checksVerdict`, a phase carries `pass`, every claim view carries `lastTurnStart` and
-`lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's `why` and the
+number is the one `DaemonAPIVersion` declares, last bumped by contract 104's merge wait
+(dispatch://INFRA-3027: an issue of `GET /legion/v1/state` whose review round waits on GitHub's
+answer about merging the pull request's head carries `mergeWait`, the head the round waits on, the
+merge state the record holds for that head, when that state was last read, when GitHub last moved
+the pull request, how many of the fence's check runs are that head's own, and the head and state
+the architect and the reviewer were told of; an issue whose round waits on nothing there carries
+no such key, and a caller from a pod below 104 is served every issue without `mergeWait`), after
+contract 98's held list
+(dispatch://INFRA-3107: `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`,
+each row carrying the issue, one word for why nothing of it runs — a closed list of eleven words
+the daemon reads in one order, of which `at_work` names no issue today (see
+`record.HeldAtWork`) — and `heldBy`, the issues that hold it, absent where no issue holds the one
+that waits; the strict reader this plugin parses the state through takes the key as optional,
+because a caller from a pod whose claims record a contract under 98 is served the admission
+block without it (`api.stateFor`,
+`withoutHeld`), and the controller's tick notice carries the same rows), after contract 94
+(dispatch://INFRA-2800: each issue carries `phaseEntry` and `givenEntry`, which a caller below
+94 is served without, and a completion of an older phase entry is refused
+`HANDOFF_STALE_ENTRY`), after contract 87
+(dispatch://INFRA-3219: each claim view carries `leakCheckCause`, the sentence a launch try was
+refused with because the shared public leak check could not be installed, which a caller below
+87 is served without), after contract 86
+(dispatch://INFRA-714: the phase vocabulary loses `awaiting_merge`, a pull request carries
+`mergeState` in place of `checksVerdict`, a phase carries `pass`, every claim view carries
+`lastTurnStart` and `lastTurnEnd`, and `handoff_complete` takes no `ready`), after contract 85's
+`why` and the
 `waitingLine` fields beside it
 (INFRA-2554: each member of the line carries `part`, `kind`, `partPlace`, `partLength`,
 `holdsSlot`, `since` for a member whose work came back, `rootRank`, `ownRank` and `rootKey`

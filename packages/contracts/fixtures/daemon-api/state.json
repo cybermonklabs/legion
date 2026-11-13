@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 97,
-    "caller": 97
+    "daemon": 104,
+    "caller": 104
   },
   "admission": {
     "cap": 5,
@@ -16,8 +16,8 @@
       "LEGION-208",
       "LEGION-210",
       "LEGION-212",
-      "LEGION-214",
-      "LEGION-215"
+      "LEGION-218",
+      "LEGION-219"
     ],
     "waiting": [
       "LEGION-212",
@@ -28,8 +28,8 @@
       "LEGION-210",
       "LEGION-211",
       "LEGION-212",
-      "LEGION-214",
-      "LEGION-215"
+      "LEGION-218",
+      "LEGION-219"
     ],
     "blocked": [
       {
@@ -44,6 +44,20 @@
         "blockedBy": [
           "LEGION-210"
         ]
+      }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "dispatch_blocker",
+        "heldBy": [
+          "LEGION-210",
+          "LEGION-213"
+        ]
+      },
+      {
+        "issue": "LEGION-214",
+        "reason": "label_off"
       }
     ]
   },
@@ -420,15 +434,25 @@
     "LEGION-214": {
       "key": "LEGION-214",
       "generation": 1,
+      "phase": "admitted",
+      "status": "todo",
+      "tree": "LEGION-214",
+      "repo": "zeta/tools",
+      "defaultBranch": "release/v7.1",
+      "workers": {}
+    },
+    "LEGION-218": {
+      "key": "LEGION-218",
+      "generation": 1,
       "phase": "reviewing",
       "status": "needs_review",
-      "tree": "LEGION-214",
+      "tree": "LEGION-218",
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {
         "implementer": {
           "claim": {
-            "session": "ses_implementer_214",
+            "session": "ses_implementer_218",
             "state": "idle",
             "pluginContract": 0
           },
@@ -438,7 +462,7 @@
         },
         "reviewer": {
           "claim": {
-            "session": "ses_reviewer_214",
+            "session": "ses_reviewer_218",
             "state": "idle",
             "pluginContract": 0
           },
@@ -470,18 +494,18 @@
       "phaseEntry": 1,
       "givenEntry": 1
     },
-    "LEGION-215": {
-      "key": "LEGION-215",
+    "LEGION-219": {
+      "key": "LEGION-219",
       "generation": 3,
       "phase": "reviewing",
       "status": "needs_review",
-      "tree": "LEGION-215",
+      "tree": "LEGION-219",
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "workers": {
         "implementer": {
           "claim": {
-            "session": "ses_implementer_215",
+            "session": "ses_implementer_219",
             "state": "idle",
             "pluginContract": 0
           },
@@ -494,7 +518,7 @@
         },
         "reviewer": {
           "claim": {
-            "session": "ses_reviewer_215",
+            "session": "ses_reviewer_219",
             "state": "idle",
             "pluginContract": 0
           },

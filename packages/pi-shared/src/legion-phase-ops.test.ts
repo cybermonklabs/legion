@@ -760,16 +760,16 @@ test("read_record hands on what a reviewing issue's round waits on from GitHub",
   const issues = state.issues as Record<string, Record<string, unknown>>;
   const architect = {
     ...implementer,
-    tree: "LEGION-215",
-    issue: "LEGION-215",
+    tree: "LEGION-219",
+    issue: "LEGION-219",
     role: "architect" as const,
   };
   const { ops } = runtime(architect, state);
 
-  const stuck = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-215" })) as {
+  const stuck = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-219" })) as {
     record: Record<string, unknown>;
   };
-  expect(stuck.record.mergeWait).toEqual(issues["LEGION-215"].mergeWait);
+  expect(stuck.record.mergeWait).toEqual(issues["LEGION-219"].mergeWait);
   expect(stuck.record.mergeWait).toEqual({
     waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
     mergeState: "blocked",
@@ -781,7 +781,7 @@ test("read_record hands on what a reviewing issue's round waits on from GitHub",
   });
   // A round still waiting for GitHub's first answer about the head carries no merge state, no
   // read of one and neither told mark.
-  const first = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-214" })) as {
+  const first = (await executePhaseOp(ops, { op: "read_record", issue: "LEGION-218" })) as {
     record: Record<string, unknown>;
   };
   expect(first.record.mergeWait).toEqual({

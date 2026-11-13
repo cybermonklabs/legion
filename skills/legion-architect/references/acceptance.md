@@ -36,11 +36,17 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   failed architect's notice is dropped, so a retried one learns of the wait from its catch-up
   alone). Accept it as this section says, a parent only after its last round (below).
 - The daemon refuses `sign_off` while an issue beneath the one you accept is still in the workflow
-  (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): take each one to done, or out of the workflow
-  with `park_child`, and sign off again. A parent: sign off only after its last round (below). The
-  daemon then closes a parent that is not the root at its own merge, which under this rule comes
-  after its children's. One issue beneath never holds it: one the daemon itself holds at
-  `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
+  (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one): run each one to done, and sign off again.
+  Park one with `park_child` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed,
+  and say in a comment which of those it is. Ask the person about a child that can reach neither
+  `done` nor a park under that rule, and hold the acceptance until they answer. Hold it too, for
+  the root and for the issue you moved an unreleased child under, until the person answers the ask
+  on the root about that child (`skill://legion-architect`, section 3): release the child when they
+  say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when
+  they say its work should wait, citing their answer. A parent: sign off only after its last round
+  (below). The daemon then closes a parent that is not the root at its own merge, which under this
+  rule comes after its children's. One issue beneath never holds it: one the daemon itself holds
+  at `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
   that phase's role with your reason in its task.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head
@@ -70,9 +76,10 @@ requirement. Nothing in the tree builds on the parent's own merge, which comes l
 that waits for it waits forever, so work another child builds on is a child of its own, in a
 repository of its own or with a deploy of its own. While the approved head does not carry those
 merges, or a check in another repository has no pass standing since the close of a child it
-needs, leave the issue in `accepting` until each has closed (`child-closed`) or been parked for
-good (`child-status`). Move a parked child's criterion to the root's own pull request or a
-released, open child first; never downgrade it. A root's requirement stays the root's, pending
+needs, leave the issue in `accepting` until each has closed (`child-closed`) or a park has
+already taken it out (`child-status`). That wait is no reason to park a child. Move a parked
+child's criterion to the root's own pull request or a released, open child first; never
+downgrade it. A root's requirement stays the root's, pending
 until this round, where its head must meet it.
 Then, in one turn:
 
@@ -210,11 +217,13 @@ phase records and pull request carried into a new generation, and that phase's r
 child that never started is handed over too, carrying no run, whatever held it at `admitted`: it
 waits in the line for a slot and for any unfinished blocker, and its architect starts as a fresh
 root and registers its own spec. Only a child that finished, was parked or was never released
-stays. The child stays its own tree; reopening the old root does not take it back. Park a child
-with `park_child` before then when its work should stop with the root. A root that is parked
+stays. The child stays its own tree; reopening the old root does not take it back. The hand-over
+runs by itself and needs no action from you.
+Park a child with `park_child` before then only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the child.
+Ask the person whether a child's work must end with the root. A root that is parked
 rather than closed hands over only a child in `merging` whose pull request is still open,
 since the daemon re-admits no parked root and only that child's own merger, started again under
-its own tree, merges that head; park that child too when its merge should wait with the root.
+its own tree, merges that head. Ask the person whether that child's merge must wait for the root.
 
 If you are that child's architect:
 
@@ -240,6 +249,6 @@ The first phase that resume starts needs no slot of its own either, since the ro
 A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.
 While your answered root stands in the line, your record carries `waitingLine`: your place in the line and its length, your `part` (`returned`) and `kind` (`answered`), your `partPlace` of `partLength` among the issues whose work came back, `holdsSlot` true because your root has held its slot since its start, `since`, the moment your work came back, and `reason`, the daemon's own sentence for that place.
 An issue that has not started carries `rootRank`, `ownRank` and `rootKey` in place of `since`, the two Dispatch ranks that placed it and the key of its tree root.
-`why` beside it says why any issue of your tree is not working now, in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record holds in the workflow that no admission list places.
+`why` beside it says why any issue of your tree is not working now, in one word and one sentence: `claim_stopped`, a claim nothing will wake; `waiting`, this line; `blocked`, a Dispatch link or an open child below it, though its reason can be the sentence of the issue's `admission.held` word (the sentence table of `packages/daemon/internal/projection/why.go` says when); `unlisted`, an issue the record holds in the workflow that no admission list places.
 Nothing is sent to you about that wait, and your resume task says what answered it.
 Act on neither your place nor your wait: the daemon starts you again on the pass that reads the answer.

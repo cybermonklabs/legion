@@ -216,10 +216,10 @@ func populatedState(t *testing.T) State {
 	// opened, so it holds none and queues for one. A member that holds none writes `holdsSlot`
 	// false rather than leaving it out, which is what the pointer behind that field is for.
 	heldSlot, noSlot := true, false
-	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-214's
+	// What the two reviewing issues' rounds wait on from GitHub (api.MergeWaitView). LEGION-218's
 	// head went up minutes ago and no read of the pull request has answered for it yet, so all
 	// the daemon knows of its age is the `updated_at` GitHub gave the pull request itself;
-	// LEGION-215's head has stood two days, its last answering read was a minute before this
+	// LEGION-219's head has stood two days, its last answering read was a minute before this
 	// state, and that read has said `blocked` ever since the architect and the reviewer were
 	// told.
 	waitingHeadUpdatedAt := time.Date(2026, 9, 22, 8, 58, 40, 0, time.UTC)
@@ -258,7 +258,7 @@ func populatedState(t *testing.T) State {
 		},
 		Admission: Admission{
 			Cap:    5,
-			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-214", "LEGION-215"},
+			Active: []string{"LEGION-208", "LEGION-210", "LEGION-212", "LEGION-218", "LEGION-219"},
 			// The line is two long and carries one member of each of its two parts, in the order
 			// the line publishes them: LEGION-212, the root a person answered, stands at 1 in the
 			// part whose work came back, which takes the free slots first, and LEGION-211, a root
@@ -267,13 +267,13 @@ func populatedState(t *testing.T) State {
 			// fields (`waitingLine`). LEGION-212 is in `active` as well, which is the shape of
 			// every member that already holds a slot: it kept the one it took when the daemon
 			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
-			// the holder's clause rather than in one about queuing for a free slot. LEGION-214 and
-			// LEGION-215 are the two reviewing roots whose round waits on GitHub's merge state, and
+			// the holder's clause rather than in one about queuing for a free slot. LEGION-218 and
+			// LEGION-219 are the two reviewing roots whose round waits on GitHub's merge state, and
 			// each holds a slot of its own, which is why the cap is five.
 			Waiting: []string{"LEGION-212", "LEGION-211"},
 			// The roots of the live trees, which the slots no longer name: LEGION-207 closed, and
 			// each of the other six roots a tree of its own.
-			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-214", "LEGION-215"},
+			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219"},
 			// LEGION-211 is the waiting root admission skips, so it is in `waiting` too;
 			// LEGION-209 is a child of LEGION-208's tree the workflow holds at `admitted`, which
 			// no waiting line carries. Both are listed, by issue key, with what each waits on —
@@ -281,6 +281,18 @@ func populatedState(t *testing.T) State {
 			Blocked: []BlockedIssue{
 				{Issue: "LEGION-209", BlockedBy: []string{"LEGION-210", "LEGION-213"}},
 				{Issue: "LEGION-211", BlockedBy: []string{"LEGION-210"}},
+			},
+			// The issues the record holds in the workflow that stand in neither list above, each
+			// with the one word for why. Both shapes of the row are here, and that is what the
+			// fixture is for: LEGION-209 is held by the issues `blocked` names, so its row
+			// carries `heldBy`, and LEGION-214, a root of its own tree whose record says the
+			// label is off (`label_off`), is held by no issue at all, so its row carries none. The contracts
+			// gate walks the keys the file holds (packages/contracts/src/legion-api.test.ts), so
+			// a list of one shape would prove nothing of the other — an absent `heldBy` is as
+			// much part of the row's schema as a filled one.
+			Held: []HeldIssue{
+				{Issue: "LEGION-209", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-210", "LEGION-213"}},
+				{Issue: "LEGION-214", Reason: record.HeldLabelOff},
 			},
 		},
 		Issues: map[string]Issue{
@@ -386,7 +398,7 @@ func populatedState(t *testing.T) State {
 					},
 				},
 				// The implementer holds the work its phases row names: the two numbers are equal,
-				// which is every role the daemon has reached, as LEGION-214's and LEGION-215's
+				// which is every role the daemon has reached, as LEGION-218's and LEGION-219's
 				// reviewers are too. LEGION-211 below is the other case, and LEGION-210, LEGION-212
 				// and LEGION-207 carry neither number, since no phase worker role works held,
 				// awaiting_person or done.
@@ -584,6 +596,24 @@ func populatedState(t *testing.T) State {
 					AdmittedAt: time.Date(2026, 9, 22, 8, 1, 30, 0, time.UTC),
 				},
 			},
+			// LEGION-214 is the fixture's one held row that names no issue holding it, which is
+			// what it is here for: the contracts gate walks the keys the file holds, so a held list
+			// of one shape would prove nothing of a row with no `heldBy`. It is a root of its own
+			// tree at admitted whose record says the Legion label is off, so the admission queue
+			// does not carry it, it stands in neither `active` nor `waiting`, and its word is
+			// `label_off`, which record.HeldReasonOf answers for that shape (measured against the
+			// ladder, not assumed). Its tree is no live tree and no draw reached it, so it carries
+			// no memory group.
+			"LEGION-214": {
+				Key:           "LEGION-214",
+				Generation:    1,
+				Phase:         phase.Admitted,
+				Status:        "todo",
+				Tree:          "LEGION-214",
+				Repo:          "zeta/tools",
+				DefaultBranch: "release/v7.1",
+				Workers:       map[claim.Role]PhaseView{},
+			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
 			// and it is open at its second look, woken by the Dispatch issue.deployed that release
@@ -635,28 +665,28 @@ func populatedState(t *testing.T) State {
 					Status:          GatedStepApproved,
 				}},
 			},
-			// LEGION-214 and LEGION-215 are the two reviewing roots whose round waits on GitHub's
+			// LEGION-218 and LEGION-219 are the two reviewing roots whose round waits on GitHub's
 			// merge state for the head its reviewer's approval stands on
 			// (classify.RoundWaitsOnMergeState, the one rule the engine reads to decide whether to
 			// read GitHub for a round), so each carries a `mergeWait`. They are the two readings
 			// the object was added for: a round GitHub has answered nothing about yet, and a
 			// round GitHub has held on `blocked` for days, whose architect and reviewer have been
 			// told of it.
-			"LEGION-214": {
-				Key:           "LEGION-214",
+			"LEGION-218": {
+				Key:           "LEGION-218",
 				Generation:    1,
 				Phase:         phase.Reviewing,
 				Status:        "needs_review",
-				Tree:          "LEGION-214",
+				Tree:          "LEGION-218",
 				Repo:          "acme/widgets",
 				DefaultBranch: "main",
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {
-						Claim:         ClaimView{Session: "ses_implementer_214", State: "idle"},
+						Claim:         ClaimView{Session: "ses_implementer_218", State: "idle"},
 						HandoffCommit: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
 						Pass:          1,
 					},
-					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_214", State: "idle"}, Pass: 1},
+					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_218", State: "idle"}, Pass: 1},
 				},
 				// Reviewing names the reviewer, so the issue carries its entry numbers as every
 				// issue whose phase names a phase worker role does: its reviewer was handed the
@@ -689,23 +719,23 @@ func populatedState(t *testing.T) State {
 					Status:          GatedStepApproved,
 				}},
 			},
-			"LEGION-215": {
-				Key:           "LEGION-215",
+			"LEGION-219": {
+				Key:           "LEGION-219",
 				Generation:    3,
 				Phase:         phase.Reviewing,
 				Status:        "needs_review",
-				Tree:          "LEGION-215",
+				Tree:          "LEGION-219",
 				Repo:          "zeta/tools",
 				DefaultBranch: "release/v7.1",
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {
-						Claim:         ClaimView{Session: "ses_implementer_215", State: "idle"},
+						Claim:         ClaimView{Session: "ses_implementer_219", State: "idle"},
 						HandoffCommit: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
 						Pass:          2,
 						Rounds:        1,
 						BackwardMoves: map[string]int{"reviewing-implementing": 1},
 					},
-					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_215", State: "idle"}, Pass: 2, Rounds: 1},
+					claim.RoleReviewer: {Claim: ClaimView{Session: "ses_reviewer_219", State: "idle"}, Pass: 2, Rounds: 1},
 				},
 				// The reviewer is on its second round, its second entry, and holds it.
 				PhaseEntry: 2,
@@ -724,7 +754,7 @@ func populatedState(t *testing.T) State {
 				// so the wait is not a head GitHub has seen no run for. The told marks name the
 				// head and the state the architect and the reviewer were told of
 				// (workflow's tellStuckMergeState), which is what tells this round from
-				// LEGION-214's: both wait on GitHub's next answer about the same head, and only
+				// LEGION-218's: both wait on GitHub's next answer about the same head, and only
 				// this one has been reported.
 				MergeWait: &MergeWaitView{
 					WaitsOn:       "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",

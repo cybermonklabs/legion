@@ -1335,7 +1335,49 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 97: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
+// 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
+// the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
+// eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
+// `record.HeldAtWork` says) and the issues that hold it where any do (`heldBy`, absent where none
+// does — a root whose Legion label is off, an issue none of the other words is true of). The
+// three lists together are every issue of the workflow and what each is doing, which `active` and
+// `waiting` alone never were: an issue in neither was simply missing, and a reader could not tell
+// one the daemon was about to start from one nothing will start again.
+// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
+// refuses a value it does not name rather than stripping it like an unknown key, so a word added
+// to the ladder later bumps this number again. The key itself is written on every body, empty
+// rather than null, and a caller from a pod whose claims record a contract below 98 is served the
+// admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
+// issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
+// `leakCheckCause`, one below 85 every issue without its rendered answer and every member of the
+// waiting line without that contract's own fields, one below 75 the body without the nine keys
+// of the decided record and its contract mark, one below 73 without `claimsToRefresh`, one below
+// 62 the workers without their counts of the moves back and one below 51 the admission block
+// without its trees; the fifteen strips compose, and every reader from 98 on takes the key as
+// optional for exactly those stripped bodies. No other key of the wire moves: no list above it
+// changes, though `why.reason` now follows the held word for some issues in `admission.blocked`
+// and `unlisted` alike, for every caller at 85 or above (the sentence table of
+// `internal/projection/why.go` is the one statement of which), which moves no contract, since the
+// reason is free text. The rows are read from the judgement the state already made
+// (`blockers.JudgeLine`, which now answers the rows the pass left behind beside the line it
+// built), so the body costs no further read of the store.
+// (The base declares 94, main's #3677 entry right above this one, landed by
+// cybermonklabs/legion#3677 (INFRA-2800). By the rule of 2026-11-13T06:29Z this change keeps 98
+// while it stands above its base and no other open head declares it, and renumbers only when the
+// base takes 98 or a number above it. It declared 76 when this pull request opened, then 78 and
+// 86, each renumbered when another change took the number first, then 94, which it left for 98
+// because an open head declared a higher number that could land first; 86 was read at
+// 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
+// already declared it, merged at 18:19Z. A reading
+// of the open heads is of this file at refs/pull/<n>/head for every open pull request, not of a
+// file list: GitHub cuts a pull request's file list short, so one that changes more files than
+// the page holds answers without this path. Read the base's own number and every open pull
+// request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 104: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
 // the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
 // mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one
 // rule the engine reads to decide whether to ask GitHub about a round at all, so the object is on
@@ -1353,21 +1395,20 @@ package api
 // so that 0 is that reading rather than a gap in the view; and `toldHead` with `toldState`, the
 // head and state the architect and the reviewer were told of once the round was reported stuck,
 // both empty while the round still waits for its first answer, which is what tells a stuck round
-// from a new one. A caller from a pod whose claims record a contract below 97 is served the
+// from a new one. A caller from a pod whose claims record a contract below 104 is served the
 // state with no `mergeWait` on any issue at all — the key absent rather than empty, since a
 // strict reader before the contract that added a key refuses it whatever it names (api's
-// stateNarrowings, withoutMergeWait) — as a caller below 94 is served every issue without
-// `phaseEntry` and `givenEntry`, one below 87 every claim view without `leakCheckCause`, one
-// below 85 every issue without `why` and every member of the waiting line
-// with its `place` and its `length` alone, one below 75
-// the claim views and the issues without the nine keys the decided record added and the body
-// without its `contract` mark, one below 73 a body with no `claimsToRefresh`, one below 62 the
-// workers without their counts of the moves back, one below 58 the issues without their place in
-// the admission line, one below 57 the claim views with no `step`, one below 56 the stranded
-// report without its retired entries, one below 55 the issues without the gated steps, one below
-// 53 a body with no `wakesWaiting` and one below 49 one with no memory draw; the bands compose,
-// and every reader
-// from this contract on takes the object as optional. The daemon makes no read of GitHub of its
+// stateNarrowings, withoutMergeWait) — as a caller below 98 is served the admission block without
+// `admission.held`, one below 94 every issue without `phaseEntry` and `givenEntry`, one below 87
+// every claim view without `leakCheckCause`, one below 85 every issue without `why` and every
+// member of the waiting line with its `place` and its `length` alone, one below 75 the claim views
+// and the issues without the nine keys the decided record added and the body without its `contract`
+// mark, one below 73 a body with no `claimsToRefresh`, one below 62 the workers without their
+// counts of the moves back, one below 58 the issues without their place in the admission line, one
+// below 57 the claim views with no `step`, one below 56 the stranded report without its retired
+// entries, one below 55 the issues without the gated steps, one below 53 a body with no
+// `wakesWaiting` and one below 49 one with no memory draw; the bands compose, and every reader from
+// this contract on takes the object as optional. The daemon makes no read of GitHub of its
 // own for any of it: every field is the record as the daemon's own reads of the pull request have
 // left it, so a state request costs no GitHub call and the object says how old the daemon's
 // knowledge of the head is rather than what GitHub would answer now. (Read at
@@ -1394,8 +1435,12 @@ package api
 // 93 it held at the seventh), #3830 90, #3715 92, #3519 and #3712 95, #2731 and #3573 96, #3708 98
 // and #3575 99. For check-daemon-api-contract.sh a base above this change's number is the base
 // taking it, so this change takes 97, the lowest number above the base's that no other open head
+// declares. A ninth reading, at the forward merge of 2026-11-13T12:54Z over the 141 open pull
+// requests, found main at 98 (dispatch://INFRA-3107's entry above, landed by #3708), #2731 96,
+// #3575 99, #3573 and #3715 100, #3712 101, #3730 102, and #3519 and #3830 103; the base stands
+// above 97, so this change takes 104, the lowest number above the base's that no other open head
 // declares. The entries above keep the numbers they were read at. Read the base's own number and
 // every open head again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 97
+const DaemonAPIVersion = 104

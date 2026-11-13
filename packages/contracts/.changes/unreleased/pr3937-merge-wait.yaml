@@ -1,5 +1,5 @@
 kind: Added
 body: |-
-  The daemon state schema names an issue's `mergeWait` (daemon API contract 97): what its review
+  The daemon state schema names an issue's `mergeWait` (daemon API contract 104): what its review
   round waits on from GitHub, with `waitsOn`, `mergeState`, `stateReadAt`, `headUpdatedAt`,
   `checkRuns`, `toldHead` and `toldState`.

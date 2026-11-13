@@ -692,19 +692,19 @@ test("the state golden carries a done issue's open production check", () => {
 });
 
 // The state golden carries two reviewing issues whose rounds wait on GitHub's merge state for
-// their heads: LEGION-214, waiting for a first answer — the head it waits on, when GitHub last
+// their heads: LEGION-218, waiting for a first answer — the head it waits on, when GitHub last
 // moved that head and no settled check run on it yet, with no state read and no told marks — and
-// LEGION-215, stuck, carrying the state read and both marks the telling left. A round waiting on
+// LEGION-219, stuck, carrying the state read and both marks the telling left. A round waiting on
 // nothing from GitHub has no `mergeWait` at all, and a merge state no GitHub answer spells, or a
 // state read that is no time, is refused.
 test("the state golden carries the rounds waiting on GitHub's merge state", () => {
   const state = fixture("state.json") as {
     issues: Record<string, { phase: string; mergeWait?: Record<string, unknown> }>;
   };
-  const first = state.issues["LEGION-214"];
-  const stuck = state.issues["LEGION-215"];
+  const first = state.issues["LEGION-218"];
+  const stuck = state.issues["LEGION-219"];
   if (first?.mergeWait === undefined || stuck?.mergeWait === undefined) {
-    throw new Error("state fixture lacks LEGION-214 or LEGION-215 or their merge waits");
+    throw new Error("state fixture lacks LEGION-218 or LEGION-219 or their merge waits");
   }
   expect(first.phase).toBe("reviewing");
   expect(stuck.phase).toBe("reviewing");
