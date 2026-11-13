@@ -1,4 +1,4 @@
-# A copy of the way back of store migration 20261111225552_phase_entry as docs/kubernetes.md
+# A committed copy of the way back of store migration 20261111225552_phase_entry as docs/kubernetes.md
 # carries it under "The phase entry (daemon API contract 94).": the content of the fenced block
 # that holds `delete from schema_version where version = 20261111225552;` - the psql line, the
 # lines of the heredoc and its terminator - in the guide's own bytes and none of the prose around
